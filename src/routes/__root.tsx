@@ -2,6 +2,7 @@ import { getPreferredTheme } from "@/features/auth/actions";
 import { Toaster } from "@/features/shared/components/custom-ui/toast";
 import { KeybindProvider } from "@/features/shared/context/keybind.context";
 import "@fontsource-variable/outfit";
+import { QueryClient } from "@tanstack/solid-query";
 import {
   HeadContent,
   Outlet,
@@ -12,7 +13,9 @@ import { TanStackRouterDevtools } from "@tanstack/solid-router-devtools";
 import { HydrationScript, Suspense } from "solid-js/web";
 import styleCss from "../styles/globals.css?url";
 
-export const Route = createRootRouteWithContext()({
+export const Route = createRootRouteWithContext<{
+  queryClient: QueryClient;
+}>()({
   loader: async () => {
     return {
       theme: await getPreferredTheme(),
