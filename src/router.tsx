@@ -9,14 +9,15 @@ import { onMount } from "solid-js";
 import { routeTree } from "./routeTree.gen";
 
 export function createRouter() {
-  const queryClient = new QueryClient();
-  //   {
-  //   defaultOptions: {
-  //     queries: {
-  //       experimental_prefetchInRender: true,
-  //     },
-  //   },
-  // }
+  const queryClient = new QueryClient({
+    defaultOptions: {
+      queries: {
+        // make ensureQueryData in loaders preload useQuery calls for 5 seconds
+        staleTime: 5000,
+        experimental_prefetchInRender: true,
+      },
+    },
+  });
 
   const router = createTanstackRouter({
     routeTree,
@@ -25,7 +26,6 @@ export function createRouter() {
     },
     scrollRestoration: true,
     defaultPreload: "intent",
-    defaultPreloadStaleTime: 0,
     defaultErrorComponent: ErrorComponent,
   });
 
