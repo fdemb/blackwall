@@ -1,0 +1,36 @@
+[data-toast] {
+  --y: translateY(100%);
+  --easing: cubic-bezier(0.19, 1, 0.22, 1);
+  transform: var(--y);
+  transition:
+    transform 400ms var(--easing),
+    opacity 400ms var(--easing),
+    scale 400ms var(--easing);
+  opacity: 0;
+  scale: 0.8;
+}
+
+[data-toast][data-mount-state="mounted"] {
+  --y: translateY(0);
+  opacity: 1;
+  scale: 1;
+}
+
+[data-toast][data-mount-state="unmounting"] {
+  --y: translateY(100%);
+  opacity: 0;
+  scale: 0.8;
+}
+
+[data-toast][data-swipe="move"] {
+  transform: translateX(var(--kb-toast-swipe-move-x));
+}
+
+[data-toast][data-swipe="cancel"] {
+  transform: translateX(0);
+  transition: transform 200ms ease-out;
+}
+
+[data-toast][data-swipe="end"] {
+  animation: swipeOut 100ms ease-out;
+}

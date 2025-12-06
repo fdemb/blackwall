@@ -1,0 +1,294 @@
+import { User } from "@/db/schema";
+import { InferDbType } from "@/db/utils";
+import { IssueActivityLog } from "@/features/issues/components/issue-activity-log";
+import { IssueDescription } from "@/features/issues/components/issue-description";
+import { IssueSidebar } from "@/features/issues/components/issue-sidebar";
+import { IssueEditingProvider } from "@/features/issues/context/issue-editing.context";
+import {
+  get,
+  getIssueLabels,
+  updateDescription,
+  updateSummary,
+} from "@/features/issues/issue-actions";
+import { PageHeader } from "@/features/shared/components/blocks/page-header";
+import { TeamAvatar } from "@/features/shared/components/custom-ui/avatar";
+import { FastLink } from "@/features/shared/components/custom-ui/fast-link";
+import { ScrollArea } from "@/features/shared/components/custom-ui/scroll-area";
+import { Button } from "@/features/shared/components/ui/button";
+import { Card, CardTitle } from "@/features/shared/components/ui/card";
+import { Separator } from "@/features/shared/components/ui/separator";
+import { useWorkspaceData } from "@/features/shared/context/workspace-context";
+import { listUsers } from "@/features/teams/actions";
+import { queryOptions, useMutation, useQuery } from "@tanstack/solid-query";
+import {
+  createFileRoute,
+  notFound,
+  type LinkProps,
+} from "@tanstack/solid-router";
+import { useServerFn } from "@tanstack/solid-start";
+import { JSONContent } from "@tiptap/core";
+import ChevronRightIcon from "lucide-solid/icons/chevron-right";
+import { createSignal, onCleanup, onMount, Show, type JSX } from "solid-js";
+import { tinykeys } from "tinykeys";
+
+type IssueFromGet = InferDbType<
+  "issue",
+  {
+    assignedTo: true;
+    comments: {
+      with: {
+        author: true;
+      };
+    };
+    labelsOnIssue: {
+      with: {
+        label: true;
+      };
+    };
+    changeEvents: {
+      with: {
+        actor: true;
+      };
+    };
+  }
+>;
+
+const getIssueWithLabelsQueryOptions = (
+  workspaceSlug: string,
+  issueKey: string,
+) =>
+  queryOptions({
+    queryKey: ["issue", "get", workspaceSlug, issueKey],
+    queryFn: async () => {
+      console.log("getIssueWithLabelsQueryOptions", workspaceSlug, issueKey);
+      const [issueData, labelsData] = await Promise.all([
+        get({
+          data: {
+            workspaceSlug,
+            issueKey,
+          },
+        }),
+        getIssueLabels({
+          data: {
+            workspaceSlug,
+            issueKey,
+          },
+        }),
+      ]);
+
+      return {
+        issueData,
+        labelsData: labelsData ?? [],
+      };
+    },
+  });
+
+const getAssignableUsersQueryOptions = (
+  workspaceSlug: string,
+  teamKey: string,
+) =>
+  queryOptions({
+    queryKey: ["issue", "assignableUsers", workspaceSlug, teamKey],
+    queryFn: async () => {
+      return await listUsers({
+        data: {
+          workspaceSlug,
+          teamKey,
+        },
+      });
+    },
+  });
+
+export const Route = createFileRoute(
+  "/_authorized/$workspace/_main/issue/$key",
+)({
+  component: RouteComponent,
+  loader: async ({ params, context }) => {
+    const data = await context.queryClient.ensureQueryData(
+      getIssueWithLabelsQueryOptions(params.workspace, params.key),
+    );
+
+    if (!data.issueData) {
+      throw notFound();
+    }
+
+    return data;
+  },
+});
+
+function Breadcrumbs(props: { children?: JSX.Element }) {
+  return <ul class="flex flex-row items-center">{props.children}</ul>;
+}
+
+function BreadcrumbsItem(props: {
+  children?: JSX.Element;
+  linkProps?: LinkProps;
+}) {
+  return (
+    <li class="group flex flex-row items-center leading-none text-muted-foreground last:text-foreground">
+      <Show when={props.linkProps} fallback={<>{props.children}</>}>
+        <FastLink
+          {...props.linkProps}
+          class="hover:bg-background hover:text-foreground px-1 py-1 -mx-1"
+        >
+          {props.children}
+        </FastLink>
+      </Show>
+      <ChevronRightIcon class="size-4 mx-2 shrink-0 group-last:hidden" />
+    </li>
+  );
+}
+
+function IssueMainView(props: {
+  issue: IssueFromGet;
+  assignableUsers: User[];
+}) {
+  const { workspace } = useWorkspaceData();
+  const [summary, setSummary] = createSignal<string | null>(null);
+  const [description, setDescription] = createSignal<JSONContent | null>(null);
+  const updateDescriptionFn = useServerFn(updateDescription);
+  const updateSummaryFn = useServerFn(updateSummary);
+
+  const saveMutation = useMutation(() => ({
+    mutationFn: async () => {
+      if (description()) {
+        await updateDescriptionFn({
+          data: {
+            workspaceSlug: workspace.slug,
+            issueKey: props.issue.key,
+            description: description()!,
+          },
+        });
+      }
+
+      if (summary()) {
+        await updateSummaryFn({
+          data: {
+            workspaceSlug: workspace.slug,
+            issueKey: props.issue.key,
+            summary: summary()!,
+          },
+        });
+      }
+    },
+    onSuccess: () => {
+      setDescription(null);
+      setSummary(null);
+    },
+  }));
+
+  onMount(() => {
+    const unsubscribe = tinykeys(window, {
+      "$mod+s": (e) => {
+        e.preventDefault();
+        saveMutation.mutate();
+      },
+    });
+
+    onCleanup(unsubscribe);
+  });
+
+  return (
+    <IssueEditingProvider
+      onSummaryChange={setSummary}
+      onDescriptionChange={setDescription}
+    >
+      <div class="flex flex-col flex-1 relative">
+        <ScrollArea>
+          <main class="flex-1 px-12 pb-8 pt-16 flex flex-col max-w-[980px] mx-auto">
+            <h2
+              class="text-xl sm:text-2xl font-medium outline-none"
+              contenteditable
+              onInput={(e) => {
+                setSummary(e.currentTarget.innerText);
+              }}
+            >
+              {props.issue.summary}
+            </h2>
+
+            <IssueDescription issue={props.issue} />
+
+            <Separator class="my-8" />
+
+            <IssueActivityLog
+              issue={props.issue}
+              workspaceSlug={workspace.slug}
+              assignableUsers={props.assignableUsers}
+            />
+          </main>
+        </ScrollArea>
+
+        <Show when={description() !== null || summary() !== null}>
+          <Card class="absolute bottom-4 left-4 right-4 flex flex-row justify-between py-0 h-16 items-center px-4">
+            <CardTitle class="leading-normal">Unsaved changes</CardTitle>
+            <div>
+              <Button
+                disabled={saveMutation.isPending}
+                onClick={() => saveMutation.mutate()}
+              >
+                Save
+              </Button>
+            </div>
+          </Card>
+        </Show>
+      </div>
+    </IssueEditingProvider>
+  );
+}
+
+function RouteComponent() {
+  const params = Route.useParams();
+  const workspaceData = useWorkspaceData();
+  const initialData = Route.useLoaderData();
+
+  const teamKey = () => initialData().issueData.team.key;
+  const issueQuery = useQuery(() =>
+    getIssueWithLabelsQueryOptions(params().workspace, params().key),
+  );
+  const assignableUsersQuery = useQuery(() =>
+    getAssignableUsersQueryOptions(params().workspace, teamKey()),
+  );
+
+  return (
+    <Show when={issueQuery.data}>
+      {(d) => (
+        <div class="flex flex-col h-screen">
+          <PageHeader>
+            <Breadcrumbs>
+              <BreadcrumbsItem
+                linkProps={{
+                  to: "/$workspace/team/$teamKey/issues",
+                  params: {
+                    workspace: workspaceData.workspace.slug,
+                    teamKey: d().issueData.team.key,
+                  },
+                }}
+              >
+                <div class="flex flex-row items-center gap-1">
+                  <TeamAvatar team={d().issueData.team} size="5" />
+                  {d().issueData.team.name}
+                </div>
+              </BreadcrumbsItem>
+              <BreadcrumbsItem>{d().issueData.issue.key}</BreadcrumbsItem>
+            </Breadcrumbs>
+          </PageHeader>
+
+          <div class="flex flex-row min-h-0 flex-1">
+            <IssueMainView
+              issue={d().issueData.issue}
+              assignableUsers={assignableUsersQuery.data ?? []}
+            />
+
+            <IssueSidebar
+              issue={d().issueData.issue}
+              workspaceSlug={params().workspace}
+              teamKey={d().issueData.team.key}
+              labels={d().labelsData}
+              assignableUsers={assignableUsersQuery.data ?? []}
+            />
+          </div>
+        </div>
+      )}
+    </Show>
+  );
+}
