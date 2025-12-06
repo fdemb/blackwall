@@ -1,0 +1,118 @@
+@layer components {
+  .prose {
+    @apply text-foreground leading-relaxed text-lg;
+  }
+
+  .prose > * + * {
+    @apply mt-4;
+  }
+
+  .prose h1 {
+    @apply text-2xl font-semibold text-foreground mt-8 first:mt-0;
+  }
+
+  .prose h2 {
+    @apply text-xl font-semibold text-foreground mt-6 first:mt-0;
+  }
+
+  .prose h3 {
+    @apply text-lg font-semibold text-foreground mt-6 first:mt-0;
+  }
+
+  .prose h4 {
+    @apply text-base font-semibold text-foreground mt-4 first:mt-0;
+  }
+
+  .prose h5 {
+    @apply text-sm font-semibold text-foreground mt-4 first:mt-0;
+  }
+
+  .prose h6 {
+    @apply text-sm font-medium text-muted-foreground mt-4 first:mt-0;
+  }
+
+  .prose p {
+    @apply text-lg;
+  }
+
+  .prose a {
+    @apply text-primary hover:text-primary/90 underline underline-offset-2 decoration-1;
+  }
+
+  .prose strong {
+    @apply font-semibold text-foreground;
+  }
+
+  .prose em {
+    @apply italic;
+  }
+
+  .prose code {
+    @apply bg-muted-foreground text-foreground px-1.5 py-0.5 font-mono;
+  }
+
+  .prose pre {
+    @apply bg-accent text-accent-foreground border p-4 overflow-x-auto font-mono leading-relaxed mt-6;
+  }
+
+  .prose pre code {
+    @apply bg-transparent text-inherit p-0;
+  }
+
+  .prose blockquote {
+    @apply border-l-4 border-border pl-4 italic text-muted-foreground my-6;
+  }
+
+  .prose ul {
+    @apply list-disc pl-6 space-y-1;
+  }
+
+  .prose ol {
+    @apply list-decimal pl-6 space-y-1;
+  }
+
+  .prose li {
+    @apply text-base;
+  }
+
+  .prose li > ul,
+  .prose li > ol {
+    @apply mt-2 mb-1;
+  }
+
+  .prose img {
+    @apply max-w-full h-auto my-6;
+  }
+
+  .prose hr {
+    @apply border-0 border-t border-border my-8;
+  }
+
+  .prose table {
+    @apply w-full border-collapse my-6;
+  }
+
+  .prose thead {
+    @apply border-b border-border;
+  }
+
+  .prose th {
+    @apply text-left py-2 px-3 font-semibold text-foreground;
+  }
+
+  .prose td {
+    @apply py-2 px-3 border-b border-border text-sm;
+  }
+
+  .prose tbody tr:last-child td {
+    @apply border-b-0;
+  }
+
+  .prose p.is-editor-empty:first-child::before {
+    color: var(--color-muted-foreground);
+    content: attr(data-placeholder);
+    float: left;
+    height: 0;
+    pointer-events: none;
+  }
+}
