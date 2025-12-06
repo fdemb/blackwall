@@ -1,0 +1,37 @@
+name: deploy
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    name: deploy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Build app files
+        run: bun run build
+
+      - name: Build server
+        run: bun build ./server.ts --compile --target=bun-linux-x64 --bytecode --minify --sourcemap
+
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "$SSH_PRIVATE_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H $SSH_HOST >> ~/.ssh/known_hosts
+
+      - name: Deploy app files
+        run: |
+          rsync -avz --delete \
+            -e "ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no" \
+            ./dist \
+            ./server \
+            ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:${{ secrets.DEPLOY_PATH }}
