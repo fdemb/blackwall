@@ -8,6 +8,6 @@ dist-ssr
 .tanstack
 .wrangler
 .output
-db.sqlite
+db.sqlite*
 blackwall_data
 server
