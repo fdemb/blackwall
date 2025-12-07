@@ -6,6 +6,7 @@ import * as schema from "./schema";
 if (!process.env.DATABASE_URL) throw new Error("DATABASE_URL is not set.");
 
 const client = new Database(process.env.DATABASE_URL);
+client.run("PRAGMA journal_mode = WAL;");
 
 const db = drizzle({
   client,
