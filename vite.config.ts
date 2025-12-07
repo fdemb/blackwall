@@ -10,10 +10,11 @@ export default defineConfig({
       projects: ["./tsconfig.json"],
     }),
     tailwindcss(),
-    tanstackStart(),
-    // solidDevTools({
-    //   autoname: true,
-    // }),
+    tanstackStart({
+      spa: {
+        enabled: true,
+      },
+    }),
     solidPlugin({ ssr: true }),
   ],
 });
