@@ -1,5 +1,5 @@
 import { cn } from "@/lib/utils";
-import { cva, VariantProps } from "class-variance-authority";
+import { cva, type VariantProps } from "class-variance-authority";
 import { splitProps, type ComponentProps } from "solid-js";
 
 const kbdVariants = cva(

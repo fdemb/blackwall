@@ -1,4 +1,4 @@
-import { InferDbType } from "@/db/utils";
+import type { InferDbType } from "@/db/utils";
 import { changeStatus, listBoard } from "@/features/issues/issue-actions";
 import { PageHeader } from "@/features/shared/components/blocks/page-header";
 import {

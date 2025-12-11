@@ -1,5 +1,5 @@
-import { User } from "@/db/schema";
-import { InferDbType } from "@/db/utils";
+import type { User } from "@/db/schema";
+import type { InferDbType } from "@/db/utils";
 import { assign } from "@/features/issues/issue-actions";
 import { UserAvatar } from "@/features/shared/components/custom-ui/avatar";
 import { PickerPopover } from "@/features/shared/components/custom-ui/picker-popover";

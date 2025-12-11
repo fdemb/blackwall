@@ -4,7 +4,7 @@ import AlertCircleIcon from "lucide-solid/icons/alert-circle";
 import CheckIcon from "lucide-solid/icons/check";
 import InfoIcon from "lucide-solid/icons/info";
 import XIcon from "lucide-solid/icons/x";
-import { createSignal, onMount, type Component } from "solid-js";
+import { createSignal, type JSX, onMount } from "solid-js";
 import { Dynamic, Match, Portal, Switch } from "solid-js/web";
 import { Button } from "../ui/button";
 import "./toast.css";
@@ -13,7 +13,7 @@ type ToastComponentProps = {
   toastId: number;
   message: string;
   class?: string;
-  icon?: Component;
+  icon?: (props: { class?: string }) => JSX.Element;
 };
 
 export function ToastComponent(props: ToastComponentProps) {

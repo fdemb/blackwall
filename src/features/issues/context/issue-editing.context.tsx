@@ -1,4 +1,4 @@
-import { JSONContent } from "@tiptap/core";
+import type { JSONContent } from "@tiptap/core";
 import { createContext, useContext, type JSX } from "solid-js";
 
 export const IssueEditingContext = createContext<{

@@ -148,6 +148,7 @@
   --text-lg: 15px;
   --text-xl: 18px;
   --ease-out-expo: cubic-bezier(0.19, 1, 0.22, 1);
+  --ease-in-out-circ: cubic-bezier(0.79, 0.14, 0.15, 0.86);
 }
 
 @layer base {

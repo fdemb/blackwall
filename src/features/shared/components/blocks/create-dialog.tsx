@@ -6,7 +6,7 @@ import { cn } from "@/lib/utils";
 import { Popover } from "@kobalte/core/popover";
 import { useNavigate } from "@tanstack/solid-router";
 import { useServerFn } from "@tanstack/solid-start";
-import { JSONContent } from "@tiptap/core";
+import type { JSONContent } from "@tiptap/core";
 import PlusIcon from "lucide-solid/icons/plus";
 import XIcon from "lucide-solid/icons/x";
 import { createSignal, mergeProps, onMount } from "solid-js";

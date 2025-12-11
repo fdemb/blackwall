@@ -1,6 +1,9 @@
-import { CreateTeamInput, TeamMutations } from "@/features/teams/dal/mutations";
+import {
+  type CreateTeamInput,
+  TeamMutations,
+} from "@/features/teams/dal/mutations";
 import { faker } from "@faker-js/faker";
-import { Team } from "../schema";
+import type { Team } from "../schema";
 
 export function teamFake(workspaceSlug: string): CreateTeamInput {
   return {

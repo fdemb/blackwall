@@ -11,7 +11,9 @@ export const Route = createFileRoute("/_either")({
   beforeLoad: async () => {
     const data = await session();
 
-    return data;
+    return {
+      user: data?.user,
+    };
   },
 });
 
@@ -20,14 +22,14 @@ function RouteComponent() {
 
   return (
     <AuthShell>
-      <Show when={sessionData()}>
-        {(sessionData) => (
-        <div class="absolute top-4 right-4 z-10 bg-background p-2 border">
-          <p class="flex flex-row gap-1">
-            Logged in as
-            <strong class="font-semibold">{sessionData().user.email}</strong>
-          </p>
-        </div>
+      <Show when={sessionData()?.user}>
+        {(user) => (
+          <div class="absolute top-4 right-4 z-10 bg-background p-2 border">
+            <p class="flex flex-row gap-1">
+              Logged in as
+              <strong class="font-semibold">{user().email}</strong>
+            </p>
+          </div>
         )}
       </Show>
 

@@ -1,10 +1,10 @@
 import {
-  type PopoverContentProps,
   Popover,
   usePopoverContext,
+  type PopoverContentProps,
 } from "@kobalte/core/popover";
 import { splitProps } from "solid-js";
-import { Picker, PickerOption, PickerProps } from "./picker";
+import { Picker, type PickerOption, type PickerProps } from "./picker";
 
 export const PickerPopover = <
   TId extends string | number | null,

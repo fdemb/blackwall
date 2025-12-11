@@ -32,14 +32,12 @@ import { Skeleton } from "./skeleton";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./tooltip";
 
 const MOBILE_BREAKPOINT = 768;
-const SIDEBAR_COOKIE_NAME = "sidebar:state";
-const SIDEBAR_COOKIE_MAX_AGE = 60 * 60 * 24 * 7;
 const SIDEBAR_WIDTH = "15rem";
 const SIDEBAR_WIDTH_MOBILE = "18rem";
 const SIDEBAR_WIDTH_ICON = "3rem";
 const SIDEBAR_KEYBOARD_SHORTCUT = "b";
 
-type SidebarContext = {
+export type SidebarContext = {
   state: Accessor<"expanded" | "collapsed">;
   open: Accessor<boolean>;
   setOpen: (open: boolean) => void;
@@ -108,9 +106,6 @@ const SidebarProvider: Component<SidebarProviderProps> = (rawProps) => {
       );
     }
     _setOpen(value);
-
-    // This sets the cookie to keep the sidebar state.
-    document.cookie = `${SIDEBAR_COOKIE_NAME}=${open()}; path=/; max-age=${SIDEBAR_COOKIE_MAX_AGE}`;
   };
 
   // Helper to toggle the sidebar.
@@ -159,7 +154,7 @@ const SidebarProvider: Component<SidebarProviderProps> = (rawProps) => {
           ...local.style,
         }}
         class={cn(
-          "group/sidebar-wrapper flex min-h-svh h-full w-full text-sidebar-foreground has-[[data-variant=inset]]:bg-sidebar",
+          "group/sidebar-wrapper flex min-h-svh h-full w-full text-sidebar-foreground has-data-[variant=inset]:bg-sidebar",
           local.class,
         )}
         {...others}
@@ -234,7 +229,7 @@ const Sidebar: Component<SidebarProps> = (rawProps) => {
           {/* This is what handles the sidebar gap on desktop */}
           <div
             class={cn(
-              "w-(--sidebar-width) relative h-svh bg-transparent transition-[width] duration-200 ease-linear",
+              "w-(--sidebar-width) relative h-svh bg-transparent transition-[width] duration-300 ease-in-out-circ",
               "group-data-[collapsible=offcanvas]:w-0",
               "group-data-[side=right]:rotate-180",
               local.variant === "floating" || local.variant === "inset"
@@ -244,7 +239,7 @@ const Sidebar: Component<SidebarProps> = (rawProps) => {
           />
           <div
             class={cn(
-              "w-(--sidebar-width) fixed inset-y-0 z-10 hidden h-svh transition-[left,right,width] duration-200 ease-linear md:flex",
+              "w-(--sidebar-width) fixed inset-y-0 z-10 hidden h-svh transition-[left,right,width] duration-300 ease-in-out-circ md:flex",
               local.side === "left"
                 ? "left-0 group-data-[collapsible=offcanvas]:left-[calc(var(--sidebar-width)*-1)]"
                 : "right-0 group-data-[collapsible=offcanvas]:right-[calc(var(--sidebar-width)*-1)]",
@@ -269,6 +264,7 @@ type SidebarTriggerProps<T extends ValidComponent = "button"> = ComponentProps<
   typeof Button<T>
 > & {
   onClick?: (event: MouseEvent) => void;
+  side?: "left" | "right";
 };
 
 const SidebarTrigger = <T extends ValidComponent = "button">(
@@ -277,8 +273,10 @@ const SidebarTrigger = <T extends ValidComponent = "button">(
   const [local, others] = splitProps(props as SidebarTriggerProps, [
     "class",
     "onClick",
+    "side",
   ]);
-  const { toggleSidebar } = useSidebar();
+  const { toggleSidebar, isMobile, open, openMobile } = useSidebar();
+  const isOpen = () => (isMobile() ? openMobile() : open());
 
   return (
     <Button
@@ -287,23 +285,21 @@ const SidebarTrigger = <T extends ValidComponent = "button">(
       size="icon"
       class={cn("size-7", local.class)}
       onClick={(event: MouseEvent) => {
-        local.onClick?.(event);
-        toggleSidebar();
+        if (local.onClick) {
+          local.onClick(event);
+        } else {
+          toggleSidebar();
+        }
       }}
       {...others}
     >
-      <svg
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        stroke-width="2"
-        stroke-linecap="round"
-        stroke-linejoin="round"
+      <SidebarIcon
+        filled={isOpen()}
         class="size-4"
-      >
-        <rect width="18" height="18" x="3" y="3" rx="2" />
-        <path d="M9 3v18" />
-      </svg>
+        classList={{
+          "rotate-180": local.side === "left",
+        }}
+      />
       <span class="sr-only">Toggle Sidebar</span>
     </Button>
   );
@@ -322,7 +318,7 @@ const SidebarRail: Component<ComponentProps<"button">> = (props) => {
       title="Toggle Sidebar"
       class={cn(
         "absolute inset-y-0 z-20 hidden w-4 -translate-x-1/2 transition-all ease-linear after:absolute after:inset-y-0 after:left-1/2 after:w-[2px] hover:after:bg-sidebar-border group-data-[side=left]:-right-4 group-data-[side=right]:left-0 sm:flex",
-        "[[data-side=left]_&]:cursor-w-resize [[data-side=right]_&]:cursor-e-resize",
+        "in-data-[side=left]:cursor-w-resize in-data-[side=right]:cursor-e-resize",
         "[[data-side=left][data-state=collapsed]_&]:cursor-e-resize [[data-side=right][data-state=collapsed]_&]:cursor-w-resize",
         "group-data-[collapsible=offcanvas]:translate-x-0 group-data-[collapsible=offcanvas]:after:left-full group-data-[collapsible=offcanvas]:hover:bg-sidebar",
         "[[data-side=left][data-collapsible=offcanvas]_&]:-right-2",
@@ -698,6 +694,32 @@ const SidebarMenuSubButton = <T extends ValidComponent = "a">(
       )}
       {...others}
     />
+  );
+};
+
+const SidebarIcon = (props: ComponentProps<"svg"> & { filled?: boolean }) => {
+  const [local, others] = splitProps(props, ["filled", "class"]);
+  return (
+    <svg
+      width="24"
+      height="24"
+      viewBox="0 0 24 24"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+      {...others}
+    >
+      <path
+        d="M3 5C3 3.89543 3.89543 3 5 3H14V21H5C3.89543 21 3 20.1046 3 19V5Z"
+        stroke="currentColor"
+        stroke-width="2"
+      />
+      <path
+        d="M21 19C21 20.1046 20.1046 21 19 21L14 21L14 3L19 3C20.1046 3 21 3.89543 21 5L21 19Z"
+        stroke="currentColor"
+        fill={local.filled ? "currentColor" : "none"}
+        stroke-width="2"
+      />
+    </svg>
   );
 };
 
