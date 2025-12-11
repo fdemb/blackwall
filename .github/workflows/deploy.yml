@@ -19,9 +19,6 @@ jobs:
       - name: Build app files
         run: bun run build
 
-      - name: Remove .env to prevent inlining
-        run: rm .env
-
       - name: Build server
         run: bun build ./server.ts --compile --target=bun-linux-x64 --bytecode --minify --sourcemap
 
