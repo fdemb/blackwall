@@ -67,5 +67,9 @@ export const updatePreferredTheme = createServerFn({ method: "POST" })
 export const getPreferredTheme = createServerFn({ method: "GET" })
   .middleware([maybeAuthMiddleware])
   .handler(async ({ context }) => {
-    return await AuthQueries.getPreferredTheme(context?.user);
+    try {
+      return await AuthQueries.getPreferredTheme(context?.user);
+    } catch (error) {
+      return "system";
+    }
   });

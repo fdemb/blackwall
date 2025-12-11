@@ -4,7 +4,7 @@
   "type": "module",
   "scripts": {
     "dev": "bun run --bun vite dev --port 3000",
-    "build": "bun run --bun vite build",
+    "build": "APP_SECRET=some-key DATABASE_URL=:memory: APP_BASE_URL=http://localhost:3000 bun run --bun vite build",
     "serve": "bun run --bun vite preview",
     "test": "vitest run",
     "start": "bun dist/server/server.js",

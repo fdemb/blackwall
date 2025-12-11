@@ -1,8 +1,7 @@
+import { env } from "@/lib/zod-env";
 import { Database } from "bun:sqlite";
 
-if (!process.env.DATABASE_URL) throw new Error("DATABASE_URL is not set.");
-
-const client = new Database(process.env.DATABASE_URL);
+const client = new Database(env.DATABASE_URL);
 
 async function dropAll() {
   const tables = client

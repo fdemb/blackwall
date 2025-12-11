@@ -1,3 +1,4 @@
+import { env } from "@/lib/zod-env";
 import { betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { db } from "../../db";
@@ -10,12 +11,16 @@ export const auth = betterAuth({
     enabled: true,
   },
   socialProviders: {
-    google: {
-      clientId: process.env.GOOGLE_CLIENT_ID as string,
-      clientSecret: process.env.GOOGLE_CLIENT_SECRET,
-    },
+    google:
+      env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET
+        ? {
+            clientId: env.GOOGLE_CLIENT_ID,
+            clientSecret: env.GOOGLE_CLIENT_SECRET,
+          }
+        : undefined,
   },
-  baseURL: process.env.APP_BASE_URL,
+  baseURL: env.APP_BASE_URL,
+  secret: env.APP_SECRET,
   advanced: {
     database: {
       generateId: false,
