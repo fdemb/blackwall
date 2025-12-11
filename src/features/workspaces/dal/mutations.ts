@@ -1,6 +1,7 @@
 import { db, dbSchema } from "@/db";
 import type { User } from "@/db/schema";
 import { AppError } from "@/features/shared/errors";
+import { env } from "@/lib/zod-env";
 import { add } from "date-fns";
 import { and, eq } from "drizzle-orm";
 import { randomBytes } from "node:crypto";
@@ -123,7 +124,7 @@ export const WorkspaceMutations = {
       );
     }
 
-    const invitationUrl = `${process.env.APP_URL}/invite/${invitation.token}`;
+    const invitationUrl = `${env.APP_BASE_URL}/invite/${invitation.token}`;
 
     return {
       invitation,
