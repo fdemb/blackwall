@@ -1,4 +1,4 @@
-import { Issue } from "@/db/schema";
+import type { Issue } from "@/db/schema";
 import { TiptapEditor } from "@/features/shared/components/tiptap/tiptap-editor";
 import { useIssueEditingContext } from "../context/issue-editing.context";
 

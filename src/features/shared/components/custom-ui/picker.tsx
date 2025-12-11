@@ -1,14 +1,14 @@
 import type { BaseMapping } from "@/lib/mappings";
 import { cn } from "@/lib/utils";
-import { Link, LinkProps, useNavigate } from "@tanstack/solid-router";
+import { Link, type LinkProps, useNavigate } from "@tanstack/solid-router";
 import CheckIcon from "lucide-solid/icons/check";
 import PlusIcon from "lucide-solid/icons/plus";
 import SearchIcon from "lucide-solid/icons/search";
+import type { JSX } from "solid-js";
 import {
   createEffect,
   createSignal,
   Index,
-  JSX,
   Match,
   mergeProps,
   Show,

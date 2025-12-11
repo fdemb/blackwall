@@ -1,5 +1,5 @@
 import { issueInsertSchema, issueStatusValues } from "@/db/schema";
-import { InferDbType } from "@/db/utils";
+import type { InferDbType } from "@/db/utils";
 import { AppError } from "@/features/shared/errors";
 import { createServerFn } from "@tanstack/solid-start";
 import * as z from "zod";

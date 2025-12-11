@@ -1,7 +1,7 @@
 import { cn } from "@/lib/utils";
 import { Checkbox as CheckboxPrimitive } from "@kobalte/core/checkbox";
 import CheckIcon from "lucide-solid/icons/check";
-import { ComponentProps, splitProps } from "solid-js";
+import { type ComponentProps, splitProps } from "solid-js";
 
 function Checkbox(props: ComponentProps<typeof CheckboxPrimitive>) {
   const [local, rest] = splitProps(props, ["class"]);

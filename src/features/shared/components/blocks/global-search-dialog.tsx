@@ -6,7 +6,7 @@ import SearchIcon from "lucide-solid/icons/search";
 import { createSignal, Match, Switch } from "solid-js";
 import { Dynamic } from "solid-js/web";
 import { UserAvatar } from "../custom-ui/avatar";
-import { PickerOption } from "../custom-ui/picker";
+import type { PickerOption } from "../custom-ui/picker";
 import { PickerDialog } from "../custom-ui/picker-dialog";
 import { Button } from "../ui/button";
 import { Dialog, DialogTrigger } from "../ui/dialog";

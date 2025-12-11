@@ -1,7 +1,7 @@
 import { QueryClient } from "@tanstack/solid-query";
 import {
   createRouter as createTanstackRouter,
-  ErrorComponentProps,
+  type ErrorComponentProps,
 } from "@tanstack/solid-router";
 import { setupRouterSsrQueryIntegration } from "@tanstack/solid-router-ssr-query";
 import BugIcon from "lucide-solid/icons/bug";

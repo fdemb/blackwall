@@ -4,7 +4,7 @@ import {
 } from "@kobalte/core/dialog";
 import { splitProps } from "solid-js";
 import { DialogContent } from "../ui/dialog";
-import { Picker, PickerOption, PickerProps } from "./picker";
+import { Picker, type PickerOption, type PickerProps } from "./picker";
 
 export const PickerDialog = <
   TId extends string | number,

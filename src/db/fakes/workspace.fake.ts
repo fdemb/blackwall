@@ -1,6 +1,6 @@
 import { WorkspaceMutations } from "@/features/workspaces/dal/mutations";
 import { faker } from "@faker-js/faker";
-import { NewWorkspace, Workspace } from "../schema";
+import type { NewWorkspace, Workspace } from "../schema";
 
 export function workspaceFake(): NewWorkspace {
   const name = faker.company.name();

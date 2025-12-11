@@ -1,5 +1,5 @@
 import { updatePreferredTheme } from "@/features/auth/actions";
-import { PickerOption } from "@/features/shared/components/custom-ui/picker";
+import type { PickerOption } from "@/features/shared/components/custom-ui/picker";
 import MonitorIcon from "lucide-solid/icons/monitor";
 import MoonIcon from "lucide-solid/icons/moon";
 import SunIcon from "lucide-solid/icons/sun";

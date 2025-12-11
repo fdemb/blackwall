@@ -1,5 +1,5 @@
-import { IssueChangeEventType, User } from "@/db/schema";
-import { InferDbType } from "@/db/utils";
+import type { IssueChangeEventType, User } from "@/db/schema";
+import type { InferDbType } from "@/db/utils";
 import { UserAvatar } from "@/features/shared/components/custom-ui/avatar";
 import { TiptapEditor } from "@/features/shared/components/tiptap/tiptap-editor";
 import { Button } from "@/features/shared/components/ui/button";
@@ -281,7 +281,7 @@ export function IssueEventItem(props: IssueEventItemProps) {
   );
 
   return (
-    <div class="flex flex-row gap-1 items-center text-muted-foreground text-sm pl-4">
+    <div class="flex flex-row gap-1 flex-wrap items-center text-muted-foreground text-sm pl-4">
       <UserAvatar user={props.event.actor} size="5" />
       <p>{props.event.actor.name}</p>
       <p class="font-medium">{eventTypeText()}</p>

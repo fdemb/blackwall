@@ -1,6 +1,6 @@
 import { faker } from "@faker-js/faker";
 import { db, dbSchema } from "..";
-import { NewUser, User } from "../schema";
+import type { NewUser, User } from "../schema";
 
 export function userFake(): NewUser {
   return {

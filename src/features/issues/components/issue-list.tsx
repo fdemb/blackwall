@@ -1,4 +1,4 @@
-import { InferDbType } from "@/db/utils";
+import type { InferDbType } from "@/db/utils";
 import { Badge } from "@/features/shared/components/custom-ui/badge";
 import { FastLink } from "@/features/shared/components/custom-ui/fast-link";
 import { formatDateShort } from "@/lib/dates";

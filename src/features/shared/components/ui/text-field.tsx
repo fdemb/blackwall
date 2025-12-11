@@ -249,7 +249,7 @@ function TanStackTextField(props: TanStackTextFieldProps) {
           type={props.type}
           aria-describedby={props.describedBy}
           onBlur={(event) => {
-            field().handleBlur(event);
+            field().handleBlur();
             props.onBlur?.(event);
           }}
           placeholder={props.placeholder}

@@ -1,5 +1,5 @@
-import { User } from "@/db/schema";
-import { InferDbType } from "@/db/utils";
+import type { User } from "@/db/schema";
+import type { InferDbType } from "@/db/utils";
 import { IssueActivityLog } from "@/features/issues/components/issue-activity-log";
 import { IssueDescription } from "@/features/issues/components/issue-description";
 import { IssueSidebar } from "@/features/issues/components/issue-sidebar";
@@ -12,23 +12,28 @@ import {
 } from "@/features/issues/issue-actions";
 import { PageHeader } from "@/features/shared/components/blocks/page-header";
 import { TeamAvatar } from "@/features/shared/components/custom-ui/avatar";
-import { FastLink } from "@/features/shared/components/custom-ui/fast-link";
+import {
+  Breadcrumbs,
+  BreadcrumbsItem,
+} from "@/features/shared/components/custom-ui/Breadcrumbs";
 import { ScrollArea } from "@/features/shared/components/custom-ui/scroll-area";
 import { Button } from "@/features/shared/components/ui/button";
 import { Card, CardTitle } from "@/features/shared/components/ui/card";
 import { Separator } from "@/features/shared/components/ui/separator";
+import {
+  SidebarInset,
+  SidebarProvider,
+  SidebarTrigger,
+} from "@/features/shared/components/ui/sidebar";
 import { useWorkspaceData } from "@/features/shared/context/workspace-context";
 import { listUsers } from "@/features/teams/actions";
 import { queryOptions, useMutation, useQuery } from "@tanstack/solid-query";
-import {
-  createFileRoute,
-  notFound,
-  type LinkProps,
-} from "@tanstack/solid-router";
+import { createFileRoute, notFound } from "@tanstack/solid-router";
 import { useServerFn } from "@tanstack/solid-start";
-import { JSONContent } from "@tiptap/core";
-import ChevronRightIcon from "lucide-solid/icons/chevron-right";
-import { createSignal, onCleanup, onMount, Show, type JSX } from "solid-js";
+import type { JSONContent } from "@tiptap/core";
+import PanelRightIcon from "lucide-solid/icons/panel-right";
+import { createSignal, onCleanup, onMount, Show } from "solid-js";
+import { Portal } from "solid-js/web";
 import { tinykeys } from "tinykeys";
 
 type IssueFromGet = InferDbType<
@@ -116,29 +121,6 @@ export const Route = createFileRoute(
   },
 });
 
-function Breadcrumbs(props: { children?: JSX.Element }) {
-  return <ul class="flex flex-row items-center">{props.children}</ul>;
-}
-
-function BreadcrumbsItem(props: {
-  children?: JSX.Element;
-  linkProps?: LinkProps;
-}) {
-  return (
-    <li class="group flex flex-row items-center leading-none text-muted-foreground last:text-foreground">
-      <Show when={props.linkProps} fallback={<>{props.children}</>}>
-        <FastLink
-          {...props.linkProps}
-          class="hover:bg-background hover:text-foreground px-1 py-1 -mx-1"
-        >
-          {props.children}
-        </FastLink>
-      </Show>
-      <ChevronRightIcon class="size-4 mx-2 shrink-0 group-last:hidden" />
-    </li>
-  );
-}
-
 function IssueMainView(props: {
   issue: IssueFromGet;
   assignableUsers: User[];
@@ -195,7 +177,7 @@ function IssueMainView(props: {
     >
       <div class="flex flex-col flex-1 relative">
         <ScrollArea>
-          <main class="flex-1 px-12 pb-8 pt-16 flex flex-col max-w-[980px] mx-auto">
+          <main class="flex-1 px-6 sm:px-12 pb-8 pt-16 flex flex-col max-w-[980px] mx-auto">
             <h2
               class="text-xl sm:text-2xl font-medium outline-none"
               contenteditable
@@ -252,7 +234,7 @@ function RouteComponent() {
   return (
     <Show when={issueQuery.data}>
       {(d) => (
-        <div class="flex flex-col h-screen">
+        <div class="flex flex-col h-screen w-full">
           <PageHeader>
             <Breadcrumbs>
               <BreadcrumbsItem
@@ -271,21 +253,33 @@ function RouteComponent() {
               </BreadcrumbsItem>
               <BreadcrumbsItem>{d().issueData.issue.key}</BreadcrumbsItem>
             </Breadcrumbs>
+
+            <div id="issue-sidebar-trigger" class="ml-auto"></div>
           </PageHeader>
 
           <div class="flex flex-row min-h-0 flex-1">
-            <IssueMainView
-              issue={d().issueData.issue}
-              assignableUsers={assignableUsersQuery.data ?? []}
-            />
+            <SidebarProvider>
+              <SidebarInset>
+                <IssueMainView
+                  issue={d().issueData.issue}
+                  assignableUsers={assignableUsersQuery.data ?? []}
+                />
+              </SidebarInset>
 
-            <IssueSidebar
-              issue={d().issueData.issue}
-              workspaceSlug={params().workspace}
-              teamKey={d().issueData.team.key}
-              labels={d().labelsData}
-              assignableUsers={assignableUsersQuery.data ?? []}
-            />
+              <Portal mount={document.getElementById("issue-sidebar-trigger")!}>
+                <SidebarTrigger class="ml-auto">
+                  <PanelRightIcon class="size-4" />
+                </SidebarTrigger>
+              </Portal>
+
+              <IssueSidebar
+                issue={d().issueData.issue}
+                workspaceSlug={params().workspace}
+                teamKey={d().issueData.team.key}
+                labels={d().labelsData}
+                assignableUsers={assignableUsersQuery.data ?? []}
+              />
+            </SidebarProvider>
           </div>
         </div>
       )}

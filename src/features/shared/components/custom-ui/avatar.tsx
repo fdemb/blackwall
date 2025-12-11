@@ -4,9 +4,9 @@ import { Show, splitProps } from "solid-js";
 import * as ImagePrimitive from "@kobalte/core/image";
 import type { PolymorphicProps } from "@kobalte/core/polymorphic";
 
-import { ColorKey, Team, User } from "@/db/schema";
+import type { ColorKey, Team, User } from "@/db/schema";
 import { cn } from "@/lib/utils";
-import { cva, VariantProps } from "class-variance-authority";
+import { cva, type VariantProps } from "class-variance-authority";
 import UserIcon from "lucide-solid/icons/user";
 import Users from "lucide-solid/icons/users";
 import { createColorFromString } from "../../colors";

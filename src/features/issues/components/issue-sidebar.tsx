@@ -1,5 +1,9 @@
-import { Label, User } from "@/db/schema";
-import { InferDbType } from "@/db/utils";
+import type { Label, User } from "@/db/schema";
+import type { InferDbType } from "@/db/utils";
+import {
+  Sidebar,
+  SidebarContent,
+} from "@/features/shared/components/ui/sidebar";
 import type { JSX } from "solid-js";
 import {
   AssigneePickerPopover,
@@ -10,7 +14,7 @@ import {
 
 type IssueForSidebar = InferDbType<"issue", { assignedTo: true }>;
 
-function SidebarItem(props: {
+function IssueSidebarItem(props: {
   children: JSX.Element;
   label: string;
   orientation: "row" | "col";
@@ -40,25 +44,25 @@ export function IssueSidebar(props: {
   teamKey: string;
 }) {
   return (
-    <aside class="max-w-64 w-full border-l bg-surface">
-      <div class="flex flex-col">
-        <SidebarItem label="Status" orientation="col">
+    <Sidebar side="right" class="mt-10">
+      <SidebarContent class="p-0">
+        <IssueSidebarItem label="Status" orientation="col">
           <StatusPickerPopover
             status={props.issue.status}
             issueKey={props.issue.key}
             workspaceSlug={props.workspaceSlug}
           />
-        </SidebarItem>
+        </IssueSidebarItem>
 
-        <SidebarItem label="Priority" orientation="col">
+        <IssueSidebarItem label="Priority" orientation="col">
           <PriorityPickerPopover
             priority={props.issue.priority}
             issueKey={props.issue.key}
             workspaceSlug={props.workspaceSlug}
           />
-        </SidebarItem>
+        </IssueSidebarItem>
 
-        <SidebarItem label="Assigned to" orientation="col">
+        <IssueSidebarItem label="Assigned to" orientation="col">
           <AssigneePickerPopover
             assignedToId={props.issue.assignedToId}
             assignedTo={props.issue.assignedTo}
@@ -67,12 +71,12 @@ export function IssueSidebar(props: {
             teamKey={props.teamKey}
             assignableUsers={props.assignableUsers}
           />
-        </SidebarItem>
+        </IssueSidebarItem>
 
-        <SidebarItem label="Labels" orientation="col">
+        <IssueSidebarItem label="Labels" orientation="col">
           <IssueLabelsPicker labels={props.labels} issueKey={props.issue.key} />
-        </SidebarItem>
-      </div>
-    </aside>
+        </IssueSidebarItem>
+      </SidebarContent>
+    </Sidebar>
   );
 }

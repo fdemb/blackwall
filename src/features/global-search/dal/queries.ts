@@ -1,5 +1,5 @@
 import { db, dbSchema } from "@/db";
-import { User } from "@/db/schema";
+import type { User } from "@/db/schema";
 import { TeamQueries } from "@/features/teams/dal/queries";
 import { and, eq, inArray, like, or, sql } from "drizzle-orm";
 

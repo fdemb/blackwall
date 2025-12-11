@@ -1,14 +1,15 @@
 import {
-  CreateIssueInput,
+  type CreateIssueInput,
   IssueMutations,
 } from "@/features/issues/dal/mutations";
 import { faker } from "@faker-js/faker";
 import { db } from "..";
-import { Issue } from "../schema";
+import type { Issue } from "../schema";
 
 export function issueFake(): CreateIssueInput {
   return {
     summary: faker.lorem.sentence(),
+    status: "to_do",
     description: {
       type: "doc",
       content: [
