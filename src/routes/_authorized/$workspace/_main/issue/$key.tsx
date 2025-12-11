@@ -15,7 +15,7 @@ import { TeamAvatar } from "@/features/shared/components/custom-ui/avatar";
 import {
   Breadcrumbs,
   BreadcrumbsItem,
-} from "@/features/shared/components/custom-ui/Breadcrumbs";
+} from "@/features/shared/components/custom-ui/breadcrumbs";
 import { ScrollArea } from "@/features/shared/components/custom-ui/scroll-area";
 import { Button } from "@/features/shared/components/ui/button";
 import { Card, CardTitle } from "@/features/shared/components/ui/card";
