@@ -47,10 +47,27 @@ export const SettingsSection: ParentComponent<SettingsSectionProps> = (
   );
 };
 
-export const SettingsCard: ParentComponent = (props) => {
+type SettingsCardProps = {
+  variant?: "row" | "column";
+};
+
+export const SettingsCard: ParentComponent<SettingsCardProps> = (props) => {
+  const merged = mergeProps(
+    {
+      variant: "row" as const,
+    },
+    props,
+  );
+
   return (
-    <div class="squircle-md bg-surface border divide-y divide-border px-2">
-      {props.children}
+    <div
+      class="squircle-md bg-surface border px-2"
+      classList={{
+        "divide-y divide-border": merged.variant === "row",
+        "py-4": merged.variant === "column",
+      }}
+    >
+      {merged.children}
     </div>
   );
 };

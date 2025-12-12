@@ -1,7 +1,7 @@
 import { db, dbSchema } from "@/db";
 import type { User } from "@/db/schema";
 import { AppError } from "@/features/shared/errors";
-import { and, count, eq } from "drizzle-orm";
+import { and, count, eq, notInArray } from "drizzle-orm";
 import { WorkspaceQueries } from "../../workspaces/dal/queries";
 
 const getForUser = async (input: {
@@ -129,9 +129,58 @@ const getFullTeam = async (input: {
   return team;
 };
 
+const listWorkspaceUsers = async (input: {
+  user: User;
+  workspaceSlug: string;
+  teamKey: string;
+}) => {
+  const workspace = await WorkspaceQueries.getBySlug(input.workspaceSlug);
+
+  const team = await TeamQueries.getForUser({
+    user: input.user,
+    workspaceSlug: input.workspaceSlug,
+    teamKey: input.teamKey,
+  });
+
+  if (!team) {
+    throw new AppError(
+      "FORBIDDEN",
+      "You don't have permission to access this resource.",
+    );
+  }
+
+  // Get all team member IDs
+  const teamMembers = await db
+    .select({ userId: dbSchema.userTeam.userId })
+    .from(dbSchema.userTeam)
+    .where(eq(dbSchema.userTeam.teamId, team.id));
+
+  const teamMemberIds = teamMembers.map((m) => m.userId);
+
+  // Get all workspace users, excluding team members
+  const workspaceUsers = await db
+    .select()
+    .from(dbSchema.user)
+    .innerJoin(
+      dbSchema.workspaceUser,
+      eq(dbSchema.user.id, dbSchema.workspaceUser.userId),
+    )
+    .where(
+      and(
+        eq(dbSchema.workspaceUser.workspaceId, workspace.id),
+        teamMemberIds.length > 0
+          ? notInArray(dbSchema.user.id, teamMemberIds)
+          : undefined,
+      ),
+    );
+
+  return workspaceUsers.map((wu) => wu.user);
+};
+
 export const TeamQueries = {
   getForUser,
   listForUser,
   listUsers,
   getFullTeam,
+  listWorkspaceUsers,
 };

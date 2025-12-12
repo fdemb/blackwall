@@ -1,4 +1,6 @@
+import { db, dbSchema } from "@/db";
 import { createServerFn } from "@tanstack/solid-start";
+import { eq } from "drizzle-orm";
 import * as z from "zod";
 import { authMiddleware } from "../auth/middleware/auth.middleware";
 import { IssueMutations } from "../issues/dal/mutations";
@@ -123,4 +125,78 @@ export const updateTeamKey = createServerFn({ method: "POST" })
     });
 
     return team;
+  });
+
+export const listWorkspaceUsers = createServerFn({ method: "GET" })
+  .middleware([authMiddleware])
+  .inputValidator(
+    z.object({
+      workspaceSlug: z.string(),
+      teamKey: z.string(),
+    }),
+  )
+  .handler(async ({ data, context }) => {
+    return TeamQueries.listWorkspaceUsers({
+      user: context.user!,
+      ...data,
+    });
+  });
+
+export const addTeamMember = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
+  .inputValidator(
+    z.object({
+      workspaceSlug: z.string(),
+      teamKey: z.string(),
+      userId: z.string(),
+    }),
+  )
+  .handler(async ({ data, context }) => {
+    const team = await TeamQueries.getForUser({
+      user: context.user!,
+      workspaceSlug: data.workspaceSlug,
+      teamKey: data.teamKey,
+    });
+
+    if (!team) {
+      throw new AppError("NOT_FOUND", "Team not found.");
+    }
+
+    // Get the user to add
+    const [userToAdd] = await db
+      .select()
+      .from(dbSchema.user)
+      .where(eq(dbSchema.user.id, data.userId))
+      .limit(1);
+
+    if (!userToAdd) {
+      throw new AppError("NOT_FOUND", "User not found.");
+    }
+
+    await TeamMutations.addUser({
+      user: userToAdd,
+      team,
+    });
+
+    return { success: true };
+  });
+
+export const removeTeamMember = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
+  .inputValidator(
+    z.object({
+      workspaceSlug: z.string(),
+      teamKey: z.string(),
+      userId: z.string(),
+    }),
+  )
+  .handler(async ({ data, context }) => {
+    await TeamMutations.removeUser({
+      user: context.user!,
+      workspaceSlug: data.workspaceSlug,
+      teamKey: data.teamKey,
+      userId: data.userId,
+    });
+
+    return { success: true };
   });
