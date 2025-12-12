@@ -58,7 +58,8 @@ type NavGroup = {
 };
 
 function createNavItems() {
-  const { workspace, teams } = useWorkspaceData();
+  const workspaceData = useWorkspaceData();
+  const teams = () => workspaceData().teamsData.map((team) => team.team);
 
   return () =>
     [
@@ -71,14 +72,14 @@ function createNavItems() {
             linkProps: {
               to: "/$workspace",
               params: {
-                workspace: workspace.slug,
+                workspace: workspaceData().workspace.slug,
               },
             },
           },
         ],
       },
       {
-        children: teams.map((team) => ({
+        children: teams().map((team) => ({
           id: `team-${team.key}`,
           title: team.name,
           type: "collapsible",
@@ -90,7 +91,7 @@ function createNavItems() {
               linkProps: {
                 to: "/$workspace/team/$teamKey/issues/board",
                 params: {
-                  workspace: workspace.slug,
+                  workspace: workspaceData().workspace.slug,
                   teamKey: team.key,
                 },
               },
@@ -102,7 +103,7 @@ function createNavItems() {
               linkProps: {
                 to: "/$workspace/team/$teamKey/issues/backlog",
                 params: {
-                  workspace: workspace.slug,
+                  workspace: workspaceData().workspace.slug,
                   teamKey: team.key,
                 },
               },
@@ -114,7 +115,7 @@ function createNavItems() {
               linkProps: {
                 to: "/$workspace/team/$teamKey/issues",
                 params: {
-                  workspace: workspace.slug,
+                  workspace: workspaceData().workspace.slug,
                   teamKey: team.key,
                 },
                 activeOptions: {
@@ -152,7 +153,8 @@ function useLocalStorageCollapsibleState() {
 }
 
 export function AppSidebar(props: ComponentProps<typeof Sidebar>) {
-  const { workspace, teams } = useWorkspaceData();
+  const workspaceData = useWorkspaceData();
+  const teams = () => workspaceData().teamsData.map((team) => team.team);
   const groups = createNavItems();
   const [collapsibleStateStore, setCollapsibleStateStore] =
     useLocalStorageCollapsibleState();
@@ -167,9 +169,12 @@ export function AppSidebar(props: ComponentProps<typeof Sidebar>) {
         </div>
 
         <div class="flex flex-row gap-2">
-          <CreateDialog workspaceSlug={workspace.slug} teams={teams} />
+          <CreateDialog
+            workspaceSlug={workspaceData().workspace.slug}
+            teams={teams()}
+          />
 
-          <GlobalSearchDialog workspaceSlug={workspace.slug} />
+          <GlobalSearchDialog workspaceSlug={workspaceData().workspace.slug} />
         </div>
       </SidebarHeader>
 

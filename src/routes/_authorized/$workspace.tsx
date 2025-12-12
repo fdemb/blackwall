@@ -36,7 +36,7 @@ function RouteComponent() {
   return (
     <Show when={workspaceData()}>
       {(data) => (
-        <WorkspaceDataContext.Provider value={data()}>
+        <WorkspaceDataContext.Provider value={data}>
           <Outlet />
         </WorkspaceDataContext.Provider>
       )}

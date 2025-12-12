@@ -11,7 +11,7 @@ import {
 } from "@/features/shared/components/ui/sidebar";
 import { TextField } from "@/features/shared/components/ui/text-field";
 import { useWorkspaceData } from "@/features/shared/context/workspace-context";
-import { Link, useRouter } from "@tanstack/solid-router";
+import { Link } from "@tanstack/solid-router";
 import ArrowLeftIcon from "lucide-solid/icons/arrow-left";
 import SearchIcon from "lucide-solid/icons/search";
 import type { ComponentProps } from "solid-js";
@@ -19,32 +19,10 @@ import { FastLink } from "../custom-ui/fast-link";
 
 export function SettingsSidebar(props: ComponentProps<typeof Sidebar>) {
   const workspaceData = useWorkspaceData();
-  const router = useRouter();
 
   return (
     <Sidebar {...props}>
       <SidebarHeader class="flex flex-col gap-2">
-        {/* <Show
-          when={router.history.canGoBack()}
-          fallback={
-            <Link
-              to="/"
-              class={buttonVariants({
-                variant: "ghost",
-                size: "xs",
-                class: "w-fit",
-              })}
-            >
-              <ArrowLeftIcon class="size-4" />
-              Back to {workspaceData.workspace.displayName}
-            </Link>
-          }
-        >
-          <Button variant="ghost" size="xs" class="w-fit">
-            <ArrowLeftIcon class="size-4" />
-            Back to {workspaceData.workspace.displayName}
-          </Button>
-        </Show> */}
         <Link
           to="/"
           class={buttonVariants({
@@ -54,7 +32,7 @@ export function SettingsSidebar(props: ComponentProps<typeof Sidebar>) {
           })}
         >
           <ArrowLeftIcon class="size-4" />
-          Back to {workspaceData.workspace.displayName}
+          Back to {workspaceData().workspace.displayName}
         </Link>
 
         <TextField class="relative">
@@ -73,10 +51,7 @@ export function SettingsSidebar(props: ComponentProps<typeof Sidebar>) {
                 <SidebarMenuButton
                   as={FastLink}
                   to="/$workspace/settings/general"
-                  params={{ workspace: workspaceData.workspace.slug }}
-                  activeOptions={{
-                    exact: true,
-                  }}
+                  params={{ workspace: workspaceData().workspace.slug }}
                 >
                   General
                 </SidebarMenuButton>
@@ -86,12 +61,19 @@ export function SettingsSidebar(props: ComponentProps<typeof Sidebar>) {
                 <SidebarMenuButton
                   as={FastLink}
                   to="/$workspace/settings/profile"
-                  params={{ workspace: workspaceData.workspace.slug }}
-                  activeOptions={{
-                    exact: true,
-                  }}
+                  params={{ workspace: workspaceData().workspace.slug }}
                 >
                   Profile
+                </SidebarMenuButton>
+              </SidebarMenuItem>
+
+              <SidebarMenuItem>
+                <SidebarMenuButton
+                  as={FastLink}
+                  to="/$workspace/settings/teams"
+                  params={{ workspace: workspaceData().workspace.slug }}
+                >
+                  Team management
                 </SidebarMenuButton>
               </SidebarMenuItem>
             </SidebarMenu>

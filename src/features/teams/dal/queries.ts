@@ -1,90 +1,137 @@
 import { db, dbSchema } from "@/db";
 import type { User } from "@/db/schema";
 import { AppError } from "@/features/shared/errors";
-import { and, eq } from "drizzle-orm";
+import { and, count, eq } from "drizzle-orm";
 import { WorkspaceQueries } from "../../workspaces/dal/queries";
 
-export const TeamQueries = {
-  getForUser: async (input: {
-    user: User;
-    workspaceSlug: string;
-    teamKey: string;
-  }) => {
-    const workspace = await WorkspaceQueries.getBySlug(input.workspaceSlug);
+const getForUser = async (input: {
+  user: User;
+  workspaceSlug: string;
+  teamKey: string;
+}) => {
+  const workspace = await WorkspaceQueries.getBySlug(input.workspaceSlug);
 
-    const [team] = await db
-      .select()
-      .from(dbSchema.team)
-      .where(
-        and(
-          eq(dbSchema.team.workspaceId, workspace.id),
-          eq(dbSchema.team.key, input.teamKey),
-        ),
-      );
+  const [team] = await db
+    .select()
+    .from(dbSchema.team)
+    .where(
+      and(
+        eq(dbSchema.team.workspaceId, workspace.id),
+        eq(dbSchema.team.key, input.teamKey),
+      ),
+    );
 
-    if (!team) {
-      return undefined;
-    }
+  if (!team) {
+    return undefined;
+  }
 
-    // Check if user is a member of this team
-    const [result] = await db
-      .select()
-      .from(dbSchema.userTeam)
-      .where(
-        and(
-          eq(dbSchema.userTeam.teamId, team.id),
-          eq(dbSchema.userTeam.userId, input.user.id),
-        ),
-      );
+  // Check if user is a member of this team
+  const [result] = await db
+    .select()
+    .from(dbSchema.userTeam)
+    .where(
+      and(
+        eq(dbSchema.userTeam.teamId, team.id),
+        eq(dbSchema.userTeam.userId, input.user.id),
+      ),
+    );
 
-    if (!result) {
-      return undefined;
-    }
+  if (!result) {
+    return undefined;
+  }
 
-    return team;
-  },
-  listForUser: async (input: { user: User; workspaceId: string }) => {
-    const userTeams = await db
-      .select()
-      .from(dbSchema.userTeam)
-      .leftJoin(dbSchema.team, eq(dbSchema.userTeam.teamId, dbSchema.team.id))
-      .where(
-        and(
-          eq(dbSchema.team.workspaceId, input.workspaceId),
-          eq(dbSchema.userTeam.userId, input.user.id),
-        ),
-      );
+  return team;
+};
 
-    return userTeams.map((ut) => ut.team).filter((team) => team !== null);
-  },
-  listUsers: async (input: {
-    user: User;
-    workspaceSlug: string;
-    teamKey: string;
-  }) => {
-    const workspace = await WorkspaceQueries.getBySlug(input.workspaceSlug);
+const listForUser = async (input: { user: User; workspaceId: string }) => {
+  const usersCount = db
+    .select({
+      teamId: dbSchema.userTeam.teamId,
+      count: count().as("users_count"),
+    })
+    .from(dbSchema.userTeam)
+    .groupBy(dbSchema.userTeam.teamId)
+    .as("users_count_sq");
 
-    const result = await db.query.team.findFirst({
-      where: (t, { eq, and }) =>
-        and(eq(t.key, input.teamKey), eq(t.workspaceId, workspace.id)),
-      with: {
-        userTeams: {
-          with: {
-            user: true,
-          },
+  const issuesCount = db
+    .select({
+      teamId: dbSchema.issue.teamId,
+      count: count().as("issues_count"),
+    })
+    .from(dbSchema.issue)
+    .groupBy(dbSchema.issue.teamId)
+    .as("issues_count_sq");
+
+  const results = await db
+    .select()
+    .from(dbSchema.userTeam)
+    .leftJoin(dbSchema.team, eq(dbSchema.userTeam.teamId, dbSchema.team.id))
+    .leftJoin(usersCount, eq(dbSchema.userTeam.teamId, usersCount.teamId))
+    .leftJoin(issuesCount, eq(dbSchema.team.id, issuesCount.teamId))
+    .where(
+      and(
+        eq(dbSchema.team.workspaceId, input.workspaceId),
+        eq(dbSchema.userTeam.userId, input.user.id),
+      ),
+    );
+
+  return results
+    .filter((result) => result.team !== null)
+    .map((result) => ({
+      team: result.team!,
+      usersCount: result.users_count_sq?.count ?? 0,
+      issuesCount: result.issues_count_sq?.count ?? 0,
+    }));
+};
+
+const listUsers = async (input: {
+  user: User;
+  workspaceSlug: string;
+  teamKey: string;
+}) => {
+  const workspace = await WorkspaceQueries.getBySlug(input.workspaceSlug);
+
+  const result = await db.query.team.findFirst({
+    where: (t, { eq, and }) =>
+      and(eq(t.key, input.teamKey), eq(t.workspaceId, workspace.id)),
+    with: {
+      userTeams: {
+        with: {
+          user: true,
         },
       },
-    });
+    },
+  });
 
-    const users = result?.userTeams.map((userTeam) => userTeam.user) ?? [];
+  const users = result?.userTeams.map((userTeam) => userTeam.user) ?? [];
 
-    if (!users.find((u) => u.id === input.user.id)) {
-      throw new AppError(
-        "FORBIDDEN",
-        "You don't have permission to access this resource.",
-      );
-    }
+  if (!users.find((u) => u.id === input.user.id)) {
+    throw new AppError(
+      "FORBIDDEN",
+      "You don't have permission to access this resource.",
+    );
+  }
 
-    return users;
-  },
+  return users;
+};
+
+/**
+ * Used for routes that need to get a full team data, like the team settings page.
+ * @param input Data required to get a full team
+ * @returns The full team data
+ */
+const getFullTeam = async (input: {
+  user: User;
+  workspaceSlug: string;
+  teamKey: string;
+}) => {
+  const team = await getForUser(input);
+  return team;
+};
+
+export const TeamQueries = {
+  getForUser,
+  listForUser,
+  listUsers,
+  getFullTeam,
 };

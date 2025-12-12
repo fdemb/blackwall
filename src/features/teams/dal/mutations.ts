@@ -1,8 +1,10 @@
 import { db, dbSchema } from "@/db";
 import type { Team, User, Workspace } from "@/db/schema";
 import { AppError } from "@/features/shared/errors";
+import { eq } from "drizzle-orm";
 import { initializeSequence } from "../../issues/dal/key-sequences";
 import { WorkspaceQueries } from "../../workspaces/dal/queries";
+import { TeamQueries } from "./queries";
 
 export type CreateTeamInput = {
   name: string;
@@ -52,5 +54,30 @@ export const TeamMutations = {
       teamId: input.team.id,
       userId: input.user.id,
     });
+  },
+
+  update: async (input: {
+    user: User;
+    workspaceSlug: string;
+    teamKey: string;
+    team: { name?: string; key?: string };
+  }) => {
+    const team = await TeamQueries.getForUser({
+      user: input.user,
+      workspaceSlug: input.workspaceSlug,
+      teamKey: input.teamKey,
+    });
+
+    if (!team) {
+      throw new AppError("NOT_FOUND", "Team not found.");
+    }
+
+    await db
+      .update(dbSchema.team)
+      .set({
+        name: input.team.name,
+        key: input.team.key,
+      })
+      .where(eq(dbSchema.team.id, team.id));
   },
 };

@@ -13,7 +13,7 @@ export function WorkspacePicker() {
   const listUserWorkspacesFn = useServerFn(listUserWorkspaces);
   const navigate = useNavigate();
   const [open, setOpen] = createSignal(false);
-  const { workspace } = useWorkspaceData();
+  const workspaceData = useWorkspaceData();
   const workspacesQuery = useQuery(() => ({
     queryKey: ["workspaces"],
     queryFn: () => {
@@ -56,13 +56,15 @@ export function WorkspacePicker() {
         variant="ghost"
         class="h-auto !px-1 !py-1 items-center"
       >
-        <span class="truncate font-medium">{workspace.displayName}</span>
+        <span class="truncate font-medium">
+          {workspaceData().workspace.displayName}
+        </span>
         <SelectorIcon class="size-3.5 ml-1 shrink-0" />
       </Popover.Trigger>
 
       <PickerPopover
         options={pickerOptions()}
-        value={workspace.id}
+        value={workspaceData().workspace.id}
         onChange={handleChange}
         // loading={workspacesQuery.isLoading}
         emptyText="No workspaces found."
