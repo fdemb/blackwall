@@ -23,14 +23,14 @@ export const getWorkspaceAndGlobalData = createServerFn({ method: "GET" })
       });
     }
 
-    const teams = await TeamQueries.listForUser({
+    const teamsData = await TeamQueries.listForUser({
       user: context.user,
       workspaceId: workspace.id,
     });
 
     return {
       workspace,
-      teams,
+      teamsData,
     };
   });
 
@@ -63,7 +63,7 @@ export const createWorkspace = createServerFn({ method: "POST" })
 export const listUserWorkspaces = createServerFn({ method: "GET" })
   .middleware([authMiddleware])
   .handler(async ({ context }) => {
-    return await WorkspaceQueries.listForUser(context.user!);
+    return await WorkspaceQueries.listForUser(context.user);
   });
 
 export const getPreferredWorkspace = createServerFn({ method: "GET" })

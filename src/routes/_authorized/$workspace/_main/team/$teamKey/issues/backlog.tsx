@@ -73,6 +73,8 @@ function RouteComponent() {
 
 function IssueEmpty() {
   const workspaceData = useWorkspaceData();
+  const teams = () => workspaceData().teamsData.map((team) => team.team);
+
   return (
     <div class="flex items-center justify-center h-full">
       <div class="p-6 flex flex-col gap-4">
@@ -80,8 +82,8 @@ function IssueEmpty() {
           No issues found
         </p>
         <CreateDialog
-          workspaceSlug={workspaceData.workspace.slug}
-          teams={workspaceData.teams}
+          workspaceSlug={workspaceData().workspace.slug}
+          teams={teams()}
         />
       </div>
     </div>

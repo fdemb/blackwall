@@ -13,7 +13,7 @@ function RouteComponent() {
   return (
     <SidebarProvider>
       <SettingsSidebar />
-      <SidebarInset class="p-4">
+      <SidebarInset>
         <Outlet />
       </SidebarInset>
     </SidebarProvider>

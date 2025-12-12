@@ -1,9 +1,16 @@
 import { db, dbSchema } from "@/db";
-import type { IssuePriority, IssueStatus, NewIssue, User } from "@/db/schema";
+import type {
+  Issue,
+  IssuePriority,
+  IssueStatus,
+  NewIssue,
+  Team,
+  User,
+} from "@/db/schema";
 import { createColorFromString } from "@/features/shared/colors";
 import { AppError } from "@/features/shared/errors";
 import type { JSONContent } from "@tiptap/core";
-import { and, count, eq } from "drizzle-orm";
+import { and, count, eq, sql } from "drizzle-orm";
 import { AuthQueries } from "../../auth/dal/queries";
 import { TeamQueries } from "../../teams/dal/queries";
 import { WorkspaceQueries } from "../../workspaces/dal/queries";
@@ -380,6 +387,48 @@ export const IssueMutations = {
         await tx.insert(dbSchema.issueChangeEvent).values(event);
       }
     });
+  },
+
+  bulkChangeTeamKeys: async (input: {
+    user: User;
+    workspaceSlug: string;
+    team: Team;
+  }) => {
+    const data = await db
+      .select()
+      .from(dbSchema.issue)
+      .innerJoin(dbSchema.team, eq(dbSchema.issue.teamId, dbSchema.team.id))
+      .innerJoin(
+        dbSchema.workspace,
+        eq(dbSchema.issue.workspaceId, dbSchema.workspace.id),
+      )
+      .where(
+        and(
+          eq(dbSchema.workspace.slug, input.workspaceSlug),
+          eq(dbSchema.team.id, input.team.id),
+        ),
+      );
+
+    const issuesToUpdate: Array<Issue> = [];
+
+    for (const item of data) {
+      const oldTeamKey = item.issue.key.split("-")[0];
+      issuesToUpdate.push({
+        ...item.issue,
+        key: item.issue.key.replace(oldTeamKey, input.team.key),
+      });
+    }
+
+    // bulk update
+    await db
+      .insert(dbSchema.issue)
+      .values(issuesToUpdate)
+      .onConflictDoUpdate({
+        target: dbSchema.issue.id,
+        set: {
+          key: sql`excluded.key`,
+        },
+      });
   },
 };
 

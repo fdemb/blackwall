@@ -21,7 +21,7 @@ export function IssueLabelsPicker(props: {
   issueKey: string;
 }) {
   const [addOpen, setAddOpen] = createSignal(false);
-  const { workspace } = useWorkspaceData();
+  const workspaceData = useWorkspaceData();
   const queryClient = useQueryClient();
 
   const handleGetAllLabels = useServerFn(getAllLabels);
@@ -36,7 +36,7 @@ export function IssueLabelsPicker(props: {
     async () => {
       const allLabels = await handleGetAllLabels({
         data: {
-          workspaceSlug: workspace.slug,
+          workspaceSlug: workspaceData().workspace.slug,
         },
       });
 
@@ -58,14 +58,14 @@ export function IssueLabelsPicker(props: {
     mutationFn: async (name: string) => {
       const label = await handleCreateLabel({
         data: {
-          workspaceSlug: workspace.slug,
+          workspaceSlug: workspaceData().workspace.slug,
           name,
         },
       });
 
       await handleAddLabelToIssue({
         data: {
-          workspaceSlug: workspace.slug,
+          workspaceSlug: workspaceData().workspace.slug,
           issueKey: props.issueKey,
           labelId: label.id,
         },
@@ -73,7 +73,12 @@ export function IssueLabelsPicker(props: {
     },
     onSettled: () => {
       queryClient.invalidateQueries({
-        queryKey: ["issue", "get", workspace.slug, props.issueKey],
+        queryKey: [
+          "issue",
+          "get",
+          workspaceData().workspace.slug,
+          props.issueKey,
+        ],
       });
     },
   }));
@@ -82,7 +87,7 @@ export function IssueLabelsPicker(props: {
     mutationFn: async (id: string) => {
       await handleAddLabelToIssue({
         data: {
-          workspaceSlug: workspace.slug,
+          workspaceSlug: workspaceData().workspace.slug,
           issueKey: props.issueKey,
           labelId: id,
         },
@@ -90,7 +95,12 @@ export function IssueLabelsPicker(props: {
     },
     onSettled: () => {
       queryClient.invalidateQueries({
-        queryKey: ["issue", "get", workspace.slug, props.issueKey],
+        queryKey: [
+          "issue",
+          "get",
+          workspaceData().workspace.slug,
+          props.issueKey,
+        ],
       });
     },
   }));
@@ -99,7 +109,7 @@ export function IssueLabelsPicker(props: {
     mutationFn: async (id: string) => {
       await handleRemoveLabelFromIssue({
         data: {
-          workspaceSlug: workspace.slug,
+          workspaceSlug: workspaceData().workspace.slug,
           issueKey: props.issueKey,
           labelId: id,
         },
@@ -107,7 +117,12 @@ export function IssueLabelsPicker(props: {
     },
     onSettled: () => {
       queryClient.invalidateQueries({
-        queryKey: ["issue", "get", workspace.slug, props.issueKey],
+        queryKey: [
+          "issue",
+          "get",
+          workspaceData().workspace.slug,
+          props.issueKey,
+        ],
       });
     },
   }));

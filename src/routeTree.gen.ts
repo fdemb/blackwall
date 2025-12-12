@@ -25,6 +25,8 @@ import { Route as AuthorizedWorkspaceSettingsIndexRouteImport } from './routes/_
 import { Route as AuthorizedWorkspaceMainIndexRouteImport } from './routes/_authorized/$workspace/_main/index'
 import { Route as AuthorizedWorkspaceSettingsProfileRouteImport } from './routes/_authorized/$workspace/settings/profile'
 import { Route as AuthorizedWorkspaceSettingsGeneralRouteImport } from './routes/_authorized/$workspace/settings/general'
+import { Route as AuthorizedWorkspaceSettingsTeamsIndexRouteImport } from './routes/_authorized/$workspace/settings/teams/index'
+import { Route as AuthorizedWorkspaceSettingsTeamsKeyRouteImport } from './routes/_authorized/$workspace/settings/teams/$key'
 import { Route as AuthorizedWorkspaceMainTeamTeamKeyRouteImport } from './routes/_authorized/$workspace/_main/team/$teamKey'
 import { Route as AuthorizedWorkspaceMainIssueKeyRouteImport } from './routes/_authorized/$workspace/_main/issue/$key'
 import { Route as AuthorizedWorkspaceMainTeamTeamKeyIssuesIndexRouteImport } from './routes/_authorized/$workspace/_main/team/$teamKey/issues/index'
@@ -112,6 +114,18 @@ const AuthorizedWorkspaceSettingsGeneralRoute =
     path: '/general',
     getParentRoute: () => AuthorizedWorkspaceSettingsRoute,
   } as any)
+const AuthorizedWorkspaceSettingsTeamsIndexRoute =
+  AuthorizedWorkspaceSettingsTeamsIndexRouteImport.update({
+    id: '/teams/',
+    path: '/teams/',
+    getParentRoute: () => AuthorizedWorkspaceSettingsRoute,
+  } as any)
+const AuthorizedWorkspaceSettingsTeamsKeyRoute =
+  AuthorizedWorkspaceSettingsTeamsKeyRouteImport.update({
+    id: '/teams/$key',
+    path: '/teams/$key',
+    getParentRoute: () => AuthorizedWorkspaceSettingsRoute,
+  } as any)
 const AuthorizedWorkspaceMainTeamTeamKeyRoute =
   AuthorizedWorkspaceMainTeamTeamKeyRouteImport.update({
     id: '/team/$teamKey',
@@ -158,6 +172,8 @@ export interface FileRoutesByFullPath {
   '/$workspace/settings/': typeof AuthorizedWorkspaceSettingsIndexRoute
   '/$workspace/issue/$key': typeof AuthorizedWorkspaceMainIssueKeyRoute
   '/$workspace/team/$teamKey': typeof AuthorizedWorkspaceMainTeamTeamKeyRouteWithChildren
+  '/$workspace/settings/teams/$key': typeof AuthorizedWorkspaceSettingsTeamsKeyRoute
+  '/$workspace/settings/teams': typeof AuthorizedWorkspaceSettingsTeamsIndexRoute
   '/$workspace/team/$teamKey/issues/backlog': typeof AuthorizedWorkspaceMainTeamTeamKeyIssuesBacklogRoute
   '/$workspace/team/$teamKey/issues/board': typeof AuthorizedWorkspaceMainTeamTeamKeyIssuesBoardRoute
   '/$workspace/team/$teamKey/issues': typeof AuthorizedWorkspaceMainTeamTeamKeyIssuesIndexRoute
@@ -175,6 +191,8 @@ export interface FileRoutesByTo {
   '/$workspace/settings': typeof AuthorizedWorkspaceSettingsIndexRoute
   '/$workspace/issue/$key': typeof AuthorizedWorkspaceMainIssueKeyRoute
   '/$workspace/team/$teamKey': typeof AuthorizedWorkspaceMainTeamTeamKeyRouteWithChildren
+  '/$workspace/settings/teams/$key': typeof AuthorizedWorkspaceSettingsTeamsKeyRoute
+  '/$workspace/settings/teams': typeof AuthorizedWorkspaceSettingsTeamsIndexRoute
   '/$workspace/team/$teamKey/issues/backlog': typeof AuthorizedWorkspaceMainTeamTeamKeyIssuesBacklogRoute
   '/$workspace/team/$teamKey/issues/board': typeof AuthorizedWorkspaceMainTeamTeamKeyIssuesBoardRoute
   '/$workspace/team/$teamKey/issues': typeof AuthorizedWorkspaceMainTeamTeamKeyIssuesIndexRoute
@@ -199,6 +217,8 @@ export interface FileRoutesById {
   '/_authorized/$workspace/settings/': typeof AuthorizedWorkspaceSettingsIndexRoute
   '/_authorized/$workspace/_main/issue/$key': typeof AuthorizedWorkspaceMainIssueKeyRoute
   '/_authorized/$workspace/_main/team/$teamKey': typeof AuthorizedWorkspaceMainTeamTeamKeyRouteWithChildren
+  '/_authorized/$workspace/settings/teams/$key': typeof AuthorizedWorkspaceSettingsTeamsKeyRoute
+  '/_authorized/$workspace/settings/teams/': typeof AuthorizedWorkspaceSettingsTeamsIndexRoute
   '/_authorized/$workspace/_main/team/$teamKey/issues/backlog': typeof AuthorizedWorkspaceMainTeamTeamKeyIssuesBacklogRoute
   '/_authorized/$workspace/_main/team/$teamKey/issues/board': typeof AuthorizedWorkspaceMainTeamTeamKeyIssuesBoardRoute
   '/_authorized/$workspace/_main/team/$teamKey/issues/': typeof AuthorizedWorkspaceMainTeamTeamKeyIssuesIndexRoute
@@ -220,6 +240,8 @@ export interface FileRouteTypes {
     | '/$workspace/settings/'
     | '/$workspace/issue/$key'
     | '/$workspace/team/$teamKey'
+    | '/$workspace/settings/teams/$key'
+    | '/$workspace/settings/teams'
     | '/$workspace/team/$teamKey/issues/backlog'
     | '/$workspace/team/$teamKey/issues/board'
     | '/$workspace/team/$teamKey/issues'
@@ -237,6 +259,8 @@ export interface FileRouteTypes {
     | '/$workspace/settings'
     | '/$workspace/issue/$key'
     | '/$workspace/team/$teamKey'
+    | '/$workspace/settings/teams/$key'
+    | '/$workspace/settings/teams'
     | '/$workspace/team/$teamKey/issues/backlog'
     | '/$workspace/team/$teamKey/issues/board'
     | '/$workspace/team/$teamKey/issues'
@@ -260,6 +284,8 @@ export interface FileRouteTypes {
     | '/_authorized/$workspace/settings/'
     | '/_authorized/$workspace/_main/issue/$key'
     | '/_authorized/$workspace/_main/team/$teamKey'
+    | '/_authorized/$workspace/settings/teams/$key'
+    | '/_authorized/$workspace/settings/teams/'
     | '/_authorized/$workspace/_main/team/$teamKey/issues/backlog'
     | '/_authorized/$workspace/_main/team/$teamKey/issues/board'
     | '/_authorized/$workspace/_main/team/$teamKey/issues/'
@@ -386,6 +412,20 @@ declare module '@tanstack/solid-router' {
       preLoaderRoute: typeof AuthorizedWorkspaceSettingsGeneralRouteImport
       parentRoute: typeof AuthorizedWorkspaceSettingsRoute
     }
+    '/_authorized/$workspace/settings/teams/': {
+      id: '/_authorized/$workspace/settings/teams/'
+      path: '/teams'
+      fullPath: '/$workspace/settings/teams'
+      preLoaderRoute: typeof AuthorizedWorkspaceSettingsTeamsIndexRouteImport
+      parentRoute: typeof AuthorizedWorkspaceSettingsRoute
+    }
+    '/_authorized/$workspace/settings/teams/$key': {
+      id: '/_authorized/$workspace/settings/teams/$key'
+      path: '/teams/$key'
+      fullPath: '/$workspace/settings/teams/$key'
+      preLoaderRoute: typeof AuthorizedWorkspaceSettingsTeamsKeyRouteImport
+      parentRoute: typeof AuthorizedWorkspaceSettingsRoute
+    }
     '/_authorized/$workspace/_main/team/$teamKey': {
       id: '/_authorized/$workspace/_main/team/$teamKey'
       path: '/team/$teamKey'
@@ -480,6 +520,8 @@ interface AuthorizedWorkspaceSettingsRouteChildren {
   AuthorizedWorkspaceSettingsGeneralRoute: typeof AuthorizedWorkspaceSettingsGeneralRoute
   AuthorizedWorkspaceSettingsProfileRoute: typeof AuthorizedWorkspaceSettingsProfileRoute
   AuthorizedWorkspaceSettingsIndexRoute: typeof AuthorizedWorkspaceSettingsIndexRoute
+  AuthorizedWorkspaceSettingsTeamsKeyRoute: typeof AuthorizedWorkspaceSettingsTeamsKeyRoute
+  AuthorizedWorkspaceSettingsTeamsIndexRoute: typeof AuthorizedWorkspaceSettingsTeamsIndexRoute
 }
 
 const AuthorizedWorkspaceSettingsRouteChildren: AuthorizedWorkspaceSettingsRouteChildren =
@@ -490,6 +532,10 @@ const AuthorizedWorkspaceSettingsRouteChildren: AuthorizedWorkspaceSettingsRoute
       AuthorizedWorkspaceSettingsProfileRoute,
     AuthorizedWorkspaceSettingsIndexRoute:
       AuthorizedWorkspaceSettingsIndexRoute,
+    AuthorizedWorkspaceSettingsTeamsKeyRoute:
+      AuthorizedWorkspaceSettingsTeamsKeyRoute,
+    AuthorizedWorkspaceSettingsTeamsIndexRoute:
+      AuthorizedWorkspaceSettingsTeamsIndexRoute,
   }
 
 const AuthorizedWorkspaceSettingsRouteWithChildren =

@@ -1,6 +1,10 @@
 import { createServerFn } from "@tanstack/solid-start";
 import * as z from "zod";
 import { authMiddleware } from "../auth/middleware/auth.middleware";
+import { IssueMutations } from "../issues/dal/mutations";
+import { AppError } from "../shared/errors";
+import { WorkspaceQueries } from "../workspaces/dal/queries";
+import { TeamMutations } from "./dal/mutations";
 import { TeamQueries } from "./dal/queries";
 
 export const listUsers = createServerFn({ method: "GET" })
@@ -31,4 +35,92 @@ export const getTeam = createServerFn({ method: "GET" })
       user: context.user,
       ...data,
     });
+  });
+
+export const listTeams = createServerFn({ method: "GET" })
+  .middleware([authMiddleware])
+  .inputValidator(
+    z.object({
+      workspaceSlug: z.string(),
+    }),
+  )
+  .handler(async ({ data, context }) => {
+    const workspace = await WorkspaceQueries.getForUser({
+      user: context.user,
+      slug: data.workspaceSlug,
+    });
+
+    return TeamQueries.listForUser({
+      user: context.user,
+      workspaceId: workspace.id,
+    });
+  });
+
+export const getFullTeam = createServerFn({ method: "GET" })
+  .middleware([authMiddleware])
+  .inputValidator(
+    z.object({
+      workspaceSlug: z.string(),
+      teamKey: z.string(),
+    }),
+  )
+  .handler(async ({ data, context }) => {
+    return TeamQueries.getFullTeam({
+      user: context.user,
+      ...data,
+    });
+  });
+
+export const updateTeamName = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
+  .inputValidator(
+    z.object({
+      workspaceSlug: z.string(),
+      teamKey: z.string(),
+      name: z.string(),
+    }),
+  )
+  .handler(async ({ data, context }) => {
+    return TeamMutations.update({
+      user: context.user,
+      workspaceSlug: data.workspaceSlug,
+      teamKey: data.teamKey,
+      team: { name: data.name },
+    });
+  });
+
+export const updateTeamKey = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
+  .inputValidator(
+    z.object({
+      workspaceSlug: z.string(),
+      teamKey: z.string(),
+      newKey: z.string(),
+    }),
+  )
+  .handler(async ({ data, context }) => {
+    await TeamMutations.update({
+      user: context.user,
+      workspaceSlug: data.workspaceSlug,
+      teamKey: data.teamKey,
+      team: { key: data.newKey },
+    });
+
+    const team = await TeamQueries.getForUser({
+      user: context.user,
+      workspaceSlug: data.workspaceSlug,
+      teamKey: data.newKey,
+    });
+
+    if (!team) {
+      throw new AppError("NOT_FOUND", "Team not found.");
+    }
+
+    await IssueMutations.bulkChangeTeamKeys({
+      user: context.user,
+      workspaceSlug: data.workspaceSlug,
+      team,
+    });
+
+    return team;
   });

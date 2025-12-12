@@ -13,7 +13,7 @@ import { DropdownMenu } from "../ui/dropdown-menu";
 
 export function UserMenu() {
   const session = useSessionData();
-  const { workspace } = useWorkspaceData();
+  const workspaceData = useWorkspaceData();
   const handleLogOut = useServerFn(logOut);
   const navigate = useNavigate();
 
@@ -46,7 +46,7 @@ export function UserMenu() {
         <DropdownMenu.Item
           as={FastLink}
           to="/$workspace/settings/general"
-          params={{ workspace: workspace.slug }}
+          params={{ workspace: workspaceData().workspace.slug }}
         >
           <SettingsIcon />
           Settings

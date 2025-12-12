@@ -125,7 +125,7 @@ function IssueMainView(props: {
   issue: IssueFromGet;
   assignableUsers: User[];
 }) {
-  const { workspace } = useWorkspaceData();
+  const workspaceData = useWorkspaceData();
   const [summary, setSummary] = createSignal<string | null>(null);
   const [description, setDescription] = createSignal<JSONContent | null>(null);
   const updateDescriptionFn = useServerFn(updateDescription);
@@ -136,7 +136,7 @@ function IssueMainView(props: {
       if (description()) {
         await updateDescriptionFn({
           data: {
-            workspaceSlug: workspace.slug,
+            workspaceSlug: workspaceData().workspace.slug,
             issueKey: props.issue.key,
             description: description()!,
           },
@@ -146,7 +146,7 @@ function IssueMainView(props: {
       if (summary()) {
         await updateSummaryFn({
           data: {
-            workspaceSlug: workspace.slug,
+            workspaceSlug: workspaceData().workspace.slug,
             issueKey: props.issue.key,
             summary: summary()!,
           },
@@ -194,7 +194,7 @@ function IssueMainView(props: {
 
             <IssueActivityLog
               issue={props.issue}
-              workspaceSlug={workspace.slug}
+              workspaceSlug={workspaceData().workspace.slug}
               assignableUsers={props.assignableUsers}
             />
           </main>
@@ -241,7 +241,7 @@ function RouteComponent() {
                 linkProps={{
                   to: "/$workspace/team/$teamKey/issues",
                   params: {
-                    workspace: workspaceData.workspace.slug,
+                    workspace: workspaceData().workspace.slug,
                     teamKey: d().issueData.team.key,
                   },
                 }}

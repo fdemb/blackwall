@@ -8,10 +8,11 @@ const search = async (input: {
   workspaceId: string;
   user: User;
 }) => {
-  const allUserTeams = await TeamQueries.listForUser({
+  const allUserTeamsData = await TeamQueries.listForUser({
     user: input.user,
     workspaceId: input.workspaceId,
   });
+  const allUserTeams = allUserTeamsData.map((team) => team.team);
 
   const searchLower = input.searchTerm.toLowerCase();
   const searchPattern = `%${searchLower}%`;
