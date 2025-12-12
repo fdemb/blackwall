@@ -5,14 +5,24 @@ import {
   SettingsRow,
   SettingsSection,
 } from "@/features/settings/components/settings-sections";
+import { UserAvatar } from "@/features/shared/components/custom-ui/avatar";
+import type { PickerOption } from "@/features/shared/components/custom-ui/picker";
+import { PickerPopover } from "@/features/shared/components/custom-ui/picker-popover";
 import { toast } from "@/features/shared/components/custom-ui/toast";
+import { Button } from "@/features/shared/components/ui/button";
 import { TanStackTextField } from "@/features/shared/components/ui/text-field";
 import { useAppForm } from "@/features/shared/context/form-context";
+import { useSessionData } from "@/features/shared/context/session-context";
 import {
+  addTeamMember,
   getFullTeam,
+  listUsers,
+  listWorkspaceUsers,
+  removeTeamMember,
   updateTeamKey,
   updateTeamName,
 } from "@/features/teams/actions";
+import { Popover } from "@kobalte/core/popover";
 import { queryOptions, useQuery, useQueryClient } from "@tanstack/solid-query";
 import {
   createFileRoute,
@@ -21,6 +31,9 @@ import {
   useRouter,
 } from "@tanstack/solid-router";
 import { useServerFn } from "@tanstack/solid-start";
+import PlusIcon from "lucide-solid/icons/plus";
+import XIcon from "lucide-solid/icons/x";
+import { createMemo, createSignal, Index, Show } from "solid-js";
 import * as z from "zod";
 
 const getTeamQueryOptions = (workspaceSlug: string, teamKey: string) =>
@@ -28,6 +41,18 @@ const getTeamQueryOptions = (workspaceSlug: string, teamKey: string) =>
     queryKey: ["team", "get", workspaceSlug, teamKey],
     queryFn: () =>
       getFullTeam({
+        data: {
+          workspaceSlug,
+          teamKey,
+        },
+      }),
+  });
+
+const getTeamMembersQueryOptions = (workspaceSlug: string, teamKey: string) =>
+  queryOptions({
+    queryKey: ["team", "members", workspaceSlug, teamKey],
+    queryFn: () =>
+      listUsers({
         data: {
           workspaceSlug,
           teamKey,
@@ -76,6 +101,9 @@ function RouteComponent() {
         <SettingsSection>
           <NameForm defaultName={teamQuery.data.name} />
           <KeyForm defaultKey={teamQuery.data.key} />
+        </SettingsSection>
+        <SettingsSection title="Members">
+          <MembersSection />
         </SettingsSection>
       </SettingsPage>
     </>
@@ -244,5 +272,186 @@ function KeyForm(props: KeyFormProps) {
         </SettingsRow>
       </SettingsCard>
     </form>
+  );
+}
+
+function MembersSection() {
+  const params = Route.useParams();
+  const session = useSessionData();
+  const queryClient = useQueryClient();
+  const [open, setOpen] = createSignal(false);
+
+  const membersQuery = useQuery(() =>
+    getTeamMembersQueryOptions(params().workspace, params().key),
+  );
+
+  const listWorkspaceUsersFn = useServerFn(listWorkspaceUsers);
+  const addTeamMemberFn = useServerFn(addTeamMember);
+  const removeTeamMemberFn = useServerFn(removeTeamMember);
+
+  const workspaceUsersQuery = useQuery(() => ({
+    queryKey: ["workspace-users", params().workspace, params().key],
+    queryFn: () =>
+      listWorkspaceUsersFn({
+        data: {
+          workspaceSlug: params().workspace,
+          teamKey: params().key,
+        },
+      }),
+    enabled: open(),
+  }));
+
+  const availableUsersOptions = createMemo((): PickerOption<string>[] => {
+    if (workspaceUsersQuery.isLoading) {
+      return [];
+    }
+
+    const users = workspaceUsersQuery.data ?? [];
+    return users.map((user) => ({
+      id: user.id,
+      label: user.name,
+      icon: () => <UserAvatar user={user} size="xs" />,
+    }));
+  });
+
+  const handleAddMember = async (userId: string) => {
+    try {
+      await addTeamMemberFn({
+        data: {
+          workspaceSlug: params().workspace,
+          teamKey: params().key,
+          userId,
+        },
+      });
+
+      toast.success("Member added successfully.");
+      queryClient.invalidateQueries({
+        queryKey: ["team", "members", params().workspace, params().key],
+      });
+      queryClient.invalidateQueries({
+        queryKey: ["workspace-users", params().workspace, params().key],
+      });
+      setOpen(false);
+    } catch (error) {
+      toast.error("Failed to add member.");
+    }
+  };
+
+  const handleRemoveMember = async (userId: string) => {
+    try {
+      await removeTeamMemberFn({
+        data: {
+          workspaceSlug: params().workspace,
+          teamKey: params().key,
+          userId,
+        },
+      });
+
+      toast.success("Member removed successfully.");
+      queryClient.invalidateQueries();
+    } catch (error) {
+      toast.error("Failed to remove member.");
+    }
+  };
+
+  const memberCount = () => membersQuery.data?.length ?? 0;
+
+  return (
+    <SettingsCard variant="column">
+      <div class="flex items-center justify-between px-4 pb-2">
+        <p class="text-sm text-muted-foreground">
+          {memberCount()} {memberCount() === 1 ? "member" : "members"}
+        </p>
+        <Popover
+          open={open()}
+          onOpenChange={setOpen}
+          placement="bottom-end"
+          gutter={8}
+        >
+          <Popover.Trigger
+            as={Button}
+            variant="outline"
+            size="xs"
+            scaleEffect={false}
+          >
+            <PlusIcon class="size-4" />
+            Add member
+          </Popover.Trigger>
+          <PickerPopover
+            value={undefined}
+            onChange={(userId: string | null) => {
+              if (userId) {
+                handleAddMember(userId);
+              }
+            }}
+            options={availableUsersOptions()}
+            loading={workspaceUsersQuery.isLoading}
+            emptyText={
+              availableUsersOptions().length === 0
+                ? "All workspace members are already in this team"
+                : undefined
+            }
+          />
+        </Popover>
+      </div>
+
+      <div class="flex flex-col divide-y divide-border">
+        <Show
+          when={memberCount() > 0}
+          fallback={
+            <div class="flex flex-col items-center justify-center py-8 text-center">
+              <p class="text-sm text-muted-foreground">
+                No members in this team yet.
+              </p>
+              <p class="text-xs text-muted-foreground mt-1">
+                Add members to collaborate on issues.
+              </p>
+            </div>
+          }
+        >
+          <Index each={membersQuery.data ?? []}>
+            {(member) => {
+              const isCurrentUser = () => member().id === session().user.id;
+
+              return (
+                <div class="group flex items-center justify-between gap-4 px-4 py-3">
+                  <div class="flex items-center gap-3 min-w-0">
+                    <UserAvatar user={member()} size="sm" />
+                    <div class="flex flex-col min-w-0">
+                      <div class="flex items-center gap-2">
+                        <span class="text-sm font-medium truncate">
+                          {member().name}
+                        </span>
+                        <Show when={isCurrentUser()}>
+                          <span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-primary/10 text-primary">
+                            You
+                          </span>
+                        </Show>
+                      </div>
+                      <Show when={member().email}>
+                        <span class="text-xs text-muted-foreground truncate">
+                          {member().email}
+                        </span>
+                      </Show>
+                    </div>
+                  </div>
+                  <Show when={!isCurrentUser()}>
+                    <Button
+                      variant="ghost"
+                      size="iconXs"
+                      class="text-muted-foreground hover:text-destructive"
+                      onClick={() => handleRemoveMember(member().id)}
+                      aria-label={`Remove ${member().name} from team`}
+                    >
+                      <XIcon class="size-4" />
+                    </Button>
+                  </Show>
+                </div>
+              );
+            }}
+          </Index>
+        </Show>
+      </div>
+    </SettingsCard>
   );
 }
