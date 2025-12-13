@@ -16,6 +16,7 @@ import {
   on,
   onCleanup,
   onMount,
+  Show,
 } from "solid-js";
 import * as z from "zod";
 import { useKeybinds } from "../../context/keybind.context";
@@ -37,7 +38,13 @@ import { Kbd, KbdGroup } from "../ui/kbd";
 import { TanStackErrorMessages, TextField } from "../ui/text-field";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip";
 
-function GlobalCreateDialog() {
+type CreateDialogProps = {
+  status?: IssueStatus;
+  teamKey?: string;
+  global?: boolean;
+};
+
+function CreateDialog(props: CreateDialogProps) {
   return (
     <Dialog>
       <Tooltip>
@@ -47,26 +54,22 @@ function GlobalCreateDialog() {
             Create
           </DialogTrigger>
         </TooltipTrigger>
-        <TooltipContent>
-          <span class="mr-2">Create a new issue</span>
-          <KbdGroup>
-            <Kbd>C</Kbd>
-          </KbdGroup>
-        </TooltipContent>
+        <Show when={props.global}>
+          <TooltipContent>
+            <span class="mr-2">Create a new issue</span>
+            <KbdGroup>
+              <Kbd>C</Kbd>
+            </KbdGroup>
+          </TooltipContent>
+        </Show>
       </Tooltip>
 
-      <CreateDialogContent global />
+      <CreateDialogContent {...props} />
     </Dialog>
   );
 }
 
-type CreateDialogContentProps = {
-  status?: IssueStatus;
-  teamKey?: string;
-  global?: boolean;
-};
-
-function CreateDialogContent(props: CreateDialogContentProps) {
+function CreateDialogContent(props: CreateDialogProps) {
   const workspaceData = useWorkspaceData();
   const teams = () => workspaceData().teamsData.map((team) => team.team);
   const navigate = useNavigate();
@@ -290,4 +293,4 @@ function TeamPicker(props: { teams: Team[]; value: string }) {
   );
 }
 
-export { CreateDialogContent, GlobalCreateDialog };
+export { CreateDialog, CreateDialogContent };

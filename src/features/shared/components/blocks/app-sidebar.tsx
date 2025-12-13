@@ -29,7 +29,7 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from "../ui/collapsible";
-import { GlobalCreateDialog } from "./create-dialog";
+import { CreateDialog } from "./create-dialog";
 import { GlobalSearchDialog } from "./global-search-dialog";
 import { LogoNoBg } from "./logos";
 import { UserMenu } from "./user-menu";
@@ -169,7 +169,7 @@ export function AppSidebar(props: ComponentProps<typeof Sidebar>) {
         </div>
 
         <div class="flex flex-row gap-2">
-          <GlobalCreateDialog />
+          <CreateDialog global />
 
           <GlobalSearchDialog workspaceSlug={workspaceData().workspace.slug} />
         </div>
