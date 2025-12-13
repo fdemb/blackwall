@@ -13,11 +13,7 @@ export default defineConfig({
       projects: ["./tsconfig.json"],
     }),
     tailwindcss(),
-    tanstackStart({
-      spa: {
-        enabled: true,
-      },
-    }),
+    tanstackStart(),
     solidPlugin({ ssr: true }),
   ],
 });

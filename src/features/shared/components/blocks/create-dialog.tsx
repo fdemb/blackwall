@@ -2,7 +2,7 @@ import type { IssueStatus, Team } from "@/db/schema";
 import { StatusPickerPopover } from "@/features/issues/components/pickers";
 import { create } from "@/features/issues/issue-actions";
 import { useAppForm } from "@/features/shared/context/form-context";
-import { cn } from "@/lib/utils";
+import { useDialogContext } from "@kobalte/core/dialog";
 import { Popover } from "@kobalte/core/popover";
 import { useNavigate } from "@tanstack/solid-router";
 import { useServerFn } from "@tanstack/solid-start";
@@ -12,12 +12,10 @@ import XIcon from "lucide-solid/icons/x";
 import {
   createEffect,
   createSignal,
-  type JSX,
   mergeProps,
   on,
   onCleanup,
   onMount,
-  Show,
 } from "solid-js";
 import * as z from "zod";
 import { useKeybinds } from "../../context/keybind.context";
@@ -39,21 +37,42 @@ import { Kbd, KbdGroup } from "../ui/kbd";
 import { TanStackErrorMessages, TextField } from "../ui/text-field";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip";
 
-type CreateDialogProps = {
-  buttonClass?: string;
+function GlobalCreateDialog() {
+  return (
+    <Dialog>
+      <Tooltip>
+        <TooltipTrigger as="div" class="w-full">
+          <DialogTrigger as={Button} size="sm" class="w-full">
+            <PlusIcon class="size-4" strokeWidth={2.75} />
+            Create
+          </DialogTrigger>
+        </TooltipTrigger>
+        <TooltipContent>
+          <span class="mr-2">Create a new issue</span>
+          <KbdGroup>
+            <Kbd>C</Kbd>
+          </KbdGroup>
+        </TooltipContent>
+      </Tooltip>
+
+      <CreateDialogContent global />
+    </Dialog>
+  );
+}
+
+type CreateDialogContentProps = {
   status?: IssueStatus;
   teamKey?: string;
-  trigger?: JSX.Element;
   global?: boolean;
 };
 
-function CreateDialog(props: CreateDialogProps) {
+function CreateDialogContent(props: CreateDialogContentProps) {
   const workspaceData = useWorkspaceData();
   const teams = () => workspaceData().teamsData.map((team) => team.team);
-  const [isOpen, setIsOpen] = createSignal(false);
   const navigate = useNavigate();
   const handleCreate = useServerFn(create);
   const { addKeybind, removeKeybind } = useKeybinds();
+  const { isOpen, close, toggle } = useDialogContext();
   const [summaryInputElement, setSummaryInputElement] =
     createSignal<HTMLInputElement | null>(null);
 
@@ -94,7 +113,7 @@ function CreateDialog(props: CreateDialogProps) {
         },
       });
 
-      setIsOpen(false);
+      close();
       form.reset();
     },
     validators: {
@@ -117,7 +136,8 @@ function CreateDialog(props: CreateDialogProps) {
   onMount(() => {
     if (props.global) {
       addKeybind("c", () => {
-        setIsOpen(true);
+        if (isOpen()) return;
+        toggle();
       });
     }
 
@@ -147,125 +167,101 @@ function CreateDialog(props: CreateDialogProps) {
   );
 
   return (
-    <Dialog open={isOpen()} onOpenChange={setIsOpen}>
-      <Show
-        when={props.trigger}
-        fallback={
-          <Tooltip>
-            <TooltipTrigger as="div" class={cn("w-full", merged.buttonClass)}>
-              <DialogTrigger as={Button} size="sm" class="w-full">
-                <PlusIcon class="size-4" strokeWidth={2.75} />
-                Create
-              </DialogTrigger>
-            </TooltipTrigger>
-            <TooltipContent>
-              <span class="mr-2">Create a new issue</span>
-              <KbdGroup>
-                <Kbd>C</Kbd>
-              </KbdGroup>
-            </TooltipContent>
-          </Tooltip>
-        }
-      >
-        {props.trigger}
-      </Show>
+    <DialogContent
+      class="p-0 gap-0 max-h-screen overflow-auto"
+      showCloseButton={false}
+      onOpenAutoFocus={(e) => e.preventDefault()}
+    >
+      <DialogSingleLineHeader>
+        <DialogTitle>New issue</DialogTitle>
+        <DialogClose as={Button} class="p-px! h-auto!" variant="ghost">
+          <XIcon class="size-4" />
+        </DialogClose>
+      </DialogSingleLineHeader>
 
-      <DialogContent
-        class="p-0 gap-0 max-h-screen overflow-auto"
-        showCloseButton={false}
-        onOpenAutoFocus={(e) => e.preventDefault()}
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          form.handleSubmit();
+        }}
       >
-        <DialogSingleLineHeader>
-          <DialogTitle>New issue</DialogTitle>
-          <DialogClose as={Button} class="p-px! h-auto!" variant="ghost">
-            <XIcon class="size-4" />
-          </DialogClose>
-        </DialogSingleLineHeader>
-
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            form.handleSubmit();
-          }}
-        >
-          <div class="px-4 py-2 flex flex-col">
-            <form.AppField name="summary">
-              {(field) => (
-                <TextField
-                  name={field().name}
+        <div class="px-4 py-2 flex flex-col">
+          <form.AppField name="summary">
+            {(field) => (
+              <TextField
+                name={field().name}
+                value={field().state.value}
+                class="pb-3"
+                validationState={
+                  field().state.meta.errors.length > 0 ? "invalid" : "valid"
+                }
+              >
+                <TextField.Input
+                  ref={setSummaryInputElement}
                   value={field().state.value}
-                  class="pb-3"
-                  validationState={
-                    field().state.meta.errors.length > 0 ? "invalid" : "valid"
-                  }
-                >
-                  <TextField.Input
-                    ref={setSummaryInputElement}
-                    value={field().state.value}
-                    onInput={(e) => field().handleChange(e.currentTarget.value)}
-                    onBlur={field().handleBlur}
-                    placeholder="Issue title"
-                    variant="unstyled"
-                    class="text-xl"
-                  />
-                  <TanStackErrorMessages />
-                </TextField>
-              )}
-            </form.AppField>
-
-            <form.AppField name="description">
-              {(field) => (
-                <TextField
-                  name={field().name}
-                  validationState={
-                    field().state.meta.errors.length > 0 ? "invalid" : "valid"
-                  }
-                  class="pb-2"
-                >
-                  <TiptapEditor
-                    initialContent={field().state.value}
-                    onChange={(content) => field().handleChange(content)}
-                    variant="plain"
-                    placeholder="Describe the issue..."
-                    class="min-h-24"
-                  />
-                  <TanStackErrorMessages />
-                </TextField>
-              )}
-            </form.AppField>
-          </div>
-
-          <div class="px-4 py-2 flex flex-row gap-2 flex-wrap">
-            <form.AppField name="teamKey">
-              {(field) => (
-                <TeamPicker teams={teams()} value={field().state.value} />
-              )}
-            </form.AppField>
-
-            <form.AppField name="status">
-              {(field) => (
-                <StatusPickerPopover
-                  controlled
-                  status={field().state.value}
-                  onChange={field().handleChange}
+                  onInput={(e) => field().handleChange(e.currentTarget.value)}
+                  onBlur={field().handleBlur}
+                  placeholder="Issue title"
+                  variant="unstyled"
+                  class="text-xl"
                 />
-              )}
-            </form.AppField>
-          </div>
+                <TanStackErrorMessages />
+              </TextField>
+            )}
+          </form.AppField>
 
-          <DialogFooter class="px-4 py-3 border-t">
-            <form.Subscribe>
-              {(state) => (
-                <Button type="submit" size="sm" disabled={!state().canSubmit}>
-                  Create issue
-                </Button>
-              )}
-            </form.Subscribe>
-          </DialogFooter>
-        </form>
-      </DialogContent>
-    </Dialog>
+          <form.AppField name="description">
+            {(field) => (
+              <TextField
+                name={field().name}
+                validationState={
+                  field().state.meta.errors.length > 0 ? "invalid" : "valid"
+                }
+                class="pb-2"
+              >
+                <TiptapEditor
+                  initialContent={field().state.value}
+                  onChange={(content) => field().handleChange(content)}
+                  variant="plain"
+                  placeholder="Describe the issue..."
+                  class="min-h-24"
+                />
+                <TanStackErrorMessages />
+              </TextField>
+            )}
+          </form.AppField>
+        </div>
+
+        <div class="px-4 py-2 flex flex-row gap-2 flex-wrap">
+          <form.AppField name="teamKey">
+            {(field) => (
+              <TeamPicker teams={teams()} value={field().state.value} />
+            )}
+          </form.AppField>
+
+          <form.AppField name="status">
+            {(field) => (
+              <StatusPickerPopover
+                controlled
+                status={field().state.value}
+                onChange={field().handleChange}
+              />
+            )}
+          </form.AppField>
+        </div>
+
+        <DialogFooter class="px-4 py-3 border-t">
+          <form.Subscribe>
+            {(state) => (
+              <Button type="submit" size="sm" disabled={!state().canSubmit}>
+                Create issue
+              </Button>
+            )}
+          </form.Subscribe>
+        </DialogFooter>
+      </form>
+    </DialogContent>
   );
 }
 
@@ -294,4 +290,4 @@ function TeamPicker(props: { teams: Team[]; value: string }) {
   );
 }
 
-export { CreateDialog };
+export { CreateDialogContent, GlobalCreateDialog };
