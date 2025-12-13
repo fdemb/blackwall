@@ -17,20 +17,24 @@ export const Route = createRootRouteWithContext<{
   queryClient: QueryClient;
 }>()({
   loader: async () => {
+    const initialTheme = await getPreferredTheme();
+
     return {
-      theme: await getPreferredTheme(),
+      initialTheme,
     };
   },
-  head: ({ loaderData }) => ({
-    meta: [{ title: "Blackwall" }],
-    links: [
-      { rel: "stylesheet", href: styleCss },
-      { rel: "preconnect", href: "https://rsms.me/" },
-      { rel: "stylesheet", href: "https://rsms.me/inter/inter.css" },
-    ],
-    scripts: [
-      {
-        children: `
+  staleTime: Infinity,
+  head: async ({ loaderData }) => {
+    return {
+      meta: [{ title: "Blackwall" }],
+      links: [
+        { rel: "stylesheet", href: styleCss },
+        { rel: "preconnect", href: "https://rsms.me/" },
+        { rel: "stylesheet", href: "https://rsms.me/inter/inter.css" },
+      ],
+      scripts: [
+        {
+          children: `
          if (! (window._setTheme)) {
           window._setTheme = (themeId) => {
             const elem = document.documentElement;
@@ -47,11 +51,12 @@ export const Route = createRootRouteWithContext<{
           }
          }
 
-        window._setTheme("${loaderData?.theme || "system"}");
+          window._setTheme("${loaderData?.initialTheme ?? "system"}");
         `,
-      },
-    ],
-  }),
+        },
+      ],
+    };
+  },
   shellComponent: RootComponent,
 });
 

@@ -14,7 +14,6 @@ export function createRouter() {
       queries: {
         // make ensureQueryData in loaders preload useQuery calls for 5 seconds
         staleTime: 5000,
-        experimental_prefetchInRender: true,
       },
     },
   });
@@ -27,6 +26,7 @@ export function createRouter() {
     scrollRestoration: true,
     defaultPreload: "intent",
     defaultErrorComponent: ErrorComponent,
+    defaultPreloadStaleTime: 0,
   });
 
   setupRouterSsrQueryIntegration({

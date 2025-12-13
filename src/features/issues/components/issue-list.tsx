@@ -46,13 +46,13 @@ function IssueListItem(props: { issue: IssueForList; workspaceSlug: string }) {
       params={{ workspace: props.workspaceSlug, key: props.issue.key }}
     >
       <div class="flex flex-row items-center">
-        <span class="px-1 py-0.5 text-xs bg-muted text-muted-foreground rounded-sm border mr-2">
+        <span class="px-1 py-0.5 whitespace-nowrap shrink-0 text-xs bg-muted text-muted-foreground rounded-sm border mr-2">
           {props.issue.key}
         </span>
         {/* <Dot class={`${priority().textClass} bg-current`} /> */}
         <Dynamic
           component={status().icon}
-          class={`${status().textClass} size-4`}
+          class={`${status().textClass} size-4 shrink-0`}
         />
         <span class="font-medium text-foreground ml-1">
           {props.issue.summary}
