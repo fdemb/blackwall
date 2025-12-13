@@ -14,6 +14,7 @@ import {
   createSignal,
   type JSX,
   mergeProps,
+  on,
   onMount,
   Show,
 } from "solid-js";
@@ -120,13 +121,21 @@ function CreateDialog(props: CreateDialogProps) {
     }
   });
 
-  createEffect(() => {
-    if (summaryInputElement() && isOpen()) {
-      requestAnimationFrame(() => {
-        summaryInputElement()?.focus();
-      });
-    }
-  });
+  createEffect(
+    on(isOpen, (open) => {
+      if (open) {
+        if (summaryInputElement()) {
+          requestAnimationFrame(() => {
+            summaryInputElement()?.focus();
+          });
+        }
+      } else {
+        setTimeout(() => {
+          form.reset();
+        }, 200);
+      }
+    }),
+  );
 
   return (
     <Dialog open={isOpen()} onOpenChange={setIsOpen}>
