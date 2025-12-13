@@ -49,43 +49,6 @@ export const list = createServerFn({ method: "GET" })
     });
   });
 
-export const listBoard = createServerFn({ method: "GET" })
-  .middleware([authMiddleware])
-  .inputValidator(
-    z.object({
-      workspaceSlug: z.string(),
-      teamKey: z.string().optional(),
-    }),
-  )
-  .handler(async ({ data, context }) => {
-    let issues: ListIssue[];
-    if (data.teamKey) {
-      issues = await IssueQueries.listInTeam({
-        user: context.user!,
-        workspaceSlug: data.workspaceSlug,
-        teamKey: data.teamKey,
-        statusFilters: ["to_do", "in_progress", "done"],
-      });
-    } else {
-      issues = await IssueQueries.list({
-        user: context.user!,
-        workspaceSlug: data.workspaceSlug,
-        statusFilters: ["to_do", "in_progress", "done"],
-      });
-    }
-
-    const groupings: Partial<Record<string, (typeof issues)[number][]>> = {};
-
-    for (const issue of issues) {
-      if (!groupings[issue.status]) {
-        groupings[issue.status] = [];
-      }
-      groupings[issue.status]?.push(issue);
-    }
-
-    return groupings;
-  });
-
 export const changeStatus = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
   .inputValidator(

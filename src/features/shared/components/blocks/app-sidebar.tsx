@@ -169,10 +169,7 @@ export function AppSidebar(props: ComponentProps<typeof Sidebar>) {
         </div>
 
         <div class="flex flex-row gap-2">
-          <CreateDialog
-            workspaceSlug={workspaceData().workspace.slug}
-            teams={teams()}
-          />
+          <CreateDialog global />
 
           <GlobalSearchDialog workspaceSlug={workspaceData().workspace.slug} />
         </div>

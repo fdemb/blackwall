@@ -1,11 +1,14 @@
 import type { InferDbType } from "@/db/utils";
-import { changeStatus, listBoard } from "@/features/issues/issue-actions";
+import { changeStatus, list } from "@/features/issues/issue-actions";
+import { CreateDialog } from "@/features/shared/components/blocks/create-dialog";
 import { PageHeader } from "@/features/shared/components/blocks/page-header";
 import {
   TeamAvatar,
   UserAvatar,
 } from "@/features/shared/components/custom-ui/avatar";
 import { Badge } from "@/features/shared/components/custom-ui/badge";
+import { Button } from "@/features/shared/components/ui/button";
+import { DialogTrigger } from "@/features/shared/components/ui/dialog";
 import { issueMappings } from "@/lib/mappings";
 import { queryOptions, useQuery, useQueryClient } from "@tanstack/solid-query";
 import { createFileRoute, Link } from "@tanstack/solid-router";
@@ -14,6 +17,7 @@ import ChevronRight from "lucide-solid/icons/chevron-right";
 import CircleIcon from "lucide-solid/icons/circle";
 import CircleCheckIcon from "lucide-solid/icons/circle-check";
 import CircleDotDashedIcon from "lucide-solid/icons/circle-dot-dashed";
+import PlusIcon from "lucide-solid/icons/plus";
 import { createMemo, For, Index, Show, type Component } from "solid-js";
 import { Dynamic } from "solid-js/web";
 
@@ -29,14 +33,15 @@ type IssueForBoard = InferDbType<
   }
 >;
 
-const listBoardQueryOptions = (workspaceSlug: string, teamKey: string) =>
+export const boardQueryOptions = (workspaceSlug: string, teamKey: string) =>
   queryOptions({
-    queryKey: ["board", "list"],
+    queryKey: ["issues", "list", workspaceSlug, teamKey],
     queryFn: () =>
-      listBoard({
+      list({
         data: {
           workspaceSlug,
           teamKey,
+          statusFilters: ["to_do", "in_progress", "done"],
         },
       }),
   });
@@ -47,17 +52,19 @@ export const Route = createFileRoute(
   component: IndexComponent,
   loader: async ({ params, context }) =>
     context.queryClient.ensureQueryData(
-      listBoardQueryOptions(params.workspace, params.teamKey),
+      boardQueryOptions(params.workspace, params.teamKey),
     ),
 });
 
 function IndexComponent() {
   const params = Route.useParams();
   const ctx = Route.useRouteContext();
-  const boardQuery = useQuery(() =>
-    listBoardQueryOptions(params().workspace, params().teamKey),
+  const query = useQuery(() =>
+    boardQueryOptions(params().workspace, params().teamKey),
   );
-  const data = createMemo(() => boardQuery.data ?? {});
+  const data = createMemo(() =>
+    Object.groupBy(query.data ?? [], (issue) => issue.status),
+  );
 
   return (
     <>
@@ -146,7 +153,7 @@ function BoardList(props: BoardListProps) {
   };
 
   return (
-    <div class="flex flex-col w-full max-w-80">
+    <div class="flex flex-col w-full max-w-80 group">
       <div
         class={`pb-2 text-sm flex flex-row items-center ${mappedStatus().textClass}`}
       >
@@ -155,6 +162,20 @@ function BoardList(props: BoardListProps) {
         <Badge size="sm" class="ml-2">
           {props.issues.length}
         </Badge>
+
+        <CreateDialog
+          status={props.statusId}
+          teamKey={params().teamKey}
+          trigger={
+            <DialogTrigger
+              as={Button}
+              variant="secondary"
+              class="size-5! p-0! items-center! justify-center! ml-auto hidden group-hover:flex"
+            >
+              <PlusIcon class="size-4 shrink-0" />
+            </DialogTrigger>
+          }
+        />
       </div>
       <div
         class="bg-surface rounded-lg p-2 ring-1 ring-border ring-inset dark:ring-white/10 h-full grow flex flex-col gap-2.5"

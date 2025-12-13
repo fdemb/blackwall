@@ -211,21 +211,21 @@ type TanStackTextFieldProps = {
   >;
 };
 
+function parseError(error: any) {
+  if (typeof error === "string") {
+    return error;
+  }
+
+  if ("message" in error) {
+    return error.message;
+  }
+
+  return String(error);
+}
+
 function TanStackTextField(props: TanStackTextFieldProps) {
   let inputRef!: HTMLInputElement;
   const field = useFieldContext<string>();
-
-  function parseError(error: any) {
-    if (typeof error === "string") {
-      return error;
-    }
-
-    if ("message" in error) {
-      return error.message;
-    }
-
-    return String(error);
-  }
 
   Solid.onMount(() => {
     if (props.autofocus && inputRef) {
@@ -259,13 +259,21 @@ function TanStackTextField(props: TanStackTextFieldProps) {
           ref={inputRef}
         />
       </div>
-      <Solid.For each={field().state.meta.errors}>
-        {(item) => (
-          <TextField.ErrorMessage>{parseError(item)}</TextField.ErrorMessage>
-        )}
-      </Solid.For>
+      <TanStackErrorMessages />
     </TextField>
   );
 }
 
-export { FullTextField, TanStackTextField, TextField };
+function TanStackErrorMessages() {
+  const field = useFieldContext<string>();
+
+  return (
+    <Solid.For each={field().state.meta.errors}>
+      {(item) => (
+        <TextField.ErrorMessage>{parseError(item)}</TextField.ErrorMessage>
+      )}
+    </Solid.For>
+  );
+}
+
+export { FullTextField, TanStackErrorMessages, TanStackTextField, TextField };

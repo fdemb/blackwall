@@ -57,7 +57,19 @@ const Button = <T extends Solid.ValidComponent = "button">(
     "scaleEffect",
   ]);
 
-  return <ButtonPrimitive class={cn(buttonVariants(local))} {...rest} />;
+  return (
+    <ButtonPrimitive
+      class={cn(
+        buttonVariants({
+          scaleEffect: local.scaleEffect,
+          variant: local.variant,
+          size: local.size,
+        }),
+        local.class,
+      )}
+      {...rest}
+    />
+  );
 };
 
 export { Button, buttonVariants };
