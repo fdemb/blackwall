@@ -16,7 +16,9 @@ export const user = sqliteTable("user", {
   createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
   updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
   lastWorkspaceId: text().references(() => workspace.id),
-  preferredTheme: text().default("system"),
+  preferredTheme: text({
+    enum: ["system", "light", "dark"],
+  }).default("system"),
 });
 
 export const session = sqliteTable("session", {

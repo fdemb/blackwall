@@ -1,11 +1,21 @@
 import { session } from "@/features/auth/actions";
 import { SessionContext } from "@/features/shared/context/session-context";
+import { queryOptions } from "@tanstack/solid-query";
 import { createFileRoute, Outlet, redirect } from "@tanstack/solid-router";
+
+const sessionQueryOptions = queryOptions({
+  queryKey: ["refreshedOnLogin"],
+  queryFn: () => {
+    console.log("session");
+    return session();
+  },
+  staleTime: Infinity,
+});
 
 export const Route = createFileRoute("/_authorized")({
   component: RouteComponent,
-  beforeLoad: async () => {
-    const data = await session();
+  beforeLoad: async ({ context }) => {
+    const data = await context.queryClient.ensureQueryData(sessionQueryOptions);
 
     if (!data) {
       throw redirect({

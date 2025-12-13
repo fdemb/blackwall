@@ -1,4 +1,7 @@
-import { updatePreferredTheme } from "@/features/auth/actions";
+import {
+  getPreferredTheme,
+  updatePreferredTheme,
+} from "@/features/auth/actions";
 import type { PickerOption } from "@/features/shared/components/custom-ui/picker";
 import MonitorIcon from "lucide-solid/icons/monitor";
 import MoonIcon from "lucide-solid/icons/moon";
@@ -60,9 +63,17 @@ export const useTheme = () => {
     }
   };
 
+  const setThemeToUserPreference = () => {
+    getPreferredTheme().then((theme) => {
+      setCurrentThemeId(theme);
+      window._setTheme(theme);
+    });
+  };
+
   return {
     currentTheme: currentTheme as () => PickerOption,
     setTheme,
     themes,
+    setThemeToUserPreference,
   };
 };

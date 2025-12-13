@@ -1,6 +1,7 @@
 import { AuthMutations } from "../../features/auth/dal/mutations";
+import { issueFactory } from "../fakes/issue.fake";
 
-export async function signUpTestUser() {
+async function seedUser() {
   return await AuthMutations.signUpEmail({
     account: {
       email: "test@example.com",
@@ -14,10 +15,9 @@ export async function signUpTestUser() {
   });
 }
 
-signUpTestUser().then(() => {
+seedUser().then(() => {
   console.log("Signed up test user");
+  issueFactory(100).then(() => {
+    console.log("Seeded 100 issues");
+  });
 });
-
-// issueFactory(10).then(() => {
-//   console.log("Seeded 10 issues");
-// });

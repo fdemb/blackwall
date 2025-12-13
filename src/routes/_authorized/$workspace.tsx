@@ -7,7 +7,10 @@ import { Show } from "solid-js";
 const getWorkspaceAndGlobalDataQueryOptions = (workspaceSlug: string) =>
   queryOptions({
     queryKey: ["workspace", "data", workspaceSlug],
-    queryFn: () => getWorkspaceAndGlobalData({ data: workspaceSlug }),
+    queryFn: () => {
+      return getWorkspaceAndGlobalData({ data: workspaceSlug });
+    },
+    staleTime: Infinity,
   });
 
 export const Route = createFileRoute("/_authorized/$workspace")({

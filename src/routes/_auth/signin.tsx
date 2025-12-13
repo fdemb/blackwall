@@ -1,4 +1,5 @@
 import { signInEmail } from "@/features/auth/actions";
+import { useTheme } from "@/features/settings/hooks/use-theme";
 import { AuthCard } from "@/features/shared/components/blocks/auth";
 import { FastLink } from "@/features/shared/components/custom-ui/fast-link";
 import { Button, buttonVariants } from "@/features/shared/components/ui/button";
@@ -16,6 +17,8 @@ export const Route = createFileRoute("/_auth/signin")({
 function RouteComponent() {
   const handleSignInEmail = useServerFn(signInEmail);
   const navigate = useNavigate();
+  const { setThemeToUserPreference } = useTheme();
+
   const form = useAppForm(() => ({
     defaultValues: {
       email: "",
@@ -34,6 +37,9 @@ function RouteComponent() {
         }),
         formApi,
       );
+
+      setThemeToUserPreference();
+
       navigate({
         to: "/",
       });
