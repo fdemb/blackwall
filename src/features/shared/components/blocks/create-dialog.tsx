@@ -9,9 +9,17 @@ import { useServerFn } from "@tanstack/solid-start";
 import type { JSONContent } from "@tiptap/core";
 import PlusIcon from "lucide-solid/icons/plus";
 import XIcon from "lucide-solid/icons/x";
-import { createSignal, mergeProps, onMount } from "solid-js";
+import {
+  createEffect,
+  createSignal,
+  type JSX,
+  mergeProps,
+  onMount,
+  Show,
+} from "solid-js";
 import * as z from "zod";
 import { useKeybinds } from "../../context/keybind.context";
+import { useWorkspaceData } from "../../context/workspace-context";
 import { TeamAvatar } from "../custom-ui/avatar";
 import { PickerPopover } from "../custom-ui/picker-popover";
 import { TiptapEditor } from "../tiptap/tiptap-editor";
@@ -26,35 +34,38 @@ import {
   DialogTrigger,
 } from "../ui/dialog";
 import { Kbd, KbdGroup } from "../ui/kbd";
-import { TextField } from "../ui/text-field";
+import { TanStackErrorMessages, TextField } from "../ui/text-field";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip";
 
-type CreateIssueForm = {
-  teamKey: string;
-  summary: string;
-  description: any;
-  status: IssueStatus;
-};
-
 type CreateDialogProps = {
-  workspaceSlug: string;
-  teams: Team[];
   buttonClass?: string;
   status?: IssueStatus;
+  teamKey?: string;
+  trigger?: JSX.Element;
+  global?: boolean;
 };
 
 function CreateDialog(props: CreateDialogProps) {
+  const workspaceData = useWorkspaceData();
+  const teams = () => workspaceData().teamsData.map((team) => team.team);
   const [isOpen, setIsOpen] = createSignal(false);
   const navigate = useNavigate();
   const handleCreate = useServerFn(create);
   const { addKeybind } = useKeybinds();
-  const merged = mergeProps(props, {
-    status: "backlog" as IssueStatus,
-  });
+  const [summaryInputElement, setSummaryInputElement] =
+    createSignal<HTMLInputElement | null>(null);
+
+  const merged = mergeProps(
+    {
+      status: "backlog" as IssueStatus,
+      teamKey: teams().length > 0 ? teams()[0].key : "",
+    },
+    props,
+  );
 
   const form = useAppForm(() => ({
     defaultValues: {
-      teamKey: merged.teams.length > 0 ? merged.teams[0].key : "",
+      teamKey: merged.teamKey,
       summary: "",
       description: undefined as JSONContent | undefined,
       status: merged.status,
@@ -62,7 +73,7 @@ function CreateDialog(props: CreateDialogProps) {
     onSubmit: async ({ value }) => {
       const issue = await handleCreate({
         data: {
-          workspaceSlug: merged.workspaceSlug,
+          workspaceSlug: workspaceData().workspace.slug,
           teamKey: value.teamKey,
           issue: value,
         },
@@ -77,7 +88,7 @@ function CreateDialog(props: CreateDialogProps) {
         to: "/$workspace/issue/$key",
         params: {
           key: issue.key,
-          workspace: merged.workspaceSlug,
+          workspace: workspaceData().workspace.slug,
         },
       });
 
@@ -102,31 +113,49 @@ function CreateDialog(props: CreateDialogProps) {
   }));
 
   onMount(() => {
-    addKeybind("c", () => {
-      setIsOpen(true);
-    });
+    if (props.global) {
+      addKeybind("c", () => {
+        setIsOpen(true);
+      });
+    }
+  });
+
+  createEffect(() => {
+    if (summaryInputElement() && isOpen()) {
+      requestAnimationFrame(() => {
+        summaryInputElement()?.focus();
+      });
+    }
   });
 
   return (
     <Dialog open={isOpen()} onOpenChange={setIsOpen}>
-      <Tooltip>
-        <TooltipTrigger as="div" class={cn("w-full", merged.buttonClass)}>
-          <DialogTrigger as={Button} size="sm" class="w-full">
-            <PlusIcon class="size-4" strokeWidth={2.75} />
-            Create
-          </DialogTrigger>
-        </TooltipTrigger>
-        <TooltipContent>
-          <span class="mr-2">Create a new issue</span>
-          <KbdGroup>
-            <Kbd>C</Kbd>
-          </KbdGroup>
-        </TooltipContent>
-      </Tooltip>
+      <Show
+        when={props.trigger}
+        fallback={
+          <Tooltip>
+            <TooltipTrigger as="div" class={cn("w-full", merged.buttonClass)}>
+              <DialogTrigger as={Button} size="sm" class="w-full">
+                <PlusIcon class="size-4" strokeWidth={2.75} />
+                Create
+              </DialogTrigger>
+            </TooltipTrigger>
+            <TooltipContent>
+              <span class="mr-2">Create a new issue</span>
+              <KbdGroup>
+                <Kbd>C</Kbd>
+              </KbdGroup>
+            </TooltipContent>
+          </Tooltip>
+        }
+      >
+        {props.trigger}
+      </Show>
 
       <DialogContent
         class="p-0 gap-0 max-h-screen overflow-auto"
         showCloseButton={false}
+        onOpenAutoFocus={(e) => e.preventDefault()}
       >
         <DialogSingleLineHeader>
           <DialogTitle>New issue</DialogTitle>
@@ -154,17 +183,15 @@ function CreateDialog(props: CreateDialogProps) {
                   }
                 >
                   <TextField.Input
+                    ref={setSummaryInputElement}
                     value={field().state.value}
                     onInput={(e) => field().handleChange(e.currentTarget.value)}
                     onBlur={field().handleBlur}
                     placeholder="Issue title"
                     variant="unstyled"
                     class="text-xl"
-                    autofocus
                   />
-                  <TextField.ErrorMessage>
-                    {field().state.meta.errors.join(", ")}
-                  </TextField.ErrorMessage>
+                  <TanStackErrorMessages />
                 </TextField>
               )}
             </form.AppField>
@@ -185,9 +212,7 @@ function CreateDialog(props: CreateDialogProps) {
                     placeholder="Describe the issue..."
                     class="min-h-24"
                   />
-                  <TextField.ErrorMessage>
-                    {field().state.meta.errors.join(", ")}
-                  </TextField.ErrorMessage>
+                  <TanStackErrorMessages />
                 </TextField>
               )}
             </form.AppField>
@@ -196,7 +221,7 @@ function CreateDialog(props: CreateDialogProps) {
           <div class="px-4 py-2 flex flex-row gap-2 flex-wrap">
             <form.AppField name="teamKey">
               {(field) => (
-                <TeamPicker teams={props.teams} value={field().state.value} />
+                <TeamPicker teams={teams()} value={field().state.value} />
               )}
             </form.AppField>
 

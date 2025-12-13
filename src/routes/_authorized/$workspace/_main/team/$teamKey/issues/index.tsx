@@ -3,13 +3,15 @@ import { list } from "@/features/issues/issue-actions";
 import { CreateDialog } from "@/features/shared/components/blocks/create-dialog";
 import { PageHeader } from "@/features/shared/components/blocks/page-header";
 import { TeamAvatar } from "@/features/shared/components/custom-ui/avatar";
-import { useWorkspaceData } from "@/features/shared/context/workspace-context";
 import { queryOptions, useQuery } from "@tanstack/solid-query";
 import { createFileRoute, notFound } from "@tanstack/solid-router";
 import ChevronRight from "lucide-solid/icons/chevron-right";
 import { Show } from "solid-js";
 
-const listIssuesQueryOptions = (workspaceSlug: string, teamKey: string) =>
+export const listIssuesQueryOptions = (
+  workspaceSlug: string,
+  teamKey: string,
+) =>
   queryOptions({
     queryKey: ["issues", "list", workspaceSlug, teamKey],
     queryFn: () =>
@@ -72,19 +74,13 @@ function RouteComponent() {
 }
 
 function IssueEmpty() {
-  const workspaceData = useWorkspaceData();
-  const teams = () => workspaceData().teamsData.map((team) => team.team);
-
   return (
     <div class="flex items-center justify-center h-full">
       <div class="p-6 flex flex-col gap-4">
         <p class="text-center text-muted-foreground font-medium">
           No issues found
         </p>
-        <CreateDialog
-          workspaceSlug={workspaceData().workspace.slug}
-          teams={teams()}
-        />
+        <CreateDialog />
       </div>
     </div>
   );
