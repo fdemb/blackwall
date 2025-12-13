@@ -15,6 +15,7 @@ import {
   type JSX,
   mergeProps,
   on,
+  onCleanup,
   onMount,
   Show,
 } from "solid-js";
@@ -52,7 +53,7 @@ function CreateDialog(props: CreateDialogProps) {
   const [isOpen, setIsOpen] = createSignal(false);
   const navigate = useNavigate();
   const handleCreate = useServerFn(create);
-  const { addKeybind } = useKeybinds();
+  const { addKeybind, removeKeybind } = useKeybinds();
   const [summaryInputElement, setSummaryInputElement] =
     createSignal<HTMLInputElement | null>(null);
 
@@ -119,20 +120,28 @@ function CreateDialog(props: CreateDialogProps) {
         setIsOpen(true);
       });
     }
+
+    onCleanup(() => {
+      removeKeybind("c");
+    });
   });
 
   createEffect(
-    on(isOpen, (open) => {
-      if (open) {
-        if (summaryInputElement()) {
-          requestAnimationFrame(() => {
-            summaryInputElement()?.focus();
-          });
-        }
-      } else {
+    on([isOpen, summaryInputElement], ([open, summaryInputElement]) => {
+      if (open && summaryInputElement) {
+        requestAnimationFrame(() => {
+          summaryInputElement.focus();
+        });
+
+        return;
+      }
+
+      if (!open) {
         setTimeout(() => {
           form.reset();
         }, 200);
+
+        return;
       }
     }),
   );
