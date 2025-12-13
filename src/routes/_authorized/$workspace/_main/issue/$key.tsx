@@ -10,6 +10,7 @@ import {
   updateDescription,
   updateSummary,
 } from "@/features/issues/issue-actions";
+import { getAssignableUsersQueryOptions } from "@/features/issues/query-options";
 import { PageHeader } from "@/features/shared/components/blocks/page-header";
 import { TeamAvatar } from "@/features/shared/components/custom-ui/avatar";
 import {
@@ -26,7 +27,6 @@ import {
   SidebarTrigger,
 } from "@/features/shared/components/ui/sidebar";
 import { useWorkspaceData } from "@/features/shared/context/workspace-context";
-import { listUsers } from "@/features/teams/actions";
 import { queryOptions, useMutation, useQuery } from "@tanstack/solid-query";
 import { createFileRoute, notFound } from "@tanstack/solid-router";
 import { useServerFn } from "@tanstack/solid-start";
@@ -85,22 +85,6 @@ const getIssueWithLabelsQueryOptions = (
         issueData,
         labelsData: labelsData ?? [],
       };
-    },
-  });
-
-const getAssignableUsersQueryOptions = (
-  workspaceSlug: string,
-  teamKey: string,
-) =>
-  queryOptions({
-    queryKey: ["issue", "assignableUsers", workspaceSlug, teamKey],
-    queryFn: async () => {
-      return await listUsers({
-        data: {
-          workspaceSlug,
-          teamKey,
-        },
-      });
     },
   });
 

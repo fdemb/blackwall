@@ -105,7 +105,7 @@ export const issue = sqliteTable(
     keyNumber: integer("key_number").notNull(),
     summary: text().notNull(),
     status: text({ enum: issueStatusValues }).notNull().default("to_do"),
-    description: text({ mode: "json" }).$type<JSONContent>(),
+    description: text({ mode: "json" }).notNull().$type<JSONContent>(),
     order: integer().default(0).notNull(),
     priority: text({ enum: issuePriorityValues }).notNull().default("medium"),
     ...lifecycleTimestamps,

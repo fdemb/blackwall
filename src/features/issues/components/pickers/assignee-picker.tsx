@@ -1,29 +1,44 @@
 import type { User } from "@/db/schema";
-import type { InferDbType } from "@/db/utils";
 import { assign } from "@/features/issues/issue-actions";
 import { UserAvatar } from "@/features/shared/components/custom-ui/avatar";
 import { PickerPopover } from "@/features/shared/components/custom-ui/picker-popover";
 import { Button } from "@/features/shared/components/ui/button";
+import { cn } from "@/lib/utils";
 import { Popover } from "@kobalte/core/popover";
 import { useQueryClient } from "@tanstack/solid-query";
 import { useServerFn } from "@tanstack/solid-start";
 import ChevronsUpDownIcon from "lucide-solid/icons/chevrons-up-down";
-import { createMemo, createSignal } from "solid-js";
+import { createMemo, createSignal, Show } from "solid-js";
 
-type AssignedUser = InferDbType<"issue", { assignedTo: true }>["assignedTo"];
+type AssigneePickerPopoverProps =
+  | {
+      assignableUsers: User[];
+      assignedToId: string | null;
+      workspaceSlug: string;
+      teamKey: string;
+      loading?: boolean;
+      small?: boolean;
+      issueKey: string;
+      controlled?: false;
+    }
+  | {
+      assignableUsers: User[];
+      assignedToId: string | null;
+      workspaceSlug: string;
+      teamKey: string;
+      loading?: boolean;
+      small?: boolean;
+      issueKey?: never;
+      handleChange?: (id: string | null) => void;
+      controlled: true;
+    };
 
-export function AssigneePickerPopover(props: {
-  assignableUsers: User[];
-  assignedToId: string | null;
-  assignedTo: AssignedUser;
-  issueKey: string;
-  workspaceSlug: string;
-  teamKey: string;
-  loading?: boolean;
-}) {
+export function AssigneePickerPopover(props: AssigneePickerPopoverProps) {
   const queryClient = useQueryClient();
   const handleAssign = useServerFn(assign);
   const [open, setOpen] = createSignal(false);
+  const assignedTo = () =>
+    props.assignableUsers.find((user) => user.id === props.assignedToId);
 
   const assignableUsersOptions = createMemo(() => {
     const options = props.assignableUsers.map((user) => ({
@@ -42,41 +57,12 @@ export function AssigneePickerPopover(props: {
     ];
   });
 
-  // const [assignableUsers] = createResource(
-  //   () => open() === true,
-  //   async () => {
-  //     const users = await listUsers({
-  //       data: {
-  //         workspaceSlug: props.workspaceSlug,
-  //         teamKey: props.teamKey,
-  //       },
-  //     });
-
-  //     if (!users) {
-  //       return;
-  //     }
-
-  //     return users.map(
-  //       (user) =>
-  //         ({
-  //           id: user.id,
-  //           label: user.name,
-  //           icon: () => <UserAvatar user={user} size="xs" />,
-  //         }) satisfies PickerOption,
-  //     );
-  //   },
-  // );
-
-  // const assignableUsersWithNull = () => [
-  //   {
-  //     id: null,
-  //     label: "Unassigned",
-  //     icon: () => <UserAvatar user={null} size="xs" />,
-  //   },
-  //   ...(assignableUsers() ?? []),
-  // ];
-
   const handleChange = async (id: string | null) => {
+    if (props.controlled) {
+      props.handleChange?.(id);
+      return;
+    }
+
     await handleAssign({
       data: {
         workspaceSlug: props.workspaceSlug,
@@ -97,14 +83,20 @@ export function AssigneePickerPopover(props: {
       gutter={8}
     >
       <Popover.Trigger
-        class="flex flex-row gap-2 items-center text-base px-2!"
+        class={cn({
+          "flex flex-row gap-2 items-center text-base px-2!": !props.small,
+          "pl-1! !pr-2 py-1! h-auto!": props.small,
+        })}
         as={Button}
         variant="outline"
+        size={props.small ? "sm" : "lg"}
         scaleEffect={false}
       >
-        <UserAvatar user={props.assignedTo} size="xs" />
-        {props.assignedTo?.name ?? "No one"}
-        <ChevronsUpDownIcon class="size-4" />
+        <UserAvatar user={assignedTo()} size={props.small ? "5" : "xs"} />
+        {assignedTo()?.name ?? "No one"}
+        <Show when={!props.small}>
+          <ChevronsUpDownIcon class="size-4" />
+        </Show>
       </Popover.Trigger>
 
       <PickerPopover
