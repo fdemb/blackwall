@@ -35,7 +35,7 @@ type IssueForBoard = InferDbType<
 
 export const boardQueryOptions = (workspaceSlug: string, teamKey: string) =>
   queryOptions({
-    queryKey: ["issues", "list", workspaceSlug, teamKey],
+    queryKey: ["issues", "board", workspaceSlug, teamKey],
     queryFn: () =>
       list({
         data: {
@@ -140,7 +140,7 @@ function BoardList(props: BoardListProps) {
       },
     }).then(() => {
       queryClient.invalidateQueries({
-        queryKey: ["board", "list"],
+        queryKey: ["issues", "board"],
       });
     });
   }
