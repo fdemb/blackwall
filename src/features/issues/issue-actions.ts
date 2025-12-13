@@ -135,15 +135,16 @@ export const create = createServerFn({ method: "POST" })
         summary: issueInsertSchema.shape.summary,
         description: issueInsertSchema.shape.description,
         status: issueInsertSchema.shape.status.optional().default("backlog"),
+        assignedToId: issueInsertSchema.shape.assignedToId.optional(),
       }),
     }),
   )
   .handler(async ({ data, context }) => {
     return await IssueMutations.create({
-      user: context.user!,
+      user: context.user,
       workspaceSlug: data.workspaceSlug,
       teamKey: data.teamKey,
-      input: data.issue,
+      issue: data.issue,
     });
   });
 

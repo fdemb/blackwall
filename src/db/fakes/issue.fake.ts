@@ -41,7 +41,7 @@ export async function issueFactory(count = 1): Promise<Issue[]> {
   for (let i = 0; i < count; i++) {
     issues.push(
       await IssueMutations.create({
-        input: issueFake(),
+        issue: issueFake(),
         user,
         workspaceSlug: workspace.slug,
         teamKey: team.key,

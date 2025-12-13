@@ -1,9 +1,14 @@
 import type { IssueStatus, Team } from "@/db/schema";
-import { StatusPickerPopover } from "@/features/issues/components/pickers";
+import {
+  AssigneePickerPopover,
+  StatusPickerPopover,
+} from "@/features/issues/components/pickers";
 import { create } from "@/features/issues/issue-actions";
+import { getAssignableUsersQueryOptions } from "@/features/issues/query-options";
 import { useAppForm } from "@/features/shared/context/form-context";
 import { useDialogContext } from "@kobalte/core/dialog";
 import { Popover } from "@kobalte/core/popover";
+import { useQuery } from "@tanstack/solid-query";
 import { useNavigate } from "@tanstack/solid-router";
 import { useServerFn } from "@tanstack/solid-start";
 import type { JSONContent } from "@tiptap/core";
@@ -41,6 +46,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip";
 type CreateDialogProps = {
   status?: IssueStatus;
   teamKey?: string;
+  assignedToId?: string;
   global?: boolean;
 };
 
@@ -72,13 +78,6 @@ function CreateDialog(props: CreateDialogProps) {
 function CreateDialogContent(props: CreateDialogProps) {
   const workspaceData = useWorkspaceData();
   const teams = () => workspaceData().teamsData.map((team) => team.team);
-  const navigate = useNavigate();
-  const handleCreate = useServerFn(create);
-  const { addKeybind, removeKeybind } = useKeybinds();
-  const { isOpen, close, toggle } = useDialogContext();
-  const [summaryInputElement, setSummaryInputElement] =
-    createSignal<HTMLInputElement | null>(null);
-
   const merged = mergeProps(
     {
       status: "backlog" as IssueStatus,
@@ -87,12 +86,26 @@ function CreateDialogContent(props: CreateDialogProps) {
     props,
   );
 
+  const navigate = useNavigate();
+  const handleCreate = useServerFn(create);
+  const { addKeybind, removeKeybind } = useKeybinds();
+  const { isOpen, close, toggle } = useDialogContext();
+  const [summaryInputElement, setSummaryInputElement] =
+    createSignal<HTMLInputElement | null>(null);
+  const assignableUsersQuery = useQuery(() =>
+    getAssignableUsersQueryOptions(
+      workspaceData().workspace.slug,
+      merged.teamKey,
+    ),
+  );
+
   const form = useAppForm(() => ({
     defaultValues: {
       teamKey: merged.teamKey,
       summary: "",
-      description: undefined as JSONContent | undefined,
+      description: undefined as unknown as JSONContent,
       status: merged.status,
+      assignedToId: merged.assignedToId ?? null,
     },
     onSubmit: async ({ value }) => {
       const issue = await handleCreate({
@@ -132,6 +145,7 @@ function CreateDialogContent(props: CreateDialogProps) {
           .refine((val) => val !== null && val !== undefined, {
             message: "Description is required",
           }),
+        assignedToId: z.string().nullable(),
       }),
     },
   }));
@@ -240,6 +254,21 @@ function CreateDialogContent(props: CreateDialogProps) {
           <form.AppField name="teamKey">
             {(field) => (
               <TeamPicker teams={teams()} value={field().state.value} />
+            )}
+          </form.AppField>
+
+          <form.AppField name="assignedToId">
+            {(field) => (
+              <AssigneePickerPopover
+                small
+                controlled
+                assignableUsers={assignableUsersQuery.data ?? []}
+                loading={assignableUsersQuery.isLoading}
+                assignedToId={field().state.value}
+                teamKey={form.state.values.teamKey}
+                workspaceSlug={workspaceData().workspace.slug}
+                handleChange={field().handleChange}
+              />
             )}
           </form.AppField>
 

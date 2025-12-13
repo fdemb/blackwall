@@ -18,18 +18,17 @@ import { buildChangeEvent, buildIssueUpdatedEvent } from "../change-events";
 import { getNextSequenceNumber, getNextSequenceNumbers } from "./key-sequences";
 import { IssueQueries, LabelQueries } from "./queries";
 
-export type CreateIssueInput = {
-  summary: string;
-  description?: JSONContent | null;
-  status: IssueStatus;
-};
+export type CreateIssueInput = Pick<
+  NewIssue,
+  "summary" | "description" | "status" | "assignedToId"
+>;
 
 export const IssueMutations = {
   create: async (input: {
     user: User;
     workspaceSlug: string;
     teamKey: string;
-    input: CreateIssueInput;
+    issue: CreateIssueInput;
   }) => {
     const team = await TeamQueries.getForUser({
       user: input.user,
@@ -39,6 +38,15 @@ export const IssueMutations = {
 
     if (!team) {
       throw new AppError("NOT_FOUND", "Team not found.");
+    }
+
+    if (input.issue.assignedToId) {
+      const assignee = await AuthQueries.getUser(input.issue.assignedToId);
+      const teamUsers = await TeamQueries.listUsers(input);
+
+      if (!assignee || !teamUsers.some((user) => user.id === assignee.id)) {
+        throw new AppError("NOT_FOUND", "Assignee not found.");
+      }
     }
 
     const result = await db.transaction(async (tx) => {
@@ -51,8 +59,9 @@ export const IssueMutations = {
       const [issue] = await tx
         .insert(dbSchema.issue)
         .values({
-          ...input.input,
+          ...input.issue,
           createdById: input.user.id,
+          assignedToId: input.issue.assignedToId ?? undefined,
           keyNumber,
           key: `${team.key}-${keyNumber}`,
           teamId: team.id,
