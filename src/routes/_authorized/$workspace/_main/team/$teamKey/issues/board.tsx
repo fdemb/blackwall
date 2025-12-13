@@ -1,6 +1,6 @@
 import type { InferDbType } from "@/db/utils";
 import { changeStatus, list } from "@/features/issues/issue-actions";
-import { CreateDialog } from "@/features/shared/components/blocks/create-dialog";
+import { CreateDialogContent } from "@/features/shared/components/blocks/create-dialog";
 import { PageHeader } from "@/features/shared/components/blocks/page-header";
 import {
   TeamAvatar,
@@ -8,7 +8,7 @@ import {
 } from "@/features/shared/components/custom-ui/avatar";
 import { Badge } from "@/features/shared/components/custom-ui/badge";
 import { Button } from "@/features/shared/components/ui/button";
-import { DialogTrigger } from "@/features/shared/components/ui/dialog";
+import { Dialog, DialogTrigger } from "@/features/shared/components/ui/dialog";
 import { issueMappings } from "@/lib/mappings";
 import { queryOptions, useQuery, useQueryClient } from "@tanstack/solid-query";
 import { createFileRoute, Link } from "@tanstack/solid-router";
@@ -163,19 +163,19 @@ function BoardList(props: BoardListProps) {
           {props.issues.length}
         </Badge>
 
-        <CreateDialog
-          status={props.statusId}
-          teamKey={params().teamKey}
-          trigger={
-            <DialogTrigger
-              as={Button}
-              variant="secondary"
-              class="size-5! p-0! items-center! justify-center! ml-auto hidden group-hover:flex"
-            >
-              <PlusIcon class="size-4 shrink-0" />
-            </DialogTrigger>
-          }
-        />
+        <Dialog>
+          <DialogTrigger
+            as={Button}
+            variant="secondary"
+            class="size-5! p-0! items-center! justify-center! ml-auto hidden group-hover:flex"
+          >
+            <PlusIcon class="size-4 shrink-0" />
+          </DialogTrigger>
+          <CreateDialogContent
+            status={props.statusId}
+            teamKey={params().teamKey}
+          />
+        </Dialog>
       </div>
       <div
         class="bg-surface rounded-lg p-2 ring-1 ring-border ring-inset dark:ring-white/10 h-full grow flex flex-col gap-2.5"
