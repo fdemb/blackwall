@@ -99,8 +99,10 @@ function RouteComponent() {
       </SettingsBackButton>
       <SettingsPage title={teamQuery.data.name}>
         <SettingsSection>
-          <NameForm defaultName={teamQuery.data.name} />
-          <KeyForm defaultKey={teamQuery.data.key} />
+          <SettingsCard>
+            <NameForm defaultName={teamQuery.data.name} />
+            <KeyForm defaultKey={teamQuery.data.key} />
+          </SettingsCard>
         </SettingsSection>
         <SettingsSection title="Members">
           <MembersSection />
@@ -165,23 +167,21 @@ function NameForm(props: NameFormProps) {
         form.handleSubmit();
       }}
     >
-      <SettingsCard>
-        <SettingsRow title="Name" description="The name of the team.">
-          <form.AppField name="name">
-            {() => (
-              <TanStackTextField
-                id="name"
-                describedBy="name-description"
-                label="Name"
-                placeholder="e.g. Awesome Team"
-                autocomplete="name"
-                labelClass="sr-only"
-                onBlur={submitOnBlur}
-              />
-            )}
-          </form.AppField>
-        </SettingsRow>
-      </SettingsCard>
+      <SettingsRow title="Name" description="The name of the team.">
+        <form.AppField name="name">
+          {() => (
+            <TanStackTextField
+              id="name"
+              describedBy="name-description"
+              label="Name"
+              placeholder="e.g. Awesome Team"
+              autocomplete="name"
+              labelClass="sr-only"
+              onBlur={submitOnBlur}
+            />
+          )}
+        </form.AppField>
+      </SettingsRow>
     </form>
   );
 }
@@ -251,26 +251,24 @@ function KeyForm(props: KeyFormProps) {
         form.handleSubmit();
       }}
     >
-      <SettingsCard>
-        <SettingsRow
-          title="Key"
-          description="Used to identify the team issues were created in."
-        >
-          <form.AppField name="key">
-            {() => (
-              <TanStackTextField
-                id="key"
-                describedBy="key-description"
-                label="Key"
-                placeholder="e.g. AWSM"
-                autocomplete="key"
-                labelClass="sr-only"
-                onBlur={submitOnBlur}
-              />
-            )}
-          </form.AppField>
-        </SettingsRow>
-      </SettingsCard>
+      <SettingsRow
+        title="Key"
+        description="Used to identify the team issues were created in."
+      >
+        <form.AppField name="key">
+          {() => (
+            <TanStackTextField
+              id="key"
+              describedBy="key-description"
+              label="Key"
+              placeholder="e.g. AWSM"
+              autocomplete="key"
+              labelClass="sr-only"
+              onBlur={submitOnBlur}
+            />
+          )}
+        </form.AppField>
+      </SettingsRow>
     </form>
   );
 }

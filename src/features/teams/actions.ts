@@ -9,6 +9,29 @@ import { WorkspaceQueries } from "../workspaces/dal/queries";
 import { TeamMutations } from "./dal/mutations";
 import { TeamQueries } from "./dal/queries";
 
+export const createTeam = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
+  .inputValidator(
+    z.object({
+      workspaceSlug: z.string(),
+      name: z.string().min(1, "Name is required"),
+      key: z
+        .string()
+        .min(1, "Key is required")
+        .max(5, "Key must be at most 5 characters"),
+    }),
+  )
+  .handler(async ({ data, context }) => {
+    const newTeam = await TeamMutations.create(data);
+
+    await TeamMutations.addUser({
+      user: context.user,
+      team: newTeam,
+    });
+
+    return newTeam;
+  });
+
 export const listUsers = createServerFn({ method: "GET" })
   .middleware([authMiddleware])
   .inputValidator(
