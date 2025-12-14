@@ -1,7 +1,7 @@
 import {
   type CreateIssueInput,
   IssueMutations,
-} from "@/features/issues/dal/mutations";
+} from "@/features/issues/dal/issue-mutations";
 import { faker } from "@faker-js/faker";
 import { db } from "..";
 import type { Issue } from "../schema";

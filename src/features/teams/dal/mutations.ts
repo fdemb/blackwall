@@ -12,98 +12,104 @@ export type CreateTeamInput = {
   workspaceSlug: string;
 };
 
-export const TeamMutations = {
-  create: async (input: CreateTeamInput) => {
-    const workspace = await WorkspaceQueries.getBySlug(input.workspaceSlug);
+async function create(input: CreateTeamInput) {
+  const workspace = await WorkspaceQueries.getBySlug(input.workspaceSlug);
 
-    const [createdTeam] = await db
-      .insert(dbSchema.team)
-      .values({
-        name: input.name,
-        key: input.key,
-        workspaceId: workspace.id,
-      })
-      .returning();
-
-    if (!createdTeam) {
-      throw new AppError(
-        "INTERNAL_SERVER_ERROR",
-        "The team couldn't be created.",
-      );
-    }
-
-    // Initialize sequence for this workspace/team pair
-    await initializeSequence({
+  const [createdTeam] = await db
+    .insert(dbSchema.team)
+    .values({
+      name: input.name,
+      key: input.key,
       workspaceId: workspace.id,
-      teamId: createdTeam.id,
-    });
+    })
+    .returning();
 
-    return createdTeam;
-  },
+  if (!createdTeam) {
+    throw new AppError(
+      "INTERNAL_SERVER_ERROR",
+      "The team couldn't be created.",
+    );
+  }
 
-  createBasedOnWorkspace: async (workspace: Workspace) => {
-    return TeamMutations.create({
-      workspaceSlug: workspace.slug,
-      key: workspace.displayName.slice(0, 3).toUpperCase(),
-      name: workspace.displayName,
-    });
-  },
+  // Initialize sequence for this workspace/team pair
+  await initializeSequence({
+    workspaceId: workspace.id,
+    teamId: createdTeam.id,
+  });
 
-  addUser: async (input: { user: User; team: Team }) => {
-    await db.insert(dbSchema.userTeam).values({
-      teamId: input.team.id,
-      userId: input.user.id,
-    });
-  },
+  return createdTeam;
+}
 
-  removeUser: async (input: {
-    user: User;
-    workspaceSlug: string;
-    teamKey: string;
-    userId: string;
-  }) => {
-    const team = await TeamQueries.getForUser({
-      user: input.user,
-      workspaceSlug: input.workspaceSlug,
-      teamKey: input.teamKey,
-    });
+async function createBasedOnWorkspace(workspace: Workspace) {
+  return create({
+    workspaceSlug: workspace.slug,
+    key: workspace.displayName.slice(0, 3).toUpperCase(),
+    name: workspace.displayName,
+  });
+}
 
-    if (!team) {
-      throw new AppError("NOT_FOUND", "Team not found.");
-    }
+async function addUser(input: { user: User; team: Team }) {
+  await db.insert(dbSchema.userTeam).values({
+    teamId: input.team.id,
+    userId: input.user.id,
+  });
+}
 
-    await db
-      .delete(dbSchema.userTeam)
-      .where(
-        and(
-          eq(dbSchema.userTeam.teamId, team.id),
-          eq(dbSchema.userTeam.userId, input.userId),
-        ),
-      );
-  },
+async function removeUser(input: {
+  user: User;
+  workspaceSlug: string;
+  teamKey: string;
+  userId: string;
+}) {
+  const team = await TeamQueries.getForUser({
+    user: input.user,
+    workspaceSlug: input.workspaceSlug,
+    teamKey: input.teamKey,
+  });
 
-  update: async (input: {
-    user: User;
-    workspaceSlug: string;
-    teamKey: string;
-    team: { name?: string; key?: string };
-  }) => {
-    const team = await TeamQueries.getForUser({
-      user: input.user,
-      workspaceSlug: input.workspaceSlug,
-      teamKey: input.teamKey,
-    });
+  if (!team) {
+    throw new AppError("NOT_FOUND", "Team not found.");
+  }
 
-    if (!team) {
-      throw new AppError("NOT_FOUND", "Team not found.");
-    }
+  await db
+    .delete(dbSchema.userTeam)
+    .where(
+      and(
+        eq(dbSchema.userTeam.teamId, team.id),
+        eq(dbSchema.userTeam.userId, input.userId),
+      ),
+    );
+}
 
-    await db
-      .update(dbSchema.team)
-      .set({
-        name: input.team.name,
-        key: input.team.key,
-      })
-      .where(eq(dbSchema.team.id, team.id));
-  },
+async function update(input: {
+  user: User;
+  workspaceSlug: string;
+  teamKey: string;
+  team: { name?: string; key?: string };
+}) {
+  const team = await TeamQueries.getForUser({
+    user: input.user,
+    workspaceSlug: input.workspaceSlug,
+    teamKey: input.teamKey,
+  });
+
+  if (!team) {
+    throw new AppError("NOT_FOUND", "Team not found.");
+  }
+
+  await db
+    .update(dbSchema.team)
+    .set({
+      name: input.team.name,
+      key: input.team.key,
+    })
+    .where(eq(dbSchema.team.id, team.id));
+}
+
+export const TeamMutations = {
+  create,
+  createBasedOnWorkspace,
+  addUser,
+  removeUser,
+  update,
 };

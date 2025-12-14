@@ -65,7 +65,6 @@ export function IssueSidebar(props: {
         <IssueSidebarItem label="Assigned to" orientation="col">
           <AssigneePickerPopover
             assignedToId={props.issue.assignedToId}
-            assignedTo={props.issue.assignedTo}
             issueKey={props.issue.key}
             workspaceSlug={props.workspaceSlug}
             teamKey={props.teamKey}

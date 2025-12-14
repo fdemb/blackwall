@@ -387,44 +387,4 @@ type FullSelectProps = {
   onBlur: Solid.JSX.EventHandler<HTMLSelectElement, FocusEvent>;
 };
 
-function FullSelect(props: FullSelectProps) {
-  const [rootProps, selectProps] = Solid.splitProps(
-    props,
-    ["name", "placeholder", "options", "required", "disabled"],
-    ["placeholder", "ref", "onInput", "onChange", "onBlur"],
-  );
-  const [getValue, setValue] = Solid.createSignal<FullSelectOption>();
-  Solid.createEffect(() => {
-    setValue(props.options.find((option) => props.value === option.value));
-  });
-  return (
-    <Select
-      {...rootProps}
-      multiple={false}
-      value={getValue()}
-      onChange={setValue}
-      optionValue="value"
-      optionTextValue="label"
-      validationState={props.error ? "invalid" : "valid"}
-      itemComponent={(props) => (
-        <Select.Item item={props.item}>
-          <Select.ItemLabel>{props.item.textValue}</Select.ItemLabel>
-        </Select.Item>
-      )}
-    >
-      <Solid.Show when={props.label}>
-        <Select.Label>{props.label}</Select.Label>
-      </Solid.Show>
-      <Select.HiddenSelect {...selectProps} />
-      <Select.Trigger>
-        <Select.Value<FullSelectOption>>
-          {(state) => state.selectedOption().label}
-        </Select.Value>
-      </Select.Trigger>
-      <Select.Content />
-      <Select.ErrorMessage>{props.error}</Select.ErrorMessage>
-    </Select>
-  );
-}
-
-export { FullSelect, Select };
+export { Select };

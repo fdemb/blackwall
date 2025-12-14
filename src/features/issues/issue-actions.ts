@@ -4,12 +4,11 @@ import { AppError } from "@/features/shared/errors";
 import { createServerFn } from "@tanstack/solid-start";
 import * as z from "zod";
 import { authMiddleware } from "../auth/middleware/auth.middleware";
-import {
-  IssueCommentMutations,
-  IssueMutations,
-  LabelMutations,
-} from "./dal/mutations";
-import { IssueQueries, LabelQueries } from "./dal/queries";
+import { CommentMutations } from "./dal/comment-mutations";
+import { IssueMutations } from "./dal/issue-mutations";
+import { IssueQueries } from "./dal/issue-queries";
+import { LabelMutations } from "./dal/label-mutations";
+import { LabelQueries } from "./dal/label-queries";
 
 type ListIssue = InferDbType<
   "issue",
@@ -157,7 +156,7 @@ export const getIssueLabels = createServerFn({ method: "GET" })
     }),
   )
   .handler(async ({ data, context }) => {
-    return await LabelQueries.getIssueLabels({
+    return await LabelQueries.getForIssue({
       workspaceSlug: data.workspaceSlug,
       issueKey: data.issueKey,
       user: context.user!,
@@ -174,7 +173,7 @@ export const addLabelToIssue = createServerFn({ method: "POST" })
     }),
   )
   .handler(async ({ data, context }) => {
-    return await LabelMutations.addLabelToIssue({
+    return await LabelMutations.addToIssue({
       workspaceSlug: data.workspaceSlug,
       issueKey: data.issueKey,
       labelId: data.labelId,
@@ -192,7 +191,7 @@ export const removeLabelFromIssue = createServerFn({ method: "POST" })
     }),
   )
   .handler(async ({ data, context }) => {
-    return await LabelMutations.removeLabelFromIssue({
+    return await LabelMutations.removeFromIssue({
       workspaceSlug: data.workspaceSlug,
       issueKey: data.issueKey,
       labelId: data.labelId,
@@ -209,7 +208,7 @@ export const createLabel = createServerFn({ method: "POST" })
     }),
   )
   .handler(async ({ data, context }) => {
-    return await LabelMutations.createLabel({
+    return await LabelMutations.create({
       workspaceSlug: data.workspaceSlug,
       name: data.name,
       user: context.user!,
@@ -224,7 +223,7 @@ export const getAllLabels = createServerFn({ method: "GET" })
     }),
   )
   .handler(async ({ data, context }) => {
-    return await LabelQueries.getAllLabels({
+    return await LabelQueries.getAllForWorkspace({
       workspaceSlug: data.workspaceSlug,
       user: context.user!,
     });
@@ -276,7 +275,7 @@ export const createComment = createServerFn({ method: "POST" })
     }),
   )
   .handler(async ({ data, context }) => {
-    return await IssueCommentMutations.createComment({
+    return await CommentMutations.create({
       user: context.user,
       workspaceSlug: data.workspaceSlug,
       issueKey: data.issueKey,

@@ -3,7 +3,7 @@ import { createServerFn } from "@tanstack/solid-start";
 import { eq } from "drizzle-orm";
 import * as z from "zod";
 import { authMiddleware } from "../auth/middleware/auth.middleware";
-import { IssueMutations } from "../issues/dal/mutations";
+import { IssueMutations } from "../issues/dal/issue-mutations";
 import { AppError } from "../shared/errors";
 import { WorkspaceQueries } from "../workspaces/dal/queries";
 import { TeamMutations } from "./dal/mutations";

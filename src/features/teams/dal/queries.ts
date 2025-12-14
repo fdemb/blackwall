@@ -4,11 +4,11 @@ import { AppError } from "@/features/shared/errors";
 import { and, count, eq, notInArray } from "drizzle-orm";
 import { WorkspaceQueries } from "../../workspaces/dal/queries";
 
-const getForUser = async (input: {
+async function getForUser(input: {
   user: User;
   workspaceSlug: string;
   teamKey: string;
-}) => {
+}) {
   const workspace = await WorkspaceQueries.getBySlug(input.workspaceSlug);
 
   const [team] = await db
@@ -41,9 +41,9 @@ const getForUser = async (input: {
   }
 
   return team;
-};
+}
 
-const listForUser = async (input: { user: User; workspaceId: string }) => {
+async function listForUser(input: { user: User; workspaceId: string }) {
   const usersCount = db
     .select({
       teamId: dbSchema.userTeam.teamId,
@@ -82,13 +82,13 @@ const listForUser = async (input: { user: User; workspaceId: string }) => {
       usersCount: result.users_count_sq?.count ?? 0,
       issuesCount: result.issues_count_sq?.count ?? 0,
     }));
-};
+}
 
-const listUsers = async (input: {
+async function listUsers(input: {
   user: User;
   workspaceSlug: string;
   teamKey: string;
-}) => {
+}) {
   const workspace = await WorkspaceQueries.getBySlug(input.workspaceSlug);
 
   const result = await db.query.team.findFirst({
@@ -113,30 +113,30 @@ const listUsers = async (input: {
   }
 
   return users;
-};
+}
 
 /**
  * Used for routes that need to get a full team data, like the team settings page.
  * @param input Data required to get a full team
  * @returns The full team data
  */
-const getFullTeam = async (input: {
+async function getFullTeam(input: {
   user: User;
   workspaceSlug: string;
   teamKey: string;
-}) => {
+}) {
   const team = await getForUser(input);
   return team;
-};
+}
 
-const listWorkspaceUsers = async (input: {
+async function listWorkspaceUsers(input: {
   user: User;
   workspaceSlug: string;
   teamKey: string;
-}) => {
+}) {
   const workspace = await WorkspaceQueries.getBySlug(input.workspaceSlug);
 
-  const team = await TeamQueries.getForUser({
+  const team = await getForUser({
     user: input.user,
     workspaceSlug: input.workspaceSlug,
     teamKey: input.teamKey,
@@ -175,7 +175,7 @@ const listWorkspaceUsers = async (input: {
     );
 
   return workspaceUsers.map((wu) => wu.user);
-};
+}
 
 export const TeamQueries = {
   getForUser,

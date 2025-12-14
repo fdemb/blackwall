@@ -3,11 +3,11 @@ import type { User } from "@/db/schema";
 import { TeamQueries } from "@/features/teams/dal/queries";
 import { and, eq, inArray, like, or, sql } from "drizzle-orm";
 
-const search = async (input: {
+async function search(input: {
   searchTerm: string;
   workspaceId: string;
   user: User;
-}) => {
+}) {
   const allUserTeamsData = await TeamQueries.listForUser({
     user: input.user,
     workspaceId: input.workspaceId,
@@ -63,7 +63,7 @@ const search = async (input: {
     issues: foundIssues,
     users: foundUsers,
   };
-};
+}
 
 export const GlobalSearchQueries = {
   search,
