@@ -27,6 +27,7 @@
     "@tanstack/solid-db": "^0.1.55",
     "@tanstack/solid-form": "^1.27.0",
     "@tanstack/solid-query": "^5.90.15",
+    "@tanstack/solid-query-devtools": "^5.91.1",
     "@tanstack/solid-router": "^1.140.0",
     "@tanstack/solid-router-devtools": "^1.140.0",
     "@tanstack/solid-router-ssr-query": "^1.140.0",

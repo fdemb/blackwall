@@ -131,4 +131,23 @@ export const WorkspaceMutations = {
       invitationUrl,
     };
   },
+  updateDisplayName: async (input: {
+    workspaceId: string;
+    displayName: string;
+  }) => {
+    const [result] = await db
+      .update(dbSchema.workspace)
+      .set({ displayName: input.displayName })
+      .where(eq(dbSchema.workspace.id, input.workspaceId))
+      .returning();
+
+    if (!result) {
+      throw new AppError(
+        "INTERNAL_SERVER_ERROR",
+        "Workspace name couldn't be updated",
+      );
+    }
+
+    return result;
+  },
 };

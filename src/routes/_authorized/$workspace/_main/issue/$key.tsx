@@ -205,14 +205,16 @@ function IssueMainView(props: {
 function RouteComponent() {
   const params = Route.useParams();
   const workspaceData = useWorkspaceData();
-  const initialData = Route.useLoaderData();
 
-  const teamKey = () => initialData().issueData.team.key;
   const issueQuery = useQuery(() =>
     getIssueWithLabelsQueryOptions(params().workspace, params().key),
   );
+
   const assignableUsersQuery = useQuery(() =>
-    getAssignableUsersQueryOptions(params().workspace, teamKey()),
+    getAssignableUsersQueryOptions(
+      params().workspace,
+      issueQuery.data!.issueData.team.key,
+    ),
   );
 
   return (

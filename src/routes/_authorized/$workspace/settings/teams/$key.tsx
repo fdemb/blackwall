@@ -142,8 +142,7 @@ function NameForm(props: NameFormProps) {
         });
 
         toast.success("Team name updated successfully.");
-        router.invalidate();
-        queryClient.refetchQueries();
+        queryClient.invalidateQueries();
       } catch (error) {
         toast.error("Failed to update team name.");
       }
@@ -219,8 +218,7 @@ function KeyForm(props: KeyFormProps) {
         toast.success(
           "Team key updated successfully, issues will be updated shortly.",
         );
-        router.invalidate();
-        queryClient.refetchQueries();
+        queryClient.invalidateQueries();
 
         if (value.key !== props.defaultKey) {
           navigate({

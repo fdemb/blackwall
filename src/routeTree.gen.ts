@@ -23,6 +23,7 @@ import { Route as AuthorizedWorkspaceSettingsRouteImport } from './routes/_autho
 import { Route as AuthorizedWorkspaceMainRouteImport } from './routes/_authorized/$workspace/_main'
 import { Route as AuthorizedWorkspaceSettingsIndexRouteImport } from './routes/_authorized/$workspace/settings/index'
 import { Route as AuthorizedWorkspaceMainIndexRouteImport } from './routes/_authorized/$workspace/_main/index'
+import { Route as AuthorizedWorkspaceSettingsWorkspaceRouteImport } from './routes/_authorized/$workspace/settings/workspace'
 import { Route as AuthorizedWorkspaceSettingsProfileRouteImport } from './routes/_authorized/$workspace/settings/profile'
 import { Route as AuthorizedWorkspaceSettingsGeneralRouteImport } from './routes/_authorized/$workspace/settings/general'
 import { Route as AuthorizedWorkspaceSettingsTeamsIndexRouteImport } from './routes/_authorized/$workspace/settings/teams/index'
@@ -104,6 +105,12 @@ const AuthorizedWorkspaceMainIndexRoute =
     path: '/',
     getParentRoute: () => AuthorizedWorkspaceMainRoute,
   } as any)
+const AuthorizedWorkspaceSettingsWorkspaceRoute =
+  AuthorizedWorkspaceSettingsWorkspaceRouteImport.update({
+    id: '/workspace',
+    path: '/workspace',
+    getParentRoute: () => AuthorizedWorkspaceSettingsRoute,
+  } as any)
 const AuthorizedWorkspaceSettingsProfileRoute =
   AuthorizedWorkspaceSettingsProfileRouteImport.update({
     id: '/profile',
@@ -182,6 +189,7 @@ export interface FileRoutesByFullPath {
   '/invite/$token': typeof EitherInviteTokenRoute
   '/$workspace/settings/general': typeof AuthorizedWorkspaceSettingsGeneralRoute
   '/$workspace/settings/profile': typeof AuthorizedWorkspaceSettingsProfileRoute
+  '/$workspace/settings/workspace': typeof AuthorizedWorkspaceSettingsWorkspaceRoute
   '/$workspace/': typeof AuthorizedWorkspaceMainIndexRoute
   '/$workspace/settings/': typeof AuthorizedWorkspaceSettingsIndexRoute
   '/$workspace/issue/$key': typeof AuthorizedWorkspaceMainIssueKeyRoute
@@ -204,6 +212,7 @@ export interface FileRoutesByTo {
   '/invite/$token': typeof EitherInviteTokenRoute
   '/$workspace/settings/general': typeof AuthorizedWorkspaceSettingsGeneralRoute
   '/$workspace/settings/profile': typeof AuthorizedWorkspaceSettingsProfileRoute
+  '/$workspace/settings/workspace': typeof AuthorizedWorkspaceSettingsWorkspaceRoute
   '/$workspace/settings': typeof AuthorizedWorkspaceSettingsIndexRoute
   '/$workspace/issue/$key': typeof AuthorizedWorkspaceMainIssueKeyRoute
   '/$workspace/team/$teamKey': typeof AuthorizedWorkspaceMainTeamTeamKeyRouteWithChildren
@@ -231,6 +240,7 @@ export interface FileRoutesById {
   '/_either/invite/$token': typeof EitherInviteTokenRoute
   '/_authorized/$workspace/settings/general': typeof AuthorizedWorkspaceSettingsGeneralRoute
   '/_authorized/$workspace/settings/profile': typeof AuthorizedWorkspaceSettingsProfileRoute
+  '/_authorized/$workspace/settings/workspace': typeof AuthorizedWorkspaceSettingsWorkspaceRoute
   '/_authorized/$workspace/_main/': typeof AuthorizedWorkspaceMainIndexRoute
   '/_authorized/$workspace/settings/': typeof AuthorizedWorkspaceSettingsIndexRoute
   '/_authorized/$workspace/_main/issue/$key': typeof AuthorizedWorkspaceMainIssueKeyRoute
@@ -256,6 +266,7 @@ export interface FileRouteTypes {
     | '/invite/$token'
     | '/$workspace/settings/general'
     | '/$workspace/settings/profile'
+    | '/$workspace/settings/workspace'
     | '/$workspace/'
     | '/$workspace/settings/'
     | '/$workspace/issue/$key'
@@ -278,6 +289,7 @@ export interface FileRouteTypes {
     | '/invite/$token'
     | '/$workspace/settings/general'
     | '/$workspace/settings/profile'
+    | '/$workspace/settings/workspace'
     | '/$workspace/settings'
     | '/$workspace/issue/$key'
     | '/$workspace/team/$teamKey'
@@ -304,6 +316,7 @@ export interface FileRouteTypes {
     | '/_either/invite/$token'
     | '/_authorized/$workspace/settings/general'
     | '/_authorized/$workspace/settings/profile'
+    | '/_authorized/$workspace/settings/workspace'
     | '/_authorized/$workspace/_main/'
     | '/_authorized/$workspace/settings/'
     | '/_authorized/$workspace/_main/issue/$key'
@@ -423,6 +436,13 @@ declare module '@tanstack/solid-router' {
       fullPath: '/$workspace/'
       preLoaderRoute: typeof AuthorizedWorkspaceMainIndexRouteImport
       parentRoute: typeof AuthorizedWorkspaceMainRoute
+    }
+    '/_authorized/$workspace/settings/workspace': {
+      id: '/_authorized/$workspace/settings/workspace'
+      path: '/workspace'
+      fullPath: '/$workspace/settings/workspace'
+      preLoaderRoute: typeof AuthorizedWorkspaceSettingsWorkspaceRouteImport
+      parentRoute: typeof AuthorizedWorkspaceSettingsRoute
     }
     '/_authorized/$workspace/settings/profile': {
       id: '/_authorized/$workspace/settings/profile'
@@ -562,6 +582,7 @@ const AuthorizedWorkspaceMainRouteWithChildren =
 interface AuthorizedWorkspaceSettingsRouteChildren {
   AuthorizedWorkspaceSettingsGeneralRoute: typeof AuthorizedWorkspaceSettingsGeneralRoute
   AuthorizedWorkspaceSettingsProfileRoute: typeof AuthorizedWorkspaceSettingsProfileRoute
+  AuthorizedWorkspaceSettingsWorkspaceRoute: typeof AuthorizedWorkspaceSettingsWorkspaceRoute
   AuthorizedWorkspaceSettingsIndexRoute: typeof AuthorizedWorkspaceSettingsIndexRoute
   AuthorizedWorkspaceSettingsTeamsKeyRoute: typeof AuthorizedWorkspaceSettingsTeamsKeyRoute
   AuthorizedWorkspaceSettingsTeamsCreateRoute: typeof AuthorizedWorkspaceSettingsTeamsCreateRoute
@@ -574,6 +595,8 @@ const AuthorizedWorkspaceSettingsRouteChildren: AuthorizedWorkspaceSettingsRoute
       AuthorizedWorkspaceSettingsGeneralRoute,
     AuthorizedWorkspaceSettingsProfileRoute:
       AuthorizedWorkspaceSettingsProfileRoute,
+    AuthorizedWorkspaceSettingsWorkspaceRoute:
+      AuthorizedWorkspaceSettingsWorkspaceRoute,
     AuthorizedWorkspaceSettingsIndexRoute:
       AuthorizedWorkspaceSettingsIndexRoute,
     AuthorizedWorkspaceSettingsTeamsKeyRoute:

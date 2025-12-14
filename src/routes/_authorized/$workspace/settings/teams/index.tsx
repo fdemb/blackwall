@@ -6,13 +6,13 @@ import { TeamAvatar } from "@/features/shared/components/custom-ui/avatar";
 import { buttonVariants } from "@/features/shared/components/ui/button";
 import { listTeams } from "@/features/teams/actions";
 import { formatDateShort } from "@/lib/dates";
-import { queryOptions } from "@tanstack/solid-query";
+import { queryOptions, useQuery } from "@tanstack/solid-query";
 import { createFileRoute, Link } from "@tanstack/solid-router";
 import { Index } from "solid-js";
 
 const listTeamsQueryOptions = (workspaceSlug: string) =>
   queryOptions({
-    queryKey: ["teams", "list", workspaceSlug],
+    queryKey: ["settings", "teams", "list", workspaceSlug],
     queryFn: () =>
       listTeams({
         data: { workspaceSlug },
@@ -61,7 +61,7 @@ function RouteComponent() {
 
 function TeamTable() {
   const params = Route.useParams();
-  const data = Route.useLoaderData();
+  const query = useQuery(() => listTeamsQueryOptions(params().workspace));
 
   return (
     <table>
@@ -86,7 +86,7 @@ function TeamTable() {
       </thead>
 
       <tbody>
-        <Index each={data().teamsData}>
+        <Index each={query.data ?? []}>
           {(team) => (
             <tr class="border-b relative hover:bg-muted">
               <td class="text-left px-3 py-3 text-sm first:pl-6">

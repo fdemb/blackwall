@@ -70,6 +70,16 @@ export function SettingsSidebar(props: ComponentProps<typeof Sidebar>) {
               <SidebarMenuItem>
                 <SidebarMenuButton
                   as={FastLink}
+                  to="/$workspace/settings/workspace"
+                  params={{ workspace: workspaceData().workspace.slug }}
+                >
+                  Workspace
+                </SidebarMenuButton>
+              </SidebarMenuItem>
+
+              <SidebarMenuItem>
+                <SidebarMenuButton
+                  as={FastLink}
                   to="/$workspace/settings/teams"
                   params={{ workspace: workspaceData().workspace.slug }}
                 >

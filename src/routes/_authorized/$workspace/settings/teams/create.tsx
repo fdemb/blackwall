@@ -47,7 +47,6 @@ function RouteComponent() {
       });
 
       queryClient.invalidateQueries();
-      router.invalidate();
     },
   }));
   return (

@@ -4,9 +4,8 @@ import { queryOptions } from "@tanstack/solid-query";
 import { createFileRoute, Outlet, redirect } from "@tanstack/solid-router";
 
 const sessionQueryOptions = queryOptions({
-  queryKey: ["refreshedOnLogin"],
+  queryKey: ["session"],
   queryFn: () => {
-    console.log("session");
     return session();
   },
   staleTime: Infinity,

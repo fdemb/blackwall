@@ -107,3 +107,24 @@ export const fetchInvitation = createServerFn({ method: "GET" })
 
     return invitation;
   });
+
+export const updateWorkspaceName = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
+  .inputValidator(
+    z.object({
+      workspaceId: z.string().min(1, "Workspace ID is required"),
+      displayName: z.string().min(1, "Workspace name is required"),
+    }),
+  )
+  .handler(async ({ data, context }) => {
+    // Verify user has access to the workspace
+    await WorkspaceQueries.getForUserById({
+      user: context.user,
+      workspaceId: data.workspaceId,
+    });
+
+    return await WorkspaceMutations.updateDisplayName({
+      workspaceId: data.workspaceId,
+      displayName: data.displayName,
+    });
+  });
