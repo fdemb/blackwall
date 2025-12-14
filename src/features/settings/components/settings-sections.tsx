@@ -32,6 +32,7 @@ export const SettingsPage: ParentComponent<SettingsPageProps> = (props) => {
 
 type SettingsSectionProps = {
   title?: string;
+  rightContent?: JSX.Element;
 };
 
 export const SettingsSection: ParentComponent<SettingsSectionProps> = (
@@ -39,9 +40,12 @@ export const SettingsSection: ParentComponent<SettingsSectionProps> = (
 ) => {
   return (
     <section class="flex flex-col gap-3">
-      <Show when={props.title}>
-        <h2 class="text-lg font-medium px-6">{props.title}</h2>
-      </Show>
+      <div class="flex items-center justify-between px-6">
+        <Show when={props.title}>
+          <h2 class="text-lg font-medium">{props.title}</h2>
+        </Show>
+        {props.rightContent}
+      </div>
       {props.children}
     </section>
   );
@@ -82,7 +86,7 @@ type SettingsRowProps = {
 
 export const SettingsRow: ParentComponent<SettingsRowProps> = (props) => {
   return (
-    <div class="p-4 flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+    <div class="px-4 py-3.5 flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
       <div class="flex-1">
         <Show
           when={props.htmlFor}

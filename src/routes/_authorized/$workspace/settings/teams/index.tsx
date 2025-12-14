@@ -3,6 +3,7 @@ import {
   SettingsSection,
 } from "@/features/settings/components/settings-sections";
 import { TeamAvatar } from "@/features/shared/components/custom-ui/avatar";
+import { buttonVariants } from "@/features/shared/components/ui/button";
 import { listTeams } from "@/features/teams/actions";
 import { formatDateShort } from "@/lib/dates";
 import { queryOptions } from "@tanstack/solid-query";
@@ -34,9 +35,24 @@ export const Route = createFileRoute("/_authorized/$workspace/settings/teams/")(
 );
 
 function RouteComponent() {
+  const params = Route.useParams();
+
   return (
     <SettingsPage title="Team management" fullWidth>
-      <SettingsSection title="Teams">
+      <SettingsSection
+        title="Teams"
+        rightContent={
+          <Link
+            class={buttonVariants({ variant: "default", size: "sm" })}
+            to="/$workspace/settings/teams/create"
+            params={{
+              workspace: params().workspace,
+            }}
+          >
+            Create team
+          </Link>
+        }
+      >
         <TeamTable />
       </SettingsSection>
     </SettingsPage>
@@ -72,19 +88,21 @@ function TeamTable() {
       <tbody>
         <Index each={data().teamsData}>
           {(team) => (
-            <tr class="border-b">
+            <tr class="border-b relative hover:bg-muted">
               <td class="text-left px-3 py-3 text-sm first:pl-6">
                 <Link
                   to="/$workspace/settings/teams/$key"
-                  class="flex items-center gap-2"
+                  class="flex items-center gap-2 font-medium absolute inset-0"
                   params={{
                     workspace: params().workspace,
                     key: team().team.key,
                   }}
-                >
+                />
+
+                <div class="flex items-center gap-2 font-medium">
                   <TeamAvatar team={team().team} size="5" />
                   {team().team.name}
-                </Link>
+                </div>
               </td>
               <td class="text-left px-3 py-3 text-sm first:pl-6">
                 {team().team.key}

@@ -1,7 +1,6 @@
 import { getPreferredTheme } from "@/features/auth/actions";
 import { Toaster } from "@/features/shared/components/custom-ui/toast";
 import { KeybindProvider } from "@/features/shared/context/keybind.context";
-import "@fontsource-variable/outfit";
 import { QueryClient } from "@tanstack/solid-query";
 import {
   HeadContent,
@@ -27,11 +26,7 @@ export const Route = createRootRouteWithContext<{
   head: async ({ loaderData }) => {
     return {
       meta: [{ title: "Blackwall" }],
-      links: [
-        { rel: "stylesheet", href: styleCss },
-        { rel: "preconnect", href: "https://rsms.me/" },
-        { rel: "stylesheet", href: "https://rsms.me/inter/inter.css" },
-      ],
+      links: [{ rel: "stylesheet", href: styleCss }],
       scripts: [
         {
           children: `
