@@ -22,7 +22,7 @@ async function getForUser(input: {
     );
 
   if (!team) {
-    return undefined;
+    throw new AppError("NOT_FOUND", "Team not found.");
   }
 
   // Check if user is a member of this team
@@ -37,7 +37,7 @@ async function getForUser(input: {
     );
 
   if (!result) {
-    return undefined;
+    throw new AppError("NOT_FOUND", "Team not found.");
   }
 
   return team;
@@ -82,6 +82,16 @@ async function listForUser(input: { user: User; workspaceId: string }) {
       usersCount: result.users_count_sq?.count ?? 0,
       issuesCount: result.issues_count_sq?.count ?? 0,
     }));
+}
+
+/**
+ * Lists all teams that the user has access to, not only ones which they are member of.
+ */
+async function listAllForUser(input: { user: User; workspaceId: string }) {
+  return await db
+    .select()
+    .from(dbSchema.team)
+    .where(eq(dbSchema.team.workspaceId, input.workspaceId));
 }
 
 async function listUsers(input: {
@@ -129,7 +139,7 @@ async function getFullTeam(input: {
   return team;
 }
 
-async function listWorkspaceUsers(input: {
+async function listRemainingUsers(input: {
   user: User;
   workspaceSlug: string;
   teamKey: string;
@@ -149,7 +159,6 @@ async function listWorkspaceUsers(input: {
     );
   }
 
-  // Get all team member IDs
   const teamMembers = await db
     .select({ userId: dbSchema.userTeam.userId })
     .from(dbSchema.userTeam)
@@ -157,7 +166,6 @@ async function listWorkspaceUsers(input: {
 
   const teamMemberIds = teamMembers.map((m) => m.userId);
 
-  // Get all workspace users, excluding team members
   const workspaceUsers = await db
     .select()
     .from(dbSchema.user)
@@ -180,7 +188,8 @@ async function listWorkspaceUsers(input: {
 export const TeamQueries = {
   getForUser,
   listForUser,
+  listAllForUser,
   listUsers,
   getFullTeam,
-  listWorkspaceUsers,
+  listRemainingUsers,
 };

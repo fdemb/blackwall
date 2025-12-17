@@ -16,19 +16,31 @@ export const validateFields = (
   return errors;
 };
 
-export const tryServerFn = async <T extends unknown>(
+export const action = async <T extends unknown>(
   promise: Promise<T>,
   formApi?: FormApi<any, any, any, any, any, any, any, any, any, any, any, any>,
 ): Promise<T> => {
   try {
-    return await promise;
+    const result = await promise;
+
+    if (
+      result &&
+      typeof result === "object" &&
+      "message" in result &&
+      typeof result.message === "string"
+    ) {
+      toast.success(result.message);
+    }
+
+    return result;
   } catch (error) {
-    formApi?.reset();
     if (error instanceof Error && typeof error.message === "string") {
       toast.error(error.message);
     } else {
       toast.error("An unexpected error occurred");
     }
     throw error;
+  } finally {
+    formApi?.reset();
   }
 };

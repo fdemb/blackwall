@@ -4,20 +4,47 @@ import {
   SettingsRow,
   SettingsSection,
 } from "@/features/settings/components/settings-sections";
+import { InviteDialogContent } from "@/features/shared/components/blocks/invite-dialog";
+import { UserAvatar } from "@/features/shared/components/custom-ui/avatar";
 import { toast } from "@/features/shared/components/custom-ui/toast";
+import { Button } from "@/features/shared/components/ui/button";
+import { Dialog, DialogTrigger } from "@/features/shared/components/ui/dialog";
 import { TanStackTextField } from "@/features/shared/components/ui/text-field";
 import { useAppForm } from "@/features/shared/context/form-context";
+import { useSessionData } from "@/features/shared/context/session-context";
 import { useWorkspaceData } from "@/features/shared/context/workspace-context";
-import { updateWorkspaceName } from "@/features/workspaces/actions";
-import { useQueryClient } from "@tanstack/solid-query";
+import { listWorkspaceUsers, updateWorkspaceName } from "@/features/settings/actions";
+import { queryOptions, useQuery, useQueryClient } from "@tanstack/solid-query";
 import { createFileRoute } from "@tanstack/solid-router";
 import { useServerFn } from "@tanstack/solid-start";
+import { Index, Show } from "solid-js";
 import * as z from "zod";
+
+const getWorkspaceUsersQueryOptions = (workspaceSlug: string) =>
+  queryOptions({
+    queryKey: ["users", workspaceSlug],
+    queryFn: () => {
+      return listWorkspaceUsers({
+        data: {
+          workspaceSlug,
+        },
+      });
+    },
+  });
 
 export const Route = createFileRoute(
   "/_authorized/$workspace/settings/workspace",
 )({
   component: RouteComponent,
+  loader: async ({ params, context }) => {
+    const workspaceUsers = await context.queryClient.ensureQueryData(
+      getWorkspaceUsersQueryOptions(params.workspace),
+    );
+
+    return {
+      workspaceUsers,
+    };
+  },
 });
 
 function RouteComponent() {
@@ -47,6 +74,10 @@ function RouteComponent() {
             />
           </SettingsRow>
         </SettingsCard>
+      </SettingsSection>
+
+      <SettingsSection title="Members">
+        <MembersSection />
       </SettingsSection>
     </SettingsPage>
   );
@@ -135,4 +166,80 @@ function getErrorMessage(error: unknown) {
   }
 
   return "Something went wrong. Please try again.";
+}
+
+function MembersSection() {
+  const params = Route.useParams();
+  const session = useSessionData();
+
+  const workspaceUsersQuery = useQuery(() =>
+    getWorkspaceUsersQueryOptions(params().workspace),
+  );
+  const memberCount = () => workspaceUsersQuery.data?.length ?? 0;
+
+  return (
+    <SettingsCard variant="column">
+      <div class="flex items-center justify-between px-4 pb-2">
+        <p class="text-sm text-muted-foreground">
+          {memberCount()} {memberCount() === 1 ? "member" : "members"}
+        </p>
+
+        <div class="flex items-center gap-2">
+          <Dialog>
+            <DialogTrigger as={Button} variant="outline" size="sm">
+              Invite
+            </DialogTrigger>
+            <InviteDialogContent />
+          </Dialog>
+        </div>
+      </div>
+
+      <div class="flex flex-col divide-y divide-border">
+        <Show
+          when={memberCount() > 0}
+          fallback={
+            <div class="flex flex-col items-center justify-center py-8 text-center">
+              <p class="text-sm text-muted-foreground">
+                No members in this team yet.
+              </p>
+              <p class="text-xs text-muted-foreground mt-1">
+                Add members to collaborate on issues.
+              </p>
+            </div>
+          }
+        >
+          <Index each={workspaceUsersQuery.data ?? []}>
+            {(member) => {
+              const isCurrentUser = () => member().id === session().user.id;
+
+              return (
+                <div class="group flex items-center justify-between gap-4 px-4 py-3">
+                  <div class="flex items-center gap-3 min-w-0">
+                    <UserAvatar user={member()} size="sm" />
+                    <div class="flex flex-col min-w-0">
+                      <div class="flex items-center gap-2">
+                        <span class="text-sm font-medium truncate">
+                          {member().name}
+                        </span>
+                        <Show when={isCurrentUser()}>
+                          <span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-primary/10 text-primary">
+                            You
+                          </span>
+                        </Show>
+                      </div>
+                      <Show when={member().email}>
+                        <span class="text-xs text-muted-foreground truncate">
+                          {member().email}
+                        </span>
+                      </Show>
+                    </div>
+                  </div>
+                </div>
+              );
+            }}
+          </Index>
+        </Show>
+      </div>
+    </SettingsCard>
+  );
 }

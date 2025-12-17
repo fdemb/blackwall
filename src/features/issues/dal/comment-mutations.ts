@@ -1,5 +1,6 @@
 import { db, dbSchema } from "@/db";
 import type { User } from "@/db/schema";
+import queue from "@/lib/queueing";
 import { buildChangeEvent } from "../change-events";
 import { IssueQueries } from "./issue-queries";
 
@@ -15,7 +16,7 @@ async function create(input: {
     issueKey: input.issueKey,
   });
 
-  return await db.transaction(async (tx) => {
+  const comment = await db.transaction(async (tx) => {
     const [comment] = await tx
       .insert(dbSchema.issueComment)
       .values({
@@ -39,6 +40,15 @@ async function create(input: {
 
     return comment;
   });
+
+  queue.add("general", {
+    type: "issue-comment-created",
+    data: {
+      comment,
+    },
+  });
+
+  return comment;
 }
 
 export const CommentMutations = {

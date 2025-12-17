@@ -9,26 +9,27 @@ import { UserAvatar } from "@/features/shared/components/custom-ui/avatar";
 import type { PickerOption } from "@/features/shared/components/custom-ui/picker";
 import { PickerPopover } from "@/features/shared/components/custom-ui/picker-popover";
 import { toast } from "@/features/shared/components/custom-ui/toast";
-import { Button } from "@/features/shared/components/ui/button";
+import { Button, buttonVariants } from "@/features/shared/components/ui/button";
 import { TanStackTextField } from "@/features/shared/components/ui/text-field";
 import { useAppForm } from "@/features/shared/context/form-context";
 import { useSessionData } from "@/features/shared/context/session-context";
 import {
   addTeamMember,
   getFullTeam,
-  listUsers,
-  listWorkspaceUsers,
+  listTeamUsers,
+  listTeamWorkspaceUsers,
   removeTeamMember,
   updateTeamKey,
   updateTeamName,
-} from "@/features/teams/actions";
+} from "@/features/settings/actions";
 import { Popover } from "@kobalte/core/popover";
 import { queryOptions, useQuery, useQueryClient } from "@tanstack/solid-query";
 import {
   createFileRoute,
+  Link,
   notFound,
+  Outlet,
   useNavigate,
-  useRouter,
 } from "@tanstack/solid-router";
 import { useServerFn } from "@tanstack/solid-start";
 import PlusIcon from "lucide-solid/icons/plus";
@@ -36,7 +37,7 @@ import XIcon from "lucide-solid/icons/x";
 import { createMemo, createSignal, Index, Show } from "solid-js";
 import * as z from "zod";
 
-const getTeamQueryOptions = (workspaceSlug: string, teamKey: string) =>
+export const getTeamQueryOptions = (workspaceSlug: string, teamKey: string) =>
   queryOptions({
     queryKey: ["team", "get", workspaceSlug, teamKey],
     queryFn: () =>
@@ -52,7 +53,7 @@ const getTeamMembersQueryOptions = (workspaceSlug: string, teamKey: string) =>
   queryOptions({
     queryKey: ["team", "members", workspaceSlug, teamKey],
     queryFn: () =>
-      listUsers({
+      listTeamUsers({
         data: {
           workspaceSlug,
           teamKey,
@@ -120,7 +121,6 @@ function NameForm(props: NameFormProps) {
   const params = Route.useParams();
   const updateTeamNameFn = useServerFn(updateTeamName);
   const queryClient = useQueryClient();
-  const router = useRouter();
 
   const form = useAppForm(() => ({
     defaultValues: {
@@ -194,7 +194,6 @@ function KeyForm(props: KeyFormProps) {
   const navigate = useNavigate();
   const updateTeamKeyFn = useServerFn(updateTeamKey);
   const queryClient = useQueryClient();
-  const router = useRouter();
 
   const form = useAppForm(() => ({
     defaultValues: {
@@ -281,7 +280,7 @@ function MembersSection() {
     getTeamMembersQueryOptions(params().workspace, params().key),
   );
 
-  const listWorkspaceUsersFn = useServerFn(listWorkspaceUsers);
+  const listWorkspaceUsersFn = useServerFn(listTeamWorkspaceUsers);
   const addTeamMemberFn = useServerFn(addTeamMember);
   const removeTeamMemberFn = useServerFn(removeTeamMember);
 
@@ -354,41 +353,53 @@ function MembersSection() {
 
   return (
     <SettingsCard variant="column">
+      <Outlet />
       <div class="flex items-center justify-between px-4 pb-2">
         <p class="text-sm text-muted-foreground">
           {memberCount()} {memberCount() === 1 ? "member" : "members"}
         </p>
-        <Popover
-          open={open()}
-          onOpenChange={setOpen}
-          placement="bottom-end"
-          gutter={8}
-        >
-          <Popover.Trigger
-            as={Button}
-            variant="outline"
-            size="xs"
-            scaleEffect={false}
+
+        <div class="flex items-center gap-2">
+          <Link
+            to="/$workspace/settings/teams/$key/invite"
+            params={params()}
+            class={buttonVariants({ variant: "ghost", size: "xs" })}
           >
-            <PlusIcon class="size-4" />
-            Add member
-          </Popover.Trigger>
-          <PickerPopover
-            value={undefined}
-            onChange={(userId: string | null) => {
-              if (userId) {
-                handleAddMember(userId);
+            Invite
+          </Link>
+
+          <Popover
+            open={open()}
+            onOpenChange={setOpen}
+            placement="bottom-end"
+            gutter={8}
+          >
+            <Popover.Trigger
+              as={Button}
+              variant="outline"
+              size="xs"
+              scaleEffect={false}
+            >
+              <PlusIcon class="size-4" />
+              Add member
+            </Popover.Trigger>
+            <PickerPopover
+              value={undefined}
+              onChange={(userId: string | null) => {
+                if (userId) {
+                  handleAddMember(userId);
+                }
+              }}
+              options={availableUsersOptions()}
+              loading={workspaceUsersQuery.isLoading}
+              emptyText={
+                availableUsersOptions().length === 0
+                  ? "All workspace members are already in this team"
+                  : undefined
               }
-            }}
-            options={availableUsersOptions()}
-            loading={workspaceUsersQuery.isLoading}
-            emptyText={
-              availableUsersOptions().length === 0
-                ? "All workspace members are already in this team"
-                : undefined
-            }
-          />
-        </Popover>
+            />
+          </Popover>
+        </div>
       </div>
 
       <div class="flex flex-col divide-y divide-border">

@@ -4,7 +4,7 @@ import {
 } from "@/features/settings/components/settings-sections";
 import { TeamAvatar } from "@/features/shared/components/custom-ui/avatar";
 import { buttonVariants } from "@/features/shared/components/ui/button";
-import { listTeams } from "@/features/teams/actions";
+import { listTeams } from "@/features/settings/actions";
 import { formatDateShort } from "@/lib/dates";
 import { queryOptions, useQuery } from "@tanstack/solid-query";
 import { createFileRoute, Link } from "@tanstack/solid-router";

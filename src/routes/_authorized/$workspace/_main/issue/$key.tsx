@@ -65,7 +65,6 @@ const getIssueWithLabelsQueryOptions = (
   queryOptions({
     queryKey: ["issue", "get", workspaceSlug, issueKey],
     queryFn: async () => {
-      console.log("getIssueWithLabelsQueryOptions", workspaceSlug, issueKey);
       const [issueData, labelsData] = await Promise.all([
         get({
           data: {

@@ -102,7 +102,7 @@ function DialogHeader<T extends ValidComponent = "div">(
   return (
     <div
       data-slot="dialog-header"
-      class={cn("flex flex-col gap-2", local.class)}
+      class={cn("flex flex-col gap-2 text-center sm:text-left", local.class)}
       {...rest}
     />
   );
@@ -157,10 +157,7 @@ function DialogTitle<T extends ValidComponent = "h2">(
   return (
     <DialogPrimitive.Title
       data-slot="dialog-title"
-      class={cn(
-        "text-sm font-normal leading-none text-foreground",
-        local.class,
-      )}
+      class={cn("text-lg leading-none font-semibold", local.class)}
       {...rest}
     />
   );

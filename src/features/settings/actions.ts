@@ -5,6 +5,7 @@ import { getRequestHeaders } from "@tanstack/solid-start-server";
 import * as z from "zod";
 import { authMiddleware } from "../auth/middleware/auth.middleware";
 import { TeamMutations } from "../teams/dal/mutations";
+import { TeamQueries } from "../teams/dal/queries";
 import { WorkspaceQueries } from "../workspaces/dal/queries";
 import { SettingsMutations } from "./dal/mutations";
 import { SettingsQueries } from "./dal/queries";
@@ -135,4 +136,226 @@ export const changePassword = createServerFn({ method: "POST" })
       newPassword: data.newPassword,
       revokeOtherSessions: data.revokeOtherSessions,
     });
+  });
+
+export const listTeams = createServerFn({ method: "GET" })
+  .middleware([authMiddleware])
+  .inputValidator(
+    z.object({
+      workspaceSlug: z.string().min(1, "Workspace slug is required"),
+    }),
+  )
+  .handler(async ({ data, context }) => {
+    const workspace = await WorkspaceQueries.getForUser({
+      user: context.user,
+      slug: data.workspaceSlug,
+    });
+
+    return await TeamQueries.listForUser({
+      user: context.user,
+      workspaceId: workspace.id,
+    });
+  });
+
+// Workspace settings actions
+export const updateWorkspaceName = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
+  .inputValidator(
+    z.object({
+      workspaceId: z.string().min(1, "Workspace ID is required"),
+      displayName: z.string().min(1, "Workspace name is required"),
+    }),
+  )
+  .handler(async ({ data, context }) => {
+    const { WorkspaceMutations } = await import("../workspaces/dal/mutations");
+
+    // Verify user has access to the workspace
+    await WorkspaceQueries.getForUserById({
+      user: context.user,
+      workspaceId: data.workspaceId,
+    });
+
+    return await WorkspaceMutations.updateDisplayName({
+      workspaceId: data.workspaceId,
+      displayName: data.displayName,
+    });
+  });
+
+export const listWorkspaceUsers = createServerFn({ method: "GET" })
+  .middleware([authMiddleware])
+  .inputValidator(
+    z.object({
+      workspaceSlug: z.string(),
+    }),
+  )
+  .handler(async ({ data, context }) => {
+    return await WorkspaceQueries.listUsers({
+      workspace: await WorkspaceQueries.getForUser({
+        user: context.user,
+        slug: data.workspaceSlug,
+      }),
+    });
+  });
+
+// Team settings actions
+export const getFullTeam = createServerFn({ method: "GET" })
+  .middleware([authMiddleware])
+  .inputValidator(
+    z.object({
+      workspaceSlug: z.string(),
+      teamKey: z.string(),
+    }),
+  )
+  .handler(async ({ data, context }) => {
+    return TeamQueries.getForUser({
+      user: context.user,
+      ...data,
+    });
+  });
+
+export const listTeamUsers = createServerFn({ method: "GET" })
+  .middleware([authMiddleware])
+  .inputValidator(
+    z.object({
+      workspaceSlug: z.string(),
+      teamKey: z.string(),
+    }),
+  )
+  .handler(async ({ data, context }) => {
+    return TeamQueries.listUsers({
+      user: context.user!,
+      ...data,
+    });
+  });
+
+export const updateTeamName = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
+  .inputValidator(
+    z.object({
+      workspaceSlug: z.string(),
+      teamKey: z.string(),
+      name: z.string(),
+    }),
+  )
+  .handler(async ({ data, context }) => {
+    return TeamMutations.update({
+      user: context.user,
+      workspaceSlug: data.workspaceSlug,
+      teamKey: data.teamKey,
+      team: { name: data.name },
+    });
+  });
+
+export const updateTeamKey = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
+  .inputValidator(
+    z.object({
+      workspaceSlug: z.string(),
+      teamKey: z.string(),
+      newKey: z.string(),
+    }),
+  )
+  .handler(async ({ data, context }) => {
+    const { IssueMutations } = await import("../issues/dal/issue-mutations");
+
+    await TeamMutations.update({
+      user: context.user,
+      workspaceSlug: data.workspaceSlug,
+      teamKey: data.teamKey,
+      team: { key: data.newKey },
+    });
+
+    const team = await TeamQueries.getForUser({
+      user: context.user,
+      workspaceSlug: data.workspaceSlug,
+      teamKey: data.newKey,
+    });
+
+    if (!team) {
+      throw new AppError("NOT_FOUND", "Team not found.");
+    }
+
+    await IssueMutations.bulkChangeTeamKeys({
+      user: context.user,
+      workspaceSlug: data.workspaceSlug,
+      team,
+    });
+
+    return team;
+  });
+
+export const listTeamWorkspaceUsers = createServerFn({ method: "GET" })
+  .middleware([authMiddleware])
+  .inputValidator(
+    z.object({
+      workspaceSlug: z.string(),
+      teamKey: z.string(),
+    }),
+  )
+  .handler(async ({ data, context }) => {
+    return TeamQueries.listRemainingUsers({
+      user: context.user!,
+      ...data,
+    });
+  });
+
+export const addTeamMember = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
+  .inputValidator(
+    z.object({
+      workspaceSlug: z.string(),
+      teamKey: z.string(),
+      userId: z.string(),
+    }),
+  )
+  .handler(async ({ data, context }) => {
+    const { db, dbSchema } = await import("@/db");
+    const { eq } = await import("drizzle-orm");
+
+    const team = await TeamQueries.getForUser({
+      user: context.user!,
+      workspaceSlug: data.workspaceSlug,
+      teamKey: data.teamKey,
+    });
+
+    if (!team) {
+      throw new AppError("NOT_FOUND", "Team not found.");
+    }
+
+    const [userToAdd] = await db
+      .select()
+      .from(dbSchema.user)
+      .where(eq(dbSchema.user.id, data.userId))
+      .limit(1);
+
+    if (!userToAdd) {
+      throw new AppError("NOT_FOUND", "User not found.");
+    }
+
+    await TeamMutations.addUser({
+      user: userToAdd,
+      team,
+    });
+
+    return { success: true };
+  });
+
+export const removeTeamMember = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
+  .inputValidator(
+    z.object({
+      workspaceSlug: z.string(),
+      teamKey: z.string(),
+      userId: z.string(),
+    }),
+  )
+  .handler(async ({ data, context }) => {
+    await TeamMutations.removeUser({
+      user: context.user!,
+      workspaceSlug: data.workspaceSlug,
+      teamKey: data.teamKey,
+      userId: data.userId,
+    });
+
+    return { success: true };
   });

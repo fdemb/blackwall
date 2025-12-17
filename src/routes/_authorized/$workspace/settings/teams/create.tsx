@@ -8,7 +8,7 @@ import {
 import { Button } from "@/features/shared/components/ui/button";
 import { TanStackTextField } from "@/features/shared/components/ui/text-field";
 import { useAppForm } from "@/features/shared/context/form-context";
-import { createTeam } from "@/features/teams/actions";
+import { createTeam } from "@/features/settings/actions";
 import { useQueryClient } from "@tanstack/solid-query";
 import { createFileRoute, useRouter } from "@tanstack/solid-router";
 import * as z from "zod";

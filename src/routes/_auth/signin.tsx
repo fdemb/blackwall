@@ -5,7 +5,7 @@ import { FastLink } from "@/features/shared/components/custom-ui/fast-link";
 import { Button, buttonVariants } from "@/features/shared/components/ui/button";
 import { TanStackTextField } from "@/features/shared/components/ui/text-field";
 import { useAppForm } from "@/features/shared/context/form-context";
-import { tryServerFn } from "@/lib/form.utils";
+import { action } from "@/lib/form.utils";
 import { createFileRoute, useNavigate } from "@tanstack/solid-router";
 import { useServerFn } from "@tanstack/solid-start";
 import * as z from "zod";
@@ -31,7 +31,7 @@ function RouteComponent() {
       }),
     },
     onSubmit: async ({ value, formApi }) => {
-      await tryServerFn(
+      await action(
         handleSignInEmail({
           data: value,
         }),

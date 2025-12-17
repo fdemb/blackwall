@@ -38,6 +38,7 @@
     "@tiptap/pm": "^3.12.1",
     "@tiptap/starter-kit": "^3.12.1",
     "@tiptap/static-renderer": "^3.12.1",
+    "@vitejs/plugin-react": "^5.1.2",
     "@xtreat/solid-iconify": "^0.1.0",
     "@zag-js/scroll-area": "^1.30.0",
     "@zag-js/solid": "^1.30.0",
@@ -48,6 +49,8 @@
     "drizzle-orm": "^0.45.0",
     "drizzle-zod": "^0.8.3",
     "lucide-solid": "^0.556.0",
+    "nodemailer": "^7.0.11",
+    "plainjob": "^0.0.14",
     "solid-devtools": "^0.34.4",
     "solid-js": "^1.9.9",
     "tailwind-merge": "^3.4.0",
@@ -58,8 +61,10 @@
     "zod": "^4.1.13"
   },
   "devDependencies": {
+    "@anthropic-ai/claude-code": "^2.0.71",
     "@faker-js/faker": "^10.1.0",
     "@types/bun": "^1.3.4",
+    "@types/nodemailer": "^7.0.4",
     "drizzle-kit": "^0.31.8",
     "prettier": "^3.7.4",
     "prettier-plugin-organize-imports": "^4.3.0",

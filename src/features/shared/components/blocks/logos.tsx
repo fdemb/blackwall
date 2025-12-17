@@ -1,6 +1,8 @@
-import type { ComponentProps } from "solid-js";
+import { cn } from "@/lib/utils";
+import { splitProps, type ComponentProps } from "solid-js";
 
 export function Logo(props: ComponentProps<"svg">) {
+  const [local, others] = splitProps(props, ["class"]);
   return (
     <svg
       width="64"
@@ -8,7 +10,8 @@ export function Logo(props: ComponentProps<"svg">) {
       viewBox="0 0 64 64"
       fill="none"
       xmlns="http://www.w3.org/2000/svg"
-      {...props}
+      class={cn("size-7 rounded-xs", local.class)}
+      {...others}
     >
       <rect width="64" height="64" fill="#C9184A" />
       <path

@@ -190,7 +190,9 @@ function CreateDialogContent(props: CreateDialogProps) {
       onOpenAutoFocus={(e) => e.preventDefault()}
     >
       <DialogSingleLineHeader>
-        <DialogTitle>New issue</DialogTitle>
+        <DialogTitle class="text-sm font-normal leading-none text-foreground">
+          New issue
+        </DialogTitle>
         <DialogClose as={Button} class="p-px! h-auto!" variant="ghost">
           <XIcon class="size-4" />
         </DialogClose>

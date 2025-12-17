@@ -53,6 +53,7 @@ export const workspaceInvitation = sqliteTable("workspace_invitation", {
   createdById: text()
     .notNull()
     .references(() => user.id),
+  email: text().notNull(),
   token: text().notNull().unique(),
   expiresAt: integer({ mode: "timestamp_ms" }),
 });
@@ -61,6 +62,7 @@ export const workspaceInvitation = sqliteTable("workspace_invitation", {
 export const workspaceRelations = relations(workspace, ({ many }) => ({
   workspaceUsers: many(workspaceUser),
   issues: many(issue),
+  invitations: many(workspaceInvitation),
 }));
 
 export const workspaceUserRelations = relations(workspaceUser, ({ one }) => ({
@@ -73,6 +75,20 @@ export const workspaceUserRelations = relations(workspaceUser, ({ one }) => ({
     references: [user.id],
   }),
 }));
+
+export const workspaceInvitationRelations = relations(
+  workspaceInvitation,
+  ({ one }) => ({
+    workspace: one(workspace, {
+      fields: [workspaceInvitation.workspaceId],
+      references: [workspace.id],
+    }),
+    createdBy: one(user, {
+      fields: [workspaceInvitation.createdById],
+      references: [user.id],
+    }),
+  }),
+);
 
 // Types
 export type Workspace = typeof workspace.$inferSelect;

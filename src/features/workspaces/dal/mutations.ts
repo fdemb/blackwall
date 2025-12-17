@@ -1,20 +1,12 @@
 import { db, dbSchema } from "@/db";
 import type { User } from "@/db/schema";
 import { AppError } from "@/features/shared/errors";
-import { env } from "@/lib/zod-env";
-import { add } from "date-fns";
 import { and, eq } from "drizzle-orm";
-import { randomBytes } from "node:crypto";
-import { WorkspaceQueries } from "./queries";
 
 type CreateWorkspaceInput = {
   slug: string;
   displayName: string;
 };
-
-function generateInviteCode(length: number = 8): string {
-  return randomBytes(length).toString("base64url").slice(0, length);
-}
 
 async function create(input: CreateWorkspaceInput) {
   const [result] = await db
@@ -102,37 +94,6 @@ async function saveLastForUser(input: { user: User; workspaceId: string }) {
     .where(eq(dbSchema.user.id, input.user.id));
 }
 
-async function createInvitation(input: { workspaceId: string; user: User }) {
-  // checks for access to the workspace
-  const _ = await WorkspaceQueries.getForUserById(input);
-
-  const [invitation] = await db
-    .insert(dbSchema.workspaceInvitation)
-    .values({
-      workspaceId: input.workspaceId,
-      createdById: input.user.id,
-      token: generateInviteCode(),
-      expiresAt: add(new Date(), {
-        days: 7,
-      }),
-    })
-    .returning();
-
-  if (!invitation) {
-    throw new AppError(
-      "INTERNAL_SERVER_ERROR",
-      "Invitation couldn't be created",
-    );
-  }
-
-  const invitationUrl = `${env.APP_BASE_URL}/invite/${invitation.token}`;
-
-  return {
-    invitation,
-    invitationUrl,
-  };
-}
-
 async function updateDisplayName(input: {
   workspaceId: string;
   displayName: string;
@@ -158,6 +119,5 @@ export const WorkspaceMutations = {
   createAndAddUser,
   addUser,
   saveLastForUser,
-  createInvitation,
   updateDisplayName,
 };

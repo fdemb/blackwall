@@ -10,9 +10,9 @@
 
   --background: #f8f5fc;
   --foreground: #2d2a3e;
-  --card: #f8f5fc;
+  --card: #faf8fd;
   --card-foreground: #2d2a3e;
-  --popover: #ffffff;
+  --popover: #f8f5fc;
   --popover-foreground: #2d2a3e;
   --primary: #e85c5c;
   --primary-darker: #d14a4a;
@@ -26,7 +26,7 @@
   --accent-foreground: #2d2a3e;
   --destructive: #e85c5c;
   --destructive-foreground: #ffffff;
-  --border: #2d2a3e15;
+  --border: #E0DBE8;
   --input: #f8f5fc;
   --ring: #d98a5c;
   --placeholder: #9892ad;
@@ -54,7 +54,7 @@
 [data-theme="dark"] {
   --background: #221e30;
   --foreground: #ddd8e4;
-  --card: #221e30;
+  --card: #272335;
   --card-foreground: #ddd8e4;
   --popover: #221e30;
   --popover-foreground: #ddd8e4;

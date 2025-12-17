@@ -15,6 +15,13 @@
       "when": 1764723728100,
       "tag": "0001_dashing_multiple_man",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1765768177219,
+      "tag": "0002_abnormal_lilandra",
+      "breakpoints": true
     }
   ]
 }

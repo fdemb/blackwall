@@ -1,11 +1,23 @@
 import * as z from "zod";
 
 export const envSchema = z.object({
-  DATABASE_URL: z.string(),
   APP_BASE_URL: z.url(),
   APP_SECRET: z.string(),
+
+  DATABASE_URL: z.string(),
+  QUEUE_DATABASE_URL: z.string(),
+
   GOOGLE_CLIENT_ID: z.string().optional(),
   GOOGLE_CLIENT_SECRET: z.string().optional(),
+
+  SMTP_HOST: z.string().optional(),
+  SMTP_PORT: z.coerce.number().optional(),
+  SMTP_USER: z.string().optional(),
+  SMTP_PASS: z.string().optional(),
+  EMAIL_FROM: z
+    .string()
+    .optional()
+    .default("Blackwall <noreply@blackwall.dev>"),
 });
 
 const env_internal = envSchema.safeParse(process.env);

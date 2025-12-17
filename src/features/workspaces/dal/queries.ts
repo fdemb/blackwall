@@ -1,5 +1,5 @@
 import { db, dbSchema } from "@/db";
-import type { User } from "@/db/schema";
+import type { User, Workspace } from "@/db/schema";
 import { AppError } from "@/features/shared/errors";
 import { and, eq } from "drizzle-orm";
 
@@ -107,18 +107,17 @@ async function listForUser(user: User) {
   return workspaces.map((w) => w.workspace);
 }
 
-async function fetchInvitationByToken(token: string) {
-  const [invitation] = await db
+async function listUsers(input: { workspace: Workspace }) {
+  const workspaceUsers = await db
     .select()
-    .from(dbSchema.workspaceInvitation)
-    .where(eq(dbSchema.workspaceInvitation.token, token))
-    .limit(1);
+    .from(dbSchema.workspaceUser)
+    .leftJoin(
+      dbSchema.user,
+      eq(dbSchema.workspaceUser.userId, dbSchema.user.id),
+    )
+    .where(eq(dbSchema.workspaceUser.workspaceId, input.workspace.id));
 
-  if (!invitation) {
-    throw new AppError("NOT_FOUND", "Invitation not found.");
-  }
-
-  return invitation;
+  return workspaceUsers.filter((wu) => wu.user !== null).map((wu) => wu.user!);
 }
 
 export const WorkspaceQueries = {
@@ -128,5 +127,5 @@ export const WorkspaceQueries = {
   getFirstForUser,
   getPreferredForUser,
   listForUser,
-  fetchInvitationByToken,
+  listUsers,
 };
