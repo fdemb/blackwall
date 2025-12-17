@@ -1,5 +1,5 @@
-import { list, uploadAttachment } from "@/features/issues/issue-actions";
-import { PageHeader } from "@/features/shared/components/blocks/page-header";
+import { PageHeader } from "@/components/blocks/page-header";
+import { list, uploadAttachment } from "@/server/issues/api";
 import { queryOptions, useQuery } from "@tanstack/solid-query";
 import { createFileRoute, notFound } from "@tanstack/solid-router";
 
@@ -38,7 +38,7 @@ function RouteComponent() {
   );
 
   function handleSubmit(e: SubmitEvent) {
-      e.preventDefault();
+    e.preventDefault();
     const target = e.target as HTMLFormElement;
     const formData = new FormData(target);
     console.log(formData);

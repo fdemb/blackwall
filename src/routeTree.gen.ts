@@ -32,7 +32,6 @@ import { Route as AuthorizedWorkspaceSettingsTeamsKeyRouteImport } from './route
 import { Route as AuthorizedWorkspaceMainTeamTeamKeyRouteImport } from './routes/_authorized/$workspace/_main/team/$teamKey'
 import { Route as AuthorizedWorkspaceMainIssueKeyRouteImport } from './routes/_authorized/$workspace/_main/issue/$key'
 import { Route as AuthorizedWorkspaceMainTeamTeamKeyIssuesIndexRouteImport } from './routes/_authorized/$workspace/_main/team/$teamKey/issues/index'
-import { Route as AuthorizedWorkspaceMainTeamTeamKeyIssuesTestDbListRouteImport } from './routes/_authorized/$workspace/_main/team/$teamKey/issues/test-db-list'
 import { Route as AuthorizedWorkspaceMainTeamTeamKeyIssuesBoardRouteImport } from './routes/_authorized/$workspace/_main/team/$teamKey/issues/board'
 import { Route as AuthorizedWorkspaceMainTeamTeamKeyIssuesBacklogRouteImport } from './routes/_authorized/$workspace/_main/team/$teamKey/issues/backlog'
 
@@ -159,12 +158,6 @@ const AuthorizedWorkspaceMainTeamTeamKeyIssuesIndexRoute =
     path: '/issues/',
     getParentRoute: () => AuthorizedWorkspaceMainTeamTeamKeyRoute,
   } as any)
-const AuthorizedWorkspaceMainTeamTeamKeyIssuesTestDbListRoute =
-  AuthorizedWorkspaceMainTeamTeamKeyIssuesTestDbListRouteImport.update({
-    id: '/issues/test-db-list',
-    path: '/issues/test-db-list',
-    getParentRoute: () => AuthorizedWorkspaceMainTeamTeamKeyRoute,
-  } as any)
 const AuthorizedWorkspaceMainTeamTeamKeyIssuesBoardRoute =
   AuthorizedWorkspaceMainTeamTeamKeyIssuesBoardRouteImport.update({
     id: '/issues/board',
@@ -199,7 +192,6 @@ export interface FileRoutesByFullPath {
   '/$workspace/settings/teams': typeof AuthorizedWorkspaceSettingsTeamsIndexRoute
   '/$workspace/team/$teamKey/issues/backlog': typeof AuthorizedWorkspaceMainTeamTeamKeyIssuesBacklogRoute
   '/$workspace/team/$teamKey/issues/board': typeof AuthorizedWorkspaceMainTeamTeamKeyIssuesBoardRoute
-  '/$workspace/team/$teamKey/issues/test-db-list': typeof AuthorizedWorkspaceMainTeamTeamKeyIssuesTestDbListRoute
   '/$workspace/team/$teamKey/issues': typeof AuthorizedWorkspaceMainTeamTeamKeyIssuesIndexRoute
 }
 export interface FileRoutesByTo {
@@ -221,7 +213,6 @@ export interface FileRoutesByTo {
   '/$workspace/settings/teams': typeof AuthorizedWorkspaceSettingsTeamsIndexRoute
   '/$workspace/team/$teamKey/issues/backlog': typeof AuthorizedWorkspaceMainTeamTeamKeyIssuesBacklogRoute
   '/$workspace/team/$teamKey/issues/board': typeof AuthorizedWorkspaceMainTeamTeamKeyIssuesBoardRoute
-  '/$workspace/team/$teamKey/issues/test-db-list': typeof AuthorizedWorkspaceMainTeamTeamKeyIssuesTestDbListRoute
   '/$workspace/team/$teamKey/issues': typeof AuthorizedWorkspaceMainTeamTeamKeyIssuesIndexRoute
 }
 export interface FileRoutesById {
@@ -250,7 +241,6 @@ export interface FileRoutesById {
   '/_authorized/$workspace/settings/teams/': typeof AuthorizedWorkspaceSettingsTeamsIndexRoute
   '/_authorized/$workspace/_main/team/$teamKey/issues/backlog': typeof AuthorizedWorkspaceMainTeamTeamKeyIssuesBacklogRoute
   '/_authorized/$workspace/_main/team/$teamKey/issues/board': typeof AuthorizedWorkspaceMainTeamTeamKeyIssuesBoardRoute
-  '/_authorized/$workspace/_main/team/$teamKey/issues/test-db-list': typeof AuthorizedWorkspaceMainTeamTeamKeyIssuesTestDbListRoute
   '/_authorized/$workspace/_main/team/$teamKey/issues/': typeof AuthorizedWorkspaceMainTeamTeamKeyIssuesIndexRoute
 }
 export interface FileRouteTypes {
@@ -276,7 +266,6 @@ export interface FileRouteTypes {
     | '/$workspace/settings/teams'
     | '/$workspace/team/$teamKey/issues/backlog'
     | '/$workspace/team/$teamKey/issues/board'
-    | '/$workspace/team/$teamKey/issues/test-db-list'
     | '/$workspace/team/$teamKey/issues'
   fileRoutesByTo: FileRoutesByTo
   to:
@@ -298,7 +287,6 @@ export interface FileRouteTypes {
     | '/$workspace/settings/teams'
     | '/$workspace/team/$teamKey/issues/backlog'
     | '/$workspace/team/$teamKey/issues/board'
-    | '/$workspace/team/$teamKey/issues/test-db-list'
     | '/$workspace/team/$teamKey/issues'
   id:
     | '__root__'
@@ -326,7 +314,6 @@ export interface FileRouteTypes {
     | '/_authorized/$workspace/settings/teams/'
     | '/_authorized/$workspace/_main/team/$teamKey/issues/backlog'
     | '/_authorized/$workspace/_main/team/$teamKey/issues/board'
-    | '/_authorized/$workspace/_main/team/$teamKey/issues/test-db-list'
     | '/_authorized/$workspace/_main/team/$teamKey/issues/'
   fileRoutesById: FileRoutesById
 }
@@ -500,13 +487,6 @@ declare module '@tanstack/solid-router' {
       preLoaderRoute: typeof AuthorizedWorkspaceMainTeamTeamKeyIssuesIndexRouteImport
       parentRoute: typeof AuthorizedWorkspaceMainTeamTeamKeyRoute
     }
-    '/_authorized/$workspace/_main/team/$teamKey/issues/test-db-list': {
-      id: '/_authorized/$workspace/_main/team/$teamKey/issues/test-db-list'
-      path: '/issues/test-db-list'
-      fullPath: '/$workspace/team/$teamKey/issues/test-db-list'
-      preLoaderRoute: typeof AuthorizedWorkspaceMainTeamTeamKeyIssuesTestDbListRouteImport
-      parentRoute: typeof AuthorizedWorkspaceMainTeamTeamKeyRoute
-    }
     '/_authorized/$workspace/_main/team/$teamKey/issues/board': {
       id: '/_authorized/$workspace/_main/team/$teamKey/issues/board'
       path: '/issues/board'
@@ -539,7 +519,6 @@ const AuthRouteWithChildren = AuthRoute._addFileChildren(AuthRouteChildren)
 interface AuthorizedWorkspaceMainTeamTeamKeyRouteChildren {
   AuthorizedWorkspaceMainTeamTeamKeyIssuesBacklogRoute: typeof AuthorizedWorkspaceMainTeamTeamKeyIssuesBacklogRoute
   AuthorizedWorkspaceMainTeamTeamKeyIssuesBoardRoute: typeof AuthorizedWorkspaceMainTeamTeamKeyIssuesBoardRoute
-  AuthorizedWorkspaceMainTeamTeamKeyIssuesTestDbListRoute: typeof AuthorizedWorkspaceMainTeamTeamKeyIssuesTestDbListRoute
   AuthorizedWorkspaceMainTeamTeamKeyIssuesIndexRoute: typeof AuthorizedWorkspaceMainTeamTeamKeyIssuesIndexRoute
 }
 
@@ -549,8 +528,6 @@ const AuthorizedWorkspaceMainTeamTeamKeyRouteChildren: AuthorizedWorkspaceMainTe
       AuthorizedWorkspaceMainTeamTeamKeyIssuesBacklogRoute,
     AuthorizedWorkspaceMainTeamTeamKeyIssuesBoardRoute:
       AuthorizedWorkspaceMainTeamTeamKeyIssuesBoardRoute,
-    AuthorizedWorkspaceMainTeamTeamKeyIssuesTestDbListRoute:
-      AuthorizedWorkspaceMainTeamTeamKeyIssuesTestDbListRoute,
     AuthorizedWorkspaceMainTeamTeamKeyIssuesIndexRoute:
       AuthorizedWorkspaceMainTeamTeamKeyIssuesIndexRoute,
   }

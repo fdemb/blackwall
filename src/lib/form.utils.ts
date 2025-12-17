@@ -1,4 +1,4 @@
-import { toast } from "@/features/shared/components/custom-ui/toast";
+import { toast } from "@/components/custom-ui/toast";
 import { FormApi } from "@tanstack/solid-form";
 
 export const validateFields = (

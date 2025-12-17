@@ -1,11 +1,8 @@
-import { getTeam } from "@/features/teams/actions";
+import { getTeam } from "@/server/team/api";
 import { queryOptions } from "@tanstack/solid-query";
 import { createFileRoute, notFound, Outlet } from "@tanstack/solid-router";
 
-export const getTeamQueryOptions = (
-  workspaceSlug: string,
-  teamKey: string,
-) =>
+export const getTeamQueryOptions = (workspaceSlug: string, teamKey: string) =>
   queryOptions({
     queryKey: ["team", "get", workspaceSlug, teamKey],
     queryFn: () =>
@@ -17,7 +14,9 @@ export const getTeamQueryOptions = (
       }),
   });
 
-export const Route = createFileRoute("/_authorized/$workspace/_main/team/$teamKey")({
+export const Route = createFileRoute(
+  "/_authorized/$workspace/_main/team/$teamKey",
+)({
   component: RouteComponent,
   beforeLoad: async ({ params, context }) => {
     const team = await context.queryClient.ensureQueryData(

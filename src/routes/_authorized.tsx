@@ -1,5 +1,5 @@
-import { session } from "@/features/auth/actions";
-import { SessionContext } from "@/features/shared/context/session-context";
+import { SessionContext } from "@/context/session-context";
+import { session } from "@/server/auth/api";
 import { queryOptions } from "@tanstack/solid-query";
 import { createFileRoute, Outlet, redirect } from "@tanstack/solid-router";
 

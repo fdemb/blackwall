@@ -1,15 +1,12 @@
+import { CreateDialogContent } from "@/components/blocks/create-dialog";
+import { PageHeader } from "@/components/blocks/page-header";
+import { TeamAvatar, UserAvatar } from "@/components/custom-ui/avatar";
+import { Badge } from "@/components/custom-ui/badge";
+import { Button } from "@/components/ui/button";
+import { Dialog, DialogTrigger } from "@/components/ui/dialog";
 import type { InferDbType } from "@/db/utils";
-import { changeStatus, list } from "@/features/issues/issue-actions";
-import { CreateDialogContent } from "@/features/shared/components/blocks/create-dialog";
-import { PageHeader } from "@/features/shared/components/blocks/page-header";
-import {
-  TeamAvatar,
-  UserAvatar,
-} from "@/features/shared/components/custom-ui/avatar";
-import { Badge } from "@/features/shared/components/custom-ui/badge";
-import { Button } from "@/features/shared/components/ui/button";
-import { Dialog, DialogTrigger } from "@/features/shared/components/ui/dialog";
 import { issueMappings } from "@/lib/mappings";
+import { changeStatus, list } from "@/server/issues/api";
 import { queryOptions, useQuery, useQueryClient } from "@tanstack/solid-query";
 import { createFileRoute, Link } from "@tanstack/solid-router";
 import { useServerFn } from "@tanstack/solid-start";

@@ -93,3 +93,4 @@ export const workspaceInvitationRelations = relations(
 // Types
 export type Workspace = typeof workspace.$inferSelect;
 export type NewWorkspace = typeof workspace.$inferInsert;
+export type WorkspaceInvitation = typeof workspaceInvitation.$inferSelect;

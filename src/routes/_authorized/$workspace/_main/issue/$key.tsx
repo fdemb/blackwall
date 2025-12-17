@@ -1,32 +1,32 @@
+import { PageHeader } from "@/components/blocks/page-header";
+import { TeamAvatar } from "@/components/custom-ui/avatar";
+import {
+  Breadcrumbs,
+  BreadcrumbsItem,
+} from "@/components/custom-ui/breadcrumbs";
+import { ScrollArea } from "@/components/custom-ui/scroll-area";
+import { IssueActivityLog } from "@/components/issues/issue-activity-log";
+import { IssueDescription } from "@/components/issues/issue-description";
+import { IssueSidebar } from "@/components/issues/issue-sidebar";
+import { Button } from "@/components/ui/button";
+import { Card, CardTitle } from "@/components/ui/card";
+import { Separator } from "@/components/ui/separator";
+import {
+  SidebarInset,
+  SidebarProvider,
+  SidebarTrigger,
+} from "@/components/ui/sidebar";
+import { IssueEditingProvider } from "@/context/issue-editing.context";
+import { useWorkspaceData } from "@/context/workspace-context";
 import type { User } from "@/db/schema";
 import type { InferDbType } from "@/db/utils";
-import { IssueActivityLog } from "@/features/issues/components/issue-activity-log";
-import { IssueDescription } from "@/features/issues/components/issue-description";
-import { IssueSidebar } from "@/features/issues/components/issue-sidebar";
-import { IssueEditingProvider } from "@/features/issues/context/issue-editing.context";
 import {
   get,
   getIssueLabels,
   updateDescription,
   updateSummary,
-} from "@/features/issues/issue-actions";
-import { getAssignableUsersQueryOptions } from "@/features/issues/query-options";
-import { PageHeader } from "@/features/shared/components/blocks/page-header";
-import { TeamAvatar } from "@/features/shared/components/custom-ui/avatar";
-import {
-  Breadcrumbs,
-  BreadcrumbsItem,
-} from "@/features/shared/components/custom-ui/breadcrumbs";
-import { ScrollArea } from "@/features/shared/components/custom-ui/scroll-area";
-import { Button } from "@/features/shared/components/ui/button";
-import { Card, CardTitle } from "@/features/shared/components/ui/card";
-import { Separator } from "@/features/shared/components/ui/separator";
-import {
-  SidebarInset,
-  SidebarProvider,
-  SidebarTrigger,
-} from "@/features/shared/components/ui/sidebar";
-import { useWorkspaceData } from "@/features/shared/context/workspace-context";
+} from "@/server/issues/api";
+import { getAssignableUsersQueryOptions } from "@/server/issues/query-options";
 import { queryOptions, useMutation, useQuery } from "@tanstack/solid-query";
 import { createFileRoute, notFound } from "@tanstack/solid-router";
 import { useServerFn } from "@tanstack/solid-start";

@@ -1,8 +1,8 @@
-import { SettingsSidebar } from "@/features/shared/components/blocks/settings-sidebar";
+import { SettingsSidebar } from "@/components/blocks/settings-sidebar";
 import {
   SidebarInset,
   SidebarProvider,
-} from "@/features/shared/components/ui/sidebar";
+} from "@/components/ui/sidebar";
 import { createFileRoute, Outlet } from "@tanstack/solid-router";
 
 export const Route = createFileRoute("/_authorized/$workspace/settings")({

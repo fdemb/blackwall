@@ -1,8 +1,8 @@
-import { AuthMutations } from "../../features/auth/dal/mutations";
+import { signUpEmail } from "@/server/auth/data";
 import { issueFactory } from "../fakes/issue.fake";
 
 async function seedUser() {
-  return await AuthMutations.signUpEmail({
+  return await signUpEmail({
     account: {
       email: "test@example.com",
       name: "Filip",

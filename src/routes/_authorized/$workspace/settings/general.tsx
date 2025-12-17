@@ -1,12 +1,12 @@
+import { PickerPopover } from "@/components/custom-ui/picker-popover";
 import {
   SettingsCard,
   SettingsPage,
   SettingsRow,
   SettingsSection,
-} from "@/features/settings/components/settings-sections";
-import { useTheme } from "@/features/settings/hooks/use-theme";
-import { PickerPopover } from "@/features/shared/components/custom-ui/picker-popover";
-import { Button } from "@/features/shared/components/ui/button";
+} from "@/components/settings/settings-sections";
+import { useTheme } from "@/components/settings/use-theme";
+import { Button } from "@/components/ui/button";
 import { Popover } from "@kobalte/core/popover";
 import { createFileRoute } from "@tanstack/solid-router";
 import ChevronDownIcon from "lucide-solid/icons/chevron-down";

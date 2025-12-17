@@ -64,6 +64,7 @@
  */
 
 import path from "node:path";
+// @ts-ignore
 import serverModule from "./dist/server/server.js";
 
 // Configuration

@@ -1,7 +1,4 @@
-import {
-  type CreateTeamInput,
-  TeamMutations,
-} from "@/features/teams/dal/mutations";
+import { createTeam, type CreateTeamInput } from "@/server/team/data";
 import { faker } from "@faker-js/faker";
 import type { Team } from "../schema";
 
@@ -19,7 +16,7 @@ export async function teamFactory(
 ): Promise<Team[]> {
   const teams: Team[] = [];
   for (let i = 0; i < count; i++) {
-    teams.push(await TeamMutations.create(teamFake(workspaceSlug)));
+    teams.push(await createTeam(teamFake(workspaceSlug)));
   }
   return teams;
 }

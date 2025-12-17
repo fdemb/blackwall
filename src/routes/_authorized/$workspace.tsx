@@ -1,5 +1,5 @@
-import { WorkspaceDataContext } from "@/features/shared/context/workspace-context";
-import { getWorkspaceAndGlobalData } from "@/features/workspaces/actions";
+import { WorkspaceDataContext } from "@/context/workspace-context";
+import { getWorkspaceAndGlobalData } from "@/server/workspace/api";
 import { queryOptions, useQuery } from "@tanstack/solid-query";
 import { createFileRoute, Outlet, redirect } from "@tanstack/solid-router";
 import { Show } from "solid-js";

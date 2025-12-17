@@ -1,7 +1,7 @@
-import { session } from "@/features/auth/actions";
-import { AuthShell } from "@/features/shared/components/blocks/auth";
-import { FastLink } from "@/features/shared/components/custom-ui/fast-link";
-import { buttonVariants } from "@/features/shared/components/ui/button";
+import { AuthShell } from "@/components/blocks/auth";
+import { FastLink } from "@/components/custom-ui/fast-link";
+import { buttonVariants } from "@/components/ui/button";
+import { session } from "@/server/auth/api";
 import { createFileRoute, Outlet } from "@tanstack/solid-router";
 import ChevronLeftIcon from "lucide-solid/icons/chevron-left";
 import { Show } from "solid-js";

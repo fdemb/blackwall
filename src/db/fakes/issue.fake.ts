@@ -1,7 +1,4 @@
-import {
-  type CreateIssueInput,
-  IssueMutations,
-} from "@/features/issues/dal/issue-mutations";
+import { createIssue, type CreateIssueInput } from "@/server/issues/issues";
 import { faker } from "@faker-js/faker";
 import { db } from "..";
 import type { Issue } from "../schema";
@@ -40,7 +37,7 @@ export async function issueFactory(count = 1): Promise<Issue[]> {
 
   for (let i = 0; i < count; i++) {
     issues.push(
-      await IssueMutations.create({
+      await createIssue({
         issue: issueFake(),
         user,
         workspaceSlug: workspace.slug,

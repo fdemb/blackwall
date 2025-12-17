@@ -1,13 +1,13 @@
+import { AuthCard } from "@/components/blocks/auth";
+import { Button } from "@/components/ui/button";
+import { TanStackTextField } from "@/components/ui/text-field";
+import { useAppForm } from "@/context/form-context";
+import { action } from "@/lib/form.utils";
 import {
   fetchInvitation,
   registerAndAcceptInvitation,
-} from "@/features/inviting/actions";
-import { AuthCard } from "@/features/shared/components/blocks/auth";
-import { Button } from "@/features/shared/components/ui/button";
-import { TanStackTextField } from "@/features/shared/components/ui/text-field";
-import { useAppForm } from "@/features/shared/context/form-context";
-import { AppError } from "@/features/shared/errors";
-import { action } from "@/lib/form.utils";
+} from "@/server/inviting/api";
+import { AppError } from "@/server/shared/errors";
 import { queryOptions, useQuery } from "@tanstack/solid-query";
 import { createFileRoute, useNavigate } from "@tanstack/solid-router";
 import * as z from "zod";

@@ -1,8 +1,8 @@
-import { AuthCard } from "@/features/shared/components/blocks/auth";
-import { Button } from "@/features/shared/components/ui/button";
-import { TanStackTextField } from "@/features/shared/components/ui/text-field";
-import { useAppForm } from "@/features/shared/context/form-context";
-import { createWorkspace } from "@/features/workspaces/actions";
+import { AuthCard } from "@/components/blocks/auth";
+import { Button } from "@/components/ui/button";
+import { TanStackTextField } from "@/components/ui/text-field";
+import { useAppForm } from "@/context/form-context";
+import { createWorkspace } from "@/server/workspace/api";
 import { createFileRoute, useNavigate } from "@tanstack/solid-router";
 import { useServerFn } from "@tanstack/solid-start";
 

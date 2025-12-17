@@ -1,6 +1,6 @@
-import { getPreferredTheme } from "@/features/auth/actions";
-import { Toaster } from "@/features/shared/components/custom-ui/toast";
-import { KeybindProvider } from "@/features/shared/context/keybind.context";
+import { Toaster } from "@/components/custom-ui/toast";
+import { KeybindProvider } from "@/context/keybind.context";
+import { getPreferredTheme } from "@/server/auth/api";
 import { QueryClient } from "@tanstack/solid-query";
 import { SolidQueryDevtools } from "@tanstack/solid-query-devtools";
 import {

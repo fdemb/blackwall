@@ -4,11 +4,11 @@ import {
   SettingsPage,
   SettingsRow,
   SettingsSection,
-} from "@/features/settings/components/settings-sections";
-import { Button } from "@/features/shared/components/ui/button";
-import { TanStackTextField } from "@/features/shared/components/ui/text-field";
-import { useAppForm } from "@/features/shared/context/form-context";
-import { createTeam } from "@/features/settings/actions";
+} from "@/components/settings/settings-sections";
+import { Button } from "@/components/ui/button";
+import { TanStackTextField } from "@/components/ui/text-field";
+import { useAppForm } from "@/context/form-context";
+import { createTeam } from "@/server/settings/api";
 import { useQueryClient } from "@tanstack/solid-query";
 import { createFileRoute, useRouter } from "@tanstack/solid-router";
 import * as z from "zod";

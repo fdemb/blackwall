@@ -1,11 +1,11 @@
+import { TeamAvatar } from "@/components/custom-ui/avatar";
 import {
   SettingsPage,
   SettingsSection,
-} from "@/features/settings/components/settings-sections";
-import { TeamAvatar } from "@/features/shared/components/custom-ui/avatar";
-import { buttonVariants } from "@/features/shared/components/ui/button";
-import { listTeams } from "@/features/settings/actions";
+} from "@/components/settings/settings-sections";
+import { buttonVariants } from "@/components/ui/button";
 import { formatDateShort } from "@/lib/dates";
+import { listTeams } from "@/server/settings/api";
 import { queryOptions, useQuery } from "@tanstack/solid-query";
 import { createFileRoute, Link } from "@tanstack/solid-router";
 import { Index } from "solid-js";

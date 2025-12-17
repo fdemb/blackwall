@@ -1,4 +1,4 @@
-import { WorkspaceMutations } from "@/features/workspaces/dal/mutations";
+import { createWorkspace } from "@/server/workspace/data";
 import { faker } from "@faker-js/faker";
 import type { NewWorkspace, Workspace } from "../schema";
 
@@ -15,7 +15,7 @@ export function workspaceFake(): NewWorkspace {
 export async function workspaceFactory(count = 1): Promise<Workspace[]> {
   const workspaces: Workspace[] = [];
   for (let i = 0; i < count; i++) {
-    workspaces.push(await WorkspaceMutations.create(workspaceFake()));
+    workspaces.push(await createWorkspace(workspaceFake()));
   }
   return workspaces;
 }

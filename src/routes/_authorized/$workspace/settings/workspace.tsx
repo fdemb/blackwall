@@ -1,19 +1,19 @@
+import { InviteDialogContent } from "@/components/blocks/invite-dialog";
+import { UserAvatar } from "@/components/custom-ui/avatar";
+import { toast } from "@/components/custom-ui/toast";
 import {
   SettingsCard,
   SettingsPage,
   SettingsRow,
   SettingsSection,
-} from "@/features/settings/components/settings-sections";
-import { InviteDialogContent } from "@/features/shared/components/blocks/invite-dialog";
-import { UserAvatar } from "@/features/shared/components/custom-ui/avatar";
-import { toast } from "@/features/shared/components/custom-ui/toast";
-import { Button } from "@/features/shared/components/ui/button";
-import { Dialog, DialogTrigger } from "@/features/shared/components/ui/dialog";
-import { TanStackTextField } from "@/features/shared/components/ui/text-field";
-import { useAppForm } from "@/features/shared/context/form-context";
-import { useSessionData } from "@/features/shared/context/session-context";
-import { useWorkspaceData } from "@/features/shared/context/workspace-context";
-import { listWorkspaceUsers, updateWorkspaceName } from "@/features/settings/actions";
+} from "@/components/settings/settings-sections";
+import { Button } from "@/components/ui/button";
+import { Dialog, DialogTrigger } from "@/components/ui/dialog";
+import { TanStackTextField } from "@/components/ui/text-field";
+import { useAppForm } from "@/context/form-context";
+import { useSessionData } from "@/context/session-context";
+import { useWorkspaceData } from "@/context/workspace-context";
+import { listWorkspaceUsers, updateWorkspaceName } from "@/server/settings/api";
 import { queryOptions, useQuery, useQueryClient } from "@tanstack/solid-query";
 import { createFileRoute } from "@tanstack/solid-router";
 import { useServerFn } from "@tanstack/solid-start";

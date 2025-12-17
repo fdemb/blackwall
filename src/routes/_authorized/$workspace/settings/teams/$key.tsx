@@ -1,18 +1,18 @@
+import { UserAvatar } from "@/components/custom-ui/avatar";
+import type { PickerOption } from "@/components/custom-ui/picker";
+import { PickerPopover } from "@/components/custom-ui/picker-popover";
+import { toast } from "@/components/custom-ui/toast";
 import {
   SettingsBackButton,
   SettingsCard,
   SettingsPage,
   SettingsRow,
   SettingsSection,
-} from "@/features/settings/components/settings-sections";
-import { UserAvatar } from "@/features/shared/components/custom-ui/avatar";
-import type { PickerOption } from "@/features/shared/components/custom-ui/picker";
-import { PickerPopover } from "@/features/shared/components/custom-ui/picker-popover";
-import { toast } from "@/features/shared/components/custom-ui/toast";
-import { Button, buttonVariants } from "@/features/shared/components/ui/button";
-import { TanStackTextField } from "@/features/shared/components/ui/text-field";
-import { useAppForm } from "@/features/shared/context/form-context";
-import { useSessionData } from "@/features/shared/context/session-context";
+} from "@/components/settings/settings-sections";
+import { Button } from "@/components/ui/button";
+import { TanStackTextField } from "@/components/ui/text-field";
+import { useAppForm } from "@/context/form-context";
+import { useSessionData } from "@/context/session-context";
 import {
   addTeamMember,
   getFullTeam,
@@ -21,12 +21,11 @@ import {
   removeTeamMember,
   updateTeamKey,
   updateTeamName,
-} from "@/features/settings/actions";
+} from "@/server/settings/api";
 import { Popover } from "@kobalte/core/popover";
 import { queryOptions, useQuery, useQueryClient } from "@tanstack/solid-query";
 import {
   createFileRoute,
-  Link,
   notFound,
   Outlet,
   useNavigate,
@@ -360,14 +359,6 @@ function MembersSection() {
         </p>
 
         <div class="flex items-center gap-2">
-          <Link
-            to="/$workspace/settings/teams/$key/invite"
-            params={params()}
-            class={buttonVariants({ variant: "ghost", size: "xs" })}
-          >
-            Invite
-          </Link>
-
           <Popover
             open={open()}
             onOpenChange={setOpen}

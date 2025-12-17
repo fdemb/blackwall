@@ -10,5 +10,5 @@ dist-ssr
 .output
 *.sqlite
 blackwall_data
-server
+./server
 local-db

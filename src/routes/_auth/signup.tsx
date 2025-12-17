@@ -1,11 +1,11 @@
-import { signUpEmail } from "@/features/auth/actions";
-import { useTheme } from "@/features/settings/hooks/use-theme";
-import { AuthCard } from "@/features/shared/components/blocks/auth";
-import { FastLink } from "@/features/shared/components/custom-ui/fast-link";
-import { Button, buttonVariants } from "@/features/shared/components/ui/button";
-import { TanStackTextField } from "@/features/shared/components/ui/text-field";
-import { useAppForm } from "@/features/shared/context/form-context";
+import { AuthCard } from "@/components/blocks/auth";
+import { FastLink } from "@/components/custom-ui/fast-link";
+import { useTheme } from "@/components/settings/use-theme";
+import { Button, buttonVariants } from "@/components/ui/button";
+import { TanStackTextField } from "@/components/ui/text-field";
+import { useAppForm } from "@/context/form-context";
 import { action, validateFields } from "@/lib/form.utils";
+import { signUpEmail } from "@/server/auth/api";
 import { createFileRoute, useNavigate } from "@tanstack/solid-router";
 import { useServerFn } from "@tanstack/solid-start";
 import { createSignal, Match, Switch } from "solid-js";

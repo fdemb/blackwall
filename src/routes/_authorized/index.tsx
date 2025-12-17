@@ -1,4 +1,4 @@
-import { getPreferredWorkspace } from "@/features/workspaces/actions";
+import { getPreferredWorkspace } from "@/server/workspace/api";
 import { createFileRoute, redirect } from "@tanstack/solid-router";
 
 export const Route = createFileRoute("/_authorized/")({

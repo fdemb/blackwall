@@ -1,17 +1,12 @@
-import {
-  changePassword,
-  updateProfileAvatar,
-  updateProfileName,
-} from "@/features/settings/actions";
+import { UserAvatar } from "@/components/custom-ui/avatar";
+import { toast } from "@/components/custom-ui/toast";
 import {
   SettingsCard,
   SettingsPage,
   SettingsRow,
   SettingsSection,
-} from "@/features/settings/components/settings-sections";
-import { UserAvatar } from "@/features/shared/components/custom-ui/avatar";
-import { toast } from "@/features/shared/components/custom-ui/toast";
-import { Button } from "@/features/shared/components/ui/button";
+} from "@/components/settings/settings-sections";
+import { Button } from "@/components/ui/button";
 import {
   Dialog,
   DialogContent,
@@ -20,11 +15,16 @@ import {
   DialogHeader,
   DialogTitle,
   DialogTrigger,
-} from "@/features/shared/components/ui/dialog";
-import { TanStackTextField } from "@/features/shared/components/ui/text-field";
-import { useAppForm } from "@/features/shared/context/form-context";
-import { useSessionData } from "@/features/shared/context/session-context";
+} from "@/components/ui/dialog";
+import { TanStackTextField } from "@/components/ui/text-field";
+import { useAppForm } from "@/context/form-context";
+import { useSessionData } from "@/context/session-context";
 import { cn } from "@/lib/utils";
+import {
+  changePassword,
+  updateProfileAvatar,
+  updateProfileName,
+} from "@/server/settings/api";
 import { useQueryClient } from "@tanstack/solid-query";
 import { createFileRoute } from "@tanstack/solid-router";
 import { useServerFn } from "@tanstack/solid-start";

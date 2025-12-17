@@ -1,8 +1,8 @@
-import { IssueList } from "@/features/issues/components/issue-list";
-import { list } from "@/features/issues/issue-actions";
-import { CreateDialog } from "@/features/shared/components/blocks/create-dialog";
-import { PageHeader } from "@/features/shared/components/blocks/page-header";
-import { TeamAvatar } from "@/features/shared/components/custom-ui/avatar";
+import { CreateDialog } from "@/components/blocks/create-dialog";
+import { PageHeader } from "@/components/blocks/page-header";
+import { TeamAvatar } from "@/components/custom-ui/avatar";
+import { IssueList } from "@/components/issues/issue-list";
+import { list } from "@/server/issues/api";
 import { queryOptions, useQuery } from "@tanstack/solid-query";
 import { createFileRoute, notFound } from "@tanstack/solid-router";
 import ChevronRight from "lucide-solid/icons/chevron-right";
