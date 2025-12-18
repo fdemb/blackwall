@@ -7,6 +7,7 @@ import {
 import { ScrollArea } from "@/components/custom-ui/scroll-area";
 import { IssueActivityLog } from "@/components/issues/issue-activity-log";
 import { IssueDescription } from "@/components/issues/issue-description";
+import { IssueMenu } from "@/components/issues/issue-menu";
 import { IssueSidebar } from "@/components/issues/issue-sidebar";
 import { Button } from "@/components/ui/button";
 import { Card, CardTitle } from "@/components/ui/card";
@@ -22,10 +23,10 @@ import type { User } from "@/db/schema";
 import type { InferDbType } from "@/db/utils";
 import {
   get,
-  getIssueLabels,
   updateDescription,
   updateSummary,
-} from "@/server/issues/api";
+} from "@/server/issues/issues.api";
+import { getIssueLabels } from "@/server/issues/labels.api";
 import { getAssignableUsersQueryOptions } from "@/server/issues/query-options";
 import { queryOptions, useMutation, useQuery } from "@tanstack/solid-query";
 import { createFileRoute, notFound } from "@tanstack/solid-router";
@@ -239,7 +240,13 @@ function RouteComponent() {
               <BreadcrumbsItem>{d().issueData.issue.key}</BreadcrumbsItem>
             </Breadcrumbs>
 
-            <div id="issue-sidebar-trigger" class="ml-auto"></div>
+            <IssueMenu
+              issue={d().issueData.issue}
+              workspaceSlug={params().workspace}
+              teamKey={d().issueData.team.key}
+            />
+
+            <div id="issue-sidebar-trigger" class="ml-auto" />
           </PageHeader>
 
           <div class="flex flex-row min-h-0 flex-1">

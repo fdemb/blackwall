@@ -274,20 +274,19 @@ function DropdownMenuSubContent(
   );
 }
 
-DropdownMenu.Portal = DropdownMenuPortal;
-DropdownMenu.Trigger = DropdownMenuTrigger;
-DropdownMenu.Content = DropdownMenuContent;
-DropdownMenu.Group = DropdownMenuGroup;
-DropdownMenu.GroupLabel = DropdownMenuGroupLabel;
-DropdownMenu.ItemLabel = DropdownMenuItemLabel;
-DropdownMenu.Item = DropdownMenuItem;
-DropdownMenu.CheckboxItem = DropdownMenuCheckboxItem;
-DropdownMenu.RadioGroup = DropdownMenuRadioGroup;
-DropdownMenu.RadioItem = DropdownMenuRadioItem;
-DropdownMenu.Separator = DropdownMenuSeparator;
-DropdownMenu.Shortcut = DropdownMenuShortcut;
-DropdownMenu.Sub = DropdownMenuSub;
-DropdownMenu.SubTrigger = DropdownMenuSubTrigger;
-DropdownMenu.SubContent = DropdownMenuSubContent;
-
-export { DropdownMenu };
+export {
+  DropdownMenu,
+  DropdownMenuCheckboxItem,
+  DropdownMenuContent,
+  DropdownMenuGroupLabel,
+  DropdownMenuItem,
+  DropdownMenuItemLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuSeparator,
+  DropdownMenuShortcut,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
+  DropdownMenuTrigger,
+};

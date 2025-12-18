@@ -2,7 +2,7 @@ import { CreateDialog } from "@/components/blocks/create-dialog";
 import { PageHeader } from "@/components/blocks/page-header";
 import { TeamAvatar } from "@/components/custom-ui/avatar";
 import { IssueList } from "@/components/issues/issue-list";
-import { list } from "@/server/issues/api";
+import { list } from "@/server/issues/issues.api";
 import { queryOptions, useQuery } from "@tanstack/solid-query";
 import { createFileRoute, notFound } from "@tanstack/solid-router";
 import ChevronRight from "lucide-solid/icons/chevron-right";

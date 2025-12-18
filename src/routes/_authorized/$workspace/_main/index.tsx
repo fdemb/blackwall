@@ -1,5 +1,6 @@
 import { PageHeader } from "@/components/blocks/page-header";
-import { list, uploadAttachment } from "@/server/issues/api";
+import { list } from "@/server/issues/issues.api";
+import { uploadAttachment } from "@/server/issues/attachments.api";
 import { queryOptions, useQuery } from "@tanstack/solid-query";
 import { createFileRoute, notFound } from "@tanstack/solid-router";
 

@@ -1,10 +1,12 @@
 import { db, dbSchema } from "@/db";
 import type { User } from "@/db/schema";
 import queue from "@/lib/queueing";
+import { and, eq } from "drizzle-orm";
+import { AppError } from "../shared/errors";
 import { buildChangeEvent } from "./change-events";
-import { getIssueByKey } from "./issues";
+import { getIssueByKey } from "./issues.data";
 
-async function createComment(input: {
+export async function createComment(input: {
   user: User;
   workspaceSlug: string;
   issueKey: string;
@@ -51,4 +53,31 @@ async function createComment(input: {
   return comment;
 }
 
-export { createComment };
+export async function softDeleteComment(input: {
+  user: User;
+  workspaceSlug: string;
+  issueKey: string;
+  commentId: string;
+}) {
+  const { issue } = await getIssueByKey({
+    user: input.user,
+    workspaceSlug: input.workspaceSlug,
+    issueKey: input.issueKey,
+  });
+
+  const comment = await db.query.issueComment.findFirst({
+    where: and(
+      eq(dbSchema.issueComment.id, input.commentId),
+      eq(dbSchema.issueComment.issueId, issue.id),
+    ),
+  });
+
+  if (!comment) {
+    throw new AppError("NOT_FOUND", "Comment not found.");
+  }
+
+  await db
+    .update(dbSchema.issueComment)
+    .set({ deletedAt: new Date() })
+    .where(eq(dbSchema.issueComment.id, comment.id));
+}

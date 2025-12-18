@@ -3,25 +3,7 @@ import { authMiddleware } from "@/server/auth/middleware/auth.middleware";
 import { AppError } from "@/server/shared/errors";
 import { createServerFn } from "@tanstack/solid-start";
 import * as z from "zod";
-import { createComment as createCommentData } from "./comments";
-import {
-  assignIssue,
-  changeIssuePriority,
-  changeIssueStatus,
-  createIssue as createIssueData,
-  getIssueByKey,
-  listIssues,
-  listIssuesInTeam,
-  updateIssueDescription,
-  updateIssueSummary,
-} from "./issues";
-import {
-  addLabelToIssue as addLabelToIssueData,
-  createLabel as createLabelData,
-  getAllLabelsForWorkspace,
-  getLabelsForIssue,
-  removeLabelFromIssue as removeLabelFromIssueData,
-} from "./labels";
+import * as issues from "./issues.data";
 
 export const list = createServerFn({ method: "GET" })
   .middleware([authMiddleware])
@@ -34,7 +16,7 @@ export const list = createServerFn({ method: "GET" })
   )
   .handler(async ({ data, context }) => {
     if (data.teamKey) {
-      return await listIssuesInTeam({
+      return await issues.listIssuesInTeam({
         user: context.user,
         workspaceSlug: data.workspaceSlug,
         teamKey: data.teamKey,
@@ -42,7 +24,7 @@ export const list = createServerFn({ method: "GET" })
       });
     }
 
-    return await listIssues({
+    return await issues.listIssues({
       user: context.user,
       workspaceSlug: data.workspaceSlug,
       statusFilters: data.statusFilters,
@@ -59,7 +41,7 @@ export const changeStatus = createServerFn({ method: "POST" })
     }),
   )
   .handler(async ({ data, context }) => {
-    return await changeIssueStatus({
+    return await issues.changeIssueStatus({
       user: context.user,
       workspaceSlug: data.workspaceSlug,
       issueKey: data.issueKey,
@@ -77,7 +59,7 @@ export const changePriority = createServerFn({ method: "POST" })
     }),
   )
   .handler(async ({ data, context }) => {
-    return await changeIssuePriority({
+    return await issues.changeIssuePriority({
       user: context.user,
       workspaceSlug: data.workspaceSlug,
       issueKey: data.issueKey,
@@ -95,7 +77,7 @@ export const assign = createServerFn({ method: "POST" })
     }),
   )
   .handler(async ({ data, context }) => {
-    return await assignIssue({
+    return await issues.assignIssue({
       user: context.user!,
       workspaceSlug: data.workspaceSlug,
       issueKey: data.issueKey,
@@ -112,7 +94,7 @@ export const get = createServerFn({ method: "GET" })
     }),
   )
   .handler(async ({ data, context }) => {
-    const result = await getIssueByKey({
+    const result = await issues.getIssueByKey({
       user: context.user!,
       workspaceSlug: data.workspaceSlug,
       issueKey: data.issueKey,
@@ -140,93 +122,11 @@ export const create = createServerFn({ method: "POST" })
     }),
   )
   .handler(async ({ data, context }) => {
-    return await createIssueData({
+    return await issues.createIssue({
       user: context.user,
       workspaceSlug: data.workspaceSlug,
       teamKey: data.teamKey,
       issue: data.issue,
-    });
-  });
-
-export const getIssueLabels = createServerFn({ method: "GET" })
-  .middleware([authMiddleware])
-  .inputValidator(
-    z.object({
-      workspaceSlug: z.string(),
-      issueKey: z.string(),
-    }),
-  )
-  .handler(async ({ data, context }) => {
-    return await getLabelsForIssue({
-      user: context.user!,
-      workspaceSlug: data.workspaceSlug,
-      issueKey: data.issueKey,
-    });
-  });
-
-export const addLabelToIssue = createServerFn({ method: "POST" })
-  .middleware([authMiddleware])
-  .inputValidator(
-    z.object({
-      workspaceSlug: z.string(),
-      issueKey: z.string(),
-      labelId: z.string(),
-    }),
-  )
-  .handler(async ({ data, context }) => {
-    return await addLabelToIssueData({
-      user: context.user!,
-      workspaceSlug: data.workspaceSlug,
-      issueKey: data.issueKey,
-      labelId: data.labelId,
-    });
-  });
-
-export const removeLabelFromIssue = createServerFn({ method: "POST" })
-  .middleware([authMiddleware])
-  .inputValidator(
-    z.object({
-      workspaceSlug: z.string(),
-      issueKey: z.string(),
-      labelId: z.string(),
-    }),
-  )
-  .handler(async ({ data, context }) => {
-    return await removeLabelFromIssueData({
-      user: context.user!,
-      workspaceSlug: data.workspaceSlug,
-      issueKey: data.issueKey,
-      labelId: data.labelId,
-    });
-  });
-
-export const createLabel = createServerFn({ method: "POST" })
-  .middleware([authMiddleware])
-  .inputValidator(
-    z.object({
-      workspaceSlug: z.string(),
-      name: z.string(),
-    }),
-  )
-  .handler(async ({ data, context }) => {
-    return await createLabelData({
-      user: context.user!,
-      workspaceSlug: data.workspaceSlug,
-      name: data.name,
-    });
-  });
-
-export const getAllLabels = createServerFn({ method: "GET" })
-  .middleware([authMiddleware])
-  .inputValidator(
-    z.object({
-      workspaceSlug: z.string(),
-    }),
-  )
-  .handler(async ({ data, context }) => {
-    return await getAllLabelsForWorkspace({
-      user: context.user!,
-      workspaceSlug: data.workspaceSlug,
     });
   });
 
@@ -240,7 +140,7 @@ export const updateDescription = createServerFn({ method: "POST" })
     }),
   )
   .handler(async ({ data, context }) => {
-    return await updateIssueDescription({
+    return await issues.updateIssueDescription({
       user: context.user,
       workspaceSlug: data.workspaceSlug,
       issueKey: data.issueKey,
@@ -258,7 +158,7 @@ export const updateSummary = createServerFn({ method: "POST" })
     }),
   )
   .handler(async ({ data, context }) => {
-    return await updateIssueSummary({
+    return await issues.updateIssueSummary({
       user: context.user,
       workspaceSlug: data.workspaceSlug,
       issueKey: data.issueKey,
@@ -266,35 +166,19 @@ export const updateSummary = createServerFn({ method: "POST" })
     });
   });
 
-export const createComment = createServerFn({ method: "POST" })
+export const deleteIssue = createServerFn({ method: "POST" })
   .middleware([authMiddleware])
   .inputValidator(
     z.object({
       workspaceSlug: z.string(),
       issueKey: z.string(),
-      content: z.any(), // TODO
     }),
   )
   .handler(async ({ data, context }) => {
-    return await createCommentData({
+    return await issues.softDeleteIssue({
       user: context.user,
       workspaceSlug: data.workspaceSlug,
       issueKey: data.issueKey,
-      content: data.content,
     });
   });
 
-export const uploadAttachment = createServerFn({ method: "POST" })
-  .middleware([authMiddleware])
-  .inputValidator((data) => {
-    if (!(data instanceof FormData)) {
-      throw new Error("Expected FormData");
-    }
-
-    return {
-      file: data.get("file") as File,
-    };
-  })
-  .handler(async ({ data, context }) => {
-    console.log(data.file);
-  });

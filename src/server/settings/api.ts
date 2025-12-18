@@ -27,7 +27,7 @@ import {
 import { createServerFn } from "@tanstack/solid-start";
 import { getRequestHeaders } from "@tanstack/solid-start-server";
 import * as z from "zod";
-import { bulkChangeIssueTeamKeys } from "../issues/issues";
+import { bulkChangeIssueTeamKeys } from "../issues/issues.data";
 
 export const createTeam = createServerFn({ method: "POST" })
   .middleware([authMiddleware])

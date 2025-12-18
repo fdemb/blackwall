@@ -9,7 +9,13 @@ import SettingsIcon from "lucide-solid/icons/settings";
 import { UserAvatar } from "../custom-ui/avatar";
 import { FastLink } from "../custom-ui/fast-link";
 import { Button } from "../ui/button";
-import { DropdownMenu } from "../ui/dropdown-menu";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "../ui/dropdown-menu";
 
 export function UserMenu() {
   const session = useSessionData();
@@ -26,7 +32,7 @@ export function UserMenu() {
 
   return (
     <DropdownMenu gutter={2}>
-      <DropdownMenu.Trigger
+      <DropdownMenuTrigger
         as={Button}
         class="flex !items-center font-normal justify-start text-left !p-2 h-auto"
         variant="ghost"
@@ -41,22 +47,22 @@ export function UserMenu() {
           </div>
           <SelectorIcon class="size-4 ml-auto" />
         </div>
-      </DropdownMenu.Trigger>
-      <DropdownMenu.Content class="min-w-[12rem]">
-        <DropdownMenu.Item
+      </DropdownMenuTrigger>
+      <DropdownMenuContent class="min-w-[12rem]">
+        <DropdownMenuItem
           as={FastLink}
           to="/$workspace/settings/general"
           params={{ workspace: workspaceData().workspace.slug }}
         >
           <SettingsIcon />
           Settings
-        </DropdownMenu.Item>
-        <DropdownMenu.Separator />
-        <DropdownMenu.Item variant="destructive" onClick={onLogOut}>
+        </DropdownMenuItem>
+        <DropdownMenuSeparator />
+        <DropdownMenuItem variant="destructive" onClick={onLogOut}>
           <LogOutIcon />
           Log out
-        </DropdownMenu.Item>
-      </DropdownMenu.Content>
+        </DropdownMenuItem>
+      </DropdownMenuContent>
     </DropdownMenu>
   );
 }

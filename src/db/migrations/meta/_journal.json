@@ -22,6 +22,13 @@
       "when": 1765768177219,
       "tag": "0002_abnormal_lilandra",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1766003549425,
+      "tag": "0003_fuzzy_mister_fear",
+      "breakpoints": true
     }
   ]
 }

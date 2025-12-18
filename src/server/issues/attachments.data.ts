@@ -3,9 +3,9 @@ import type { User } from "@/db/schema";
 import { AppError } from "@/server/shared/errors";
 import { and, eq } from "drizzle-orm";
 import { buildChangeEvent } from "./change-events";
-import { getIssueByKey } from "./issues";
+import { getIssueByKey } from "./issues.data";
 
-async function createAttachment(input: {
+export async function createAttachment(input: {
   user: User;
   workspaceSlug: string;
   issueKey: string;
@@ -46,7 +46,7 @@ async function createAttachment(input: {
   });
 }
 
-async function deleteAttachment(input: {
+export async function deleteAttachment(input: {
   user: User;
   workspaceSlug: string;
   issueKey: string;
@@ -87,5 +87,3 @@ async function deleteAttachment(input: {
       .where(eq(dbSchema.issueAttachment.id, attachment.id));
   });
 }
-
-export { createAttachment, deleteAttachment };

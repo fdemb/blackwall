@@ -5,7 +5,7 @@ import { useAppForm } from "@/context/form-context";
 import type { IssueChangeEventType, User } from "@/db/schema";
 import type { InferDbType } from "@/db/utils";
 import { issueMappings } from "@/lib/mappings";
-import { createComment } from "@/server/issues/api";
+import { createComment } from "@/server/issues/comments.api";
 import { useQueryClient } from "@tanstack/solid-query";
 import type { JSONContent } from "@tiptap/core";
 import { formatRelative } from "date-fns";

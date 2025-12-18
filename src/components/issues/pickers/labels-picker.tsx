@@ -9,7 +9,7 @@ import {
   createLabel,
   getAllLabels,
   removeLabelFromIssue,
-} from "@/server/issues/api";
+} from "@/server/issues/labels.api";
 import { Popover } from "@kobalte/core/popover";
 import { useMutation, useQueryClient } from "@tanstack/solid-query";
 import { useServerFn } from "@tanstack/solid-start";

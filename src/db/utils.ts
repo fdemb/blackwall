@@ -17,6 +17,7 @@ export const lifecycleTimestamps = {
     .notNull()
     .$default(() => new Date())
     .$onUpdate(() => new Date()),
+  deletedAt: sqlite.integer({ mode: "timestamp_ms" }),
 };
 
 export const nanoidPk = sqlite

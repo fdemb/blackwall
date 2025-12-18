@@ -1,4 +1,4 @@
-import { createIssue, type CreateIssueInput } from "@/server/issues/issues";
+import { createIssue, type CreateIssueInput } from "@/server/issues/issues.data";
 import { faker } from "@faker-js/faker";
 import { db } from "..";
 import type { Issue } from "../schema";

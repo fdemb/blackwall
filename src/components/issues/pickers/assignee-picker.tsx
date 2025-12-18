@@ -3,7 +3,7 @@ import { PickerPopover } from "@/components/custom-ui/picker-popover";
 import { Button } from "@/components/ui/button";
 import type { User } from "@/db/schema";
 import { cn } from "@/lib/utils";
-import { assign } from "@/server/issues/api";
+import { assign } from "@/server/issues/issues.api";
 import { Popover } from "@kobalte/core/popover";
 import { useQueryClient } from "@tanstack/solid-query";
 import { useServerFn } from "@tanstack/solid-start";

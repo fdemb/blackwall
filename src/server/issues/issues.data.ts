@@ -20,7 +20,7 @@ export type CreateIssueInput = Pick<
   "summary" | "description" | "status" | "assignedToId"
 >;
 
-async function listIssues(input: {
+export async function listIssues(input: {
   user: User;
   workspaceSlug: string;
   statusFilters?: IssueStatus[];
@@ -49,7 +49,7 @@ async function listIssues(input: {
   });
 }
 
-async function listIssuesInTeam(input: {
+export async function listIssuesInTeam(input: {
   user: User;
   workspaceSlug: string;
   teamKey: string;
@@ -91,7 +91,7 @@ async function listIssuesInTeam(input: {
   });
 }
 
-async function getIssueByKey(input: {
+export async function getIssueByKey(input: {
   user: User;
   workspaceSlug: string;
   issueKey: string;
@@ -158,7 +158,7 @@ async function getIssueByKey(input: {
   };
 }
 
-async function createIssue(input: {
+export async function createIssue(input: {
   user: User;
   workspaceSlug: string;
   teamKey: string;
@@ -224,7 +224,7 @@ async function createIssue(input: {
   return result;
 }
 
-async function createManyIssues(input: {
+export async function createManyIssues(input: {
   user: User;
   workspaceSlug: string;
   teamKey: string;
@@ -284,7 +284,7 @@ async function createManyIssues(input: {
   return results;
 }
 
-async function changeIssueStatus(input: {
+export async function changeIssueStatus(input: {
   user: User;
   workspaceSlug: string;
   issueKey: string;
@@ -340,7 +340,7 @@ async function changeIssueStatus(input: {
   return result;
 }
 
-async function changeIssuePriority(input: {
+export async function changeIssuePriority(input: {
   user: User;
   workspaceSlug: string;
   issueKey: string;
@@ -396,7 +396,7 @@ async function changeIssuePriority(input: {
   return result;
 }
 
-async function assignIssue(input: {
+export async function assignIssue(input: {
   user: User;
   workspaceSlug: string;
   issueKey: string;
@@ -452,7 +452,7 @@ async function assignIssue(input: {
   return result;
 }
 
-async function updateIssueDescription(input: {
+export async function updateIssueDescription(input: {
   user: User;
   workspaceSlug: string;
   issueKey: string;
@@ -490,7 +490,7 @@ async function updateIssueDescription(input: {
   });
 }
 
-async function updateIssueSummary(input: {
+export async function updateIssueSummary(input: {
   user: User;
   workspaceSlug: string;
   issueKey: string;
@@ -532,7 +532,7 @@ async function updateIssueSummary(input: {
   });
 }
 
-async function bulkChangeIssueTeamKeys(input: {
+export async function bulkChangeIssueTeamKeys(input: {
   user: User;
   workspaceSlug: string;
   team: Team;
@@ -574,16 +574,23 @@ async function bulkChangeIssueTeamKeys(input: {
     });
 }
 
-export {
-  assignIssue,
-  bulkChangeIssueTeamKeys,
-  changeIssuePriority,
-  changeIssueStatus,
-  createIssue,
-  createManyIssues,
-  getIssueByKey,
-  listIssues,
-  listIssuesInTeam,
-  updateIssueDescription,
-  updateIssueSummary,
-};
+export async function softDeleteIssue(input: {
+  user: User;
+  workspaceSlug: string;
+  issueKey: string;
+}) {
+  const { issue } = await getIssueByKey({
+    user: input.user,
+    workspaceSlug: input.workspaceSlug,
+    issueKey: input.issueKey,
+  });
+
+  if (!issue) {
+    throw new AppError("NOT_FOUND", "Issue not found.");
+  }
+
+  await db
+    .update(dbSchema.issue)
+    .set({ deletedAt: new Date() })
+    .where(eq(dbSchema.issue.id, issue.id));
+}

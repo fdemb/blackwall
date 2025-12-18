@@ -282,8 +282,8 @@ const SidebarTrigger = <T extends ValidComponent = "button">(
     <Button
       data-sidebar="trigger"
       variant="ghost"
-      size="icon"
-      class={cn("size-7", local.class)}
+      size="iconXs"
+      class={local.class}
       onClick={(event: MouseEvent) => {
         if (local.onClick) {
           local.onClick(event);

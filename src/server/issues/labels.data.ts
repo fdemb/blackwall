@@ -8,9 +8,9 @@ import {
 } from "@/server/workspace/data";
 import { and, count, eq } from "drizzle-orm";
 import { buildChangeEvent } from "./change-events";
-import { getIssueByKey } from "./issues";
+import { getIssueByKey } from "./issues.data";
 
-async function getLabelsForIssue(input: {
+export async function getLabelsForIssue(input: {
   user: User;
   workspaceSlug: string;
   issueKey: string;
@@ -31,7 +31,7 @@ async function getLabelsForIssue(input: {
   return labelOnIssues.map((labelOnIssue) => labelOnIssue.label);
 }
 
-async function getLabelById(input: {
+export async function getLabelById(input: {
   user: User;
   workspaceSlug: string;
   labelId: string;
@@ -55,7 +55,7 @@ async function getLabelById(input: {
   return label;
 }
 
-async function getAllLabelsForWorkspace(input: {
+export async function getAllLabelsForWorkspace(input: {
   user: User;
   workspaceSlug: string;
 }) {
@@ -69,7 +69,7 @@ async function getAllLabelsForWorkspace(input: {
   });
 }
 
-async function createLabel(input: {
+export async function createLabel(input: {
   user: User;
   workspaceSlug: string;
   name: string;
@@ -103,7 +103,7 @@ async function createLabel(input: {
   return label;
 }
 
-async function addLabelToIssue(input: {
+export async function addLabelToIssue(input: {
   user: User;
   workspaceSlug: string;
   issueKey: string;
@@ -154,7 +154,7 @@ async function addLabelToIssue(input: {
   });
 }
 
-async function removeLabelFromIssue(input: {
+export async function removeLabelFromIssue(input: {
   user: User;
   workspaceSlug: string;
   issueKey: string;
@@ -189,12 +189,3 @@ async function removeLabelFromIssue(input: {
     );
   });
 }
-
-export {
-  addLabelToIssue,
-  createLabel,
-  getAllLabelsForWorkspace,
-  getLabelById,
-  getLabelsForIssue,
-  removeLabelFromIssue,
-};

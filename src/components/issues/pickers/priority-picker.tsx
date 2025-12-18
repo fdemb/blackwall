@@ -1,7 +1,7 @@
 import { PickerPopover } from "@/components/custom-ui/picker-popover";
 import type { IssuePriority } from "@/db/schema";
 import { issueMappings, mappingToOptionArray } from "@/lib/mappings";
-import { changePriority } from "@/server/issues/api";
+import { changePriority } from "@/server/issues/issues.api";
 import { Popover } from "@kobalte/core/popover";
 import { useQueryClient } from "@tanstack/solid-query";
 import { useServerFn } from "@tanstack/solid-start";

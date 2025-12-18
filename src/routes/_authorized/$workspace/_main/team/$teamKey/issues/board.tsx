@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogTrigger } from "@/components/ui/dialog";
 import type { InferDbType } from "@/db/utils";
 import { issueMappings } from "@/lib/mappings";
-import { changeStatus, list } from "@/server/issues/api";
+import { changeStatus, list } from "@/server/issues/issues.api";
 import { queryOptions, useQuery, useQueryClient } from "@tanstack/solid-query";
 import { createFileRoute, Link } from "@tanstack/solid-router";
 import { useServerFn } from "@tanstack/solid-start";

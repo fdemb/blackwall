@@ -4,7 +4,7 @@ import {
 } from "@/components/issues/pickers";
 import { useAppForm } from "@/context/form-context";
 import type { IssueStatus, Team } from "@/db/schema";
-import { create } from "@/server/issues/api";
+import { create } from "@/server/issues/issues.api";
 import { getAssignableUsersQueryOptions } from "@/server/issues/query-options";
 import { useDialogContext } from "@kobalte/core/dialog";
 import { Popover } from "@kobalte/core/popover";
