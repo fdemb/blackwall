@@ -76,8 +76,22 @@ export async function softDeleteComment(input: {
     throw new AppError("NOT_FOUND", "Comment not found.");
   }
 
-  await db
-    .update(dbSchema.issueComment)
-    .set({ deletedAt: new Date() })
-    .where(eq(dbSchema.issueComment.id, comment.id));
+  await db.transaction(async (tx) => {
+    await tx
+      .update(dbSchema.issueComment)
+      .set({ deletedAt: new Date() })
+      .where(eq(dbSchema.issueComment.id, comment.id));
+
+    await tx.insert(dbSchema.issueChangeEvent).values(
+      buildChangeEvent(
+        {
+          issueId: issue.id,
+          workspaceId: issue.workspaceId,
+          actorId: input.user.id,
+        },
+        "comment_deleted",
+        comment.id,
+      ),
+    );
+  });
 }

@@ -175,10 +175,11 @@ export const deleteIssue = createServerFn({ method: "POST" })
     }),
   )
   .handler(async ({ data, context }) => {
-    return await issues.softDeleteIssue({
+    await issues.softDeleteIssue({
       user: context.user,
       workspaceSlug: data.workspaceSlug,
       issueKey: data.issueKey,
     });
-  });
 
+    return { message: "Issue deleted" };
+  });

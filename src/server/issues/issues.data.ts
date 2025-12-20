@@ -11,7 +11,7 @@ import { getUserById } from "@/server/auth/data";
 import { AppError } from "@/server/shared/errors";
 import { getTeamForUser, listTeamUsers } from "@/server/team/data";
 import { getWorkspaceForUser } from "@/server/workspace/data";
-import { and, asc, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { buildChangeEvent, buildIssueUpdatedEvent } from "./change-events";
 import { getNextSequenceNumber, getNextSequenceNumbers } from "./key-sequences";
 
@@ -30,7 +30,10 @@ export async function listIssues(input: {
     slug: input.workspaceSlug,
   });
 
-  const where = [eq(dbSchema.issue.workspaceId, workspace.id)];
+  const where = [
+    eq(dbSchema.issue.workspaceId, workspace.id),
+    isNull(dbSchema.issue.deletedAt),
+  ];
 
   if (input.statusFilters) {
     where.push(inArray(dbSchema.issue.status, input.statusFilters));
@@ -72,6 +75,7 @@ export async function listIssuesInTeam(input: {
   const where = [
     eq(dbSchema.issue.workspaceId, workspace.id),
     eq(dbSchema.issue.teamId, team.id),
+    isNull(dbSchema.issue.deletedAt),
   ];
 
   if (input.statusFilters) {
@@ -108,11 +112,13 @@ export async function getIssueByKey(input: {
     where: and(
       eq(dbSchema.issue.workspaceId, workspace.id),
       eq(dbSchema.issue.key, input.issueKey),
+      isNull(dbSchema.issue.deletedAt),
     ),
     with: {
       assignedTo: true,
       team: true,
       comments: {
+        where: (table) => isNull(table.deletedAt),
         orderBy: (table) => [asc(table.id)], // uuidv7 is timestamp-based
         with: {
           author: true,

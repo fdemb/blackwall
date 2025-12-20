@@ -31,10 +31,12 @@ export const deleteComment = createServerFn({ method: "POST" })
     }),
   )
   .handler(async ({ data, context }) => {
-    return await comments.softDeleteComment({
+    await comments.softDeleteComment({
       user: context.user,
       workspaceSlug: data.workspaceSlug,
       issueKey: data.issueKey,
       commentId: data.commentId,
     });
+
+    return { message: "Comment deleted" };
   });
