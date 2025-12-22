@@ -1,7 +1,7 @@
 import { WorkspaceDataContext } from "@/context/workspace-context";
 import { getWorkspaceAndGlobalData } from "@/server/workspace/api";
 import { queryOptions, useQuery } from "@tanstack/solid-query";
-import { createFileRoute, Outlet, redirect } from "@tanstack/solid-router";
+import { createFileRoute, Outlet } from "@tanstack/solid-router";
 import { Show } from "solid-js";
 
 const getWorkspaceAndGlobalDataQueryOptions = (workspaceSlug: string) =>
@@ -16,15 +16,9 @@ const getWorkspaceAndGlobalDataQueryOptions = (workspaceSlug: string) =>
 export const Route = createFileRoute("/_authorized/$workspace")({
   component: RouteComponent,
   beforeLoad: async ({ params, context }) => {
-    try {
-      return await context.queryClient.ensureQueryData(
-        getWorkspaceAndGlobalDataQueryOptions(params.workspace),
-      );
-    } catch (error) {
-      throw redirect({
-        to: "/",
-      });
-    }
+    return await context.queryClient.ensureQueryData(
+      getWorkspaceAndGlobalDataQueryOptions(params.workspace),
+    );
   },
 });
 
