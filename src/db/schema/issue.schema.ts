@@ -182,13 +182,12 @@ export const issueAttachment = sqliteTable("issue_attachment", {
   id: text()
     .primaryKey()
     .$defaultFn(() => randomUUIDv7()),
-  issueId: text()
-    .notNull()
-    .references(() => issue.id),
+  issueId: text().references(() => issue.id, { onDelete: "cascade" }),
   createdById: text()
     .notNull()
     .references(() => user.id),
   filePath: text().notNull(),
+  mimeType: text().notNull(),
   originalFileName: text().notNull(),
   ...lifecycleTimestamps,
 });
@@ -237,6 +236,20 @@ export const issueChangeEventRelations = relations(
     workspace: one(workspace, {
       fields: [issueChangeEvent.workspaceId],
       references: [workspace.id],
+    }),
+  }),
+);
+
+export const issueAttachmentRelations = relations(
+  issueAttachment,
+  ({ one }) => ({
+    issue: one(issue, {
+      fields: [issueAttachment.issueId],
+      references: [issue.id],
+    }),
+    createdBy: one(user, {
+      fields: [issueAttachment.createdById],
+      references: [user.id],
     }),
   }),
 );

@@ -23,6 +23,7 @@ import type { IssueChangeEventType, User } from "@/db/schema";
 import type { InferDbType } from "@/db/utils";
 import { action } from "@/lib/form.utils";
 import { issueMappings } from "@/lib/mappings";
+import { uploadAttachment } from "@/server/issues/attachments.api";
 import { createComment, deleteComment } from "@/server/issues/comments.api";
 import { useQueryClient } from "@tanstack/solid-query";
 import type { JSONContent } from "@tiptap/core";
@@ -219,6 +220,16 @@ export function IssueActivityLog(props: IssueActivityLogProps) {
 export function IssueCommentForm(props: IssueCommentFormProps) {
   const queryClient = useQueryClient();
 
+  const handleUpload = async (file: File) => {
+    const formData = new FormData();
+    formData.append("file", file);
+    formData.append("workspaceSlug", props.workspaceSlug);
+    formData.append("issueKey", props.issue.key);
+
+    const attachment = await uploadAttachment({ data: formData });
+    return attachment;
+  };
+
   const form = useAppForm(() => ({
     defaultValues: {
       content: { type: "doc" } as JSONContent,
@@ -258,6 +269,8 @@ export function IssueCommentForm(props: IssueCommentFormProps) {
           <TiptapEditor
             content={field().state.value}
             onChange={(content) => field().handleChange(content)}
+            onAttachmentUpload={handleUpload}
+            workspaceSlug={props.workspaceSlug}
             placeholder="Add a comment..."
             variant="plain"
             class="min-h-24 p-4 squircle-lg bg-accent border"
@@ -353,7 +366,7 @@ export function CommentMenu(props: CommentMenuProps) {
 
 export function IssueCommentItem(props: IssueCommentItemProps) {
   return (
-    <div class="p-4 squircle-lg bg-accent border flex flex-col gap-2">
+    <div class="p-4 squircle-lg bg-accent border flex flex-col gap-3.5">
       <div class="flex flex-row gap-1 items-center">
         <UserAvatar user={props.comment.author} size="xs" />
         <p class="font-medium">{props.comment.author.name}</p>

@@ -52,7 +52,7 @@
   }
 
   .prose pre {
-    @apply bg-accent text-accent-foreground border p-4 overflow-x-auto font-mono leading-relaxed mt-6;
+    @apply bg-accent text-accent-foreground border p-4 overflow-x-auto font-mono leading-relaxed;
   }
 
   .prose pre code {
@@ -81,7 +81,7 @@
   }
 
   .prose img {
-    @apply max-w-full h-auto my-6;
+    @apply max-w-full h-auto max-h-[20rem];
   }
 
   .prose hr {

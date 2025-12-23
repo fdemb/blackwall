@@ -510,16 +510,6 @@ async function initializeServer() {
   // Load TanStack Start server handler
   let handler: { fetch: (request: Request) => Response | Promise<Response> };
   handler = serverModule;
-  // try {
-  //   const serverModule = (await import(SERVER_ENTRY_POINT)) as {
-  //     default: { fetch: (request: Request) => Response | Promise<Response> };
-  //   };
-  //   handler = serverModule.default;
-  //   log.success("TanStack Start application handler initialized");
-  // } catch (error) {
-  //   log.error(`Failed to load server handler: ${String(error)}`);
-  //   process.exit(1);
-  // }
 
   // Build static routes with intelligent preloading
   const { routes } = await initializeStaticRoutes(CLIENT_DIRECTORY);

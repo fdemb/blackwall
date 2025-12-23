@@ -1,21 +1,20 @@
+import { getFile } from "@/lib/file-upload";
 import { createFileRoute } from "@tanstack/solid-router";
 
 export const Route = createFileRoute("/uploaded-files/$")({
-	loader(ctx) {
-		console.log(ctx.params._splat);
-	},
-	server: {
-		handlers: {
-			GET: async ({ params }) => {
-				const file = Bun.file(`blackwall_data/uploads/${params._splat}`);
-				const exists = await file.exists();
+  server: {
+    handlers: {
+      GET: async ({ params }) => {
+        const { file, exists } = await getFile(
+          `blackwall_data/uploads/public/${params._splat}`,
+        );
 
-				if (!exists) {
-					return new Response("File not found", { status: 404 });
-				}
+        if (!exists) {
+          return new Response("File not found", { status: 404 });
+        }
 
-				return new Response(file);
-			},
-		},
-	},
+        return new Response(file);
+      },
+    },
+  },
 });

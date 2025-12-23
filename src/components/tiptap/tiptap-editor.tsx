@@ -1,10 +1,18 @@
 import { cn } from "@/lib/utils";
 import { ClientOnly } from "@tanstack/solid-router";
 import { Editor, type Content, type JSONContent } from "@tiptap/core";
+import { Image } from "@tiptap/extension-image";
 import { Placeholder } from "@tiptap/extension-placeholder";
 import { StarterKit } from "@tiptap/starter-kit";
 import { renderToHTMLString } from "@tiptap/static-renderer";
 import { cva, type VariantProps } from "class-variance-authority";
+import CodeIcon from "lucide-solid/icons/code";
+import Heading1Icon from "lucide-solid/icons/heading-1";
+import Heading2Icon from "lucide-solid/icons/heading-2";
+import ImageIcon from "lucide-solid/icons/image";
+import ListIcon from "lucide-solid/icons/list";
+import ListOrderedIcon from "lucide-solid/icons/list-ordered";
+import QuoteIcon from "lucide-solid/icons/quote";
 import {
   createEffect,
   createMemo,
@@ -13,12 +21,19 @@ import {
   on,
   onCleanup,
 } from "solid-js";
+import {
+  SlashCommand,
+  type SlashCommandItem,
+} from "./extensions/slash-command";
+import { createSuggestionRenderer } from "./suggestion-renderer";
 
 export type TiptapProps = {
   initialContent?: Content;
   content?: JSONContent;
   onChange?: (content: JSONContent) => void;
   onBlur?: (content: JSONContent) => void;
+  onAttachmentUpload?: (file: File) => Promise<{ id: string } | null>;
+  workspaceSlug?: string;
   placeholder?: string;
   class?: string;
   editable?: boolean;
@@ -69,6 +84,7 @@ export const TiptapEditor = (
       content: merged.content || (merged.initialContent as JSONContent),
       extensions: [
         StarterKit,
+        Image,
         Placeholder.configure({ placeholder: merged.placeholder }),
       ],
     });
@@ -80,6 +96,109 @@ export const TiptapEditor = (
     return result;
   });
 
+  const triggerFileUpload = (
+    editor: Editor,
+    range: { from: number; to: number },
+  ) => {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = "image/*";
+    input.onchange = async () => {
+      const file = input.files?.[0];
+      if (!file || !merged.onAttachmentUpload) return;
+
+      // Delete the slash command text
+      editor.chain().focus().deleteRange(range).run();
+
+      const result = await merged.onAttachmentUpload(file);
+      if (result && merged.workspaceSlug) {
+        editor
+          .chain()
+          .focus()
+          .setImage({
+            src: `/${merged.workspaceSlug}/issue-attachment/${result.id}`,
+          })
+          .run();
+      }
+    };
+    input.click();
+  };
+
+  const getSlashCommandItems = (query: string): SlashCommandItem[] => {
+    const items: SlashCommandItem[] = [
+      {
+        title: "Image",
+        description: "Upload an image",
+        icon: () => <ImageIcon class="size-4" />,
+        command: ({ editor, range }) => triggerFileUpload(editor, range),
+      },
+      {
+        title: "Heading 1",
+        description: "Large heading",
+        icon: () => <Heading1Icon class="size-4" />,
+        command: ({ editor, range }) => {
+          editor
+            .chain()
+            .focus()
+            .deleteRange(range)
+            .setNode("heading", { level: 1 })
+            .run();
+        },
+      },
+      {
+        title: "Heading 2",
+        description: "Medium heading",
+        icon: () => <Heading2Icon class="size-4" />,
+        command: ({ editor, range }) => {
+          editor
+            .chain()
+            .focus()
+            .deleteRange(range)
+            .setNode("heading", { level: 2 })
+            .run();
+        },
+      },
+      {
+        title: "Bullet List",
+        description: "Create a bullet list",
+        icon: () => <ListIcon class="size-4" />,
+        command: ({ editor, range }) => {
+          editor.chain().focus().deleteRange(range).toggleBulletList().run();
+        },
+      },
+      {
+        title: "Numbered List",
+        description: "Create a numbered list",
+        icon: () => <ListOrderedIcon class="size-4" />,
+        command: ({ editor, range }) => {
+          editor.chain().focus().deleteRange(range).toggleOrderedList().run();
+        },
+      },
+      {
+        title: "Code Block",
+        description: "Add a code block",
+        icon: () => <CodeIcon class="size-4" />,
+        command: ({ editor, range }) => {
+          editor.chain().focus().deleteRange(range).toggleCodeBlock().run();
+        },
+      },
+      {
+        title: "Quote",
+        description: "Add a blockquote",
+        icon: () => <QuoteIcon class="size-4" />,
+        command: ({ editor, range }) => {
+          editor.chain().focus().deleteRange(range).toggleBlockquote().run();
+        },
+      },
+    ];
+
+    if (!query) return items;
+
+    return items.filter((item) =>
+      item.title.toLowerCase().includes(query.toLowerCase()),
+    );
+  };
+
   function makeEditable(e: MouseEvent) {
     e.stopPropagation();
     if (editor()?.isEditable) return;
@@ -89,13 +208,24 @@ export const TiptapEditor = (
 
   createEffect(
     on(element, (element) => {
+      const suggestionRenderer = createSuggestionRenderer();
+
       setEditor(
         () =>
           new Editor({
             element: element,
             extensions: [
-              StarterKit,
+              StarterKit.configure({
+                trailingNode: false,
+              }),
+              Image,
               Placeholder.configure({ placeholder: merged.placeholder }),
+              SlashCommand.configure({
+                suggestion: {
+                  items: ({ query }) => getSlashCommandItems(query),
+                  render: () => suggestionRenderer,
+                },
+              }),
             ],
             content: merged.initialContent,
             editable: merged.editable,

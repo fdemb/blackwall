@@ -1,4 +1,5 @@
-import { deleteFile, saveFile } from "@/lib/file-upload";
+import { db, dbSchema } from "@/db";
+import { deleteFileByUrl, saveFile, toPublicUrl } from "@/lib/file-upload";
 import { getUserById } from "@/server/auth/data";
 import { authMiddleware } from "@/server/auth/middleware/auth.middleware";
 import {
@@ -26,6 +27,7 @@ import {
 } from "@/server/workspace/data";
 import { createServerFn } from "@tanstack/solid-start";
 import { getRequestHeaders } from "@tanstack/solid-start-server";
+import { eq } from "drizzle-orm";
 import * as z from "zod";
 import { bulkChangeIssueTeamKeys } from "../issues/issues.data";
 
@@ -100,7 +102,10 @@ export const updateProfileAvatar = createServerFn({ method: "POST" })
     const currentUser = await getUserById(context.user.id);
 
     if (data.intent === "remove") {
-      deleteFile(currentUser.image);
+      if (currentUser.image) {
+        deleteFileByUrl(currentUser.image);
+      }
+
       return await updateAvatar({
         headers,
         userId: context.user.id,
@@ -120,12 +125,16 @@ export const updateProfileAvatar = createServerFn({ method: "POST" })
       throw new AppError("BAD_REQUEST", "Image must be smaller than 5MB.");
     }
 
-    const avatarUrl = await saveFile(data.file, {
-      directory: "avatars",
-      prefix: context.user.id,
+    const avatarFilePath = await saveFile(data.file, {
+      directory: "public/avatars",
+      name: context.user.id,
     });
 
-    deleteFile(currentUser.image);
+    if (currentUser.image) {
+      deleteFileByUrl(currentUser.image);
+    }
+
+    const avatarUrl = toPublicUrl(avatarFilePath);
 
     return await updateAvatar({
       headers,
@@ -324,9 +333,6 @@ export const addTeamMember = createServerFn({ method: "POST" })
     }),
   )
   .handler(async ({ data, context }) => {
-    const { db, dbSchema } = await import("@/db");
-    const { eq } = await import("drizzle-orm");
-
     const team = await getTeamForUser({
       user: context.user!,
       workspaceSlug: data.workspaceSlug,

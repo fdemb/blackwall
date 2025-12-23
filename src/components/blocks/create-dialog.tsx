@@ -4,6 +4,7 @@ import {
 } from "@/components/issues/pickers";
 import { useAppForm } from "@/context/form-context";
 import type { IssueStatus, Team } from "@/db/schema";
+import { uploadAttachment } from "@/server/issues/attachments.api";
 import { create } from "@/server/issues/issues.api";
 import { getAssignableUsersQueryOptions } from "@/server/issues/query-options";
 import { useDialogContext } from "@kobalte/core/dialog";
@@ -98,6 +99,16 @@ function CreateDialogContent(props: CreateDialogProps) {
       merged.teamKey,
     ),
   );
+
+  const handleUpload = async (file: File) => {
+    const formData = new FormData();
+    formData.append("file", file);
+    formData.append("workspaceSlug", workspaceData().workspace.slug);
+    // No issueKey - creates orphan attachment for new issue
+
+    const attachment = await uploadAttachment({ data: formData });
+    return attachment;
+  };
 
   const form = useAppForm(() => ({
     defaultValues: {
@@ -245,6 +256,8 @@ function CreateDialogContent(props: CreateDialogProps) {
                 <TiptapEditor
                   initialContent={field().state.value}
                   onChange={(content) => field().handleChange(content)}
+                  onAttachmentUpload={handleUpload}
+                  workspaceSlug={workspaceData().workspace.slug}
                   variant="plain"
                   placeholder="Describe the issue..."
                   class="min-h-24"

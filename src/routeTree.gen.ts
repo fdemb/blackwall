@@ -31,6 +31,7 @@ import { Route as AuthorizedWorkspaceSettingsTeamsCreateRouteImport } from './ro
 import { Route as AuthorizedWorkspaceSettingsTeamsKeyRouteImport } from './routes/_authorized/$workspace/settings/teams/$key'
 import { Route as AuthorizedWorkspaceMainTeamTeamKeyRouteImport } from './routes/_authorized/$workspace/_main/team/$teamKey'
 import { Route as AuthorizedWorkspaceMainIssueKeyRouteImport } from './routes/_authorized/$workspace/_main/issue/$key'
+import { Route as AuthorizedWorkspaceMainIssueAttachmentIdRouteImport } from './routes/_authorized/$workspace/_main/issue-attachment/$id'
 import { Route as AuthorizedWorkspaceMainTeamTeamKeyIssuesIndexRouteImport } from './routes/_authorized/$workspace/_main/team/$teamKey/issues/index'
 import { Route as AuthorizedWorkspaceMainTeamTeamKeyIssuesBoardRouteImport } from './routes/_authorized/$workspace/_main/team/$teamKey/issues/board'
 import { Route as AuthorizedWorkspaceMainTeamTeamKeyIssuesBacklogRouteImport } from './routes/_authorized/$workspace/_main/team/$teamKey/issues/backlog'
@@ -152,6 +153,12 @@ const AuthorizedWorkspaceMainIssueKeyRoute =
     path: '/issue/$key',
     getParentRoute: () => AuthorizedWorkspaceMainRoute,
   } as any)
+const AuthorizedWorkspaceMainIssueAttachmentIdRoute =
+  AuthorizedWorkspaceMainIssueAttachmentIdRouteImport.update({
+    id: '/issue-attachment/$id',
+    path: '/issue-attachment/$id',
+    getParentRoute: () => AuthorizedWorkspaceMainRoute,
+  } as any)
 const AuthorizedWorkspaceMainTeamTeamKeyIssuesIndexRoute =
   AuthorizedWorkspaceMainTeamTeamKeyIssuesIndexRouteImport.update({
     id: '/issues/',
@@ -185,6 +192,7 @@ export interface FileRoutesByFullPath {
   '/$workspace/settings/workspace': typeof AuthorizedWorkspaceSettingsWorkspaceRoute
   '/$workspace/': typeof AuthorizedWorkspaceMainIndexRoute
   '/$workspace/settings/': typeof AuthorizedWorkspaceSettingsIndexRoute
+  '/$workspace/issue-attachment/$id': typeof AuthorizedWorkspaceMainIssueAttachmentIdRoute
   '/$workspace/issue/$key': typeof AuthorizedWorkspaceMainIssueKeyRoute
   '/$workspace/team/$teamKey': typeof AuthorizedWorkspaceMainTeamTeamKeyRouteWithChildren
   '/$workspace/settings/teams/$key': typeof AuthorizedWorkspaceSettingsTeamsKeyRoute
@@ -206,6 +214,7 @@ export interface FileRoutesByTo {
   '/$workspace/settings/profile': typeof AuthorizedWorkspaceSettingsProfileRoute
   '/$workspace/settings/workspace': typeof AuthorizedWorkspaceSettingsWorkspaceRoute
   '/$workspace/settings': typeof AuthorizedWorkspaceSettingsIndexRoute
+  '/$workspace/issue-attachment/$id': typeof AuthorizedWorkspaceMainIssueAttachmentIdRoute
   '/$workspace/issue/$key': typeof AuthorizedWorkspaceMainIssueKeyRoute
   '/$workspace/team/$teamKey': typeof AuthorizedWorkspaceMainTeamTeamKeyRouteWithChildren
   '/$workspace/settings/teams/$key': typeof AuthorizedWorkspaceSettingsTeamsKeyRoute
@@ -234,6 +243,7 @@ export interface FileRoutesById {
   '/_authorized/$workspace/settings/workspace': typeof AuthorizedWorkspaceSettingsWorkspaceRoute
   '/_authorized/$workspace/_main/': typeof AuthorizedWorkspaceMainIndexRoute
   '/_authorized/$workspace/settings/': typeof AuthorizedWorkspaceSettingsIndexRoute
+  '/_authorized/$workspace/_main/issue-attachment/$id': typeof AuthorizedWorkspaceMainIssueAttachmentIdRoute
   '/_authorized/$workspace/_main/issue/$key': typeof AuthorizedWorkspaceMainIssueKeyRoute
   '/_authorized/$workspace/_main/team/$teamKey': typeof AuthorizedWorkspaceMainTeamTeamKeyRouteWithChildren
   '/_authorized/$workspace/settings/teams/$key': typeof AuthorizedWorkspaceSettingsTeamsKeyRoute
@@ -259,6 +269,7 @@ export interface FileRouteTypes {
     | '/$workspace/settings/workspace'
     | '/$workspace/'
     | '/$workspace/settings/'
+    | '/$workspace/issue-attachment/$id'
     | '/$workspace/issue/$key'
     | '/$workspace/team/$teamKey'
     | '/$workspace/settings/teams/$key'
@@ -280,6 +291,7 @@ export interface FileRouteTypes {
     | '/$workspace/settings/profile'
     | '/$workspace/settings/workspace'
     | '/$workspace/settings'
+    | '/$workspace/issue-attachment/$id'
     | '/$workspace/issue/$key'
     | '/$workspace/team/$teamKey'
     | '/$workspace/settings/teams/$key'
@@ -307,6 +319,7 @@ export interface FileRouteTypes {
     | '/_authorized/$workspace/settings/workspace'
     | '/_authorized/$workspace/_main/'
     | '/_authorized/$workspace/settings/'
+    | '/_authorized/$workspace/_main/issue-attachment/$id'
     | '/_authorized/$workspace/_main/issue/$key'
     | '/_authorized/$workspace/_main/team/$teamKey'
     | '/_authorized/$workspace/settings/teams/$key'
@@ -480,6 +493,13 @@ declare module '@tanstack/solid-router' {
       preLoaderRoute: typeof AuthorizedWorkspaceMainIssueKeyRouteImport
       parentRoute: typeof AuthorizedWorkspaceMainRoute
     }
+    '/_authorized/$workspace/_main/issue-attachment/$id': {
+      id: '/_authorized/$workspace/_main/issue-attachment/$id'
+      path: '/issue-attachment/$id'
+      fullPath: '/$workspace/issue-attachment/$id'
+      preLoaderRoute: typeof AuthorizedWorkspaceMainIssueAttachmentIdRouteImport
+      parentRoute: typeof AuthorizedWorkspaceMainRoute
+    }
     '/_authorized/$workspace/_main/team/$teamKey/issues/': {
       id: '/_authorized/$workspace/_main/team/$teamKey/issues/'
       path: '/issues'
@@ -539,6 +559,7 @@ const AuthorizedWorkspaceMainTeamTeamKeyRouteWithChildren =
 
 interface AuthorizedWorkspaceMainRouteChildren {
   AuthorizedWorkspaceMainIndexRoute: typeof AuthorizedWorkspaceMainIndexRoute
+  AuthorizedWorkspaceMainIssueAttachmentIdRoute: typeof AuthorizedWorkspaceMainIssueAttachmentIdRoute
   AuthorizedWorkspaceMainIssueKeyRoute: typeof AuthorizedWorkspaceMainIssueKeyRoute
   AuthorizedWorkspaceMainTeamTeamKeyRoute: typeof AuthorizedWorkspaceMainTeamTeamKeyRouteWithChildren
 }
@@ -546,6 +567,8 @@ interface AuthorizedWorkspaceMainRouteChildren {
 const AuthorizedWorkspaceMainRouteChildren: AuthorizedWorkspaceMainRouteChildren =
   {
     AuthorizedWorkspaceMainIndexRoute: AuthorizedWorkspaceMainIndexRoute,
+    AuthorizedWorkspaceMainIssueAttachmentIdRoute:
+      AuthorizedWorkspaceMainIssueAttachmentIdRoute,
     AuthorizedWorkspaceMainIssueKeyRoute: AuthorizedWorkspaceMainIssueKeyRoute,
     AuthorizedWorkspaceMainTeamTeamKeyRoute:
       AuthorizedWorkspaceMainTeamTeamKeyRouteWithChildren,
