@@ -34,7 +34,7 @@ jobs:
 
       - name: Deploy app files
         run: |
-          rsync -avz --delete \
+          rsync -avz --no-perms --chmod=640,D750 --delete \
             -e "ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no" \
             --exclude database \
             ./dist \
