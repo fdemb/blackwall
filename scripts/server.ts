@@ -65,7 +65,7 @@
 
 import path from "node:path";
 // @ts-ignore
-import serverModule from "./dist/server/server.js";
+import serverModule from "../dist/server/server.js";
 
 // Configuration
 const SERVER_PORT = Number(process.env.PORT ?? 3000);
