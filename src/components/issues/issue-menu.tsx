@@ -47,7 +47,7 @@ export function IssueMenu(props: IssueMenuProps) {
     );
 
     queryClient.invalidateQueries({
-      queryKey: ["issue"],
+      queryKey: ["issue", "issues"],
     });
 
     navigate({

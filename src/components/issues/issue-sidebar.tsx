@@ -1,9 +1,6 @@
+import { Sidebar, SidebarContent } from "@/components/ui/sidebar";
 import type { Label, User } from "@/db/schema";
 import type { InferDbType } from "@/db/utils";
-import {
-  Sidebar,
-  SidebarContent,
-} from "@/components/ui/sidebar";
 import type { JSX } from "solid-js";
 import {
   AssigneePickerPopover,
