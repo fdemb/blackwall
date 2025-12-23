@@ -20,7 +20,7 @@ jobs:
         run: bun run build
 
       - name: Build server
-        run: bun build ./server.ts --compile --target=bun-linux-x64 --bytecode --minify --sourcemap
+        run: bun build ./scripts/server.ts --compile --target=bun-linux-x64 --bytecode --minify --sourcemap
 
       - name: Setup SSH
         run: |
@@ -36,4 +36,5 @@ jobs:
             --exclude database \
             ./dist \
             ./server \
+            ./src/db/migrations \
             ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:${{ secrets.DEPLOY_PATH }}
