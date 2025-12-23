@@ -63,6 +63,7 @@
  *   bun run server.ts
  */
 
+import "@/lib/zod-env"; // added so env is validated
 import path from "node:path";
 // @ts-ignore
 import serverModule from "../dist/server/server.js";
