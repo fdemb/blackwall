@@ -15,8 +15,6 @@
     "db:seed": "bun ./src/db/seeders/index.ts"
   },
   "dependencies": {
-    "@fontsource-variable/outfit": "^5.2.8",
-    "@fontsource-variable/plus-jakarta-sans": "^5.2.8",
     "@kobalte/core": "^0.13.11",
     "@solid-primitives/scheduled": "^1.5.2",
     "@tailwindcss/vite": "^4.1.18",
@@ -62,7 +60,6 @@
     "zod": "^4.2.1"
   },
   "devDependencies": {
-    "@anthropic-ai/claude-code": "^2.0.71",
     "@faker-js/faker": "^10.1.0",
     "@libsql/client": "^0.15.15",
     "@types/bun": "^1.3.5",
