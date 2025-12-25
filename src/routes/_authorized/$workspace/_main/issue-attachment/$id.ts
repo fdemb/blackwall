@@ -16,8 +16,6 @@ export const Route = createFileRoute(
           return new Response("Not found", { status: 404 });
         }
 
-        console.log(attachment.filePath);
-
         const { file, exists } = await getFile(attachment.filePath);
 
         if (!exists) {

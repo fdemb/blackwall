@@ -3,6 +3,11 @@
     @apply text-foreground leading-relaxed text-lg;
   }
 
+  .prose,
+  .prose * {
+    overflow-wrap: anywhere;
+  }
+
   .prose > * + * {
     @apply mt-4;
   }
@@ -48,15 +53,15 @@
   }
 
   .prose code {
-    @apply bg-muted-foreground text-foreground px-1.5 py-0.5 font-mono;
+    @apply bg-muted text-foreground border rounded-sm px-1.5 py-0.5 font-mono;
   }
 
   .prose pre {
-    @apply bg-accent text-accent-foreground border p-4 overflow-x-auto font-mono leading-relaxed;
+    @apply bg-surface text-accent-foreground ring-1 ring-foreground/10 p-4 overflow-x-auto font-mono leading-relaxed rounded-md;
   }
 
   .prose pre code {
-    @apply bg-transparent text-inherit p-0;
+    @apply bg-transparent text-inherit p-0 rounded-none border-none;
   }
 
   .prose blockquote {
@@ -81,7 +86,7 @@
   }
 
   .prose img {
-    @apply max-w-full h-auto max-h-[20rem];
+    @apply max-w-full h-auto max-h-80;
   }
 
   .prose hr {
@@ -111,6 +116,14 @@
   .prose p.is-editor-empty:first-child::before {
     color: var(--color-muted-foreground);
     content: attr(data-placeholder);
+    float: left;
+    height: 0;
+    pointer-events: none;
+  }
+
+  .prose p.is-empty:not(.is-editor-empty:first-child)::before {
+    color: var(--color-muted-foreground);
+    content: "/ to show commands";
     float: left;
     height: 0;
     pointer-events: none;

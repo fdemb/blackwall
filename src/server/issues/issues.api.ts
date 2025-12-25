@@ -140,12 +140,16 @@ export const updateDescription = createServerFn({ method: "POST" })
     }),
   )
   .handler(async ({ data, context }) => {
-    return await issues.updateIssueDescription({
+    await issues.updateIssueDescription({
       user: context.user,
       workspaceSlug: data.workspaceSlug,
       issueKey: data.issueKey,
       description: data.description,
     });
+
+    return {
+      message: "Description updated.",
+    };
   });
 
 export const updateSummary = createServerFn({ method: "POST" })
@@ -158,12 +162,16 @@ export const updateSummary = createServerFn({ method: "POST" })
     }),
   )
   .handler(async ({ data, context }) => {
-    return await issues.updateIssueSummary({
+    await issues.updateIssueSummary({
       user: context.user,
       workspaceSlug: data.workspaceSlug,
       issueKey: data.issueKey,
       summary: data.summary,
     });
+
+    return {
+      message: "Summary updated.",
+    };
   });
 
 export const deleteIssue = createServerFn({ method: "POST" })

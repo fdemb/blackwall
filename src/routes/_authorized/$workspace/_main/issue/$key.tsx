@@ -9,33 +9,24 @@ import { IssueActivityLog } from "@/components/issues/issue-activity-log";
 import { IssueDescription } from "@/components/issues/issue-description";
 import { IssueMenu } from "@/components/issues/issue-menu";
 import { IssueSidebar } from "@/components/issues/issue-sidebar";
-import { Button } from "@/components/ui/button";
-import { Card, CardTitle } from "@/components/ui/card";
+import { IssueSummary } from "@/components/issues/issue-summary";
 import { Separator } from "@/components/ui/separator";
 import {
   SidebarInset,
   SidebarProvider,
   SidebarTrigger,
 } from "@/components/ui/sidebar";
-import { IssueEditingProvider } from "@/context/issue-editing.context";
 import { useWorkspaceData } from "@/context/workspace-context";
 import type { User } from "@/db/schema";
 import type { InferDbType } from "@/db/utils";
-import {
-  get,
-  updateDescription,
-  updateSummary,
-} from "@/server/issues/issues.api";
+import { get } from "@/server/issues/issues.api";
 import { getIssueLabels } from "@/server/issues/labels.api";
 import { getAssignableUsersQueryOptions } from "@/server/issues/query-options";
-import { queryOptions, useMutation, useQuery } from "@tanstack/solid-query";
+import { queryOptions, useQuery } from "@tanstack/solid-query";
 import { createFileRoute, notFound } from "@tanstack/solid-router";
-import { useServerFn } from "@tanstack/solid-start";
-import type { JSONContent } from "@tiptap/core";
 import PanelRightIcon from "lucide-solid/icons/panel-right";
-import { createSignal, onCleanup, onMount, Show } from "solid-js";
+import { Show } from "solid-js";
 import { Portal } from "solid-js/web";
-import { tinykeys } from "tinykeys";
 
 type IssueFromGet = InferDbType<
   "issue",
@@ -110,95 +101,24 @@ function IssueMainView(props: {
   assignableUsers: User[];
 }) {
   const workspaceData = useWorkspaceData();
-  const [summary, setSummary] = createSignal<string | null>(null);
-  const [description, setDescription] = createSignal<JSONContent | null>(null);
-  const updateDescriptionFn = useServerFn(updateDescription);
-  const updateSummaryFn = useServerFn(updateSummary);
-
-  const saveMutation = useMutation(() => ({
-    mutationFn: async () => {
-      if (description()) {
-        await updateDescriptionFn({
-          data: {
-            workspaceSlug: workspaceData().workspace.slug,
-            issueKey: props.issue.key,
-            description: description()!,
-          },
-        });
-      }
-
-      if (summary()) {
-        await updateSummaryFn({
-          data: {
-            workspaceSlug: workspaceData().workspace.slug,
-            issueKey: props.issue.key,
-            summary: summary()!,
-          },
-        });
-      }
-    },
-    onSuccess: () => {
-      setDescription(null);
-      setSummary(null);
-    },
-  }));
-
-  onMount(() => {
-    const unsubscribe = tinykeys(window, {
-      "$mod+s": (e) => {
-        e.preventDefault();
-        saveMutation.mutate();
-      },
-    });
-
-    onCleanup(unsubscribe);
-  });
 
   return (
-    <IssueEditingProvider
-      onSummaryChange={setSummary}
-      onDescriptionChange={setDescription}
-    >
-      <div class="flex flex-col flex-1 relative">
-        <ScrollArea>
-          <main class="flex-1 px-6 sm:px-12 pb-8 pt-16 flex flex-col max-w-[980px] mx-auto">
-            <h2
-              class="text-xl sm:text-2xl font-medium outline-none"
-              contenteditable
-              onInput={(e) => {
-                setSummary(e.currentTarget.innerText);
-              }}
-            >
-              {props.issue.summary}
-            </h2>
+    <div class="flex flex-col flex-1 relative min-w-0">
+      <ScrollArea>
+        <main class="flex-1 min-w-0 px-6 sm:px-12 pb-8 pt-16 flex flex-col max-w-[980px] mx-auto">
+          <IssueSummary issue={props.issue} />
+          <IssueDescription issue={props.issue} />
 
-            <IssueDescription issue={props.issue} />
+          <Separator class="my-8" />
 
-            <Separator class="my-8" />
-
-            <IssueActivityLog
-              issue={props.issue}
-              workspaceSlug={workspaceData().workspace.slug}
-              assignableUsers={props.assignableUsers}
-            />
-          </main>
-        </ScrollArea>
-
-        <Show when={description() !== null || summary() !== null}>
-          <Card class="absolute bottom-4 left-4 right-4 flex flex-row justify-between py-0 h-16 items-center px-4">
-            <CardTitle class="leading-normal">Unsaved changes</CardTitle>
-            <div>
-              <Button
-                disabled={saveMutation.isPending}
-                onClick={() => saveMutation.mutate()}
-              >
-                Save
-              </Button>
-            </div>
-          </Card>
-        </Show>
-      </div>
-    </IssueEditingProvider>
+          <IssueActivityLog
+            issue={props.issue}
+            workspaceSlug={workspaceData().workspace.slug}
+            assignableUsers={props.assignableUsers}
+          />
+        </main>
+      </ScrollArea>
+    </div>
   );
 }
 
@@ -220,7 +140,7 @@ function RouteComponent() {
   return (
     <Show when={issueQuery.data}>
       {(d) => (
-        <div class="flex flex-col h-screen w-full">
+        <div class="flex flex-col w-full">
           <PageHeader>
             <Breadcrumbs>
               <BreadcrumbsItem

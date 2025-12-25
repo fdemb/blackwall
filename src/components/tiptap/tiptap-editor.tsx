@@ -37,7 +37,7 @@ export type TiptapProps = {
   placeholder?: string;
   class?: string;
   editable?: boolean;
-  editableOnClick?: boolean;
+  onPointerDown?: (e: PointerEvent) => void;
 };
 
 const tiptapVariants = cva("", {
@@ -59,7 +59,6 @@ export const TiptapEditor = (
   const merged = mergeProps(
     {
       editable: true,
-      editableOnClick: false,
     },
     props,
   );
@@ -199,13 +198,6 @@ export const TiptapEditor = (
     );
   };
 
-  function makeEditable(e: MouseEvent) {
-    e.stopPropagation();
-    if (editor()?.isEditable) return;
-
-    editor()?.setEditable(true);
-  }
-
   createEffect(
     on(element, (element) => {
       const suggestionRenderer = createSuggestionRenderer();
@@ -281,7 +273,10 @@ export const TiptapEditor = (
     <>
       <ClientOnly
         fallback={
-          <div class="w-full h-full" data-fallback>
+          <div
+            class="w-full h-full whitespace-pre-wrap wrap-break-word"
+            data-fallback
+          >
             <div
               class={cn(
                 tiptapVariants({ variant: merged.variant }),
@@ -297,7 +292,7 @@ export const TiptapEditor = (
             setElement(el);
           }}
           class="w-full h-full"
-          onPointerDown={merged.editableOnClick ? makeEditable : undefined}
+          onPointerDown={props.onPointerDown}
         />
       </ClientOnly>
     </>

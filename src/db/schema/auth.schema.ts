@@ -2,7 +2,7 @@ import type { User as BetterAuthUserType } from "better-auth";
 import { randomUUIDv7 } from "bun";
 import { relations } from "drizzle-orm";
 import { integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
-import { userTeam } from "./team.schema";
+import { team, userTeam } from "./team.schema";
 import { workspace } from "./workspace.schema";
 
 export const user = sqliteTable("user", {
@@ -16,6 +16,7 @@ export const user = sqliteTable("user", {
   createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
   updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
   lastWorkspaceId: text().references(() => workspace.id),
+  lastTeamId: text().references(() => team.id),
   preferredTheme: text({
     enum: ["system", "light", "dark"],
   }).default("system"),
@@ -100,9 +101,13 @@ export const accountRelations = relations(account, ({ one }) => ({
 
 export const userRelations = relations(user, ({ one, many }) => ({
   userTeams: many(userTeam),
-  lastWorkspaceId: one(workspace, {
+  lastWorkspace: one(workspace, {
     fields: [user.lastWorkspaceId],
     references: [workspace.id],
+  }),
+  lastTeam: one(team, {
+    fields: [user.lastTeamId],
+    references: [team.id],
   }),
 }));
 

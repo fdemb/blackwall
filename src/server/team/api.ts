@@ -1,7 +1,7 @@
 import { authMiddleware } from "@/server/auth/middleware/auth.middleware";
 import { createServerFn } from "@tanstack/solid-start";
 import * as z from "zod";
-import { getTeamForUser, listTeamUsers } from "./data";
+import { getPreferredTeamForUser, getTeamForUser, listTeamUsers } from "./data";
 
 export const listUsers = createServerFn({ method: "GET" })
   .middleware([authMiddleware])
@@ -28,6 +28,20 @@ export const getTeam = createServerFn({ method: "GET" })
   )
   .handler(async ({ data, context }) => {
     return getTeamForUser({
+      user: context.user,
+      ...data,
+    });
+  });
+
+export const getPreferredTeam = createServerFn({ method: "GET" })
+  .middleware([authMiddleware])
+  .inputValidator(
+    z.object({
+      workspaceSlug: z.string(),
+    }),
+  )
+  .handler(async ({ data, context }) => {
+    return getPreferredTeamForUser({
       user: context.user,
       ...data,
     });

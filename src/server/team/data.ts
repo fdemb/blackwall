@@ -49,6 +49,14 @@ export async function getTeamForUser(input: {
     throw new AppError("NOT_FOUND", "Team not found.");
   }
 
+  // save last team id
+  if (!input.user.lastTeamId || input.user.lastTeamId !== team.id) {
+    await db
+      .update(dbSchema.user)
+      .set({ lastTeamId: team.id })
+      .where(eq(dbSchema.user.id, input.user.id));
+  }
+
   return team;
 }
 
@@ -286,4 +294,28 @@ export async function updateTeam(input: {
       key: input.team.key,
     })
     .where(eq(dbSchema.team.id, team.id));
+}
+
+export async function getPreferredTeamForUser(input: {
+  user: User;
+  workspaceSlug: string;
+}) {
+  const workspace = await getWorkspaceBySlug(input.workspaceSlug);
+  const allUserTeams = await listAllTeamsForUser({
+    user: input.user,
+    workspaceId: workspace.id,
+  });
+
+  if (allUserTeams.length === 0) {
+    return null;
+  }
+
+  if (input.user.lastTeamId) {
+    const lastTeam = allUserTeams.find(
+      (team) => team.id === input.user.lastTeamId,
+    );
+    return lastTeam;
+  }
+
+  return allUserTeams[0];
 }

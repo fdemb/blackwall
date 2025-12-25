@@ -1,62 +1,25 @@
-import { PageHeader } from "@/components/blocks/page-header";
-import { list } from "@/server/issues/issues.api";
-import { uploadAttachment } from "@/server/issues/attachments.api";
-import { queryOptions, useQuery } from "@tanstack/solid-query";
-import { createFileRoute, notFound } from "@tanstack/solid-router";
-
-const listIssuesQueryOptions = (workspaceSlug: string) =>
-  queryOptions({
-    queryKey: ["issues", "list", workspaceSlug],
-    queryFn: () =>
-      list({
-        data: {
-          workspaceSlug,
-        },
-      }),
-  });
+import { getPreferredTeam } from "@/server/team/api";
+import { createFileRoute, notFound, redirect } from "@tanstack/solid-router";
 
 export const Route = createFileRoute("/_authorized/$workspace/_main/")({
-  component: RouteComponent,
-  loader: async ({ params, context }) => {
-    const issues = await context.queryClient.ensureQueryData(
-      listIssuesQueryOptions(params.workspace),
-    );
+  loader: async ({ params }) => {
+    const preferredTeam = await getPreferredTeam({
+      data: {
+        workspaceSlug: params.workspace,
+      },
+    });
 
-    if (!issues) {
+    if (!preferredTeam) {
+      // TODO: show onboarding page
       throw notFound();
     }
 
-    return {
-      issues,
-    };
+    throw redirect({
+      to: "/$workspace/team/$teamKey/issues",
+      params: {
+        workspace: params.workspace,
+        teamKey: preferredTeam.key,
+      },
+    });
   },
 });
-
-function RouteComponent() {
-  const params = Route.useParams();
-  const issuesQuery = useQuery(() =>
-    listIssuesQueryOptions(params().workspace),
-  );
-
-  function handleSubmit(e: SubmitEvent) {
-    e.preventDefault();
-    const target = e.target as HTMLFormElement;
-    const formData = new FormData(target);
-    console.log(formData);
-
-    uploadAttachment({
-      data: formData,
-    });
-  }
-
-  return (
-    <>
-      <PageHeader>Dashboard</PageHeader>
-      Here will be some dashboard
-      <form enctype="multipart/form-data" method="post" onSubmit={handleSubmit}>
-        <input type="file" name="file" />
-        <button>Submit</button>
-      </form>
-    </>
-  );
-}
