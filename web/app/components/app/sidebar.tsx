@@ -79,7 +79,7 @@ export function Sidebar({ onSearch, onNavigate }: { onSearch: () => void; onNavi
         <div className="space-y-0.5">
           <NavLink to={`${base}/inbox`} className={linkClass}>
             <Inbox />{t("nav.inbox")}
-            {unread > 0 && <span className="ml-auto rounded-full bg-primary px-1.5 text-[11px] font-semibold tabular-nums text-primary-foreground">{unread}</span>}
+            {unread > 0 && <span className="ml-auto rounded-full bg-primary-solid px-1.5 text-[11px] font-semibold tabular-nums text-primary-foreground">{unread}</span>}
           </NavLink>
           <NavLink to={`${base}/my-issues`} className={linkClass}><UserRound />{t("nav.myIssues")}</NavLink>
         </div>

@@ -49,7 +49,7 @@ export function DatePicker({ label, value, onChange, clearable = true, placehold
       >
         {value ? (
           <DateInput className="flex flex-1">
-            {(segment) => <DateSegment segment={segment} className="rounded px-0.5 tabular-nums outline-none focus:bg-primary focus:text-primary-foreground data-[placeholder]:text-muted-foreground" />}
+            {(segment) => <DateSegment segment={segment} className="rounded px-0.5 tabular-nums outline-none focus:bg-primary-solid focus:text-primary-foreground data-[placeholder]:text-muted-foreground" />}
           </DateInput>
         ) : (
           <span className="flex-1 text-muted-foreground">{placeholder ?? ""}</span>
@@ -79,7 +79,7 @@ export function DatePicker({ label, value, onChange, clearable = true, placehold
                 {(date) => (
                   <CalendarCell
                     date={date}
-                    className="flex size-8 cursor-default items-center justify-center rounded-md text-[13px] outline-none hover:bg-muted selected:bg-primary selected:text-primary-foreground focus-visible:ring-2 focus-visible:ring-ring/60 outside-month:text-muted-foreground/40 disabled:opacity-30 unavailable:text-destructive"
+                    className="flex size-8 cursor-default items-center justify-center rounded-md text-[13px] outline-none hover:bg-muted selected:bg-primary-solid selected:text-primary-foreground focus-visible:ring-2 focus-visible:ring-ring/60 outside-month:text-muted-foreground/40 disabled:opacity-30 unavailable:text-destructive"
                   />
                 )}
               </CalendarGridBody>
