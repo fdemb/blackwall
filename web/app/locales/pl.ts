@@ -102,7 +102,7 @@ export const pl: Record<keyof typeof en, string> = {
 
   "trash.sub": "Usunięte zadania można przywrócić", "trash.emptyTitle": "Kosz jest pusty", "trash.emptySub": "Usunięte zadania czekają tu na przywrócenie.",
   "trash.restoreAll": "Przywróć wszystko", "trash.restored": "Przywrócono", "trash.deleted": "Usunięto {when}",
-  "activity.title": "Aktywność", "activity.sub": "Wszystko, co zmieniło się w przestrzeni", "activity.empty": "Brak aktywności.",
+  "activity.title": "Aktywność",
   "activity.create_issue": "utworzono", "activity.update_issue": "zaktualizowano", "activity.move_issue": "przeniesiono", "activity.delete_issue": "usunięto", "activity.restore_issue": "przywrócono",
   "activity.add_comment": "skomentowano", "activity.edit_comment": "edytowano komentarz w", "activity.delete_comment": "usunięto komentarz w", "activity.log_time": "zapisano czas w",
   "activity.issue_completed": "zakończono", "activity.follow": "obserwacja", "activity.bulk_issues": "zmiana zbiorcza", "activity.create_sprint": "utworzono sprint",

@@ -3,7 +3,7 @@ import { Link, NavLink, useLocation, useNavigate, useOutletContext } from "react
 import { Disclosure, DisclosurePanel, Heading } from "react-aria-components";
 import {
   BarChart3, Check, ChevronDown, ChevronRight, FolderKanban, Inbox, LogOut, Plus, Search, Settings, SquarePen, Trash2,
-  UserRound, Users, Layers, Eye, UserCog, Building2, History,
+  UserRound, Users, Layers, Eye, UserCog, Building2,
 } from "lucide-react";
 import { Avatar } from "~/components/ui/avatar";
 import { Button } from "~/components/ui/button";
@@ -89,7 +89,6 @@ export function Sidebar({ onSearch, onNavigate }: { onSearch: () => void; onNavi
           <NavLink to={`${base}/projects`} className={linkClass}><FolderKanban />{t("nav.projects")}</NavLink>
           <NavLink to={`${base}/people`} className={linkClass}><Users />{t("nav.people")}</NavLink>
           <NavLink to={`${base}/reports`} className={linkClass}><BarChart3 />{t("nav.reports")}</NavLink>
-          <NavLink to={`${base}/activity`} className={linkClass}><History />{t("activity.title")}</NavLink>
         </Section>
 
         <Section title={t("nav.teams")}>

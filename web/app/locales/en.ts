@@ -100,7 +100,7 @@ export const en = {
 
   "trash.sub": "Deleted issues can be restored", "trash.emptyTitle": "Trash is empty", "trash.emptySub": "Deleted issues wait here until you restore them.",
   "trash.restoreAll": "Restore all", "trash.restored": "Restored", "trash.deleted": "Deleted {when}",
-  "activity.title": "Activity", "activity.sub": "Everything that changed in this workspace", "activity.empty": "No activity yet.",
+  "activity.title": "Activity",
   "activity.create_issue": "created", "activity.update_issue": "updated", "activity.move_issue": "moved", "activity.delete_issue": "deleted", "activity.restore_issue": "restored",
   "activity.add_comment": "commented on", "activity.edit_comment": "edited a comment on", "activity.delete_comment": "removed a comment on", "activity.log_time": "logged time on",
   "activity.issue_completed": "completed", "activity.follow": "followed", "activity.bulk_issues": "updated in bulk", "activity.create_sprint": "created a sprint",

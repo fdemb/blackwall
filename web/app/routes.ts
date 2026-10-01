@@ -24,7 +24,6 @@ export default [
       route("people", "routes/people.tsx"),
       route("people/:userId", "routes/person.tsx"),
       route("trash", "routes/trash.tsx"),
-      route("activity", "routes/activity.tsx"),
       route("account", "routes/account.tsx"),
       route("settings", "routes/settings.tsx", [
         index("routes/settings-general.tsx"),

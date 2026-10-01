@@ -832,7 +832,7 @@ function Composer({ issue, hasItems }: { issue: Issue; hasItems: boolean }) {
   );
 }
 
-export function activityLabel(t: ReturnType<typeof useI18n>["t"], action: string) {
+function activityLabel(t: ReturnType<typeof useI18n>["t"], action: string) {
   const key = `activity.${action}` as Parameters<typeof t>[0];
   const text = t(key);
   return text === key ? action.replaceAll("_", " ").replace(/\./g, " ") : text;
