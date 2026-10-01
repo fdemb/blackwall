@@ -2,6 +2,7 @@ use crate::{
     auth::{self, *},
     domain::*,
     error::{Error, Result},
+    jobs::{Email, Grant, Job, Webhook},
     store::{NewAttachment, NewJob, Store},
 };
 use axum::{
@@ -429,7 +430,16 @@ fn outgoing(before: &Workspace, after: &Workspace) -> Vec<NewJob> {
         before.activity.iter().map(|event| event.id).collect();
     for event in after.activity.iter().filter(|e| !previous.contains(&e.id)) {
         for integration in after.integrations.iter().filter(|i| i.enabled) {
-            jobs.push(NewJob{id:format!("{}:{}",event.id,integration.id),kind:"webhook".into(),payload:serde_json::json!({"workspace_id":after.id,"integration_id":integration.id,"url":integration.webhook_url,"secret":integration.secret,"event":{"workspace_id":after.id,"activity":event}}),due_at:Utc::now().timestamp()});
+            jobs.push(NewJob::now(
+                format!("{}:{}", event.id, integration.id),
+                Job::Webhook(Webhook {
+                    workspace_id: after.id,
+                    integration_id: integration.id,
+                    url: integration.webhook_url.clone(),
+                    secret: integration.secret.clone(),
+                    event: serde_json::json!({"workspace_id":after.id,"activity":event}),
+                }),
+            ));
         }
     }
     jobs
@@ -500,7 +510,19 @@ async fn command(
             .iter()
             .find(|i| Some(i.id) == result.id)
             .ok_or_else(|| Error::Internal("invitation result missing".into()))?;
-        jobs.push(NewJob{id:Uuid::new_v4().to_string(),kind:"email".into(),payload:serde_json::json!({"to":invitation.email,"subject":"Join a Blackwall workspace","workspace_id":id,"invitation_id":invitation.id,"token_hash":invitation.token_hash,"token":token}),due_at:Utc::now().timestamp()});
+        jobs.push(NewJob::now(
+            Uuid::new_v4().to_string(),
+            Job::Email(Email {
+                to: invitation.email.clone(),
+                subject: "Join a Blackwall workspace".into(),
+                token,
+                grant: Grant::Invitation {
+                    workspace_id: id,
+                    invitation_id: invitation.id,
+                    token_hash: invitation.token_hash.clone(),
+                },
+            }),
+        ));
     }
     auth::filter_notifications(&store, &before, &mut workspace).await?;
     jobs.extend(outgoing(&before, &workspace));

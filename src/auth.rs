@@ -1,6 +1,7 @@
 use crate::{
     error::{Error, Result},
-    store::Store,
+    jobs::{Email, Grant, Job},
+    store::{NewJob, Outbox, Store},
 };
 use argon2::{
     Argon2, PasswordHash, PasswordHasher, PasswordVerifier,
@@ -312,8 +313,19 @@ impl Store {
             .bind(now + 3600)
             .execute(&mut *tx)
             .await?;
-            sqlx::query("INSERT INTO outbox (id,kind,payload,due_at) VALUES ($1,'email',$2,$3)").bind(Uuid::new_v4().to_string()).bind(serde_json::json!({"to":email,"subject":"Reset your Blackwall password","user_id":user,"token_hash":hash(&token),"token":token}).to_string()).bind(now).execute(&mut *tx).await?;
+            let user_id = Uuid::parse_str(&user).map_err(|e| Error::Internal(e.to_string()))?;
+            let job = Job::Email(Email {
+                to: email,
+                subject: "Reset your Blackwall password".into(),
+                grant: Grant::Reset {
+                    user_id,
+                    token_hash: hash(&token),
+                },
+                token,
+            });
+            Outbox::insert(&mut tx, &NewJob::now(Uuid::new_v4().to_string(), job)).await?;
             tx.commit().await?;
+            self.outbox.ready();
         }
         Ok(())
     }

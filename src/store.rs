@@ -2,19 +2,20 @@ use crate::{
     domain::Workspace,
     error::{Error, Result},
 };
+use chrono::{DateTime, Utc};
 use sqlx::{AnyPool, Row, any::AnyPoolOptions};
+use std::sync::Arc;
+use tokio::sync::Notify;
 use uuid::Uuid;
+mod outbox;
+pub use outbox::{Claim, NewJob, Outbox};
 
 #[derive(Clone)]
 pub struct Store {
     pub pool: AnyPool,
-}
-
-pub struct NewJob {
-    pub id: String,
-    pub kind: String,
-    pub payload: serde_json::Value,
-    pub due_at: i64,
+    pub outbox: Outbox,
+    /// Fires when a commit may have moved a workspace's next tick earlier.
+    pub(crate) ticks_changed: Arc<Notify>,
 }
 pub struct NewAttachment {
     pub id: Uuid,
@@ -37,7 +38,11 @@ impl Store {
                 .execute(&pool)
                 .await?;
         }
-        let store = Self { pool };
+        let store = Self {
+            outbox: Outbox::new(pool.clone()),
+            pool,
+            ticks_changed: Arc::new(Notify::new()),
+        };
         store.migrate().await?;
         Ok(store)
     }
@@ -60,7 +65,24 @@ impl Store {
         for statement in statements {
             sqlx::query(statement).execute(&mut *tx).await?;
         }
-        sqlx::query("INSERT INTO schema_migrations (version,applied_at) VALUES (1,$1) ON CONFLICT (version) DO NOTHING").bind(chrono::Utc::now().timestamp()).execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO schema_migrations (version,applied_at) VALUES (1,$1) ON CONFLICT (version) DO NOTHING").bind(Utc::now().timestamp()).execute(&mut *tx).await?;
+        let scheduled = sqlx::query("SELECT version FROM schema_migrations WHERE version = 2")
+            .fetch_optional(&mut *tx)
+            .await?
+            .is_some();
+        if !scheduled {
+            // Existing workspaces start due so the first tick computes their real schedule.
+            sqlx::query("ALTER TABLE workspaces ADD COLUMN next_tick_at BIGINT DEFAULT 0")
+                .execute(&mut *tx)
+                .await?;
+            sqlx::query("CREATE INDEX workspaces_next_tick ON workspaces(next_tick_at)")
+                .execute(&mut *tx)
+                .await?;
+            sqlx::query("INSERT INTO schema_migrations (version,applied_at) VALUES (2,$1)")
+                .bind(Utc::now().timestamp())
+                .execute(&mut *tx)
+                .await?;
+        }
         tx.commit().await?;
         Ok(())
     }
@@ -95,17 +117,22 @@ impl Store {
 
     pub async fn insert_workspace(&self, workspace: &Workspace, creator: Uuid) -> Result<()> {
         let mut tx = self.pool.begin().await?;
-        sqlx::query("INSERT INTO workspaces (id, revision, data) VALUES ($1, 0, $2)")
-            .bind(workspace.id.to_string())
-            .bind(serde_json::to_string(workspace)?)
-            .execute(&mut *tx)
-            .await?;
+        let next_tick = workspace.tick_due(Utc::now()).map(ceil_seconds);
+        sqlx::query(
+            "INSERT INTO workspaces (id, revision, data, next_tick_at) VALUES ($1, 0, $2, $3)",
+        )
+        .bind(workspace.id.to_string())
+        .bind(serde_json::to_string(workspace)?)
+        .bind(next_tick)
+        .execute(&mut *tx)
+        .await?;
         sqlx::query("INSERT INTO workspace_members (workspace_id, user_id) VALUES ($1, $2)")
             .bind(workspace.id.to_string())
             .bind(creator.to_string())
             .execute(&mut *tx)
             .await?;
         tx.commit().await?;
+        self.tick_scheduled(next_tick);
         Ok(())
     }
 
@@ -130,9 +157,10 @@ impl Store {
                 "workspace storage limit is 16 MiB".into(),
             ));
         }
+        let next_tick = workspace.tick_due(Utc::now()).map(ceil_seconds);
         let mut tx = self.pool.begin().await?;
-        let updated = sqlx::query("UPDATE workspaces SET data = $1, revision = revision + 1 WHERE id = $2 AND revision = $3")
-            .bind(serde_json::to_string(workspace)?).bind(workspace.id.to_string()).bind(expected_revision).execute(&mut *tx).await?;
+        let updated = sqlx::query("UPDATE workspaces SET data = $1, revision = revision + 1, next_tick_at = $2 WHERE id = $3 AND revision = $4")
+            .bind(serde_json::to_string(workspace)?).bind(next_tick).bind(workspace.id.to_string()).bind(expected_revision).execute(&mut *tx).await?;
         if updated.rows_affected() != 1 {
             return Err(Error::Conflict(
                 "workspace changed; reload and retry".into(),
@@ -150,25 +178,66 @@ impl Store {
                 .await?;
         }
         for job in jobs {
-            sqlx::query("INSERT INTO outbox (id,kind,payload,due_at) VALUES ($1,$2,$3,$4) ON CONFLICT (id) DO NOTHING").bind(&job.id).bind(&job.kind).bind(job.payload.to_string()).bind(job.due_at).execute(&mut *tx).await?;
+            Outbox::insert(&mut tx, job).await?;
         }
         if let Some(a) = attachment {
             sqlx::query("INSERT INTO attachments (id,workspace_id,issue_id,uploader_id,filename,content_type,bytes_hex,created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)")
                 .bind(a.id.to_string()).bind(workspace.id.to_string()).bind(a.issue_id.to_string()).bind(a.uploader_id.to_string()).bind(a.filename).bind(a.content_type).bind(hex::encode(a.bytes)).bind(chrono::Utc::now().timestamp()).execute(&mut *tx).await?;
         }
         tx.commit().await?;
+        if !jobs.is_empty() {
+            self.outbox.ready();
+        }
+        self.tick_scheduled(next_tick);
         Ok(expected_revision + 1)
     }
 
-    pub async fn enqueue(
+    fn tick_scheduled(&self, next_tick: Option<i64>) {
+        if next_tick.is_some() {
+            self.ticks_changed.notify_one();
+        }
+    }
+
+    /// Workspaces whose scheduled tick is due at `now`.
+    pub async fn due_workspaces(&self, now: DateTime<Utc>) -> Result<Vec<Uuid>> {
+        let rows =
+            sqlx::query("SELECT id FROM workspaces WHERE next_tick_at <= $1 ORDER BY next_tick_at")
+                .bind(now.timestamp())
+                .fetch_all(&self.pool)
+                .await?;
+        rows.into_iter()
+            .map(|row| {
+                Uuid::parse_str(row.try_get::<&str, _>("id")?)
+                    .map_err(|e| Error::Internal(e.to_string()))
+            })
+            .collect()
+    }
+
+    pub async fn next_workspace_tick(&self) -> Result<Option<i64>> {
+        let row = sqlx::query("SELECT MIN(next_tick_at) AS next FROM workspaces")
+            .fetch_one(&self.pool)
+            .await?;
+        Ok(row.try_get("next")?)
+    }
+
+    /// Records the next tick for an unchanged revision. A newer commit already set its own.
+    pub async fn reschedule_tick(
         &self,
-        id: &str,
-        kind: &str,
-        payload: &serde_json::Value,
-        due: i64,
+        id: Uuid,
+        revision: i64,
+        at: Option<DateTime<Utc>>,
     ) -> Result<()> {
-        sqlx::query("INSERT INTO outbox (id, kind, payload, due_at) VALUES ($1, $2, $3, $4) ON CONFLICT (id) DO NOTHING")
-            .bind(id).bind(kind).bind(payload.to_string()).bind(due).execute(&self.pool).await?;
+        sqlx::query("UPDATE workspaces SET next_tick_at = $1 WHERE id = $2 AND revision = $3")
+            .bind(at.map(ceil_seconds))
+            .bind(id.to_string())
+            .bind(revision)
+            .execute(&self.pool)
+            .await?;
         Ok(())
     }
+}
+
+/// Rounds up so a wakeup never lands just before the event and spins until it arrives.
+fn ceil_seconds(at: DateTime<Utc>) -> i64 {
+    at.timestamp() + i64::from(at.timestamp_subsec_nanos() > 0)
 }

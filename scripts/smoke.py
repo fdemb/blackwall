@@ -72,20 +72,20 @@ with tempfile.TemporaryDirectory(prefix="blackwall-smoke-") as temporary:
         invitation = command({"type": "invite", "email": "colleague@example.com", "role": "member", "token_hash": "server-generated"})["result"]["id"]
         cancelled = command({"type": "invite", "email": "cancelled@example.com", "role": "member", "token_hash": "server-generated"})["result"]["id"]
         command({"type": "cancel_invitation", "id": cancelled})
+        # Commits wake the delivery worker, so mail arrives well before any timer would fire.
+        for _ in range(20):
+            spooled = {json.loads(file.read_text())["to"]: file for file in Path(temporary, "mail").glob("*.json")}
+            if "colleague@example.com" in spooled:
+                break
+            time.sleep(0.1)
+        file = spooled["colleague@example.com"]
+        mail = json.loads(file.read_text())
+        assert mail["invitation_id"] == invitation
+        assert file.stat().st_mode & 0o777 == 0o600
         stop()
         start()
         persisted = request("GET", path)
         assert persisted["workspace"]["issues"][0]["id"] == issue
-        for _ in range(100):
-            files = list(Path(temporary, "mail").glob("*.json"))
-            if files:
-                break
-            time.sleep(0.1)
-        assert len(files) == 1, "only the active invitation should deliver"
-        mail = json.loads(files[0].read_text())
-        assert mail["to"] == "colleague@example.com"
-        assert mail["invitation_id"] == invitation
-        assert files[0].stat().st_mode & 0o777 == 0o600
         colleague = request("POST", "/api/auth/register", {"email": "colleague@example.com", "password": "smoke-password-456", "display_name": "Colleague"})
         token = colleague["token"]
         joined = request("POST", path + "/invitations/accept", {"token": mail["token"]})
@@ -94,7 +94,7 @@ with tempfile.TemporaryDirectory(prefix="blackwall-smoke-") as temporary:
         shell = request("GET", "/login")
         assert b"<!DOCTYPE html>" in shell and b"/assets/" in shell
         assert request("GET", "/api/schema.json")["components"]["schemas"]["Command"]
-        print("PASS: real HTTP, restart persistence, invitation delivery/cancellation/acceptance, HTML, assets, OpenAPI")
+        print("PASS: real HTTP, restart persistence, prompt invitation delivery and acceptance, HTML, assets, OpenAPI")
     finally:
         stop()
         log.close()

@@ -1,5 +1,14 @@
 use super::*;
 use std::collections::{BTreeMap, BTreeSet};
+
+const REMINDER_LEAD: chrono::Duration = chrono::Duration::hours(24);
+
+struct Reminder {
+    issue_id: Uuid,
+    user: Uuid,
+    message: String,
+    key: String,
+}
 impl Workspace {
     pub fn new(name: String, owner: Uuid) -> Result<Self> {
         text(&name, 200)?;
@@ -63,6 +72,14 @@ impl Workspace {
             .flat_map(|t| &t.stages)
             .any(|s| s.id == i.stage_id && matches!(s.kind, StageKind::Done | StageKind::Cancelled))
     }
+    fn wants(&self, user: Uuid, kind: &AlertKind) -> bool {
+        self.member(user).is_ok()
+            && self
+                .alert_preferences
+                .iter()
+                .find(|p| p.user_id == user)
+                .is_none_or(|p| p.enabled(kind))
+    }
     fn notify(
         &mut self,
         user: Uuid,
@@ -72,14 +89,7 @@ impl Workspace {
         key: String,
         now: DateTime<Utc>,
     ) {
-        if self.member(user).is_err()
-            || self
-                .alert_preferences
-                .iter()
-                .find(|p| p.user_id == user)
-                .is_some_and(|p| !p.enabled(&kind))
-            || self.notifications.iter().any(|n| n.dedup_key == key)
-        {
+        if !self.wants(user, &kind) || self.notifications.iter().any(|n| n.dedup_key == key) {
             return;
         }
         self.notifications.push(Notification {
@@ -1484,18 +1494,59 @@ impl Workspace {
                 changed = true;
             }
         }
-        let due: Vec<_> = self
-            .issues
+        for reminder in self.due_reminders(now) {
+            let len = self.notifications.len();
+            self.notify(
+                reminder.user,
+                Some(reminder.issue_id),
+                AlertKind::Deadline,
+                reminder.message,
+                reminder.key,
+                now,
+            );
+            changed |= self.notifications.len() != len;
+        }
+        changed
+    }
+    /// When `tick` next has work, given that it already ran at `now`. Reminders that were due
+    /// but suppressed stay suppressed until a command changes the workspace.
+    pub fn next_tick(&self, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
+        let expiries = self
+            .invitations
             .iter()
-            .filter(|i| {
-                i.deleted_at.is_none()
-                    && !self.done(i)
-                    && i.deadline
-                        .is_some_and(|d| d <= now + chrono::Duration::hours(24))
-            })
-            .cloned()
+            .filter(|i| i.state == InvitationState::Pending)
+            .map(|i| i.expires_at);
+        let reminders = self
+            .open_deadlines()
+            .map(|(_, deadline)| deadline - REMINDER_LEAD)
+            .filter(|at| *at > now);
+        expiries.chain(reminders).min()
+    }
+    /// When `tick` next has work after a command changed the workspace at `now`.
+    pub fn tick_due(&self, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
+        if self.due_reminders(now).is_empty() {
+            self.next_tick(now)
+        } else {
+            Some(now)
+        }
+    }
+    fn open_deadlines(&self) -> impl Iterator<Item = (&Issue, DateTime<Utc>)> {
+        self.issues
+            .iter()
+            .filter(|i| i.deleted_at.is_none() && !self.done(i))
+            .filter_map(|i| Some((i, i.deadline?)))
+    }
+    fn due_reminders(&self, now: DateTime<Utc>) -> Vec<Reminder> {
+        let sent: BTreeSet<_> = self
+            .notifications
+            .iter()
+            .map(|n| n.dedup_key.as_str())
             .collect();
-        for issue in due {
+        let mut due = Vec::new();
+        for (issue, deadline) in self.open_deadlines() {
+            if deadline > now + REMINDER_LEAD {
+                continue;
+            }
             let users: BTreeSet<_> = issue
                 .followers
                 .iter()
@@ -1503,19 +1554,18 @@ impl Workspace {
                 .chain(issue.assignee)
                 .collect();
             for user in users {
-                let len = self.notifications.len();
-                self.notify(
-                    user,
-                    Some(issue.id),
-                    AlertKind::Deadline,
-                    format!("Deadline approaching: {}", issue.title),
-                    format!("deadline:{}:{}:{user}", issue.id, issue.deadline.unwrap()),
-                    now,
-                );
-                changed |= self.notifications.len() != len;
+                let key = format!("deadline:{}:{deadline}:{user}", issue.id);
+                if self.wants(user, &AlertKind::Deadline) && !sent.contains(key.as_str()) {
+                    due.push(Reminder {
+                        issue_id: issue.id,
+                        user,
+                        message: format!("Deadline approaching: {}", issue.title),
+                        key,
+                    });
+                }
             }
         }
-        changed
+        due
     }
     pub fn report(&self, actor: Uuid) -> Result<Report> {
         self.member(actor)?;
