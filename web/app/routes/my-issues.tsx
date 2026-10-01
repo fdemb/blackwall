@@ -13,7 +13,6 @@ export default function MyIssues() {
   const [tab, setTab] = useState<"assigned" | "following">("assigned");
   return (
     <Workbench
-      key={tab}
       title={t("nav.myIssues")}
       icon={<UserRound className="size-4 text-muted-foreground" />}
       base={tab === "assigned" ? { assignee: me } : {}}

@@ -44,8 +44,9 @@ export function LabelChips({ issue, max = 3 }: { issue: Issue; max?: number }) {
 export function AssigneeAvatar({ issue, size = 20 }: { issue: Issue; size?: number }) {
   const { member } = useWorkspace();
   const m = member(issue.assignee);
-  if (!m) return <span style={{ width: size, height: size }} className="inline-block rounded-full border border-dashed border-muted-foreground/40" />;
-  return <Avatar name={m.display_name} src={m.avatar_url} size={size} />;
+  const { t } = useI18n();
+  if (!m) return <span role="img" aria-label={t("assignee.none")} title={t("assignee.none")} style={{ width: size, height: size }} className="inline-block rounded-full border border-dashed border-muted-foreground/40" />;
+  return <Avatar name={m.display_name} src={m.avatar_url} size={size} named />;
 }
 
 export function BlockedBadge({ issue }: { issue: Issue }) {

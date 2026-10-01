@@ -63,7 +63,7 @@ export const en = {
   "group.stage": "Group by status", "group.priority": "Group by priority", "group.assignee": "Group by assignee", "group.none": "No grouping", "group.all": "All issues",
   "sort.label": "Sort", "sort.position": "Manual", "sort.priority": "Priority", "sort.deadline": "Deadline", "sort.updated": "Updated",
   "filter.add": "Filter", "filter.clear": "Clear filters", "filter.search": "Filter by title…", "filter.dueBefore": "Due by", "filter.today": "Due today", "filter.week": "Due in 7 days", "filter.month": "Due in 30 days",
-  "empty.issues": "No issues yet", "empty.issuesSub": "Press C to create the first one.", "empty.noMatch": "Nothing matches", "empty.noMatchSub": "Try removing a filter.",
+  "empty.issues": "No issues yet", "empty.issuesSub": "Create the first one with New issue.", "empty.noMatch": "Nothing matches", "empty.noMatchSub": "Try removing a filter.",
   "view.save": "Save view", "view.saveSub": "Come back to these filters any time.", "view.saved": "View saved", "view.share": "Share with the workspace", "view.shared": "Shared", "view.delete": "Delete view",
   "bulk.select": "Select issue", "bulk.selected": "{n} selected", "bulk.toolbar": "Bulk actions", "bulk.sameTeam": "Select issues from one team to change status.",
 
@@ -151,4 +151,24 @@ export const en = {
   "error.offlineRetry": "Retry now",
 
   "error.network": "Couldn't reach the server. Check your connection and try again.",
+
+  "filter.status": "Status",
+  "filter.back": "All filters",
+  "filter.searchValues": "Search…",
+  "filter.noValues": "Nothing to choose from.",
+  "filter.dueTo": "Due by {date}",
+  "view.update": "Update view",
+  "view.updated": "View updated",
+  "view.rename": "Edit view",
+  "view.unsaved": "Filters changed since this view was saved.",
+  "view.deleteTitle": "Delete this view?",
+  "view.personalOnly": "Only you can see views you save.",
+  "view.revert": "Reset",
+  "bulk.deleteTitle": "Delete {n} issues?",
+  "bulk.deleteSub": "They move to Trash and can be restored.",
+  "bulk.deleted": "{n} issues moved to Trash",
+  "bulk.restored": "{n} issues restored",
+  "action.confirmDelete": "Delete",
+
+  "empty.issuesViewerSub": "Issues your team creates will show up here.",
 } as const;

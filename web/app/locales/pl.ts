@@ -65,7 +65,7 @@ export const pl: Record<keyof typeof en, string> = {
   "group.stage": "Grupuj wg statusu", "group.priority": "Grupuj wg priorytetu", "group.assignee": "Grupuj wg osoby", "group.none": "Bez grupowania", "group.all": "Wszystkie zadania",
   "sort.label": "Sortuj", "sort.position": "Ręcznie", "sort.priority": "Priorytet", "sort.deadline": "Termin", "sort.updated": "Ostatnio zmienione",
   "filter.add": "Filtr", "filter.clear": "Wyczyść filtry", "filter.search": "Filtruj po tytule…", "filter.dueBefore": "Termin do", "filter.today": "Termin dziś", "filter.week": "Termin w 7 dni", "filter.month": "Termin w 30 dni",
-  "empty.issues": "Brak zadań", "empty.issuesSub": "Naciśnij C, aby utworzyć pierwsze.", "empty.noMatch": "Nic nie pasuje", "empty.noMatchSub": "Spróbuj usunąć któryś filtr.",
+  "empty.issues": "Brak zadań", "empty.issuesSub": "Utwórz pierwsze przyciskiem Nowe zadanie.", "empty.noMatch": "Nic nie pasuje", "empty.noMatchSub": "Spróbuj usunąć któryś filtr.",
   "view.save": "Zapisz widok", "view.saveSub": "Wróć do tych filtrów w dowolnej chwili.", "view.saved": "Widok zapisany", "view.share": "Udostępnij przestrzeni", "view.shared": "Udostępniony", "view.delete": "Usuń widok",
   "bulk.select": "Zaznacz zadanie", "bulk.selected": "Zaznaczono: {n}", "bulk.toolbar": "Działania zbiorcze", "bulk.sameTeam": "Aby zmienić status, zaznacz zadania z jednego zespołu.",
 
@@ -153,4 +153,24 @@ export const pl: Record<keyof typeof en, string> = {
   "error.offlineRetry": "Spróbuj teraz",
 
   "error.network": "Nie udało się połączyć z serwerem. Sprawdź połączenie i spróbuj ponownie.",
+
+  "filter.status": "Status",
+  "filter.back": "Wszystkie filtry",
+  "filter.searchValues": "Szukaj…",
+  "filter.noValues": "Brak opcji do wyboru.",
+  "filter.dueTo": "Termin do {date}",
+  "view.update": "Zaktualizuj widok",
+  "view.updated": "Widok zaktualizowany",
+  "view.rename": "Edytuj widok",
+  "view.unsaved": "Filtry zmieniono od zapisania widoku.",
+  "view.deleteTitle": "Usunąć ten widok?",
+  "view.personalOnly": "Widoki, które zapisujesz, widzisz tylko Ty.",
+  "view.revert": "Przywróć",
+  "bulk.deleteTitle": "Usunąć zadania: {n}?",
+  "bulk.deleteSub": "Trafią do kosza i można je przywrócić.",
+  "bulk.deleted": "Zadania przeniesione do kosza: {n}",
+  "bulk.restored": "Zadania przywrócone: {n}",
+  "action.confirmDelete": "Usuń",
+
+  "empty.issuesViewerSub": "Zadania utworzone przez zespół pojawią się tutaj.",
 };

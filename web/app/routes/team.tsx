@@ -8,12 +8,12 @@ import { DndColumn } from "~/components/app/board";
 import { StageIcon } from "~/components/app/icons";
 import { FilterBar } from "~/components/app/filter-bar";
 import { IssueList } from "~/components/app/issue-list";
-import { Workbench } from "~/components/app/workbench";
+import { Workbench, useQueueState, type QueueState } from "~/components/app/workbench";
 import { EmptyState, Page, PageHeader, Scroll } from "~/components/app/page";
 import { applyFilter, isDone } from "~/lib/filters";
 import { useT } from "~/lib/i18n";
 import { useWorkspace } from "~/lib/workspace";
-import type { Id, IssueFilter, Workspace } from "~/lib/types";
+import type { Id, Workspace } from "~/lib/types";
 
 type Layout = "list" | "board" | "backlog";
 
@@ -30,11 +30,22 @@ export function moveOptimistic(ws: Workspace, ids: Id[], stageId: Id, beforeId: 
   };
 }
 
+type SprintScope = Id | null | "all";
+
 export default function Team() {
+  const { teamId } = useParams();
+  // Filters live above the layout switch, so list, board and backlog share them. A new team starts clean.
+  return <TeamPage key={teamId} />;
+}
+
+function TeamPage() {
   const t = useT();
   const { teamId, ws: wsId } = useParams();
   const [params, setParams] = useSearchParams();
   const { ws, team } = useWorkspace();
+  const state = useQueueState();
+  const activeSprint = ws.sprints.find((s) => s.team_id === teamId && s.state === "active");
+  const [sprint, setSprint] = useState<SprintScope>(activeSprint ? activeSprint.id : "all");
   const tm = team(teamId!);
   if (!tm) return <Navigate to={`/${wsId}/my-issues`} replace />;
   const layout = (params.get("layout") as Layout) || "list";
@@ -52,11 +63,11 @@ export default function Team() {
       <CalendarRange className="size-4" />{t("team.sprints")}
     </Link>
   );
-  if (layout === "board") return <BoardView key={tm.id} teamId={tm.id} name={tm.name} tabs={tabs} sprintLink={sprintLink} />;
-  if (layout === "backlog") return <BacklogView key={tm.id} teamId={tm.id} name={tm.name} tabs={tabs} sprintLink={sprintLink} />;
+  if (layout === "board") return <BoardView teamId={tm.id} name={tm.name} tabs={tabs} sprintLink={sprintLink} state={state} sprint={sprint} setSprint={setSprint} />;
+  if (layout === "backlog") return <BacklogView teamId={tm.id} name={tm.name} tabs={tabs} sprintLink={sprintLink} state={state} />;
   return (
     <Workbench
-      key={tm.id}
+      state={state}
       title={tm.name}
       base={{ team_id: tm.id }}
       hide={["team_id"]}
@@ -66,17 +77,19 @@ export default function Team() {
   );
 }
 
-function BoardView({ teamId, name, tabs, sprintLink }: { teamId: Id; name: string; tabs: React.ReactNode; sprintLink: React.ReactNode }) {
+function BoardView({ teamId, name, tabs, sprintLink, state, sprint, setSprint }: {
+  teamId: Id; name: string; tabs: React.ReactNode; sprintLink: React.ReactNode; state: QueueState; sprint: SprintScope; setSprint: (s: SprintScope) => void;
+}) {
   const t = useT();
   const { ws, team, run, create } = useWorkspace();
   const tm = team(teamId)!;
-  const [filter, setFilter] = useState<IssueFilter>({});
-  const activeSprint = ws.sprints.find((s) => s.team_id === teamId && s.state === "active");
-  const [sprint, setSprint] = useState<Id | null | "all">(activeSprint ? activeSprint.id : "all");
+  const { filter, setFilter } = state;
   const sprints = ws.sprints.filter((s) => s.team_id === teamId && s.state !== "archived");
   const stages = [...tm.stages].sort((a, b) => a.position - b.position);
+  const narrowed = Object.keys(filter).some((k) => k !== "sort" && k !== "sprint_id" && k !== "team_id" && filter[k as keyof typeof filter]) || sprint !== "all";
+  const teamHasIssues = ws.issues.some((i) => i.team_id === teamId && !i.deleted_at);
   const issues = useMemo(() => {
-    let list = applyFilter(ws, { ...filter, team_id: teamId, sort: "position" });
+    let list = applyFilter(ws, { ...filter, team_id: teamId, sprint_id: undefined, sort: "position" });
     if (sprint === "none") list = list.filter((i) => !i.sprint_id);
     else if (sprint !== "all" && sprint) list = list.filter((i) => i.sprint_id === sprint);
     return list;
@@ -110,6 +123,13 @@ function BoardView({ teamId, name, tabs, sprintLink }: { teamId: Id; name: strin
           </div>
         </div>
       </PageHeader>
+      {issues.length === 0 && narrowed && teamHasIssues ? (
+        <EmptyState
+          title={t("empty.noMatch")}
+          description={t("empty.noMatchSub")}
+          action={<Button onPress={() => { setFilter({}); setSprint("all"); }}>{t("filter.clear")}</Button>}
+        />
+      ) : (
       <div className="flex min-h-0 flex-1 gap-3 overflow-x-auto p-3">
         {stages.map((s) => {
           const list = issues.filter((i) => i.stage_id === s.id);
@@ -126,16 +146,18 @@ function BoardView({ teamId, name, tabs, sprintLink }: { teamId: Id; name: strin
           );
         })}
       </div>
+      )}
     </Page>
   );
 }
 
-function BacklogView({ teamId, name, tabs, sprintLink }: { teamId: Id; name: string; tabs: React.ReactNode; sprintLink: React.ReactNode }) {
+function BacklogView({ teamId, name, tabs, sprintLink, state }: { teamId: Id; name: string; tabs: React.ReactNode; sprintLink: React.ReactNode; state: QueueState }) {
   const t = useT();
   const { ws, create, canWrite } = useWorkspace();
-  const [filter, setFilter] = useState<IssueFilter>({});
+  const { filter, setFilter } = state;
+  const narrowed = Object.keys(filter).some((k) => k !== "sort" && k !== "sprint_id" && k !== "team_id" && filter[k as keyof typeof filter]);
   const issues = useMemo(
-    () => applyFilter(ws, { ...filter, team_id: teamId, sort: filter.sort ?? "priority" }).filter((i) => !i.sprint_id && !isDone(ws, i)),
+    () => applyFilter(ws, { ...filter, team_id: teamId, sprint_id: undefined, sort: filter.sort ?? "priority" }).filter((i) => !i.sprint_id && !isDone(ws, i)),
     [ws, filter, teamId],
   );
   return (
@@ -149,7 +171,13 @@ function BacklogView({ teamId, name, tabs, sprintLink }: { teamId: Id; name: str
         <FilterBar filter={filter} onChange={setFilter} hide={["team_id", "sprint_id"]} saveable={false} />
       </PageHeader>
       <Scroll>
-        <IssueList issues={issues} groupBy="none" emptyState={<EmptyState icon={<ListTodo />} title={t("backlog.emptyTitle")} description={t("backlog.emptySub")} />} />
+        <IssueList
+          issues={issues}
+          groupBy="none"
+          emptyState={narrowed
+            ? <EmptyState title={t("empty.noMatch")} description={t("empty.noMatchSub")} action={<Button onPress={() => setFilter({})}>{t("filter.clear")}</Button>} />
+            : <EmptyState icon={<ListTodo />} title={t("backlog.emptyTitle")} description={t("backlog.emptySub")} />}
+        />
       </Scroll>
     </Page>
   );

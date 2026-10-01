@@ -6,6 +6,7 @@ export type SprintState = "planned" | "active" | "completed" | "archived";
 export type AlertKind = "assignment" | "reply" | "change" | "mention" | "deadline";
 export type InvitationState = "pending" | "accepted" | "cancelled" | "expired";
 export type IssueSort = "position" | "deadline" | "updated" | "priority";
+export type IssueGroup = "stage" | "priority" | "assignee" | "none";
 export type Language = "en" | "pl";
 export type Theme = "light" | "dark" | "system";
 
@@ -37,6 +38,7 @@ export interface Invitation { id: Id; email: string; role: Role; expires_at: str
 export interface IssueFilter {
   assignee?: Id; team_id?: Id; stage_id?: Id; priority?: Priority; label_id?: Id;
   sprint_id?: Id; project_id?: Id; due_before?: string; search?: string; trash?: boolean; sort?: IssueSort;
+  unassigned?: boolean; group_by?: IssueGroup;
 }
 export interface SavedView { id: Id; owner: Id; name: string; shared: boolean; filter: IssueFilter }
 export interface Notification {
@@ -88,9 +90,11 @@ export type Command =
   | { type: "update_stage"; team_id: Id; id: Id; name: string; kind: StageKind; position: number }
   | { type: "delete_stage"; team_id: Id; id: Id; replacement: Id }
   | { type: "create_label"; name: string; color: string }
+  | { type: "update_label"; id: Id; name: string; color: string }
   | { type: "create_project"; name: string; description: string; team_ids: Id[] }
   | { type: "update_project"; id: Id; name: string; description: string; team_ids: Id[] }
   | { type: "create_milestone"; project_id: Id; name: string; deadline: string | null }
+  | { type: "update_milestone"; id: Id; name: string; deadline: string | null }
   | { type: "create_sprint"; team_id: Id; name: string; goal: string; starts_at: string; ends_at: string }
   | { type: "update_sprint"; id: Id; name: string; goal: string; starts_at: string; ends_at: string; state: SprintState }
   | { type: "complete_sprint"; id: Id; carryover_sprint_id: Id | null }
@@ -110,6 +114,7 @@ export type Command =
   | { type: "update_time"; id: Id; minutes: number; note: string; logged_at: string }
   | { type: "delete_time"; id: Id }
   | { type: "save_view"; name: string; shared: boolean; filter: IssueFilter }
+  | { type: "update_view"; id: Id; name: string; shared: boolean; filter: IssueFilter }
   | { type: "delete_view"; id: Id }
   | { type: "invite"; email: string; role: Role; token_hash: string }
   | { type: "resend_invitation"; id: Id; token_hash: string }
@@ -117,6 +122,7 @@ export type Command =
   | { type: "set_role"; user_id: Id; role: Role }
   | { type: "remove_member"; user_id: Id }
   | { type: "mark_notification_read"; id: Id }
+  | { type: "mark_notification_unread"; id: Id }
   | { type: "mark_all_notifications_read" }
   | { type: "configure_alerts"; assignment: boolean; reply: boolean; change: boolean; mention: boolean; deadline: boolean }
   | { type: "create_integration"; name: string; webhook_url: string; secret: string }
