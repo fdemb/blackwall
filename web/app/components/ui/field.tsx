@@ -20,7 +20,7 @@ export function Description({ className, ...props }: React.ComponentProps<typeof
 export function FieldError({ className, ...props }: FieldErrorProps) {
   return <RACFieldError {...props} className={composeRenderProps(className, (c) => cn("mt-1 text-xs text-destructive", c))} />;
 }
-export function Input({ className, ...props }: InputProps) {
+export function Input({ className, ...props }: InputProps & { ref?: React.Ref<HTMLInputElement> }) {
   return <RACInput {...props} className={composeRenderProps(className, (c) => cn(fieldBase, "h-8 pointer-coarse:h-10", c))} />;
 }
 export function TextArea({ className, ...props }: TextAreaProps) {

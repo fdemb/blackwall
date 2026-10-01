@@ -278,10 +278,12 @@ function Prop({ label, children }: { label: string; children: React.ReactNode })
 function EstimateField({ value, disabled, onCommit }: { value: number | null; disabled: boolean; onCommit: (v: number | null) => void }) {
   const t = useI18n().t;
   const [v, setV] = useState(value?.toString() ?? "");
-  useEffect(() => setV(value?.toString() ?? ""), [value]);
+  const field = useRef<HTMLInputElement>(null);
+  useEffect(() => { if (document.activeElement !== field.current) setV(value?.toString() ?? ""); }, [value]);
   return (
     <div className="relative">
       <Input
+        ref={field}
         aria-label={t("field.estimate")}
         type="number"
         min={0}
@@ -380,8 +382,9 @@ function TitleField({ issue, onSave }: { issue: Issue; onSave: (title: string) =
   const t = useI18n().t;
   const { canWrite } = useWorkspace();
   const [title, setTitle] = useState(issue.title);
-  useEffect(() => setTitle(issue.title), [issue.title]);
   const ref = useRef<HTMLTextAreaElement>(null);
+  // A teammate's edit shouldn't overwrite a title you are in the middle of typing.
+  useEffect(() => { if (document.activeElement !== ref.current) setTitle(issue.title); }, [issue.title]);
   const fit = () => {
     const el = ref.current;
     if (!el) return;

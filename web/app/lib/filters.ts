@@ -60,7 +60,8 @@ export function effectiveFilter(filter: IssueFilter, scope: IssueFilter = {}, gr
 const normalized = (f: IssueFilter) =>
   JSON.stringify(
     Object.entries({ ...f, sort: f.sort ?? "position", group_by: f.group_by ?? "stage" })
-      .filter(([, v]) => v !== undefined && v !== "" && v !== false)
+      // The server sends unset filters as null, the UI leaves them out. Treat both as unset.
+      .filter(([, v]) => v !== undefined && v !== null && v !== "" && v !== false)
       .sort(([a], [b]) => a.localeCompare(b)),
   );
 export const sameFilter = (a: IssueFilter, b: IssueFilter) => normalized(a) === normalized(b);
