@@ -1,27 +1,30 @@
 import { useMemo, useState } from "react";
 import { Autocomplete, Input, Menu, MenuItem, MenuSection, Header, SearchField, ModalOverlay, Modal, Dialog as RACDialog } from "react-aria-components";
 import { useNavigate } from "react-router";
-import { Bell, BarChart3, Search, Settings, Trash2, UserRound, Inbox, FolderKanban, Users, Plus, Layers } from "lucide-react";
+import { Bell, BarChart3, Keyboard, Search, Settings, Trash2, UserRound, Inbox, FolderKanban, Users, Plus, Layers } from "lucide-react";
 import { Avatar } from "~/components/ui/avatar";
 import { Kbd } from "~/components/ui/tooltip";
 import { applyFilter } from "~/lib/filters";
 import { issueKey } from "~/lib/format";
 import { useT } from "~/lib/i18n";
+import { useShortcutsEnabled } from "~/lib/shortcuts";
 import { useWorkspace } from "~/lib/workspace";
 import { PriorityIcon, StageIcon } from "./icons";
 import { stageOf } from "~/lib/filters";
 
 interface Entry { id: string; label: string; icon: React.ReactNode; hint?: string; run: () => void }
 
-export function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenChange: (o: boolean) => void }) {
+export function CommandPalette({ open, onOpenChange, onHelp }: { open: boolean; onOpenChange: (o: boolean) => void; onHelp: () => void }) {
   const t = useT();
   const nav = useNavigate();
-  const { ws, members, create } = useWorkspace();
+  const { ws, members, create, canWrite } = useWorkspace();
+  const [shortcuts] = useShortcutsEnabled();
   const [q, setQ] = useState("");
   const go = (path: string) => () => { onOpenChange(false); nav(`/${ws.id}/${path}`); };
 
   const actions: Entry[] = useMemo(() => [
-    { id: "a-new", label: t("issue.new"), icon: <Plus className="size-4" />, hint: "C", run: () => { onOpenChange(false); create.show(); } },
+    // Viewers can't create issues, so the command isn't offered to them.
+    ...(canWrite ? [{ id: "a-new", label: t("issue.new"), icon: <Plus className="size-4" />, hint: shortcuts ? "C" : undefined, run: () => { onOpenChange(false); create.show(); } }] : []),
     { id: "a-inbox", label: t("nav.inbox"), icon: <Inbox className="size-4" />, run: go("inbox") },
     { id: "a-my", label: t("nav.myIssues"), icon: <UserRound className="size-4" />, run: go("my-issues") },
     { id: "a-issues", label: t("nav.allIssues"), icon: <Layers className="size-4" />, run: go("issues") },
@@ -31,9 +34,10 @@ export function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenCh
     { id: "a-trash", label: t("nav.trash"), icon: <Trash2 className="size-4" />, run: go("trash") },
     { id: "a-settings", label: t("nav.settings"), icon: <Settings className="size-4" />, run: go("settings") },
     { id: "a-account", label: t("nav.account"), icon: <Bell className="size-4" />, run: go("account") },
+    { id: "a-help", label: t("help.shortcuts"), icon: <Keyboard className="size-4" />, run: () => { onOpenChange(false); onHelp(); } },
     ...ws.teams.map((tm) => ({ id: `t-${tm.id}`, label: `${tm.name} · ${t("team.board")}`, icon: <Layers className="size-4" />, run: go(`team/${tm.id}?layout=board`) })),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  ], [t, ws.id, ws.teams]);
+  ], [t, ws.id, ws.teams, canWrite, shortcuts]);
 
   const query = q.trim().toLowerCase();
   const issues = query ? applyFilter(ws, { search: query, sort: "updated" }).slice(0, 8) : applyFilter(ws, { sort: "updated" }).slice(0, 5);

@@ -296,4 +296,17 @@ export const pl: Record<keyof typeof en, string> = {
   "data.count.projects": "Projekty",
   "data.count.sprints": "Sprinty",
   "data.emptyFile": "W tym pliku nie ma nic do zaimportowania.",
+
+  "help.shortcuts": "Skróty klawiszowe",
+  "help.shortcutsSub": "Skróty jednoklawiszowe działają poza polami tekstowymi. Możesz je wyłączyć w ustawieniach konta.",
+  "help.palette": "Otwórz wyszukiwarkę i polecenia",
+  "help.newIssue": "Utwórz zadanie",
+  "help.search": "Szukaj",
+  "help.goInbox": "Przejdź do skrzynki",
+  "help.goMine": "Przejdź do moich zadań",
+  "help.goAll": "Przejdź do wszystkich zadań",
+  "help.goProjects": "Przejdź do projektów",
+  "help.goReports": "Przejdź do raportów",
+  "help.send": "Wyślij komentarz lub zapisz opis",
+  "help.then": "potem",
 };

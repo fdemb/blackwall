@@ -294,4 +294,17 @@ export const en = {
   "data.count.projects": "Projects",
   "data.count.sprints": "Sprints",
   "data.emptyFile": "There's nothing to import in that file.",
+
+  "help.shortcuts": "Keyboard shortcuts",
+  "help.shortcutsSub": "Single-key shortcuts work outside text fields. You can turn them off in Account.",
+  "help.palette": "Open search and commands",
+  "help.newIssue": "Create an issue",
+  "help.search": "Search",
+  "help.goInbox": "Go to Inbox",
+  "help.goMine": "Go to My issues",
+  "help.goAll": "Go to All issues",
+  "help.goProjects": "Go to Projects",
+  "help.goReports": "Go to Reports",
+  "help.send": "Send a comment or save a description",
+  "help.then": "then",
 } as const;
