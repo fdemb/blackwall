@@ -2,12 +2,10 @@ import { useState } from "react";
 import { Form } from "react-aria-components";
 import { Link } from "react-router";
 import { FolderKanban, Plus } from "lucide-react";
-import { DialogTrigger } from "react-aria-components";
 import { Button } from "~/components/ui/button";
 import { Dialog, useDialogDirty } from "~/components/ui/dialog";
 import { SearchField, TextField } from "~/components/ui/field";
-import { Menu, MenuItem } from "~/components/ui/menu";
-import { Popover } from "~/components/ui/popover";
+import { Menu, MenuItem, MenuPopover, MenuTrigger } from "~/components/ui/menu";
 import { Checkbox } from "~/components/ui/toggles";
 import { EmptyState, Page, PageHeader, Scroll } from "~/components/app/page";
 import { ProgressBar } from "~/components/app/progress";
@@ -41,16 +39,16 @@ export default function Projects() {
         {ws.projects.length > 1 && (
           <div className="flex flex-wrap items-center gap-2 px-4 pb-2">
             <SearchField aria-label={t("action.search")} placeholder={t("project.search")} value={q} onChange={setQ} className="w-full sm:w-56" />
-            <DialogTrigger>
+            <MenuTrigger>
               <Button variant="ghost" size="sm">{t("sort.label")}: {t(sort === "name" ? "project.sortName" : sort === "progress" ? "project.sortProgress" : "project.sortRecent")}</Button>
-              <Popover placement="bottom start">
+              <MenuPopover placement="bottom start">
                 <Menu selectionMode="single" selectedKeys={[sort]} onAction={(k) => setSort(k as ProjectSort)} aria-label={t("sort.label")}>
                   <MenuItem id="name">{t("project.sortName")}</MenuItem>
                   <MenuItem id="progress">{t("project.sortProgress")}</MenuItem>
                   <MenuItem id="recent">{t("project.sortRecent")}</MenuItem>
                 </Menu>
-              </Popover>
-            </DialogTrigger>
+              </MenuPopover>
+            </MenuTrigger>
           </div>
         )}
       </PageHeader>

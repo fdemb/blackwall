@@ -5,7 +5,7 @@ import { Button } from "~/components/ui/button";
 import { Dialog, useDialogDirty } from "~/components/ui/dialog";
 import { SearchField, TextField } from "~/components/ui/field";
 import { Switch } from "~/components/ui/toggles";
-import { Menu, MenuItem } from "~/components/ui/menu";
+import { Menu, MenuItem, MenuPopover, MenuTrigger } from "~/components/ui/menu";
 import { Popover } from "~/components/ui/popover";
 import { Avatar } from "~/components/ui/avatar";
 import { useToast } from "~/components/ui/toast";
@@ -95,14 +95,14 @@ export function FilterBar({
 
 function ChoiceMenu({ label, icon, selected, options, onPick }: { label: string; icon?: React.ReactNode; selected: string; options: Choice[]; onPick: (id: string) => void }) {
   return (
-    <DialogTrigger>
+    <MenuTrigger>
       <Button variant="ghost" size="sm">{icon}{label}</Button>
-      <Popover placement="bottom end" className="min-w-44">
+      <MenuPopover placement="bottom end">
         <Menu selectionMode="single" selectedKeys={[selected]} onAction={(k) => onPick(String(k))} aria-label={label}>
           {options.map((o) => <MenuItem key={o.id} id={o.id}>{o.label}</MenuItem>)}
         </Menu>
-      </Popover>
-    </DialogTrigger>
+      </MenuPopover>
+    </MenuTrigger>
   );
 }
 
