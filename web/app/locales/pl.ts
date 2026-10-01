@@ -131,4 +131,26 @@ export const pl: Record<keyof typeof en, string> = {
   "data.imported": "Import zakończony", "data.invalidJson": "Ten plik nie jest poprawnym JSON-em.",
 
   "error.conflict": "Ktoś inny zmienił tę przestrzeń. Wczytaliśmy ją ponownie. Spróbuj jeszcze raz.", "error.generic": "Coś poszło nie tak.",
+
+  "action.clearField": "Wyczyść",
+  "action.close": "Zamknij",
+  "action.dismiss": "Odrzuć",
+  "action.retry": "Spróbuj ponownie",
+  "action.undo": "Cofnij",
+  "action.saving": "Zapisywanie…",
+  "action.saved": "Zapisano",
+  "action.saveFailed": "Nie zapisano",
+  "action.openCalendar": "Otwórz kalendarz",
+  "action.reload": "Odśwież stronę",
+  "action.copy": "Kopiuj",
+  "action.copied": "Skopiowano",
+  "error.title": "Coś poszło nie tak",
+  "error.unknown": "Nieznany błąd",
+  "error.home": "Wróć do Blackwall",
+  "error.switch": "Wybierz inną przestrzeń",
+  "error.refresh": "Zmiana została zapisana, ale nie udało się wczytać najnowszych danych.",
+  "error.offline": "Brak połączenia z serwerem. Widzisz ostatnio wczytane dane.",
+  "error.offlineRetry": "Spróbuj teraz",
+
+  "error.network": "Nie udało się połączyć z serwerem. Sprawdź połączenie i spróbuj ponownie.",
 };

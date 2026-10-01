@@ -129,4 +129,26 @@ export const en = {
   "data.imported": "Import finished", "data.invalidJson": "That file isn't valid JSON.",
 
   "error.conflict": "Someone else changed this workspace. We reloaded it. Try again.", "error.generic": "Something went wrong.",
+
+  "action.clearField": "Clear",
+  "action.close": "Close",
+  "action.dismiss": "Dismiss",
+  "action.retry": "Try again",
+  "action.undo": "Undo",
+  "action.saving": "Saving…",
+  "action.saved": "Saved",
+  "action.saveFailed": "Not saved",
+  "action.openCalendar": "Open calendar",
+  "action.reload": "Reload page",
+  "action.copy": "Copy",
+  "action.copied": "Copied",
+  "error.title": "Something went wrong",
+  "error.unknown": "Unknown error",
+  "error.home": "Back to Blackwall",
+  "error.switch": "Choose another workspace",
+  "error.refresh": "Your change was saved, but the latest data couldn't be loaded.",
+  "error.offline": "Can't reach the server. You're looking at the last data we loaded.",
+  "error.offlineRetry": "Retry now",
+
+  "error.network": "Couldn't reach the server. Check your connection and try again.",
 } as const;
