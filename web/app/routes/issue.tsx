@@ -2,7 +2,9 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Disclosure, DisclosurePanel, FileTrigger, Form, Heading } from "react-aria-components";
 import { Link, Navigate, useLocation, useNavigate, useParams } from "react-router";
 import {
-  Bell, BellOff, ChevronLeft, ChevronRight, Download, ExternalLink, FileText, Link2, Loader2, Lock, MoreHorizontal, Paperclip, Pencil, Plus, Trash2, X,
+  ArchiveRestore, Bell, BellOff, CalendarDays, CalendarRange, ChevronLeft, ChevronRight, ChevronsUp, CircleCheck, CircleDot, CirclePlus, Clock, Download,
+  ExternalLink, FileText, Flag, FolderKanban, Gauge, GitFork, Link2, Loader2, Lock, MoreHorizontal, Paperclip, Pencil, Plus, Signal, Tag, Trash2, UserRound, X,
+  type LucideIcon,
 } from "lucide-react";
 import { Avatar } from "~/components/ui/avatar";
 import { Button } from "~/components/ui/button";
@@ -626,22 +628,32 @@ function ConfirmDelete({ title, isOpen, onOpenChange, onConfirm }: { title: stri
 }
 
 /** Issue events worth showing in the timeline. Comments render on their own. */
-const EVENT_LABELS: Partial<Record<string, Key>> = {
-  create_issue: "timeline.create_issue",
-  update_issue: "timeline.update_issue",
-  move_issue: "timeline.move_issue",
-  restore_issue: "timeline.restore_issue",
-  issue_completed: "timeline.issue_completed",
-  add_attachment: "timeline.add_attachment",
-  remove_attachment: "timeline.remove_attachment",
-  add_source_link: "timeline.add_source_link",
-  log_time: "timeline.log_time",
-  update_time: "timeline.update_time",
+const EVENTS: Partial<Record<string, { label: Key; icon: LucideIcon }>> = {
+  create_issue: { label: "timeline.create_issue", icon: CirclePlus },
+  update_issue: { label: "timeline.update_issue", icon: Pencil },
+  move_issue: { label: "timeline.move_issue", icon: CircleDot },
+  restore_issue: { label: "timeline.restore_issue", icon: ArchiveRestore },
+  issue_completed: { label: "timeline.issue_completed", icon: CircleCheck },
+  add_attachment: { label: "timeline.add_attachment", icon: Paperclip },
+  remove_attachment: { label: "timeline.remove_attachment", icon: Paperclip },
+  add_source_link: { label: "timeline.add_source_link", icon: Link2 },
+  log_time: { label: "timeline.log_time", icon: Clock },
+  update_time: { label: "timeline.update_time", icon: Clock },
 };
-const FIELD_LABELS: Partial<Record<string, Key>> = {
-  title: "field.title", description: "field.description", stage: "field.stage", assignee: "field.assignee", priority: "field.priority",
-  labels: "field.labels", estimate: "field.estimate", deadline: "field.deadline", project: "field.project", milestone: "field.milestone",
-  sprint: "field.sprint", parent: "issue.parent", dependencies: "issue.dependencies",
+const FIELDS: Partial<Record<string, { label: Key; icon: LucideIcon }>> = {
+  title: { label: "field.title", icon: Pencil },
+  description: { label: "field.description", icon: Pencil },
+  stage: { label: "field.stage", icon: CircleDot },
+  assignee: { label: "field.assignee", icon: UserRound },
+  priority: { label: "field.priority", icon: Signal },
+  labels: { label: "field.labels", icon: Tag },
+  estimate: { label: "field.estimate", icon: Gauge },
+  deadline: { label: "field.deadline", icon: CalendarDays },
+  project: { label: "field.project", icon: FolderKanban },
+  milestone: { label: "field.milestone", icon: Flag },
+  sprint: { label: "field.sprint", icon: CalendarRange },
+  parent: { label: "issue.parent", icon: GitFork },
+  dependencies: { label: "issue.dependencies", icon: Lock },
 };
 const PAGE = 30;
 
@@ -655,42 +667,55 @@ function Timeline({ issue }: { issue: Issue }) {
   const items = [
     ...ws.comments.filter((c) => c.issue_id === issue.id).map((c): TimelineItem => ({ kind: "comment", at: c.created_at, comment: c })),
     ...ws.activity
-      .filter((a) => a.entity_id !== null && EVENT_LABELS[a.action] && (a.entity_id === issue.id || entries.has(a.entity_id)))
+      .filter((a) => a.entity_id !== null && EVENTS[a.action] && (a.entity_id === issue.id || entries.has(a.entity_id)))
       .map((a): TimelineItem => ({ kind: "event", at: a.at, event: a })),
   ].sort((a, b) => +new Date(a.at) - +new Date(b.at));
   const hidden = Math.max(0, items.length - limit);
   return (
     <Section title={t("activity.title")}>
-      {hidden > 0 && (
-        <Button variant="ghost" size="sm" className="mb-3 -ml-2.5" onPress={() => setLimit((l) => l + PAGE)}>{t("timeline.older", { n: Math.min(hidden, PAGE) })}</Button>
+      {items.length > 0 && (
+        // The line sits behind the list. Event dots ride on it and comment cards cover it.
+        <ol className="relative space-y-3 before:absolute before:inset-y-3 before:left-3.5 before:w-px before:-translate-x-1/2 before:bg-border">
+          {hidden > 0 && (
+            <li className="relative flex items-center gap-3">
+              <TimelineDot><ChevronsUp /></TimelineDot>
+              <Button variant="ghost" size="sm" className="-ml-1.5" onPress={() => setLimit((l) => l + PAGE)}>{t("timeline.older", { n: Math.min(hidden, PAGE) })}</Button>
+            </li>
+          )}
+          {items.slice(hidden).map((item) =>
+            item.kind === "comment" ? <CommentItem key={item.comment.id} comment={item.comment} /> : <EventItem key={item.event.id} event={item.event} entries={entries} />,
+          )}
+        </ol>
       )}
-      <ol className="space-y-4">
-        {items.slice(hidden).map((item) =>
-          item.kind === "comment" ? <CommentItem key={item.comment.id} comment={item.comment} /> : <EventItem key={item.event.id} event={item.event} entries={entries} />,
-        )}
-      </ol>
       <Composer issue={issue} hasItems={items.length > 0} />
     </Section>
+  );
+}
+
+function TimelineDot({ className, children }: { className?: string; children: React.ReactNode }) {
+  return (
+    <span className={cn("grid size-7 shrink-0 place-items-center rounded-full border border-border bg-background text-muted-foreground [&_svg]:size-3.5", className)}>
+      {children}
+    </span>
   );
 }
 
 function EventItem({ event, entries }: { event: Activity; entries: Map<Id, TimeEntry> }) {
   const { t, lang } = useI18n();
   const { member } = useWorkspace();
-  const fields = (event.fields ?? []).flatMap((f) => {
-    const key = FIELD_LABELS[f];
-    return key ? [t(key).toLocaleLowerCase(lang)] : [];
-  });
+  const fields = (event.fields ?? []).flatMap((f) => FIELDS[f] ?? []);
   const entry = event.entity_id ? entries.get(event.entity_id) : undefined;
-  const key = EVENT_LABELS[event.action];
+  const meta = EVENTS[event.action];
   const label =
-    event.action === "update_issue" && fields.length ? t("timeline.changed", { fields: fields.join(", ") })
+    event.action === "update_issue" && fields.length ? t("timeline.changed", { fields: fields.map((f) => t(f.label).toLocaleLowerCase(lang)).join(", ") })
     : event.action === "log_time" && entry ? t("timeline.log_time", { time: formatMinutes(entry.minutes) })
-    : key ? t(key) : activityLabel(t, event.action);
+    : meta ? t(meta.label) : activityLabel(t, event.action);
+  // A single-field change shows that field's icon; several fields fall back to the generic edit icon.
+  const Icon = (fields.length === 1 ? fields[0].icon : meta?.icon) ?? Pencil;
   return (
-    <li className="flex items-center gap-3 text-xs text-muted-foreground">
-      <span className="grid w-7 shrink-0 place-items-center"><span className="size-1.5 rounded-full bg-muted-foreground/40" /></span>
-      <span>
+    <li className="relative flex items-center gap-3 text-xs text-muted-foreground">
+      <TimelineDot className={cn(event.action === "issue_completed" && "text-success")}><Icon /></TimelineDot>
+      <span className="min-w-0">
         <span className="font-medium text-foreground">{member(event.actor)?.display_name ?? t("person.unknown")}</span> {label} · <time dateTime={event.at} title={new Date(event.at).toLocaleString(lang)}>{relativeTime(event.at, lang)}</time>
       </span>
     </li>
@@ -709,22 +734,22 @@ function CommentItem({ comment: c }: { comment: Comment }) {
     run({ type: "edit_comment", id: c.id, body: editBody.trim(), mentions: mentionsIn(editBody, members) }).then(() => setEditBody(null)).catch(() => {});
   };
   return (
-    <li className="group flex gap-3">
-      <Avatar name={m?.display_name ?? "?"} src={m?.avatar_url} size={28} />
-      <div className="min-w-0 flex-1">
-        <div className="flex min-h-7 items-center gap-2 text-[13px]">
-          <Link to={`/${ws.id}/people/${c.author}`} className="font-semibold hover:underline">{m?.display_name ?? t("person.unknown")}</Link>
-          <time dateTime={c.created_at} title={new Date(c.created_at).toLocaleString(lang)} className="text-xs text-muted-foreground">{relativeTime(c.created_at, lang)}</time>
-          {c.edited_at && <span className="text-xs text-muted-foreground">({t("comment.edited")})</span>}
-          {(mine || canAdmin) && editBody === null && (
-            <span className={cn("ml-auto flex", revealOnHover)}>
-              {mine && <Button variant="ghost" size="icon" aria-label={t("action.edit")} onPress={() => setEditBody(c.body)}><Pencil /></Button>}
-              <Button variant="ghost" size="icon" aria-label={t("action.delete")} onPress={() => setConfirm(true)}><Trash2 /></Button>
-            </span>
-          )}
-        </div>
+    <li className="group relative rounded-lg border border-border bg-card shadow-xs">
+      <div className="flex min-h-10 items-center gap-2 py-1.5 pl-3 pr-1.5 text-[13px]">
+        <Avatar name={m?.display_name ?? "?"} src={m?.avatar_url} size={20} />
+        <Link to={`/${ws.id}/people/${c.author}`} className="font-semibold hover:underline">{m?.display_name ?? t("person.unknown")}</Link>
+        <time dateTime={c.created_at} title={new Date(c.created_at).toLocaleString(lang)} className="text-xs text-muted-foreground">{relativeTime(c.created_at, lang)}</time>
+        {c.edited_at && <span className="text-xs text-muted-foreground">({t("comment.edited")})</span>}
+        {(mine || canAdmin) && editBody === null && (
+          <span className={cn("ml-auto flex", revealOnHover)}>
+            {mine && <Button variant="ghost" size="icon" aria-label={t("action.edit")} onPress={() => setEditBody(c.body)}><Pencil /></Button>}
+            <Button variant="ghost" size="icon" aria-label={t("action.delete")} onPress={() => setConfirm(true)}><Trash2 /></Button>
+          </span>
+        )}
+      </div>
+      <div className="px-3 pb-3">
         {editBody !== null ? (
-          <div className="mt-1.5 space-y-2" onKeyDown={(e) => { if (e.key === "Escape") { e.stopPropagation(); setEditBody(null); } }}>
+          <div className="space-y-2" onKeyDown={(e) => { if (e.key === "Escape") { e.stopPropagation(); setEditBody(null); } }}>
             <MarkdownEditor label={t("comment.edit")} value={editBody} onChange={setEditBody} autoFocus minRows={3} onSubmit={save} />
             <div className="flex justify-end gap-2">
               <Button variant="ghost" onPress={() => setEditBody(null)}>{t("action.cancel")}</Button>
