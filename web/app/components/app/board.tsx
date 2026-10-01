@@ -7,16 +7,42 @@ import { useT } from "~/lib/i18n";
 import { useWorkspace } from "~/lib/workspace";
 import type { Id, Issue } from "~/lib/types";
 import { PriorityIcon } from "./icons";
-import { AssigneeAvatar, BlockedBadge, DeadlineChip, LabelChips, SubtaskProgress } from "./issue-parts";
+import {
+  AssigneeAvatar,
+  BlockedBadge,
+  DeadlineChip,
+  LabelChips,
+  SubtaskProgress,
+} from "./issue-parts";
 
 const TYPE = "application/x-blackwall-issue";
 
 export function DndColumn({
-  id, title, icon, count, issues, onDrop, onCreate, canDrop = true, className, aside, emptyText, footer,
+  id,
+  title,
+  icon,
+  count,
+  issues,
+  onDrop,
+  onCreate,
+  canDrop = true,
+  className,
+  aside,
+  emptyText,
+  footer,
 }: {
-  id: string; title: string; icon?: React.ReactNode; count?: number; issues: Issue[];
+  id: string;
+  title: string;
+  icon?: React.ReactNode;
+  count?: number;
+  issues: Issue[];
   onDrop: (ids: Id[], beforeId: Id | null, source: Id | null) => void;
-  onCreate?: () => void; canDrop?: boolean; className?: string; aside?: React.ReactNode; emptyText?: string; footer?: React.ReactNode;
+  onCreate?: () => void;
+  canDrop?: boolean;
+  className?: string;
+  aside?: React.ReactNode;
+  emptyText?: string;
+  footer?: React.ReactNode;
 }) {
   const t = useT();
   const { canWrite } = useWorkspace();
@@ -43,7 +69,11 @@ export function DndColumn({
   };
   const { dragAndDropHooks } = useDragAndDrop({
     isDisabled: !canWrite || !canDrop,
-    getItems: (keys) => [...keys].map((k) => ({ [TYPE]: JSON.stringify({ id: k, column: id }), "text/plain": String(k) })),
+    getItems: (keys) =>
+      [...keys].map((k) => ({
+        [TYPE]: JSON.stringify({ id: k, column: id }),
+        "text/plain": String(k),
+      })),
     acceptedDragTypes: [TYPE],
     getDropOperation: () => "move",
     onInsert: async (e) => {
@@ -55,12 +85,12 @@ export function DndColumn({
       const { ids, source } = await read(e.items as never);
       onDrop(ids, null, source);
     },
-    renderDropIndicator: (target) => (
-      <DropLine target={target} />
-    ),
+    renderDropIndicator: (target) => <DropLine target={target} />,
   });
   return (
-    <section className={cn("flex min-h-0 w-72 shrink-0 flex-col rounded-xl bg-muted/50", className)}>
+    <section
+      className={cn("flex min-h-0 w-72 shrink-0 flex-col rounded-xl bg-muted/50", className)}
+    >
       <header className="flex items-center gap-2 px-3 pb-1 pt-2.5">
         {icon}
         <h3 className="text-[13px] font-medium">{title}</h3>
@@ -80,7 +110,11 @@ export function DndColumn({
         selectionMode="none"
         dragAndDropHooks={dragAndDropHooks}
         className="flex min-h-16 flex-1 flex-col gap-1.5 overflow-y-auto p-1.5 outline-none drop-target:bg-accent/60 drop-target:ring-2 drop-target:ring-primary/40 rounded-b-xl transition-colors"
-        renderEmptyState={() => <p className="px-2 py-6 text-center text-xs text-muted-foreground">{emptyText ?? t("board.empty")}</p>}
+        renderEmptyState={() => (
+          <p className="px-2 py-6 text-center text-xs text-muted-foreground">
+            {emptyText ?? t("board.empty")}
+          </p>
+        )}
       >
         {(issue) => <BoardCard issue={issue} />}
       </ListBox>
@@ -91,7 +125,12 @@ export function DndColumn({
 
 import { DropIndicator } from "react-aria-components";
 function DropLine({ target }: { target: DropTarget }) {
-  return <DropIndicator target={target} className="relative z-10 h-0.5 rounded-full bg-primary dragging:opacity-0 drop-target:h-1 -my-0.5 [&[data-drop-target]]:bg-primary" />;
+  return (
+    <DropIndicator
+      target={target}
+      className="relative z-10 h-0.5 rounded-full bg-primary dragging:opacity-0 drop-target:h-1 -my-0.5 [&[data-drop-target]]:bg-primary"
+    />
+  );
 }
 
 export function BoardCard({ issue }: { issue: Issue }) {
@@ -106,7 +145,9 @@ export function BoardCard({ issue }: { issue: Issue }) {
       <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
         <span className="tabular-nums">{issueKey(issue.number)}</span>
         <BlockedBadge issue={issue} />
-        <span className="ml-auto"><AssigneeAvatar issue={issue} size={18} /></span>
+        <span className="ml-auto">
+          <AssigneeAvatar issue={issue} size={18} />
+        </span>
       </div>
       <p className="mt-1 line-clamp-3 font-medium leading-snug">{issue.title}</p>
       <div className="mt-2 flex flex-wrap items-center gap-x-2.5 gap-y-1">
@@ -114,7 +155,9 @@ export function BoardCard({ issue }: { issue: Issue }) {
         <LabelChips issue={issue} max={2} />
         <DeadlineChip issue={issue} />
         <SubtaskProgress issue={issue} />
-        {issue.estimate ? <span className="text-xs tabular-nums text-muted-foreground">{issue.estimate} pt</span> : null}
+        {issue.estimate ? (
+          <span className="text-xs tabular-nums text-muted-foreground">{issue.estimate} pt</span>
+        ) : null}
       </div>
     </ListBoxItem>
   );

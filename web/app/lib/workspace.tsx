@@ -1,4 +1,13 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { ApiError, workspaces } from "./api";
 import { useSession } from "./session";
 import { useToast } from "~/components/ui/toast";
@@ -17,22 +26,37 @@ interface Ctx {
   team: (id: Id) => Team | undefined;
   stage: (id: Id) => Stage | undefined;
   issue: (id: Id) => Issue | undefined;
-  run: (command: Command, opts?: { optimistic?: (ws: Workspace) => Workspace; quiet?: boolean }) => Promise<Id | null>;
+  run: (
+    command: Command,
+    opts?: { optimistic?: (ws: Workspace) => Workspace; quiet?: boolean },
+  ) => Promise<Id | null>;
   reload: () => Promise<void>;
   upload: (issueId: Id, file: File, commentId?: Id) => Promise<void>;
   unread: number;
-  create: { open: boolean; defaults: Partial<import("./types").IssueInput>; show: (defaults?: Partial<import("./types").IssueInput>) => void; hide: () => void };
+  create: {
+    open: boolean;
+    defaults: Partial<import("./types").IssueInput>;
+    show: (defaults?: Partial<import("./types").IssueInput>) => void;
+    hide: () => void;
+  };
 }
 const WorkspaceCtx = createContext<Ctx | null>(null);
 
 export function WorkspaceProvider({
-  initial, children,
-}: { initial: { revision: number; workspace: Workspace; members: MemberProfile[] }; children: ReactNode }) {
+  initial,
+  children,
+}: {
+  initial: { revision: number; workspace: Workspace; members: MemberProfile[] };
+  children: ReactNode;
+}) {
   const { profile } = useSession();
   const toast = useToast();
   const t = useT();
   const [state, setState] = useState(initial);
-  const [createState, setCreate] = useState<{ open: boolean; defaults: Partial<import("./types").IssueInput> }>({ open: false, defaults: {} });
+  const [createState, setCreate] = useState<{
+    open: boolean;
+    defaults: Partial<import("./types").IssueInput>;
+  }>({ open: false, defaults: {} });
   const revisionRef = useRef(initial.revision);
   const queue = useRef<Promise<unknown>>(Promise.resolve());
   const id = state.workspace.id;

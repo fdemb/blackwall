@@ -8,4 +8,4 @@ fi
 "$blackwall_cargo" fmt --check
 "$blackwall_cargo" clippy --all-targets -- -D warnings
 "$blackwall_cargo" test
-(cd web && npm ci && npm run typecheck && npm run build)
+(cd web && pnpm install --frozen-lockfile && pnpm exec vp check && pnpm run typecheck && pnpm run build)

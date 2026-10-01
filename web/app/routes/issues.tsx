@@ -4,5 +4,10 @@ import { useT } from "~/lib/i18n";
 
 export default function AllIssues() {
   const t = useT();
-  return <Workbench title={t("nav.allIssues")} icon={<Layers className="size-4 text-muted-foreground" />} />;
+  return (
+    <Workbench
+      title={t("nav.allIssues")}
+      icon={<Layers className="size-4 text-muted-foreground" />}
+    />
+  );
 }

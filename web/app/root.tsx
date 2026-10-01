@@ -1,5 +1,14 @@
 import { useEffect } from "react";
-import { Links, Meta, Outlet, Scripts, ScrollRestoration, isRouteErrorResponse, useHref, useNavigate } from "react-router";
+import {
+  Links,
+  Meta,
+  Outlet,
+  Scripts,
+  ScrollRestoration,
+  isRouteErrorResponse,
+  useHref,
+  useNavigate,
+} from "react-router";
 import { RouterProvider } from "react-aria-components";
 import "./app.css";
 import { ToastProvider } from "~/components/ui/toast";
@@ -55,13 +64,19 @@ export default function App() {
 }
 
 export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {
-  const message = isRouteErrorResponse(error) ? `${error.status} ${error.statusText}` : error instanceof Error ? error.message : "Unknown error";
+  const message = isRouteErrorResponse(error)
+    ? `${error.status} ${error.statusText}`
+    : error instanceof Error
+      ? error.message
+      : "Unknown error";
   return (
     <div className="grid h-dvh place-items-center p-6 text-center">
       <div>
         <h1 className="text-lg font-semibold">Something went wrong</h1>
         <p className="mt-1 text-muted-foreground">{message}</p>
-        <a href="/" className="mt-4 inline-block text-primary hover:underline">Back to Blackwall</a>
+        <a href="/" className="mt-4 inline-block text-primary hover:underline">
+          Back to Blackwall
+        </a>
       </div>
     </div>
   );

@@ -28,7 +28,13 @@ export default function MyIssues() {
           </TabList>
         </Tabs>
       }
-      empty={<EmptyState icon={<CheckCheck />} title={tab === "assigned" ? t("my.emptyTitle") : t("my.followEmptyTitle")} description={tab === "assigned" ? t("my.emptySub") : t("my.followEmptySub")} />}
+      empty={
+        <EmptyState
+          icon={<CheckCheck />}
+          title={tab === "assigned" ? t("my.emptyTitle") : t("my.followEmptyTitle")}
+          description={tab === "assigned" ? t("my.emptySub") : t("my.followEmptySub")}
+        />
+      }
     />
   );
 }

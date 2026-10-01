@@ -32,15 +32,35 @@ export default function Login() {
           }
         }}
       >
-        <TextField name="email" type="email" label={t("field.email")} autoComplete="email" autoFocus isRequired />
-        <TextField name="password" type="password" label={t("field.password")} autoComplete="current-password" isRequired error={error} />
-        <Button type="submit" variant="primary" size="lg" isDisabled={busy}>{t("auth.login")}</Button>
+        <TextField
+          name="email"
+          type="email"
+          label={t("field.email")}
+          autoComplete="email"
+          autoFocus
+          isRequired
+        />
+        <TextField
+          name="password"
+          type="password"
+          label={t("field.password")}
+          autoComplete="current-password"
+          isRequired
+          error={error}
+        />
+        <Button type="submit" variant="primary" size="lg" isDisabled={busy}>
+          {t("auth.login")}
+        </Button>
       </Form>
       <div className="mt-5 flex justify-between text-[13px] text-muted-foreground">
-        <Link to="/recover" className="hover:text-foreground hover:underline">{t("auth.forgot")}</Link>
+        <Link to="/recover" className="hover:text-foreground hover:underline">
+          {t("auth.forgot")}
+        </Link>
         <span>
           {t("auth.noAccount")}{" "}
-          <Link to="/register" className="font-medium text-primary hover:underline">{t("auth.register")}</Link>
+          <Link to="/register" className="font-medium text-primary hover:underline">
+            {t("auth.register")}
+          </Link>
         </span>
       </div>
     </>

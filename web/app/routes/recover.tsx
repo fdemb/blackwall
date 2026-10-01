@@ -36,10 +36,25 @@ export default function Recover() {
             setBusy(false);
           }}
         >
-          <TextField name="email" type="email" label={t("field.email")} value={email} onChange={setEmail} autoFocus isRequired error={error} />
-          <Button type="submit" variant="primary" size="lg" isDisabled={busy}>{t("auth.sendLink")}</Button>
+          <TextField
+            name="email"
+            type="email"
+            label={t("field.email")}
+            value={email}
+            onChange={setEmail}
+            autoFocus
+            isRequired
+            error={error}
+          />
+          <Button type="submit" variant="primary" size="lg" isDisabled={busy}>
+            {t("auth.sendLink")}
+          </Button>
         </Form>
-        <p className="mt-5 text-[13px]"><Link to="/login" className="text-muted-foreground hover:text-foreground hover:underline">{t("auth.backToLogin")}</Link></p>
+        <p className="mt-5 text-[13px]">
+          <Link to="/login" className="text-muted-foreground hover:text-foreground hover:underline">
+            {t("auth.backToLogin")}
+          </Link>
+        </p>
       </>
     );
 
@@ -66,8 +81,18 @@ export default function Recover() {
         }}
       >
         <TextField name="token" label={t("auth.token")} autoFocus isRequired />
-        <TextField name="password" type="password" label={t("auth.newPassword")} autoComplete="new-password" minLength={12} isRequired error={error} />
-        <Button type="submit" variant="primary" size="lg" isDisabled={busy}>{t("auth.resetPassword")}</Button>
+        <TextField
+          name="password"
+          type="password"
+          label={t("auth.newPassword")}
+          autoComplete="new-password"
+          minLength={12}
+          isRequired
+          error={error}
+        />
+        <Button type="submit" variant="primary" size="lg" isDisabled={busy}>
+          {t("auth.resetPassword")}
+        </Button>
       </Form>
     </>
   );

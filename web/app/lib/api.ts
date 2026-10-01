@@ -1,11 +1,24 @@
 import type {
-  Command, Issue, IssueFilter, MemberProfile, Profile, Report, WorkspaceSummary, Workspace,
+  Command,
+  Issue,
+  IssueFilter,
+  MemberProfile,
+  Profile,
+  Report,
+  WorkspaceSummary,
+  Workspace,
 } from "./types";
 
-export interface SearchResult { issues: Issue[]; people: MemberProfile[] }
+export interface SearchResult {
+  issues: Issue[];
+  people: MemberProfile[];
+}
 
 export class ApiError extends Error {
-  constructor(message: string, public status: number) {
+  constructor(
+    message: string,
+    public status: number,
+  ) {
     super(message);
   }
 }
@@ -16,7 +29,10 @@ export function setCsrf(token: string) {
   sessionStorage.setItem("bw-csrf", token);
 }
 
-export async function api<T>(path: string, init: { method?: string; body?: unknown } = {}): Promise<T> {
+export async function api<T>(
+  path: string,
+  init: { method?: string; body?: unknown } = {},
+): Promise<T> {
   const method = init.method ?? "GET";
   const headers: Record<string, string> = {};
   const isForm = init.body instanceof FormData;
@@ -26,7 +42,12 @@ export async function api<T>(path: string, init: { method?: string; body?: unkno
     method,
     credentials: "same-origin",
     headers,
-    body: init.body === undefined ? undefined : isForm ? (init.body as FormData) : JSON.stringify(init.body),
+    body:
+      init.body === undefined
+        ? undefined
+        : isForm
+          ? (init.body as FormData)
+          : JSON.stringify(init.body),
   });
   const token = response.headers.get("X-CSRF-Token");
   if (token) setCsrf(token);
@@ -44,28 +65,36 @@ export async function api<T>(path: string, init: { method?: string; body?: unkno
   return data as T;
 }
 
-
 export const auth = {
   me: () => api<Profile>("/api/me"),
   login: (email: string, password: string) =>
-    api<{ csrf_token: string; profile: Profile }>("/api/auth/login", { method: "POST", body: { email, password } }),
+    api<{ csrf_token: string; profile: Profile }>("/api/auth/login", {
+      method: "POST",
+      body: { email, password },
+    }),
   register: (email: string, password: string, display_name: string) =>
     api<{ csrf_token: string; profile: Profile }>("/api/auth/register", {
       method: "POST",
       body: { email, password, display_name },
     }),
   logout: () => api<null>("/api/auth/logout", { method: "POST" }),
-  requestReset: (email: string) => api<null>("/api/auth/reset-request", { method: "POST", body: { email } }),
-  reset: (token: string, password: string) => api<null>("/api/auth/reset", { method: "POST", body: { token, password } }),
+  requestReset: (email: string) =>
+    api<null>("/api/auth/reset-request", { method: "POST", body: { email } }),
+  reset: (token: string, password: string) =>
+    api<null>("/api/auth/reset", { method: "POST", body: { token, password } }),
   changePassword: (current_password: string, new_password: string) =>
     api<null>("/api/auth/password", { method: "POST", body: { current_password, new_password } }),
-  editProfile: (profile: Omit<Profile, "id" | "email">) => api<Profile>("/api/me", { method: "PATCH", body: profile }),
+  editProfile: (profile: Omit<Profile, "id" | "email">) =>
+    api<Profile>("/api/me", { method: "PATCH", body: profile }),
 };
 
 export const workspaces = {
   list: () => api<WorkspaceSummary[]>("/api/workspaces"),
   create: (name: string) =>
-    api<{ revision: number; workspace: Workspace }>("/api/workspaces", { method: "POST", body: { name } }),
+    api<{ revision: number; workspace: Workspace }>("/api/workspaces", {
+      method: "POST",
+      body: { name },
+    }),
   get: (id: string) => api<{ revision: number; workspace: Workspace }>(`/api/workspaces/${id}`),
   members: (id: string) => api<MemberProfile[]>(`/api/workspaces/${id}/members`),
   command: (id: string, revision: number, command: Command) =>
@@ -73,7 +102,8 @@ export const workspaces = {
       method: "POST",
       body: { revision, command },
     }),
-  search: (id: string, q: string) => api<SearchResult>(`/api/workspaces/${id}/search?q=${encodeURIComponent(q)}`),
+  search: (id: string, q: string) =>
+    api<SearchResult>(`/api/workspaces/${id}/search?q=${encodeURIComponent(q)}`),
   report: (id: string) => api<Report>(`/api/workspaces/${id}/report`),
   accept: (id: string, token: string) =>
     api<{ revision: number; workspace: Workspace }>(`/api/workspaces/${id}/invitations/accept`, {
@@ -99,11 +129,14 @@ export const workspaces = {
 };
 
 export function markdown(text: string) {
-  return api<{ html: string }>("/api/markdown", { method: "POST", body: { text } }).then((r) => r.html);
+  return api<{ html: string }>("/api/markdown", { method: "POST", body: { text } }).then(
+    (r) => r.html,
+  );
 }
 
 export function filterQuery(filter: IssueFilter) {
   const params = new URLSearchParams();
-  for (const [k, v] of Object.entries(filter)) if (v !== undefined && v !== "" && v !== false) params.set(k, String(v));
+  for (const [k, v] of Object.entries(filter))
+    if (v !== undefined && v !== "" && v !== false) params.set(k, String(v));
   return params.toString();
 }

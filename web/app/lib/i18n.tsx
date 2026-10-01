@@ -23,7 +23,8 @@ export function I18nProvider({ initial, children }: { initial: Language; childre
   const t = useCallback<I18n["t"]>(
     (key, vars) => {
       let text = dictionaries[lang][key] ?? en[key] ?? key;
-      if (vars) for (const [k, v] of Object.entries(vars)) text = text.replaceAll(`{${k}}`, String(v));
+      if (vars)
+        for (const [k, v] of Object.entries(vars)) text = text.replaceAll(`{${k}}`, String(v));
       return text;
     },
     [lang],

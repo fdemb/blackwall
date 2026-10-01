@@ -1,8 +1,32 @@
+# rust
 /target
+**/*.rs.bk
+
+# env and local data
 .env
+.env.*.local
 *.db
 *.db-shm
 *.db-wal
 /uploads
 
 /dev-mail
+
+# node
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+*.log
+npm-debug.log*
+
+# os
+.DS_Store
+Thumbs.db
+
+__screenshots__/
+test-results/
+
+# editors
+.idea/
+.vscode/

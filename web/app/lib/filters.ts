@@ -13,8 +13,12 @@ export function applyFilter(ws: Workspace, filter: IssueFilter, me?: string): Is
       (!filter.label_id || i.labels.includes(filter.label_id)) &&
       (!filter.sprint_id || i.sprint_id === filter.sprint_id) &&
       (!filter.project_id || i.project_id === filter.project_id) &&
-      (!filter.due_before || (i.deadline !== null && new Date(i.deadline) <= new Date(filter.due_before))) &&
-      (!q || i.title.toLowerCase().includes(q) || `bw-${i.number}`.includes(q) || i.description.toLowerCase().includes(q)),
+      (!filter.due_before ||
+        (i.deadline !== null && new Date(i.deadline) <= new Date(filter.due_before))) &&
+      (!q ||
+        i.title.toLowerCase().includes(q) ||
+        `bw-${i.number}`.includes(q) ||
+        i.description.toLowerCase().includes(q)),
   );
   const sort = filter.sort ?? "position";
   const byTeamPos = (a: Issue, b: Issue) => a.position - b.position;
@@ -25,8 +29,10 @@ export function applyFilter(ws: Workspace, filter: IssueFilter, me?: string): Is
       if (!b.deadline) return -1;
       return new Date(a.deadline).getTime() - new Date(b.deadline).getTime();
     }
-    if (sort === "updated") return new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime();
-    if (sort === "priority") return PRIORITY_RANK[b.priority] - PRIORITY_RANK[a.priority] || byTeamPos(a, b);
+    if (sort === "updated")
+      return new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime();
+    if (sort === "priority")
+      return PRIORITY_RANK[b.priority] - PRIORITY_RANK[a.priority] || byTeamPos(a, b);
     return byTeamPos(a, b);
   });
   return list;

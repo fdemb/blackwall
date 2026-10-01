@@ -1,5 +1,11 @@
 import {
-  Modal, ModalOverlay, Dialog as RACDialog, Heading, DialogTrigger, composeRenderProps, type ModalOverlayProps,
+  Modal,
+  ModalOverlay,
+  Dialog as RACDialog,
+  Heading,
+  DialogTrigger,
+  composeRenderProps,
+  type ModalOverlayProps,
 } from "react-aria-components";
 import { X } from "lucide-react";
 import { cn } from "~/lib/utils";
@@ -16,7 +22,16 @@ interface DialogProps extends Omit<ModalOverlayProps, "children"> {
   hideClose?: boolean;
 }
 
-export function Dialog({ title, description, size = "md", position = "center", children, className, hideClose, ...props }: DialogProps) {
+export function Dialog({
+  title,
+  description,
+  size = "md",
+  position = "center",
+  children,
+  className,
+  hideClose,
+  ...props
+}: DialogProps) {
   return (
     <ModalOverlay
       isDismissable
@@ -42,16 +57,28 @@ export function Dialog({ title, description, size = "md", position = "center", c
             <>
               <div className="flex items-start justify-between gap-4 px-5 pb-1 pt-4">
                 <div>
-                  <Heading slot="title" className="text-[15px] font-semibold tracking-tight">{title}</Heading>
-                  {description && <p className="mt-0.5 text-xs text-muted-foreground">{description}</p>}
+                  <Heading slot="title" className="text-[15px] font-semibold tracking-tight">
+                    {title}
+                  </Heading>
+                  {description && (
+                    <p className="mt-0.5 text-xs text-muted-foreground">{description}</p>
+                  )}
                 </div>
                 {!hideClose && (
-                  <Button variant="ghost" size="icon" onPress={close} aria-label="Close" className="-mr-2 -mt-1">
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    onPress={close}
+                    aria-label="Close"
+                    className="-mr-2 -mt-1"
+                  >
                     <X />
                   </Button>
                 )}
               </div>
-              <div className="overflow-auto px-5 pb-5 pt-3">{typeof children === "function" ? children(close) : children}</div>
+              <div className="overflow-auto px-5 pb-5 pt-3">
+                {typeof children === "function" ? children(close) : children}
+              </div>
             </>
           )}
         </RACDialog>

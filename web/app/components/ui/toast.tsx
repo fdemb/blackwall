@@ -2,8 +2,15 @@ import { createContext, useCallback, useContext, useMemo, useState, type ReactNo
 import { AlertCircle, Check, X } from "lucide-react";
 import { cn } from "~/lib/utils";
 
-interface Item { id: number; text: string; kind: "info" | "error" }
-interface ToastApi { show: (text: string) => void; error: (text: string) => void }
+interface Item {
+  id: number;
+  text: string;
+  kind: "info" | "error";
+}
+interface ToastApi {
+  show: (text: string) => void;
+  error: (text: string) => void;
+}
 const Ctx = createContext<ToastApi | null>(null);
 let counter = 0;
 
@@ -18,11 +25,18 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     },
     [dismiss],
   );
-  const api = useMemo<ToastApi>(() => ({ show: (t) => push("info", t), error: (t) => push("error", t) }), [push]);
+  const api = useMemo<ToastApi>(
+    () => ({ show: (t) => push("info", t), error: (t) => push("error", t) }),
+    [push],
+  );
   return (
     <Ctx value={api}>
       {children}
-      <div role="status" aria-live="polite" className="pointer-events-none fixed bottom-4 right-4 z-[60] flex w-80 flex-col gap-2">
+      <div
+        role="status"
+        aria-live="polite"
+        className="pointer-events-none fixed bottom-4 right-4 z-[60] flex w-80 flex-col gap-2"
+      >
         {items.map((i) => (
           <div
             key={i.id}
@@ -31,9 +45,17 @@ export function ToastProvider({ children }: { children: ReactNode }) {
               i.kind === "error" ? "border-destructive/40" : "border-border",
             )}
           >
-            {i.kind === "error" ? <AlertCircle className="mt-0.5 size-4 shrink-0 text-destructive" /> : <Check className="mt-0.5 size-4 shrink-0 text-primary" />}
+            {i.kind === "error" ? (
+              <AlertCircle className="mt-0.5 size-4 shrink-0 text-destructive" />
+            ) : (
+              <Check className="mt-0.5 size-4 shrink-0 text-primary" />
+            )}
             <span className="flex-1">{i.text}</span>
-            <button aria-label="Dismiss" className="text-muted-foreground hover:text-foreground" onClick={() => dismiss(i.id)}>
+            <button
+              aria-label="Dismiss"
+              className="text-muted-foreground hover:text-foreground"
+              onClick={() => dismiss(i.id)}
+            >
               <X className="size-3.5" />
             </button>
           </div>

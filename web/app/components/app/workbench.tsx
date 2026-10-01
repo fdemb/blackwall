@@ -11,10 +11,28 @@ import { EmptyState, Page, PageHeader, Scroll } from "./page";
 
 /** Filterable, groupable issue list shared by My issues, All issues and saved views. */
 export function Workbench({
-  title, icon, subtitle, base = {}, initial = {}, hide = [], actions, headerExtra, empty, saveable = true, extraFilter,
+  title,
+  icon,
+  subtitle,
+  base = {},
+  initial = {},
+  hide = [],
+  actions,
+  headerExtra,
+  empty,
+  saveable = true,
+  extraFilter,
 }: {
-  title: React.ReactNode; icon?: React.ReactNode; subtitle?: React.ReactNode; base?: IssueFilter; initial?: IssueFilter;
-  hide?: (keyof IssueFilter)[]; actions?: React.ReactNode; headerExtra?: React.ReactNode; empty?: React.ReactNode; saveable?: boolean;
+  title: React.ReactNode;
+  icon?: React.ReactNode;
+  subtitle?: React.ReactNode;
+  base?: IssueFilter;
+  initial?: IssueFilter;
+  hide?: (keyof IssueFilter)[];
+  actions?: React.ReactNode;
+  headerExtra?: React.ReactNode;
+  empty?: React.ReactNode;
+  saveable?: boolean;
   extraFilter?: (i: import("~/lib/types").Issue) => boolean;
 }) {
   const t = useT();
@@ -32,10 +50,27 @@ export function Workbench({
         title={title}
         icon={icon}
         subtitle={subtitle ?? t("count.issues", { n: issues.length })}
-        actions={<>{actions}{canWrite && <Button variant="primary" size="sm" onPress={() => create.show()}><Plus />{t("issue.new")}</Button>}</>}
+        actions={
+          <>
+            {actions}
+            {canWrite && (
+              <Button variant="primary" size="sm" onPress={() => create.show()}>
+                <Plus />
+                {t("issue.new")}
+              </Button>
+            )}
+          </>
+        }
       >
         {headerExtra}
-        <FilterBar filter={filter} onChange={setFilter} hide={hide} groupBy={groupBy} onGroupBy={setGroupBy} saveable={saveable} />
+        <FilterBar
+          filter={filter}
+          onChange={setFilter}
+          hide={hide}
+          groupBy={groupBy}
+          onGroupBy={setGroupBy}
+          saveable={saveable}
+        />
       </PageHeader>
       <Scroll>
         <IssueList
@@ -43,8 +78,18 @@ export function Workbench({
           groupBy={groupBy}
           showTeam
           emptyState={
-            empty && !filtered ? empty : (
-              <EmptyState title={filtered ? t("empty.noMatch") : t("empty.issues")} description={filtered ? t("empty.noMatchSub") : t("empty.issuesSub")} action={filtered ? <Button onPress={() => setFilter({})}>{t("filter.clear")}</Button> : undefined} />
+            empty && !filtered ? (
+              empty
+            ) : (
+              <EmptyState
+                title={filtered ? t("empty.noMatch") : t("empty.issues")}
+                description={filtered ? t("empty.noMatchSub") : t("empty.issuesSub")}
+                action={
+                  filtered ? (
+                    <Button onPress={() => setFilter({})}>{t("filter.clear")}</Button>
+                  ) : undefined
+                }
+              />
             )
           }
         />
