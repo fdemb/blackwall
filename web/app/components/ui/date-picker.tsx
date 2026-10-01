@@ -4,6 +4,7 @@ import {
 } from "react-aria-components";
 import { CalendarDays, ChevronLeft, ChevronRight, X } from "lucide-react";
 import { parseDate, type CalendarDate } from "@internationalized/date";
+import { useT } from "~/lib/i18n";
 import { cn } from "~/lib/utils";
 import { Button } from "./button";
 import { Label } from "./field";
@@ -32,6 +33,7 @@ interface Props extends Omit<DatePickerProps<DateValue>, "value" | "onChange"> {
 }
 
 export function DatePicker({ label, value, onChange, clearable = true, placeholder, endOfDay = true, variant = "field", className, ...props }: Props) {
+  const t = useT();
   return (
     <RACDatePicker
       {...props}
@@ -55,11 +57,11 @@ export function DatePicker({ label, value, onChange, clearable = true, placehold
           <span className="flex-1 text-muted-foreground">{placeholder ?? ""}</span>
         )}
         {clearable && value && (
-          <Button variant="ghost" size="icon" className="size-6" aria-label="Clear" onPress={() => onChange(null)}>
+          <Button variant="ghost" size="icon" className="size-6" aria-label={t("action.clearField")} onPress={() => onChange(null)}>
             <X className="size-3" />
           </Button>
         )}
-        <Button variant="ghost" size="icon" className="size-6">
+        <Button variant="ghost" size="icon" className="size-6" aria-label={t("action.openCalendar")}>
           <CalendarDays className="size-3.5" />
         </Button>
       </Group>

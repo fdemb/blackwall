@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Form } from "react-aria-components";
 import { LogOut } from "lucide-react";
 import { Avatar } from "~/components/ui/avatar";
@@ -11,6 +11,8 @@ import { Card, Page, PageHeader, Scroll } from "~/components/app/page";
 import { auth } from "~/lib/api";
 import { useI18n } from "~/lib/i18n";
 import { useSession } from "~/lib/session";
+import { useShortcutsEnabled } from "~/lib/shortcuts";
+import { usePending } from "~/lib/use-pending";
 import { useWorkspace } from "~/lib/workspace";
 import type { Language, Theme } from "~/lib/types";
 
@@ -76,36 +78,78 @@ function ProfileCard() {
 function PreferencesCard() {
   const t = useI18n().t;
   const { profile, saveProfile } = useSession();
+  const toast = useToast();
+  const [shortcuts, setShortcuts] = useShortcutsEnabled();
+  const { pending, guard } = usePending();
+  const save = (patch: Partial<Pick<typeof profile, "language" | "theme">>) =>
+    guard(async () => {
+      await saveProfile(patch);
+      toast.show(t("account.prefSaved"));
+    }).then(() => undefined);
   return (
     <CardShell title={t("account.preferences")}>
       <div className="grid gap-4 sm:grid-cols-2">
-        <Select label={t("pref.language")} selectedKey={profile.language} onSelectionChange={(k) => saveProfile({ language: k as Language })} options={[{ id: "en", label: "English" }, { id: "pl", label: "Polski" }]} />
-        <Select label={t("pref.theme")} selectedKey={profile.theme} onSelectionChange={(k) => saveProfile({ theme: k as Theme })} options={(["light", "dark", "system"] as const).map((k) => ({ id: k, label: t(`theme.${k}`) }))} />
+        <Select label={t("pref.language")} isDisabled={pending} selectedKey={profile.language} onSelectionChange={(k) => void save({ language: k as Language })} options={[{ id: "en", label: "English" }, { id: "pl", label: "Polski" }]} />
+        <Select label={t("pref.theme")} isDisabled={pending} selectedKey={profile.theme} onSelectionChange={(k) => void save({ theme: k as Theme })} options={(["light", "dark", "system"] as const).map((k) => ({ id: k, label: t(`theme.${k}`) }))} />
       </div>
+      <Switch isSelected={shortcuts} onChange={setShortcuts} className="mt-5 flex-row-reverse justify-between">
+        <span><span className="block font-medium">{t("account.shortcuts")}</span><span className="block text-xs text-muted-foreground">{t("account.shortcutsSub")}</span></span>
+      </Switch>
     </CardShell>
   );
 }
 
 function AlertsCard() {
   const t = useI18n().t;
+  const toast = useToast();
   const { profile, saveProfile } = useSession();
   const { ws, me, run } = useWorkspace();
   const mine = ws.alert_preferences.find((p) => p.user_id === me);
-  const prefs = { assignment: mine?.assignment ?? profile.alerts.assignments, reply: mine?.reply ?? profile.alerts.replies, change: mine?.change ?? profile.alerts.changes, mention: mine?.mention ?? true, deadline: mine?.deadline ?? profile.alerts.deadlines };
-  const set = async (patch: Partial<typeof prefs>) => {
-    const next = { ...prefs, ...patch };
-    await run({ type: "configure_alerts", ...next }).catch(() => {});
-    await saveProfile({ alerts: { assignments: next.assignment, replies: next.reply, changes: next.change, deadlines: next.deadline } }).catch(() => {});
+  const stored = { assignment: mine?.assignment ?? profile.alerts.assignments, reply: mine?.reply ?? profile.alerts.replies, change: mine?.change ?? profile.alerts.changes, mention: mine?.mention ?? true, deadline: mine?.deadline ?? profile.alerts.deadlines };
+  type Prefs = typeof stored;
+  const storedRef = useRef(stored);
+  storedRef.current = stored;
+  // The switches show `local` at once. Saves go one at a time and always send the newest choice, so two
+  // quick toggles can't overwrite each other with a stale snapshot.
+  const [local, setLocal] = useState<Prefs>(stored);
+  const latest = useRef<Prefs>(stored);
+  const sent = useRef<Prefs | null>(null);
+  const chain = useRef<Promise<unknown>>(Promise.resolve());
+  const [status, setStatus] = useState<"idle" | "saving" | "saved" | "failed">("idle");
+  const set = (patch: Partial<Prefs>) => {
+    latest.current = { ...latest.current, ...patch };
+    setLocal(latest.current);
+    setStatus("saving");
+    chain.current = chain.current.then(async () => {
+      const want = latest.current;
+      if (sent.current === want) return;
+      try {
+        await run({ type: "configure_alerts", ...want }, { quiet: true });
+        sent.current = want;
+      } catch (e) {
+        toast.error((e as Error).message);
+        latest.current = storedRef.current;
+        sent.current = null;
+        setLocal(storedRef.current);
+        return setStatus("failed");
+      }
+      // The profile keeps a default copy for new workspaces. A failure here doesn't undo the saved choice.
+      await saveProfile({ alerts: { assignments: want.assignment, replies: want.reply, changes: want.change, deadlines: want.deadline } }).catch((e: Error) => toast.error(e.message));
+      if (latest.current === want) setStatus("saved");
+    });
   };
   return (
     <CardShell title={t("account.alerts")} description={t("account.alertsSub", { name: ws.name })}>
       <div className="space-y-3.5">
         {(["assignment", "reply", "change", "mention", "deadline"] as const).map((k) => (
-          <Switch key={k} isSelected={prefs[k]} onChange={(v) => set({ [k]: v })} className="justify-between flex-row-reverse">
+          <Switch key={k} isSelected={local[k]} onChange={(v) => set({ [k]: v })} className="justify-between flex-row-reverse">
             <span><span className="block font-medium">{t(`alert.${k}`)}</span><span className="block text-xs text-muted-foreground">{t(`alert.${k}Sub`)}</span></span>
           </Switch>
         ))}
       </div>
+      <p role="status" className={`mt-4 text-xs ${status === "failed" ? "text-destructive" : "text-muted-foreground"}`}>
+        {status === "saving" ? t("account.alertsSaving") : status === "saved" ? t("account.alertsSaved") : status === "failed" ? t("account.alertsFailed") : ""}
+      </p>
     </CardShell>
   );
 }

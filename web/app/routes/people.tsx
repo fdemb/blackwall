@@ -3,6 +3,7 @@ import { Link } from "react-router";
 import { Users } from "lucide-react";
 import { Avatar } from "~/components/ui/avatar";
 import { Badge } from "~/components/ui/badge";
+import { Button } from "~/components/ui/button";
 import { SearchField } from "~/components/ui/field";
 import { EmptyState, Page, PageHeader, Scroll } from "~/components/app/page";
 import { useT } from "~/lib/i18n";
@@ -15,9 +16,13 @@ export default function People() {
   const list = members.filter((m) => `${m.display_name} ${m.email}`.toLowerCase().includes(q.toLowerCase()));
   return (
     <Page>
-      <PageHeader title={t("nav.people")} icon={<Users className="size-4 text-muted-foreground" />} subtitle={t("count.members", { n: members.length })} actions={<SearchField aria-label={t("action.search")} placeholder={t("people.search")} value={q} onChange={setQ} className="w-56" />} />
+      <PageHeader title={t("nav.people")} icon={<Users className="size-4 text-muted-foreground" />} subtitle={t("count.members", { n: members.length })}>
+        <div className="px-4 pb-2"><SearchField aria-label={t("action.search")} placeholder={t("people.search")} value={q} onChange={setQ} className="w-full sm:w-64" /></div>
+      </PageHeader>
       <Scroll>
-        {list.length === 0 ? <EmptyState icon={<Users />} title={t("search.empty")} /> : (
+        {list.length === 0 ? (
+          <EmptyState icon={<Users />} title={t("search.empty")} description={t("people.noMatch", { q: q.trim() })} action={<Button onPress={() => setQ("")}>{t("action.clearSearch")}</Button>} />
+        ) : (
           <ul className="grid gap-3 p-4 sm:grid-cols-2 xl:grid-cols-3">
             {list.map((m) => {
               const role = ws.members.find((x) => x.user_id === m.id)?.role;

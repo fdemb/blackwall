@@ -1,5 +1,5 @@
 import type {
-  Command, Issue, IssueFilter, MemberProfile, Profile, Report, WorkspaceSummary, Workspace,
+  Command, ImportSummary, Issue, IssueFilter, MemberProfile, Profile, Report, WorkspaceSummary, Workspace,
 } from "./types";
 
 export interface SearchResult { issues: Issue[]; people: MemberProfile[] }
@@ -82,7 +82,7 @@ export const workspaces = {
     }),
   export: (id: string) => api<unknown>(`/api/workspaces/${id}/export`),
   import: (id: string, revision: number, body: { issues?: unknown[]; transfer?: unknown }) =>
-    api<{ revision: number; summary: unknown }>(`/api/workspaces/${id}/import`, {
+    api<{ revision: number; summary: ImportSummary | null }>(`/api/workspaces/${id}/import`, {
       method: "POST",
       body: { revision, ...body },
     }),

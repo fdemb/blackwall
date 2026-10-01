@@ -64,6 +64,9 @@ export interface Profile {
   language: Language; theme: Theme;
   alerts: { assignments: boolean; replies: boolean; changes: boolean; deadlines: boolean };
 }
+export interface ImportSummary {
+  issues: number; comments: number; time_entries: number; identities: { source: Id; target: Id; fallback: boolean }[];
+}
 export interface Total { id: Id; minutes: number; open_issues: number; effort: number }
 export interface Report {
   total_minutes: number; issues: Total[]; people: Total[]; teams: Total[]; projects: Total[];
