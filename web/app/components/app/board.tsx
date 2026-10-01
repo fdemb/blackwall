@@ -96,6 +96,7 @@ function DropLine({ target }: { target: DropTarget }) {
 
 export function BoardCard({ issue }: { issue: Issue }) {
   const { ws } = useWorkspace();
+  const t = useT();
   return (
     <ListBoxItem
       id={issue.id}
@@ -114,7 +115,7 @@ export function BoardCard({ issue }: { issue: Issue }) {
         <LabelChips issue={issue} max={2} />
         <DeadlineChip issue={issue} />
         <SubtaskProgress issue={issue} />
-        {issue.estimate ? <span className="text-xs tabular-nums text-muted-foreground">{issue.estimate} pt</span> : null}
+        {issue.estimate ? <span className="text-xs tabular-nums text-muted-foreground">{issue.estimate} {t("estimate.unit")}</span> : null}
       </div>
     </ListBoxItem>
   );

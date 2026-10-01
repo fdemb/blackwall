@@ -196,4 +196,26 @@ export const en = {
   "project.noMatch": "No projects match",
   "milestone.edit": "Edit milestone",
   "action.clearSearch": "Clear search",
+
+  "sprint.endBeforeStart": "The end date can't be before the start date.",
+  "sprint.viewIssues": "View issues",
+  "sprint.issuesTitle": "{name}: issues",
+  "sprint.noIssues": "No issues were in this sprint.",
+  "sprint.starting": "Starting…",
+
+  "inbox.all": "All",
+  "inbox.unreadOnly": "Unread",
+  "inbox.markRead": "Mark as read",
+  "inbox.markUnread": "Mark as unread",
+  "inbox.noUnread": "No unread notifications",
+  "inbox.noUnreadSub": "Switch to All to see earlier ones.",
+  "inbox.inTrash": "In Trash",
+
+  "trash.restoring": "Restoring {done} of {total}…",
+  "trash.restoredN": "{n} issues restored",
+
+  "reports.showData": "Show data as a table",
+  "reports.hideData": "Hide table",
+  "reports.loadFailed": "The report didn't load.",
+  "time.deleteConfirmSub": "The logged time is removed from the issue and from reports.",
 } as const;

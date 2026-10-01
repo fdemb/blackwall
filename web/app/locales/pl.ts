@@ -198,4 +198,26 @@ export const pl: Record<keyof typeof en, string> = {
   "project.noMatch": "Brak pasujących projektów",
   "milestone.edit": "Edytuj kamień milowy",
   "action.clearSearch": "Wyczyść wyszukiwanie",
+
+  "sprint.endBeforeStart": "Data końca nie może być przed początkiem.",
+  "sprint.viewIssues": "Pokaż zadania",
+  "sprint.issuesTitle": "{name}: zadania",
+  "sprint.noIssues": "W tym sprincie nie było zadań.",
+  "sprint.starting": "Rozpoczynanie…",
+
+  "inbox.all": "Wszystkie",
+  "inbox.unreadOnly": "Nieprzeczytane",
+  "inbox.markRead": "Oznacz jako przeczytane",
+  "inbox.markUnread": "Oznacz jako nieprzeczytane",
+  "inbox.noUnread": "Brak nieprzeczytanych powiadomień",
+  "inbox.noUnreadSub": "Przełącz na Wszystkie, aby zobaczyć wcześniejsze.",
+  "inbox.inTrash": "W koszu",
+
+  "trash.restoring": "Przywracanie: {done} z {total}…",
+  "trash.restoredN": "Przywrócone zadania: {n}",
+
+  "reports.showData": "Pokaż dane w tabeli",
+  "reports.hideData": "Ukryj tabelę",
+  "reports.loadFailed": "Nie udało się wczytać raportu.",
+  "time.deleteConfirmSub": "Zapisany czas zniknie z zadania i raportów.",
 };

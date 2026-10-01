@@ -6,6 +6,7 @@ import { Button } from "~/components/ui/button";
 import { Dialog } from "~/components/ui/dialog";
 import { Tab, TabList, TabPanel, Tabs } from "~/components/ui/tabs";
 import { BarList, Columns } from "~/components/app/charts";
+import { ConfirmDialog } from "~/components/app/confirm";
 import { Card, EmptyState, Page, PageHeader, Scroll } from "~/components/app/page";
 import { ProgressBar } from "~/components/app/progress";
 import { TimeForm } from "~/components/app/time-form";
@@ -20,11 +21,14 @@ export default function Reports() {
   const { ws, revision, member } = useWorkspace();
   const [report, setReport] = useState<Report | null>(null);
   const [error, setError] = useState("");
+  const [attempt, setAttempt] = useState(0);
   useEffect(() => {
     let live = true;
-    workspaces.report(ws.id).then((r) => live && setReport(r)).catch((e) => live && setError(e.message));
+    // A new load clears the last failure, so an old error can't sit on top of fresh data.
+    setError("");
+    workspaces.report(ws.id).then((r) => live && setReport(r)).catch((e) => live && setError(e.message || t("reports.loadFailed")));
     return () => { live = false; };
-  }, [ws.id, revision]);
+  }, [ws.id, revision, attempt, t]);
 
   const nameOf = useMemo(() => ({
     people: (id: string) => member(id)?.display_name ?? "?",
@@ -45,7 +49,12 @@ export default function Reports() {
             <Tab id="time">{t("reports.time")}</Tab>
           </TabList>
           <TabPanel id="overview" className="space-y-4">
-            {error ? <p className="text-destructive">{error}</p> : !report ? <div className="h-40 animate-pulse rounded-xl bg-muted" /> : (
+            {error ? (
+              <div role="alert" className="flex flex-wrap items-center gap-3">
+                <p className="text-destructive">{error}</p>
+                <Button size="sm" onPress={() => { setReport(null); setAttempt((n) => n + 1); }}>{t("action.retry")}</Button>
+              </div>
+            ) : !report ? <div className="h-40 animate-pulse rounded-xl bg-muted" /> : (
               <>
                 <div className="grid gap-3 sm:grid-cols-3">
                   <Stat label={t("reports.totalTime")} value={formatMinutes(report.total_minutes)} />
@@ -56,7 +65,7 @@ export default function Reports() {
                   <Card className="p-4">
                     <h2 className="mb-3 text-[13px] font-semibold">{t("reports.delivery")}</h2>
                     {report.delivery.length === 0 ? <p className="text-[13px] text-muted-foreground">{t("reports.noDelivery")}</p> : (
-                      <Columns data={report.delivery.map((d) => ({ date: d.date, value: d.completed }))} label={(d, v) => `${d}: ${t("reports.completed", { n: v })}`} />
+                      <Columns title={t("reports.delivery")} data={report.delivery.map((d) => ({ date: d.date, value: d.completed }))} label={(d, v) => `${d}: ${t("reports.completed", { n: v })}`} />
                     )}
                   </Card>
                   <Card className="p-4">
@@ -70,7 +79,7 @@ export default function Reports() {
                               <Avatar name={m?.display_name ?? "?"} src={m?.avatar_url} size={22} />
                               <span className="min-w-0 flex-1 truncate">{m?.display_name ?? "?"}</span>
                               <span className="tabular-nums text-muted-foreground">{t("reports.openCount", { n: p.open_issues })}</span>
-                              <span className="w-16 text-right tabular-nums text-muted-foreground">{p.effort} pt</span>
+                              <span className="w-16 text-right tabular-nums text-muted-foreground">{p.effort} {t("estimate.unit")}</span>
                             </li>
                           );
                         })}
@@ -85,7 +94,7 @@ export default function Reports() {
                           const sp = ws.sprints.find((x) => x.id === s.id);
                           return (
                             <li key={s.id} className="text-[13px]">
-                              <div className="mb-1 flex justify-between"><span className="font-medium">{sp?.name ?? "?"}</span><span className="tabular-nums text-muted-foreground">{s.completed}/{s.total} · {s.effort} pt</span></div>
+                              <div className="mb-1 flex justify-between"><span className="font-medium">{sp?.name ?? "?"}</span><span className="tabular-nums text-muted-foreground">{s.completed}/{s.total} · {s.effort} {t("estimate.unit")}</span></div>
                               <ProgressBar value={s.completed} total={s.total} label={sp?.name} />
                             </li>
                           );
@@ -136,11 +145,13 @@ function TimeLog({ lang }: { lang: string }) {
   const t = useI18n().t;
   const { ws, me, member, run, canAdmin } = useWorkspace();
   const [editing, setEditing] = useState<TimeEntry | null>(null);
+  const [deleting, setDeleting] = useState<TimeEntry | null>(null);
   const entries = [...ws.time_entries].sort((a, b) => +new Date(b.logged_at) - +new Date(a.logged_at));
   if (!entries.length) return <EmptyState icon={<BarChart3 />} title={t("time.emptyTitle")} description={t("time.emptySub")} />;
   return (
     <Card>
-      <table className="w-full text-[13px]">
+      <div className="overflow-x-auto">
+      <table className="w-full min-w-[40rem] text-[13px]">
         <thead>
           <tr className="border-b border-border text-left text-xs text-muted-foreground">
             <th className="px-4 py-2 font-medium">{t("field.date")}</th>
@@ -166,7 +177,7 @@ function TimeLog({ lang }: { lang: string }) {
                   {(e.user_id === me || canAdmin) && (
                     <>
                       <Button variant="ghost" size="icon" aria-label={t("action.edit")} onPress={() => setEditing(e)}><Pencil /></Button>
-                      <Button variant="ghost" size="icon" aria-label={t("action.delete")} onPress={() => run({ type: "delete_time", id: e.id }).catch(() => {})}><Trash2 /></Button>
+                      <Button variant="ghost" size="icon" aria-label={t("action.delete")} onPress={() => setDeleting(e)}><Trash2 /></Button>
                     </>
                   )}
                 </td>
@@ -175,6 +186,8 @@ function TimeLog({ lang }: { lang: string }) {
           })}
         </tbody>
       </table>
+      </div>
+      <ConfirmDialog title={t("time.deleteTitle")} description={t("time.deleteConfirmSub")} isOpen={deleting !== null} onOpenChange={(o) => !o && setDeleting(null)} onConfirm={() => run({ type: "delete_time", id: deleting!.id }, { quiet: true })} />
       <Dialog title={t("time.edit")} size="sm" isOpen={editing !== null} onOpenChange={(o) => !o && setEditing(null)}>
         {(close) => editing && <TimeForm issueId={editing.issue_id} entry={editing} close={close} />}
       </Dialog>
