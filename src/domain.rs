@@ -253,9 +253,20 @@ pub struct IssueFilter {
     pub due_before: Option<DateTime<Utc>>,
     pub search: Option<String>,
     #[serde(default)]
+    pub unassigned: bool,
+    #[serde(default)]
     pub trash: bool,
     #[serde(default)]
     pub sort: IssueSort,
+    pub group_by: Option<IssueGroup>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, ToSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum IssueGroup {
+    Stage,
+    Priority,
+    Assignee,
+    None,
 }
 #[derive(Clone, Debug, Default, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
@@ -475,6 +486,197 @@ mod tests {
             .is_err()
         );
         assert!(w.query(viewer, IssueFilter::default()).is_ok());
+    }
+    #[test]
+    fn views_update_and_filter_unassigned() {
+        let (mut w, owner, team) = setup();
+        let now = Utc::now();
+        let mut mine = input(team);
+        mine.assignee = Some(owner);
+        w.apply(owner, Command::CreateIssue { input: mine }, now)
+            .unwrap();
+        w.apply(owner, Command::CreateIssue { input: input(team) }, now)
+            .unwrap();
+        let open = w
+            .query(
+                owner,
+                IssueFilter {
+                    unassigned: true,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(open.len(), 1);
+        assert!(open[0].assignee.is_none());
+        let view = w
+            .apply(
+                owner,
+                Command::SaveView {
+                    name: "Mine".into(),
+                    shared: false,
+                    filter: IssueFilter {
+                        assignee: Some(owner),
+                        ..Default::default()
+                    },
+                },
+                now,
+            )
+            .unwrap()
+            .id
+            .unwrap();
+        w.apply(
+            owner,
+            Command::UpdateView {
+                id: view,
+                name: "Renamed".into(),
+                shared: true,
+                filter: IssueFilter {
+                    group_by: Some(IssueGroup::Priority),
+                    ..Default::default()
+                },
+            },
+            now,
+        )
+        .unwrap();
+        assert_eq!(w.views[0].name, "Renamed");
+        assert!(w.views[0].shared);
+        assert_eq!(w.views[0].filter.group_by, Some(IssueGroup::Priority));
+        let viewer = Uuid::new_v4();
+        w.members.push(Member {
+            user_id: viewer,
+            role: Role::Viewer,
+        });
+        let personal = w
+            .apply(
+                viewer,
+                Command::SaveView {
+                    name: "Mine".into(),
+                    shared: false,
+                    filter: IssueFilter::default(),
+                },
+                now,
+            )
+            .unwrap()
+            .id
+            .unwrap();
+        assert!(
+            w.apply(
+                viewer,
+                Command::UpdateView {
+                    id: personal,
+                    name: "Shared".into(),
+                    shared: true,
+                    filter: IssueFilter::default(),
+                },
+                now,
+            )
+            .is_err()
+        );
+        assert!(
+            w.apply(
+                viewer,
+                Command::UpdateView {
+                    id: view,
+                    name: "Hijack".into(),
+                    shared: false,
+                    filter: IssueFilter::default(),
+                },
+                now,
+            )
+            .is_err()
+        );
+    }
+    #[test]
+    fn corrects_labels_milestones_and_unread_state() {
+        let (mut w, owner, _) = setup();
+        let now = Utc::now();
+        let label = w
+            .apply(
+                owner,
+                Command::CreateLabel {
+                    name: "bug".into(),
+                    color: "#ef4444".into(),
+                },
+                now,
+            )
+            .unwrap()
+            .id
+            .unwrap();
+        w.apply(
+            owner,
+            Command::UpdateLabel {
+                id: label,
+                name: "defect".into(),
+                color: "#f97316".into(),
+            },
+            now,
+        )
+        .unwrap();
+        assert_eq!(w.labels[0].name, "defect");
+        let project = w
+            .apply(
+                owner,
+                Command::CreateProject {
+                    name: "Launch".into(),
+                    description: String::new(),
+                    team_ids: vec![],
+                },
+                now,
+            )
+            .unwrap()
+            .id
+            .unwrap();
+        let milestone = w
+            .apply(
+                owner,
+                Command::CreateMilestone {
+                    project_id: project,
+                    name: "Beta".into(),
+                    deadline: None,
+                },
+                now,
+            )
+            .unwrap()
+            .id
+            .unwrap();
+        w.apply(
+            owner,
+            Command::UpdateMilestone {
+                id: milestone,
+                name: "Public beta".into(),
+                deadline: Some(now),
+            },
+            now,
+        )
+        .unwrap();
+        assert_eq!(w.milestones[0].name, "Public beta");
+        assert!(w.milestones[0].deadline.is_some());
+        assert!(
+            w.apply(
+                owner,
+                Command::UpdateMilestone {
+                    id: Uuid::new_v4(),
+                    name: "Ghost".into(),
+                    deadline: None,
+                },
+                now,
+            )
+            .is_err()
+        );
+        let note = Uuid::new_v4();
+        w.notifications.push(Notification {
+            id: note,
+            user_id: owner,
+            issue_id: None,
+            kind: AlertKind::Assignment,
+            message: "Assigned".into(),
+            read_at: Some(now),
+            created_at: now,
+            dedup_key: String::new(),
+        });
+        w.apply(owner, Command::MarkNotificationUnread { id: note }, now)
+            .unwrap();
+        assert!(w.notifications[0].read_at.is_none());
     }
     #[test]
     fn scheduler_deduplicates_deadline_notifications() {

@@ -91,6 +91,11 @@ pub enum Command {
         name: String,
         color: String,
     },
+    UpdateLabel {
+        id: Uuid,
+        name: String,
+        color: String,
+    },
     CreateProject {
         name: String,
         #[serde(default)]
@@ -105,6 +110,11 @@ pub enum Command {
     },
     CreateMilestone {
         project_id: Uuid,
+        name: String,
+        deadline: Option<DateTime<Utc>>,
+    },
+    UpdateMilestone {
+        id: Uuid,
         name: String,
         deadline: Option<DateTime<Utc>>,
     },
@@ -206,6 +216,12 @@ pub enum Command {
         shared: bool,
         filter: IssueFilter,
     },
+    UpdateView {
+        id: Uuid,
+        name: String,
+        shared: bool,
+        filter: IssueFilter,
+    },
     DeleteView {
         id: Uuid,
     },
@@ -229,6 +245,9 @@ pub enum Command {
         user_id: Uuid,
     },
     MarkNotificationRead {
+        id: Uuid,
+    },
+    MarkNotificationUnread {
         id: Uuid,
     },
     MarkAllNotificationsRead,
@@ -270,9 +289,11 @@ impl Command {
             Self::UpdateStage { .. } => "update_stage",
             Self::DeleteStage { .. } => "delete_stage",
             Self::CreateLabel { .. } => "create_label",
+            Self::UpdateLabel { .. } => "update_label",
             Self::CreateProject { .. } => "create_project",
             Self::UpdateProject { .. } => "update_project",
             Self::CreateMilestone { .. } => "create_milestone",
+            Self::UpdateMilestone { .. } => "update_milestone",
             Self::CreateSprint { .. } => "create_sprint",
             Self::UpdateSprint { .. } => "update_sprint",
             Self::CompleteSprint { .. } => "complete_sprint",
@@ -294,6 +315,7 @@ impl Command {
             Self::UpdateTime { .. } => "update_time",
             Self::DeleteTime { .. } => "delete_time",
             Self::SaveView { .. } => "save_view",
+            Self::UpdateView { .. } => "update_view",
             Self::DeleteView { .. } => "delete_view",
             Self::Invite { .. } => "invite",
             Self::ResendInvitation { .. } => "resend_invitation",
@@ -307,6 +329,7 @@ impl Command {
             Self::DeleteIntegration { .. } => "delete_integration",
             Self::AddSourceLink { .. } => "add_source_link",
             Self::ImportIssues { .. } => "import_issues",
+            Self::MarkNotificationUnread { .. } => "mark_notification_unread",
             Self::MarkAllNotificationsRead => "mark_all_notifications_read",
         }
     }

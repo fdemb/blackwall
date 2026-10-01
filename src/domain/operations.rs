@@ -560,9 +560,11 @@ impl Workspace {
         let personal = matches!(
             &command,
             Command::MarkNotificationRead { .. }
+                | Command::MarkNotificationUnread { .. }
                 | Command::MarkAllNotificationsRead
                 | Command::ConfigureAlerts { .. }
                 | Command::SaveView { shared: false, .. }
+                | Command::UpdateView { shared: false, .. }
                 | Command::DeleteView { .. }
                 | Command::Follow { .. }
         );
@@ -698,6 +700,20 @@ impl Workspace {
                 self.labels.push(Label { id, name, color });
                 result = Some(id)
             }
+            Command::UpdateLabel { id, name, color } => {
+                text(&name, 100)?;
+                if color.len() > 40 {
+                    return Err(Error::BadRequest("invalid color".into()));
+                }
+                let l = self
+                    .labels
+                    .iter_mut()
+                    .find(|l| l.id == id)
+                    .ok_or(Error::NotFound)?;
+                l.name = name;
+                l.color = color;
+                result = Some(id)
+            }
             Command::CreateProject {
                 name,
                 description,
@@ -759,6 +775,17 @@ impl Workspace {
                     name,
                     deadline,
                 });
+                result = Some(id)
+            }
+            Command::UpdateMilestone { id, name, deadline } => {
+                text(&name, 200)?;
+                let m = self
+                    .milestones
+                    .iter_mut()
+                    .find(|m| m.id == id)
+                    .ok_or(Error::NotFound)?;
+                m.name = name;
+                m.deadline = deadline;
                 result = Some(id)
             }
             Command::CreateSprint {
@@ -1171,6 +1198,35 @@ impl Workspace {
                 });
                 result = Some(id)
             }
+            Command::UpdateView {
+                id,
+                name,
+                shared,
+                filter,
+            } => {
+                text(&name, 200)?;
+                let owner = self
+                    .views
+                    .iter()
+                    .find(|v| v.id == id)
+                    .ok_or(Error::NotFound)?
+                    .owner;
+                if owner != actor {
+                    self.admin(actor)?;
+                }
+                if shared && self.member(actor)?.role == Role::Viewer {
+                    return Err(Error::Forbidden);
+                }
+                let v = self
+                    .views
+                    .iter_mut()
+                    .find(|v| v.id == id)
+                    .ok_or(Error::NotFound)?;
+                v.name = name;
+                v.shared = shared;
+                v.filter = filter;
+                result = Some(id)
+            }
             Command::DeleteView { id } => {
                 let v = self
                     .views
@@ -1309,6 +1365,15 @@ impl Workspace {
                 n.read_at = Some(now);
                 result = Some(id)
             }
+            Command::MarkNotificationUnread { id } => {
+                let n = self
+                    .notifications
+                    .iter_mut()
+                    .find(|n| n.id == id && n.user_id == actor)
+                    .ok_or(Error::NotFound)?;
+                n.read_at = None;
+                result = Some(id)
+            }
             Command::MarkAllNotificationsRead => {
                 for n in &mut self.notifications {
                     if n.user_id == actor {
@@ -1443,6 +1508,7 @@ impl Workspace {
             .filter(|i| {
                 i.deleted_at.is_some() == f.trash
                     && f.assignee.is_none_or(|v| i.assignee == Some(v))
+                    && (!f.unassigned || i.assignee.is_none())
                     && f.team_id.is_none_or(|v| i.team_id == v)
                     && f.stage_id.is_none_or(|v| i.stage_id == v)
                     && f.priority.as_ref().is_none_or(|v| i.priority == *v)
