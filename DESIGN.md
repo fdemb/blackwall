@@ -1,9 +1,13 @@
 # Design
 
-The frontend is an operational reference client. A compact sidebar provides workspaces and views; the main column provides lists, forms, and issue detail. Native HTML controls and visible labels keep behavior easy to inspect and replace.
+Linear is the reference: dense, keyboard-first, quiet. A neutral sidebar holds the workspace switcher, inbox, teams, and saved views. The main column holds one page at a time. Issue detail is a full page with properties on the right, not a modal.
 
-Use a neutral paper background, dark ink, thin separators, and restrained blue links/actions. Dark mode reverses the surfaces and adjusts the foreground for contrast. System mode follows the operating system. Use the system UI font without a separate display face because this is a deliberately simple application interface.
+Color is neutral (slightly cool grays) with one accent, violet, used for primary actions, selection, focus rings, progress, and the done state. Status colors (amber for in progress, red for urgent and overdue) appear only as small icons and chips. Light, dark, and system themes share the same tokens in `web/app/app.css`.
 
-Keep issues in rows with number, title, stage, assignee, priority, and deadline. Boards group those same issues into team stages. Place issue editing, discussion, attachments, and time entries together. Empty states explain the next useful action. Render server text through escaped HTML or textContent; Markdown rendering belongs to the backend.
+Type is Inter Variable at 13px for the interface and 14px for long text. Numbers use tabular figures. JetBrains Mono appears only for code and identifiers.
 
-English and Polish strings share one dictionary. Forms retain visible focus, disabled states, status messages, and responsive layouts. Avoid illustrative content, decorative imagery, elaborate animation, or invented product claims.
+Components are shadcn-style wrappers over React Aria Components in `web/app/components/ui`, so keyboard, focus, and screen reader behavior come from the library. Drag and drop uses React Aria's collection hooks, which also work from the keyboard.
+
+Everything is reachable from Ctrl/Cmd+K. `C` creates an issue, `/` searches, `G` then `I`, `M`, `A`, `P`, or `R` jumps between pages. Empty states name the next action. Motion is short and disabled under `prefers-reduced-motion`.
+
+English and Polish share one typed dictionary in `web/app/locales`. Markdown is rendered and sanitized by the backend.

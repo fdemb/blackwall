@@ -1,14 +1,17 @@
 # Blackwall
 
-A Rust work-management API with an Askama frontend, plain JavaScript, SQLite or PostgreSQL, and durable background jobs.
+A Rust work-management API with a React Router frontend (React Aria Components, Tailwind), SQLite or PostgreSQL, and durable background jobs.
 
 ## Run locally
 
-Install stable Rust, then run. If `cargo` is not on your shell path after installation, first run `source "$HOME/.cargo/env"`.
+Install stable Rust and Node 20+. Build the frontend once, then run the server. If `cargo` is not on your shell path after installation, first run `source "$HOME/.cargo/env"`.
 
 ```sh
+(cd web && npm install && npm run build)
 cargo run
 ```
+
+The server reads the build from `web/build/client`. Set `WEB_DIR` to serve it from elsewhere. For frontend work, run `cargo run` and `npm run dev` inside `web/`; Vite proxies `/api` to port 3000 and serves the app on port 5173.
 
 Open `http://127.0.0.1:3000`, register an account, and create a workspace. Create a team under Planning before adding issues. SQLite creates `blackwall.db` in the working directory.
 
@@ -37,9 +40,9 @@ The work API uses explicit commands. Each request includes the current workspace
 }
 ```
 
-Send that request to `POST /api/workspaces/{id}/commands`. Read `GET /api/workspaces/{id}` to obtain the revision. HTTP 409 means another change committed first; reload before retrying. The frontend's extra-actions form uses this same generated contract.
+Send that request to `POST /api/workspaces/{id}/commands`. Read `GET /api/workspaces/{id}` to obtain the revision. HTTP 409 means another change committed first; reload before retrying.
 
-The API implements workspace membership and invitations, custom team workflows, labels, issue relations, projects, milestones, sprint carryover, saved views, comments and mentions, attachment uploads, inbox preferences, time corrections, reports, search, bulk actions, trash, activity, JSON transfer, signed webhooks, and account recovery. The frontend provides forms for common operations and a schema-based command form for the remainder.
+The API implements workspace membership and invitations, custom team workflows, labels, issue relations, projects, milestones, sprint carryover, saved views, comments and mentions, attachment uploads, inbox preferences, time corrections, reports, search, bulk actions, trash, activity, JSON transfer, signed webhooks, and account recovery.
 
 ## Background delivery
 

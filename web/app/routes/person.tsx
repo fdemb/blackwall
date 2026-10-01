@@ -1,0 +1,52 @@
+import { Link, Navigate, useParams } from "react-router";
+import { ChevronLeft, Mail, Phone } from "lucide-react";
+import { Avatar } from "~/components/ui/avatar";
+import { Badge } from "~/components/ui/badge";
+import { IssueList } from "~/components/app/issue-list";
+import { EmptyState, Page, PageHeader, Scroll } from "~/components/app/page";
+import { applyFilter, isDone } from "~/lib/filters";
+import { useT } from "~/lib/i18n";
+import { useWorkspace } from "~/lib/workspace";
+
+export default function Person() {
+  const t = useT();
+  const { userId, ws: wsId } = useParams();
+  const { ws, member } = useWorkspace();
+  const m = member(userId);
+  if (!m) return <Navigate to={`/${wsId}/people`} replace />;
+  const role = ws.members.find((x) => x.user_id === m.id)?.role;
+  const issues = applyFilter(ws, { assignee: m.id }).filter((i) => !isDone(ws, i));
+  const teams = ws.teams.filter((x) => x.members.includes(m.id));
+  const looksLikeEmailOrPhone = /^[+\d][\d\s()-]{5,}$/.test(m.contact);
+  return (
+    <Page>
+      <PageHeader title={m.display_name} icon={<Link to={`/${ws.id}/people`} aria-label={t("action.back")} className="-ml-1 grid size-7 place-items-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"><ChevronLeft className="size-4" /></Link>} />
+      <Scroll>
+        <div className="mx-auto max-w-3xl space-y-8 p-6">
+          <div className="flex items-center gap-5">
+            <Avatar name={m.display_name} src={m.avatar_url} size={72} />
+            <div className="min-w-0 space-y-1.5">
+              <div className="flex items-center gap-2"><h2 className="text-xl font-semibold tracking-tight">{m.display_name}</h2>{role && <Badge tone={role === "owner" ? "primary" : "neutral"}>{t(`role.${role}`)}</Badge>}</div>
+              <a href={`mailto:${m.email}`} className="flex items-center gap-2 text-[13px] text-muted-foreground hover:text-foreground"><Mail className="size-3.5" />{m.email}</a>
+              {m.contact && (looksLikeEmailOrPhone
+                ? <a href={`tel:${m.contact.replace(/\s/g, "")}`} className="flex items-center gap-2 text-[13px] text-muted-foreground hover:text-foreground"><Phone className="size-3.5" />{m.contact}</a>
+                : <p className="flex items-center gap-2 text-[13px] text-muted-foreground"><Phone className="size-3.5" />{m.contact}</p>)}
+            </div>
+          </div>
+          <section>
+            <h3 className="mb-2 text-[13px] font-semibold">{t("nav.teams")}</h3>
+            {teams.length === 0 ? <p className="text-[13px] text-muted-foreground">{t("person.noTeams")}</p> : (
+              <div className="flex flex-wrap gap-2">{teams.map((x) => <Link key={x.id} to={`/${ws.id}/team/${x.id}`} className="rounded-full border border-border px-3 py-1 text-[13px] hover:border-primary/50 hover:text-primary">{x.name}</Link>)}</div>
+            )}
+          </section>
+          <section>
+            <h3 className="mb-2 text-[13px] font-semibold">{t("person.assigned")}</h3>
+            <div className="overflow-hidden rounded-xl border border-border">
+              <IssueList issues={issues} groupBy="none" selectable={false} emptyState={<EmptyState title={t("person.noIssues")} />} />
+            </div>
+          </section>
+        </div>
+      </Scroll>
+    </Page>
+  );
+}

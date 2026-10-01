@@ -8,7 +8,7 @@ web
 
 ## Stack
 
-Delegated by the user. Rust API with Askama templates, HTML, and plain JavaScript. SQLite and PostgreSQL are selectable at deployment.
+Rust API. React Router (framework mode, SPA) with React Aria Components and Tailwind CSS in `web/`. SQLite and PostgreSQL are selectable at deployment.
 
 ## Users
 
@@ -22,7 +22,7 @@ Blackwall puts ownership, team plans, issue discussion, and notifications in one
 
 Workspaces, roles, invitations, teams, issues, projects, milestones, workflows, boards, sprints, saved views, comments, notifications, time tracking, reporting, search, member profiles, bulk changes, recovery, import/export, integrations, and account preferences belong in the product.
 
-English and Polish, plus light, dark, and system themes, are required. The backend is the priority. The frontend is intentionally small and will be rebuilt after the API is established. Browser verification is outside the requested work.
+English and Polish, plus light, dark, and system themes, are required. Browser verification is outside the requested work.
 
 ## Brand commitments
 

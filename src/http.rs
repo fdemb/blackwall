@@ -150,10 +150,11 @@ pub struct IncomingLink {
 }
 
 pub fn router(store: Store) -> Router {
+    router_with_web(store, crate::web::default_dir())
+}
+
+pub fn router_with_web(store: Store, web_dir: std::path::PathBuf) -> Router {
     Router::new()
-        .route("/", get(crate::ui::index))
-        .route("/static/app.js", get(crate::ui::js))
-        .route("/static/style.css", get(crate::ui::css))
         .route("/health", get(health))
         .route("/api/schema.json", get(schema))
         .route("/api/auth/register", post(register))
@@ -193,6 +194,7 @@ pub fn router(store: Store) -> Router {
             post(incoming),
         )
         .route("/api/markdown", post(markdown))
+        .fallback_service(crate::web::service(web_dir))
         .layer(DefaultBodyLimit::max(6 * 1024 * 1024))
         .layer(middleware::from_fn(security_headers))
         .layer(middleware::from_fn(auth_rate_limit))
@@ -248,7 +250,9 @@ async fn security_headers(request: Request, next: Next) -> Response {
         HeaderValue::from_static("nosniff"),
     );
     headers.insert("referrer-policy", HeaderValue::from_static("same-origin"));
-    headers.insert("content-security-policy", HeaderValue::from_static("default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' https:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"));
+    if !headers.contains_key(header::CONTENT_SECURITY_POLICY) {
+        headers.insert(header::CONTENT_SECURITY_POLICY, HeaderValue::from_static("default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' https:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"));
+    }
     headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     response
 }

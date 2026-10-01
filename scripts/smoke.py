@@ -91,8 +91,8 @@ with tempfile.TemporaryDirectory(prefix="blackwall-smoke-") as temporary:
         joined = request("POST", path + "/invitations/accept", {"token": mail["token"]})
         assert len(joined["workspace"]["members"]) == 2
         assert request("GET", "/api/workspaces")[0]["id"] == workspace_id
-        assert b"<!doctype html>" in request("GET", "/")
-        assert b"async function api" in request("GET", "/static/app.js")
+        shell = request("GET", "/login")
+        assert b"<!DOCTYPE html>" in shell and b"/assets/" in shell
         assert request("GET", "/api/schema.json")["components"]["schemas"]["Command"]
         print("PASS: real HTTP, restart persistence, invitation delivery/cancellation/acceptance, HTML, assets, OpenAPI")
     finally:

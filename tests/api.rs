@@ -5,7 +5,7 @@ use axum::{
 use blackwall::{
     auth::{Register, Session},
     domain::{BulkAction, Command, IssueInput, IssuePatch, Priority, Role},
-    http::router,
+    http::router_with_web,
     jobs,
     store::{NewJob, Store},
 };
@@ -98,7 +98,14 @@ async fn complete_contract_on_both_engines() {
 }
 async fn contract(url: &str) {
     let store = Store::connect(url).await.unwrap();
-    let app = router(store.clone());
+    let web = std::env::temp_dir().join(format!("blackwall-web-{}", Uuid::new_v4()));
+    std::fs::create_dir_all(&web).unwrap();
+    std::fs::write(
+        web.join("index.html"),
+        "<!DOCTYPE html><script src=\"/theme.js\"></script><script>window.boot=1</script>",
+    )
+    .unwrap();
+    let app = router_with_web(store.clone(), web);
     let owner = account(&store, "owner").await;
     let colleague = account(&store, "colleague").await;
     let outsider = account(&store, "outsider").await;
@@ -769,21 +776,34 @@ async fn contract(url: &str) {
     let (status, schema) = call(&app, "GET", "/api/schema.json", None, None).await;
     assert_eq!(status, StatusCode::OK);
     assert!(schema["components"]["schemas"]["Command"].is_object());
-    let response = app
-        .clone()
-        .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-    assert!(
-        response
-            .into_body()
-            .collect()
+    for path in ["/", "/some/client/route"] {
+        let response = app
+            .clone()
+            .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
             .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let csp = response.headers()["content-security-policy"]
+            .to_str()
             .unwrap()
-            .to_bytes()
-            .starts_with(b"<!doctype html>")
-    );
+            .to_owned();
+        assert!(
+            csp.contains("'sha256-"),
+            "inline bootstrap script must be hashed: {csp}"
+        );
+        assert!(!csp.contains("unsafe-inline"));
+        assert!(
+            response
+                .into_body()
+                .collect()
+                .await
+                .unwrap()
+                .to_bytes()
+                .starts_with(b"<!DOCTYPE html>")
+        );
+    }
+    let (status, _) = call(&app, "GET", "/api/nope", None, None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
     let result = store
         .register(Register {
             email: owner.profile.email.clone(),

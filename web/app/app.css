@@ -1,0 +1,115 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@plugin "tailwindcss-react-aria-components";
+@import "@fontsource-variable/inter";
+@import "@fontsource-variable/jetbrains-mono";
+
+@custom-variant dark (&:is(.dark *));
+
+:root {
+  --background: oklch(0.985 0.002 286);
+  --foreground: oklch(0.21 0.01 286);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.21 0.01 286);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.21 0.01 286);
+  --primary: oklch(0.54 0.23 293);
+  --primary-foreground: oklch(0.985 0.01 293);
+  --secondary: oklch(0.955 0.004 286);
+  --secondary-foreground: oklch(0.28 0.01 286);
+  --muted: oklch(0.96 0.003 286);
+  --muted-foreground: oklch(0.52 0.012 286);
+  --accent: oklch(0.955 0.03 293);
+  --accent-foreground: oklch(0.42 0.18 293);
+  --destructive: oklch(0.577 0.22 27);
+  --success: oklch(0.6 0.15 155);
+  --warning: oklch(0.72 0.15 75);
+  --border: oklch(0.915 0.004 286);
+  --input: oklch(0.9 0.005 286);
+  --ring: oklch(0.6 0.2 293);
+  --sidebar: oklch(0.968 0.003 286);
+  --radius: 0.5rem;
+}
+
+.dark {
+  --background: oklch(0.175 0.006 286);
+  --foreground: oklch(0.94 0.004 286);
+  --card: oklch(0.205 0.007 286);
+  --card-foreground: oklch(0.94 0.004 286);
+  --popover: oklch(0.225 0.008 286);
+  --popover-foreground: oklch(0.94 0.004 286);
+  --primary: oklch(0.62 0.21 293);
+  --primary-foreground: oklch(0.99 0.005 293);
+  --secondary: oklch(0.26 0.008 286);
+  --secondary-foreground: oklch(0.92 0.004 286);
+  --muted: oklch(0.24 0.007 286);
+  --muted-foreground: oklch(0.68 0.01 286);
+  --accent: oklch(0.3 0.06 293);
+  --accent-foreground: oklch(0.86 0.09 293);
+  --destructive: oklch(0.65 0.21 25);
+  --success: oklch(0.72 0.16 155);
+  --warning: oklch(0.8 0.15 80);
+  --border: oklch(0.28 0.008 286);
+  --input: oklch(0.32 0.009 286);
+  --ring: oklch(0.64 0.2 293);
+  --sidebar: oklch(0.15 0.006 286);
+}
+
+@theme inline {
+  --font-sans: "Inter Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono Variable", ui-monospace, monospace;
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-sidebar: var(--sidebar);
+  --radius-sm: calc(var(--radius) - 2px);
+  --radius-md: var(--radius);
+  --radius-lg: calc(var(--radius) + 2px);
+  --radius-xl: calc(var(--radius) + 6px);
+}
+
+@layer base {
+  * { @apply border-border outline-ring/50; }
+  html { -webkit-font-smoothing: antialiased; font-feature-settings: "cv11", "ss03"; }
+  body { @apply bg-background text-foreground font-sans text-[13px] leading-5; }
+  ::selection { background: color-mix(in oklch, var(--primary) 30%, transparent); }
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 999px; border: 2px solid transparent; background-clip: content-box; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--input); background-clip: content-box; border: 2px solid transparent; }
+}
+
+.prose-bw { @apply text-[14px] leading-6; }
+.prose-bw > * + * { @apply mt-3; }
+.prose-bw h1, .prose-bw h2, .prose-bw h3 { @apply font-semibold tracking-tight; }
+.prose-bw h1 { @apply text-lg; }
+.prose-bw h2 { @apply text-base; }
+.prose-bw ul { @apply list-disc pl-5; }
+.prose-bw ol { @apply list-decimal pl-5; }
+.prose-bw a { @apply text-primary underline underline-offset-2; }
+.prose-bw code { @apply rounded bg-muted px-1 py-0.5 font-mono text-[12px]; }
+.prose-bw pre { @apply overflow-x-auto rounded-md bg-muted p-3; }
+.prose-bw pre code { @apply bg-transparent p-0; }
+.prose-bw blockquote { @apply border-l-2 border-primary/40 pl-3 text-muted-foreground; }
+.prose-bw table { @apply w-full border-collapse text-[13px]; }
+.prose-bw th, .prose-bw td { @apply border border-border px-2 py-1; }
+
+@media (prefers-reduced-motion: reduce) {
+  * { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+}

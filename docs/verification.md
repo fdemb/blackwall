@@ -1,6 +1,6 @@
 # Verification
 
-The final build passed `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, and `node --check static/app.js`.
+The final build passed `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, and the `web/` typecheck and production build.
 
 `cargo test` passed 10 unit tests and the API workflow suite. The workflow ran against both SQLite and a temporary PostgreSQL 18 instance using `TEST_POSTGRES_URL`.
 

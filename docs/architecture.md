@@ -9,7 +9,7 @@ Clients register, create a workspace, then submit typed commands with the worksp
 - `store` owns portable SQL, migrations, workspace revision checks, membership indexes, attachment data, and the delivery outbox.
 - `http` exposes typed JSON contracts and OpenAPI, scopes reads to current membership, and commits commands.
 - `jobs` creates deadline reminders, expires invitations and tokens, and leases durable delivery work.
-- `ui` renders an Askama shell; plain JavaScript calls the public API.
+- `web` serves the compiled React Router app from `web/build/client` and hashes its inline bootstrap scripts into the page's CSP. The app calls the public API.
 
 A command loads the current workspace, checks current membership, applies domain rules, then saves with a compare-and-swap revision update. A competing member removal also changes that revision, so stale authorization cannot commit. Bulk edits and sprint completion change one snapshot and commit together. Membership indexes update in the same transaction. A conflict returns HTTP 409; callers reload before retrying.
 

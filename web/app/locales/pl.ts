@@ -1,0 +1,127 @@
+import type { en } from "./en";
+
+export const pl: Record<keyof typeof en, string> = {
+  "nav.main": "Nawigacja główna", "nav.skip": "Przejdź do treści", "nav.inbox": "Skrzynka", "nav.myIssues": "Moje zadania", "nav.allIssues": "Wszystkie zadania",
+  "nav.issues": "Zadania", "nav.workspace": "Przestrzeń", "nav.projects": "Projekty", "nav.people": "Osoby", "nav.reports": "Raporty", "nav.teams": "Zespoły",
+  "nav.views": "Widoki", "nav.trash": "Kosz", "nav.settings": "Ustawienia", "nav.account": "Konto", "nav.signOut": "Wyloguj",
+
+  "action.add": "Dodaj", "action.back": "Wstecz", "action.cancel": "Anuluj", "action.clear": "Wyczyść zaznaczenie", "action.delete": "Usuń", "action.download": "Pobierz",
+  "action.edit": "Edytuj", "action.more": "Więcej działań", "action.moveDown": "Przesuń w dół", "action.moveUp": "Przesuń w górę", "action.remove": "Usuń", "action.restore": "Przywróć",
+  "action.save": "Zapisz", "action.search": "Szukaj",
+
+  "field.assignee": "Osoba przypisana", "field.contact": "Dane kontaktowe", "field.date": "Data", "field.deadline": "Termin", "field.description": "Opis",
+  "field.displayName": "Nazwa wyświetlana", "field.email": "E-mail", "field.estimate": "Estymata", "field.issue": "Zadanie", "field.labels": "Etykiety", "field.milestone": "Kamień milowy",
+  "field.name": "Nazwa", "field.password": "Hasło", "field.priority": "Priorytet", "field.project": "Projekt", "field.role": "Rola", "field.sprint": "Sprint",
+  "field.stage": "Status", "field.team": "Zespół", "field.title": "Tytuł",
+
+  "priority.urgent": "Pilny", "priority.high": "Wysoki", "priority.normal": "Średni", "priority.low": "Niski", "priority.none": "Brak priorytetu",
+  "role.owner": "Właściciel", "role.admin": "Administrator", "role.member": "Członek", "role.viewer": "Obserwator",
+  "theme.light": "Jasny", "theme.dark": "Ciemny", "theme.system": "Systemowy",
+  "pref.language": "Język", "pref.theme": "Motyw",
+
+  "auth.welcomeBack": "Miło Cię widzieć", "auth.loginSub": "Zaloguj się i wróć do pracy.", "auth.login": "Zaloguj się", "auth.forgot": "Nie pamiętasz hasła?",
+  "auth.noAccount": "Nie masz konta?", "auth.register": "Utwórz konto", "auth.createAccount": "Utwórz konto", "auth.registerSub": "Jedno miejsce na pracę zespołu.",
+  "auth.haveAccount": "Masz już konto?", "auth.passwordHint": "Co najmniej 12 znaków.", "auth.recoverTitle": "Zresetuj hasło",
+  "auth.recoverSub": "Podaj e-mail, a wyślemy token odzyskiwania.", "auth.sendLink": "Wyślij token", "auth.backToLogin": "Wróć do logowania",
+  "auth.checkMail": "Sprawdź skrzynkę", "auth.checkMailSub": "Jeśli konto {email} istnieje, token jest w drodze. Wklej go poniżej.",
+  "auth.token": "Token odzyskiwania", "auth.newPassword": "Nowe hasło", "auth.resetPassword": "Ustaw nowe hasło", "auth.resetDone": "Hasło zmienione. Możesz się zalogować.",
+
+  "welcome.title": "Witaj, {name}", "welcome.createSub": "Przestrzeń zbiera zespoły, zadania i projekty.", "welcome.joinSub": "Wklej identyfikator przestrzeni i token z zaproszenia.",
+  "welcome.haveInvite": "Mam zaproszenie", "welcome.startOwn": "Utwórz własną przestrzeń", "welcome.back": "Wróć do mojej przestrzeni",
+  "workspace.name": "Nazwa przestrzeni", "workspace.namePlaceholder": "Acme", "workspace.create": "Utwórz przestrzeń", "workspace.id": "Identyfikator przestrzeni", "workspace.newOrJoin": "Utwórz lub dołącz do przestrzeni",
+  "invite.token": "Token zaproszenia", "invite.accept": "Dołącz do przestrzeni",
+
+  "issue.new": "Nowe zadanie", "issue.create": "Utwórz zadanie", "issue.created": "Zadanie utworzone", "issue.titlePlaceholder": "Tytuł zadania",
+  "issue.descriptionPlaceholder": "Dodaj opis. Możesz używać Markdown.", "issue.needTeam": "Zadania należą do zespołów. Najpierw utwórz zespół.",
+  "issue.properties": "Właściwości", "issue.follow": "Obserwuj", "issue.unfollow": "Przestań obserwować", "issue.followers": "Obserwujący", "issue.updated": "Zmieniono",
+  "issue.copyLink": "Kopiuj link", "issue.linkCopied": "Skopiowano link", "issue.deleteTitle": "Usunąć to zadanie?", "issue.deleteSub": "Trafi do kosza i można je przywrócić.",
+  "issue.movedToTrash": "Przeniesiono do kosza", "issue.deleted": "To zadanie jest w koszu", "issue.deletedSub": "Przywróć je z kosza, aby dalej pracować.",
+  "issue.editDescription": "Edytuj opis", "issue.addDescription": "Dodaj opis…", "issue.noDescription": "Brak opisu.",
+  "issue.subtasks": "Podzadania", "issue.addSubtask": "Dodaj podzadanie", "issue.subtaskTitle": "Tytuł podzadania", "issue.subtaskPlaceholder": "Co trzeba zrobić?",
+  "issue.dependencies": "Zależności", "issue.addBlocker": "Dodaj blokadę", "issue.noDependencies": "Nic nie blokuje tego zadania.", "issue.blockedBy": "Blokowane przez",
+  "issue.blocks": "Blokuje", "issue.resolved": "Rozwiązane", "issue.parent": "Nadrzędne", "issue.setParent": "Ustaw nadrzędne", "issue.sourceLinks": "Odnośniki źródłowe",
+  "issue.attachments": "Załączniki", "issue.discussion": "Dyskusja", "issue.find": "Znajdź zadanie", "issue.findPlaceholder": "Szukaj zadań…",
+  "assignee.none": "Nieprzypisane", "labels.none": "Brak etykiet", "labels.empty": "Brak etykiet", "project.none": "Bez projektu", "milestone.none": "Bez kamienia milowego", "sprint.none": "Bez sprintu",
+  "deadline.none": "Brak terminu", "deadline.overdue": "Po terminie", "estimate.none": "Brak estymaty",
+  "attachments.add": "Dołącz pliki", "attachments.none": "Brak załączników.", "attachments.tooLarge": "Plik {name} przekracza limit 5 MB.",
+
+  "comment.new": "Nowy komentarz", "comment.edit": "Edytuj komentarz", "comment.placeholder": "Napisz komentarz. Użyj @, aby wspomnieć osobę.", "comment.send": "Skomentuj",
+  "comment.hint": "Ctrl+Enter wysyła", "comment.edited": "edytowano",
+  "editor.bold": "Pogrubienie", "editor.italic": "Kursywa", "editor.code": "Kod", "editor.link": "Link", "editor.list": "Lista punktowana", "editor.numbered": "Lista numerowana",
+  "editor.quote": "Cytat", "editor.mention": "Wzmianka", "editor.write": "Pisz", "editor.preview": "Podgląd", "editor.nothing": "Nic do wyświetlenia.",
+
+  "time.title": "Czas pracy", "time.log": "Zapisz czas", "time.edit": "Edytuj wpis czasu", "time.none": "Nie zapisano jeszcze czasu.", "time.total": "Zapisano {time}", "time.duration": "Czas trwania",
+  "time.durationHint": "Na przykład 90, 1h 30m lub 1,5h.", "time.note": "Notatka", "time.notePlaceholder": "Nad czym pracowano?",
+  "time.emptyTitle": "Brak zapisanego czasu", "time.emptySub": "Zapisz czas w dowolnym zadaniu, a pojawi się tutaj.",
+
+  "count.issues": "Zadania: {n}", "count.members": "Osoby: {n}",
+  "group.stage": "Grupuj wg statusu", "group.priority": "Grupuj wg priorytetu", "group.assignee": "Grupuj wg osoby", "group.none": "Bez grupowania", "group.all": "Wszystkie zadania",
+  "sort.label": "Sortuj", "sort.position": "Ręcznie", "sort.priority": "Priorytet", "sort.deadline": "Termin", "sort.updated": "Ostatnio zmienione",
+  "filter.add": "Filtr", "filter.clear": "Wyczyść filtry", "filter.search": "Filtruj po tytule…", "filter.dueBefore": "Termin do", "filter.today": "Termin dziś", "filter.week": "Termin w 7 dni", "filter.month": "Termin w 30 dni",
+  "empty.issues": "Brak zadań", "empty.issuesSub": "Naciśnij C, aby utworzyć pierwsze.", "empty.noMatch": "Nic nie pasuje", "empty.noMatchSub": "Spróbuj usunąć któryś filtr.",
+  "view.save": "Zapisz widok", "view.saveSub": "Wróć do tych filtrów w dowolnej chwili.", "view.saved": "Widok zapisany", "view.share": "Udostępnij przestrzeni", "view.shared": "Udostępniony", "view.delete": "Usuń widok",
+  "bulk.select": "Zaznacz zadanie", "bulk.selected": "Zaznaczono: {n}", "bulk.toolbar": "Działania zbiorcze", "bulk.sameTeam": "Aby zmienić status, zaznacz zadania z jednego zespołu.",
+
+  "my.assigned": "Przypisane", "my.following": "Obserwowane", "my.emptyTitle": "Nic nie jest do Ciebie przypisane", "my.emptySub": "Skorzystaj z ciszy albo weź coś z backlogu zespołu.",
+  "my.followEmptyTitle": "Nic nie obserwujesz", "my.followEmptySub": "Obserwuj zadanie, aby widzieć je tutaj i dostawać powiadomienia.",
+
+  "team.issues": "Lista", "team.board": "Tablica", "team.backlog": "Backlog", "team.sprints": "Sprinty", "team.backlogSub": "Otwarta praca poza sprintami",
+  "team.create": "Utwórz zespół", "team.createFirst": "Utwórz pierwszy zespół", "team.namePlaceholder": "Platforma", "team.pickMembers": "Wybierz osoby",
+  "board.empty": "Brak zadań", "board.allSprints": "Wszystkie zadania", "board.noSprint": "Poza sprintami",
+  "backlog.emptyTitle": "Backlog jest pusty", "backlog.emptySub": "Wszystko jest w sprincie albo zakończone.",
+
+  "sprint.new": "Nowy sprint", "sprint.edit": "Edytuj sprint", "sprint.goal": "Cel", "sprint.goalPlaceholder": "Co ma osiągnąć ten sprint?", "sprint.starts": "Początek", "sprint.ends": "Koniec",
+  "sprint.start": "Rozpocznij sprint", "sprint.complete": "Zakończ sprint", "sprint.archive": "Archiwizuj", "sprint.past": "Poprzednie sprinty", "sprint.progress": "Zrobione {done} z {total}",
+  "sprint.outcome": "Zrobione {done}/{total} · {effort} pkt", "sprint.moveTo": "Przenieś niezakończone zadania do", "sprint.unfinished": "Niezakończone zadania: {n}. Wybierz, dokąd trafią.",
+  "sprint.allDone": "Wszystko w tym sprincie jest zrobione.", "sprint.backlogEmpty": "Backlog jest pusty", "sprint.dropHere": "Przeciągnij tu zadania",
+  "sprint.state.planned": "Planowany", "sprint.state.active": "Aktywny", "sprint.state.completed": "Zakończony", "sprint.state.archived": "Zarchiwizowany",
+
+  "project.new": "Nowy projekt", "project.edit": "Edytuj projekt", "project.emptyTitle": "Brak projektów", "project.emptySub": "Zgrupuj powiązane zadania w większą inicjatywę i śledź postępy.",
+  "project.noDescription": "Brak opisu", "project.allTeams": "Wszystkie zespoły", "project.teams": "Zespoły", "project.noTeams": "Utwórz zespół, aby go tu powiązać.", "project.progress": "Postęp",
+  "project.doneOf": "Zrobione {done} z {total} zadań", "project.milestones": "Kamienie milowe", "project.issuesEmpty": "Dodaj zadania w polu Projekt na stronie zadania.",
+  "milestone.new": "Dodaj kamień milowy", "milestone.empty": "Brak kamieni milowych.",
+
+  "inbox.markAll": "Oznacz wszystko jako przeczytane", "inbox.unread": "Nieprzeczytane: {n}", "inbox.unreadDot": "Nieprzeczytane", "inbox.emptyTitle": "Wszystko na bieżąco", "inbox.emptySub": "Tutaj trafiają przypisania, odpowiedzi, wzmianki i terminy.",
+  "alert.assignment": "Przypisanie", "alert.reply": "Odpowiedź", "alert.change": "Zmiana", "alert.mention": "Wzmianka", "alert.deadline": "Termin",
+  "alert.assignmentSub": "Gdy przypiszą Ci zadanie", "alert.replySub": "Gdy ktoś odpowie w obserwowanym wątku", "alert.changeSub": "Gdy zmieni się obserwowane zadanie",
+  "alert.mentionSub": "Gdy ktoś Cię wspomni", "alert.deadlineSub": "Gdy zbliża się termin",
+
+  "reports.overview": "Przegląd", "reports.time": "Wpisy czasu", "reports.totalTime": "Zapisany czas", "reports.delivered": "Zakończone zadania", "reports.last30": "Ostatnie dni",
+  "reports.openIssues": "Otwarte zadania", "reports.delivery": "Trend realizacji", "reports.noDelivery": "Nic jeszcze nie zakończono.", "reports.completed": "Zakończone: {n}",
+  "reports.workload": "Obciążenie", "reports.openCount": "Otwarte: {n}", "reports.sprints": "Wyniki sprintów", "reports.timeBy": "Czas wg", "reports.noTime": "Nie zapisano jeszcze czasu.", "reports.none": "Brak danych.",
+
+  "people.search": "Szukaj osób…", "person.unknown": "Były członek", "person.noTeams": "Nie należy jeszcze do żadnego zespołu.", "person.assigned": "Otwarte zadania", "person.noIssues": "Nic otwartego.",
+  "search.title": "Szukaj", "search.placeholder": "Szukaj zadań, osób lub przejdź do…", "search.empty": "Brak wyników", "search.issues": "Zadania", "search.people": "Osoby", "search.actions": "Przejdź do",
+
+  "trash.sub": "Usunięte zadania można przywrócić", "trash.emptyTitle": "Kosz jest pusty", "trash.emptySub": "Usunięte zadania czekają tu na przywrócenie.",
+  "trash.restoreAll": "Przywróć wszystko", "trash.restored": "Przywrócono", "trash.deleted": "Usunięto {when}",
+  "activity.title": "Aktywność", "activity.sub": "Wszystko, co zmieniło się w przestrzeni", "activity.empty": "Brak aktywności.",
+  "activity.create_issue": "utworzono", "activity.update_issue": "zaktualizowano", "activity.move_issue": "przeniesiono", "activity.delete_issue": "usunięto", "activity.restore_issue": "przywrócono",
+  "activity.add_comment": "skomentowano", "activity.edit_comment": "edytowano komentarz w", "activity.delete_comment": "usunięto komentarz w", "activity.log_time": "zapisano czas w",
+  "activity.issue_completed": "zakończono", "activity.follow": "obserwacja", "activity.bulk_issues": "zmiana zbiorcza", "activity.create_sprint": "utworzono sprint",
+  "activity.complete_sprint": "zakończono sprint", "activity.create_project": "utworzono projekt", "activity.invite": "zaproszono osobę", "activity.create_team": "utworzono zespół",
+  "activity.add_source_link": "dodano odnośnik źródłowy do", "activity.update_time": "poprawiono czas w", "activity.delete_time": "usunięto czas z",
+
+  "account.profile": "Profil", "account.profileSub": "Tak widzą Cię współpracownicy.", "account.avatar": "Adres zdjęcia profilowego", "account.avatarHint": "Link do obrazu przez https.",
+  "account.avatarInvalid": "Użyj linku https://.", "account.contactHint": "Telefon, komunikator lub cokolwiek, co warto wiedzieć.", "account.saved": "Profil zapisany",
+  "account.preferences": "Preferencje", "account.alerts": "Powiadomienia", "account.alertsSub": "Dla przestrzeni {name}. Wybierz, co trafia do skrzynki.",
+  "account.password": "Hasło", "account.currentPassword": "Obecne hasło", "account.changePassword": "Zmień hasło", "account.passwordChanged": "Hasło zmienione",
+
+  "settings.general": "Ogólne", "settings.members": "Członkowie", "settings.teams": "Zespoły", "settings.labels": "Etykiety", "settings.integrations": "Integracje", "settings.data": "Import i eksport",
+  "members.sub": "Zarządzaj tym, kto widzi i zmienia pracę.", "members.you": "Ty", "members.remove": "Usuń członka", "members.removeSub": "{name} straci dostęp do tej przestrzeni.",
+  "invite.new": "Zaproś osoby", "invite.sub": "Dostaną e-mail z tokenem do dołączenia.", "invite.send": "Wyślij zaproszenie", "invite.sent": "Wysłano zaproszenie do {email}", "invite.pending": "Oczekujące zaproszenia",
+  "invite.none": "Brak oczekujących zaproszeń.", "invite.expires": "Wygasa {date}", "invite.resend": "Wyślij ponownie", "invite.resent": "Zaproszenie wysłane ponownie", "invite.cancel": "Anuluj",
+  "teams.sub": "Każdy zespół ma własną tablicę i przepływ pracy.", "teams.emptyTitle": "Brak zespołów", "teams.emptySub": "Utwórz zespół, aby dodawać zadania.", "teams.workflow": "Etapy przepływu pracy",
+  "stage.add": "Dodaj etap", "stage.name": "Nazwa etapu", "stage.kind": "Typ", "stage.delete": "Usuń etap", "stage.deleteSub": "Zadania z etapu „{name}” trafią do innego etapu.", "stage.moveTo": "Przenieś zadania do",
+  "stage.kind.backlog": "Backlog", "stage.kind.planned": "Planowany", "stage.kind.active": "W toku", "stage.kind.done": "Zrobione", "stage.kind.cancelled": "Anulowane",
+  "labels.sub": "Kolorowe znaczniki do przekrojowego porządkowania pracy.", "labels.color": "Kolor", "labels.add": "Dodaj etykietę",
+  "integrations.sub": "Wysyłaj aktywność do swoich narzędzi i odbieraj odnośniki z repozytoriów.", "integrations.add": "Dodaj integrację", "integrations.adminOnly": "Integracjami zarządzają tylko administratorzy",
+  "integrations.emptyTitle": "Brak integracji", "integrations.emptySub": "Podłącz webhook, aby dostawać informacje o zmianach.", "integrations.enabled": "Włączona", "integrations.deleted": "Integracja usunięta",
+  "integrations.url": "Adres webhooka", "integrations.urlHint": "Publiczny punkt https odbierający zdarzenia.", "integrations.secret": "Sekret podpisu", "integrations.secretHint": "Co najmniej 16 znaków. Służy do podpisów HMAC-SHA256.",
+  "integrations.help": "Zdarzenia wychodzące mają nagłówek X-Blackwall-Signature. Aby powiązać pull requesty, wyślij podpisany JSON metodą POST na ścieżkę pokazaną przy integracji.",
+  "data.export": "Eksport", "data.exportSub": "Pobierz całą przestrzeń jako JSON.", "data.exportButton": "Pobierz JSON",
+  "data.import": "Import", "data.importSub": "Wczytaj eksport z Blackwall albo listę zadań w JSON.", "data.drop": "Upuść tutaj plik .json", "data.choose": "Wybierz plik",
+  "data.imported": "Import zakończony", "data.invalidJson": "Ten plik nie jest poprawnym JSON-em.",
+
+  "error.conflict": "Ktoś inny zmienił tę przestrzeń. Wczytaliśmy ją ponownie. Spróbuj jeszcze raz.", "error.generic": "Coś poszło nie tak.",
+};
