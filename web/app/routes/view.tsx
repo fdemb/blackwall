@@ -22,10 +22,24 @@ export default function View() {
       saveable={false}
       actions={
         <>
-          {view.shared && <Badge tone="primary"><Users className="size-3" />{t("view.shared")}</Badge>}
+          {view.shared && (
+            <Badge tone="primary">
+              <Users className="size-3" />
+              {t("view.shared")}
+            </Badge>
+          )}
           {view.owner === me && (
-            <Button variant="ghost" size="sm" onPress={() => run({ type: "delete_view", id: view.id }).then(() => nav(`/${wsId}/issues`)).catch(() => {})}>
-              <Trash2 />{t("view.delete")}
+            <Button
+              variant="ghost"
+              size="sm"
+              onPress={() =>
+                run({ type: "delete_view", id: view.id })
+                  .then(() => nav(`/${wsId}/issues`))
+                  .catch(() => {})
+              }
+            >
+              <Trash2 />
+              {t("view.delete")}
             </Button>
           )}
         </>

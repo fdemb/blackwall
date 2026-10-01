@@ -12,7 +12,15 @@ import type { Id } from "~/lib/types";
 
 const cache = new Map<string, string>();
 
-export function Markdown({ text, className, empty }: { text: string; className?: string; empty?: string }) {
+export function Markdown({
+  text,
+  className,
+  empty,
+}: {
+  text: string;
+  className?: string;
+  empty?: string;
+}) {
   const [html, setHtml] = useState<string | null>(cache.get(text) ?? null);
   useEffect(() => {
     if (!text.trim()) return setHtml("");
@@ -30,7 +38,8 @@ export function Markdown({ text, className, empty }: { text: string; className?:
     };
   }, [text]);
   if (!text.trim()) return empty ? <p className="text-muted-foreground">{empty}</p> : null;
-  if (html === null) return <p className={cn("whitespace-pre-wrap text-[14px]", className)}>{text}</p>;
+  if (html === null)
+    return <p className={cn("whitespace-pre-wrap text-[14px]", className)}>{text}</p>;
   // The backend sanitizes with ammonia before returning HTML.
   return <div className={cn("prose-bw", className)} dangerouslySetInnerHTML={{ __html: html }} />;
 }
@@ -40,10 +49,23 @@ export function mentionsIn(text: string, members: { id: Id; display_name: string
 }
 
 export function MarkdownEditor({
-  value, onChange, placeholder, minRows = 4, autoFocus, onSubmit, mentions = true, label,
+  value,
+  onChange,
+  placeholder,
+  minRows = 4,
+  autoFocus,
+  onSubmit,
+  mentions = true,
+  label,
 }: {
-  value: string; onChange: (v: string) => void; placeholder?: string; minRows?: number; autoFocus?: boolean;
-  onSubmit?: () => void; mentions?: boolean; label: string;
+  value: string;
+  onChange: (v: string) => void;
+  placeholder?: string;
+  minRows?: number;
+  autoFocus?: boolean;
+  onSubmit?: () => void;
+  mentions?: boolean;
+  label: string;
 }) {
   const t = useT();
   const { members } = useWorkspace();
@@ -66,7 +88,9 @@ export function MarkdownEditor({
     if (!el) return;
     const s = value.lastIndexOf("\n", el.selectionStart - 1) + 1;
     const block = value.slice(s, el.selectionEnd || s);
-    const lines = (block || "").split("\n").map((l, i) => (typeof prefix === "string" ? prefix : prefix(i)) + l);
+    const lines = (block || "")
+      .split("\n")
+      .map((l, i) => (typeof prefix === "string" ? prefix : prefix(i)) + l);
     onChange(value.slice(0, s) + lines.join("\n") + value.slice(s + block.length));
     requestAnimationFrame(() => el.focus());
   };
@@ -95,12 +119,22 @@ export function MarkdownEditor({
         {mentions && (
           <MenuTrigger>
             <Tip label={t("editor.mention")}>
-              <Button variant="ghost" size="icon" aria-label={t("editor.mention")} isDisabled={preview}>
+              <Button
+                variant="ghost"
+                size="icon"
+                aria-label={t("editor.mention")}
+                isDisabled={preview}
+              >
                 <AtSign className="size-3.5" />
               </Button>
             </Tip>
             <MenuPopover placement="bottom start">
-              <Menu items={members} onAction={(id) => insert(`@${members.find((m) => m.id === id)?.display_name ?? ""} `)}>
+              <Menu
+                items={members}
+                onAction={(id) =>
+                  insert(`@${members.find((m) => m.id === id)?.display_name ?? ""} `)
+                }
+              >
                 {(m) => (
                   <MenuItem id={m.id} textValue={m.display_name}>
                     <Avatar name={m.display_name} src={m.avatar_url} size={16} />
@@ -117,7 +151,10 @@ export function MarkdownEditor({
               key={String(p)}
               type="button"
               onClick={() => setPreview(p)}
-              className={cn("rounded px-2 py-0.5 font-medium text-muted-foreground", preview === p && "bg-card text-foreground shadow-xs")}
+              className={cn(
+                "rounded px-2 py-0.5 font-medium text-muted-foreground",
+                preview === p && "bg-card text-foreground shadow-xs",
+              )}
             >
               {p ? t("editor.preview") : t("editor.write")}
             </button>
@@ -142,8 +179,14 @@ export function MarkdownEditor({
               e.preventDefault();
               onSubmit();
             }
-            if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "b") { e.preventDefault(); wrap("**", "**", "bold"); }
-            if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "i") { e.preventDefault(); wrap("_", "_", "italic"); }
+            if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "b") {
+              e.preventDefault();
+              wrap("**", "**", "bold");
+            }
+            if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "i") {
+              e.preventDefault();
+              wrap("_", "_", "italic");
+            }
           }}
           className="block w-full resize-y bg-transparent px-3 py-2.5 text-[14px] leading-6 outline-none placeholder:text-muted-foreground/70"
         />

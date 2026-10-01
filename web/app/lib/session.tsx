@@ -29,7 +29,10 @@ export function SessionProvider({ initial, children }: { initial: Profile; child
     },
     [profile, setProfile],
   );
-  const value = useMemo(() => ({ profile, setProfile, saveProfile }), [profile, setProfile, saveProfile]);
+  const value = useMemo(
+    () => ({ profile, setProfile, saveProfile }),
+    [profile, setProfile, saveProfile],
+  );
   return <Ctx value={value}>{children}</Ctx>;
 }
 

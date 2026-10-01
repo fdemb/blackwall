@@ -2,7 +2,8 @@ import type { Theme } from "./types";
 
 export function applyTheme(theme: Theme) {
   localStorage.setItem("bw-theme", theme);
-  const dark = theme === "dark" || (theme === "system" && matchMedia("(prefers-color-scheme: dark)").matches);
+  const dark =
+    theme === "dark" || (theme === "system" && matchMedia("(prefers-color-scheme: dark)").matches);
   document.documentElement.classList.toggle("dark", dark);
 }
 

@@ -1,4 +1,8 @@
-import { Button as RACButton, composeRenderProps, type ButtonProps as RACButtonProps } from "react-aria-components";
+import {
+  Button as RACButton,
+  composeRenderProps,
+  type ButtonProps as RACButtonProps,
+} from "react-aria-components";
 import { cva, type VariantProps } from "class-variance-authority";
 import { cn } from "~/lib/utils";
 
@@ -7,7 +11,8 @@ export const buttonVariants = cva(
   {
     variants: {
       variant: {
-        primary: "bg-primary text-primary-foreground shadow-sm shadow-primary/25 hover:bg-primary/90",
+        primary:
+          "bg-primary text-primary-foreground shadow-sm shadow-primary/25 hover:bg-primary/90",
         secondary: "border border-input bg-card text-foreground shadow-xs hover:bg-muted",
         ghost: "text-muted-foreground hover:bg-muted hover:text-foreground pressed:bg-muted",
         subtle: "bg-accent text-accent-foreground hover:bg-accent/70",
@@ -32,7 +37,9 @@ export function Button({ className, variant, size, ...props }: ButtonProps) {
   return (
     <RACButton
       {...props}
-      className={composeRenderProps(className, (className) => cn(buttonVariants({ variant, size }), className))}
+      className={composeRenderProps(className, (className) =>
+        cn(buttonVariants({ variant, size }), className),
+      )}
     />
   );
 }

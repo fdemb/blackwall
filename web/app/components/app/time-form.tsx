@@ -8,7 +8,15 @@ import { useI18n } from "~/lib/i18n";
 import { useWorkspace } from "~/lib/workspace";
 import type { Id, TimeEntry } from "~/lib/types";
 
-export function TimeForm({ issueId, entry, close }: { issueId: Id; entry: TimeEntry | null; close: () => void }) {
+export function TimeForm({
+  issueId,
+  entry,
+  close,
+}: {
+  issueId: Id;
+  entry: TimeEntry | null;
+  close: () => void;
+}) {
   const t = useI18n().t;
   const { run } = useWorkspace();
   const [dur, setDur] = useState(entry ? formatMinutes(entry.minutes) : "");
@@ -17,18 +25,44 @@ export function TimeForm({ issueId, entry, close }: { issueId: Id; entry: TimeEn
   const minutes = parseMinutes(dur);
   const invalid = !minutes || minutes <= 0 || minutes > 24 * 60 || !when;
   return (
-    <Form className="flex flex-col gap-4" onSubmit={async (e) => {
-      e.preventDefault();
-      if (invalid) return;
-      const body = { minutes: minutes!, note: note.trim(), logged_at: when! };
-      await (entry ? run({ type: "update_time", id: entry.id, ...body }) : run({ type: "log_time", issue_id: issueId, ...body })).then(close).catch(() => {});
-    }}>
-      <TextField label={t("time.duration")} description={t("time.durationHint")} value={dur} onChange={setDur} autoFocus isRequired isInvalid={dur !== "" && minutes === null} />
-      <TextField label={t("time.note")} value={note} onChange={setNote} placeholder={t("time.notePlaceholder")} />
+    <Form
+      className="flex flex-col gap-4"
+      onSubmit={async (e) => {
+        e.preventDefault();
+        if (invalid) return;
+        const body = { minutes: minutes!, note: note.trim(), logged_at: when! };
+        await (
+          entry
+            ? run({ type: "update_time", id: entry.id, ...body })
+            : run({ type: "log_time", issue_id: issueId, ...body })
+        )
+          .then(close)
+          .catch(() => {});
+      }}
+    >
+      <TextField
+        label={t("time.duration")}
+        description={t("time.durationHint")}
+        value={dur}
+        onChange={setDur}
+        autoFocus
+        isRequired
+        isInvalid={dur !== "" && minutes === null}
+      />
+      <TextField
+        label={t("time.note")}
+        value={note}
+        onChange={setNote}
+        placeholder={t("time.notePlaceholder")}
+      />
       <DatePicker label={t("field.date")} value={when} onChange={setWhen} clearable={false} />
       <div className="flex justify-end gap-2">
-        <Button variant="ghost" onPress={close}>{t("action.cancel")}</Button>
-        <Button type="submit" variant="primary" isDisabled={invalid}>{t("action.save")}</Button>
+        <Button variant="ghost" onPress={close}>
+          {t("action.cancel")}
+        </Button>
+        <Button type="submit" variant="primary" isDisabled={invalid}>
+          {t("action.save")}
+        </Button>
       </div>
     </Form>
   );

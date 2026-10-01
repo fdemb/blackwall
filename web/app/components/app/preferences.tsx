@@ -10,7 +10,10 @@ export function LanguageToggle() {
   const { lang, setLang, t } = useI18n();
   return (
     <MenuTrigger>
-      <Button variant="ghost" size="sm" aria-label={t("pref.language")}><Languages />{lang.toUpperCase()}</Button>
+      <Button variant="ghost" size="sm" aria-label={t("pref.language")}>
+        <Languages />
+        {lang.toUpperCase()}
+      </Button>
       <MenuPopover placement="bottom end">
         <Menu selectionMode="single" selectedKeys={[lang]} onAction={(k) => setLang(k as Language)}>
           <MenuItem id="en">English</MenuItem>
@@ -29,12 +32,26 @@ export function ThemeToggle() {
   const Icon = THEME_ICONS[profile.theme];
   return (
     <MenuTrigger>
-      <Button variant="ghost" size="icon" aria-label={t("pref.theme")}><Icon /></Button>
+      <Button variant="ghost" size="icon" aria-label={t("pref.theme")}>
+        <Icon />
+      </Button>
       <MenuPopover placement="top end">
-        <Menu selectionMode="single" selectedKeys={[profile.theme]} onAction={(k) => { applyTheme(k as Theme); saveProfile({ theme: k as Theme }).catch(() => {}); }}>
+        <Menu
+          selectionMode="single"
+          selectedKeys={[profile.theme]}
+          onAction={(k) => {
+            applyTheme(k as Theme);
+            saveProfile({ theme: k as Theme }).catch(() => {});
+          }}
+        >
           {(["light", "dark", "system"] as const).map((k) => {
             const I = THEME_ICONS[k];
-            return <MenuItem key={k} id={k}><I />{t(`theme.${k}`)}</MenuItem>;
+            return (
+              <MenuItem key={k} id={k}>
+                <I />
+                {t(`theme.${k}`)}
+              </MenuItem>
+            );
           })}
         </Menu>
       </MenuPopover>

@@ -1,6 +1,19 @@
 import {
-  DatePicker as RACDatePicker, DateInput, DateSegment, Calendar, CalendarGrid, CalendarGridHeader, CalendarGridBody,
-  CalendarHeaderCell, CalendarCell, Heading, Group, Dialog, composeRenderProps, type DatePickerProps, type DateValue,
+  DatePicker as RACDatePicker,
+  DateInput,
+  DateSegment,
+  Calendar,
+  CalendarGrid,
+  CalendarGridHeader,
+  CalendarGridBody,
+  CalendarHeaderCell,
+  CalendarCell,
+  Heading,
+  Group,
+  Dialog,
+  composeRenderProps,
+  type DatePickerProps,
+  type DateValue,
 } from "react-aria-components";
 import { CalendarDays, ChevronLeft, ChevronRight, X } from "lucide-react";
 import { parseDate, type CalendarDate } from "@internationalized/date";
@@ -12,7 +25,9 @@ import { Popover } from "./popover";
 export function toCalendarDate(iso: string | null | undefined): CalendarDate | null {
   if (!iso) return null;
   const d = new Date(iso);
-  return parseDate(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`);
+  return parseDate(
+    `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`,
+  );
 }
 /** End of the chosen local day, so a deadline "today" stays valid all day. */
 export function fromCalendarDate(value: DateValue | null, endOfDay = true): string | null {
@@ -31,7 +46,17 @@ interface Props extends Omit<DatePickerProps<DateValue>, "value" | "onChange"> {
   variant?: "field" | "ghost";
 }
 
-export function DatePicker({ label, value, onChange, clearable = true, placeholder, endOfDay = true, variant = "field", className, ...props }: Props) {
+export function DatePicker({
+  label,
+  value,
+  onChange,
+  clearable = true,
+  placeholder,
+  endOfDay = true,
+  variant = "field",
+  className,
+  ...props
+}: Props) {
   return (
     <RACDatePicker
       {...props}
@@ -44,18 +69,31 @@ export function DatePicker({ label, value, onChange, clearable = true, placehold
       <Group
         className={cn(
           "flex items-center gap-1 rounded-md text-[13px]",
-          variant === "field" ? "h-8 border border-input bg-card pl-2.5 pr-0.5 shadow-xs focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/25" : "h-7 pl-2",
+          variant === "field"
+            ? "h-8 border border-input bg-card pl-2.5 pr-0.5 shadow-xs focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/25"
+            : "h-7 pl-2",
         )}
       >
         {value ? (
           <DateInput className="flex flex-1">
-            {(segment) => <DateSegment segment={segment} className="rounded px-0.5 tabular-nums outline-none focus:bg-primary focus:text-primary-foreground data-[placeholder]:text-muted-foreground" />}
+            {(segment) => (
+              <DateSegment
+                segment={segment}
+                className="rounded px-0.5 tabular-nums outline-none focus:bg-primary focus:text-primary-foreground data-[placeholder]:text-muted-foreground"
+              />
+            )}
           </DateInput>
         ) : (
           <span className="flex-1 text-muted-foreground">{placeholder ?? ""}</span>
         )}
         {clearable && value && (
-          <Button variant="ghost" size="icon" className="size-6" aria-label="Clear" onPress={() => onChange(null)}>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="size-6"
+            aria-label="Clear"
+            onPress={() => onChange(null)}
+          >
             <X className="size-3" />
           </Button>
         )}
@@ -67,13 +105,21 @@ export function DatePicker({ label, value, onChange, clearable = true, placehold
         <Dialog className="p-3 outline-none">
           <Calendar>
             <header className="mb-2 flex items-center justify-between">
-              <Button slot="previous" variant="ghost" size="icon"><ChevronLeft /></Button>
+              <Button slot="previous" variant="ghost" size="icon">
+                <ChevronLeft />
+              </Button>
               <Heading className="text-[13px] font-semibold" />
-              <Button slot="next" variant="ghost" size="icon"><ChevronRight /></Button>
+              <Button slot="next" variant="ghost" size="icon">
+                <ChevronRight />
+              </Button>
             </header>
             <CalendarGrid className="border-separate border-spacing-0.5">
               <CalendarGridHeader>
-                {(day) => <CalendarHeaderCell className="pb-1 text-[11px] font-medium text-muted-foreground">{day}</CalendarHeaderCell>}
+                {(day) => (
+                  <CalendarHeaderCell className="pb-1 text-[11px] font-medium text-muted-foreground">
+                    {day}
+                  </CalendarHeaderCell>
+                )}
               </CalendarGridHeader>
               <CalendarGridBody>
                 {(date) => (

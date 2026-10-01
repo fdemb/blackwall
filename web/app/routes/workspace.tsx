@@ -14,7 +14,10 @@ import type { Route } from "./+types/workspace";
 
 export async function clientLoader({ params }: Route.ClientLoaderArgs) {
   try {
-    const [w, members] = await Promise.all([workspaces.get(params.ws), workspaces.members(params.ws)]);
+    const [w, members] = await Promise.all([
+      workspaces.get(params.ws),
+      workspaces.members(params.ws),
+    ]);
     localStorage.setItem(LAST_WS, params.ws);
     return { revision: w.revision, workspace: w.workspace, members };
   } catch (e) {
@@ -26,7 +29,17 @@ export async function clientLoader({ params }: Route.ClientLoaderArgs) {
   }
 }
 
-export function shouldRevalidate({ currentParams, nextParams, currentUrl, nextUrl }: { currentParams: Record<string, string | undefined>; nextParams: Record<string, string | undefined>; currentUrl: URL; nextUrl: URL }) {
+export function shouldRevalidate({
+  currentParams,
+  nextParams,
+  currentUrl,
+  nextUrl,
+}: {
+  currentParams: Record<string, string | undefined>;
+  nextParams: Record<string, string | undefined>;
+  currentUrl: URL;
+  nextUrl: URL;
+}) {
   return currentParams.ws !== nextParams.ws || currentUrl.href === nextUrl.href;
 }
 
@@ -53,11 +66,23 @@ function Shell() {
         e.preventDefault();
         setPalette((o) => !o);
       } else if (!typing && !e.metaKey && !e.ctrlKey && !e.altKey) {
-        if (e.key === "c" && canWrite) { e.preventDefault(); create.show(); }
-        if (e.key === "/") { e.preventDefault(); setPalette(true); }
+        if (e.key === "c" && canWrite) {
+          e.preventDefault();
+          create.show();
+        }
+        if (e.key === "/") {
+          e.preventDefault();
+          setPalette(true);
+        }
         if (e.key === "g") {
           const once = (ev: KeyboardEvent) => {
-            const map: Record<string, string> = { i: "inbox", m: "my-issues", a: "issues", p: "projects", r: "reports" };
+            const map: Record<string, string> = {
+              i: "inbox",
+              m: "my-issues",
+              a: "issues",
+              p: "projects",
+              r: "reports",
+            };
             if (map[ev.key]) nav(`/${ws.id}/${map[ev.key]}`);
             window.removeEventListener("keydown", once);
           };
@@ -72,16 +97,43 @@ function Shell() {
 
   return (
     <div className="flex h-dvh overflow-hidden">
-      <a href="#main" className="sr-only focus:not-sr-only focus:absolute focus:z-50 focus:m-2 focus:rounded-md focus:bg-card focus:px-3 focus:py-1.5">{t("nav.skip")}</a>
-      <div className="hidden border-r border-border md:block"><Sidebar onSearch={() => setPalette(true)} /></div>
-      <ModalOverlay isOpen={drawer} onOpenChange={setDrawer} isDismissable className="fixed inset-0 z-40 bg-black/40 md:hidden">
+      <a
+        href="#main"
+        className="sr-only focus:not-sr-only focus:absolute focus:z-50 focus:m-2 focus:rounded-md focus:bg-card focus:px-3 focus:py-1.5"
+      >
+        {t("nav.skip")}
+      </a>
+      <div className="hidden border-r border-border md:block">
+        <Sidebar onSearch={() => setPalette(true)} />
+      </div>
+      <ModalOverlay
+        isOpen={drawer}
+        onOpenChange={setDrawer}
+        isDismissable
+        className="fixed inset-0 z-40 bg-black/40 md:hidden"
+      >
         <Modal className="h-full w-60 bg-sidebar shadow-xl entering:animate-in entering:slide-in-from-left exiting:animate-out exiting:slide-out-to-left">
-          <RACDialog aria-label={t("nav.main")} className="h-full outline-none"><Sidebar onSearch={() => { setDrawer(false); setPalette(true); }} onNavigate={() => setDrawer(false)} /></RACDialog>
+          <RACDialog aria-label={t("nav.main")} className="h-full outline-none">
+            <Sidebar
+              onSearch={() => {
+                setDrawer(false);
+                setPalette(true);
+              }}
+              onNavigate={() => setDrawer(false)}
+            />
+          </RACDialog>
         </Modal>
       </ModalOverlay>
       <main id="main" className="flex min-w-0 flex-1 flex-col bg-background">
         <div className="flex h-11 items-center border-b border-border px-2 md:hidden">
-          <Button variant="ghost" size="icon-lg" aria-label={t("nav.main")} onPress={() => setDrawer(true)}><MenuIcon /></Button>
+          <Button
+            variant="ghost"
+            size="icon-lg"
+            aria-label={t("nav.main")}
+            onPress={() => setDrawer(true)}
+          >
+            <MenuIcon />
+          </Button>
           <span className="ml-1 truncate text-sm font-semibold">{ws.name}</span>
         </div>
         <Outlet />

@@ -7,11 +7,11 @@ A Rust work-management API with a React Router frontend (React Aria Components, 
 Install stable Rust and Node 20+. Build the frontend once, then run the server. If `cargo` is not on your shell path after installation, first run `source "$HOME/.cargo/env"`.
 
 ```sh
-(cd web && npm install && npm run build)
+(cd web && pnpm install && pnpm run build)
 cargo run
 ```
 
-The server reads the build from `web/build/client`. Set `WEB_DIR` to serve it from elsewhere. For frontend work, run `cargo run` and `npm run dev` inside `web/`; Vite proxies `/api` to port 3000 and serves the app on port 5173.
+The server reads the build from `web/build/client`. Set `WEB_DIR` to serve it from elsewhere. For frontend work, run `cargo run` and `pnpm run dev` inside `web/`; Vite proxies `/api` to port 3000 and serves the app on port 5173. Frontend checks run through Vite+ (`vp check` for format and lint, backed by oxfmt and oxlint).
 
 Open `http://127.0.0.1:3000`, register an account, and create a workspace. Create a team under Planning before adding issues. SQLite creates `blackwall.db` in the working directory.
 
