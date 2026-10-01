@@ -238,6 +238,7 @@ impl Transfer {
             action: "workspace_imported".into(),
             entity_id: None,
             at: now,
+            fields: vec![],
         });
         candidate.validate_imported()?;
         *workspace = candidate;

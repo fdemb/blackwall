@@ -22,6 +22,7 @@ interface PickProps {
   isDisabled?: boolean;
   placeholder?: string;
   className?: string;
+  triggerClassName?: string;
 }
 
 /** Select with an explicit "none" entry that maps to null. */

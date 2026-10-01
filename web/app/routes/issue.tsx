@@ -1,15 +1,14 @@
-import { useEffect, useRef, useState } from "react";
-import { FileTrigger, Form } from "react-aria-components";
-import { Link, Navigate, useNavigate, useParams } from "react-router";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { Disclosure, DisclosurePanel, FileTrigger, Form, Heading } from "react-aria-components";
+import { Link, Navigate, useLocation, useNavigate, useParams } from "react-router";
 import {
-  Bell, BellOff, ChevronLeft, Clock, Download, ExternalLink, FileText, Link2, Lock, MoreHorizontal, Paperclip, Pencil, Plus, Trash2, X,
+  Bell, BellOff, ChevronLeft, ChevronRight, Download, ExternalLink, FileText, Link2, Loader2, Lock, MoreHorizontal, Paperclip, Pencil, Plus, Trash2, X,
 } from "lucide-react";
 import { Avatar } from "~/components/ui/avatar";
-import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
 import { DatePicker } from "~/components/ui/date-picker";
 import { Dialog } from "~/components/ui/dialog";
-import { Input, TextField } from "~/components/ui/field";
+import { Input } from "~/components/ui/field";
 import { Menu, MenuItem, MenuPopover, MenuTrigger } from "~/components/ui/menu";
 import { useToast } from "~/components/ui/toast";
 import { Markdown, MarkdownEditor, mentionsIn } from "~/components/app/markdown";
@@ -19,11 +18,17 @@ import { TimeForm } from "~/components/app/time-form";
 import { AssigneePicker, LabelsPicker, NullableSelect, PriorityPicker, StagePicker } from "~/components/app/pickers";
 import { EmptyState, Page } from "~/components/app/page";
 import { isDone, stageOf } from "~/lib/filters";
-import { bytes, formatMinutes, fullDate, issueKey, parseMinutes, relativeTime } from "~/lib/format";
-import { useI18n } from "~/lib/i18n";
+import { bytes, formatMinutes, fullDate, issueKey, relativeTime } from "~/lib/format";
+import { useI18n, type Key } from "~/lib/i18n";
+import { useMediaQuery } from "~/lib/media";
 import { useWorkspace } from "~/lib/workspace";
 import { cn } from "~/lib/utils";
-import type { Comment, Id, Issue, IssuePatch, TimeEntry } from "~/lib/types";
+import type { Activity, Comment, Id, Issue, IssuePatch, TimeEntry } from "~/lib/types";
+
+const MAX_UPLOAD = 5 * 1024 * 1024;
+/** Row actions hide until hover on devices that can hover, and stay visible on touch. */
+const revealOnHover = "[@media(hover:hover)]:opacity-0 group-hover:opacity-100 group-focus-within:opacity-100";
+const modKey = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.userAgent) ? "⌘" : "Ctrl";
 
 export default function IssuePage() {
   const { issueId, ws: wsId } = useParams();
@@ -40,27 +45,32 @@ export default function IssuePage() {
 }
 
 function IssueView({ issue }: { issue: Issue }) {
-  const { t, lang } = useI18n();
+  const { t } = useI18n();
   const nav = useNavigate();
+  const location = useLocation();
   const toast = useToast();
-  const { ws, me, run, team, canWrite, member } = useWorkspace();
+  const { ws, me, run, team, canWrite } = useWorkspace();
+  const wide = useMediaQuery("(min-width: 1024px)");
   const tm = team(issue.team_id);
   const patch = (p: IssuePatch) => run({ type: "update_issue", id: issue.id, patch: p }).catch(() => {});
   const following = issue.followers.includes(me);
   const subs = ws.issues.filter((i) => i.parent_id === issue.id && !i.deleted_at);
   const parent = ws.issues.find((i) => i.id === issue.parent_id);
-  const projectMilestones = ws.milestones.filter((m) => m.project_id === issue.project_id);
-  const sprints = ws.sprints.filter((s) => s.team_id === issue.team_id && (s.state === "planned" || s.state === "active" || s.id === issue.sprint_id));
-  const [title, setTitle] = useState(issue.title);
-  useEffect(() => setTitle(issue.title), [issue.title]);
+  const blockers = issue.dependencies.map((id) => ws.issues.find((i) => i.id === id)).filter((i): i is Issue => Boolean(i && !i.deleted_at));
+  const blocking = ws.issues.filter((i) => !i.deleted_at && i.dependencies.includes(issue.id));
+  const addBlocker = (id: Id) => patch({ dependencies: [...issue.dependencies, id] });
+  const uploader = useUploader(issue.id);
+  const [addingSubtask, setAddingSubtask] = useState(false);
   const [confirm, setConfirm] = useState(false);
-  const loggedTotal = ws.time_entries.filter((e) => e.issue_id === issue.id).reduce((a, e) => a + e.minutes, 0);
+  // Go back to wherever the issue was opened from. A fresh tab has no history, so use the team list.
+  const goBack = () => (location.key === "default" ? nav(`/${ws.id}/team/${issue.team_id}?layout=list`) : nav(-1));
+  const chip = "h-7 w-auto rounded-full border border-border px-2.5";
 
   return (
     <Page className="overflow-hidden">
       <header className="flex h-12 shrink-0 items-center gap-2 border-b border-border px-4">
-        <Link to={`/${ws.id}/team/${issue.team_id}?layout=list`} aria-label={t("action.back")} className="-ml-1 grid size-7 place-items-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"><ChevronLeft className="size-4" /></Link>
-        <span className="text-[13px] text-muted-foreground">{tm?.name}</span>
+        <Button variant="ghost" size="icon" aria-label={t("action.back")} className="-ml-1" onPress={goBack}><ChevronLeft /></Button>
+        {tm && <Link to={`/${ws.id}/team/${tm.id}`} className="text-[13px] text-muted-foreground hover:text-foreground hover:underline">{tm.name}</Link>}
         <span className="text-muted-foreground/50">/</span>
         <span className="text-[13px] font-medium tabular-nums">{issueKey(issue.number)}</span>
         <div className="ml-auto flex items-center gap-1">
@@ -71,7 +81,7 @@ function IssueView({ issue }: { issue: Issue }) {
             <Button variant="ghost" size="icon-lg" aria-label={t("action.more")}><MoreHorizontal /></Button>
             <MenuPopover placement="bottom end">
               <Menu onAction={(k) => {
-                if (k === "copy") navigator.clipboard.writeText(location.href).then(() => toast.show(t("issue.linkCopied")));
+                if (k === "copy") navigator.clipboard.writeText(window.location.href).then(() => toast.show(t("issue.linkCopied")));
                 if (k === "delete") setConfirm(true);
               }}>
                 <MenuItem id="copy"><Link2 />{t("issue.copyLink")}</MenuItem>
@@ -82,106 +92,146 @@ function IssueView({ issue }: { issue: Issue }) {
         </div>
       </header>
 
-      <div className="flex min-h-0 flex-1 flex-col overflow-y-auto lg:flex-row lg:overflow-visible">
-        <div className="min-w-0 flex-1 lg:overflow-y-auto">
-          <div className="mx-auto max-w-3xl space-y-8 px-6 py-8">
-            {parent && (
-              <Link to={`/${ws.id}/issue/${parent.id}`} className="inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground">
-                <span className="tabular-nums">{issueKey(parent.number)}</span><span className="truncate">{parent.title}</span>
-              </Link>
+      <div className="flex min-h-0 flex-1">
+        <div className="min-w-0 flex-1 overflow-y-auto">
+          <div className="mx-auto max-w-3xl px-6 py-8">
+            <div className="space-y-3">
+              {parent && (
+                <div className="group flex items-center gap-1 text-xs text-muted-foreground">
+                  <Link to={`/${ws.id}/issue/${parent.id}`} className="inline-flex min-w-0 items-center gap-1.5 hover:text-foreground">
+                    <span className="tabular-nums">{issueKey(parent.number)}</span><span className="truncate">{parent.title}</span>
+                  </Link>
+                  {canWrite && <Button variant="ghost" size="icon" className={cn("size-5", revealOnHover)} aria-label={t("issue.removeParent")} onPress={() => patch({ clear_parent: true })}><X className="size-3" /></Button>}
+                </div>
+              )}
+              <TitleField issue={issue} onSave={(title) => patch({ title })} />
+              <div className="flex flex-wrap items-center gap-1.5">
+                <StagePicker variant="ghost" className="w-auto" triggerClassName={chip} isDisabled={!canWrite} teamId={issue.team_id} value={issue.stage_id} onChange={(id) => patch({ stage_id: id })} />
+                <PriorityPicker variant="ghost" className="w-auto" triggerClassName={chip} isDisabled={!canWrite} value={issue.priority} onChange={(priority) => patch({ priority })} />
+                <AssigneePicker variant="ghost" className="w-auto" triggerClassName={chip} isDisabled={!canWrite} teamId={issue.team_id} value={issue.assignee} onChange={(id) => patch(id ? { assignee: id } : { clear_assignee: true })} />
+              </div>
+            </div>
+            {!wide && (
+              <Disclosure className="mt-4 rounded-lg border border-border">
+                {({ isExpanded }) => (
+                  <>
+                    <Heading>
+                      <Button slot="trigger" variant="ghost" className="h-9 w-full justify-start px-3">
+                        {t("issue.allProperties")}
+                        <ChevronRight className={cn("ml-auto size-3.5 transition-transform", isExpanded && "rotate-90")} />
+                      </Button>
+                    </Heading>
+                    <DisclosurePanel>
+                      <div className="space-y-1 border-t border-border p-2"><Properties issue={issue} hasParent={Boolean(parent)} excludeIds={subs.map((s) => s.id)} /></div>
+                    </DisclosurePanel>
+                  </>
+                )}
+              </Disclosure>
             )}
-            <input
-              aria-label={t("field.title")}
-              value={title}
-              readOnly={!canWrite}
-              maxLength={200}
-              onChange={(e) => setTitle(e.target.value)}
-              onBlur={() => title.trim() && title !== issue.title && patch({ title: title.trim() })}
-              onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); if (e.key === "Escape") setTitle(issue.title); }}
-              className="-mx-2 block w-[calc(100%+1rem)] rounded-md bg-transparent px-2 py-1 text-2xl font-semibold tracking-tight outline-none hover:bg-muted/60 focus:bg-muted/60 focus:ring-2 focus:ring-ring/40"
-            />
-            <Description issue={issue} onSave={(description) => patch({ description })} />
-            <Subtasks issue={issue} subs={subs} />
-            <Dependencies issue={issue} />
-            <Attachments issue={issue} />
-            <TimeSection issue={issue} total={loggedTotal} />
-            <Discussion issue={issue} />
-            <IssueActivity issue={issue} />
+
+            <div className="mt-6 space-y-8">
+              <div className="space-y-2">
+                <Description issue={issue} onSave={(description) => patch({ description })} />
+                {canWrite && (
+                  <div className="flex flex-wrap gap-1">
+                    {!subs.length && !addingSubtask && <Button variant="ghost" size="sm" onPress={() => setAddingSubtask(true)}><Plus />{t("issue.addSubtask")}</Button>}
+                    {!blockers.length && !blocking.length && (
+                      <IssuePicker exclude={[issue.id, ...issue.dependencies]} onPick={addBlocker} trigger={<Button variant="ghost" size="sm"><Lock />{t("issue.addBlocker")}</Button>} />
+                    )}
+                    {!issue.attachments.length && <AttachButton uploader={uploader} />}
+                  </div>
+                )}
+              </div>
+              {(subs.length > 0 || addingSubtask) && <Subtasks issue={issue} subs={subs} adding={addingSubtask} setAdding={setAddingSubtask} />}
+              {(blockers.length > 0 || blocking.length > 0) && <Dependencies issue={issue} blockers={blockers} blocking={blocking} onAdd={addBlocker} />}
+              {issue.attachments.length > 0 && <Attachments issue={issue} uploader={uploader} />}
+              <Timeline issue={issue} />
+            </div>
           </div>
         </div>
 
-        <aside aria-label={t("issue.properties")} className="w-full shrink-0 space-y-1 border-t border-border p-4 lg:w-72 lg:overflow-y-auto lg:border-l lg:border-t-0">
-          <Prop label={t("field.stage")}><StagePicker variant="ghost" isDisabled={!canWrite} teamId={issue.team_id} value={issue.stage_id} onChange={(id) => patch({ stage_id: id })} /></Prop>
-          <Prop label={t("field.priority")}><PriorityPicker variant="ghost" isDisabled={!canWrite} value={issue.priority} onChange={(priority) => patch({ priority })} /></Prop>
-          <Prop label={t("field.assignee")}>
-            <AssigneePicker variant="ghost" isDisabled={!canWrite} teamId={issue.team_id} value={issue.assignee} onChange={(id) => patch(id ? { assignee: id } : { clear_assignee: true })} />
-          </Prop>
-          <Prop label={t("field.labels")}><LabelsPicker isDisabled={!canWrite} value={issue.labels} onChange={(labels) => patch({ labels })} /></Prop>
-          <Prop label={t("field.deadline")}>
-            <DatePicker variant="ghost" isDisabled={!canWrite} placeholder={t("deadline.none")} value={issue.deadline} onChange={(d) => patch(d ? { deadline: d } : { clear_deadline: true })} />
-          </Prop>
-          <Prop label={t("field.estimate")}>
-            <EstimateField value={issue.estimate} disabled={!canWrite} onCommit={(v) => patch(v === null ? { clear_estimate: true } : { estimate: v })} />
-          </Prop>
-          <div className="my-3 h-px bg-border" />
-          <Prop label={t("field.project")}>
-            <NullableSelect variant="ghost" isDisabled={!canWrite} noneLabel={t("project.none")} value={issue.project_id} options={ws.projects.map((p) => ({ id: p.id, label: p.name }))}
-              onChange={(id) => patch(id ? { project_id: id, clear_milestone: true } : { clear_project: true, clear_milestone: true })} />
-          </Prop>
-          {issue.project_id && (
-            <Prop label={t("field.milestone")}>
-              <NullableSelect variant="ghost" isDisabled={!canWrite} noneLabel={t("milestone.none")} value={issue.milestone_id} options={projectMilestones.map((m) => ({ id: m.id, label: m.name }))}
-                onChange={(id) => patch(id ? { milestone_id: id } : { clear_milestone: true })} />
-            </Prop>
-          )}
-          <Prop label={t("field.sprint")}>
-            <NullableSelect variant="ghost" isDisabled={!canWrite} noneLabel={t("sprint.none")} value={issue.sprint_id} options={sprints.map((s) => ({ id: s.id, label: s.name }))}
-              onChange={(id) => patch(id ? { sprint_id: id } : { clear_sprint: true })} />
-          </Prop>
-          <Prop label={t("issue.parent")}>
-            {parent ? (
-              <div className="flex items-center gap-1 px-2 py-1 text-[13px]">
-                <Link to={`/${ws.id}/issue/${parent.id}`} className="min-w-0 flex-1 truncate hover:underline"><span className="tabular-nums text-muted-foreground">{issueKey(parent.number)}</span> {parent.title}</Link>
-                {canWrite && <Button variant="ghost" size="icon" aria-label={t("action.remove")} onPress={() => patch({ clear_parent: true })}><X /></Button>}
-              </div>
-            ) : (
-              <IssuePicker exclude={[issue.id, ...subs.map((s) => s.id)]} onPick={(id) => patch({ parent_id: id })} trigger={<Button variant="ghost" isDisabled={!canWrite} className="h-7 w-full justify-start px-2 font-normal text-muted-foreground"><Plus />{t("issue.setParent")}</Button>} />
-            )}
-          </Prop>
-          {issue.source_links.length > 0 && (
-            <>
-              <div className="my-3 h-px bg-border" />
-              <Prop label={t("issue.sourceLinks")}>
-                <ul className="space-y-1 px-2">
-                  {issue.source_links.map((l) => (
-                    <li key={l.url}><a href={l.url} target="_blank" rel="noreferrer noopener" className="flex items-center gap-1.5 text-[13px] text-primary hover:underline"><ExternalLink className="size-3.5 shrink-0" /><span className="truncate">{l.title || l.url}</span></a></li>
-                  ))}
-                </ul>
-              </Prop>
-            </>
-          )}
-          <div className="my-3 h-px bg-border" />
-          <dl className="space-y-1 px-2 text-xs text-muted-foreground">
-            <div className="flex justify-between"><dt>{t("issue.created")}</dt><dd>{fullDate(issue.created_at, lang)}</dd></div>
-            <div className="flex justify-between"><dt>{t("issue.updated")}</dt><dd>{relativeTime(issue.updated_at, lang)}</dd></div>
-            {issue.followers.length > 0 && (
-              <div className="flex items-center justify-between"><dt>{t("issue.followers")}</dt>
-                <dd className="flex -space-x-1">{issue.followers.slice(0, 5).map((f) => { const m = member(f); return m ? <Avatar key={f} name={m.display_name} src={m.avatar_url} size={16} className="ring-2 ring-background" /> : null; })}</dd>
-              </div>
-            )}
-          </dl>
-        </aside>
+        {wide && (
+          <aside aria-label={t("issue.properties")} className="w-72 shrink-0 space-y-1 overflow-y-auto border-l border-border p-4">
+            <Properties issue={issue} hasParent={Boolean(parent)} excludeIds={subs.map((s) => s.id)} />
+          </aside>
+        )}
       </div>
 
       <Dialog title={t("issue.deleteTitle")} description={t("issue.deleteSub")} size="sm" isOpen={confirm} onOpenChange={setConfirm}>
         {(close) => (
           <div className="flex justify-end gap-2">
             <Button variant="ghost" onPress={close}>{t("action.cancel")}</Button>
-            <Button variant="destructive" onPress={() => run({ type: "delete_issue", id: issue.id }).then(() => { close(); toast.show(t("issue.movedToTrash")); nav(`/${ws.id}/team/${issue.team_id}?layout=list`); }).catch(() => {})}>{t("action.delete")}</Button>
+            <Button variant="destructive" onPress={() => run({ type: "delete_issue", id: issue.id }).then(() => { close(); toast.show(t("issue.movedToTrash")); goBack(); }).catch(() => {})}>{t("action.delete")}</Button>
           </div>
         )}
       </Dialog>
     </Page>
+  );
+}
+
+function Properties({ issue, hasParent, excludeIds }: { issue: Issue; hasParent: boolean; excludeIds: Id[] }) {
+  const { t, lang } = useI18n();
+  const { ws, run, canWrite, member } = useWorkspace();
+  const patch = (p: IssuePatch) => run({ type: "update_issue", id: issue.id, patch: p }).catch(() => {});
+  const projectMilestones = ws.milestones.filter((m) => m.project_id === issue.project_id);
+  const sprints = ws.sprints.filter((s) => s.team_id === issue.team_id && (s.state === "planned" || s.state === "active" || s.id === issue.sprint_id));
+  const followers = issue.followers.map(member).filter((m) => m !== undefined);
+  return (
+    <>
+      <Prop label={t("field.labels")}><LabelsPicker isDisabled={!canWrite} value={issue.labels} onChange={(labels) => patch({ labels })} /></Prop>
+      <Prop label={t("field.deadline")}>
+        <DatePicker variant="ghost" isDisabled={!canWrite} placeholder={t("deadline.none")} value={issue.deadline} onChange={(d) => patch(d ? { deadline: d } : { clear_deadline: true })} />
+      </Prop>
+      <Prop label={t("field.estimate")}>
+        <EstimateField value={issue.estimate} disabled={!canWrite} onCommit={(v) => patch(v === null ? { clear_estimate: true } : { estimate: v })} />
+      </Prop>
+      <TimeProp issue={issue} />
+      <div className="my-3 h-px bg-border" />
+      <Prop label={t("field.project")}>
+        <NullableSelect variant="ghost" isDisabled={!canWrite} noneLabel={t("project.none")} value={issue.project_id} options={ws.projects.map((p) => ({ id: p.id, label: p.name }))}
+          onChange={(id) => patch(id ? { project_id: id, clear_milestone: true } : { clear_project: true, clear_milestone: true })} />
+      </Prop>
+      {issue.project_id && (
+        <Prop label={t("field.milestone")}>
+          <NullableSelect variant="ghost" isDisabled={!canWrite} noneLabel={t("milestone.none")} value={issue.milestone_id} options={projectMilestones.map((m) => ({ id: m.id, label: m.name }))}
+            onChange={(id) => patch(id ? { milestone_id: id } : { clear_milestone: true })} />
+        </Prop>
+      )}
+      <Prop label={t("field.sprint")}>
+        <NullableSelect variant="ghost" isDisabled={!canWrite} noneLabel={t("sprint.none")} value={issue.sprint_id} options={sprints.map((s) => ({ id: s.id, label: s.name }))}
+          onChange={(id) => patch(id ? { sprint_id: id } : { clear_sprint: true })} />
+      </Prop>
+      {!hasParent && canWrite && (
+        <Prop label={t("issue.parent")}>
+          <IssuePicker exclude={[issue.id, ...excludeIds]} onPick={(id) => patch({ parent_id: id })} trigger={<Button variant="ghost" className="h-7 w-full justify-start px-2 font-normal text-muted-foreground"><Plus />{t("issue.setParent")}</Button>} />
+        </Prop>
+      )}
+      {issue.source_links.length > 0 && (
+        <>
+          <div className="my-3 h-px bg-border" />
+          <Prop label={t("issue.sourceLinks")}>
+            <ul className="space-y-1 px-2">
+              {issue.source_links.map((l) => (
+                <li key={l.url}><a href={l.url} target="_blank" rel="noreferrer noopener" className="flex items-center gap-1.5 text-[13px] text-primary hover:underline"><ExternalLink className="size-3.5 shrink-0" /><span className="truncate">{l.title || l.url}</span></a></li>
+              ))}
+            </ul>
+          </Prop>
+        </>
+      )}
+      <div className="my-3 h-px bg-border" />
+      <dl className="space-y-1 px-2 text-xs text-muted-foreground">
+        <div className="flex justify-between"><dt>{t("issue.created")}</dt><dd>{fullDate(issue.created_at, lang)}</dd></div>
+        <div className="flex justify-between"><dt>{t("issue.updated")}</dt><dd>{relativeTime(issue.updated_at, lang)}</dd></div>
+        {followers.length > 0 && (
+          <div className="flex items-center justify-between"><dt>{t("issue.followers")}</dt>
+            <dd className="flex items-center gap-1.5" title={followers.map((m) => m.display_name).join(", ")}>
+              <span className="flex -space-x-1">{followers.slice(0, 5).map((m) => <Avatar key={m.id} name={m.display_name} src={m.avatar_url} size={16} className="ring-2 ring-background" />)}</span>
+              {followers.length > 5 && <span className="tabular-nums">+{followers.length - 5}</span>}
+            </dd>
+          </div>
+        )}
+      </dl>
+    </>
   );
 }
 
@@ -199,25 +249,93 @@ function EstimateField({ value, disabled, onCommit }: { value: number | null; di
   const [v, setV] = useState(value?.toString() ?? "");
   useEffect(() => setV(value?.toString() ?? ""), [value]);
   return (
-    <Input
-      aria-label={t("field.estimate")}
-      type="number"
-      min={0}
-      max={1000}
-      disabled={disabled}
-      value={v}
-      placeholder={t("estimate.none")}
-      onChange={(e) => setV(e.target.value)}
-      onBlur={() => { const n = v === "" ? null : Number(v); if (n !== value) onCommit(n); }}
-      className="h-7 border-transparent bg-transparent shadow-none hover:bg-muted focus:bg-card"
-    />
+    <div className="relative">
+      <Input
+        aria-label={t("field.estimate")}
+        type="number"
+        min={0}
+        max={1000}
+        inputMode="numeric"
+        disabled={disabled}
+        value={v}
+        placeholder={t("estimate.none")}
+        onChange={(e) => setV(e.target.value)}
+        onBlur={() => { const n = v === "" ? null : Number(v); if (n !== value) onCommit(n); }}
+        className="h-7 border-transparent bg-transparent pr-9 shadow-none hover:bg-muted focus:bg-card"
+      />
+      {v !== "" && <span className="pointer-events-none absolute inset-y-0 right-2.5 flex items-center text-xs text-muted-foreground">{t("estimate.unit")}</span>}
+    </div>
+  );
+}
+
+type TimeView = { kind: "closed" } | { kind: "list" } | { kind: "form"; entry: TimeEntry | null };
+
+function TimeProp({ issue }: { issue: Issue }) {
+  const { t, lang } = useI18n();
+  const { ws, me, run, member, canWrite, canAdmin } = useWorkspace();
+  const entries = ws.time_entries.filter((e) => e.issue_id === issue.id).sort((a, b) => +new Date(b.logged_at) - +new Date(a.logged_at));
+  const total = entries.reduce((a, e) => a + e.minutes, 0);
+  const [view, setView] = useState<TimeView>({ kind: "closed" });
+  const [deleting, setDeleting] = useState<Id | null>(null);
+  if (!entries.length && !canWrite) return null;
+  const title = view.kind === "form" ? (view.entry ? t("time.edit") : t("time.log")) : t("time.title");
+  return (
+    <Prop label={t("time.title")}>
+      <Button variant="ghost" className="h-7 w-full justify-start px-2 font-normal" onPress={() => setView(entries.length ? { kind: "list" } : { kind: "form", entry: null })}>
+        {entries.length ? <span className="tabular-nums text-foreground">{formatMinutes(total)}</span> : <span className="flex items-center gap-1.5 text-muted-foreground"><Plus />{t("time.log")}</span>}
+      </Button>
+      <Dialog
+        title={title}
+        description={view.kind === "list" ? t("time.total", { time: formatMinutes(total) }) : undefined}
+        size={view.kind === "list" ? "md" : "sm"}
+        isOpen={view.kind !== "closed"}
+        onOpenChange={(open) => { if (!open) { setView({ kind: "closed" }); setDeleting(null); } }}
+      >
+        {view.kind === "form" ? (
+          <TimeForm issueId={issue.id} entry={view.entry} close={() => setView(entries.length ? { kind: "list" } : { kind: "closed" })} />
+        ) : (
+          <div className="space-y-3">
+            <ul className="-mx-1 max-h-80 divide-y divide-border/70 overflow-y-auto">
+              {entries.map((e) => {
+                const m = member(e.user_id);
+                return (
+                  <li key={e.id} className="group flex min-h-11 items-center gap-2.5 px-1 py-1.5 text-[13px]">
+                    {deleting === e.id ? (
+                      <>
+                        <span className="flex-1">{t("time.deleteTitle")}</span>
+                        <Button variant="ghost" size="sm" onPress={() => setDeleting(null)}>{t("action.cancel")}</Button>
+                        <Button variant="destructive" size="sm" onPress={() => run({ type: "delete_time", id: e.id }).then(() => setDeleting(null)).catch(() => {})}>{t("action.delete")}</Button>
+                      </>
+                    ) : (
+                      <>
+                        <Avatar name={m?.display_name ?? "?"} src={m?.avatar_url} size={18} />
+                        <span className="w-16 font-medium tabular-nums">{formatMinutes(e.minutes)}</span>
+                        <span className="min-w-0 flex-1 truncate text-muted-foreground">{e.note}</span>
+                        <span className="text-xs tabular-nums text-muted-foreground">{fullDate(e.logged_at, lang)}</span>
+                        {(e.user_id === me || canAdmin) && (
+                          <span className={cn("flex", revealOnHover)}>
+                            <Button variant="ghost" size="icon" aria-label={t("action.edit")} onPress={() => setView({ kind: "form", entry: e })}><Pencil /></Button>
+                            <Button variant="ghost" size="icon" aria-label={t("action.delete")} onPress={() => setDeleting(e.id)}><Trash2 /></Button>
+                          </span>
+                        )}
+                      </>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+            {canWrite && <div className="flex justify-end"><Button onPress={() => setView({ kind: "form", entry: null })}><Plus />{t("time.log")}</Button></div>}
+          </div>
+        )}
+      </Dialog>
+    </Prop>
   );
 }
 
 function Section({ title, icon, action, children }: { title: string; icon?: React.ReactNode; action?: React.ReactNode; children: React.ReactNode }) {
   return (
     <section>
-      <div className="mb-2 flex items-center gap-2">
+      <div className="mb-2 flex min-h-7 items-center gap-2">
         {icon}
         <h2 className="text-[13px] font-semibold">{title}</h2>
         <div className="ml-auto">{action}</div>
@@ -227,18 +345,97 @@ function Section({ title, icon, action, children }: { title: string; icon?: Reac
   );
 }
 
+function TitleField({ issue, onSave }: { issue: Issue; onSave: (title: string) => void }) {
+  const t = useI18n().t;
+  const { canWrite } = useWorkspace();
+  const [title, setTitle] = useState(issue.title);
+  useEffect(() => setTitle(issue.title), [issue.title]);
+  const ref = useRef<HTMLTextAreaElement>(null);
+  const fit = () => {
+    const el = ref.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${el.scrollHeight}px`;
+  };
+  useLayoutEffect(fit, [title]);
+  useEffect(() => {
+    addEventListener("resize", fit);
+    return () => removeEventListener("resize", fit);
+  }, []);
+  const commit = () => {
+    const next = title.replace(/\s+/g, " ").trim();
+    if (!next) return setTitle(issue.title);
+    setTitle(next);
+    if (next !== issue.title) onSave(next);
+  };
+  return (
+    <textarea
+      ref={ref}
+      rows={1}
+      aria-label={t("field.title")}
+      value={title}
+      readOnly={!canWrite}
+      maxLength={200}
+      onChange={(e) => setTitle(e.target.value.replace(/\n/g, " "))}
+      onBlur={commit}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") { e.preventDefault(); e.currentTarget.blur(); }
+        if (e.key === "Escape") setTitle(issue.title);
+      }}
+      className={cn(
+        "-mx-2 block w-[calc(100%+1rem)] resize-none overflow-hidden rounded-md bg-transparent px-2 py-1 text-2xl font-semibold leading-snug tracking-tight outline-none",
+        canWrite && "hover:bg-muted/60 focus:bg-muted/60 focus:ring-2 focus:ring-ring/40",
+      )}
+    />
+  );
+}
+
 function Description({ issue, onSave }: { issue: Issue; onSave: (d: string) => void }) {
   const t = useI18n().t;
   const { canWrite } = useWorkspace();
-  const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState(issue.description);
-  if (editing)
+  // null while not editing.
+  const [draft, setDraft] = useState<string | null>(null);
+  const box = useRef<HTMLDivElement>(null);
+  const latest = useRef({ draft, saved: issue.description, onSave });
+  latest.current = { draft, saved: issue.description, onSave };
+  const dirty = draft !== null && draft !== issue.description;
+
+  const commit = () => {
+    const { draft: d, saved, onSave: save } = latest.current;
+    if (d !== null && d !== saved) save(d);
+    latest.current.draft = null;
+    setDraft(null);
+  };
+  // Leaving the page mid-edit keeps the draft instead of dropping it.
+  useEffect(() => () => {
+    const { draft: d, saved, onSave: save } = latest.current;
+    if (d !== null && d !== saved) save(d);
+  }, []);
+  useEffect(() => {
+    if (!dirty) return;
+    const warn = (e: BeforeUnloadEvent) => e.preventDefault();
+    addEventListener("beforeunload", warn);
+    return () => removeEventListener("beforeunload", warn);
+  }, [dirty]);
+
+  if (draft !== null)
     return (
-      <div className="space-y-2">
-        <MarkdownEditor label={t("field.description")} value={draft} onChange={setDraft} autoFocus minRows={8} onSubmit={() => { onSave(draft); setEditing(false); }} />
+      <div
+        ref={box}
+        className="space-y-2"
+        onBlur={() => setTimeout(() => {
+          // Save when focus leaves the editor for the page. Ignore window switches and the mention menu.
+          // Safari doesn't focus clicked buttons, so a pointer still over the editor means a click inside it.
+          const el = document.activeElement;
+          if (!box.current || !document.hasFocus() || box.current.contains(el) || box.current.matches(":hover") || el?.closest("[role=menu]")) return;
+          commit();
+        })}
+        onKeyDown={(e) => { if (e.key === "Escape") { e.stopPropagation(); setDraft(null); } }}
+      >
+        <MarkdownEditor label={t("field.description")} value={draft} onChange={setDraft} autoFocus minRows={8} onSubmit={commit} />
         <div className="flex justify-end gap-2">
-          <Button variant="ghost" onPress={() => { setDraft(issue.description); setEditing(false); }}>{t("action.cancel")}</Button>
-          <Button variant="primary" onPress={() => { onSave(draft); setEditing(false); }}>{t("action.save")}</Button>
+          <Button variant="ghost" onPress={() => setDraft(null)}>{t("action.cancel")}</Button>
+          <Button variant="primary" onPress={commit}>{t("action.save")}</Button>
         </div>
       </div>
     );
@@ -247,8 +444,12 @@ function Description({ issue, onSave }: { issue: Issue; onSave: (d: string) => v
       role={canWrite ? "button" : undefined}
       tabIndex={canWrite ? 0 : undefined}
       aria-label={canWrite ? t("issue.editDescription") : undefined}
-      onClick={(e) => { if (canWrite && !(e.target as HTMLElement).closest("a")) { setDraft(issue.description); setEditing(true); } }}
-      onKeyDown={(e) => { if (canWrite && e.key === "Enter") { setDraft(issue.description); setEditing(true); } }}
+      onClick={(e) => {
+        // Let people follow links and select text without opening the editor.
+        if (!canWrite || (e.target instanceof Element && e.target.closest("a")) || getSelection()?.isCollapsed === false) return;
+        setDraft(issue.description);
+      }}
+      onKeyDown={(e) => { if (canWrite && e.key === "Enter") setDraft(issue.description); }}
       className={cn("-mx-3 min-h-16 rounded-lg px-3 py-2 outline-none", canWrite && "cursor-text hover:bg-muted/50 focus-visible:ring-2 focus-visible:ring-ring/50")}
     >
       <Markdown text={issue.description} empty={canWrite ? t("issue.addDescription") : t("issue.noDescription")} />
@@ -256,10 +457,26 @@ function Description({ issue, onSave }: { issue: Issue; onSave: (d: string) => v
   );
 }
 
-function Subtasks({ issue, subs }: { issue: Issue; subs: Issue[] }) {
+function IssueRow({ issue, trailing }: { issue: Issue; trailing?: React.ReactNode }) {
+  const { ws, member } = useWorkspace();
+  const st = stageOf(ws, issue);
+  const assignee = member(issue.assignee);
+  return (
+    <li className="group flex h-9 items-center gap-2.5 px-3 text-[13px] hover:bg-muted/60">
+      <Link to={`/${ws.id}/issue/${issue.id}`} className="flex min-w-0 flex-1 items-center gap-2.5 self-stretch">
+        {st && <StageIcon kind={st.kind} />}
+        <span className="w-14 shrink-0 tabular-nums text-muted-foreground">{issueKey(issue.number)}</span>
+        <span className={cn("truncate", isDone(ws, issue) && "text-muted-foreground line-through")}>{issue.title}</span>
+      </Link>
+      {assignee && <span title={assignee.display_name}><Avatar name={assignee.display_name} src={assignee.avatar_url} size={18} /></span>}
+      {trailing}
+    </li>
+  );
+}
+
+function Subtasks({ issue, subs, adding, setAdding }: { issue: Issue; subs: Issue[]; adding: boolean; setAdding: (v: boolean) => void }) {
   const { t } = useI18n();
   const { ws, run, canWrite } = useWorkspace();
-  const [adding, setAdding] = useState(false);
   const [title, setTitle] = useState("");
   const done = subs.filter((s) => isDone(ws, s)).length;
   const submit = async () => {
@@ -268,30 +485,27 @@ function Subtasks({ issue, subs }: { issue: Issue; subs: Issue[] }) {
     await run({ type: "create_issue", input: { title: title.trim(), team_id: issue.team_id, stage_id: first?.id, parent_id: issue.id, project_id: issue.project_id, sprint_id: issue.sprint_id } }).catch(() => {});
     setTitle("");
   };
-  if (!subs.length && !canWrite) return null;
   return (
     <Section title={t("issue.subtasks")} action={subs.length > 0 && <span className="text-xs tabular-nums text-muted-foreground">{done}/{subs.length}</span>}>
       {subs.length > 0 && (
         <div className="mb-2 h-1 overflow-hidden rounded-full bg-border"><div className="h-full rounded-full bg-primary transition-[width]" style={{ width: `${(done / subs.length) * 100}%` }} /></div>
       )}
       <ul className="divide-y divide-border/70 rounded-lg border border-border">
-        {subs.map((s) => {
-          const st = stageOf(ws, s);
-          return (
-            <li key={s.id}>
-              <Link to={`/${ws.id}/issue/${s.id}`} className="flex h-9 items-center gap-2.5 px-3 text-[13px] hover:bg-muted/60">
-                {st && <StageIcon kind={st.kind} />}
-                <span className="w-14 tabular-nums text-muted-foreground">{issueKey(s.number)}</span>
-                <span className={cn("flex-1 truncate", isDone(ws, s) && "text-muted-foreground line-through")}>{s.title}</span>
-              </Link>
-            </li>
-          );
-        })}
+        {subs.map((s) => <IssueRow key={s.id} issue={s} />)}
         {canWrite && (
           <li>
             {adding ? (
               <Form className="flex items-center gap-2 px-3 py-1.5" onSubmit={(e) => { e.preventDefault(); void submit(); }}>
-                <Input autoFocus aria-label={t("issue.subtaskTitle")} value={title} onChange={(e) => setTitle(e.target.value)} onKeyDown={(e) => e.key === "Escape" && setAdding(false)} placeholder={t("issue.subtaskPlaceholder")} className="h-7 border-0 shadow-none focus:ring-0" />
+                <Input
+                  autoFocus
+                  aria-label={t("issue.subtaskTitle")}
+                  value={title}
+                  onChange={(e) => setTitle(e.target.value)}
+                  onKeyDown={(e) => e.key === "Escape" && setAdding(false)}
+                  onBlur={() => !title.trim() && setAdding(false)}
+                  placeholder={t("issue.subtaskPlaceholder")}
+                  className="h-7 border-0 shadow-none focus:ring-0"
+                />
                 <Button type="submit" size="sm" variant="subtle">{t("action.add")}</Button>
               </Form>
             ) : (
@@ -304,41 +518,70 @@ function Subtasks({ issue, subs }: { issue: Issue; subs: Issue[] }) {
   );
 }
 
-function Dependencies({ issue }: { issue: Issue }) {
+function Dependencies({ issue, blockers, blocking, onAdd }: { issue: Issue; blockers: Issue[]; blocking: Issue[]; onAdd: (id: Id) => void }) {
   const t = useI18n().t;
-  const { ws, run, canWrite } = useWorkspace();
-  const blockers = issue.dependencies.map((id) => ws.issues.find((i) => i.id === id)).filter((i): i is Issue => Boolean(i && !i.deleted_at));
-  const blocking = ws.issues.filter((i) => !i.deleted_at && i.dependencies.includes(issue.id));
-  const set = (dependencies: Id[]) => run({ type: "update_issue", id: issue.id, patch: { dependencies } }).catch(() => {});
-  if (!blockers.length && !blocking.length && !canWrite) return null;
+  const { run, canWrite } = useWorkspace();
+  const remove = (id: Id) => run({ type: "update_issue", id: issue.id, patch: { dependencies: issue.dependencies.filter((d) => d !== id) } }).catch(() => {});
+  const group = (title: string, list: Issue[], removable: boolean) => list.length > 0 && (
+    <div>
+      <h3 className="mb-1 text-xs text-muted-foreground">{title}</h3>
+      <ul className="divide-y divide-border/70 rounded-lg border border-border">
+        {list.map((b) => (
+          <IssueRow
+            key={b.id}
+            issue={b}
+            trailing={removable && canWrite && <Button variant="ghost" size="icon" className={revealOnHover} aria-label={t("action.remove")} onPress={() => remove(b.id)}><X /></Button>}
+          />
+        ))}
+      </ul>
+    </div>
+  );
   return (
     <Section
       title={t("issue.dependencies")}
       icon={<Lock className="size-3.5 text-muted-foreground" />}
-      action={canWrite && <IssuePicker exclude={[issue.id, ...issue.dependencies]} onPick={(id) => set([...issue.dependencies, id])} trigger={<Button variant="ghost" size="sm"><Plus />{t("issue.addBlocker")}</Button>} />}
+      action={canWrite && <IssuePicker exclude={[issue.id, ...issue.dependencies]} onPick={onAdd} trigger={<Button variant="ghost" size="sm"><Plus />{t("issue.addBlocker")}</Button>} />}
     >
-      {blockers.length === 0 && blocking.length === 0 && <p className="text-[13px] text-muted-foreground">{t("issue.noDependencies")}</p>}
-      <ul className="space-y-1">
-        {blockers.map((b) => (
-          <li key={b.id} className="flex items-center gap-2 text-[13px]">
-            <Badge tone={isDone(ws, b) ? "success" : "danger"}>{isDone(ws, b) ? t("issue.resolved") : t("issue.blockedBy")}</Badge>
-            <Link to={`/${ws.id}/issue/${b.id}`} className="min-w-0 flex-1 truncate hover:underline"><span className="tabular-nums text-muted-foreground">{issueKey(b.number)}</span> {b.title}</Link>
-            {canWrite && <Button variant="ghost" size="icon" aria-label={t("action.remove")} onPress={() => set(issue.dependencies.filter((d) => d !== b.id))}><X /></Button>}
-          </li>
-        ))}
-        {blocking.map((b) => (
-          <li key={b.id} className="flex items-center gap-2 text-[13px]">
-            <Badge tone="warning">{t("issue.blocks")}</Badge>
-            <Link to={`/${ws.id}/issue/${b.id}`} className="min-w-0 flex-1 truncate hover:underline"><span className="tabular-nums text-muted-foreground">{issueKey(b.number)}</span> {b.title}</Link>
-          </li>
-        ))}
-      </ul>
+      <div className="space-y-3">
+        {group(t("issue.blockedBy"), blockers, true)}
+        {group(t("issue.blocks"), blocking, false)}
+      </div>
     </Section>
   );
 }
 
 export function attachmentUrl(wsId: Id, id: Id) {
   return `/api/workspaces/${wsId}/attachments/${id}`;
+}
+
+function useUploader(issueId: Id) {
+  const t = useI18n().t;
+  const { upload } = useWorkspace();
+  const toast = useToast();
+  const [busy, setBusy] = useState(false);
+  const pick = async (list: FileList | null) => {
+    if (!list) return;
+    setBusy(true);
+    for (const f of Array.from(list)) {
+      if (f.size > MAX_UPLOAD) { toast.error(t("attachments.tooLarge", { name: f.name })); continue; }
+      await upload(issueId, f).catch(() => {});
+    }
+    setBusy(false);
+  };
+  return { busy, pick };
+}
+type Uploader = ReturnType<typeof useUploader>;
+
+function AttachButton({ uploader }: { uploader: Uploader }) {
+  const t = useI18n().t;
+  return (
+    <FileTrigger allowsMultiple onSelect={(list) => void uploader.pick(list)}>
+      <Button variant="ghost" size="sm" isDisabled={uploader.busy}>
+        {uploader.busy ? <Loader2 className="animate-spin" /> : <Paperclip />}
+        {uploader.busy ? t("attachments.uploading") : t("attachments.add")}
+      </Button>
+    </FileTrigger>
+  );
 }
 
 function AttachmentChip({ wsId, a, onRemove }: { wsId: Id; a: { id: Id; name: string; size: number }; onRemove?: () => void }) {
@@ -354,188 +597,210 @@ function AttachmentChip({ wsId, a, onRemove }: { wsId: Id; a: { id: Id; name: st
   );
 }
 
-function Attachments({ issue }: { issue: Issue }) {
+function Attachments({ issue, uploader }: { issue: Issue; uploader: Uploader }) {
   const t = useI18n().t;
-  const { ws, run, upload, canWrite } = useWorkspace();
+  const { ws, run, canWrite } = useWorkspace();
+  return (
+    <Section title={t("issue.attachments")} icon={<Paperclip className="size-3.5 text-muted-foreground" />} action={canWrite && <AttachButton uploader={uploader} />}>
+      <ul className="grid gap-1.5 sm:grid-cols-2">
+        {issue.attachments.map((a) => (
+          <AttachmentChip key={a.id} wsId={ws.id} a={a} onRemove={canWrite ? () => run({ type: "remove_attachment", issue_id: issue.id, attachment_id: a.id }).catch(() => {}) : undefined} />
+        ))}
+      </ul>
+    </Section>
+  );
+}
+
+function ConfirmDelete({ title, isOpen, onOpenChange, onConfirm }: { title: string; isOpen: boolean; onOpenChange: (open: boolean) => void; onConfirm: () => Promise<unknown> }) {
+  const t = useI18n().t;
+  return (
+    <Dialog title={title} description={t("action.cannotUndo")} size="sm" isOpen={isOpen} onOpenChange={onOpenChange}>
+      {(close) => (
+        <div className="flex justify-end gap-2">
+          <Button variant="ghost" onPress={close}>{t("action.cancel")}</Button>
+          <Button variant="destructive" onPress={() => void onConfirm().then(close, () => {})}>{t("action.delete")}</Button>
+        </div>
+      )}
+    </Dialog>
+  );
+}
+
+/** Issue events worth showing in the timeline. Comments render on their own. */
+const EVENT_LABELS: Partial<Record<string, Key>> = {
+  create_issue: "timeline.create_issue",
+  update_issue: "timeline.update_issue",
+  move_issue: "timeline.move_issue",
+  restore_issue: "timeline.restore_issue",
+  issue_completed: "timeline.issue_completed",
+  add_attachment: "timeline.add_attachment",
+  remove_attachment: "timeline.remove_attachment",
+  add_source_link: "timeline.add_source_link",
+  log_time: "timeline.log_time",
+  update_time: "timeline.update_time",
+};
+const FIELD_LABELS: Partial<Record<string, Key>> = {
+  title: "field.title", description: "field.description", stage: "field.stage", assignee: "field.assignee", priority: "field.priority",
+  labels: "field.labels", estimate: "field.estimate", deadline: "field.deadline", project: "field.project", milestone: "field.milestone",
+  sprint: "field.sprint", parent: "issue.parent", dependencies: "issue.dependencies",
+};
+const PAGE = 30;
+
+type TimelineItem = { kind: "comment"; at: string; comment: Comment } | { kind: "event"; at: string; event: Activity };
+
+function Timeline({ issue }: { issue: Issue }) {
+  const { t } = useI18n();
+  const { ws } = useWorkspace();
+  const [limit, setLimit] = useState(PAGE);
+  const entries = new Map(ws.time_entries.filter((e) => e.issue_id === issue.id).map((e) => [e.id, e]));
+  const items = [
+    ...ws.comments.filter((c) => c.issue_id === issue.id).map((c): TimelineItem => ({ kind: "comment", at: c.created_at, comment: c })),
+    ...ws.activity
+      .filter((a) => a.entity_id !== null && EVENT_LABELS[a.action] && (a.entity_id === issue.id || entries.has(a.entity_id)))
+      .map((a): TimelineItem => ({ kind: "event", at: a.at, event: a })),
+  ].sort((a, b) => +new Date(a.at) - +new Date(b.at));
+  const hidden = Math.max(0, items.length - limit);
+  return (
+    <Section title={t("activity.title")}>
+      {hidden > 0 && (
+        <Button variant="ghost" size="sm" className="mb-3 -ml-2.5" onPress={() => setLimit((l) => l + PAGE)}>{t("timeline.older", { n: Math.min(hidden, PAGE) })}</Button>
+      )}
+      <ol className="space-y-4">
+        {items.slice(hidden).map((item) =>
+          item.kind === "comment" ? <CommentItem key={item.comment.id} comment={item.comment} /> : <EventItem key={item.event.id} event={item.event} entries={entries} />,
+        )}
+      </ol>
+      <Composer issue={issue} hasItems={items.length > 0} />
+    </Section>
+  );
+}
+
+function EventItem({ event, entries }: { event: Activity; entries: Map<Id, TimeEntry> }) {
+  const { t, lang } = useI18n();
+  const { member } = useWorkspace();
+  const fields = (event.fields ?? []).flatMap((f) => {
+    const key = FIELD_LABELS[f];
+    return key ? [t(key).toLocaleLowerCase(lang)] : [];
+  });
+  const entry = event.entity_id ? entries.get(event.entity_id) : undefined;
+  const key = EVENT_LABELS[event.action];
+  const label =
+    event.action === "update_issue" && fields.length ? t("timeline.changed", { fields: fields.join(", ") })
+    : event.action === "log_time" && entry ? t("timeline.log_time", { time: formatMinutes(entry.minutes) })
+    : key ? t(key) : activityLabel(t, event.action);
+  return (
+    <li className="flex items-center gap-3 text-xs text-muted-foreground">
+      <span className="grid w-7 shrink-0 place-items-center"><span className="size-1.5 rounded-full bg-muted-foreground/40" /></span>
+      <span>
+        <span className="font-medium text-foreground">{member(event.actor)?.display_name ?? t("person.unknown")}</span> {label} · <time dateTime={event.at} title={new Date(event.at).toLocaleString(lang)}>{relativeTime(event.at, lang)}</time>
+      </span>
+    </li>
+  );
+}
+
+function CommentItem({ comment: c }: { comment: Comment }) {
+  const { t, lang } = useI18n();
+  const { ws, me, members, member, run, canAdmin } = useWorkspace();
+  const [editBody, setEditBody] = useState<string | null>(null);
+  const [confirm, setConfirm] = useState(false);
+  const m = member(c.author);
+  const mine = c.author === me;
+  const save = () => {
+    if (!editBody?.trim()) return;
+    run({ type: "edit_comment", id: c.id, body: editBody.trim(), mentions: mentionsIn(editBody, members) }).then(() => setEditBody(null)).catch(() => {});
+  };
+  return (
+    <li className="group flex gap-3">
+      <Avatar name={m?.display_name ?? "?"} src={m?.avatar_url} size={28} />
+      <div className="min-w-0 flex-1">
+        <div className="flex min-h-7 items-center gap-2 text-[13px]">
+          <Link to={`/${ws.id}/people/${c.author}`} className="font-semibold hover:underline">{m?.display_name ?? t("person.unknown")}</Link>
+          <time dateTime={c.created_at} title={new Date(c.created_at).toLocaleString(lang)} className="text-xs text-muted-foreground">{relativeTime(c.created_at, lang)}</time>
+          {c.edited_at && <span className="text-xs text-muted-foreground">({t("comment.edited")})</span>}
+          {(mine || canAdmin) && editBody === null && (
+            <span className={cn("ml-auto flex", revealOnHover)}>
+              {mine && <Button variant="ghost" size="icon" aria-label={t("action.edit")} onPress={() => setEditBody(c.body)}><Pencil /></Button>}
+              <Button variant="ghost" size="icon" aria-label={t("action.delete")} onPress={() => setConfirm(true)}><Trash2 /></Button>
+            </span>
+          )}
+        </div>
+        {editBody !== null ? (
+          <div className="mt-1.5 space-y-2" onKeyDown={(e) => { if (e.key === "Escape") { e.stopPropagation(); setEditBody(null); } }}>
+            <MarkdownEditor label={t("comment.edit")} value={editBody} onChange={setEditBody} autoFocus minRows={3} onSubmit={save} />
+            <div className="flex justify-end gap-2">
+              <Button variant="ghost" onPress={() => setEditBody(null)}>{t("action.cancel")}</Button>
+              <Button variant="primary" isDisabled={!editBody.trim()} onPress={save}>{t("action.save")}</Button>
+            </div>
+          </div>
+        ) : (
+          <Markdown text={c.body} className="text-[13.5px]" />
+        )}
+        {c.attachments.length > 0 && (
+          <ul className="mt-2 grid gap-1.5 sm:grid-cols-2">{c.attachments.map((a) => <AttachmentChip key={a.id} wsId={ws.id} a={a} />)}</ul>
+        )}
+      </div>
+      <ConfirmDelete title={t("comment.deleteTitle")} isOpen={confirm} onOpenChange={setConfirm} onConfirm={() => run({ type: "delete_comment", id: c.id })} />
+    </li>
+  );
+}
+
+function Composer({ issue, hasItems }: { issue: Issue; hasItems: boolean }) {
+  const { t } = useI18n();
+  const { members, run, upload, canWrite } = useWorkspace();
   const toast = useToast();
-  const [busy, setBusy] = useState(false);
-  if (!issue.attachments.length && !canWrite) return null;
-  return (
-    <Section
-      title={t("issue.attachments")}
-      icon={<Paperclip className="size-3.5 text-muted-foreground" />}
-      action={canWrite && (
-        <FileTrigger allowsMultiple onSelect={async (list) => {
-          if (!list) return;
-          setBusy(true);
-          for (const f of Array.from(list)) {
-            if (f.size > 5 * 1024 * 1024) { toast.error(t("attachments.tooLarge", { name: f.name })); continue; }
-            await upload(issue.id, f).catch(() => {});
-          }
-          setBusy(false);
-        }}>
-          <Button variant="ghost" size="sm" isDisabled={busy}><Plus />{t("attachments.add")}</Button>
-        </FileTrigger>
-      )}
-    >
-      {issue.attachments.length === 0 ? <p className="text-[13px] text-muted-foreground">{t("attachments.none")}</p> : (
-        <ul className="grid gap-1.5 sm:grid-cols-2">
-          {issue.attachments.map((a) => (
-            <AttachmentChip key={a.id} wsId={ws.id} a={a} onRemove={canWrite ? () => run({ type: "remove_attachment", issue_id: issue.id, attachment_id: a.id }).catch(() => {}) : undefined} />
-          ))}
-        </ul>
-      )}
-    </Section>
-  );
-}
-
-function TimeSection({ issue, total }: { issue: Issue; total: number }) {
-  const { t, lang } = useI18n();
-  const { ws, me, run, member, canWrite, canAdmin } = useWorkspace();
-  const entries = ws.time_entries.filter((e) => e.issue_id === issue.id).sort((a, b) => +new Date(b.logged_at) - +new Date(a.logged_at));
-  const [editing, setEditing] = useState<TimeEntry | "new" | null>(null);
-  return (
-    <Section
-      title={t("time.title")}
-      icon={<Clock className="size-3.5 text-muted-foreground" />}
-      action={<div className="flex items-center gap-2">{total > 0 && <span className="text-xs tabular-nums text-muted-foreground">{t("time.total", { time: formatMinutes(total) })}</span>}{canWrite && <Button variant="ghost" size="sm" onPress={() => setEditing("new")}><Plus />{t("time.log")}</Button>}</div>}
-    >
-      {entries.length === 0 ? <p className="text-[13px] text-muted-foreground">{t("time.none")}</p> : (
-        <ul className="divide-y divide-border/70 rounded-lg border border-border">
-          {entries.map((e) => {
-            const m = member(e.user_id);
-            return (
-              <li key={e.id} className="group flex items-center gap-2.5 px-3 py-2 text-[13px]">
-                <Avatar name={m?.display_name ?? "?"} src={m?.avatar_url} size={18} />
-                <span className="w-16 font-medium tabular-nums">{formatMinutes(e.minutes)}</span>
-                <span className="min-w-0 flex-1 truncate text-muted-foreground">{e.note}</span>
-                <span className="text-xs tabular-nums text-muted-foreground">{fullDate(e.logged_at, lang)}</span>
-                {(e.user_id === me || canAdmin) && (
-                  <span className="flex opacity-0 group-hover:opacity-100 group-focus-within:opacity-100">
-                    <Button variant="ghost" size="icon" aria-label={t("action.edit")} onPress={() => setEditing(e)}><Pencil /></Button>
-                    <Button variant="ghost" size="icon" aria-label={t("action.delete")} onPress={() => run({ type: "delete_time", id: e.id }).catch(() => {})}><Trash2 /></Button>
-                  </span>
-                )}
-              </li>
-            );
-          })}
-        </ul>
-      )}
-      <Dialog title={editing === "new" ? t("time.log") : t("time.edit")} size="sm" isOpen={editing !== null} onOpenChange={(o) => !o && setEditing(null)}>
-        {(close) => <TimeForm issueId={issue.id} entry={editing === "new" ? null : editing} close={close} />}
-      </Dialog>
-    </Section>
-  );
-}
-
-function Discussion({ issue }: { issue: Issue }) {
-  const { t, lang } = useI18n();
-  const { ws, me, members, member, run, upload, canWrite, canAdmin } = useWorkspace();
-  const comments = ws.comments.filter((c) => c.issue_id === issue.id).sort((a, b) => +new Date(a.created_at) - +new Date(b.created_at));
   const [body, setBody] = useState("");
   const [files, setFiles] = useState<File[]>([]);
   const [busy, setBusy] = useState(false);
-  const [editId, setEditId] = useState<Id | null>(null);
-  const [editBody, setEditBody] = useState("");
-  const end = useRef<HTMLDivElement>(null);
+  const box = useRef<HTMLDivElement>(null);
+  if (!canWrite) return null;
 
+  const addFiles = (list: FileList | null) => {
+    if (!list) return;
+    const ok = Array.from(list).filter((f) => {
+      if (f.size <= MAX_UPLOAD) return true;
+      toast.error(t("attachments.tooLarge", { name: f.name }));
+      return false;
+    });
+    setFiles((l) => [...l, ...ok]);
+  };
   const post = async () => {
-    if (!body.trim()) return;
+    if (!body.trim() || busy) return;
     setBusy(true);
     try {
       const id = await run({ type: "add_comment", issue_id: issue.id, body: body.trim(), mentions: mentionsIn(body, members), attachments: [] });
       if (id) for (const f of files) await upload(issue.id, f, id).catch(() => {});
       setBody("");
       setFiles([]);
-      requestAnimationFrame(() => end.current?.scrollIntoView({ block: "nearest", behavior: "smooth" }));
+      requestAnimationFrame(() => box.current?.scrollIntoView({ block: "nearest", behavior: "smooth" }));
     } catch { /* toast shown */ }
     setBusy(false);
   };
 
   return (
-    <Section title={t("issue.discussion")} action={<span className="text-xs tabular-nums text-muted-foreground">{comments.length}</span>}>
-      <ol className="space-y-5">
-        {comments.map((c: Comment) => {
-          const m = member(c.author);
-          const mine = c.author === me;
-          return (
-            <li key={c.id} className="group flex gap-3">
-              <Avatar name={m?.display_name ?? "?"} src={m?.avatar_url} size={28} />
-              <div className="min-w-0 flex-1">
-                <div className="flex items-baseline gap-2 text-[13px]">
-                  <Link to={`/${ws.id}/people/${c.author}`} className="font-semibold hover:underline">{m?.display_name ?? t("person.unknown")}</Link>
-                  <time dateTime={c.created_at} title={new Date(c.created_at).toLocaleString(lang)} className="text-xs text-muted-foreground">{relativeTime(c.created_at, lang)}</time>
-                  {c.edited_at && <span className="text-xs text-muted-foreground">({t("comment.edited")})</span>}
-                  {(mine || canAdmin) && editId !== c.id && (
-                    <span className="ml-auto flex opacity-0 group-hover:opacity-100 group-focus-within:opacity-100">
-                      {mine && <Button variant="ghost" size="icon" aria-label={t("action.edit")} onPress={() => { setEditId(c.id); setEditBody(c.body); }}><Pencil /></Button>}
-                      <Button variant="ghost" size="icon" aria-label={t("action.delete")} onPress={() => run({ type: "delete_comment", id: c.id }).catch(() => {})}><Trash2 /></Button>
-                    </span>
-                  )}
-                </div>
-                {editId === c.id ? (
-                  <div className="mt-1.5 space-y-2">
-                    <MarkdownEditor label={t("comment.edit")} value={editBody} onChange={setEditBody} autoFocus minRows={3} onSubmit={() => undefined} />
-                    <div className="flex justify-end gap-2">
-                      <Button variant="ghost" onPress={() => setEditId(null)}>{t("action.cancel")}</Button>
-                      <Button variant="primary" isDisabled={!editBody.trim()} onPress={() => run({ type: "edit_comment", id: c.id, body: editBody.trim(), mentions: mentionsIn(editBody, members) }).then(() => setEditId(null)).catch(() => {})}>{t("action.save")}</Button>
-                    </div>
-                  </div>
-                ) : (
-                  <Markdown text={c.body} className="mt-0.5 text-[13.5px]" />
-                )}
-                {c.attachments.length > 0 && (
-                  <ul className="mt-2 grid gap-1.5 sm:grid-cols-2">{c.attachments.map((a) => <AttachmentChip key={a.id} wsId={ws.id} a={a} />)}</ul>
-                )}
-              </div>
+    <div ref={box} className={cn("space-y-2", hasItems && "mt-6")}>
+      <MarkdownEditor label={t("comment.new")} value={body} onChange={setBody} placeholder={t("comment.placeholder")} minRows={3} onSubmit={post} />
+      {files.length > 0 && (
+        <ul className="flex flex-wrap gap-1.5">
+          {files.map((f, i) => (
+            <li key={i} className="inline-flex items-center gap-1.5 rounded-md border border-border bg-muted px-2 py-1 text-xs">
+              <Paperclip className="size-3" />{f.name}
+              <button type="button" aria-label={t("action.remove")} disabled={busy} onClick={() => setFiles((l) => l.filter((_, j) => j !== i))}><X className="size-3" /></button>
             </li>
-          );
-        })}
-      </ol>
-      <div ref={end} />
-      {canWrite ? (
-        <div className={cn("space-y-2", comments.length > 0 && "mt-5")}>
-          <MarkdownEditor label={t("comment.new")} value={body} onChange={setBody} placeholder={t("comment.placeholder")} minRows={3} onSubmit={post} />
-          {files.length > 0 && (
-            <ul className="flex flex-wrap gap-1.5">
-              {files.map((f, i) => (
-                <li key={i} className="inline-flex items-center gap-1.5 rounded-md border border-border bg-muted px-2 py-1 text-xs">
-                  <Paperclip className="size-3" />{f.name}
-                  <button type="button" aria-label={t("action.remove")} onClick={() => setFiles((l) => l.filter((_, j) => j !== i))}><X className="size-3" /></button>
-                </li>
-              ))}
-            </ul>
-          )}
-          <div className="flex items-center justify-between">
-            <FileTrigger allowsMultiple onSelect={(l) => l && setFiles((f) => [...f, ...Array.from(l)])}>
-              <Button variant="ghost" size="sm"><Paperclip />{t("attachments.add")}</Button>
-            </FileTrigger>
-            <div className="flex items-center gap-2">
-              <span className="hidden text-xs text-muted-foreground sm:block">{t("comment.hint")}</span>
-              <Button variant="primary" isDisabled={!body.trim() || busy} onPress={post}>{t("comment.send")}</Button>
-            </div>
-          </div>
+          ))}
+        </ul>
+      )}
+      <div className="flex items-center justify-between">
+        <FileTrigger allowsMultiple onSelect={addFiles}>
+          <Button variant="ghost" size="sm" isDisabled={busy}><Paperclip />{t("attachments.add")}</Button>
+        </FileTrigger>
+        <div className="flex items-center gap-2">
+          <span className="hidden text-xs text-muted-foreground sm:block">{t("comment.hint", { key: modKey })}</span>
+          <Button variant="primary" isDisabled={!body.trim() || busy} onPress={post}>
+            {busy && <Loader2 className="animate-spin" />}
+            {busy ? t("comment.sending") : t("comment.send")}
+          </Button>
         </div>
-      ) : null}
-    </Section>
-  );
-}
-
-function IssueActivity({ issue }: { issue: Issue }) {
-  const { t, lang } = useI18n();
-  const { ws, member } = useWorkspace();
-  const items = ws.activity.filter((a) => a.entity_id === issue.id).slice(-15).reverse();
-  if (!items.length) return null;
-  return (
-    <Section title={t("activity.title")}>
-      <ul className="space-y-1.5 border-l border-border pl-4">
-        {items.map((a) => (
-          <li key={a.id} className="text-xs text-muted-foreground">
-            <span className="font-medium text-foreground">{member(a.actor)?.display_name ?? t("person.unknown")}</span> {activityLabel(t, a.action)} · {relativeTime(a.at, lang)}
-          </li>
-        ))}
-      </ul>
-    </Section>
+      </div>
+    </div>
   );
 }
 

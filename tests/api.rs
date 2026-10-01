@@ -398,6 +398,11 @@ async fn contract(url: &str) {
         },
     )
     .await;
+    let activity = snapshot(&app, &owner, &id).await["workspace"]["activity"].clone();
+    assert_eq!(
+        activity.as_array().unwrap().last().unwrap()["fields"],
+        json!(["assignee"])
+    );
     change(
         &app,
         &owner,

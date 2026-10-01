@@ -228,6 +228,9 @@ pub struct Activity {
     pub action: String,
     pub entity_id: Option<Uuid>,
     pub at: DateTime<Utc>,
+    /// Issue fields an update changed, so the timeline can say what moved.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fields: Vec<String>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct Integration {

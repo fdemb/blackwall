@@ -45,7 +45,7 @@ export interface Notification {
 }
 export interface AlertPrefsWs { user_id: Id; assignment: boolean; reply: boolean; change: boolean; mention: boolean; deadline: boolean }
 export interface Integration { id: Id; name: string; webhook_url: string; enabled: boolean }
-export interface Activity { id: Id; actor: Id; action: string; entity_id: Id | null; at: string }
+export interface Activity { id: Id; actor: Id; action: string; entity_id: Id | null; at: string; fields?: string[] }
 
 export interface Workspace {
   id: Id; name: string; members: { user_id: Id; role: Role }[]; teams: Team[]; labels: Label[];
