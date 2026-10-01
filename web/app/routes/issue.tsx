@@ -11,6 +11,8 @@ import { Button } from "~/components/ui/button";
 import { DatePicker } from "~/components/ui/date-picker";
 import { Dialog } from "~/components/ui/dialog";
 import { Input } from "~/components/ui/field";
+import { ConfirmDialog } from "~/components/app/confirm";
+import { SaveStatus } from "~/components/app/save-status";
 import { Menu, MenuItem, MenuPopover, MenuTrigger } from "~/components/ui/menu";
 import { useToast } from "~/components/ui/toast";
 import { Markdown, MarkdownEditor, mentionsIn } from "~/components/app/markdown";
@@ -20,14 +22,15 @@ import { TimeForm } from "~/components/app/time-form";
 import { AssigneePicker, LabelsPicker, NullableSelect, PriorityPicker, StagePicker } from "~/components/app/pickers";
 import { EmptyState, Page } from "~/components/app/page";
 import { isDone, stageOf } from "~/lib/filters";
-import { bytes, formatMinutes, fullDate, issueKey, relativeTime } from "~/lib/format";
+import { bytes, formatMinutes, fullDate, issueKey, MAX_UPLOAD, relativeTime } from "~/lib/format";
+import { useDocumentTitle } from "~/lib/title";
 import { useI18n, type Key } from "~/lib/i18n";
 import { useMediaQuery } from "~/lib/media";
+import { usePending } from "~/lib/use-pending";
 import { useWorkspace } from "~/lib/workspace";
 import { cn } from "~/lib/utils";
 import type { Activity, Comment, Id, Issue, IssuePatch, TimeEntry } from "~/lib/types";
 
-const MAX_UPLOAD = 5 * 1024 * 1024;
 /** Row actions hide until hover on devices that can hover, and stay visible on touch. */
 const revealOnHover = "[@media(hover:hover)]:opacity-0 group-hover:opacity-100 group-focus-within:opacity-100";
 const modKey = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.userAgent) ? "⌘" : "Ctrl";
@@ -37,13 +40,32 @@ export default function IssuePage() {
   const { issue: find, ws } = useWorkspace();
   const t = useI18n().t;
   const issue = find(issueId!);
-  if (!issue || issue.deleted_at)
-    return issue?.deleted_at ? (
-      <Page><EmptyState icon={<Trash2 />} title={t("issue.deleted")} description={t("issue.deletedSub")} action={<Link className="text-primary hover:underline" to={`/${wsId}/trash`}>{t("nav.trash")}</Link>} /></Page>
-    ) : (
-      <Navigate to={`/${ws.id}/my-issues`} replace />
-    );
+  if (!issue) return <Navigate to={`/${ws.id}/my-issues`} replace />;
+  if (issue.deleted_at) return <DeletedIssue issue={issue} wsId={wsId!} />;
   return <IssueView key={issue.id} issue={issue} />;
+}
+
+/** A link to a trashed issue still says which issue it was and offers the way back. */
+function DeletedIssue({ issue, wsId }: { issue: Issue; wsId: string }) {
+  const { t } = useI18n();
+  const { run, canWrite } = useWorkspace();
+  const toast = useToast();
+  useDocumentTitle(`${issueKey(issue.number)} ${issue.title}`);
+  return (
+    <Page>
+      <EmptyState
+        icon={<Trash2 />}
+        title={`${issueKey(issue.number)} ${issue.title}`}
+        description={`${t("issue.deleted")}. ${canWrite ? t("issue.deletedSub") : ""}`.trim()}
+        action={
+          <div className="flex items-center gap-3">
+            {canWrite && <Button variant="primary" onPress={() => run({ type: "restore_issue", id: issue.id }).then(() => toast.show(t("issue.restored"))).catch(() => {})}><ArchiveRestore />{t("issue.restore")}</Button>}
+            <Link className="text-primary hover:underline" to={`/${wsId}/trash`}>{t("nav.trash")}</Link>
+          </div>
+        }
+      />
+    </Page>
+  );
 }
 
 function IssueView({ issue }: { issue: Issue }) {
@@ -54,7 +76,9 @@ function IssueView({ issue }: { issue: Issue }) {
   const { ws, me, run, team, canWrite } = useWorkspace();
   const wide = useMediaQuery("(min-width: 1024px)");
   const tm = team(issue.team_id);
-  const patch = (p: IssuePatch) => run({ type: "update_issue", id: issue.id, patch: p }).catch(() => {});
+  useDocumentTitle(`${issueKey(issue.number)} ${issue.title}`);
+  // Resolves to whether the save landed, so editors can keep a draft that didn't.
+  const patch = (p: IssuePatch) => run({ type: "update_issue", id: issue.id, patch: p }).then(() => true, () => false);
   const following = issue.followers.includes(me);
   const subs = ws.issues.filter((i) => i.parent_id === issue.id && !i.deleted_at);
   const parent = ws.issues.find((i) => i.id === issue.parent_id);
@@ -76,6 +100,7 @@ function IssueView({ issue }: { issue: Issue }) {
         <span className="text-muted-foreground/50">/</span>
         <span className="text-[13px] font-medium tabular-nums">{issueKey(issue.number)}</span>
         <div className="ml-auto flex items-center gap-1">
+          <SaveStatus />
           <Button variant="ghost" size="sm" onPress={() => run({ type: "follow", issue_id: issue.id, following: !following }).catch(() => {})}>
             {following ? <BellOff /> : <Bell />}{following ? t("issue.unfollow") : t("issue.follow")}
           </Button>
@@ -97,6 +122,7 @@ function IssueView({ issue }: { issue: Issue }) {
       <div className="flex min-h-0 flex-1">
         <div className="min-w-0 flex-1 overflow-y-auto">
           <div className="mx-auto max-w-3xl px-6 py-8">
+            <h1 className="sr-only">{t("issue.titleHeading", { key: issueKey(issue.number), title: issue.title })}</h1>
             <div className="space-y-3">
               {parent && (
                 <div className="group flex items-center gap-1 text-xs text-muted-foreground">
@@ -159,14 +185,17 @@ function IssueView({ issue }: { issue: Issue }) {
         )}
       </div>
 
-      <Dialog title={t("issue.deleteTitle")} description={t("issue.deleteSub")} size="sm" isOpen={confirm} onOpenChange={setConfirm}>
-        {(close) => (
-          <div className="flex justify-end gap-2">
-            <Button variant="ghost" onPress={close}>{t("action.cancel")}</Button>
-            <Button variant="destructive" onPress={() => run({ type: "delete_issue", id: issue.id }).then(() => { close(); toast.show(t("issue.movedToTrash")); goBack(); }).catch(() => {})}>{t("action.delete")}</Button>
-          </div>
-        )}
-      </Dialog>
+      <ConfirmDialog
+        title={t("issue.deleteTitle")}
+        description={t("issue.deleteSub")}
+        isOpen={confirm}
+        onOpenChange={setConfirm}
+        onConfirm={async () => {
+          await run({ type: "delete_issue", id: issue.id }, { quiet: true });
+          toast.show(t("issue.movedToTrash"), { label: t("action.undo"), run: () => void run({ type: "restore_issue", id: issue.id }).catch(() => {}) });
+          goBack();
+        }}
+      />
     </Page>
   );
 }
@@ -174,7 +203,7 @@ function IssueView({ issue }: { issue: Issue }) {
 function Properties({ issue, hasParent, excludeIds }: { issue: Issue; hasParent: boolean; excludeIds: Id[] }) {
   const { t, lang } = useI18n();
   const { ws, run, canWrite, member } = useWorkspace();
-  const patch = (p: IssuePatch) => run({ type: "update_issue", id: issue.id, patch: p }).catch(() => {});
+  const patch = (p: IssuePatch) => run({ type: "update_issue", id: issue.id, patch: p }).then(() => true, () => false);
   const projectMilestones = ws.milestones.filter((m) => m.project_id === issue.project_id);
   const sprints = ws.sprints.filter((s) => s.team_id === issue.team_id && (s.state === "planned" || s.state === "active" || s.id === issue.sprint_id));
   const followers = issue.followers.map(member).filter((m) => m !== undefined);
@@ -182,7 +211,7 @@ function Properties({ issue, hasParent, excludeIds }: { issue: Issue; hasParent:
     <>
       <Prop label={t("field.labels")}><LabelsPicker isDisabled={!canWrite} value={issue.labels} onChange={(labels) => patch({ labels })} /></Prop>
       <Prop label={t("field.deadline")}>
-        <DatePicker variant="ghost" isDisabled={!canWrite} placeholder={t("deadline.none")} value={issue.deadline} onChange={(d) => patch(d ? { deadline: d } : { clear_deadline: true })} />
+        <DatePicker variant="ghost" aria-label={t("field.deadline")} isDisabled={!canWrite} placeholder={t("deadline.none")} value={issue.deadline} onChange={(d) => patch(d ? { deadline: d } : { clear_deadline: true })} />
       </Prop>
       <Prop label={t("field.estimate")}>
         <EstimateField value={issue.estimate} disabled={!canWrite} onCommit={(v) => patch(v === null ? { clear_estimate: true } : { estimate: v })} />
@@ -227,7 +256,7 @@ function Properties({ issue, hasParent, excludeIds }: { issue: Issue; hasParent:
         {followers.length > 0 && (
           <div className="flex items-center justify-between"><dt>{t("issue.followers")}</dt>
             <dd className="flex items-center gap-1.5" title={followers.map((m) => m.display_name).join(", ")}>
-              <span className="flex -space-x-1">{followers.slice(0, 5).map((m) => <Avatar key={m.id} name={m.display_name} src={m.avatar_url} size={16} className="ring-2 ring-background" />)}</span>
+              <span className="flex -space-x-1">{followers.slice(0, 5).map((m) => <Avatar key={m.id} name={m.display_name} src={m.avatar_url} size={16} named className="ring-2 ring-background" />)}</span>
               {followers.length > 5 && <span className="tabular-nums">+{followers.length - 5}</span>}
             </dd>
           </div>
@@ -392,27 +421,54 @@ function TitleField({ issue, onSave }: { issue: Issue; onSave: (title: string) =
   );
 }
 
-function Description({ issue, onSave }: { issue: Issue; onSave: (d: string) => void }) {
+/** Descriptions that failed to save, by issue, so reopening the editor brings the text back. */
+const failedDrafts = new Map<Id, string>();
+
+function Description({ issue, onSave }: { issue: Issue; onSave: (d: string) => Promise<boolean> }) {
   const t = useI18n().t;
   const { canWrite } = useWorkspace();
   // null while not editing.
-  const [draft, setDraft] = useState<string | null>(null);
+  const [draft, setDraft] = useState<string | null>(failedDrafts.get(issue.id) ?? null);
+  const [saving, setSaving] = useState(false);
+  const [discarding, setDiscarding] = useState(false);
+  const busy = useRef(false);
   const box = useRef<HTMLDivElement>(null);
   const latest = useRef({ draft, saved: issue.description, onSave });
   latest.current = { draft, saved: issue.description, onSave };
   const dirty = draft !== null && draft !== issue.description;
 
-  const commit = () => {
+  // The editor closes only once the server has the text. A failed save leaves it open with the draft intact.
+  const commit = async () => {
     const { draft: d, saved, onSave: save } = latest.current;
-    if (d !== null && d !== saved) save(d);
+    if (d === null || busy.current) return;
+    if (d === saved) {
+      failedDrafts.delete(issue.id);
+      return setDraft(null);
+    }
+    busy.current = true;
+    setSaving(true);
+    const ok = await save(d);
+    busy.current = false;
+    setSaving(false);
+    if (ok) {
+      failedDrafts.delete(issue.id);
+      latest.current.draft = null;
+      setDraft(null);
+    } else {
+      failedDrafts.set(issue.id, d);
+    }
+  };
+  const cancel = () => (dirty ? setDiscarding(true) : setDraft(null));
+  const discard = () => {
+    failedDrafts.delete(issue.id);
     latest.current.draft = null;
     setDraft(null);
   };
-  // Leaving the page mid-edit keeps the draft instead of dropping it.
+  // Leaving the page mid-edit saves the draft, and keeps it for next time if that fails.
   useEffect(() => () => {
     const { draft: d, saved, onSave: save } = latest.current;
-    if (d !== null && d !== saved) save(d);
-  }, []);
+    if (d !== null && d !== saved && !busy.current) void save(d).then((ok) => ok ? failedDrafts.delete(issue.id) : failedDrafts.set(issue.id, d));
+  }, [issue.id]);
   useEffect(() => {
     if (!dirty) return;
     const warn = (e: BeforeUnloadEvent) => e.preventDefault();
@@ -429,16 +485,17 @@ function Description({ issue, onSave }: { issue: Issue; onSave: (d: string) => v
           // Save when focus leaves the editor for the page. Ignore window switches and the mention menu.
           // Safari doesn't focus clicked buttons, so a pointer still over the editor means a click inside it.
           const el = document.activeElement;
-          if (!box.current || !document.hasFocus() || box.current.contains(el) || box.current.matches(":hover") || el?.closest("[role=menu]")) return;
-          commit();
+          if (!box.current || !document.hasFocus() || box.current.contains(el) || box.current.matches(":hover") || el?.closest("[role=menu], [role=dialog], [role=alertdialog]")) return;
+          void commit();
         })}
-        onKeyDown={(e) => { if (e.key === "Escape") { e.stopPropagation(); setDraft(null); } }}
+        onKeyDown={(e) => { if (e.key === "Escape") { e.stopPropagation(); cancel(); } }}
       >
-        <MarkdownEditor label={t("field.description")} value={draft} onChange={setDraft} autoFocus minRows={8} onSubmit={commit} />
+        <MarkdownEditor label={t("field.description")} value={draft} onChange={setDraft} autoFocus minRows={8} onSubmit={() => void commit()} />
         <div className="flex justify-end gap-2">
-          <Button variant="ghost" onPress={() => setDraft(null)}>{t("action.cancel")}</Button>
-          <Button variant="primary" onPress={commit}>{t("action.save")}</Button>
+          <Button variant="ghost" onPress={cancel}>{t("action.cancel")}</Button>
+          <Button variant="primary" isDisabled={saving} onPress={() => void commit()}>{saving ? t("action.saving") : t("action.save")}</Button>
         </div>
+        <ConfirmDialog title={t("draft.discardTitle")} description={t("draft.discardSub")} confirmLabel={t("draft.discard")} isOpen={discarding} onOpenChange={setDiscarding} onConfirm={async () => discard()} />
       </div>
     );
   return (
@@ -470,7 +527,7 @@ function IssueRow({ issue, trailing }: { issue: Issue; trailing?: React.ReactNod
         <span className="w-14 shrink-0 tabular-nums text-muted-foreground">{issueKey(issue.number)}</span>
         <span className={cn("truncate", isDone(ws, issue) && "text-muted-foreground line-through")}>{issue.title}</span>
       </Link>
-      {assignee && <span title={assignee.display_name}><Avatar name={assignee.display_name} src={assignee.avatar_url} size={18} /></span>}
+      {assignee && <Avatar name={assignee.display_name} src={assignee.avatar_url} size={18} named />}
       {trailing}
     </li>
   );
@@ -480,13 +537,15 @@ function Subtasks({ issue, subs, adding, setAdding }: { issue: Issue; subs: Issu
   const { t } = useI18n();
   const { ws, run, canWrite } = useWorkspace();
   const [title, setTitle] = useState("");
+  const { pending, guard } = usePending();
   const done = subs.filter((s) => isDone(ws, s)).length;
-  const submit = async () => {
+  // The title is cleared only after the issue exists. If the request fails it stays for another try.
+  const submit = () => guard(async () => {
     if (!title.trim()) return setAdding(false);
     const first = [...(ws.teams.find((x) => x.id === issue.team_id)?.stages ?? [])].sort((a, b) => a.position - b.position)[0];
-    await run({ type: "create_issue", input: { title: title.trim(), team_id: issue.team_id, stage_id: first?.id, parent_id: issue.id, project_id: issue.project_id, sprint_id: issue.sprint_id } }).catch(() => {});
+    await run({ type: "create_issue", input: { title: title.trim(), team_id: issue.team_id, stage_id: first?.id, parent_id: issue.id, project_id: issue.project_id, sprint_id: issue.sprint_id } });
     setTitle("");
-  };
+  }).catch(() => {});
   return (
     <Section title={t("issue.subtasks")} action={subs.length > 0 && <span className="text-xs tabular-nums text-muted-foreground">{done}/{subs.length}</span>}>
       {subs.length > 0 && (
@@ -508,7 +567,7 @@ function Subtasks({ issue, subs, adding, setAdding }: { issue: Issue; subs: Issu
                   placeholder={t("issue.subtaskPlaceholder")}
                   className="h-7 border-0 shadow-none focus:ring-0"
                 />
-                <Button type="submit" size="sm" variant="subtle">{t("action.add")}</Button>
+                <Button type="submit" size="sm" variant="subtle" isDisabled={pending}>{t("action.add")}</Button>
               </Form>
             ) : (
               <button type="button" onClick={() => setAdding(true)} className="flex h-9 w-full items-center gap-2 px-3 text-[13px] text-muted-foreground hover:bg-muted/60 hover:text-foreground"><Plus className="size-3.5" />{t("issue.addSubtask")}</button>
@@ -610,20 +669,6 @@ function Attachments({ issue, uploader }: { issue: Issue; uploader: Uploader }) 
         ))}
       </ul>
     </Section>
-  );
-}
-
-function ConfirmDelete({ title, isOpen, onOpenChange, onConfirm }: { title: string; isOpen: boolean; onOpenChange: (open: boolean) => void; onConfirm: () => Promise<unknown> }) {
-  const t = useI18n().t;
-  return (
-    <Dialog title={title} description={t("action.cannotUndo")} size="sm" isOpen={isOpen} onOpenChange={onOpenChange}>
-      {(close) => (
-        <div className="flex justify-end gap-2">
-          <Button variant="ghost" onPress={close}>{t("action.cancel")}</Button>
-          <Button variant="destructive" onPress={() => void onConfirm().then(close, () => {})}>{t("action.delete")}</Button>
-        </div>
-      )}
-    </Dialog>
   );
 }
 
@@ -730,8 +775,10 @@ function CommentItem({ comment: c }: { comment: Comment }) {
   const { ws, me, members, member, run, canAdmin } = useWorkspace();
   const [editBody, setEditBody] = useState<string | null>(null);
   const [confirm, setConfirm] = useState(false);
+  const [discarding, setDiscarding] = useState(false);
   const m = member(c.author);
   const mine = c.author === me;
+  const cancelEdit = () => (editBody !== null && editBody !== c.body ? setDiscarding(true) : setEditBody(null));
   const save = () => {
     if (!editBody?.trim()) return;
     run({ type: "edit_comment", id: c.id, body: editBody.trim(), mentions: mentionsIn(editBody, members) }).then(() => setEditBody(null)).catch(() => {});
@@ -752,10 +799,11 @@ function CommentItem({ comment: c }: { comment: Comment }) {
       </div>
       <div className="px-3 pb-3">
         {editBody !== null ? (
-          <div className="space-y-2" onKeyDown={(e) => { if (e.key === "Escape") { e.stopPropagation(); setEditBody(null); } }}>
+          <div className="space-y-2" onKeyDown={(e) => { if (e.key === "Escape") { e.stopPropagation(); cancelEdit(); } }}>
             <MarkdownEditor label={t("comment.edit")} value={editBody} onChange={setEditBody} autoFocus minRows={3} onSubmit={save} />
+            <ConfirmDialog title={t("draft.discardTitle")} description={t("draft.discardSub")} confirmLabel={t("draft.discard")} isOpen={discarding} onOpenChange={setDiscarding} onConfirm={async () => setEditBody(null)} />
             <div className="flex justify-end gap-2">
-              <Button variant="ghost" onPress={() => setEditBody(null)}>{t("action.cancel")}</Button>
+              <Button variant="ghost" onPress={cancelEdit}>{t("action.cancel")}</Button>
               <Button variant="primary" isDisabled={!editBody.trim()} onPress={save}>{t("action.save")}</Button>
             </div>
           </div>
@@ -766,7 +814,7 @@ function CommentItem({ comment: c }: { comment: Comment }) {
           <ul className="mt-2 grid gap-1.5 sm:grid-cols-2">{c.attachments.map((a) => <AttachmentChip key={a.id} wsId={ws.id} a={a} />)}</ul>
         )}
       </div>
-      <ConfirmDelete title={t("comment.deleteTitle")} isOpen={confirm} onOpenChange={setConfirm} onConfirm={() => run({ type: "delete_comment", id: c.id })} />
+      <ConfirmDialog title={t("comment.deleteTitle")} isOpen={confirm} onOpenChange={setConfirm} onConfirm={() => run({ type: "delete_comment", id: c.id }, { quiet: true })} />
     </li>
   );
 }
@@ -777,9 +825,18 @@ function Composer({ issue, hasItems }: { issue: Issue; hasItems: boolean }) {
   const toast = useToast();
   const [body, setBody] = useState("");
   const [files, setFiles] = useState<File[]>([]);
-  const [busy, setBusy] = useState(false);
+  // Set when the comment was posted but some files weren't, so a retry attaches them to that comment.
+  const [retry, setRetry] = useState<{ commentId: Id; files: File[] } | null>(null);
+  const { pending: busy, error, guard } = usePending();
   const box = useRef<HTMLDivElement>(null);
   if (!canWrite) return null;
+
+  const uploadAll = async (commentId: Id, list: File[]) => {
+    const failed: File[] = [];
+    for (const f of list) await upload(issue.id, f, commentId).catch(() => failed.push(f));
+    setRetry(failed.length ? { commentId, files: failed } : null);
+    return failed;
+  };
 
   const addFiles = (list: FileList | null) => {
     if (!list) return;
@@ -790,18 +847,21 @@ function Composer({ issue, hasItems }: { issue: Issue; hasItems: boolean }) {
     });
     setFiles((l) => [...l, ...ok]);
   };
-  const post = async () => {
-    if (!body.trim() || busy) return;
-    setBusy(true);
-    try {
-      const id = await run({ type: "add_comment", issue_id: issue.id, body: body.trim(), mentions: mentionsIn(body, members), attachments: [] });
-      if (id) for (const f of files) await upload(issue.id, f, id).catch(() => {});
-      setBody("");
-      setFiles([]);
-      requestAnimationFrame(() => box.current?.scrollIntoView({ block: "nearest", behavior: "smooth" }));
-    } catch { /* toast shown */ }
-    setBusy(false);
-  };
+  const post = () => guard(async () => {
+    if (!body.trim()) return;
+    const id = await run({ type: "add_comment", issue_id: issue.id, body: body.trim(), mentions: mentionsIn(body, members), attachments: [] }, { quiet: true });
+    // The comment exists now. Clear the text so it can't be posted twice, and keep any file that failed.
+    setBody("");
+    setFiles([]);
+    if (id && files.length) {
+      const failed = await uploadAll(id, files);
+      if (failed.length) toast.error(t("attachments.someFailed", { n: failed.length, total: files.length }));
+    }
+    requestAnimationFrame(() => box.current?.scrollIntoView({ block: "nearest", behavior: "smooth" }));
+  });
+  const retryUpload = () => guard(async () => {
+    if (retry) await uploadAll(retry.commentId, retry.files);
+  });
 
   return (
     <div ref={box} className={cn("space-y-2", hasItems && "mt-6")}>
@@ -815,6 +875,14 @@ function Composer({ issue, hasItems }: { issue: Issue; hasItems: boolean }) {
             </li>
           ))}
         </ul>
+      )}
+      {error && <p role="alert" className="text-xs text-destructive">{error}</p>}
+      {retry && (
+        <div role="alert" className="flex flex-wrap items-center gap-2 rounded-md border border-destructive/40 px-3 py-2 text-xs">
+          <span className="flex-1">{t("attachments.retryNote", { n: retry.files.length })} {retry.files.map((f) => f.name).join(", ")}</span>
+          <Button size="sm" variant="secondary" isDisabled={busy} onPress={retryUpload}>{t("attachments.retry")}</Button>
+          <Button size="sm" variant="ghost" onPress={() => setRetry(null)}>{t("action.dismiss")}</Button>
+        </div>
       )}
       <div className="flex items-center justify-between">
         <FileTrigger allowsMultiple onSelect={addFiles}>

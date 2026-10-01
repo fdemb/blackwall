@@ -173,4 +173,29 @@ export const pl: Record<keyof typeof en, string> = {
   "action.confirmDelete": "Usuń",
 
   "empty.issuesViewerSub": "Zadania utworzone przez zespół pojawią się tutaj.",
+
+  "issue.moreProperties": "Więcej właściwości",
+  "issue.fewerProperties": "Mniej właściwości",
+  "issue.creating": "Tworzenie…",
+  "attachments.partial": "Zadanie utworzono, ale nie przesłano plików: {n} z {total} ({names}). Dołącz je ponownie w zadaniu.",
+  "attachments.someFailed": "Nie przesłano plików: {n} z {total}. Zostały na liście, aby spróbować ponownie.",
+
+  "draft.discardTitle": "Odrzucić zmiany?",
+  "draft.discardSub": "To, co napisano, nie zostanie zapisane.",
+  "draft.discard": "Odrzuć",
+  "draft.keep": "Wróć do edycji",
+  "issue.restore": "Przywróć zadanie",
+  "issue.restored": "Zadanie przywrócone",
+  "issue.titleHeading": "Zadanie {key}: {title}",
+
+  "attachments.retry": "Ponów przesyłanie",
+  "attachments.retryNote": "Komentarz opublikowano, ale nie przesłano plików: {n}.",
+
+  "project.search": "Szukaj projektów…",
+  "project.sortName": "Nazwa",
+  "project.sortProgress": "Postęp",
+  "project.sortRecent": "Ostatnia aktywność",
+  "project.noMatch": "Brak pasujących projektów",
+  "milestone.edit": "Edytuj kamień milowy",
+  "action.clearSearch": "Wyczyść wyszukiwanie",
 };

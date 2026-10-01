@@ -1,14 +1,16 @@
 import { useEffect, useState } from "react";
 import { FileTrigger, Form } from "react-aria-components";
 import { useNavigate } from "react-router";
-import { Paperclip, X } from "lucide-react";
-import { Dialog } from "~/components/ui/dialog";
+import { ChevronDown, Paperclip, X } from "lucide-react";
+import { Dialog, useDialogDirty } from "~/components/ui/dialog";
 import { Button } from "~/components/ui/button";
 import { Input, Label } from "~/components/ui/field";
 import { DatePicker } from "~/components/ui/date-picker";
 import { Select } from "~/components/ui/select";
 import { useToast } from "~/components/ui/toast";
-import { bytes } from "~/lib/format";
+import { bytes, MAX_UPLOAD } from "~/lib/format";
+import { usePending } from "~/lib/use-pending";
+import { cn } from "~/lib/utils";
 import { useT } from "~/lib/i18n";
 import { useWorkspace } from "~/lib/workspace";
 import type { Id, IssueInput, Priority } from "~/lib/types";
@@ -48,7 +50,9 @@ function CreateIssueForm() {
   const [estimate, setEstimate] = useState("");
   const [deadline, setDeadline] = useState<string | null>(null);
   const [files, setFiles] = useState<File[]>([]);
-  const [busy, setBusy] = useState(false);
+  const { pending, error, guard } = usePending();
+  const [more, setMore] = useState(Boolean(d.project_id || d.sprint_id || d.labels?.length));
+  useDialogDirty(title.trim() !== "" || description !== "" || files.length > 0);
 
   useEffect(() => {
     if (!team) return;
@@ -68,22 +72,30 @@ function CreateIssueForm() {
   const sprints = ws.sprints.filter((s) => s.team_id === teamId && (s.state === "planned" || s.state === "active"));
   const projects = ws.projects.filter((p) => !teamId || p.team_ids.length === 0 || p.team_ids.includes(teamId));
 
-  const submit = async () => {
+  // Repeated Ctrl+Enter presses hit the guard, so one submission can't create two issues.
+  const submit = () => guard(async () => {
     if (!title.trim() || !teamId) return;
-    setBusy(true);
     const input: IssueInput = {
       title: title.trim(), description, team_id: teamId, stage_id: stageId, assignee, priority, labels,
       estimate: estimate ? Number(estimate) : null, deadline, project_id: projectId, sprint_id: sprintId, parent_id: parentId,
     };
-    try {
-      const id = await run({ type: "create_issue", input });
-      for (const file of files) if (id) await upload(id, file).catch(() => {});
-      toast.show(t("issue.created"));
-      create.hide();
-      if (id) nav(`/${ws.id}/issue/${id}`);
-    } catch {
-      setBusy(false);
-    }
+    const id = await run({ type: "create_issue", input }, { quiet: true });
+    // The issue exists from here on, so a failed upload must not reopen the form and invite a duplicate.
+    const failed: File[] = [];
+    if (id) for (const file of files) await upload(id, file).catch(() => failed.push(file));
+    create.hide();
+    toast.show(t("issue.created"));
+    if (failed.length) toast.error(t("attachments.partial", { n: failed.length, total: files.length, names: failed.map((f) => f.name).join(", ") }));
+    if (id) nav(`/${ws.id}/issue/${id}`);
+  });
+  const addFiles = (list: FileList | null) => {
+    if (!list) return;
+    const ok = Array.from(list).filter((f) => {
+      if (f.size <= MAX_UPLOAD) return true;
+      toast.error(t("attachments.tooLarge", { name: f.name }));
+      return false;
+    });
+    setFiles((l) => [...l, ...ok]);
   };
 
   return (
@@ -105,25 +117,36 @@ function CreateIssueForm() {
         {teamId && <StagePicker label={t("field.stage")} teamId={teamId} value={stageId} onChange={setStageId} />}
         <PriorityPicker label={t("field.priority")} value={priority} onChange={setPriority} />
         <AssigneePicker label={t("field.assignee")} teamId={teamId} value={assignee} onChange={setAssignee} />
-        <NullableSelect label={t("field.project")} noneLabel={t("project.none")} value={projectId} onChange={setProjectId} options={projects.map((p) => ({ id: p.id, label: p.name }))} />
-        <NullableSelect label={t("field.sprint")} noneLabel={t("sprint.none")} value={sprintId} onChange={setSprintId} options={sprints.map((s) => ({ id: s.id, label: s.name }))} />
-        <DatePicker label={t("field.deadline")} value={deadline} onChange={setDeadline} />
-        <div>
-          <Label>{t("field.estimate")}</Label>
-          <Input aria-label={t("field.estimate")} type="number" min={0} max={1000} inputMode="numeric" placeholder="0" value={estimate} onChange={(e) => setEstimate(e.target.value)} />
-        </div>
-        <div className="col-span-2 sm:col-span-1">
-          <Label>{t("field.labels")}</Label>
-          <LabelsPicker variant="field" value={labels} onChange={setLabels} />
-        </div>
       </div>
-      <div className="mt-1 flex items-center gap-2">
-        <FileTrigger allowsMultiple onSelect={(list) => list && setFiles((l) => [...l, ...Array.from(list)])}>
+      <div>
+        <Button variant="ghost" size="sm" className="-ml-2" aria-expanded={more} onPress={() => setMore(!more)}>
+          <ChevronDown className={cn("transition-transform", !more && "-rotate-90")} />
+          {more ? t("issue.fewerProperties") : t("issue.moreProperties")}
+        </Button>
+        {more && (
+          <div className="mt-2 grid grid-cols-2 gap-3 sm:grid-cols-3">
+            <NullableSelect label={t("field.project")} noneLabel={t("project.none")} value={projectId} onChange={setProjectId} options={projects.map((p) => ({ id: p.id, label: p.name }))} />
+            <NullableSelect label={t("field.sprint")} noneLabel={t("sprint.none")} value={sprintId} onChange={setSprintId} options={sprints.map((s) => ({ id: s.id, label: s.name }))} />
+            <DatePicker label={t("field.deadline")} value={deadline} onChange={setDeadline} />
+            <div>
+              <Label>{t("field.estimate")}</Label>
+              <Input aria-label={t("field.estimate")} type="number" min={0} max={1000} inputMode="numeric" placeholder="0" value={estimate} onChange={(e) => setEstimate(e.target.value)} />
+            </div>
+            <div className="col-span-2 sm:col-span-1">
+              <Label>{t("field.labels")}</Label>
+              <LabelsPicker variant="field" value={labels} onChange={setLabels} />
+            </div>
+          </div>
+        )}
+      </div>
+      {error && <p role="alert" className="text-xs text-destructive">{error}</p>}
+      <div className="mt-1 flex flex-wrap items-center gap-2">
+        <FileTrigger allowsMultiple onSelect={addFiles}>
           <Button variant="ghost"><Paperclip />{t("attachments.add")}</Button>
         </FileTrigger>
         <div className="ml-auto flex items-center gap-2">
           <Button variant="ghost" onPress={create.hide}>{t("action.cancel")}</Button>
-          <Button type="submit" variant="primary" isDisabled={!title.trim() || busy}>{t("issue.create")}</Button>
+          <Button type="submit" variant="primary" isDisabled={!title.trim() || pending}>{pending ? t("issue.creating") : t("issue.create")}</Button>
         </div>
       </div>
     </Form>

@@ -2,32 +2,66 @@ import { useState } from "react";
 import { Form } from "react-aria-components";
 import { Link } from "react-router";
 import { FolderKanban, Plus } from "lucide-react";
+import { DialogTrigger } from "react-aria-components";
 import { Button } from "~/components/ui/button";
-import { Dialog } from "~/components/ui/dialog";
-import { TextField } from "~/components/ui/field";
+import { Dialog, useDialogDirty } from "~/components/ui/dialog";
+import { SearchField, TextField } from "~/components/ui/field";
+import { Menu, MenuItem } from "~/components/ui/menu";
+import { Popover } from "~/components/ui/popover";
 import { Checkbox } from "~/components/ui/toggles";
 import { EmptyState, Page, PageHeader, Scroll } from "~/components/app/page";
 import { ProgressBar } from "~/components/app/progress";
 import { isDone } from "~/lib/filters";
 import { useT } from "~/lib/i18n";
+import { usePending } from "~/lib/use-pending";
 import { useWorkspace } from "~/lib/workspace";
 import type { Id, Project } from "~/lib/types";
+
+type ProjectSort = "name" | "progress" | "recent";
 
 export default function Projects() {
   const t = useT();
   const { ws, canWrite } = useWorkspace();
   const [open, setOpen] = useState(false);
+  const [q, setQ] = useState("");
+  const [sort, setSort] = useState<ProjectSort>("name");
+  const rows = ws.projects.map((p) => {
+    const issues = ws.issues.filter((i) => i.project_id === p.id && !i.deleted_at);
+    const done = issues.filter((i) => isDone(ws, i)).length;
+    const touched = Math.max(0, ...issues.map((i) => +new Date(i.updated_at)));
+    return { p, issues, done, ratio: issues.length ? done / issues.length : 0, touched };
+  });
+  const needle = q.trim().toLowerCase();
+  const list = rows
+    .filter(({ p }) => !needle || `${p.name} ${p.description}`.toLowerCase().includes(needle))
+    .sort((a, b) => (sort === "progress" ? b.ratio - a.ratio : sort === "recent" ? b.touched - a.touched : 0) || a.p.name.localeCompare(b.p.name));
   return (
     <Page>
-      <PageHeader title={t("nav.projects")} icon={<FolderKanban className="size-4 text-muted-foreground" />} actions={canWrite && <Button variant="primary" size="sm" onPress={() => setOpen(true)}><Plus />{t("project.new")}</Button>} />
+      <PageHeader title={t("nav.projects")} icon={<FolderKanban className="size-4 text-muted-foreground" />} actions={canWrite && <Button variant="primary" size="sm" onPress={() => setOpen(true)}><Plus />{t("project.new")}</Button>}>
+        {ws.projects.length > 1 && (
+          <div className="flex flex-wrap items-center gap-2 px-4 pb-2">
+            <SearchField aria-label={t("action.search")} placeholder={t("project.search")} value={q} onChange={setQ} className="w-full sm:w-56" />
+            <DialogTrigger>
+              <Button variant="ghost" size="sm">{t("sort.label")}: {t(sort === "name" ? "project.sortName" : sort === "progress" ? "project.sortProgress" : "project.sortRecent")}</Button>
+              <Popover placement="bottom start">
+                <Menu selectionMode="single" selectedKeys={[sort]} onAction={(k) => setSort(k as ProjectSort)} aria-label={t("sort.label")}>
+                  <MenuItem id="name">{t("project.sortName")}</MenuItem>
+                  <MenuItem id="progress">{t("project.sortProgress")}</MenuItem>
+                  <MenuItem id="recent">{t("project.sortRecent")}</MenuItem>
+                </Menu>
+              </Popover>
+            </DialogTrigger>
+          </div>
+        )}
+      </PageHeader>
       <Scroll>
         {ws.projects.length === 0 ? (
           <EmptyState icon={<FolderKanban />} title={t("project.emptyTitle")} description={t("project.emptySub")} action={canWrite && <Button variant="primary" onPress={() => setOpen(true)}>{t("project.new")}</Button>} />
+        ) : list.length === 0 ? (
+          <EmptyState icon={<FolderKanban />} title={t("project.noMatch")} action={<Button onPress={() => setQ("")}>{t("action.clearSearch")}</Button>} />
         ) : (
           <ul className="grid gap-3 p-4 sm:grid-cols-2 xl:grid-cols-3">
-            {ws.projects.map((p) => {
-              const issues = ws.issues.filter((i) => i.project_id === p.id && !i.deleted_at);
-              const done = issues.filter((i) => isDone(ws, i)).length;
+            {list.map(({ p, issues, done }) => {
               return (
                 <li key={p.id}>
                   <Link to={`/${ws.id}/projects/${p.id}`} className="group block rounded-xl border border-border bg-card p-4 shadow-xs outline-none transition hover:border-primary/40 hover:shadow-md focus-visible:ring-2 focus-visible:ring-ring/60">
@@ -56,11 +90,16 @@ export function ProjectForm({ project, close }: { project?: Project; close: () =
   const [name, setName] = useState(project?.name ?? "");
   const [description, setDescription] = useState(project?.description ?? "");
   const [teams, setTeams] = useState<Id[]>(project?.team_ids ?? []);
+  const { pending, error, guard } = usePending();
+  useDialogDirty(name !== (project?.name ?? "") || description !== (project?.description ?? "") || teams.join() !== (project?.team_ids ?? []).join());
   return (
-    <Form className="flex flex-col gap-4" onSubmit={async (e) => {
+    <Form className="flex flex-col gap-4" onSubmit={(e) => {
       e.preventDefault();
       const body = { name: name.trim(), description: description.trim(), team_ids: teams };
-      await (project ? run({ type: "update_project", id: project.id, ...body }) : run({ type: "create_project", ...body })).then(close).catch(() => {});
+      void guard(async () => {
+        await (project ? run({ type: "update_project", id: project.id, ...body }, { quiet: true }) : run({ type: "create_project", ...body }, { quiet: true }));
+        close();
+      });
     }}>
       <TextField label={t("field.name")} value={name} onChange={setName} autoFocus isRequired />
       <TextField label={t("field.description")} value={description} onChange={setDescription} multiline rows={3} />
@@ -73,9 +112,10 @@ export function ProjectForm({ project, close }: { project?: Project; close: () =
           {ws.teams.length === 0 && <p className="text-xs text-muted-foreground">{t("project.noTeams")}</p>}
         </div>
       </fieldset>
+      {error && <p role="alert" className="text-xs text-destructive">{error}</p>}
       <div className="flex justify-end gap-2">
         <Button variant="ghost" onPress={close}>{t("action.cancel")}</Button>
-        <Button type="submit" variant="primary" isDisabled={!name.trim()}>{t("action.save")}</Button>
+        <Button type="submit" variant="primary" isDisabled={!name.trim() || pending}>{pending ? t("action.saving") : t("action.save")}</Button>
       </div>
     </Form>
   );

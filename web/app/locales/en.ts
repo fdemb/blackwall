@@ -171,4 +171,29 @@ export const en = {
   "action.confirmDelete": "Delete",
 
   "empty.issuesViewerSub": "Issues your team creates will show up here.",
+
+  "issue.moreProperties": "More properties",
+  "issue.fewerProperties": "Fewer properties",
+  "issue.creating": "Creating…",
+  "attachments.partial": "The issue was created, but {n} of {total} files didn't upload: {names}. Attach them again from the issue.",
+  "attachments.someFailed": "{n} of {total} files didn't upload. They're still listed so you can try again.",
+
+  "draft.discardTitle": "Discard your changes?",
+  "draft.discardSub": "What you wrote won't be saved.",
+  "draft.discard": "Discard",
+  "draft.keep": "Keep editing",
+  "issue.restore": "Restore issue",
+  "issue.restored": "Issue restored",
+  "issue.titleHeading": "Issue {key}: {title}",
+
+  "attachments.retry": "Retry upload",
+  "attachments.retryNote": "Your comment was posted, but {n} files didn't upload.",
+
+  "project.search": "Find projects…",
+  "project.sortName": "Name",
+  "project.sortProgress": "Progress",
+  "project.sortRecent": "Recent activity",
+  "project.noMatch": "No projects match",
+  "milestone.edit": "Edit milestone",
+  "action.clearSearch": "Clear search",
 } as const;
