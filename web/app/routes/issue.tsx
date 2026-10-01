@@ -693,9 +693,12 @@ function Timeline({ issue }: { issue: Issue }) {
 }
 
 function TimelineDot({ className, children }: { className?: string; children: React.ReactNode }) {
+  // The outer box keeps the row height and the dot centered on the line; only the dot itself is small.
   return (
-    <span className={cn("grid size-7 shrink-0 place-items-center rounded-full border border-border bg-background text-muted-foreground [&_svg]:size-3.5", className)}>
-      {children}
+    <span className="grid size-7 shrink-0 place-items-center">
+      <span className={cn("grid size-5 place-items-center rounded-full border border-border bg-background text-muted-foreground [&_svg]:size-3", className)}>
+        {children}
+      </span>
     </span>
   );
 }
