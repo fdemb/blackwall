@@ -17,6 +17,7 @@ import {
 } from "react-aria-components";
 import { CalendarDays, ChevronLeft, ChevronRight, X } from "lucide-react";
 import { parseDate, type CalendarDate } from "@internationalized/date";
+import { useT } from "~/lib/i18n";
 import { cn } from "~/lib/utils";
 import { Button } from "./button";
 import { Label } from "./field";
@@ -57,6 +58,7 @@ export function DatePicker({
   className,
   ...props
 }: Props) {
+  const t = useT();
   return (
     <RACDatePicker
       {...props}
@@ -79,7 +81,7 @@ export function DatePicker({
             {(segment) => (
               <DateSegment
                 segment={segment}
-                className="rounded px-0.5 tabular-nums outline-none focus:bg-primary focus:text-primary-foreground data-[placeholder]:text-muted-foreground"
+                className="rounded px-0.5 tabular-nums outline-none focus:bg-primary-solid focus:text-primary-foreground data-[placeholder]:text-muted-foreground"
               />
             )}
           </DateInput>
@@ -91,13 +93,18 @@ export function DatePicker({
             variant="ghost"
             size="icon"
             className="size-6"
-            aria-label="Clear"
+            aria-label={t("action.clearField")}
             onPress={() => onChange(null)}
           >
             <X className="size-3" />
           </Button>
         )}
-        <Button variant="ghost" size="icon" className="size-6">
+        <Button
+          variant="ghost"
+          size="icon"
+          className="size-6"
+          aria-label={t("action.openCalendar")}
+        >
           <CalendarDays className="size-3.5" />
         </Button>
       </Group>
@@ -125,7 +132,7 @@ export function DatePicker({
                 {(date) => (
                   <CalendarCell
                     date={date}
-                    className="flex size-8 cursor-default items-center justify-center rounded-md text-[13px] outline-none hover:bg-muted selected:bg-primary selected:text-primary-foreground focus-visible:ring-2 focus-visible:ring-ring/60 outside-month:text-muted-foreground/40 disabled:opacity-30 unavailable:text-destructive"
+                    className="flex size-8 cursor-default items-center justify-center rounded-md text-[13px] outline-none hover:bg-muted selected:bg-primary-solid selected:text-primary-foreground focus-visible:ring-2 focus-visible:ring-ring/60 outside-month:text-muted-foreground/40 disabled:opacity-30 unavailable:text-destructive"
                   />
                 )}
               </CalendarGridBody>

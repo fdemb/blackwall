@@ -1,14 +1,15 @@
 import { useState } from "react";
 import { Form } from "react-aria-components";
-import { useNavigate, useOutletContext, useRevalidator } from "react-router";
+import { useNavigate, useOutletContext, useRevalidator, useSearchParams } from "react-router";
 import { Button } from "~/components/ui/button";
-import { TextField } from "~/components/ui/field";
+import { FormError, TextField } from "~/components/ui/field";
 import { Logo } from "~/components/app/logo";
 import { LanguageToggle } from "~/components/app/preferences";
 import { auth, workspaces } from "~/lib/api";
 import { LAST_WS } from "~/lib/auth-guard";
 import { useT } from "~/lib/i18n";
 import { useSession } from "~/lib/session";
+import { useDocumentTitle } from "~/lib/title";
 import type { WorkspaceSummary } from "~/lib/types";
 
 export default function Welcome() {
@@ -17,9 +18,14 @@ export default function Welcome() {
   const { profile } = useSession();
   const { revalidate } = useRevalidator();
   const { workspaces: list } = useOutletContext<{ workspaces: WorkspaceSummary[] }>();
+  const [params] = useSearchParams();
   const [error, setError] = useState("");
-  const [mode, setMode] = useState<"create" | "join">("create");
+  // An invitation link can carry ?workspace= and ?token=, which opens the join form with both filled in.
+  const [mode, setMode] = useState<"create" | "join">(
+    params.get("workspace") || params.get("token") ? "join" : "create",
+  );
   const [busy, setBusy] = useState(false);
+  useDocumentTitle(t("workspace.newOrJoin"));
   return (
     <div className="relative grid min-h-dvh place-items-center overflow-hidden px-4 py-10">
       <div
@@ -81,16 +87,34 @@ export default function Welcome() {
               placeholder={t("workspace.namePlaceholder")}
               autoFocus
               isRequired
-              error={error}
             />
           ) : (
             <>
-              <TextField name="id" label={t("workspace.id")} autoFocus isRequired />
-              <TextField name="token" label={t("invite.token")} isRequired error={error} />
+              <TextField
+                name="id"
+                label={t("workspace.id")}
+                description={t("workspace.idHint")}
+                defaultValue={params.get("workspace") ?? ""}
+                autoFocus
+                isRequired
+              />
+              <TextField
+                name="token"
+                label={t("invite.token")}
+                defaultValue={params.get("token") ?? ""}
+                isRequired
+              />
             </>
           )}
+          <FormError>{error}</FormError>
           <Button type="submit" variant="primary" size="lg" isDisabled={busy}>
-            {mode === "create" ? t("workspace.create") : t("invite.accept")}
+            {busy
+              ? mode === "create"
+                ? t("workspace.creating")
+                : t("workspace.joining")
+              : mode === "create"
+                ? t("workspace.create")
+                : t("invite.accept")}
           </Button>
         </Form>
         <Button

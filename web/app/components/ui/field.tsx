@@ -15,6 +15,7 @@ import {
   type SearchFieldProps,
 } from "react-aria-components";
 import { Search, X } from "lucide-react";
+import { useT } from "~/lib/i18n";
 import { cn } from "~/lib/utils";
 import { Button } from "./button";
 
@@ -46,11 +47,11 @@ export function FieldError({ className, ...props }: FieldErrorProps) {
     />
   );
 }
-export function Input({ className, ...props }: InputProps) {
+export function Input({ className, ...props }: InputProps & { ref?: React.Ref<HTMLInputElement> }) {
   return (
     <RACInput
       {...props}
-      className={composeRenderProps(className, (c) => cn(fieldBase, "h-8", c))}
+      className={composeRenderProps(className, (c) => cn(fieldBase, "h-8 pointer-coarse:h-10", c))}
     />
   );
 }
@@ -105,11 +106,22 @@ export function TextField({
   );
 }
 
+/** A failure from submitting the whole form, as opposed to one invalid field. */
+export function FormError({ children }: { children?: React.ReactNode }) {
+  if (!children) return null;
+  return (
+    <p role="alert" className="text-[13px] text-destructive">
+      {children}
+    </p>
+  );
+}
+
 export function SearchField({
   placeholder,
   className,
   ...props
 }: SearchFieldProps & { placeholder?: string }) {
+  const t = useT();
   return (
     <RACSearchField
       {...props}
@@ -118,13 +130,16 @@ export function SearchField({
       <Search className="pointer-events-none absolute left-2.5 size-3.5 text-muted-foreground" />
       <RACInput
         placeholder={placeholder}
-        className={cn(fieldBase, "h-8 pl-8 pr-7 [&::-webkit-search-cancel-button]:hidden")}
+        className={cn(
+          fieldBase,
+          "h-8 pl-8 pr-7 pointer-coarse:h-10 [&::-webkit-search-cancel-button]:hidden",
+        )}
       />
       <Button
         variant="ghost"
         size="icon"
         className="absolute right-0.5 size-6 group-empty:hidden [[data-empty]_&]:hidden"
-        aria-label="Clear"
+        aria-label={t("action.clearField")}
       >
         <X className="size-3" />
       </Button>

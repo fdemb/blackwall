@@ -4,17 +4,20 @@ import { MailPlus, RotateCw, UserMinus, X } from "lucide-react";
 import { Avatar } from "~/components/ui/avatar";
 import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
-import { Dialog } from "~/components/ui/dialog";
-import { TextField } from "~/components/ui/field";
+import { Dialog, useDialogDirty } from "~/components/ui/dialog";
+import { FormError, TextField } from "~/components/ui/field";
 import { Select } from "~/components/ui/select";
 import { useToast } from "~/components/ui/toast";
+import { ConfirmDialog } from "~/components/app/confirm";
 import { Card } from "~/components/app/page";
 import { fullDate } from "~/lib/format";
 import { useI18n } from "~/lib/i18n";
+import { usePending } from "~/lib/use-pending";
 import { useWorkspace } from "~/lib/workspace";
 import type { Id, Role } from "~/lib/types";
 
 const ROLES: Role[] = ["owner", "admin", "member", "viewer"];
+const rank = (r: Role) => ROLES.length - ROLES.indexOf(r);
 
 export default function Members() {
   const { t, lang } = useI18n();
@@ -22,6 +25,13 @@ export default function Members() {
   const toast = useToast();
   const [inviting, setInviting] = useState(false);
   const [removing, setRemoving] = useState<Id | null>(null);
+  const [demoting, setDemoting] = useState<Role | null>(null);
+  const { pending, guard } = usePending();
+  const changeRole = (userId: Id, next: Role, current: Role) => {
+    // Lowering your own role can't be undone by yourself, so ask first.
+    if (userId === me && rank(next) < rank(current)) return setDemoting(next);
+    void guard(() => run({ type: "set_role", user_id: userId, role: next }));
+  };
   const invitations = ws.invitations.filter((i) => i.state === "pending" || i.state === "expired");
   const owners = ws.members.filter((m) => m.role === "owner").length;
   const roleOptions = ROLES.filter((r) => r !== "owner" || role === "owner").map((r) => ({
@@ -34,7 +44,9 @@ export default function Members() {
         <div className="flex items-center border-b border-border px-4 py-3">
           <div>
             <h2 className="text-[14px] font-semibold">{t("settings.members")}</h2>
-            <p className="text-xs text-muted-foreground">{t("members.sub")}</p>
+            <p className="text-xs text-muted-foreground">
+              {t("members.sub")} {t("members.roleHelp")}
+            </p>
           </div>
           {canAdmin && (
             <Button
@@ -68,15 +80,12 @@ export default function Members() {
                 </div>
                 {canAdmin && !locked && (wm.role !== "owner" || role === "owner") ? (
                   <Select
-                    aria-label={t("field.role")}
+                    aria-label={t("members.roleFor", { name: m?.display_name ?? "" })}
                     className="w-32"
+                    isDisabled={pending}
                     selectedKey={wm.role}
                     options={roleOptions}
-                    onSelectionChange={(k) =>
-                      run({ type: "set_role", user_id: wm.user_id, role: k as Role }).catch(
-                        () => {},
-                      )
-                    }
+                    onSelectionChange={(k) => changeRole(wm.user_id, k as Role, wm.role)}
                   />
                 ) : (
                   <Badge>{t(`role.${wm.role}`)}</Badge>
@@ -85,7 +94,7 @@ export default function Members() {
                   <Button
                     variant="ghost"
                     size="icon"
-                    aria-label={t("members.remove")}
+                    aria-label={`${t("members.remove")}: ${m?.display_name ?? ""}`}
                     onPress={() => setRemoving(wm.user_id)}
                   >
                     <UserMinus />
@@ -109,23 +118,28 @@ export default function Members() {
           ) : (
             <ul className="divide-y divide-border">
               {invitations.map((i) => (
-                <li key={i.id} className="flex items-center gap-3 px-4 py-2.5 text-[13px]">
+                <li
+                  key={i.id}
+                  className="flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-2.5 text-[13px]"
+                >
                   <div className="min-w-0 flex-1">
                     <p className="truncate font-medium">{i.email}</p>
                     <p className="text-xs text-muted-foreground">
                       {t("invite.expires", { date: fullDate(i.expires_at, lang) })}
                     </p>
                   </div>
-                  <Badge tone={i.state === "expired" ? "warning" : "neutral"}>
-                    {t(`role.${i.role}`)}
-                  </Badge>
+                  {i.state === "expired" && <Badge tone="warning">{t("invite.expired")}</Badge>}
+                  <Badge>{t(`role.${i.role}`)}</Badge>
                   <Button
                     variant="ghost"
                     size="sm"
+                    isDisabled={pending}
                     onPress={() =>
-                      run({ type: "resend_invitation", id: i.id, token_hash: "" })
-                        .then(() => toast.show(t("invite.resent")))
-                        .catch(() => {})
+                      void guard(() =>
+                        run({ type: "resend_invitation", id: i.id, token_hash: "" }).then(() =>
+                          toast.show(t("invite.resent")),
+                        ),
+                      )
                     }
                   >
                     <RotateCw />
@@ -134,7 +148,8 @@ export default function Members() {
                   <Button
                     variant="ghost"
                     size="sm"
-                    onPress={() => run({ type: "cancel_invitation", id: i.id }).catch(() => {})}
+                    isDisabled={pending}
+                    onPress={() => void guard(() => run({ type: "cancel_invitation", id: i.id }))}
                   >
                     <X />
                     {t("invite.cancel")}
@@ -157,6 +172,14 @@ export default function Members() {
           <InviteForm close={close} roles={roleOptions.filter((r) => r.id !== "owner")} />
         )}
       </Dialog>
+      <ConfirmDialog
+        title={t("members.selfDemoteTitle")}
+        description={t("members.selfDemoteSub")}
+        confirmLabel={t("members.changeRole")}
+        isOpen={demoting !== null}
+        onOpenChange={(o) => !o && setDemoting(null)}
+        onConfirm={() => run({ type: "set_role", user_id: me, role: demoting! }, { quiet: true })}
+      />
       <Dialog
         title={t("members.remove")}
         description={t("members.removeSub", {
@@ -173,10 +196,9 @@ export default function Members() {
             </Button>
             <Button
               variant="destructive"
+              isDisabled={pending}
               onPress={() =>
-                run({ type: "remove_member", user_id: removing! })
-                  .then(close)
-                  .catch(() => {})
+                void guard(() => run({ type: "remove_member", user_id: removing! }).then(close))
               }
             >
               {t("members.remove")}
@@ -200,17 +222,18 @@ function InviteForm({
   const toast = useToast();
   const [email, setEmail] = useState("");
   const [role, setRole] = useState<Role>("member");
+  const { pending, error, guard } = usePending();
+  useDialogDirty(email !== "");
   return (
     <Form
       className="flex flex-col gap-4"
-      onSubmit={async (e) => {
+      onSubmit={(e) => {
         e.preventDefault();
-        await run({ type: "invite", email: email.trim(), role, token_hash: "" })
-          .then(() => {
-            toast.show(t("invite.sent", { email }));
-            close();
-          })
-          .catch(() => {});
+        void guard(async () => {
+          await run({ type: "invite", email: email.trim(), role, token_hash: "" }, { quiet: true });
+          toast.show(t("invite.sent", { email }));
+          close();
+        });
       }}
     >
       <TextField
@@ -227,12 +250,13 @@ function InviteForm({
         onSelectionChange={(k) => setRole(k as Role)}
         options={roles}
       />
+      <FormError>{error}</FormError>
       <div className="flex justify-end gap-2">
         <Button variant="ghost" onPress={close}>
           {t("action.cancel")}
         </Button>
-        <Button type="submit" variant="primary" isDisabled={!email.trim()}>
-          {t("invite.send")}
+        <Button type="submit" variant="primary" isDisabled={!email.trim() || pending}>
+          {pending ? t("invite.sending") : t("invite.send")}
         </Button>
       </div>
     </Form>

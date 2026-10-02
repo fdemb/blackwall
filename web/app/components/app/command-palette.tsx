@@ -15,6 +15,7 @@ import { useNavigate } from "react-router";
 import {
   Bell,
   BarChart3,
+  Keyboard,
   Search,
   Settings,
   Trash2,
@@ -30,6 +31,7 @@ import { Kbd } from "~/components/ui/tooltip";
 import { applyFilter } from "~/lib/filters";
 import { issueKey } from "~/lib/format";
 import { useT } from "~/lib/i18n";
+import { useShortcutsEnabled } from "~/lib/shortcuts";
 import { useWorkspace } from "~/lib/workspace";
 import { PriorityIcon, StageIcon } from "./icons";
 import { stageOf } from "~/lib/filters";
@@ -45,13 +47,16 @@ interface Entry {
 export function CommandPalette({
   open,
   onOpenChange,
+  onHelp,
 }: {
   open: boolean;
   onOpenChange: (o: boolean) => void;
+  onHelp: () => void;
 }) {
   const t = useT();
   const nav = useNavigate();
-  const { ws, members, create } = useWorkspace();
+  const { ws, members, create, canWrite } = useWorkspace();
+  const [shortcuts] = useShortcutsEnabled();
   const [q, setQ] = useState("");
   const go = (path: string) => () => {
     onOpenChange(false);
@@ -60,16 +65,21 @@ export function CommandPalette({
 
   const actions: Entry[] = useMemo(
     () => [
-      {
-        id: "a-new",
-        label: t("issue.new"),
-        icon: <Plus className="size-4" />,
-        hint: "C",
-        run: () => {
-          onOpenChange(false);
-          create.show();
-        },
-      },
+      // Viewers can't create issues, so the command isn't offered to them.
+      ...(canWrite
+        ? [
+            {
+              id: "a-new",
+              label: t("issue.new"),
+              icon: <Plus className="size-4" />,
+              hint: shortcuts ? "C" : undefined,
+              run: () => {
+                onOpenChange(false);
+                create.show();
+              },
+            },
+          ]
+        : []),
       {
         id: "a-inbox",
         label: t("nav.inbox"),
@@ -124,6 +134,15 @@ export function CommandPalette({
         icon: <Bell className="size-4" />,
         run: go("account"),
       },
+      {
+        id: "a-help",
+        label: t("help.shortcuts"),
+        icon: <Keyboard className="size-4" />,
+        run: () => {
+          onOpenChange(false);
+          onHelp();
+        },
+      },
       ...ws.teams.map((tm) => ({
         id: `t-${tm.id}`,
         label: `${tm.name} · ${t("team.board")}`,
@@ -132,7 +151,7 @@ export function CommandPalette({
       })),
       // eslint-disable-next-line react-hooks/exhaustive-deps
     ],
-    [t, ws.id, ws.teams],
+    [t, ws.id, ws.teams, canWrite, shortcuts],
   );
 
   const query = q.trim().toLowerCase();

@@ -5,26 +5,36 @@ import { CalendarDays, ChevronLeft, Flag, Pencil, Plus } from "lucide-react";
 import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
 import { DatePicker } from "~/components/ui/date-picker";
-import { Dialog } from "~/components/ui/dialog";
+import { Dialog, useDialogDirty } from "~/components/ui/dialog";
 import { TextField } from "~/components/ui/field";
+import { FilterBar } from "~/components/app/filter-bar";
 import { IssueList } from "~/components/app/issue-list";
+import { useQueueState } from "~/components/app/workbench";
 import { EmptyState, Page, PageHeader, Scroll } from "~/components/app/page";
 import { ProgressBar } from "~/components/app/progress";
 import { applyFilter, isDone } from "~/lib/filters";
 import { daysUntil, fullDate } from "~/lib/format";
 import { useI18n } from "~/lib/i18n";
+import { usePending } from "~/lib/use-pending";
 import { useWorkspace } from "~/lib/workspace";
 import { ProjectForm } from "./projects";
+import type { Milestone } from "~/lib/types";
 
 export default function ProjectPage() {
   const { t, lang } = useI18n();
   const { projectId, ws: wsId } = useParams();
   const { ws, canWrite, create } = useWorkspace();
   const [editing, setEditing] = useState(false);
-  const [addingMilestone, setAddingMilestone] = useState(false);
+  const [milestoneForm, setMilestoneForm] = useState<Milestone | "new" | null>(null);
+  const { filter, setFilter } = useQueueState();
   const project = ws.projects.find((p) => p.id === projectId);
   if (!project) return <Navigate to={`/${wsId}/projects`} replace />;
+  // Progress and milestones always count the whole project. Only the list below follows the filters.
   const issues = applyFilter(ws, { project_id: project.id });
+  const shown = applyFilter(ws, { ...filter, project_id: project.id });
+  const narrowed = Object.keys(filter).some(
+    (k) => k !== "sort" && filter[k as keyof typeof filter],
+  );
   const done = issues.filter((i) => isDone(ws, i)).length;
   const milestones = ws.milestones
     .filter((m) => m.project_id === project.id)
@@ -77,13 +87,31 @@ export default function ProjectPage() {
                 {project.description}
               </p>
             )}
+            {issues.length > 0 && (
+              <div className="-mx-4">
+                <FilterBar
+                  filter={filter}
+                  onChange={setFilter}
+                  hide={["project_id", "team_id", "sprint_id"]}
+                  saveable={false}
+                />
+              </div>
+            )}
             <div className="overflow-hidden rounded-xl border border-border">
               <IssueList
-                issues={issues}
+                issues={shown}
                 groupBy="stage"
                 showTeam
                 emptyState={
-                  <EmptyState title={t("empty.issues")} description={t("project.issuesEmpty")} />
+                  narrowed ? (
+                    <EmptyState
+                      title={t("empty.noMatch")}
+                      description={t("empty.noMatchSub")}
+                      action={<Button onPress={() => setFilter({})}>{t("filter.clear")}</Button>}
+                    />
+                  ) : (
+                    <EmptyState title={t("empty.issues")} description={t("project.issuesEmpty")} />
+                  )
                 }
               />
             </div>
@@ -121,7 +149,7 @@ export default function ProjectPage() {
                     variant="ghost"
                     size="sm"
                     className="ml-auto"
-                    onPress={() => setAddingMilestone(true)}
+                    onPress={() => setMilestoneForm("new")}
                   >
                     <Plus />
                     {t("milestone.new")}
@@ -139,9 +167,20 @@ export default function ProjectPage() {
                     return (
                       <li key={m.id} className="rounded-lg border border-border bg-card p-3">
                         <div className="flex items-center gap-2 text-[13px] font-medium">
-                          <Flag className="size-3.5 text-primary" />
-                          {m.name}
+                          <Flag className="size-3.5 shrink-0 text-primary" />
+                          <span className="min-w-0 flex-1 truncate">{m.name}</span>
                           {late && <Badge tone="danger">{t("deadline.overdue")}</Badge>}
+                          {canWrite && (
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="-my-1 -mr-1"
+                              aria-label={`${t("milestone.edit")}: ${m.name}`}
+                              onPress={() => setMilestoneForm(m)}
+                            >
+                              <Pencil />
+                            </Button>
+                          )}
                         </div>
                         {m.deadline && (
                           <p className="mt-0.5 flex items-center gap-1 text-xs text-muted-foreground">
@@ -171,40 +210,68 @@ export default function ProjectPage() {
         {(close) => <ProjectForm project={project} close={close} />}
       </Dialog>
       <Dialog
-        title={t("milestone.new")}
+        title={milestoneForm === "new" ? t("milestone.new") : t("milestone.edit")}
         size="sm"
-        isOpen={addingMilestone}
-        onOpenChange={setAddingMilestone}
+        isOpen={milestoneForm !== null}
+        onOpenChange={(o) => !o && setMilestoneForm(null)}
       >
-        {(close) => <MilestoneForm projectId={project.id} close={close} />}
+        {(close) => (
+          <MilestoneForm
+            projectId={project.id}
+            milestone={milestoneForm === "new" ? null : milestoneForm}
+            close={close}
+          />
+        )}
       </Dialog>
     </Page>
   );
 }
 
-function MilestoneForm({ projectId, close }: { projectId: string; close: () => void }) {
+function MilestoneForm({
+  projectId,
+  milestone,
+  close,
+}: {
+  projectId: string;
+  milestone: Milestone | null;
+  close: () => void;
+}) {
   const t = useI18n().t;
   const { run } = useWorkspace();
-  const [name, setName] = useState("");
-  const [deadline, setDeadline] = useState<string | null>(null);
+  const { pending, error, guard } = usePending();
+  const [name, setName] = useState(milestone?.name ?? "");
+  const [deadline, setDeadline] = useState<string | null>(milestone?.deadline ?? null);
+  useDialogDirty(name !== (milestone?.name ?? "") || deadline !== (milestone?.deadline ?? null));
   return (
     <Form
       className="flex flex-col gap-4"
-      onSubmit={async (e) => {
+      onSubmit={(e) => {
         e.preventDefault();
-        await run({ type: "create_milestone", project_id: projectId, name: name.trim(), deadline })
-          .then(close)
-          .catch(() => {});
+        void guard(async () => {
+          const body = { name: name.trim(), deadline };
+          await run(
+            milestone
+              ? { type: "update_milestone", id: milestone.id, ...body }
+              : { type: "create_milestone", project_id: projectId, ...body },
+            { quiet: true },
+          );
+          close();
+        });
       }}
     >
       <TextField label={t("field.name")} value={name} onChange={setName} autoFocus isRequired />
       <DatePicker label={t("field.deadline")} value={deadline} onChange={setDeadline} />
+      {error && (
+        <p role="alert" className="text-xs text-destructive">
+          {error}
+        </p>
+      )}
       <div className="flex justify-end gap-2">
         <Button variant="ghost" onPress={close}>
           {t("action.cancel")}
         </Button>
-        <Button type="submit" variant="primary" isDisabled={!name.trim()}>
-          {t("action.save")}
+        <Button type="submit" variant="primary" isDisabled={!name.trim() || pending}>
+          {pending ? t("action.saving") : t("action.save")}
         </Button>
       </div>
     </Form>

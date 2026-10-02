@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   GridList,
   GridListItem,
@@ -11,12 +11,14 @@ import { Button } from "~/components/ui/button";
 import { Checkbox } from "~/components/ui/toggles";
 import { Menu, MenuItem, MenuPopover, MenuTrigger, MenuSeparator } from "~/components/ui/menu";
 import { Avatar } from "~/components/ui/avatar";
+import { useToast } from "~/components/ui/toast";
+import { ConfirmDialog } from "./confirm";
 import { cn } from "~/lib/utils";
 import { issueKey, PRIORITIES } from "~/lib/format";
 import { stageOf } from "~/lib/filters";
 import { useT } from "~/lib/i18n";
 import { useWorkspace } from "~/lib/workspace";
-import type { Id, Issue, IssuePatch } from "~/lib/types";
+import type { Id, Issue, IssueGroup, IssuePatch } from "~/lib/types";
 import { PriorityIcon, StageIcon } from "./icons";
 import {
   AssigneeAvatar,
@@ -26,7 +28,7 @@ import {
   SubtaskProgress,
 } from "./issue-parts";
 
-export type GroupBy = "stage" | "priority" | "assignee" | "none";
+export type GroupBy = IssueGroup;
 
 interface Group {
   id: string;
@@ -99,6 +101,20 @@ export function IssueList({
   const { canWrite } = useWorkspace();
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const canSelect = selectable && canWrite;
+
+  // Selection follows what is on screen. Filtering an issue out, or collapsing its group, drops it
+  // from the selection, so a bulk action never touches issues the person can't see.
+  const visible = useMemo(
+    () =>
+      new Set(groups.filter((g) => !collapsed.has(g.id)).flatMap((g) => g.items.map((i) => i.id))),
+    [groups, collapsed],
+  );
+  useEffect(() => {
+    setSelected((prev) => {
+      const next = new Set([...prev].filter((id) => visible.has(id)));
+      return next.size === prev.size ? prev : next;
+    });
+  }, [visible]);
 
   const onGroupSelection = (group: Group, sel: Selection) => {
     setSelected((prev) => {
@@ -190,7 +206,7 @@ export function IssueRow({
         <Checkbox
           slot="selection"
           aria-label={t("bulk.select")}
-          className="w-4 opacity-0 group-hover:opacity-100 group-selected:opacity-100 group-focus-visible:opacity-100 [&:has([data-selected])]:opacity-100"
+          className="relative w-4 after:absolute after:-inset-3 after:content-[''] [@media(hover:hover)]:opacity-0 group-hover:opacity-100 group-selected:opacity-100 group-focus-visible:opacity-100 [&:has([data-selected])]:opacity-100"
         />
       )}
       <PriorityMenu
@@ -271,7 +287,9 @@ function PriorityMenu({
 
 function BulkBar({ selected, clear }: { selected: Set<Id>; clear: () => void }) {
   const t = useT();
+  const toast = useToast();
   const { ws, members, run } = useWorkspace();
+  const [confirm, setConfirm] = useState(false);
   if (selected.size === 0) return null;
   const ids = [...selected];
   const first = ws.issues.find((i) => i.id === ids[0]);
@@ -281,11 +299,22 @@ function BulkBar({ selected, clear }: { selected: Set<Id>; clear: () => void }) 
     run({ type: "bulk_issues", ids, action: { update: patch } })
       .then(clear)
       .catch(() => {});
+  const remove = async () => {
+    await run({ type: "bulk_issues", ids, action: "delete" }, { quiet: true });
+    clear();
+    toast.show(t("bulk.deleted", { n: ids.length }), {
+      label: t("action.undo"),
+      run: () =>
+        void run({ type: "bulk_issues", ids, action: "restore" })
+          .then(() => toast.show(t("bulk.restored", { n: ids.length })))
+          .catch(() => {}),
+    });
+  };
   return (
     <div
       role="toolbar"
       aria-label={t("bulk.toolbar")}
-      className="fixed bottom-6 left-1/2 z-40 flex -translate-x-1/2 animate-in items-center gap-1 rounded-xl border border-border bg-popover p-1.5 shadow-xl slide-in-from-bottom-4 fade-in-0"
+      className="fixed bottom-4 left-1/2 z-40 flex max-w-[calc(100vw-1.5rem)] -translate-x-1/2 animate-in flex-wrap items-center justify-center gap-1 rounded-xl border border-border bg-popover p-1.5 shadow-xl slide-in-from-bottom-4 fade-in-0 sm:bottom-6"
     >
       <span className="px-2.5 text-[13px] font-medium">
         {t("bulk.selected", { n: ids.length })}
@@ -351,11 +380,7 @@ function BulkBar({ selected, clear }: { selected: Set<Id>; clear: () => void }) 
         variant="ghost"
         size="sm"
         className="text-destructive hover:bg-destructive/10 hover:text-destructive"
-        onPress={() =>
-          run({ type: "bulk_issues", ids, action: "delete" })
-            .then(clear)
-            .catch(() => {})
-        }
+        onPress={() => setConfirm(true)}
       >
         <Trash2 />
         {t("action.delete")}
@@ -363,6 +388,13 @@ function BulkBar({ selected, clear }: { selected: Set<Id>; clear: () => void }) 
       <Button variant="ghost" size="icon" aria-label={t("action.clear")} onPress={clear}>
         <X />
       </Button>
+      <ConfirmDialog
+        title={t("bulk.deleteTitle", { n: ids.length })}
+        description={t("bulk.deleteSub")}
+        isOpen={confirm}
+        onOpenChange={setConfirm}
+        onConfirm={remove}
+      />
     </div>
   );
 }

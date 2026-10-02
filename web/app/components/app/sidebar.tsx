@@ -143,7 +143,7 @@ export function Sidebar({
             <Inbox />
             {t("nav.inbox")}
             {unread > 0 && (
-              <span className="ml-auto rounded-full bg-primary px-1.5 text-[11px] font-semibold tabular-nums text-primary-foreground">
+              <span className="ml-auto rounded-full bg-primary-solid px-1.5 text-[11px] font-semibold tabular-nums text-primary-foreground">
                 {unread}
               </span>
             )}
@@ -248,9 +248,10 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 function TeamLinks({ id, name, base }: { id: string; name: string; base: string }) {
   const t = useT();
   const { pathname, search } = useLocation();
-  const [open, setOpen] = useState(false);
+  // null follows the route (open while you're inside the team). Once clicked, the choice sticks.
+  const [open, setOpen] = useState<boolean | null>(null);
   const inTeam = pathname.startsWith(`${base}/team/${id}`);
-  const isOpen = open || inTeam;
+  const isOpen = open ?? inTeam;
   const layout = new URLSearchParams(search).get("layout") ?? "list";
   const onTeamPage = pathname === `${base}/team/${id}`;
   const items = [
@@ -263,7 +264,7 @@ function TeamLinks({ id, name, base }: { id: string; name: string; base: string 
       <button
         type="button"
         aria-expanded={isOpen}
-        onClick={() => setOpen(!open)}
+        onClick={() => setOpen(!isOpen)}
         className="flex h-7 w-full items-center gap-2 rounded-md px-2 text-[13px] font-medium text-muted-foreground outline-none hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/60"
       >
         <span className="grid size-4 place-items-center rounded bg-accent text-[10px] font-bold text-accent-foreground">

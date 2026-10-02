@@ -1,3 +1,4 @@
+import { useDocumentTitle } from "~/lib/title";
 import { cn } from "~/lib/utils";
 
 export function Page({ children, className }: { children: React.ReactNode; className?: string }) {
@@ -17,6 +18,7 @@ export function PageHeader({
   actions?: React.ReactNode;
   children?: React.ReactNode;
 }) {
+  useDocumentTitle(typeof title === "string" ? title : null);
   return (
     <header className="shrink-0 border-b border-border">
       <div className="flex min-h-12 items-center gap-2 px-4 py-2">

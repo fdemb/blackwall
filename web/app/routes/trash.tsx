@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { RotateCcw, Trash2 } from "lucide-react";
 import { Link } from "react-router";
 import { Button } from "~/components/ui/button";
@@ -13,6 +14,22 @@ export default function Trash() {
   const { ws, run, canWrite } = useWorkspace();
   const toast = useToast();
   const issues = applyFilter(ws, { trash: true, sort: "updated" });
+  const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
+  // The server accepts at most 500 issues per bulk command, so a large Trash is restored in batches.
+  const restoreAll = async () => {
+    const ids = issues.map((i) => i.id);
+    setProgress({ done: 0, total: ids.length });
+    try {
+      for (let at = 0; at < ids.length; at += 500) {
+        await run({ type: "bulk_issues", ids: ids.slice(at, at + 500), action: "restore" });
+        setProgress({ done: Math.min(at + 500, ids.length), total: ids.length });
+      }
+      toast.show(t("trash.restoredN", { n: ids.length }));
+    } catch {
+      /* the failed batch already showed its error; the rest stay in Trash */
+    }
+    setProgress(null);
+  };
   return (
     <Page>
       <PageHeader
@@ -25,14 +42,11 @@ export default function Trash() {
             <Button
               variant="ghost"
               size="sm"
-              onPress={() =>
-                run({ type: "bulk_issues", ids: issues.map((i) => i.id), action: "restore" })
-                  .then(() => toast.show(t("trash.restored")))
-                  .catch(() => {})
-              }
+              isDisabled={progress !== null}
+              onPress={() => void restoreAll()}
             >
               <RotateCcw />
-              {t("trash.restoreAll")}
+              {progress ? t("trash.restoring", progress) : t("trash.restoreAll")}
             </Button>
           )
         }
@@ -49,7 +63,7 @@ export default function Trash() {
             {issues.map((i) => (
               <li
                 key={i.id}
-                className="flex h-11 items-center gap-3 border-b border-border/70 px-4 text-[13px]"
+                className="flex min-h-11 items-center gap-3 border-b border-border/70 px-4 py-1 text-[13px]"
               >
                 <span className="w-14 tabular-nums text-muted-foreground">
                   {issueKey(i.number)}
@@ -60,7 +74,7 @@ export default function Trash() {
                 >
                   {i.title}
                 </Link>
-                <span className="text-xs text-muted-foreground">
+                <span className="hidden text-xs text-muted-foreground sm:inline">
                   {i.deleted_at && t("trash.deleted", { when: relativeTime(i.deleted_at, lang) })}
                 </span>
                 {canWrite && (

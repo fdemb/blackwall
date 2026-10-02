@@ -12,7 +12,7 @@ import {
 import { RouterProvider } from "react-aria-components";
 import "./app.css";
 import { ToastProvider } from "~/components/ui/toast";
-import { I18nProvider, initialLanguage } from "~/lib/i18n";
+import { I18nProvider, initialLanguage, translate } from "~/lib/i18n";
 import { watchSystemTheme } from "~/lib/theme";
 import type { Route } from "./+types/root";
 
@@ -64,19 +64,36 @@ export default function App() {
 }
 
 export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {
+  // The error page replaces the app, including its i18n provider, so it reads the language directly.
+  const lang = initialLanguage();
+  const t = (key: Parameters<typeof translate>[1]) => translate(lang, key);
   const message = isRouteErrorResponse(error)
     ? `${error.status} ${error.statusText}`
     : error instanceof Error
       ? error.message
-      : "Unknown error";
+      : t("error.unknown");
+  const action = "inline-flex h-9 items-center rounded-md px-3 text-[13px] font-medium";
   return (
-    <div className="grid h-dvh place-items-center p-6 text-center">
+    <div role="alert" className="grid h-dvh place-items-center p-6 text-center">
       <div>
-        <h1 className="text-lg font-semibold">Something went wrong</h1>
-        <p className="mt-1 text-muted-foreground">{message}</p>
-        <a href="/" className="mt-4 inline-block text-primary hover:underline">
-          Back to Blackwall
-        </a>
+        <h1 className="text-lg font-semibold">{t("error.title")}</h1>
+        <p className="mt-1 break-words text-muted-foreground">{message}</p>
+        <div className="mt-5 flex flex-wrap items-center justify-center gap-2">
+          {/* Reloading retries the same page. Going home can land on the workspace that failed, so offer the picker too. */}
+          <button
+            type="button"
+            onClick={() => location.reload()}
+            className={`${action} bg-primary-solid text-primary-foreground hover:bg-primary-solid/90`}
+          >
+            {t("action.reload")}
+          </button>
+          <a href="/welcome" className={`${action} border border-input hover:bg-muted`}>
+            {t("error.switch")}
+          </a>
+          <a href="/" className={`${action} text-primary hover:underline`}>
+            {t("error.home")}
+          </a>
+        </div>
       </div>
     </div>
   );

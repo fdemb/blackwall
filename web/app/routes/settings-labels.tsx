@@ -1,32 +1,68 @@
 import { useState } from "react";
-import { Form } from "react-aria-components";
-import { Tag } from "lucide-react";
+import { Form, Radio, RadioGroup } from "react-aria-components";
+import { Pencil, Tag } from "lucide-react";
 import { Button } from "~/components/ui/button";
-import { TextField } from "~/components/ui/field";
+import { Dialog, useDialogDirty } from "~/components/ui/dialog";
+import { FormError, TextField } from "~/components/ui/field";
 import { Card } from "~/components/app/page";
 import { LabelDot } from "~/components/app/pickers";
-import { useT } from "~/lib/i18n";
+import { useT, type Key } from "~/lib/i18n";
+import { usePending } from "~/lib/use-pending";
 import { useWorkspace } from "~/lib/workspace";
-import { cn } from "~/lib/utils";
+import type { Label } from "~/lib/types";
 
-const COLORS = [
-  "#7c3aed",
-  "#a78bfa",
-  "#ec4899",
-  "#ef4444",
-  "#f97316",
-  "#eab308",
-  "#22c55e",
-  "#14b8a6",
-  "#0ea5e9",
-  "#64748b",
+const COLORS: [string, Key][] = [
+  ["#7c3aed", "color.violet"],
+  ["#a78bfa", "color.lavender"],
+  ["#ec4899", "color.pink"],
+  ["#ef4444", "color.red"],
+  ["#f97316", "color.orange"],
+  ["#eab308", "color.yellow"],
+  ["#22c55e", "color.green"],
+  ["#14b8a6", "color.teal"],
+  ["#0ea5e9", "color.blue"],
+  ["#64748b", "color.slate"],
 ];
+
+/** A radio group, so arrow keys move between colors and a screen reader hears each color's name. */
+function ColorPicker({ value, onChange }: { value: string; onChange: (c: string) => void }) {
+  const t = useT();
+  // A label saved with a color outside the palette keeps showing as its own choice instead of vanishing.
+  const options = COLORS.some(([c]) => c === value)
+    ? COLORS.map(([c, k]) => [c, t(k)] as const)
+    : [...COLORS.map(([c, k]) => [c, t(k)] as const), [value, value] as const];
+  return (
+    <RadioGroup
+      value={value}
+      onChange={onChange}
+      orientation="horizontal"
+      aria-label={t("labels.color")}
+      className="flex flex-wrap gap-1"
+    >
+      {options.map(([c, name]) => (
+        <Radio
+          key={c}
+          value={c}
+          aria-label={name}
+          className="group grid size-7 cursor-default place-items-center rounded-full outline-none pointer-coarse:size-9"
+        >
+          <span
+            className="size-5 rounded-full ring-offset-2 ring-offset-card transition group-selected:ring-2 group-selected:ring-foreground group-focus-visible:ring-2 group-focus-visible:ring-ring"
+            style={{ background: c }}
+          />
+        </Radio>
+      ))}
+    </RadioGroup>
+  );
+}
 
 export default function Labels() {
   const t = useT();
   const { ws, run, canWrite } = useWorkspace();
   const [name, setName] = useState("");
-  const [color, setColor] = useState(COLORS[0]);
+  const [color, setColor] = useState(COLORS[0][0]);
+  const [editing, setEditing] = useState<Label | null>(null);
+  const { pending, error, guard } = usePending();
   return (
     <>
       <div>
@@ -37,11 +73,12 @@ export default function Labels() {
         <Card className="p-4">
           <Form
             className="flex flex-wrap items-end gap-3"
-            onSubmit={async (e) => {
+            onSubmit={(e) => {
               e.preventDefault();
-              await run({ type: "create_label", name: name.trim(), color })
-                .then(() => setName(""))
-                .catch(() => {});
+              void guard(async () => {
+                await run({ type: "create_label", name: name.trim(), color }, { quiet: true });
+                setName("");
+              });
             }}
           >
             <TextField
@@ -52,26 +89,13 @@ export default function Labels() {
               isRequired
               maxLength={40}
             />
-            <div role="radiogroup" aria-label={t("labels.color")} className="flex gap-1.5 pb-1.5">
-              {COLORS.map((c) => (
-                <button
-                  key={c}
-                  type="button"
-                  role="radio"
-                  aria-checked={c === color}
-                  aria-label={c}
-                  onClick={() => setColor(c)}
-                  className={cn(
-                    "size-5 rounded-full outline-none ring-offset-2 ring-offset-card transition focus-visible:ring-2 focus-visible:ring-ring",
-                    c === color && "ring-2 ring-foreground",
-                  )}
-                  style={{ background: c }}
-                />
-              ))}
+            <div className="pb-0.5">
+              <ColorPicker value={color} onChange={setColor} />
             </div>
-            <Button type="submit" variant="primary" isDisabled={!name.trim()}>
+            <Button type="submit" variant="primary" isDisabled={!name.trim() || pending}>
               {t("labels.add")}
             </Button>
+            <FormError>{error}</FormError>
           </Form>
         </Card>
       )}
@@ -84,17 +108,80 @@ export default function Labels() {
         ) : (
           <ul className="divide-y divide-border">
             {ws.labels.map((l) => (
-              <li key={l.id} className="flex items-center gap-2.5 px-4 py-2.5 text-[13px]">
+              <li key={l.id} className="flex items-center gap-2.5 px-4 py-2 text-[13px]">
                 <LabelDot color={l.color} className="size-2.5" />
-                {l.name}
-                <span className="ml-auto text-xs text-muted-foreground tabular-nums">
-                  {ws.issues.filter((i) => !i.deleted_at && i.labels.includes(l.id)).length}
+                <span className="min-w-0 flex-1 truncate">{l.name}</span>
+                <span className="text-xs tabular-nums text-muted-foreground">
+                  {t("labels.used", {
+                    n: ws.issues.filter((i) => !i.deleted_at && i.labels.includes(l.id)).length,
+                  })}
                 </span>
+                {canWrite && (
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    aria-label={`${t("labels.edit")}: ${l.name}`}
+                    onPress={() => setEditing(l)}
+                  >
+                    <Pencil />
+                  </Button>
+                )}
               </li>
             ))}
           </ul>
         )}
       </Card>
+      <Dialog
+        title={t("labels.edit")}
+        size="sm"
+        isOpen={editing !== null}
+        onOpenChange={(o) => !o && setEditing(null)}
+      >
+        {(close) => editing && <EditLabel label={editing} close={close} />}
+      </Dialog>
     </>
+  );
+}
+
+function EditLabel({ label, close }: { label: Label; close: () => void }) {
+  const t = useT();
+  const { run } = useWorkspace();
+  const { pending, error, guard } = usePending();
+  const [name, setName] = useState(label.name);
+  const [color, setColor] = useState(label.color);
+  useDialogDirty(name !== label.name || color !== label.color);
+  return (
+    <Form
+      className="flex flex-col gap-4"
+      onSubmit={(e) => {
+        e.preventDefault();
+        void guard(async () => {
+          await run(
+            { type: "update_label", id: label.id, name: name.trim(), color },
+            { quiet: true },
+          );
+          close();
+        });
+      }}
+    >
+      <TextField
+        label={t("field.name")}
+        value={name}
+        onChange={setName}
+        autoFocus
+        isRequired
+        maxLength={40}
+      />
+      <ColorPicker value={color} onChange={setColor} />
+      <FormError>{error}</FormError>
+      <div className="flex justify-end gap-2">
+        <Button variant="ghost" onPress={close}>
+          {t("action.cancel")}
+        </Button>
+        <Button type="submit" variant="primary" isDisabled={!name.trim() || pending}>
+          {pending ? t("action.saving") : t("action.save")}
+        </Button>
+      </div>
+    </Form>
   );
 }

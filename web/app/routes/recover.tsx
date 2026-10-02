@@ -1,21 +1,39 @@
 import { useState } from "react";
 import { Form } from "react-aria-components";
-import { Link, useNavigate } from "react-router";
+import { Link, useNavigate, useSearchParams } from "react-router";
 import { MailCheck } from "lucide-react";
 import { Button } from "~/components/ui/button";
-import { TextField } from "~/components/ui/field";
+import { FormError, TextField } from "~/components/ui/field";
 import { auth } from "~/lib/api";
 import { useT } from "~/lib/i18n";
+import { useDocumentTitle } from "~/lib/title";
 import { useToast } from "~/components/ui/toast";
 
 export default function Recover() {
   const t = useT();
   const nav = useNavigate();
   const toast = useToast();
-  const [step, setStep] = useState<"request" | "reset">("request");
-  const [error, setError] = useState("");
+  const [params] = useSearchParams();
+  // A link carrying ?token= (and optionally &email=) goes straight to choosing a new password.
+  const [step, setStep] = useState<"request" | "reset">(params.get("token") ? "reset" : "request");
+  const [requestError, setRequestError] = useState("");
+  const [resetError, setResetError] = useState("");
   const [busy, setBusy] = useState(false);
-  const [email, setEmail] = useState("");
+  const [email, setEmail] = useState(params.get("email") ?? "");
+  useDocumentTitle(t("auth.recoverTitle"));
+
+  /** Asks for a token. Resolves to an error message, or null when the request went through. */
+  const request = async () => {
+    setBusy(true);
+    try {
+      await auth.requestReset(email);
+      return null;
+    } catch (err) {
+      return (err as Error).message;
+    } finally {
+      setBusy(false);
+    }
+  };
 
   if (step === "request")
     return (
@@ -26,14 +44,11 @@ export default function Recover() {
           className="flex flex-col gap-4"
           onSubmit={async (e) => {
             e.preventDefault();
-            setBusy(true);
-            try {
-              await auth.requestReset(email);
-              setStep("reset");
-            } catch (err) {
-              setError((err as Error).message);
-            }
-            setBusy(false);
+            setRequestError("");
+            const failure = await request();
+            if (failure) return setRequestError(failure);
+            setResetError("");
+            setStep("reset");
           }}
         >
           <TextField
@@ -42,18 +57,29 @@ export default function Recover() {
             label={t("field.email")}
             value={email}
             onChange={setEmail}
+            autoComplete="email"
             autoFocus
             isRequired
-            error={error}
           />
+          <FormError>{requestError}</FormError>
           <Button type="submit" variant="primary" size="lg" isDisabled={busy}>
-            {t("auth.sendLink")}
+            {busy ? t("auth.sending") : t("auth.sendLink")}
           </Button>
         </Form>
-        <p className="mt-5 text-[13px]">
+        <p className="mt-5 flex justify-between text-[13px]">
           <Link to="/login" className="text-muted-foreground hover:text-foreground hover:underline">
             {t("auth.backToLogin")}
           </Link>
+          <button
+            type="button"
+            className="text-muted-foreground hover:text-foreground hover:underline"
+            onClick={() => {
+              setRequestError("");
+              setStep("reset");
+            }}
+          >
+            {t("auth.haveToken")}
+          </button>
         </p>
       </>
     );
@@ -62,25 +88,33 @@ export default function Recover() {
     <>
       <MailCheck className="mb-3 size-7 text-primary" />
       <h1 className="text-xl font-semibold tracking-tight">{t("auth.checkMail")}</h1>
-      <p className="mb-6 mt-1 text-muted-foreground">{t("auth.checkMailSub", { email })}</p>
+      <p className="mb-6 mt-1 text-muted-foreground">
+        {email ? t("auth.checkMailSub", { email }) : t("auth.checkMailNoEmail")}
+      </p>
       <Form
         className="flex flex-col gap-4"
         onSubmit={async (e) => {
           e.preventDefault();
           const f = new FormData(e.currentTarget);
           setBusy(true);
-          setError("");
+          setResetError("");
           try {
             await auth.reset(String(f.get("token")).trim(), String(f.get("password")));
             toast.show(t("auth.resetDone"));
             nav("/login");
           } catch (err) {
-            setError((err as Error).message);
+            setResetError((err as Error).message);
             setBusy(false);
           }
         }}
       >
-        <TextField name="token" label={t("auth.token")} autoFocus isRequired />
+        <TextField
+          name="token"
+          label={t("auth.token")}
+          defaultValue={params.get("token") ?? ""}
+          autoFocus
+          isRequired
+        />
         <TextField
           name="password"
           type="password"
@@ -88,12 +122,43 @@ export default function Recover() {
           autoComplete="new-password"
           minLength={12}
           isRequired
-          error={error}
+          description={t("auth.passwordHint")}
         />
+        <FormError>{resetError}</FormError>
         <Button type="submit" variant="primary" size="lg" isDisabled={busy}>
-          {t("auth.resetPassword")}
+          {busy ? t("auth.updating") : t("auth.resetPassword")}
         </Button>
       </Form>
+      <div className="mt-5 flex flex-wrap justify-between gap-2 text-[13px] text-muted-foreground">
+        {email && (
+          <button
+            type="button"
+            disabled={busy}
+            className="hover:text-foreground hover:underline"
+            onClick={async () => {
+              setResetError("");
+              const failure = await request();
+              if (failure) setResetError(failure);
+              else toast.show(t("auth.resent"));
+            }}
+          >
+            {t("auth.resend")}
+          </button>
+        )}
+        <button
+          type="button"
+          className="hover:text-foreground hover:underline"
+          onClick={() => {
+            setResetError("");
+            setStep("request");
+          }}
+        >
+          {t("auth.changeEmail")}
+        </button>
+        <Link to="/login" className="hover:text-foreground hover:underline">
+          {t("auth.backToLogin")}
+        </Link>
+      </div>
     </>
   );
 }

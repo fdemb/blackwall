@@ -8,6 +8,6 @@ Type is Inter Variable at 13px for the interface and 14px for long text. Numbers
 
 Components are shadcn-style wrappers over React Aria Components in `web/app/components/ui`, so keyboard, focus, and screen reader behavior come from the library. Drag and drop uses React Aria's collection hooks, which also work from the keyboard.
 
-Everything is reachable from Ctrl/Cmd+K. `C` creates an issue, `/` searches, `G` then `I`, `M`, `A`, `P`, or `R` jumps between pages. Empty states name the next action. Motion is short and disabled under `prefers-reduced-motion`.
+Everything is reachable from Ctrl/Cmd+K. `C` creates an issue, `/` searches, `G` then `I`, `M`, `A`, `P`, or `R` jumps between pages. The single-key shortcuts can be turned off in Account, and Ctrl/Cmd+K keeps working. Empty states name the next action. Motion is short and disabled under `prefers-reduced-motion`.
 
 English and Polish share one typed dictionary in `web/app/locales`. Markdown is rendered and sanitized by the backend.

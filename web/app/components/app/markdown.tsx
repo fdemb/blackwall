@@ -108,7 +108,7 @@ export function MarkdownEditor({
 
   return (
     <div className="rounded-lg border border-input bg-card shadow-xs transition-shadow focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/25">
-      <div className="flex items-center gap-0.5 border-b border-border px-1.5 py-1">
+      <div className="flex flex-wrap items-center gap-0.5 border-b border-border px-1.5 py-1">
         {tools.map(({ icon: Icon, label: l, run }) => (
           <Tip key={l} label={l}>
             <Button variant="ghost" size="icon" aria-label={l} isDisabled={preview} onPress={run}>
@@ -151,8 +151,9 @@ export function MarkdownEditor({
               key={String(p)}
               type="button"
               onClick={() => setPreview(p)}
+              aria-pressed={preview === p}
               className={cn(
-                "rounded px-2 py-0.5 font-medium text-muted-foreground",
+                "rounded px-2 py-0.5 font-medium text-muted-foreground pointer-coarse:px-3 pointer-coarse:py-1.5",
                 preview === p && "bg-card text-foreground shadow-xs",
               )}
             >

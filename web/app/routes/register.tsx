@@ -2,15 +2,17 @@ import { useState } from "react";
 import { Form } from "react-aria-components";
 import { Link, useNavigate } from "react-router";
 import { Button } from "~/components/ui/button";
-import { TextField } from "~/components/ui/field";
+import { FormError, TextField } from "~/components/ui/field";
 import { auth, setCsrf } from "~/lib/api";
 import { useT } from "~/lib/i18n";
+import { useDocumentTitle } from "~/lib/title";
 
 export default function Register() {
   const t = useT();
   const nav = useNavigate();
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  useDocumentTitle(t("auth.register"));
   return (
     <>
       <h1 className="text-xl font-semibold tracking-tight">{t("auth.createAccount")}</h1>
@@ -57,11 +59,11 @@ export default function Register() {
           autoComplete="new-password"
           minLength={12}
           isRequired
-          error={error}
           description={t("auth.passwordHint")}
         />
+        <FormError>{error}</FormError>
         <Button type="submit" variant="primary" size="lg" isDisabled={busy}>
-          {t("auth.register")}
+          {busy ? t("auth.creating") : t("auth.register")}
         </Button>
       </Form>
       <p className="mt-5 text-[13px] text-muted-foreground">

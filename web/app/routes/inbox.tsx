@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { useNavigate } from "react-router";
 import {
   AtSign,
@@ -5,13 +6,17 @@ import {
   CalendarClock,
   CheckCheck,
   Inbox as InboxIcon,
+  Mail,
+  MailOpen,
   MessageSquare,
   PenLine,
   UserPlus,
 } from "lucide-react";
+import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
+import { Tab, TabList, Tabs } from "~/components/ui/tabs";
 import { EmptyState, Page, PageHeader, Scroll } from "~/components/app/page";
-import { relativeTime } from "~/lib/format";
+import { issueKey, relativeTime } from "~/lib/format";
 import { useI18n } from "~/lib/i18n";
 import { useWorkspace } from "~/lib/workspace";
 import { cn } from "~/lib/utils";
@@ -29,9 +34,11 @@ export default function Inbox() {
   const { t, lang } = useI18n();
   const nav = useNavigate();
   const { ws, run, unread } = useWorkspace();
-  const list = [...ws.notifications].sort(
+  const [view, setView] = useState<"all" | "unread">("all");
+  const sorted = [...ws.notifications].sort(
     (a, b) => +new Date(b.created_at) - +new Date(a.created_at),
   );
+  const list = view === "unread" ? sorted.filter((n) => !n.read_at) : sorted;
   return (
     <Page>
       <PageHeader
@@ -50,20 +57,46 @@ export default function Inbox() {
             </Button>
           )
         }
-      />
+      >
+        {sorted.length > 0 && (
+          <Tabs
+            selectedKey={view}
+            onSelectionChange={(k) => setView(k as "all" | "unread")}
+            className="px-4 pb-2"
+          >
+            <TabList aria-label={t("nav.inbox")}>
+              <Tab id="all">{t("inbox.all")}</Tab>
+              <Tab id="unread">
+                {t("inbox.unreadOnly")}
+                {unread > 0 && <span className="tabular-nums text-muted-foreground">{unread}</span>}
+              </Tab>
+            </TabList>
+          </Tabs>
+        )}
+      </PageHeader>
       <Scroll>
-        {list.length === 0 ? (
+        {sorted.length === 0 ? (
           <EmptyState
             icon={<Bell />}
             title={t("inbox.emptyTitle")}
             description={t("inbox.emptySub")}
           />
+        ) : list.length === 0 ? (
+          <EmptyState
+            icon={<Bell />}
+            title={t("inbox.noUnread")}
+            description={t("inbox.noUnreadSub")}
+          />
         ) : (
           <ul>
             {list.map((n) => {
               const Icon = ICONS[n.kind];
+              const issue = n.issue_id ? ws.issues.find((i) => i.id === n.issue_id) : undefined;
               return (
-                <li key={n.id} className="border-b border-border/70">
+                <li
+                  key={n.id}
+                  className="group flex items-center border-b border-border/70 hover:bg-muted/60 focus-within:bg-muted/60"
+                >
                   <button
                     type="button"
                     onClick={() => {
@@ -71,7 +104,7 @@ export default function Inbox() {
                         run({ type: "mark_notification_read", id: n.id }).catch(() => {});
                       if (n.issue_id) nav(`/${ws.id}/issue/${n.issue_id}`);
                     }}
-                    className="flex w-full items-center gap-3 px-4 py-3 text-left outline-none hover:bg-muted/60 focus-visible:bg-muted/60"
+                    className="flex min-w-0 flex-1 items-center gap-3 px-4 py-3 text-left outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/60"
                   >
                     <span
                       className={cn(
@@ -85,12 +118,22 @@ export default function Inbox() {
                     </span>
                     <span className="min-w-0 flex-1">
                       <span
-                        className={cn("block truncate text-[13px]", !n.read_at && "font-semibold")}
+                        className={cn(
+                          "line-clamp-2 block text-[13px]",
+                          !n.read_at && "font-semibold",
+                        )}
                       >
                         {n.message}
                       </span>
-                      <span className="block text-xs text-muted-foreground">
-                        {t(`alert.${n.kind}`)}
+                      <span className="mt-0.5 flex flex-wrap items-center gap-x-2 text-xs text-muted-foreground">
+                        <span>{t(`alert.${n.kind}`)}</span>
+                        {issue && (
+                          <span className="min-w-0 truncate">
+                            <span className="tabular-nums">{issueKey(issue.number)}</span>{" "}
+                            {issue.title}
+                          </span>
+                        )}
+                        {issue?.deleted_at && <Badge tone="warning">{t("inbox.inTrash")}</Badge>}
                       </span>
                     </span>
                     <time
@@ -101,11 +144,27 @@ export default function Inbox() {
                     </time>
                     {!n.read_at && (
                       <span
+                        role="img"
                         aria-label={t("inbox.unreadDot")}
                         className="size-2 shrink-0 rounded-full bg-primary"
                       />
                     )}
                   </button>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="mr-2"
+                    aria-label={n.read_at ? t("inbox.markUnread") : t("inbox.markRead")}
+                    onPress={() =>
+                      run(
+                        n.read_at
+                          ? { type: "mark_notification_unread", id: n.id }
+                          : { type: "mark_notification_read", id: n.id },
+                      ).catch(() => {})
+                    }
+                  >
+                    {n.read_at ? <Mail /> : <MailOpen />}
+                  </Button>
                 </li>
               );
             })}

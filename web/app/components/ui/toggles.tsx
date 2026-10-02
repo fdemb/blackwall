@@ -22,7 +22,7 @@ export function Checkbox({ className, children, ...props }: CheckboxProps) {
             className={cn(
               "flex size-4 shrink-0 items-center justify-center rounded-[5px] border border-input bg-card text-primary-foreground transition-colors group-hover:border-muted-foreground group-focus-visible:ring-2 group-focus-visible:ring-ring/60",
               (isSelected || isIndeterminate) &&
-                "border-primary bg-primary group-hover:border-primary",
+                "border-primary-solid bg-primary-solid group-hover:border-primary-solid",
             )}
           >
             {isIndeterminate ? (

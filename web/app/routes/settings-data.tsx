@@ -2,18 +2,71 @@ import { useState } from "react";
 import { DropZone, FileTrigger, Text } from "react-aria-components";
 import { Download, FileUp } from "lucide-react";
 import { Button } from "~/components/ui/button";
+import { Dialog } from "~/components/ui/dialog";
+import { FormError } from "~/components/ui/field";
 import { useToast } from "~/components/ui/toast";
 import { Card } from "~/components/app/page";
 import { workspaces } from "~/lib/api";
 import { download } from "~/lib/format";
-import { useT } from "~/lib/i18n";
+import { useT, type Key } from "~/lib/i18n";
+import { usePending } from "~/lib/use-pending";
 import { useWorkspace } from "~/lib/workspace";
+import type { ImportSummary } from "~/lib/types";
+
+type Body = { issues: unknown[] } | { transfer: unknown };
+interface Preview {
+  name: string;
+  kind: "transfer" | "issues";
+  counts: [Key, number][];
+  body: Body;
+}
+
+const COUNTED = [
+  "issues",
+  "comments",
+  "time_entries",
+  "teams",
+  "labels",
+  "projects",
+  "sprints",
+] as const;
+
+/** Reads the file and works out what it holds, without sending anything to the server yet. */
+function inspect(name: string, parsed: unknown): Preview | null {
+  const obj = (parsed ?? {}) as Record<string, unknown>;
+  const len = (v: unknown) => (Array.isArray(v) ? v.length : 0);
+  // A Blackwall export is an object; a bare array is treated as a list of issue inputs.
+  if (Array.isArray(parsed))
+    return parsed.length
+      ? {
+          name,
+          kind: "issues",
+          counts: [["data.count.issues", parsed.length]],
+          body: { issues: parsed },
+        }
+      : null;
+  if (obj.issues && !obj.workspace && !obj.teams)
+    return len(obj.issues)
+      ? {
+          name,
+          kind: "issues",
+          counts: [["data.count.issues", len(obj.issues)]],
+          body: { issues: obj.issues as unknown[] },
+        }
+      : null;
+  const counts = COUNTED.map(
+    (k) => [`data.count.${k}` as Key, len(obj[k])] as [Key, number],
+  ).filter(([, n]) => n > 0);
+  return counts.length ? { name, kind: "transfer", counts, body: { transfer: parsed } } : null;
+}
 
 export default function Data() {
   const t = useT();
-  const { ws, revision, canWrite, reload } = useWorkspace();
+  const { ws, revision, canWrite, canAdmin, reload } = useWorkspace();
   const toast = useToast();
   const [busy, setBusy] = useState(false);
+  const [preview, setPreview] = useState<Preview | null>(null);
+  const [result, setResult] = useState<ImportSummary | null | undefined>(undefined);
 
   const exportAll = async () => {
     setBusy(true);
@@ -28,23 +81,19 @@ export default function Data() {
     }
     setBusy(false);
   };
-  const importFile = async (file: File) => {
-    setBusy(true);
+  const choose = async (file: File) => {
     try {
-      const parsed = JSON.parse(await file.text());
-      // A Blackwall export is an object; a bare array is treated as a list of issue inputs.
-      const body = Array.isArray(parsed)
-        ? { issues: parsed }
-        : parsed.issues && !parsed.workspace && !parsed.teams
-          ? { issues: parsed.issues }
-          : { transfer: parsed };
-      await workspaces.import(ws.id, revision, body);
-      await reload();
-      toast.show(t("data.imported"));
+      const found = inspect(file.name, JSON.parse(await file.text()));
+      if (!found) return toast.error(t("data.emptyFile"));
+      setResult(undefined);
+      setPreview(found);
     } catch (e) {
       toast.error(e instanceof SyntaxError ? t("data.invalidJson") : (e as Error).message);
     }
-    setBusy(false);
+  };
+  const close = () => {
+    setPreview(null);
+    setResult(undefined);
   };
   return (
     <>
@@ -64,7 +113,10 @@ export default function Data() {
             className="mt-4 flex flex-col items-center gap-2 rounded-xl border-2 border-dashed border-border p-8 text-center transition-colors drop-target:border-primary drop-target:bg-accent/50"
             onDrop={async (e) => {
               for (const item of e.items)
-                if (item.kind === "file") await importFile(await item.getFile());
+                if (item.kind === "file") {
+                  await choose(await item.getFile());
+                  break;
+                }
             }}
           >
             <FileUp className="size-6 text-muted-foreground" />
@@ -73,15 +125,127 @@ export default function Data() {
             </Text>
             <FileTrigger
               acceptedFileTypes={["application/json", ".json"]}
-              onSelect={(l) => l?.[0] && importFile(l[0])}
+              onSelect={(l) => l?.[0] && void choose(l[0])}
             >
-              <Button variant="secondary" isDisabled={busy}>
-                {t("data.choose")}
-              </Button>
+              <Button variant="secondary">{t("data.choose")}</Button>
             </FileTrigger>
           </DropZone>
         </Card>
       )}
+      <Dialog
+        title={result !== undefined ? t("data.resultTitle") : t("data.previewTitle")}
+        description={
+          result === undefined && preview
+            ? t("data.previewSub", { name: preview.name, workspace: ws.name })
+            : undefined
+        }
+        size="sm"
+        isOpen={preview !== null}
+        onOpenChange={(o) => !o && close()}
+      >
+        {() =>
+          preview &&
+          (result !== undefined ? (
+            <Finished summary={result} onDone={close} />
+          ) : (
+            <Review
+              preview={preview}
+              allowed={preview.kind === "issues" || canAdmin}
+              onCancel={close}
+              onImport={async () => {
+                const res = await workspaces.import(ws.id, revision, preview.body);
+                await reload().catch(() => undefined);
+                setResult(res.summary);
+                toast.show(t("data.imported"));
+              }}
+            />
+          ))
+        }
+      </Dialog>
     </>
+  );
+}
+
+function Review({
+  preview,
+  allowed,
+  onCancel,
+  onImport,
+}: {
+  preview: Preview;
+  allowed: boolean;
+  onCancel: () => void;
+  onImport: () => Promise<void>;
+}) {
+  const t = useT();
+  const { pending, error, guard } = usePending();
+  return (
+    <div className="space-y-4">
+      <div>
+        <p className="text-[13px] font-medium">
+          {t(preview.kind === "transfer" ? "data.kindTransfer" : "data.kindIssues")}
+        </p>
+        <dl className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1 text-[13px]">
+          {preview.counts.map(([label, n]) => (
+            <div key={label} className="flex justify-between border-b border-border/60 py-1">
+              <dt className="text-muted-foreground">{t(label)}</dt>
+              <dd className="tabular-nums">{n}</dd>
+            </div>
+          ))}
+        </dl>
+      </div>
+      {!allowed && (
+        <p role="alert" className="text-[13px] text-destructive">
+          {t("data.adminOnly")}
+        </p>
+      )}
+      <FormError>{error}</FormError>
+      <div className="flex justify-end gap-2">
+        <Button variant="ghost" onPress={onCancel}>
+          {t("action.cancel")}
+        </Button>
+        <Button
+          variant="primary"
+          isDisabled={!allowed || pending}
+          onPress={() => void guard(onImport)}
+        >
+          {pending ? t("data.importing") : t("data.confirm")}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+function Finished({ summary, onDone }: { summary: ImportSummary | null; onDone: () => void }) {
+  const t = useT();
+  const fallback = summary?.identities.filter((i) => i.fallback).length ?? 0;
+  const matched = (summary?.identities.length ?? 0) - fallback;
+  return (
+    <div className="space-y-3 text-[13px]">
+      {summary ? (
+        <>
+          <p>
+            {t("data.resultCounts", {
+              issues: summary.issues,
+              comments: summary.comments,
+              time: summary.time_entries,
+            })}
+          </p>
+          {matched > 0 && (
+            <p className="text-muted-foreground">{t("data.resultMatched", { n: matched })}</p>
+          )}
+          {fallback > 0 && (
+            <p className="font-medium">{t("data.resultIdentities", { n: fallback })}</p>
+          )}
+        </>
+      ) : (
+        <p>{t("data.imported")}</p>
+      )}
+      <div className="flex justify-end">
+        <Button variant="primary" onPress={onDone}>
+          {t("data.done")}
+        </Button>
+      </div>
+    </div>
   );
 }

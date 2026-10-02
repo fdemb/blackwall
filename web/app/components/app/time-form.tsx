@@ -1,10 +1,12 @@
 import { useState } from "react";
 import { Form } from "react-aria-components";
 import { Button } from "~/components/ui/button";
+import { useDialogDirty } from "~/components/ui/dialog";
 import { DatePicker } from "~/components/ui/date-picker";
 import { TextField } from "~/components/ui/field";
 import { formatMinutes, parseMinutes } from "~/lib/format";
 import { useI18n } from "~/lib/i18n";
+import { usePending } from "~/lib/use-pending";
 import { useWorkspace } from "~/lib/workspace";
 import type { Id, TimeEntry } from "~/lib/types";
 
@@ -22,22 +24,25 @@ export function TimeForm({
   const [dur, setDur] = useState(entry ? formatMinutes(entry.minutes) : "");
   const [note, setNote] = useState(entry?.note ?? "");
   const [when, setWhen] = useState<string | null>(entry?.logged_at ?? new Date().toISOString());
+  const { pending, error, guard } = usePending();
+  useDialogDirty(
+    dur !== (entry ? formatMinutes(entry.minutes) : "") || note !== (entry?.note ?? ""),
+  );
   const minutes = parseMinutes(dur);
   const invalid = !minutes || minutes <= 0 || minutes > 24 * 60 || !when;
   return (
     <Form
       className="flex flex-col gap-4"
-      onSubmit={async (e) => {
+      onSubmit={(e) => {
         e.preventDefault();
         if (invalid) return;
         const body = { minutes: minutes!, note: note.trim(), logged_at: when! };
-        await (
-          entry
-            ? run({ type: "update_time", id: entry.id, ...body })
-            : run({ type: "log_time", issue_id: issueId, ...body })
-        )
-          .then(close)
-          .catch(() => {});
+        void guard(async () => {
+          await (entry
+            ? run({ type: "update_time", id: entry.id, ...body }, { quiet: true })
+            : run({ type: "log_time", issue_id: issueId, ...body }, { quiet: true }));
+          close();
+        });
       }}
     >
       <TextField
@@ -56,12 +61,17 @@ export function TimeForm({
         placeholder={t("time.notePlaceholder")}
       />
       <DatePicker label={t("field.date")} value={when} onChange={setWhen} clearable={false} />
+      {error && (
+        <p role="alert" className="text-xs text-destructive">
+          {error}
+        </p>
+      )}
       <div className="flex justify-end gap-2">
         <Button variant="ghost" onPress={close}>
           {t("action.cancel")}
         </Button>
-        <Button type="submit" variant="primary" isDisabled={invalid}>
-          {t("action.save")}
+        <Button type="submit" variant="primary" isDisabled={invalid || pending}>
+          {pending ? t("action.saving") : t("action.save")}
         </Button>
       </div>
     </Form>

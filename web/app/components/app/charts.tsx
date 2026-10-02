@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useI18n } from "~/lib/i18n";
 import { cn } from "~/lib/utils";
 
 export function BarList({
@@ -32,14 +33,22 @@ export function BarList({
   );
 }
 
+/**
+ * Column chart. Each column takes focus and responds to a tap, and a table below lists the same numbers,
+ * so values are readable without a mouse.
+ */
 export function Columns({
   data,
   label,
+  title,
 }: {
   data: { date: string; value: number }[];
   label: (d: string, v: number) => string;
+  title: string;
 }) {
-  const [hover, setHover] = useState<number | null>(null);
+  const { t } = useI18n();
+  const [active, setActive] = useState<number | null>(null);
+  const [table, setTable] = useState(false);
   const max = Math.max(1, ...data.map((d) => d.value));
   const w = 100 / Math.max(data.length, 1);
   return (
@@ -49,8 +58,8 @@ export function Columns({
           viewBox="0 0 100 40"
           preserveAspectRatio="none"
           className="h-full w-full overflow-visible"
-          role="img"
-          aria-label="Delivery"
+          role="group"
+          aria-label={title}
         >
           {[0.25, 0.5, 0.75, 1].map((f) => (
             <line
@@ -68,29 +77,45 @@ export function Columns({
           {data.map((d, i) => {
             const h = (d.value / max) * 38;
             return (
-              <rect
-                key={d.date}
-                x={i * w + w * 0.15}
-                y={40 - h}
-                width={w * 0.7}
-                height={Math.max(h, d.value ? 0.6 : 0)}
-                rx="0.6"
-                className={cn(
-                  "fill-primary transition-opacity",
-                  hover !== null && hover !== i && "opacity-40",
-                )}
-                onMouseEnter={() => setHover(i)}
-                onMouseLeave={() => setHover(null)}
-              />
+              <g key={d.date}>
+                {/* A wider invisible target makes thin columns easy to hit with a finger. */}
+                <rect
+                  x={i * w}
+                  y="0"
+                  width={w}
+                  height="40"
+                  fill="transparent"
+                  tabIndex={0}
+                  role="img"
+                  aria-label={label(d.date, d.value)}
+                  className="outline-none"
+                  onMouseEnter={() => setActive(i)}
+                  onMouseLeave={() => setActive(null)}
+                  onFocus={() => setActive(i)}
+                  onBlur={() => setActive(null)}
+                  onClick={() => setActive(active === i ? null : i)}
+                />
+                <rect
+                  x={i * w + w * 0.15}
+                  y={40 - h}
+                  width={w * 0.7}
+                  height={Math.max(h, d.value ? 0.6 : 0)}
+                  rx="0.6"
+                  className={cn(
+                    "pointer-events-none fill-primary transition-opacity",
+                    active !== null && active !== i && "opacity-40",
+                  )}
+                />
+              </g>
             );
           })}
         </svg>
-        {hover !== null && data[hover] && (
+        {active !== null && data[active] && (
           <div
             className="pointer-events-none absolute -top-2 rounded-md bg-foreground px-2 py-1 text-xs text-background shadow"
-            style={{ left: `${Math.min(88, hover * w)}%` }}
+            style={{ left: `${Math.min(88, active * w)}%` }}
           >
-            {label(data[hover].date, data[hover].value)}
+            {label(data[active].date, data[active].value)}
           </div>
         )}
       </div>
@@ -98,6 +123,32 @@ export function Columns({
         <span>{data[0]?.date.slice(5)}</span>
         <span>{data[data.length - 1]?.date.slice(5)}</span>
       </div>
+      <button
+        type="button"
+        aria-expanded={table}
+        onClick={() => setTable(!table)}
+        className="mt-2 text-xs text-primary hover:underline"
+      >
+        {table ? t("reports.hideData") : t("reports.showData")}
+      </button>
+      {table && (
+        <table className="mt-2 w-full text-xs">
+          <thead>
+            <tr className="border-b border-border text-left text-muted-foreground">
+              <th className="py-1 font-medium">{t("field.date")}</th>
+              <th className="py-1 text-right font-medium">{title}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {data.map((d) => (
+              <tr key={d.date} className="border-b border-border/60 last:border-0">
+                <td className="py-1 tabular-nums">{d.date}</td>
+                <td className="py-1 text-right tabular-nums">{d.value}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
     </div>
   );
 }

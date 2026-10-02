@@ -10,6 +10,8 @@ export const PRIORITY_RANK: Record<Priority, number> = {
 };
 export const STAGE_KINDS: StageKind[] = ["backlog", "planned", "active", "done", "cancelled"];
 
+export const MAX_UPLOAD = 5 * 1024 * 1024;
+
 export const issueKey = (number: number) => `BW-${number}`;
 
 export function formatMinutes(minutes: number) {

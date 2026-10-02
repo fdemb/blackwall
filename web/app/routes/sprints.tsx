@@ -5,6 +5,7 @@ import {
   Archive,
   CheckCheck,
   ChevronLeft,
+  List,
   MoreHorizontal,
   Pencil,
   Play,
@@ -14,15 +15,17 @@ import {
 import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
 import { DatePicker } from "~/components/ui/date-picker";
-import { Dialog } from "~/components/ui/dialog";
+import { Dialog, useDialogDirty } from "~/components/ui/dialog";
 import { TextField } from "~/components/ui/field";
 import { Menu, MenuItem, MenuPopover, MenuTrigger } from "~/components/ui/menu";
 import { DndColumn } from "~/components/app/board";
+import { IssueList } from "~/components/app/issue-list";
 import { NullableSelect } from "~/components/app/pickers";
-import { Page, PageHeader, Card } from "~/components/app/page";
+import { EmptyState, Page, PageHeader, Card } from "~/components/app/page";
 import { isDone } from "~/lib/filters";
 import { fullDate, shortDate } from "~/lib/format";
 import { useI18n } from "~/lib/i18n";
+import { usePending } from "~/lib/use-pending";
 import { useWorkspace } from "~/lib/workspace";
 import type { Id, Sprint, Workspace } from "~/lib/types";
 
@@ -38,6 +41,8 @@ export default function Sprints() {
   const tm = team(teamId!);
   const [editing, setEditing] = useState<Sprint | "new" | null>(null);
   const [completing, setCompleting] = useState<Sprint | null>(null);
+  const [viewing, setViewing] = useState<Sprint | null>(null);
+  const { pending: changing, guard } = usePending();
   if (!tm) return <Navigate to={`/${wsId}/my-issues`} replace />;
   const sprints = ws.sprints.filter((s) => s.team_id === tm.id);
   const open = sprints
@@ -131,15 +136,17 @@ export default function Sprints() {
                             onAction={(k) => {
                               if (k === "edit") setEditing(s);
                               if (k === "start")
-                                run({
-                                  type: "update_sprint",
-                                  id: s.id,
-                                  name: s.name,
-                                  goal: s.goal,
-                                  starts_at: s.starts_at,
-                                  ends_at: s.ends_at,
-                                  state: "active",
-                                }).catch(() => {});
+                                void guard(() =>
+                                  run({
+                                    type: "update_sprint",
+                                    id: s.id,
+                                    name: s.name,
+                                    goal: s.goal,
+                                    starts_at: s.starts_at,
+                                    ends_at: s.ends_at,
+                                    state: "active",
+                                  }),
+                                );
                               if (k === "complete") setCompleting(s);
                             }}
                           >
@@ -148,9 +155,9 @@ export default function Sprints() {
                               {t("action.edit")}
                             </MenuItem>
                             {s.state === "planned" && (
-                              <MenuItem id="start">
+                              <MenuItem id="start" isDisabled={changing}>
                                 <Play />
-                                {t("sprint.start")}
+                                {changing ? t("sprint.starting") : t("sprint.start")}
                               </MenuItem>
                             )}
                             {s.state === "active" && (
@@ -195,7 +202,10 @@ export default function Sprints() {
             <h2 className="mb-2 text-[13px] font-semibold">{t("sprint.past")}</h2>
             <Card className="divide-y divide-border">
               {past.map((s) => (
-                <div key={s.id} className="flex items-center gap-3 px-4 py-2.5 text-[13px]">
+                <div
+                  key={s.id}
+                  className="flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-2.5 text-[13px]"
+                >
                   <span className="font-medium">{s.name}</span>
                   <Badge>{t(`sprint.state.${s.state}`)}</Badge>
                   <span className="text-muted-foreground tabular-nums">
@@ -210,11 +220,21 @@ export default function Sprints() {
                       })}
                     </span>
                   )}
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className={s.outcome ? "" : "ml-auto"}
+                    onPress={() => setViewing(s)}
+                  >
+                    <List />
+                    {t("sprint.viewIssues")}
+                  </Button>
                   {canWrite && s.state === "completed" && (
                     <Button
                       variant="ghost"
                       size="sm"
-                      onPress={() => run({ type: "archive_sprint", id: s.id }).catch(() => {})}
+                      isDisabled={changing}
+                      onPress={() => void guard(() => run({ type: "archive_sprint", id: s.id }))}
                     >
                       <Archive />
                       {t("sprint.archive")}
@@ -236,6 +256,27 @@ export default function Sprints() {
         {(close) => (
           <SprintForm teamId={tm.id} sprint={editing === "new" ? null : editing} close={close} />
         )}
+      </Dialog>
+      <Dialog
+        title={t("sprint.issuesTitle", { name: viewing?.name ?? "" })}
+        size="lg"
+        isOpen={viewing !== null}
+        onOpenChange={(o) => !o && setViewing(null)}
+      >
+        {() =>
+          viewing && (
+            <div className="-mx-5 -mb-5 max-h-[60vh] overflow-y-auto border-t border-border">
+              <IssueList
+                issues={teamIssues
+                  .filter((i) => i.sprint_id === viewing.id)
+                  .sort((a, b) => a.position - b.position)}
+                groupBy="stage"
+                selectable={false}
+                emptyState={<EmptyState title={t("sprint.noIssues")} />}
+              />
+            </div>
+          )
+        }
       </Dialog>
       <Dialog
         title={t("sprint.complete")}
@@ -267,21 +308,31 @@ function SprintForm({
   const [end, setEnd] = useState<string | null>(
     sprint?.ends_at ?? new Date(Date.now() + 14 * 86400000).toISOString(),
   );
-  const invalid = !name.trim() || !start || !end || new Date(end) < new Date(start);
+  const { pending, error, guard } = usePending();
+  const reversed = Boolean(start && end && new Date(end) < new Date(start));
+  const invalid = !name.trim() || !start || !end || reversed;
+  useDialogDirty(
+    name !== (sprint?.name ?? "") ||
+      goal !== (sprint?.goal ?? "") ||
+      start !== (sprint?.starts_at ?? start) ||
+      end !== (sprint?.ends_at ?? end),
+  );
   return (
     <Form
       className="flex flex-col gap-4"
-      onSubmit={async (e) => {
+      onSubmit={(e) => {
         e.preventDefault();
         if (invalid) return;
         const body = { name: name.trim(), goal: goal.trim(), starts_at: start!, ends_at: end! };
-        await (
-          sprint
-            ? run({ type: "update_sprint", id: sprint.id, state: sprint.state, ...body })
-            : run({ type: "create_sprint", team_id: teamId, ...body })
-        )
-          .then(close)
-          .catch(() => {});
+        void guard(async () => {
+          await (sprint
+            ? run(
+                { type: "update_sprint", id: sprint.id, state: sprint.state, ...body },
+                { quiet: true },
+              )
+            : run({ type: "create_sprint", team_id: teamId, ...body }, { quiet: true }));
+          close();
+        });
       }}
     >
       <TextField label={t("field.name")} value={name} onChange={setName} autoFocus isRequired />
@@ -301,14 +352,30 @@ function SprintForm({
           clearable={false}
           endOfDay={false}
         />
-        <DatePicker label={t("sprint.ends")} value={end} onChange={setEnd} clearable={false} />
+        <DatePicker
+          label={t("sprint.ends")}
+          value={end}
+          onChange={setEnd}
+          clearable={false}
+          isInvalid={reversed}
+        />
       </div>
+      {reversed && (
+        <p role="alert" className="-mt-2 text-xs text-destructive">
+          {t("sprint.endBeforeStart")}
+        </p>
+      )}
+      {error && (
+        <p role="alert" className="text-xs text-destructive">
+          {error}
+        </p>
+      )}
       <div className="flex justify-end gap-2">
         <Button variant="ghost" onPress={close}>
           {t("action.cancel")}
         </Button>
-        <Button type="submit" variant="primary" isDisabled={invalid}>
-          {t("action.save")}
+        <Button type="submit" variant="primary" isDisabled={invalid || pending}>
+          {pending ? t("action.saving") : t("action.save")}
         </Button>
       </div>
     </Form>
@@ -319,6 +386,7 @@ function CompleteForm({ sprint, close }: { sprint: Sprint; close: () => void }) 
   const t = useI18n().t;
   const { ws, run } = useWorkspace();
   const [target, setTarget] = useState<Id | null>(null);
+  const { pending, error, guard } = usePending();
   const unfinished = ws.issues.filter(
     (i) => i.sprint_id === sprint.id && !i.deleted_at && !isDone(ws, i),
   ).length;
@@ -333,11 +401,15 @@ function CompleteForm({ sprint, close }: { sprint: Sprint; close: () => void }) 
   return (
     <Form
       className="flex flex-col gap-4"
-      onSubmit={async (e) => {
+      onSubmit={(e) => {
         e.preventDefault();
-        await run({ type: "complete_sprint", id: sprint.id, carryover_sprint_id: target })
-          .then(close)
-          .catch(() => {});
+        void guard(async () => {
+          await run(
+            { type: "complete_sprint", id: sprint.id, carryover_sprint_id: target },
+            { quiet: true },
+          );
+          close();
+        });
       }}
     >
       <p className="text-[13px] text-muted-foreground">
@@ -352,11 +424,16 @@ function CompleteForm({ sprint, close }: { sprint: Sprint; close: () => void }) 
           options={options}
         />
       )}
+      {error && (
+        <p role="alert" className="text-xs text-destructive">
+          {error}
+        </p>
+      )}
       <div className="flex justify-end gap-2">
         <Button variant="ghost" onPress={close}>
           {t("action.cancel")}
         </Button>
-        <Button type="submit" variant="primary">
+        <Button type="submit" variant="primary" isDisabled={pending}>
           {t("sprint.complete")}
         </Button>
       </div>

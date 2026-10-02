@@ -17,7 +17,7 @@ export default function Person() {
   const role = ws.members.find((x) => x.user_id === m.id)?.role;
   const issues = applyFilter(ws, { assignee: m.id }).filter((i) => !isDone(ws, i));
   const teams = ws.teams.filter((x) => x.members.includes(m.id));
-  const looksLikeEmailOrPhone = /^[+\d][\d\s()-]{5,}$/.test(m.contact);
+  const looksLikePhone = /^[+\d][\d\s()-]{5,}$/.test(m.contact);
   return (
     <Page>
       <PageHeader
@@ -34,34 +34,36 @@ export default function Person() {
       />
       <Scroll>
         <div className="mx-auto max-w-3xl space-y-8 p-6">
-          <div className="flex items-center gap-5">
+          <div className="flex flex-wrap items-center gap-x-5 gap-y-3">
             <Avatar name={m.display_name} src={m.avatar_url} size={72} />
-            <div className="min-w-0 space-y-1.5">
-              <div className="flex items-center gap-2">
-                <h2 className="text-xl font-semibold tracking-tight">{m.display_name}</h2>
+            <div className="min-w-0 flex-1 basis-60 space-y-1.5">
+              <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                <h2 className="min-w-0 break-words text-xl font-semibold tracking-tight">
+                  {m.display_name}
+                </h2>
                 {role && (
                   <Badge tone={role === "owner" ? "primary" : "neutral"}>{t(`role.${role}`)}</Badge>
                 )}
               </div>
               <a
                 href={`mailto:${m.email}`}
-                className="flex items-center gap-2 text-[13px] text-muted-foreground hover:text-foreground"
+                className="flex items-start gap-2 break-all text-[13px] text-muted-foreground hover:text-foreground"
               >
-                <Mail className="size-3.5" />
+                <Mail className="mt-0.5 size-3.5 shrink-0" />
                 {m.email}
               </a>
               {m.contact &&
-                (looksLikeEmailOrPhone ? (
+                (looksLikePhone ? (
                   <a
                     href={`tel:${m.contact.replace(/\s/g, "")}`}
-                    className="flex items-center gap-2 text-[13px] text-muted-foreground hover:text-foreground"
+                    className="flex items-start gap-2 break-words text-[13px] text-muted-foreground hover:text-foreground"
                   >
-                    <Phone className="size-3.5" />
+                    <Phone className="mt-0.5 size-3.5 shrink-0" />
                     {m.contact}
                   </a>
                 ) : (
-                  <p className="flex items-center gap-2 text-[13px] text-muted-foreground">
-                    <Phone className="size-3.5" />
+                  <p className="flex items-start gap-2 whitespace-pre-line break-words text-[13px] text-muted-foreground">
+                    <Phone className="mt-0.5 size-3.5 shrink-0" />
                     {m.contact}
                   </p>
                 ))}

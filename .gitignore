@@ -32,3 +32,6 @@ test-results/
 .vscode/
 
 .impeccable
+
+# stray build output
+frontend/
