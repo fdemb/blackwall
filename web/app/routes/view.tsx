@@ -46,20 +46,60 @@ function ViewPage({ view }: { view: SavedView }) {
       subtitle={changed ? t("view.unsaved") : undefined}
       actions={
         <>
-          {view.shared && <Badge tone="primary"><Users className="size-3" />{t("view.shared")}</Badge>}
+          {view.shared && (
+            <Badge tone="primary">
+              <Users className="size-3" />
+              {t("view.shared")}
+            </Badge>
+          )}
           {changed && (
             <>
-              <Button variant="ghost" size="sm" onPress={() => { state.setFilter(view.filter); state.setGroupBy(view.filter.group_by ?? "stage"); }}><RotateCcw />{t("view.revert")}</Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                onPress={() => {
+                  state.setFilter(view.filter);
+                  state.setGroupBy(view.filter.group_by ?? "stage");
+                }}
+              >
+                <RotateCcw />
+                {t("view.revert")}
+              </Button>
               {canEdit && (
-                <Button variant="subtle" size="sm" isDisabled={pending} onPress={() => void guard(async () => {
-                  await run({ type: "update_view", id: view.id, name: view.name, shared: view.shared, filter: current });
-                  toast.show(t("view.updated"));
-                })}>{t("view.update")}</Button>
+                <Button
+                  variant="subtle"
+                  size="sm"
+                  isDisabled={pending}
+                  onPress={() =>
+                    void guard(async () => {
+                      await run({
+                        type: "update_view",
+                        id: view.id,
+                        name: view.name,
+                        shared: view.shared,
+                        filter: current,
+                      });
+                      toast.show(t("view.updated"));
+                    })
+                  }
+                >
+                  {t("view.update")}
+                </Button>
               )}
             </>
           )}
-          {canEdit && <Button variant="ghost" size="sm" onPress={() => setEditing(true)}><Pencil />{t("view.rename")}</Button>}
-          {canEdit && <Button variant="ghost" size="sm" onPress={() => setDeleting(true)}><Trash2 />{t("view.delete")}</Button>}
+          {canEdit && (
+            <Button variant="ghost" size="sm" onPress={() => setEditing(true)}>
+              <Pencil />
+              {t("view.rename")}
+            </Button>
+          )}
+          {canEdit && (
+            <Button variant="ghost" size="sm" onPress={() => setDeleting(true)}>
+              <Trash2 />
+              {t("view.delete")}
+            </Button>
+          )}
           <Dialog title={t("view.rename")} size="sm" isOpen={editing} onOpenChange={setEditing}>
             {(close) => <EditViewForm view={view} close={close} />}
           </Dialog>
@@ -67,7 +107,10 @@ function ViewPage({ view }: { view: SavedView }) {
             title={t("view.deleteTitle")}
             isOpen={deleting}
             onOpenChange={setDeleting}
-            onConfirm={async () => { await run({ type: "delete_view", id: view.id }, { quiet: true }); nav(`/${wsId}/issues`); }}
+            onConfirm={async () => {
+              await run({ type: "delete_view", id: view.id }, { quiet: true });
+              nav(`/${wsId}/issues`);
+            }}
           />
         </>
       }
@@ -83,16 +126,37 @@ function EditViewForm({ view, close }: { view: SavedView; close: () => void }) {
   const [shared, setShared] = useState(view.shared);
   useDialogDirty(name !== view.name || shared !== view.shared);
   return (
-    <Form className="flex flex-col gap-4" onSubmit={(e) => {
-      e.preventDefault();
-      void guard(async () => { await run({ type: "update_view", id: view.id, name: name.trim(), shared, filter: view.filter }, { quiet: true }); close(); });
-    }}>
+    <Form
+      className="flex flex-col gap-4"
+      onSubmit={(e) => {
+        e.preventDefault();
+        void guard(async () => {
+          await run(
+            { type: "update_view", id: view.id, name: name.trim(), shared, filter: view.filter },
+            { quiet: true },
+          );
+          close();
+        });
+      }}
+    >
       <TextField label={t("field.name")} value={name} onChange={setName} autoFocus isRequired />
-      {canWrite && <Switch isSelected={shared} onChange={setShared}>{t("view.share")}</Switch>}
-      {error && <p role="alert" className="text-xs text-destructive">{error}</p>}
+      {canWrite && (
+        <Switch isSelected={shared} onChange={setShared}>
+          {t("view.share")}
+        </Switch>
+      )}
+      {error && (
+        <p role="alert" className="text-xs text-destructive">
+          {error}
+        </p>
+      )}
       <div className="flex justify-end gap-2">
-        <Button variant="ghost" onPress={close}>{t("action.cancel")}</Button>
-        <Button type="submit" variant="primary" isDisabled={!name.trim() || pending}>{pending ? t("action.saving") : t("action.save")}</Button>
+        <Button variant="ghost" onPress={close}>
+          {t("action.cancel")}
+        </Button>
+        <Button type="submit" variant="primary" isDisabled={!name.trim() || pending}>
+          {pending ? t("action.saving") : t("action.save")}
+        </Button>
       </div>
     </Form>
   );

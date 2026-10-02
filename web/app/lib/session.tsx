@@ -1,4 +1,12 @@
-import { createContext, useCallback, useContext, useMemo, useRef, useState, type ReactNode } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { auth } from "./api";
 import { useI18n } from "./i18n";
 import { applyTheme } from "./theme";
@@ -38,7 +46,10 @@ export function SessionProvider({ initial, children }: { initial: Profile; child
     },
     [setProfile],
   );
-  const value = useMemo(() => ({ profile, setProfile, saveProfile }), [profile, setProfile, saveProfile]);
+  const value = useMemo(
+    () => ({ profile, setProfile, saveProfile }),
+    [profile, setProfile, saveProfile],
+  );
   return <Ctx value={value}>{children}</Ctx>;
 }
 

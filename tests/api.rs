@@ -6,7 +6,7 @@ use blackwall::{
     auth::{Register, Session},
     domain::{BulkAction, Command, IssueInput, IssuePatch, Priority, Role},
     http::router_with_web,
-    jobs,
+    jobs::{self, Email, Grant, Job, Mailer},
     store::{NewJob, Store},
 };
 use chrono::{Duration, Utc};
@@ -362,6 +362,10 @@ async fn contract(url: &str) {
         },
     )
     .await;
+    // Committing a job wakes the delivery worker instead of leaving it for a timer.
+    tokio::time::timeout(std::time::Duration::from_secs(1), store.outbox.wait())
+        .await
+        .unwrap();
     let invite_row=sqlx::query("SELECT payload FROM outbox WHERE kind='email' AND payload LIKE $1 ORDER BY due_at DESC LIMIT 1").bind(format!("%{}%",colleague.profile.email)).fetch_one(&store.pool).await.unwrap();
     let mail: Value = serde_json::from_str(invite_row.try_get("payload").unwrap()).unwrap();
     let (status, value) = call(
@@ -648,7 +652,7 @@ async fn contract(url: &str) {
         },
     )
     .await;
-    jobs::tick(&store).await.unwrap();
+    jobs::tick(&store, &Mailer::Disabled).await.unwrap();
     let queued =
         sqlx::query("SELECT delivered_at FROM outbox WHERE kind='webhook' AND payload LIKE $1")
             .bind(format!("%{integration}%"))
@@ -692,7 +696,7 @@ async fn contract(url: &str) {
     .await;
     let quiet_id = quiet["result"]["id"].clone();
     let revision = snapshot(&app, &owner, &id).await["revision"].clone();
-    jobs::tick(&store).await.unwrap();
+    jobs::tick(&store, &Mailer::Disabled).await.unwrap();
     let current = snapshot(&app, &owner, &id).await;
     assert_eq!(current["revision"], revision);
     assert!(
@@ -702,6 +706,66 @@ async fn contract(url: &str) {
             .iter()
             .any(|n| n["issue_id"] == quiet_id && n["kind"] == "deadline")
     );
+    // Delivery rechecks state, so an email for an invitation cancelled before the worker runs
+    // completes without being sent.
+    let cancelled = change(
+        &app,
+        &owner,
+        &id,
+        Command::Invite {
+            email: "cancelled@example.com".into(),
+            role: Role::Member,
+            token_hash: "ignored-client-hash".into(),
+        },
+    )
+    .await;
+    let cancelled = uuid(&cancelled["result"]["id"]);
+    change(
+        &app,
+        &owner,
+        &id,
+        Command::CancelInvitation { id: cancelled },
+    )
+    .await;
+    jobs::tick(&store, &Mailer::Disabled).await.unwrap();
+    let row = sqlx::query(
+        "SELECT delivered_at,last_error FROM outbox WHERE kind='email' AND payload LIKE $1",
+    )
+    .bind(format!("%{cancelled}%"))
+    .fetch_one(&store.pool)
+    .await
+    .unwrap();
+    assert!(row.try_get::<i64, _>("delivered_at").unwrap() > 0);
+    assert!(row.try_get::<String, _>("last_error").unwrap().is_empty());
+    // A suppressed reminder does not keep the workspace due.
+    assert!(
+        !store
+            .due_workspaces(Utc::now())
+            .await
+            .unwrap()
+            .contains(&workspace_id)
+    );
+    // A deadline outside the reminder window schedules the tick for when the window opens.
+    let mut later_input = issue(team, "Later deadline");
+    later_input.assignee = Some(owner.profile.id);
+    let deadline = Utc::now() + Duration::hours(30);
+    later_input.deadline = Some(deadline);
+    change(
+        &app,
+        &owner,
+        &id,
+        Command::CreateIssue { input: later_input },
+    )
+    .await;
+    let next_tick: i64 = sqlx::query("SELECT next_tick_at FROM workspaces WHERE id=$1")
+        .bind(&id)
+        .fetch_one(&store.pool)
+        .await
+        .unwrap()
+        .try_get("next_tick_at")
+        .unwrap();
+    assert!(next_tick > Utc::now().timestamp());
+    assert!(next_tick <= (deadline - Duration::hours(24)).timestamp() + 1);
 
     let (a, rev) = store.load_workspace(workspace_id).await.unwrap();
     let mut b = a.clone();
@@ -713,11 +777,14 @@ async fn contract(url: &str) {
     assert_ne!(first_write.is_ok(), second_write.is_ok());
     let now = Utc::now().timestamp();
     let job = Uuid::new_v4().to_string();
-    store
-        .enqueue(&job, "unknown_kind", &json!({}), now)
+    // A row the current code cannot decode still records the failed attempt.
+    sqlx::query("INSERT INTO outbox (id,kind,payload,due_at) VALUES ($1,'unknown_kind','{}',$2)")
+        .bind(&job)
+        .bind(now)
+        .execute(&store.pool)
         .await
         .unwrap();
-    jobs::tick(&store).await.unwrap();
+    jobs::tick(&store, &Mailer::Disabled).await.unwrap();
     let row = sqlx::query("SELECT attempts,lease_until,last_error FROM outbox WHERE id=$1")
         .bind(&job)
         .fetch_one(&store.pool)
@@ -733,7 +800,7 @@ async fn contract(url: &str) {
         .iter()
         .filter(|n| n["kind"] == "deadline")
         .count();
-    jobs::tick(&store).await.unwrap();
+    jobs::tick(&store, &Mailer::Disabled).await.unwrap();
     assert_eq!(
         snapshot(&app, &owner, &id).await["workspace"]["notifications"]
             .as_array()
@@ -858,12 +925,19 @@ async fn contract(url: &str) {
         .commit_workspace(
             &b,
             rev,
-            &[NewJob {
-                id: stale_job.clone(),
-                kind: "email".into(),
-                payload: json!({}),
-                due_at: now,
-            }],
+            &[NewJob::now(
+                stale_job.clone(),
+                Job::Email(Email {
+                    to: "stale@example.com".into(),
+                    subject: "Stale".into(),
+                    token: "token".into(),
+                    grant: Grant::Invitation {
+                        workspace_id,
+                        invitation_id: Uuid::new_v4(),
+                        token_hash: "hash".into(),
+                    },
+                }),
+            )],
             None,
         )
         .await;

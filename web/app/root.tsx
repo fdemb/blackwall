@@ -1,5 +1,14 @@
 import { useEffect } from "react";
-import { Links, Meta, Outlet, Scripts, ScrollRestoration, isRouteErrorResponse, useHref, useNavigate } from "react-router";
+import {
+  Links,
+  Meta,
+  Outlet,
+  Scripts,
+  ScrollRestoration,
+  isRouteErrorResponse,
+  useHref,
+  useNavigate,
+} from "react-router";
 import { RouterProvider } from "react-aria-components";
 import "./app.css";
 import { ToastProvider } from "~/components/ui/toast";
@@ -58,7 +67,11 @@ export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {
   // The error page replaces the app, including its i18n provider, so it reads the language directly.
   const lang = initialLanguage();
   const t = (key: Parameters<typeof translate>[1]) => translate(lang, key);
-  const message = isRouteErrorResponse(error) ? `${error.status} ${error.statusText}` : error instanceof Error ? error.message : t("error.unknown");
+  const message = isRouteErrorResponse(error)
+    ? `${error.status} ${error.statusText}`
+    : error instanceof Error
+      ? error.message
+      : t("error.unknown");
   const action = "inline-flex h-9 items-center rounded-md px-3 text-[13px] font-medium";
   return (
     <div role="alert" className="grid h-dvh place-items-center p-6 text-center">
@@ -67,9 +80,19 @@ export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {
         <p className="mt-1 break-words text-muted-foreground">{message}</p>
         <div className="mt-5 flex flex-wrap items-center justify-center gap-2">
           {/* Reloading retries the same page. Going home can land on the workspace that failed, so offer the picker too. */}
-          <button type="button" onClick={() => location.reload()} className={`${action} bg-primary-solid text-primary-foreground hover:bg-primary-solid/90`}>{t("action.reload")}</button>
-          <a href="/welcome" className={`${action} border border-input hover:bg-muted`}>{t("error.switch")}</a>
-          <a href="/" className={`${action} text-primary hover:underline`}>{t("error.home")}</a>
+          <button
+            type="button"
+            onClick={() => location.reload()}
+            className={`${action} bg-primary-solid text-primary-foreground hover:bg-primary-solid/90`}
+          >
+            {t("action.reload")}
+          </button>
+          <a href="/welcome" className={`${action} border border-input hover:bg-muted`}>
+            {t("error.switch")}
+          </a>
+          <a href="/" className={`${action} text-primary hover:underline`}>
+            {t("error.home")}
+          </a>
         </div>
       </div>
     </div>

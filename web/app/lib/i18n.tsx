@@ -1,4 +1,12 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+  type ReactNode,
+} from "react";
 import { I18nProvider as AriaLocale } from "react-aria-components";
 import { en } from "~/locales/en";
 import { pl } from "~/locales/pl";

@@ -25,7 +25,11 @@ export default function Register() {
           setBusy(true);
           setError("");
           try {
-            const s = await auth.register(String(f.get("email")), String(f.get("password")), String(f.get("name")));
+            const s = await auth.register(
+              String(f.get("email")),
+              String(f.get("password")),
+              String(f.get("name")),
+            );
             setCsrf(s.csrf_token);
             nav("/", { replace: true });
           } catch (err) {
@@ -34,15 +38,39 @@ export default function Register() {
           }
         }}
       >
-        <TextField name="name" label={t("field.displayName")} autoComplete="name" autoFocus isRequired />
-        <TextField name="email" type="email" label={t("field.email")} autoComplete="email" isRequired />
-        <TextField name="password" type="password" label={t("field.password")} autoComplete="new-password" minLength={12} isRequired description={t("auth.passwordHint")} />
+        <TextField
+          name="name"
+          label={t("field.displayName")}
+          autoComplete="name"
+          autoFocus
+          isRequired
+        />
+        <TextField
+          name="email"
+          type="email"
+          label={t("field.email")}
+          autoComplete="email"
+          isRequired
+        />
+        <TextField
+          name="password"
+          type="password"
+          label={t("field.password")}
+          autoComplete="new-password"
+          minLength={12}
+          isRequired
+          description={t("auth.passwordHint")}
+        />
         <FormError>{error}</FormError>
-        <Button type="submit" variant="primary" size="lg" isDisabled={busy}>{busy ? t("auth.creating") : t("auth.register")}</Button>
+        <Button type="submit" variant="primary" size="lg" isDisabled={busy}>
+          {busy ? t("auth.creating") : t("auth.register")}
+        </Button>
       </Form>
       <p className="mt-5 text-[13px] text-muted-foreground">
         {t("auth.haveAccount")}{" "}
-        <Link to="/login" className="font-medium text-primary hover:underline">{t("auth.login")}</Link>
+        <Link to="/login" className="font-medium text-primary hover:underline">
+          {t("auth.login")}
+        </Link>
       </p>
     </>
   );

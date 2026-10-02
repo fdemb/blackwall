@@ -5,28 +5,74 @@ import { usePending } from "~/lib/use-pending";
 
 /** Asks before something destructive. Stays open and shows the error if the action fails. */
 export function ConfirmDialog({
-  title, description, confirmLabel, isOpen, onOpenChange, onConfirm,
+  title,
+  description,
+  confirmLabel,
+  isOpen,
+  onOpenChange,
+  onConfirm,
 }: {
-  title: string; description?: string; confirmLabel?: string; isOpen: boolean; onOpenChange: (open: boolean) => void;
+  title: string;
+  description?: string;
+  confirmLabel?: string;
+  isOpen: boolean;
+  onOpenChange: (open: boolean) => void;
   onConfirm: () => Promise<unknown>;
 }) {
   const t = useT();
   return (
-    <Dialog title={title} description={description ?? t("action.cannotUndo")} size="sm" isOpen={isOpen} onOpenChange={onOpenChange}>
-      {(close) => <ConfirmBody label={confirmLabel ?? t("action.delete")} close={close} onConfirm={onConfirm} />}
+    <Dialog
+      title={title}
+      description={description ?? t("action.cannotUndo")}
+      size="sm"
+      isOpen={isOpen}
+      onOpenChange={onOpenChange}
+    >
+      {(close) => (
+        <ConfirmBody
+          label={confirmLabel ?? t("action.delete")}
+          close={close}
+          onConfirm={onConfirm}
+        />
+      )}
     </Dialog>
   );
 }
 
-function ConfirmBody({ label, close, onConfirm }: { label: string; close: () => void; onConfirm: () => Promise<unknown> }) {
+function ConfirmBody({
+  label,
+  close,
+  onConfirm,
+}: {
+  label: string;
+  close: () => void;
+  onConfirm: () => Promise<unknown>;
+}) {
   const t = useT();
   const { pending, error, guard } = usePending();
   return (
     <div className="space-y-3">
-      {error && <p role="alert" className="text-xs text-destructive">{error}</p>}
+      {error && (
+        <p role="alert" className="text-xs text-destructive">
+          {error}
+        </p>
+      )}
       <div className="flex justify-end gap-2">
-        <Button variant="ghost" onPress={close}>{t("action.cancel")}</Button>
-        <Button variant="destructive" isDisabled={pending} onPress={() => void guard(async () => { await onConfirm(); close(); })}>{label}</Button>
+        <Button variant="ghost" onPress={close}>
+          {t("action.cancel")}
+        </Button>
+        <Button
+          variant="destructive"
+          isDisabled={pending}
+          onPress={() =>
+            void guard(async () => {
+              await onConfirm();
+              close();
+            })
+          }
+        >
+          {label}
+        </Button>
       </div>
     </div>
   );

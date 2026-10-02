@@ -32,17 +32,52 @@ export default function Projects() {
   const needle = q.trim().toLowerCase();
   const list = rows
     .filter(({ p }) => !needle || `${p.name} ${p.description}`.toLowerCase().includes(needle))
-    .sort((a, b) => (sort === "progress" ? b.ratio - a.ratio : sort === "recent" ? b.touched - a.touched : 0) || a.p.name.localeCompare(b.p.name));
+    .sort(
+      (a, b) =>
+        (sort === "progress" ? b.ratio - a.ratio : sort === "recent" ? b.touched - a.touched : 0) ||
+        a.p.name.localeCompare(b.p.name),
+    );
   return (
     <Page>
-      <PageHeader title={t("nav.projects")} icon={<FolderKanban className="size-4 text-muted-foreground" />} actions={canWrite && <Button variant="primary" size="sm" onPress={() => setOpen(true)}><Plus />{t("project.new")}</Button>}>
+      <PageHeader
+        title={t("nav.projects")}
+        icon={<FolderKanban className="size-4 text-muted-foreground" />}
+        actions={
+          canWrite && (
+            <Button variant="primary" size="sm" onPress={() => setOpen(true)}>
+              <Plus />
+              {t("project.new")}
+            </Button>
+          )
+        }
+      >
         {ws.projects.length > 1 && (
           <div className="flex flex-wrap items-center gap-2 px-4 pb-2">
-            <SearchField aria-label={t("action.search")} placeholder={t("project.search")} value={q} onChange={setQ} className="w-full sm:w-56" />
+            <SearchField
+              aria-label={t("action.search")}
+              placeholder={t("project.search")}
+              value={q}
+              onChange={setQ}
+              className="w-full sm:w-56"
+            />
             <MenuTrigger>
-              <Button variant="ghost" size="sm">{t("sort.label")}: {t(sort === "name" ? "project.sortName" : sort === "progress" ? "project.sortProgress" : "project.sortRecent")}</Button>
+              <Button variant="ghost" size="sm">
+                {t("sort.label")}:{" "}
+                {t(
+                  sort === "name"
+                    ? "project.sortName"
+                    : sort === "progress"
+                      ? "project.sortProgress"
+                      : "project.sortRecent",
+                )}
+              </Button>
               <MenuPopover placement="bottom start">
-                <Menu selectionMode="single" selectedKeys={[sort]} onAction={(k) => setSort(k as ProjectSort)} aria-label={t("sort.label")}>
+                <Menu
+                  selectionMode="single"
+                  selectedKeys={[sort]}
+                  onAction={(k) => setSort(k as ProjectSort)}
+                  aria-label={t("sort.label")}
+                >
                   <MenuItem id="name">{t("project.sortName")}</MenuItem>
                   <MenuItem id="progress">{t("project.sortProgress")}</MenuItem>
                   <MenuItem id="recent">{t("project.sortRecent")}</MenuItem>
@@ -54,22 +89,56 @@ export default function Projects() {
       </PageHeader>
       <Scroll>
         {ws.projects.length === 0 ? (
-          <EmptyState icon={<FolderKanban />} title={t("project.emptyTitle")} description={t("project.emptySub")} action={canWrite && <Button variant="primary" onPress={() => setOpen(true)}>{t("project.new")}</Button>} />
+          <EmptyState
+            icon={<FolderKanban />}
+            title={t("project.emptyTitle")}
+            description={t("project.emptySub")}
+            action={
+              canWrite && (
+                <Button variant="primary" onPress={() => setOpen(true)}>
+                  {t("project.new")}
+                </Button>
+              )
+            }
+          />
         ) : list.length === 0 ? (
-          <EmptyState icon={<FolderKanban />} title={t("project.noMatch")} action={<Button onPress={() => setQ("")}>{t("action.clearSearch")}</Button>} />
+          <EmptyState
+            icon={<FolderKanban />}
+            title={t("project.noMatch")}
+            action={<Button onPress={() => setQ("")}>{t("action.clearSearch")}</Button>}
+          />
         ) : (
           <ul className="grid gap-3 p-4 sm:grid-cols-2 xl:grid-cols-3">
             {list.map(({ p, issues, done }) => {
               return (
                 <li key={p.id}>
-                  <Link to={`/${ws.id}/projects/${p.id}`} className="group block rounded-xl border border-border bg-card p-4 shadow-xs outline-none transition hover:border-primary/40 hover:shadow-md focus-visible:ring-2 focus-visible:ring-ring/60">
-                    <h2 className="font-semibold tracking-tight group-hover:text-primary">{p.name}</h2>
-                    <p className="mt-1 line-clamp-2 min-h-10 text-[13px] text-muted-foreground">{p.description || t("project.noDescription")}</p>
+                  <Link
+                    to={`/${ws.id}/projects/${p.id}`}
+                    className="group block rounded-xl border border-border bg-card p-4 shadow-xs outline-none transition hover:border-primary/40 hover:shadow-md focus-visible:ring-2 focus-visible:ring-ring/60"
+                  >
+                    <h2 className="font-semibold tracking-tight group-hover:text-primary">
+                      {p.name}
+                    </h2>
+                    <p className="mt-1 line-clamp-2 min-h-10 text-[13px] text-muted-foreground">
+                      {p.description || t("project.noDescription")}
+                    </p>
                     <div className="mt-3 flex items-center gap-3 text-xs text-muted-foreground">
-                      <ProgressBar value={done} total={issues.length} className="flex-1" label={p.name} />
-                      <span className="tabular-nums">{done}/{issues.length}</span>
+                      <ProgressBar
+                        value={done}
+                        total={issues.length}
+                        className="flex-1"
+                        label={p.name}
+                      />
+                      <span className="tabular-nums">
+                        {done}/{issues.length}
+                      </span>
                     </div>
-                    <p className="mt-2 truncate text-xs text-muted-foreground">{p.team_ids.map((id) => ws.teams.find((x) => x.id === id)?.name).filter(Boolean).join(", ") || t("project.allTeams")}</p>
+                    <p className="mt-2 truncate text-xs text-muted-foreground">
+                      {p.team_ids
+                        .map((id) => ws.teams.find((x) => x.id === id)?.name)
+                        .filter(Boolean)
+                        .join(", ") || t("project.allTeams")}
+                    </p>
                   </Link>
                 </li>
               );
@@ -77,7 +146,9 @@ export default function Projects() {
           </ul>
         )}
       </Scroll>
-      <Dialog title={t("project.new")} size="md" isOpen={open} onOpenChange={setOpen}>{(close) => <ProjectForm close={close} />}</Dialog>
+      <Dialog title={t("project.new")} size="md" isOpen={open} onOpenChange={setOpen}>
+        {(close) => <ProjectForm close={close} />}
+      </Dialog>
     </Page>
   );
 }
@@ -89,31 +160,64 @@ export function ProjectForm({ project, close }: { project?: Project; close: () =
   const [description, setDescription] = useState(project?.description ?? "");
   const [teams, setTeams] = useState<Id[]>(project?.team_ids ?? []);
   const { pending, error, guard } = usePending();
-  useDialogDirty(name !== (project?.name ?? "") || description !== (project?.description ?? "") || teams.join() !== (project?.team_ids ?? []).join());
+  useDialogDirty(
+    name !== (project?.name ?? "") ||
+      description !== (project?.description ?? "") ||
+      teams.join() !== (project?.team_ids ?? []).join(),
+  );
   return (
-    <Form className="flex flex-col gap-4" onSubmit={(e) => {
-      e.preventDefault();
-      const body = { name: name.trim(), description: description.trim(), team_ids: teams };
-      void guard(async () => {
-        await (project ? run({ type: "update_project", id: project.id, ...body }, { quiet: true }) : run({ type: "create_project", ...body }, { quiet: true }));
-        close();
-      });
-    }}>
+    <Form
+      className="flex flex-col gap-4"
+      onSubmit={(e) => {
+        e.preventDefault();
+        const body = { name: name.trim(), description: description.trim(), team_ids: teams };
+        void guard(async () => {
+          await (project
+            ? run({ type: "update_project", id: project.id, ...body }, { quiet: true })
+            : run({ type: "create_project", ...body }, { quiet: true }));
+          close();
+        });
+      }}
+    >
       <TextField label={t("field.name")} value={name} onChange={setName} autoFocus isRequired />
-      <TextField label={t("field.description")} value={description} onChange={setDescription} multiline rows={3} />
+      <TextField
+        label={t("field.description")}
+        value={description}
+        onChange={setDescription}
+        multiline
+        rows={3}
+      />
       <fieldset>
-        <legend className="mb-1.5 text-xs font-medium text-muted-foreground">{t("project.teams")}</legend>
+        <legend className="mb-1.5 text-xs font-medium text-muted-foreground">
+          {t("project.teams")}
+        </legend>
         <div className="flex flex-col gap-2">
           {ws.teams.map((tm) => (
-            <Checkbox key={tm.id} isSelected={teams.includes(tm.id)} onChange={(on) => setTeams(on ? [...teams, tm.id] : teams.filter((x) => x !== tm.id))}>{tm.name}</Checkbox>
+            <Checkbox
+              key={tm.id}
+              isSelected={teams.includes(tm.id)}
+              onChange={(on) => setTeams(on ? [...teams, tm.id] : teams.filter((x) => x !== tm.id))}
+            >
+              {tm.name}
+            </Checkbox>
           ))}
-          {ws.teams.length === 0 && <p className="text-xs text-muted-foreground">{t("project.noTeams")}</p>}
+          {ws.teams.length === 0 && (
+            <p className="text-xs text-muted-foreground">{t("project.noTeams")}</p>
+          )}
         </div>
       </fieldset>
-      {error && <p role="alert" className="text-xs text-destructive">{error}</p>}
+      {error && (
+        <p role="alert" className="text-xs text-destructive">
+          {error}
+        </p>
+      )}
       <div className="flex justify-end gap-2">
-        <Button variant="ghost" onPress={close}>{t("action.cancel")}</Button>
-        <Button type="submit" variant="primary" isDisabled={!name.trim() || pending}>{pending ? t("action.saving") : t("action.save")}</Button>
+        <Button variant="ghost" onPress={close}>
+          {t("action.cancel")}
+        </Button>
+        <Button type="submit" variant="primary" isDisabled={!name.trim() || pending}>
+          {pending ? t("action.saving") : t("action.save")}
+        </Button>
       </div>
     </Form>
   );

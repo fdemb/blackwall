@@ -20,7 +20,17 @@ export function SaveStatus() {
   }, [pending]);
   return (
     <span role="status" className="flex items-center gap-1 text-xs text-muted-foreground">
-      {pending > 0 ? <><Loader2 className="size-3 animate-spin" />{t("action.saving")}</> : saved ? <><Check className="size-3" />{t("action.saved")}</> : null}
+      {pending > 0 ? (
+        <>
+          <Loader2 className="size-3 animate-spin" />
+          {t("action.saving")}
+        </>
+      ) : saved ? (
+        <>
+          <Check className="size-3" />
+          {t("action.saved")}
+        </>
+      ) : null}
     </span>
   );
 }

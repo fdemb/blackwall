@@ -51,13 +51,35 @@ export default function Recover() {
             setStep("reset");
           }}
         >
-          <TextField name="email" type="email" label={t("field.email")} value={email} onChange={setEmail} autoComplete="email" autoFocus isRequired />
+          <TextField
+            name="email"
+            type="email"
+            label={t("field.email")}
+            value={email}
+            onChange={setEmail}
+            autoComplete="email"
+            autoFocus
+            isRequired
+          />
           <FormError>{requestError}</FormError>
-          <Button type="submit" variant="primary" size="lg" isDisabled={busy}>{busy ? t("auth.sending") : t("auth.sendLink")}</Button>
+          <Button type="submit" variant="primary" size="lg" isDisabled={busy}>
+            {busy ? t("auth.sending") : t("auth.sendLink")}
+          </Button>
         </Form>
         <p className="mt-5 flex justify-between text-[13px]">
-          <Link to="/login" className="text-muted-foreground hover:text-foreground hover:underline">{t("auth.backToLogin")}</Link>
-          <button type="button" className="text-muted-foreground hover:text-foreground hover:underline" onClick={() => { setRequestError(""); setStep("reset"); }}>{t("auth.haveToken")}</button>
+          <Link to="/login" className="text-muted-foreground hover:text-foreground hover:underline">
+            {t("auth.backToLogin")}
+          </Link>
+          <button
+            type="button"
+            className="text-muted-foreground hover:text-foreground hover:underline"
+            onClick={() => {
+              setRequestError("");
+              setStep("reset");
+            }}
+          >
+            {t("auth.haveToken")}
+          </button>
         </p>
       </>
     );
@@ -66,7 +88,9 @@ export default function Recover() {
     <>
       <MailCheck className="mb-3 size-7 text-primary" />
       <h1 className="text-xl font-semibold tracking-tight">{t("auth.checkMail")}</h1>
-      <p className="mb-6 mt-1 text-muted-foreground">{email ? t("auth.checkMailSub", { email }) : t("auth.checkMailNoEmail")}</p>
+      <p className="mb-6 mt-1 text-muted-foreground">
+        {email ? t("auth.checkMailSub", { email }) : t("auth.checkMailNoEmail")}
+      </p>
       <Form
         className="flex flex-col gap-4"
         onSubmit={async (e) => {
@@ -84,24 +108,56 @@ export default function Recover() {
           }
         }}
       >
-        <TextField name="token" label={t("auth.token")} defaultValue={params.get("token") ?? ""} autoFocus isRequired />
-        <TextField name="password" type="password" label={t("auth.newPassword")} autoComplete="new-password" minLength={12} isRequired description={t("auth.passwordHint")} />
+        <TextField
+          name="token"
+          label={t("auth.token")}
+          defaultValue={params.get("token") ?? ""}
+          autoFocus
+          isRequired
+        />
+        <TextField
+          name="password"
+          type="password"
+          label={t("auth.newPassword")}
+          autoComplete="new-password"
+          minLength={12}
+          isRequired
+          description={t("auth.passwordHint")}
+        />
         <FormError>{resetError}</FormError>
-        <Button type="submit" variant="primary" size="lg" isDisabled={busy}>{busy ? t("auth.updating") : t("auth.resetPassword")}</Button>
+        <Button type="submit" variant="primary" size="lg" isDisabled={busy}>
+          {busy ? t("auth.updating") : t("auth.resetPassword")}
+        </Button>
       </Form>
       <div className="mt-5 flex flex-wrap justify-between gap-2 text-[13px] text-muted-foreground">
         {email && (
-          <button type="button" disabled={busy} className="hover:text-foreground hover:underline" onClick={async () => {
-            setResetError("");
-            const failure = await request();
-            if (failure) setResetError(failure);
-            else toast.show(t("auth.resent"));
-          }}>
+          <button
+            type="button"
+            disabled={busy}
+            className="hover:text-foreground hover:underline"
+            onClick={async () => {
+              setResetError("");
+              const failure = await request();
+              if (failure) setResetError(failure);
+              else toast.show(t("auth.resent"));
+            }}
+          >
             {t("auth.resend")}
           </button>
         )}
-        <button type="button" className="hover:text-foreground hover:underline" onClick={() => { setResetError(""); setStep("request"); }}>{t("auth.changeEmail")}</button>
-        <Link to="/login" className="hover:text-foreground hover:underline">{t("auth.backToLogin")}</Link>
+        <button
+          type="button"
+          className="hover:text-foreground hover:underline"
+          onClick={() => {
+            setResetError("");
+            setStep("request");
+          }}
+        >
+          {t("auth.changeEmail")}
+        </button>
+        <Link to="/login" className="hover:text-foreground hover:underline">
+          {t("auth.backToLogin")}
+        </Link>
       </div>
     </>
   );

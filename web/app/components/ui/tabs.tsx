@@ -1,12 +1,30 @@
-import { Tabs as RACTabs, TabList as RACTabList, Tab as RACTab, TabPanel as RACTabPanel, composeRenderProps } from "react-aria-components";
+import {
+  Tabs as RACTabs,
+  TabList as RACTabList,
+  Tab as RACTab,
+  TabPanel as RACTabPanel,
+  composeRenderProps,
+} from "react-aria-components";
 import type { TabsProps, TabListProps, TabProps, TabPanelProps } from "react-aria-components";
 import { cn } from "~/lib/utils";
 
 export function Tabs({ className, ...props }: TabsProps) {
-  return <RACTabs {...props} className={composeRenderProps(className, (c) => cn("flex flex-col gap-3", c))} />;
+  return (
+    <RACTabs
+      {...props}
+      className={composeRenderProps(className, (c) => cn("flex flex-col gap-3", c))}
+    />
+  );
 }
 export function TabList<T extends object>({ className, ...props }: TabListProps<T>) {
-  return <RACTabList {...props} className={composeRenderProps(className, (c) => cn("inline-flex w-fit items-center gap-0.5 rounded-lg bg-muted p-0.5", c))} />;
+  return (
+    <RACTabList
+      {...props}
+      className={composeRenderProps(className, (c) =>
+        cn("inline-flex w-fit items-center gap-0.5 rounded-lg bg-muted p-0.5", c),
+      )}
+    />
+  );
 }
 export function Tab({ className, ...props }: TabProps) {
   return (
@@ -22,5 +40,12 @@ export function Tab({ className, ...props }: TabProps) {
   );
 }
 export function TabPanel({ className, ...props }: TabPanelProps) {
-  return <RACTabPanel {...props} className={composeRenderProps(className, (c) => cn("outline-none focus-visible:ring-2 focus-visible:ring-ring/60", c))} />;
+  return (
+    <RACTabPanel
+      {...props}
+      className={composeRenderProps(className, (c) =>
+        cn("outline-none focus-visible:ring-2 focus-visible:ring-ring/60", c),
+      )}
+    />
+  );
 }

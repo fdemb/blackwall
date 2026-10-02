@@ -1,4 +1,13 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { ApiError, workspaces } from "./api";
 import { useSession } from "./session";
 import { useToast } from "~/components/ui/toast";
@@ -18,7 +27,10 @@ interface Ctx {
   stage: (id: Id) => Stage | undefined;
   issue: (id: Id) => Issue | undefined;
   /** `quiet` skips the error toast, for forms that show the failure beside their own controls. */
-  run: (command: Command, opts?: { optimistic?: (ws: Workspace) => Workspace; quiet?: boolean }) => Promise<Id | null>;
+  run: (
+    command: Command,
+    opts?: { optimistic?: (ws: Workspace) => Workspace; quiet?: boolean },
+  ) => Promise<Id | null>;
   reload: () => Promise<void>;
   /** Number of writes waiting on the server. */
   pending: number;
@@ -27,25 +39,38 @@ interface Ctx {
   retrySync: () => void;
   upload: (issueId: Id, file: File, commentId?: Id) => Promise<void>;
   unread: number;
-  create: { open: boolean; defaults: Partial<import("./types").IssueInput>; show: (defaults?: Partial<import("./types").IssueInput>) => void; hide: () => void };
+  create: {
+    open: boolean;
+    defaults: Partial<import("./types").IssueInput>;
+    show: (defaults?: Partial<import("./types").IssueInput>) => void;
+    hide: () => void;
+  };
 }
 const WorkspaceCtx = createContext<Ctx | null>(null);
 
 export function WorkspaceProvider({
-  initial, children,
-}: { initial: { revision: number; workspace: Workspace; members: MemberProfile[] }; children: ReactNode }) {
+  initial,
+  children,
+}: {
+  initial: { revision: number; workspace: Workspace; members: MemberProfile[] };
+  children: ReactNode;
+}) {
   const { profile } = useSession();
   const toast = useToast();
   const t = useT();
   const [state, setState] = useState(initial);
-  const [createState, setCreate] = useState<{ open: boolean; defaults: Partial<import("./types").IssueInput> }>({ open: false, defaults: {} });
+  const [createState, setCreate] = useState<{
+    open: boolean;
+    defaults: Partial<import("./types").IssueInput>;
+  }>({ open: false, defaults: {} });
   const revisionRef = useRef(initial.revision);
   const queue = useRef<Promise<unknown>>(Promise.resolve());
   const inFlight = useRef(0);
   const [pending, setPending] = useState(0);
   const [offline, setOffline] = useState(false);
   const id = state.workspace.id;
-  const canWriteNow = state.workspace.members.find((m) => m.user_id === profile.id)?.role !== "viewer";
+  const canWriteNow =
+    state.workspace.members.find((m) => m.user_id === profile.id)?.role !== "viewer";
 
   useEffect(() => {
     setState(initial);
@@ -76,7 +101,10 @@ export function WorkspaceProvider({
   const refreshAfterWrite = useCallback(
     () =>
       reload().catch(() =>
-        toast.error(t("error.refresh"), { label: t("action.retry"), run: () => void reload().catch(() => undefined) }),
+        toast.error(t("error.refresh"), {
+          label: t("action.retry"),
+          run: () => void reload().catch(() => undefined),
+        }),
       ),
     [reload, toast, t],
   );
@@ -179,7 +207,9 @@ export function WorkspaceProvider({
       unread: ws.notifications.filter((n) => !n.read_at).length,
       create: {
         ...createState,
-        show: (defaults = {}) => { if (canWriteNow) setCreate({ open: true, defaults }); },
+        show: (defaults = {}) => {
+          if (canWriteNow) setCreate({ open: true, defaults });
+        },
         hide: () => setCreate({ open: false, defaults: {} }),
       },
     };

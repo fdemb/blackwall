@@ -14,18 +14,49 @@ import { useWorkspace } from "~/lib/workspace";
 import type { ImportSummary } from "~/lib/types";
 
 type Body = { issues: unknown[] } | { transfer: unknown };
-interface Preview { name: string; kind: "transfer" | "issues"; counts: [Key, number][]; body: Body }
+interface Preview {
+  name: string;
+  kind: "transfer" | "issues";
+  counts: [Key, number][];
+  body: Body;
+}
 
-const COUNTED = ["issues", "comments", "time_entries", "teams", "labels", "projects", "sprints"] as const;
+const COUNTED = [
+  "issues",
+  "comments",
+  "time_entries",
+  "teams",
+  "labels",
+  "projects",
+  "sprints",
+] as const;
 
 /** Reads the file and works out what it holds, without sending anything to the server yet. */
 function inspect(name: string, parsed: unknown): Preview | null {
   const obj = (parsed ?? {}) as Record<string, unknown>;
   const len = (v: unknown) => (Array.isArray(v) ? v.length : 0);
   // A Blackwall export is an object; a bare array is treated as a list of issue inputs.
-  if (Array.isArray(parsed)) return parsed.length ? { name, kind: "issues", counts: [["data.count.issues", parsed.length]], body: { issues: parsed } } : null;
-  if (obj.issues && !obj.workspace && !obj.teams) return len(obj.issues) ? { name, kind: "issues", counts: [["data.count.issues", len(obj.issues)]], body: { issues: obj.issues as unknown[] } } : null;
-  const counts = COUNTED.map((k) => [`data.count.${k}` as Key, len(obj[k])] as [Key, number]).filter(([, n]) => n > 0);
+  if (Array.isArray(parsed))
+    return parsed.length
+      ? {
+          name,
+          kind: "issues",
+          counts: [["data.count.issues", parsed.length]],
+          body: { issues: parsed },
+        }
+      : null;
+  if (obj.issues && !obj.workspace && !obj.teams)
+    return len(obj.issues)
+      ? {
+          name,
+          kind: "issues",
+          counts: [["data.count.issues", len(obj.issues)]],
+          body: { issues: obj.issues as unknown[] },
+        }
+      : null;
+  const counts = COUNTED.map(
+    (k) => [`data.count.${k}` as Key, len(obj[k])] as [Key, number],
+  ).filter(([, n]) => n > 0);
   return counts.length ? { name, kind: "transfer", counts, body: { transfer: parsed } } : null;
 }
 
@@ -41,8 +72,13 @@ export default function Data() {
     setBusy(true);
     try {
       const data = await workspaces.export(ws.id);
-      download(`${ws.name.toLowerCase().replace(/\W+/g, "-")}-export.json`, JSON.stringify(data, null, 2));
-    } catch (e) { toast.error((e as Error).message); }
+      download(
+        `${ws.name.toLowerCase().replace(/\W+/g, "-")}-export.json`,
+        JSON.stringify(data, null, 2),
+      );
+    } catch (e) {
+      toast.error((e as Error).message);
+    }
     setBusy(false);
   };
   const choose = async (file: File) => {
@@ -51,15 +87,23 @@ export default function Data() {
       if (!found) return toast.error(t("data.emptyFile"));
       setResult(undefined);
       setPreview(found);
-    } catch (e) { toast.error(e instanceof SyntaxError ? t("data.invalidJson") : (e as Error).message); }
+    } catch (e) {
+      toast.error(e instanceof SyntaxError ? t("data.invalidJson") : (e as Error).message);
+    }
   };
-  const close = () => { setPreview(null); setResult(undefined); };
+  const close = () => {
+    setPreview(null);
+    setResult(undefined);
+  };
   return (
     <>
       <Card className="p-5">
         <h2 className="text-[14px] font-semibold">{t("data.export")}</h2>
         <p className="mt-0.5 text-[13px] text-muted-foreground">{t("data.exportSub")}</p>
-        <Button className="mt-4" variant="secondary" isDisabled={busy} onPress={exportAll}><Download />{t("data.exportButton")}</Button>
+        <Button className="mt-4" variant="secondary" isDisabled={busy} onPress={exportAll}>
+          <Download />
+          {t("data.exportButton")}
+        </Button>
       </Card>
       {canWrite && (
         <Card className="p-5">
@@ -67,23 +111,43 @@ export default function Data() {
           <p className="mt-0.5 text-[13px] text-muted-foreground">{t("data.importSub")}</p>
           <DropZone
             className="mt-4 flex flex-col items-center gap-2 rounded-xl border-2 border-dashed border-border p-8 text-center transition-colors drop-target:border-primary drop-target:bg-accent/50"
-            onDrop={async (e) => { for (const item of e.items) if (item.kind === "file") { await choose(await item.getFile()); break; } }}
+            onDrop={async (e) => {
+              for (const item of e.items)
+                if (item.kind === "file") {
+                  await choose(await item.getFile());
+                  break;
+                }
+            }}
           >
             <FileUp className="size-6 text-muted-foreground" />
-            <Text slot="label" className="text-[13px] text-muted-foreground">{t("data.drop")}</Text>
-            <FileTrigger acceptedFileTypes={["application/json", ".json"]} onSelect={(l) => l?.[0] && void choose(l[0])}><Button variant="secondary">{t("data.choose")}</Button></FileTrigger>
+            <Text slot="label" className="text-[13px] text-muted-foreground">
+              {t("data.drop")}
+            </Text>
+            <FileTrigger
+              acceptedFileTypes={["application/json", ".json"]}
+              onSelect={(l) => l?.[0] && void choose(l[0])}
+            >
+              <Button variant="secondary">{t("data.choose")}</Button>
+            </FileTrigger>
           </DropZone>
         </Card>
       )}
       <Dialog
         title={result !== undefined ? t("data.resultTitle") : t("data.previewTitle")}
-        description={result === undefined && preview ? t("data.previewSub", { name: preview.name, workspace: ws.name }) : undefined}
+        description={
+          result === undefined && preview
+            ? t("data.previewSub", { name: preview.name, workspace: ws.name })
+            : undefined
+        }
         size="sm"
         isOpen={preview !== null}
         onOpenChange={(o) => !o && close()}
       >
-        {() => preview && (
-          result !== undefined ? <Finished summary={result} onDone={close} /> : (
+        {() =>
+          preview &&
+          (result !== undefined ? (
+            <Finished summary={result} onDone={close} />
+          ) : (
             <Review
               preview={preview}
               allowed={preview.kind === "issues" || canAdmin}
@@ -95,31 +159,58 @@ export default function Data() {
                 toast.show(t("data.imported"));
               }}
             />
-          )
-        )}
+          ))
+        }
       </Dialog>
     </>
   );
 }
 
-function Review({ preview, allowed, onCancel, onImport }: { preview: Preview; allowed: boolean; onCancel: () => void; onImport: () => Promise<void> }) {
+function Review({
+  preview,
+  allowed,
+  onCancel,
+  onImport,
+}: {
+  preview: Preview;
+  allowed: boolean;
+  onCancel: () => void;
+  onImport: () => Promise<void>;
+}) {
   const t = useT();
   const { pending, error, guard } = usePending();
   return (
     <div className="space-y-4">
       <div>
-        <p className="text-[13px] font-medium">{t(preview.kind === "transfer" ? "data.kindTransfer" : "data.kindIssues")}</p>
+        <p className="text-[13px] font-medium">
+          {t(preview.kind === "transfer" ? "data.kindTransfer" : "data.kindIssues")}
+        </p>
         <dl className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1 text-[13px]">
           {preview.counts.map(([label, n]) => (
-            <div key={label} className="flex justify-between border-b border-border/60 py-1"><dt className="text-muted-foreground">{t(label)}</dt><dd className="tabular-nums">{n}</dd></div>
+            <div key={label} className="flex justify-between border-b border-border/60 py-1">
+              <dt className="text-muted-foreground">{t(label)}</dt>
+              <dd className="tabular-nums">{n}</dd>
+            </div>
           ))}
         </dl>
       </div>
-      {!allowed && <p role="alert" className="text-[13px] text-destructive">{t("data.adminOnly")}</p>}
+      {!allowed && (
+        <p role="alert" className="text-[13px] text-destructive">
+          {t("data.adminOnly")}
+        </p>
+      )}
       <FormError>{error}</FormError>
       <div className="flex justify-end gap-2">
-        <Button variant="ghost" onPress={onCancel}>{t("action.cancel")}</Button>
-        <Button variant="primary" isDisabled={!allowed || pending} onPress={() => void guard(onImport)}>{pending ? t("data.importing") : t("data.confirm")}</Button>
+        <Button variant="ghost" onPress={onCancel}>
+          {t("action.cancel")}
+        </Button>
+        <Button
+          variant="primary"
+          isDisabled={!allowed || pending}
+          onPress={() => void guard(onImport)}
+        >
+          {pending ? t("data.importing") : t("data.confirm")}
+        </Button>
       </div>
     </div>
   );
@@ -133,12 +224,28 @@ function Finished({ summary, onDone }: { summary: ImportSummary | null; onDone: 
     <div className="space-y-3 text-[13px]">
       {summary ? (
         <>
-          <p>{t("data.resultCounts", { issues: summary.issues, comments: summary.comments, time: summary.time_entries })}</p>
-          {matched > 0 && <p className="text-muted-foreground">{t("data.resultMatched", { n: matched })}</p>}
-          {fallback > 0 && <p className="font-medium">{t("data.resultIdentities", { n: fallback })}</p>}
+          <p>
+            {t("data.resultCounts", {
+              issues: summary.issues,
+              comments: summary.comments,
+              time: summary.time_entries,
+            })}
+          </p>
+          {matched > 0 && (
+            <p className="text-muted-foreground">{t("data.resultMatched", { n: matched })}</p>
+          )}
+          {fallback > 0 && (
+            <p className="font-medium">{t("data.resultIdentities", { n: fallback })}</p>
+          )}
         </>
-      ) : <p>{t("data.imported")}</p>}
-      <div className="flex justify-end"><Button variant="primary" onPress={onDone}>{t("data.done")}</Button></div>
+      ) : (
+        <p>{t("data.imported")}</p>
+      )}
+      <div className="flex justify-end">
+        <Button variant="primary" onPress={onDone}>
+          {t("data.done")}
+        </Button>
+      </div>
     </div>
   );
 }

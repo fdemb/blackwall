@@ -2,6 +2,8 @@ use blackwall::{http, jobs, store::Store};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Load before anything reads env. Real environment variables win over .env.
+    dotenvy::dotenv().ok();
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -12,10 +14,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite://blackwall.db?mode=rwc".into());
     let bind = std::env::var("BIND_ADDR").unwrap_or_else(|_| "127.0.0.1:3000".into());
     let store = Store::connect(&database_url).await?;
+    let mailer = jobs::Mailer::from_env()?;
+    tracing::info!(mail = mailer.describe(), "email delivery configured");
     let listener = tokio::net::TcpListener::bind(&bind).await?;
     tracing::info!(address = %listener.local_addr()?, "Blackwall listening");
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
-    let worker = tokio::spawn(jobs::run(store.clone(), shutdown_rx));
+    let worker = tokio::spawn(jobs::run(store.clone(), mailer, shutdown_rx));
     axum::serve(
         listener,
         http::router(store).into_make_service_with_connect_info::<std::net::SocketAddr>(),

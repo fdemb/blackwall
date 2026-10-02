@@ -9,7 +9,7 @@ export function usePending() {
   const [pending, setPending] = useState(false);
   const [error, setError] = useState("");
   const running = useRef(false);
-  const guard = useCallback(async <T,>(action: () => Promise<T>): Promise<T | undefined> => {
+  const guard = useCallback(async <T>(action: () => Promise<T>): Promise<T | undefined> => {
     if (running.current) return undefined;
     running.current = true;
     setPending(true);

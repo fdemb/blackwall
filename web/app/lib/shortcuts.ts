@@ -3,7 +3,8 @@ import { useCallback, useSyncExternalStore } from "react";
 const KEY = "bw-shortcuts";
 const listeners = new Set<() => void>();
 
-const read = () => (typeof localStorage === "undefined" ? true : localStorage.getItem(KEY) !== "off");
+const read = () =>
+  typeof localStorage === "undefined" ? true : localStorage.getItem(KEY) !== "off";
 
 /** Single-key shortcuts (C, /, G then a letter) can clash with speech input, so they can be turned off. */
 export function useShortcutsEnabled() {

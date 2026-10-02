@@ -9,5 +9,9 @@ export function useMediaQuery(query: string) {
     },
     [query],
   );
-  return useSyncExternalStore(subscribe, () => matchMedia(query).matches, () => false);
+  return useSyncExternalStore(
+    subscribe,
+    () => matchMedia(query).matches,
+    () => false,
+  );
 }

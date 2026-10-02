@@ -1,7 +1,13 @@
 import type { Priority, StageKind } from "./types";
 
 export const PRIORITIES: Priority[] = ["urgent", "high", "normal", "low", "none"];
-export const PRIORITY_RANK: Record<Priority, number> = { urgent: 4, high: 3, normal: 2, low: 1, none: 0 };
+export const PRIORITY_RANK: Record<Priority, number> = {
+  urgent: 4,
+  high: 3,
+  normal: 2,
+  low: 1,
+  none: 0,
+};
 export const STAGE_KINDS: StageKind[] = ["backlog", "planned", "active", "done", "cancelled"];
 
 export const MAX_UPLOAD = 5 * 1024 * 1024;
@@ -31,7 +37,10 @@ export function parseMinutes(input: string): number | null {
 
 export function initials(name: string) {
   const parts = name.trim().split(/\s+/).filter(Boolean);
-  return ((parts[0]?.[0] ?? "") + (parts.length > 1 ? parts[parts.length - 1][0] : "")).toUpperCase() || "?";
+  return (
+    ((parts[0]?.[0] ?? "") + (parts.length > 1 ? parts[parts.length - 1][0] : "")).toUpperCase() ||
+    "?"
+  );
 }
 
 export function colorFor(seed: string) {
@@ -44,9 +53,15 @@ export function relativeTime(iso: string, lang: string) {
   const diff = (new Date(iso).getTime() - Date.now()) / 1000;
   const rtf = new Intl.RelativeTimeFormat(lang, { numeric: "auto" });
   const steps: [Intl.RelativeTimeFormatUnit, number][] = [
-    ["year", 31536000], ["month", 2592000], ["week", 604800], ["day", 86400], ["hour", 3600], ["minute", 60],
+    ["year", 31536000],
+    ["month", 2592000],
+    ["week", 604800],
+    ["day", 86400],
+    ["hour", 3600],
+    ["minute", 60],
   ];
-  for (const [unit, secs] of steps) if (Math.abs(diff) >= secs) return rtf.format(Math.round(diff / secs), unit);
+  for (const [unit, secs] of steps)
+    if (Math.abs(diff) >= secs) return rtf.format(Math.round(diff / secs), unit);
   return rtf.format(Math.round(diff), "second");
 }
 
@@ -55,7 +70,11 @@ export function shortDate(iso: string, lang: string) {
 }
 
 export function fullDate(iso: string, lang: string) {
-  return new Date(iso).toLocaleDateString(lang, { year: "numeric", month: "short", day: "numeric" });
+  return new Date(iso).toLocaleDateString(lang, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+  });
 }
 
 export function daysUntil(iso: string) {

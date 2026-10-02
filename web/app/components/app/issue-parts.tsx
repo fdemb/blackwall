@@ -15,9 +15,18 @@ export function DeadlineChip({ issue, className }: { issue: Issue; className?: s
   if (!issue.deadline) return null;
   const left = daysUntil(issue.deadline);
   const done = isDone(ws, issue);
-  const tone = done ? "text-muted-foreground" : left < 0 ? "text-destructive" : left <= 2 ? "text-warning" : "text-muted-foreground";
+  const tone = done
+    ? "text-muted-foreground"
+    : left < 0
+      ? "text-destructive"
+      : left <= 2
+        ? "text-warning"
+        : "text-muted-foreground";
   return (
-    <span className={cn("inline-flex items-center gap-1 text-xs tabular-nums", tone, className)} title={left < 0 && !done ? t("deadline.overdue") : undefined}>
+    <span
+      className={cn("inline-flex items-center gap-1 text-xs tabular-nums", tone, className)}
+      title={left < 0 && !done ? t("deadline.overdue") : undefined}
+    >
       <CalendarDays className="size-3" />
       {shortDate(issue.deadline, lang)}
     </span>
@@ -31,12 +40,17 @@ export function LabelChips({ issue, max = 3 }: { issue: Issue; max?: number }) {
   return (
     <span className="flex items-center gap-1">
       {labels.slice(0, max).map((l) => (
-        <span key={l.id} className="inline-flex items-center gap-1.5 rounded-full border border-border px-1.5 py-px text-[11px] text-muted-foreground">
+        <span
+          key={l.id}
+          className="inline-flex items-center gap-1.5 rounded-full border border-border px-1.5 py-px text-[11px] text-muted-foreground"
+        >
           <LabelDot color={l.color} />
           {l.name}
         </span>
       ))}
-      {labels.length > max && <span className="text-[11px] text-muted-foreground">+{labels.length - max}</span>}
+      {labels.length > max && (
+        <span className="text-[11px] text-muted-foreground">+{labels.length - max}</span>
+      )}
     </span>
   );
 }
@@ -45,7 +59,16 @@ export function AssigneeAvatar({ issue, size = 20 }: { issue: Issue; size?: numb
   const { member } = useWorkspace();
   const m = member(issue.assignee);
   const { t } = useI18n();
-  if (!m) return <span role="img" aria-label={t("assignee.none")} title={t("assignee.none")} style={{ width: size, height: size }} className="inline-block rounded-full border border-dashed border-muted-foreground/40" />;
+  if (!m)
+    return (
+      <span
+        role="img"
+        aria-label={t("assignee.none")}
+        title={t("assignee.none")}
+        style={{ width: size, height: size }}
+        className="inline-block rounded-full border border-dashed border-muted-foreground/40"
+      />
+    );
   return <Avatar name={m.display_name} src={m.avatar_url} size={size} named />;
 }
 

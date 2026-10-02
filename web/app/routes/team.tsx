@@ -17,7 +17,12 @@ import type { Id, Workspace } from "~/lib/types";
 
 type Layout = "list" | "board" | "backlog";
 
-export function moveOptimistic(ws: Workspace, ids: Id[], stageId: Id, beforeId: Id | null): Workspace {
+export function moveOptimistic(
+  ws: Workspace,
+  ids: Id[],
+  stageId: Id,
+  beforeId: Id | null,
+): Workspace {
   const before = beforeId ? ws.issues.find((i) => i.id === beforeId) : undefined;
   const inStage = ws.issues.filter((i) => i.stage_id === stageId && !ids.includes(i.id));
   const end = Math.max(0, ...inStage.map((i) => i.position)) + 1;
@@ -25,7 +30,13 @@ export function moveOptimistic(ws: Workspace, ids: Id[], stageId: Id, beforeId: 
     ...ws,
     issues: ws.issues.map((i) => {
       const k = ids.indexOf(i.id);
-      return k < 0 ? i : { ...i, stage_id: stageId, position: before ? before.position - 0.5 + k * 0.01 : end + k };
+      return k < 0
+        ? i
+        : {
+            ...i,
+            stage_id: stageId,
+            position: before ? before.position - 0.5 + k * 0.01 : end + k,
+          };
     }),
   };
 }
@@ -50,21 +61,58 @@ function TeamPage() {
   if (!tm) return <Navigate to={`/${wsId}/my-issues`} replace />;
   const layout = (params.get("layout") as Layout) || "list";
   const tabs = (
-    <Tabs selectedKey={layout} onSelectionChange={(k) => setParams({ layout: String(k) }, { replace: true })} className="px-4 pb-2">
+    <Tabs
+      selectedKey={layout}
+      onSelectionChange={(k) => setParams({ layout: String(k) }, { replace: true })}
+      className="px-4 pb-2"
+    >
       <TabList aria-label={tm.name}>
-        <Tab id="list"><List />{t("team.issues")}</Tab>
-        <Tab id="board"><KanbanSquare />{t("team.board")}</Tab>
-        <Tab id="backlog"><ListTodo />{t("team.backlog")}</Tab>
+        <Tab id="list">
+          <List />
+          {t("team.issues")}
+        </Tab>
+        <Tab id="board">
+          <KanbanSquare />
+          {t("team.board")}
+        </Tab>
+        <Tab id="backlog">
+          <ListTodo />
+          {t("team.backlog")}
+        </Tab>
       </TabList>
     </Tabs>
   );
   const sprintLink = (
-    <Link to={`/${ws.id}/team/${tm.id}/sprints`} className="inline-flex h-7 items-center gap-1.5 rounded-md px-2.5 text-[13px] font-medium text-muted-foreground hover:bg-muted hover:text-foreground">
-      <CalendarRange className="size-4" />{t("team.sprints")}
+    <Link
+      to={`/${ws.id}/team/${tm.id}/sprints`}
+      className="inline-flex h-7 items-center gap-1.5 rounded-md px-2.5 text-[13px] font-medium text-muted-foreground hover:bg-muted hover:text-foreground"
+    >
+      <CalendarRange className="size-4" />
+      {t("team.sprints")}
     </Link>
   );
-  if (layout === "board") return <BoardView teamId={tm.id} name={tm.name} tabs={tabs} sprintLink={sprintLink} state={state} sprint={sprint} setSprint={setSprint} />;
-  if (layout === "backlog") return <BacklogView teamId={tm.id} name={tm.name} tabs={tabs} sprintLink={sprintLink} state={state} />;
+  if (layout === "board")
+    return (
+      <BoardView
+        teamId={tm.id}
+        name={tm.name}
+        tabs={tabs}
+        sprintLink={sprintLink}
+        state={state}
+        sprint={sprint}
+        setSprint={setSprint}
+      />
+    );
+  if (layout === "backlog")
+    return (
+      <BacklogView
+        teamId={tm.id}
+        name={tm.name}
+        tabs={tabs}
+        sprintLink={sprintLink}
+        state={state}
+      />
+    );
   return (
     <Workbench
       state={state}
@@ -77,8 +125,22 @@ function TeamPage() {
   );
 }
 
-function BoardView({ teamId, name, tabs, sprintLink, state, sprint, setSprint }: {
-  teamId: Id; name: string; tabs: React.ReactNode; sprintLink: React.ReactNode; state: QueueState; sprint: SprintScope; setSprint: (s: SprintScope) => void;
+function BoardView({
+  teamId,
+  name,
+  tabs,
+  sprintLink,
+  state,
+  sprint,
+  setSprint,
+}: {
+  teamId: Id;
+  name: string;
+  tabs: React.ReactNode;
+  sprintLink: React.ReactNode;
+  state: QueueState;
+  sprint: SprintScope;
+  setSprint: (s: SprintScope) => void;
 }) {
   const t = useT();
   const { ws, team, run, create } = useWorkspace();
@@ -86,10 +148,19 @@ function BoardView({ teamId, name, tabs, sprintLink, state, sprint, setSprint }:
   const { filter, setFilter } = state;
   const sprints = ws.sprints.filter((s) => s.team_id === teamId && s.state !== "archived");
   const stages = [...tm.stages].sort((a, b) => a.position - b.position);
-  const narrowed = Object.keys(filter).some((k) => k !== "sort" && k !== "sprint_id" && k !== "team_id" && filter[k as keyof typeof filter]) || sprint !== "all";
+  const narrowed =
+    Object.keys(filter).some(
+      (k) =>
+        k !== "sort" && k !== "sprint_id" && k !== "team_id" && filter[k as keyof typeof filter],
+    ) || sprint !== "all";
   const teamHasIssues = ws.issues.some((i) => i.team_id === teamId && !i.deleted_at);
   const issues = useMemo(() => {
-    let list = applyFilter(ws, { ...filter, team_id: teamId, sprint_id: undefined, sort: "position" });
+    let list = applyFilter(ws, {
+      ...filter,
+      team_id: teamId,
+      sprint_id: undefined,
+      sort: "position",
+    });
     if (sprint === "none") list = list.filter((i) => !i.sprint_id);
     else if (sprint !== "all" && sprint) list = list.filter((i) => i.sprint_id === sprint);
     return list;
@@ -101,7 +172,12 @@ function BoardView({ teamId, name, tabs, sprintLink, state, sprint, setSprint }:
       let before = beforeId;
       for (const id of ids) {
         if (id === before) continue;
-        await run({ type: "move_issue", id, stage_id: stageId, before_id: before }, id === ids[0] ? { optimistic: (w) => moveOptimistic(w, ids, stageId, beforeId) } : undefined).catch(() => {});
+        await run(
+          { type: "move_issue", id, stage_id: stageId, before_id: before },
+          id === ids[0]
+            ? { optimistic: (w) => moveOptimistic(w, ids, stageId, beforeId) }
+            : undefined,
+        ).catch(() => {});
       }
     })();
   };
@@ -111,14 +187,24 @@ function BoardView({ teamId, name, tabs, sprintLink, state, sprint, setSprint }:
       <PageHeader title={name} actions={sprintLink}>
         {tabs}
         <div className="flex flex-wrap items-center gap-2 pr-4">
-          <div className="flex-1"><FilterBar filter={filter} onChange={setFilter} hide={["team_id", "sprint_id"]} saveable={false} /></div>
+          <div className="flex-1">
+            <FilterBar
+              filter={filter}
+              onChange={setFilter}
+              hide={["team_id", "sprint_id"]}
+              saveable={false}
+            />
+          </div>
           <div className="w-44 pb-2">
             <NullableSelect
               aria-label={t("field.sprint")}
               noneLabel={t("board.allSprints")}
               value={sprint === "all" ? null : sprint}
               onChange={(v) => setSprint(v ?? "all")}
-              options={[{ id: "none", label: t("board.noSprint") }, ...sprints.map((s) => ({ id: s.id, label: s.name }))]}
+              options={[
+                { id: "none", label: t("board.noSprint") },
+                ...sprints.map((s) => ({ id: s.id, label: s.name })),
+              ]}
             />
           </div>
         </div>
@@ -127,37 +213,75 @@ function BoardView({ teamId, name, tabs, sprintLink, state, sprint, setSprint }:
         <EmptyState
           title={t("empty.noMatch")}
           description={t("empty.noMatchSub")}
-          action={<Button onPress={() => { setFilter({}); setSprint("all"); }}>{t("filter.clear")}</Button>}
+          action={
+            <Button
+              onPress={() => {
+                setFilter({});
+                setSprint("all");
+              }}
+            >
+              {t("filter.clear")}
+            </Button>
+          }
         />
       ) : (
-      <div className="flex min-h-0 flex-1 gap-3 overflow-x-auto p-3">
-        {stages.map((s) => {
-          const list = issues.filter((i) => i.stage_id === s.id);
-          return (
-            <DndColumn
-              key={s.id}
-              id={s.id}
-              title={s.name}
-              icon={<StageIcon kind={s.kind} />}
-              issues={list}
-              onDrop={onDrop(s.id)}
-              onCreate={() => create.show({ team_id: teamId, stage_id: s.id, sprint_id: typeof sprint === "string" && sprint !== "all" && sprint !== "none" ? sprint : undefined })}
-            />
-          );
-        })}
-      </div>
+        <div className="flex min-h-0 flex-1 gap-3 overflow-x-auto p-3">
+          {stages.map((s) => {
+            const list = issues.filter((i) => i.stage_id === s.id);
+            return (
+              <DndColumn
+                key={s.id}
+                id={s.id}
+                title={s.name}
+                icon={<StageIcon kind={s.kind} />}
+                issues={list}
+                onDrop={onDrop(s.id)}
+                onCreate={() =>
+                  create.show({
+                    team_id: teamId,
+                    stage_id: s.id,
+                    sprint_id:
+                      typeof sprint === "string" && sprint !== "all" && sprint !== "none"
+                        ? sprint
+                        : undefined,
+                  })
+                }
+              />
+            );
+          })}
+        </div>
       )}
     </Page>
   );
 }
 
-function BacklogView({ teamId, name, tabs, sprintLink, state }: { teamId: Id; name: string; tabs: React.ReactNode; sprintLink: React.ReactNode; state: QueueState }) {
+function BacklogView({
+  teamId,
+  name,
+  tabs,
+  sprintLink,
+  state,
+}: {
+  teamId: Id;
+  name: string;
+  tabs: React.ReactNode;
+  sprintLink: React.ReactNode;
+  state: QueueState;
+}) {
   const t = useT();
   const { ws, create, canWrite } = useWorkspace();
   const { filter, setFilter } = state;
-  const narrowed = Object.keys(filter).some((k) => k !== "sort" && k !== "sprint_id" && k !== "team_id" && filter[k as keyof typeof filter]);
+  const narrowed = Object.keys(filter).some(
+    (k) => k !== "sort" && k !== "sprint_id" && k !== "team_id" && filter[k as keyof typeof filter],
+  );
   const issues = useMemo(
-    () => applyFilter(ws, { ...filter, team_id: teamId, sprint_id: undefined, sort: filter.sort ?? "priority" }).filter((i) => !i.sprint_id && !isDone(ws, i)),
+    () =>
+      applyFilter(ws, {
+        ...filter,
+        team_id: teamId,
+        sprint_id: undefined,
+        sort: filter.sort ?? "priority",
+      }).filter((i) => !i.sprint_id && !isDone(ws, i)),
     [ws, filter, teamId],
   );
   return (
@@ -165,18 +289,45 @@ function BacklogView({ teamId, name, tabs, sprintLink, state }: { teamId: Id; na
       <PageHeader
         title={name}
         subtitle={t("team.backlogSub")}
-        actions={<>{sprintLink}{canWrite && <Button variant="primary" size="sm" onPress={() => create.show({ team_id: teamId })}><Plus />{t("issue.new")}</Button>}</>}
+        actions={
+          <>
+            {sprintLink}
+            {canWrite && (
+              <Button variant="primary" size="sm" onPress={() => create.show({ team_id: teamId })}>
+                <Plus />
+                {t("issue.new")}
+              </Button>
+            )}
+          </>
+        }
       >
         {tabs}
-        <FilterBar filter={filter} onChange={setFilter} hide={["team_id", "sprint_id"]} saveable={false} />
+        <FilterBar
+          filter={filter}
+          onChange={setFilter}
+          hide={["team_id", "sprint_id"]}
+          saveable={false}
+        />
       </PageHeader>
       <Scroll>
         <IssueList
           issues={issues}
           groupBy="none"
-          emptyState={narrowed
-            ? <EmptyState title={t("empty.noMatch")} description={t("empty.noMatchSub")} action={<Button onPress={() => setFilter({})}>{t("filter.clear")}</Button>} />
-            : <EmptyState icon={<ListTodo />} title={t("backlog.emptyTitle")} description={t("backlog.emptySub")} />}
+          emptyState={
+            narrowed ? (
+              <EmptyState
+                title={t("empty.noMatch")}
+                description={t("empty.noMatchSub")}
+                action={<Button onPress={() => setFilter({})}>{t("filter.clear")}</Button>}
+              />
+            ) : (
+              <EmptyState
+                icon={<ListTodo />}
+                title={t("backlog.emptyTitle")}
+                description={t("backlog.emptySub")}
+              />
+            )
+          }
         />
       </Scroll>
     </Page>

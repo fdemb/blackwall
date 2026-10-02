@@ -1,0 +1,210 @@
+use super::{Email, Grant};
+use lettre::{
+    AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor,
+    message::{Mailbox, header::ContentType},
+};
+use std::{path::PathBuf, time::Duration};
+
+/// Where email jobs go. Configured once at startup from the environment.
+#[derive(Clone)]
+pub enum Mailer {
+    Smtp {
+        transport: AsyncSmtpTransport<Tokio1Executor>,
+        from: Mailbox,
+    },
+    /// Writes each email's JSON payload to a private directory instead of sending it.
+    Spool(PathBuf),
+    /// Email jobs fail and retry until mail is configured.
+    Disabled,
+}
+
+impl Mailer {
+    /// `DEV_MAIL_DIR` selects the spool. Otherwise `SMTP_URL` and `SMTP_FROM` configure SMTP,
+    /// for example `smtps://user:password@smtp.example.com` or
+    /// `smtp://smtp.example.com:587?tls=required`.
+    pub fn from_env() -> Result<Self, String> {
+        if let Ok(directory) = std::env::var("DEV_MAIL_DIR") {
+            return Ok(Self::Spool(directory.into()));
+        }
+        let Ok(url) = std::env::var("SMTP_URL") else {
+            return Ok(Self::Disabled);
+        };
+        let from = std::env::var("SMTP_FROM")
+            .map_err(|_| "SMTP_FROM is required with SMTP_URL")?
+            .parse()
+            .map_err(|_| "SMTP_FROM must be an address like Blackwall <noreply@example.com>")?;
+        // The URL can hold credentials, so errors leave it out.
+        let transport = AsyncSmtpTransport::<Tokio1Executor>::from_url(&url)
+            .map_err(|_| "SMTP_URL is not a valid smtp:// or smtps:// URL")?
+            .timeout(Some(Duration::from_secs(15)))
+            .build();
+        Ok(Self::Smtp { transport, from })
+    }
+
+    pub fn describe(&self) -> &'static str {
+        match self {
+            Self::Smtp { .. } => "smtp",
+            Self::Spool(_) => "development spool",
+            Self::Disabled => "disabled",
+        }
+    }
+
+    pub(super) async fn send(&self, id: &str, email: &Email) -> Result<(), String> {
+        match self {
+            Self::Smtp { transport, from } => {
+                let message = message(id, from, email)?;
+                transport.send(message).await.map_err(|error| {
+                    if error.is_permanent() {
+                        "smtp server rejected the message"
+                    } else {
+                        "smtp delivery failed"
+                    }
+                })?;
+                Ok(())
+            }
+            Self::Spool(directory) => spool(directory, id, email).await,
+            Self::Disabled => Err("email is not configured".into()),
+        }
+    }
+}
+
+fn message(id: &str, from: &Mailbox, email: &Email) -> Result<Message, String> {
+    // A stable Message-ID lets receivers drop duplicates when a retry repeats a delivery.
+    let message_id = format!("<{}@{}>", crate::auth::hash(id), from.email.domain());
+    Message::builder()
+        .from(from.clone())
+        .to(email.to.parse().map_err(|_| "invalid recipient address")?)
+        .subject(&email.subject)
+        .message_id(Some(message_id))
+        .header(ContentType::TEXT_PLAIN)
+        .body(body(email))
+        .map_err(|_| "invalid email".into())
+}
+
+fn body(email: &Email) -> String {
+    match &email.grant {
+        Grant::Invitation { workspace_id, .. } => format!(
+            "You've been invited to a Blackwall workspace.\n\n\
+             Sign in or register with this email address. On the welcome page, choose Join \
+             workspace and enter:\n\n\
+             Workspace ID: {workspace_id}\n\
+             Invitation token: {}\n\n\
+             If you weren't expecting this invitation, you can ignore this email.\n",
+            email.token
+        ),
+        Grant::Reset { .. } => format!(
+            "Someone asked to reset the password for your Blackwall account.\n\n\
+             Enter this recovery token on the password recovery page within one hour:\n\n\
+             {}\n\n\
+             If you didn't ask for this, ignore this email. Your password stays the same.\n",
+            email.token
+        ),
+    }
+}
+
+async fn spool(directory: &PathBuf, id: &str, email: &Email) -> Result<(), String> {
+    use tokio::io::AsyncWriteExt;
+    tokio::fs::create_dir_all(directory)
+        .await
+        .map_err(|_| "mail spool unavailable")?;
+    let path = directory.join(format!("{}.json", crate::auth::hash(id)));
+    let mut options = tokio::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+    let mut file = options
+        .open(path)
+        .await
+        .map_err(|_| "mail spool write failed")?;
+    let body = serde_json::to_vec(email).map_err(|_| "invalid email")?;
+    file.write_all(&body)
+        .await
+        .map_err(|_| "mail spool write failed")?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::{
+        io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
+        net::TcpListener,
+    };
+    use uuid::Uuid;
+
+    /// Accepts one SMTP session and returns the message data.
+    async fn smtp_sink(listener: TcpListener) -> String {
+        let (stream, _) = listener.accept().await.unwrap();
+        let (read, mut write) = stream.into_split();
+        let mut lines = BufReader::new(read).lines();
+        write.write_all(b"220 sink ESMTP\r\n").await.unwrap();
+        let mut data = None::<String>;
+        while let Some(line) = lines.next_line().await.unwrap() {
+            if let Some(received) = &mut data {
+                if line == "." {
+                    write.write_all(b"250 queued\r\n").await.unwrap();
+                    return data.unwrap();
+                }
+                received.push_str(&line);
+                received.push('\n');
+                continue;
+            }
+            let reply: &[u8] = match line.to_ascii_uppercase().get(..4) {
+                Some("EHLO") => b"250-sink\r\n250 8BITMIME\r\n",
+                Some("DATA") => {
+                    data = Some(String::new());
+                    b"354 go ahead\r\n"
+                }
+                _ => b"250 ok\r\n",
+            };
+            write.write_all(reply).await.unwrap();
+        }
+        panic!("client closed before sending data");
+    }
+
+    #[tokio::test]
+    async fn sends_invitation_over_smtp() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let sink = tokio::spawn(smtp_sink(listener));
+        let mailer = Mailer::Smtp {
+            transport: AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous("127.0.0.1")
+                .port(port)
+                .build(),
+            from: "Blackwall <noreply@example.com>".parse().unwrap(),
+        };
+        let workspace_id = Uuid::new_v4();
+        let email = Email {
+            to: "colleague@example.com".into(),
+            subject: "Join a Blackwall workspace".into(),
+            token: "invite-token-123".into(),
+            grant: Grant::Invitation {
+                workspace_id,
+                invitation_id: Uuid::new_v4(),
+                token_hash: "hash".into(),
+            },
+        };
+        mailer.send("job-1", &email).await.unwrap();
+        let data = sink.await.unwrap();
+        assert!(data.contains("To: colleague@example.com"), "{data}");
+        assert!(
+            data.contains("Subject: Join a Blackwall workspace"),
+            "{data}"
+        );
+        assert!(
+            data.contains(&format!(
+                "Message-ID: <{}@example.com>",
+                crate::auth::hash("job-1")
+            )),
+            "{data}"
+        );
+        assert!(
+            data.contains(&format!("Workspace ID: {workspace_id}")),
+            "{data}"
+        );
+        assert!(
+            data.contains("Invitation token: invite-token-123"),
+            "{data}"
+        );
+    }
+}

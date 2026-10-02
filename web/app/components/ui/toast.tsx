@@ -3,9 +3,20 @@ import { AlertCircle, Check, X } from "lucide-react";
 import { useT } from "~/lib/i18n";
 import { cn } from "~/lib/utils";
 
-export interface ToastAction { label: string; run: () => void }
-interface Item { id: number; text: string; kind: "info" | "error"; action?: ToastAction }
-interface ToastApi { show: (text: string, action?: ToastAction) => void; error: (text: string, action?: ToastAction) => void }
+export interface ToastAction {
+  label: string;
+  run: () => void;
+}
+interface Item {
+  id: number;
+  text: string;
+  kind: "info" | "error";
+  action?: ToastAction;
+}
+interface ToastApi {
+  show: (text: string, action?: ToastAction) => void;
+  error: (text: string, action?: ToastAction) => void;
+}
 const Ctx = createContext<ToastApi | null>(null);
 let counter = 0;
 
@@ -22,7 +33,13 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     },
     [dismiss],
   );
-  const api = useMemo<ToastApi>(() => ({ show: (text, a) => push("info", text, a), error: (text, a) => push("error", text, a) }), [push]);
+  const api = useMemo<ToastApi>(
+    () => ({
+      show: (text, a) => push("info", text, a),
+      error: (text, a) => push("error", text, a),
+    }),
+    [push],
+  );
   return (
     <Ctx value={api}>
       {children}
@@ -36,18 +53,30 @@ export function ToastProvider({ children }: { children: ReactNode }) {
               i.kind === "error" ? "border-destructive/40" : "border-border",
             )}
           >
-            {i.kind === "error" ? <AlertCircle className="mt-0.5 size-4 shrink-0 text-destructive" /> : <Check className="mt-0.5 size-4 shrink-0 text-primary" />}
+            {i.kind === "error" ? (
+              <AlertCircle className="mt-0.5 size-4 shrink-0 text-destructive" />
+            ) : (
+              <Check className="mt-0.5 size-4 shrink-0 text-primary" />
+            )}
             <span className="flex-1">{i.text}</span>
             {i.action && (
               <button
                 type="button"
                 className="shrink-0 font-medium text-primary hover:underline"
-                onClick={() => { i.action!.run(); dismiss(i.id); }}
+                onClick={() => {
+                  i.action!.run();
+                  dismiss(i.id);
+                }}
               >
                 {i.action.label}
               </button>
             )}
-            <button type="button" aria-label={t("action.dismiss")} className="grid size-5 shrink-0 place-items-center text-muted-foreground hover:text-foreground pointer-coarse:size-8" onClick={() => dismiss(i.id)}>
+            <button
+              type="button"
+              aria-label={t("action.dismiss")}
+              className="grid size-5 shrink-0 place-items-center text-muted-foreground hover:text-foreground pointer-coarse:size-8"
+              onClick={() => dismiss(i.id)}
+            >
               <X className="size-3.5" />
             </button>
           </div>
