@@ -46,11 +46,13 @@ The API implements workspace membership and invitations, custom team workflows, 
 
 ## Background delivery
 
-The worker runs every 30 seconds. It adds due-date reminders to the inbox, expires invitations and sessions, and claims persisted email and webhook jobs. Delivery retries use backoff and leases. Unconfigured email jobs remain queued with a recorded error.
+Background workers add due-date reminders to the inbox, expire invitations, sessions, and reset tokens, and deliver persisted email and webhook jobs. Each worker sleeps until its next due time, and commits wake it, so new mail and webhooks go out right away. Delivery retries use backoff and leases. Email jobs stay queued with a recorded error until mail is configured.
 
-Set `EMAIL_WEBHOOK_URL` to your trusted mail adapter. It receives JSON containing `to`, `subject`, and a recovery or invitation `token`; invitation mail also includes `workspace_id`. `EMAIL_WEBHOOK_TOKEN` adds bearer authentication. The adapter must build and deliver the message and deduplicate `Idempotency-Key` values. There is no bundled SMTP provider.
+Email goes out over SMTP. Set `SMTP_URL`, for example `smtps://user:password@smtp.example.com` or `smtp://smtp.example.com:587?tls=required`, with credentials percent-encoded, and set `SMTP_FROM` to the sender address. Each message gets a Message-ID derived from its job, so a retried delivery repeats the same ID. Cancelled, expired, accepted, or superseded invitations do not deliver queued messages.
 
-For local development, set `DEV_MAIL_DIR=./dev-mail`. Jobs write JSON files with mode 0600 rather than sending mail. Keep that directory private. Copy the workspace ID and token into the join form, or the reset token into the recovery form. Cancelled, expired, accepted, or superseded invitations do not deliver queued messages.
+For local development, `docker compose up -d` starts [Mailpit](https://mailpit.axllent.org). Point the app at `SMTP_URL=smtp://127.0.0.1:1025` and read mail at http://localhost:8025. Copy the workspace ID and token into the join form, or the reset token into the recovery form.
+
+Setting `DEV_MAIL_DIR=./dev-mail` instead writes each email as a JSON file with mode 0600. It takes precedence over SMTP. Keep that directory private and never enable it on a public host.
 
 Integrations send activity events to configured public HTTPS endpoints. Outgoing requests include `Idempotency-Key` and `X-Blackwall-Signature: sha256=<hex HMAC-SHA256>`. Incoming source-control links use `POST /api/workspaces/{id}/integrations/{integration}/webhook`, signed over the exact request body with the integration secret:
 
