@@ -1,18 +1,15 @@
 import { useEffect, useState } from "react";
-import { Outlet, redirect, useNavigate } from "react-router";
-import { Menu as MenuIcon, WifiOff } from "lucide-react";
-import { Button } from "~/components/ui/button";
+import { Outlet, redirect, useNavigate, useOutletContext } from "react-router";
 import { CommandPalette } from "~/components/app/command-palette";
 import { CreateIssueDialog } from "~/components/app/create-issue";
 import { Dialog } from "~/components/ui/dialog";
 import { Kbd } from "~/components/ui/tooltip";
-import { Sidebar } from "~/components/app/sidebar";
-import { ModalOverlay, Modal, Dialog as RACDialog } from "react-aria-components";
 import { ApiError, workspaces } from "~/lib/api";
 import { LAST_WS } from "~/lib/auth-guard";
 import { WorkspaceProvider, useWorkspace } from "~/lib/workspace";
 import { useT, type Key } from "~/lib/i18n";
 import { useShortcutsEnabled } from "~/lib/shortcuts";
+import type { WorkspaceSummary } from "~/lib/types";
 import type { Route } from "./+types/workspace";
 
 export async function clientLoader({ params }: Route.ClientLoaderArgs) {
@@ -49,9 +46,15 @@ export function shouldRevalidate({
 export default function WorkspaceLayout({ loaderData }: Route.ComponentProps) {
   return (
     <WorkspaceProvider initial={loaderData}>
-      <Shell />
+      <Workspace />
     </WorkspaceProvider>
   );
+}
+
+/** What the app shell and the settings screen read from `useOutletContext`. */
+export interface WorkspaceOutlet {
+  workspaces: WorkspaceSummary[];
+  openPalette: () => void;
 }
 
 const SHORTCUTS: [string[], Key][] = [
@@ -66,14 +69,15 @@ const SHORTCUTS: [string[], Key][] = [
   [["Ctrl/Cmd", "Enter"], "help.send"],
 ];
 
-function Shell() {
+/** Keyboard shortcuts and the overlays that work everywhere in a workspace, including settings. */
+function Workspace() {
   const t = useT();
   const nav = useNavigate();
-  const { ws, create, canWrite, offline, retrySync } = useWorkspace();
+  const { workspaces } = useOutletContext<{ workspaces: WorkspaceSummary[] }>();
+  const { ws, create, canWrite } = useWorkspace();
   const [shortcuts] = useShortcutsEnabled();
   const [palette, setPalette] = useState(false);
   const [help, setHelp] = useState(false);
-  const [drawer, setDrawer] = useState(false);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -113,60 +117,10 @@ function Shell() {
   }, [canWrite, create, nav, ws.id, shortcuts]);
 
   return (
-    <div className="flex h-dvh overflow-hidden">
-      <a
-        href="#main"
-        className="sr-only focus:not-sr-only focus:absolute focus:z-50 focus:m-2 focus:rounded-md focus:bg-card focus:px-3 focus:py-1.5"
-      >
-        {t("nav.skip")}
-      </a>
-      <div className="hidden border-r border-border md:block">
-        <Sidebar onSearch={() => setPalette(true)} />
-      </div>
-      <ModalOverlay
-        isOpen={drawer}
-        onOpenChange={setDrawer}
-        isDismissable
-        className="fixed inset-0 z-40 bg-black/40 md:hidden"
-      >
-        <Modal className="h-full w-60 bg-sidebar shadow-xl entering:animate-in entering:slide-in-from-left exiting:animate-out exiting:slide-out-to-left">
-          <RACDialog aria-label={t("nav.main")} className="h-full outline-none">
-            <Sidebar
-              onSearch={() => {
-                setDrawer(false);
-                setPalette(true);
-              }}
-              onNavigate={() => setDrawer(false)}
-            />
-          </RACDialog>
-        </Modal>
-      </ModalOverlay>
-      <main id="main" className="flex min-w-0 flex-1 flex-col bg-background">
-        <div className="flex h-11 items-center border-b border-border px-2 md:hidden">
-          <Button
-            variant="ghost"
-            size="icon-lg"
-            aria-label={t("nav.main")}
-            onPress={() => setDrawer(true)}
-          >
-            <MenuIcon />
-          </Button>
-          <span className="ml-1 truncate text-sm font-semibold">{ws.name}</span>
-        </div>
-        {offline && (
-          <div
-            role="status"
-            className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-warning/40 bg-warning/15 px-4 py-1.5 text-xs"
-          >
-            <WifiOff className="size-3.5 shrink-0" />
-            <span className="flex-1">{t("error.offline")}</span>
-            <Button size="sm" variant="ghost" onPress={retrySync}>
-              {t("error.offlineRetry")}
-            </Button>
-          </div>
-        )}
-        <Outlet />
-      </main>
+    <>
+      <Outlet
+        context={{ workspaces, openPalette: () => setPalette(true) } satisfies WorkspaceOutlet}
+      />
       <CommandPalette open={palette} onOpenChange={setPalette} onHelp={() => setHelp(true)} />
       <CreateIssueDialog />
       <Dialog
@@ -194,6 +148,6 @@ function Shell() {
           ))}
         </dl>
       </Dialog>
-    </div>
+    </>
   );
 }

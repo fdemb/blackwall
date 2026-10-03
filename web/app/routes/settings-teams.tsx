@@ -5,7 +5,8 @@ import { Button } from "~/components/ui/button";
 import { Dialog, useDialogDirty } from "~/components/ui/dialog";
 import { FormError, Input, TextField } from "~/components/ui/field";
 import { Select } from "~/components/ui/select";
-import { Card, EmptyState } from "~/components/app/page";
+import { EmptyState } from "~/components/app/page";
+import { SettingsPage, SettingsSection } from "~/components/app/settings";
 import { MultiMemberPicker } from "~/components/app/pickers";
 import { StageIcon } from "~/components/app/icons";
 import { STAGE_KINDS } from "~/lib/format";
@@ -19,32 +20,37 @@ export default function Teams() {
   const { ws, canAdmin, canWrite, create } = useWorkspace();
   const [creating, setCreating] = useState(false);
   return (
-    <>
-      {ws.teams.length > 0 && ws.issues.length === 0 && canWrite && (
-        <Card className="flex flex-wrap items-center gap-3 border-primary/30 bg-accent/40 p-4">
-          <div className="min-w-0 flex-1">
-            <h2 className="text-[14px] font-semibold">{t("setup.issueTitle")}</h2>
-            <p className="text-xs text-muted-foreground">{t("setup.issueSub")}</p>
-          </div>
-          <Button variant="primary" onPress={() => create.show({ team_id: ws.teams[0].id })}>
-            {t("issue.new")}
-          </Button>
-        </Card>
-      )}
-      <div className="flex items-center">
-        <div>
-          <h2 className="text-[14px] font-semibold">{t("settings.teams")}</h2>
-          <p className="text-xs text-muted-foreground">{t("teams.sub")}</p>
-        </div>
-        {canAdmin && (
-          <Button variant="primary" size="sm" className="ml-auto" onPress={() => setCreating(true)}>
+    <SettingsPage
+      title={t("settings.teams")}
+      description={t("teams.sub")}
+      actions={
+        canAdmin && (
+          <Button variant="primary" size="sm" onPress={() => setCreating(true)}>
             <Plus />
             {t("team.create")}
           </Button>
-        )}
-      </div>
+        )
+      }
+    >
+      {ws.teams.length > 0 && ws.issues.length === 0 && canWrite && (
+        <SettingsSection>
+          <div className="flex flex-wrap items-center gap-3 rounded-lg bg-accent/50 px-4 py-3">
+            <div className="min-w-0 flex-1">
+              <h2 className="text-[13px] font-semibold">{t("setup.issueTitle")}</h2>
+              <p className="text-xs text-muted-foreground">{t("setup.issueSub")}</p>
+            </div>
+            <Button
+              variant="primary"
+              size="sm"
+              onPress={() => create.show({ team_id: ws.teams[0].id })}
+            >
+              {t("issue.new")}
+            </Button>
+          </div>
+        </SettingsSection>
+      )}
       {ws.teams.length === 0 && (
-        <Card>
+        <SettingsSection>
           <EmptyState
             icon={<Users />}
             title={t("teams.emptyTitle")}
@@ -57,15 +63,15 @@ export default function Teams() {
               )
             }
           />
-        </Card>
+        </SettingsSection>
       )}
       {ws.teams.map((tm) => (
-        <TeamCard key={tm.id} team={tm} />
+        <TeamSection key={tm.id} team={tm} />
       ))}
       <Dialog title={t("team.create")} size="sm" isOpen={creating} onOpenChange={setCreating}>
         {(close) => <CreateTeam close={close} />}
       </Dialog>
-    </>
+    </SettingsPage>
   );
 }
 
@@ -114,7 +120,7 @@ function CreateTeam({ close }: { close: () => void }) {
   );
 }
 
-function TeamCard({ team }: { team: Team }) {
+function TeamSection({ team }: { team: Team }) {
   const t = useT();
   const { run, canAdmin } = useWorkspace();
   const stages = [...team.stages].sort((a, b) => a.position - b.position);
@@ -141,47 +147,46 @@ function TeamCard({ team }: { team: Team }) {
       });
     });
   return (
-    <Card>
-      <div className="flex flex-wrap items-center gap-3 border-b border-border px-4 py-3">
-        <h3 className="text-[14px] font-semibold">{team.name}</h3>
-        <div className="ml-auto w-56">
-          {canAdmin ? (
+    <SettingsSection
+      title={team.name}
+      actions={
+        canAdmin && (
+          <div className="w-56">
             <MultiMemberPicker
               value={team.members}
               onChange={(members) =>
                 run({ type: "set_team_members", id: team.id, members }).catch(() => {})
               }
             />
-          ) : null}
-        </div>
+          </div>
+        )
+      }
+    >
+      <div className="mb-2 flex items-center">
+        <h3 className="text-xs font-medium text-muted-foreground">{t("teams.workflow")}</h3>
+        {canAdmin && (
+          <Button variant="ghost" size="sm" className="ml-auto" onPress={() => setAdding(true)}>
+            <Plus />
+            {t("stage.add")}
+          </Button>
+        )}
       </div>
-      <div className="px-4 py-3">
-        <div className="mb-2 flex items-center">
-          <h4 className="text-xs font-medium text-muted-foreground">{t("teams.workflow")}</h4>
-          {canAdmin && (
-            <Button variant="ghost" size="sm" className="ml-auto" onPress={() => setAdding(true)}>
-              <Plus />
-              {t("stage.add")}
-            </Button>
-          )}
-        </div>
-        <ul className="space-y-1">
-          {stages.map((s, i) => (
-            <StageRow
-              key={s.id}
-              team={team}
-              stage={s}
-              first={i === 0}
-              last={i === stages.length - 1}
-              canEdit={canAdmin}
-              busy={moving}
-              onUp={() => void swap(s, stages[i - 1])}
-              onDown={() => void swap(s, stages[i + 1])}
-              onDelete={() => setDeleting(s)}
-            />
-          ))}
-        </ul>
-      </div>
+      <ul className="space-y-1">
+        {stages.map((s, i) => (
+          <StageRow
+            key={s.id}
+            team={team}
+            stage={s}
+            first={i === 0}
+            last={i === stages.length - 1}
+            canEdit={canAdmin}
+            busy={moving}
+            onUp={() => void swap(s, stages[i - 1])}
+            onDown={() => void swap(s, stages[i + 1])}
+            onDelete={() => setDeleting(s)}
+          />
+        ))}
+      </ul>
       <Dialog title={t("stage.add")} size="sm" isOpen={adding} onOpenChange={setAdding}>
         {(close) => <AddStage team={team} close={close} />}
       </Dialog>
@@ -194,7 +199,7 @@ function TeamCard({ team }: { team: Team }) {
       >
         {(close) => deleting && <DeleteStage team={team} stage={deleting} close={close} />}
       </Dialog>
-    </Card>
+    </SettingsSection>
   );
 }
 

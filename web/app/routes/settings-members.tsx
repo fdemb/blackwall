@@ -9,7 +9,7 @@ import { FormError, TextField } from "~/components/ui/field";
 import { Select } from "~/components/ui/select";
 import { useToast } from "~/components/ui/toast";
 import { ConfirmDialog } from "~/components/app/confirm";
-import { Card } from "~/components/app/page";
+import { SettingsList, SettingsPage, SettingsSection } from "~/components/app/settings";
 import { fullDate } from "~/lib/format";
 import { useI18n } from "~/lib/i18n";
 import { usePending } from "~/lib/use-pending";
@@ -39,33 +39,25 @@ export default function Members() {
     label: t(`role.${r}`),
   }));
   return (
-    <>
-      <Card>
-        <div className="flex items-center border-b border-border px-4 py-3">
-          <div>
-            <h2 className="text-[14px] font-semibold">{t("settings.members")}</h2>
-            <p className="text-xs text-muted-foreground">
-              {t("members.sub")} {t("members.roleHelp")}
-            </p>
-          </div>
-          {canAdmin && (
-            <Button
-              variant="primary"
-              size="sm"
-              className="ml-auto"
-              onPress={() => setInviting(true)}
-            >
-              <MailPlus />
-              {t("invite.new")}
-            </Button>
-          )}
-        </div>
-        <ul className="divide-y divide-border">
+    <SettingsPage
+      title={t("settings.members")}
+      description={`${t("members.sub")} ${t("members.roleHelp")}`}
+      actions={
+        canAdmin && (
+          <Button variant="primary" size="sm" onPress={() => setInviting(true)}>
+            <MailPlus />
+            {t("invite.new")}
+          </Button>
+        )
+      }
+    >
+      <SettingsSection>
+        <SettingsList>
           {ws.members.map((wm) => {
             const m = members.find((x) => x.id === wm.user_id);
             const locked = wm.role === "owner" && owners <= 1;
             return (
-              <li key={wm.user_id} className="flex items-center gap-3 px-4 py-2.5">
+              <li key={wm.user_id} className="flex min-h-13 items-center gap-3 py-2">
                 <Avatar name={m?.display_name ?? "?"} src={m?.avatar_url} size={28} />
                 <div className="min-w-0 flex-1">
                   <p className="truncate text-[13px] font-medium">
@@ -90,37 +82,36 @@ export default function Members() {
                 ) : (
                   <Badge>{t(`role.${wm.role}`)}</Badge>
                 )}
-                {canAdmin && !locked && wm.user_id !== me && (
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    aria-label={`${t("members.remove")}: ${m?.display_name ?? ""}`}
-                    onPress={() => setRemoving(wm.user_id)}
-                  >
-                    <UserMinus />
-                  </Button>
+                {canAdmin && (
+                  <span className="w-7 shrink-0">
+                    {!locked && wm.user_id !== me && (
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        aria-label={`${t("members.remove")}: ${m?.display_name ?? ""}`}
+                        onPress={() => setRemoving(wm.user_id)}
+                      >
+                        <UserMinus />
+                      </Button>
+                    )}
+                  </span>
                 )}
               </li>
             );
           })}
-        </ul>
-      </Card>
+        </SettingsList>
+      </SettingsSection>
 
       {canAdmin && (
-        <Card>
-          <div className="border-b border-border px-4 py-3">
-            <h2 className="text-[14px] font-semibold">{t("invite.pending")}</h2>
-          </div>
+        <SettingsSection title={t("invite.pending")}>
           {invitations.length === 0 ? (
-            <p className="px-4 py-6 text-center text-[13px] text-muted-foreground">
-              {t("invite.none")}
-            </p>
+            <p className="text-[13px] text-muted-foreground">{t("invite.none")}</p>
           ) : (
-            <ul className="divide-y divide-border">
+            <SettingsList>
               {invitations.map((i) => (
                 <li
                   key={i.id}
-                  className="flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-2.5 text-[13px]"
+                  className="flex flex-wrap items-center gap-x-3 gap-y-1 py-2.5 text-[13px]"
                 >
                   <div className="min-w-0 flex-1">
                     <p className="truncate font-medium">{i.email}</p>
@@ -156,9 +147,9 @@ export default function Members() {
                   </Button>
                 </li>
               ))}
-            </ul>
+            </SettingsList>
           )}
-        </Card>
+        </SettingsSection>
       )}
 
       <Dialog
@@ -206,7 +197,7 @@ export default function Members() {
           </div>
         )}
       </Dialog>
-    </>
+    </SettingsPage>
   );
 }
 
