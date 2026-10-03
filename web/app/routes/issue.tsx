@@ -1435,91 +1435,104 @@ function CommentItem({ comment: c }: { comment: Comment }) {
       .catch(() => {});
   };
   return (
-    <li className="group relative rounded-lg border border-border bg-card shadow-xs">
-      <div className="flex min-h-10 items-center gap-2 py-1.5 pl-3 pr-1.5 text-[13px]">
-        <Avatar name={m?.display_name ?? "?"} src={m?.avatar_url} size={20} />
-        <Link to={`/${ws.id}/people/${c.author}`} className="font-semibold hover:underline">
-          {m?.display_name ?? t("person.unknown")}
-        </Link>
-        <time
-          dateTime={c.created_at}
-          title={new Date(c.created_at).toLocaleString(lang)}
-          className="text-xs text-muted-foreground"
-        >
-          {relativeTime(c.created_at, lang)}
-        </time>
-        {c.edited_at && (
-          <span className="text-xs text-muted-foreground">({t("comment.edited")})</span>
-        )}
-        {(mine || canAdmin) && editBody === null && (
-          <span className={cn("ml-auto flex", revealOnHover)}>
-            {mine && (
+    // The avatar takes the timeline dot's slot, so it sits on the line and the card lines up with event text.
+    <li className="group relative flex gap-3">
+      <span className="flex w-7 shrink-0 justify-center pt-[7px]">
+        <Avatar
+          name={m?.display_name ?? "?"}
+          src={m?.avatar_url}
+          size={24}
+          className="ring-4 ring-background"
+        />
+      </span>
+      <div className="min-w-0 flex-1 rounded-lg border border-border bg-card shadow-xs">
+        <div className="flex h-9 items-center gap-1.5 pl-3.5 pr-1 text-[13px]">
+          <Link
+            to={`/${ws.id}/people/${c.author}`}
+            className="truncate font-semibold hover:underline"
+          >
+            {m?.display_name ?? t("person.unknown")}
+          </Link>
+          <time
+            dateTime={c.created_at}
+            title={new Date(c.created_at).toLocaleString(lang)}
+            className="shrink-0 text-xs text-muted-foreground"
+          >
+            {relativeTime(c.created_at, lang)}
+          </time>
+          {c.edited_at && (
+            <span className="shrink-0 text-xs text-muted-foreground">· {t("comment.edited")}</span>
+          )}
+          {(mine || canAdmin) && editBody === null && (
+            <span className={cn("ml-auto flex", revealOnHover)}>
+              {mine && (
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  aria-label={t("action.edit")}
+                  onPress={() => setEditBody(c.body)}
+                >
+                  <Pencil />
+                </Button>
+              )}
               <Button
                 variant="ghost"
                 size="icon"
-                aria-label={t("action.edit")}
-                onPress={() => setEditBody(c.body)}
+                aria-label={t("action.delete")}
+                onPress={() => setConfirm(true)}
               >
-                <Pencil />
+                <Trash2 />
               </Button>
-            )}
-            <Button
-              variant="ghost"
-              size="icon"
-              aria-label={t("action.delete")}
-              onPress={() => setConfirm(true)}
+            </span>
+          )}
+        </div>
+        <div className="-mt-0.5 px-3.5 pb-2.5">
+          {editBody !== null ? (
+            <div
+              className="space-y-2"
+              onKeyDown={(e) => {
+                if (e.key === "Escape") {
+                  e.stopPropagation();
+                  cancelEdit();
+                }
+              }}
             >
-              <Trash2 />
-            </Button>
-          </span>
-        )}
-      </div>
-      <div className="px-3 pb-3">
-        {editBody !== null ? (
-          <div
-            className="space-y-2"
-            onKeyDown={(e) => {
-              if (e.key === "Escape") {
-                e.stopPropagation();
-                cancelEdit();
-              }
-            }}
-          >
-            <MarkdownEditor
-              label={t("comment.edit")}
-              value={editBody}
-              onChange={setEditBody}
-              autoFocus
-              minRows={3}
-              onSubmit={save}
-            />
-            <ConfirmDialog
-              title={t("draft.discardTitle")}
-              description={t("draft.discardSub")}
-              confirmLabel={t("draft.discard")}
-              isOpen={discarding}
-              onOpenChange={setDiscarding}
-              onConfirm={async () => setEditBody(null)}
-            />
-            <div className="flex justify-end gap-2">
-              <Button variant="ghost" onPress={cancelEdit}>
-                {t("action.cancel")}
-              </Button>
-              <Button variant="primary" isDisabled={!editBody.trim()} onPress={save}>
-                {t("action.save")}
-              </Button>
+              <MarkdownEditor
+                label={t("comment.edit")}
+                value={editBody}
+                onChange={setEditBody}
+                autoFocus
+                minRows={3}
+                onSubmit={save}
+              />
+              <ConfirmDialog
+                title={t("draft.discardTitle")}
+                description={t("draft.discardSub")}
+                confirmLabel={t("draft.discard")}
+                isOpen={discarding}
+                onOpenChange={setDiscarding}
+                onConfirm={async () => setEditBody(null)}
+              />
+              <div className="flex justify-end gap-2">
+                <Button variant="ghost" onPress={cancelEdit}>
+                  {t("action.cancel")}
+                </Button>
+                <Button variant="primary" isDisabled={!editBody.trim()} onPress={save}>
+                  {t("action.save")}
+                </Button>
+              </div>
             </div>
-          </div>
-        ) : (
-          <Markdown text={c.body} className="text-[13.5px]" />
-        )}
-        {c.attachments.length > 0 && (
-          <ul className="mt-2 grid gap-1.5 sm:grid-cols-2">
-            {c.attachments.map((a) => (
-              <AttachmentChip key={a.id} wsId={ws.id} a={a} />
-            ))}
-          </ul>
-        )}
+          ) : (
+            <Markdown text={c.body} className="text-[13.5px] leading-[1.6]" />
+          )}
+          {c.attachments.length > 0 && (
+            <ul className="mt-3 grid gap-1.5 sm:grid-cols-2">
+              {c.attachments.map((a) => (
+                <AttachmentChip key={a.id} wsId={ws.id} a={a} />
+              ))}
+            </ul>
+          )}
+        </div>
       </div>
       <ConfirmDialog
         title={t("comment.deleteTitle")}

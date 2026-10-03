@@ -1,0 +1,203 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>PostgreSQL migration plan · Blackwall</title>
+<style>
+:root{--bg:#faf9fc;--paper:#fff;--text:#25232b;--muted:#615c6c;--line:#dedbe5;--accent:#643ac5;--code:#f0edf6;--side:#f3f1f7}
+*{box-sizing:border-box}
+html{scroll-padding-top:28px}
+body{margin:0;background:var(--bg);color:var(--text);font:16px/1.7 ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+::selection{background:#ded0ff;color:#25232b}
+a{color:var(--accent);text-underline-offset:4px}
+a:hover{text-decoration:underline}
+a:focus-visible,button:focus-visible{outline:3px solid var(--accent);outline-offset:4px}
+.skip{position:absolute;left:16px;top:-100px;z-index:5;background:var(--paper);padding:8px 16px}
+.skip:focus{top:12px}
+.layout{display:grid;grid-template-columns:270px minmax(0,1fr);max-width:1360px;margin:auto;min-height:100vh}
+aside{padding:38px 24px;background:var(--side);border-right:1px solid var(--line)}
+.sidebar{position:sticky;top:28px}
+.brand{font-weight:650;font-size:18px;letter-spacing:-.02em;margin:0 0 22px}
+nav{display:grid;gap:3px;font-size:13px;line-height:1.5}
+nav a{padding:6px 0;text-decoration:none;color:var(--muted)}
+nav a:hover{color:var(--accent)}
+.actions{margin-top:25px;padding-top:18px;border-top:1px solid var(--line);display:flex;flex-wrap:wrap;gap:12px;align-items:center;font-size:13px}
+button{font:inherit;color:var(--accent);background:transparent;border:1px solid var(--line);padding:6px 10px;border-radius:4px;cursor:pointer}
+button:hover{background:var(--paper)}
+main{min-width:0;background:var(--paper);padding:60px clamp(24px,5vw,80px) 90px}
+article{max-width:74ch;margin:auto}
+h1,h2,h3{line-height:1.23;font-weight:650;letter-spacing:-.025em;text-wrap:balance}
+h1{font-size:clamp(32px,4vw,48px);margin:0 0 24px;max-width:18ch}
+h2{font-size:25px;margin:56px 0 18px;padding-top:26px;border-top:1px solid var(--line)}
+h3{font-size:19px;margin:30px 0 12px}
+p{margin:0 0 18px}
+h1+p{font-size:20px;line-height:1.55;color:var(--muted)}
+ul,ol{margin:14px 0 24px;padding-left:24px}
+li{padding-left:3px;margin:9px 0}
+.task{list-style:none;position:relative;padding-left:3px}
+.check{position:absolute;left:-23px;top:.5em;width:13px;height:13px;border:1px solid #8b8498;border-radius:2px}
+code{font: .88em/1.5 ui-monospace,SFMono-Regular,Consolas,monospace;background:var(--code);padding:2px 5px;border-radius:3px;overflow-wrap:anywhere}
+footer{margin-top:52px;padding-top:20px;border-top:1px solid var(--line);font-size:13px;color:var(--muted)}
+@media(prefers-color-scheme:dark){:root{--bg:#18161e;--paper:#1e1c25;--text:#eae7f0;--muted:#b9b2c8;--line:#3d374c;--accent:#c3a9ff;--code:#302a40;--side:#211d2b}.check{border-color:#a89fba}}
+@media(max-width:860px){.layout{grid-template-columns:220px minmax(0,1fr)}aside{padding:28px 18px}main{padding:40px 28px 64px}body{font-size:15px}}
+@media(max-width:640px){.layout{display:block}aside{padding:20px;border-right:0;border-bottom:1px solid var(--line)}.sidebar{position:static}.brand{margin-bottom:12px}nav{grid-template-columns:1fr 1fr;gap:4px 16px}nav a{padding:4px 0}.actions{margin-top:15px;padding-top:12px}main{padding:32px 20px 56px}h2{font-size:23px;margin-top:42px}h1+p{font-size:18px}}
+@media print{html{color-scheme:light}body{background:white;color:black;font-size:10pt;line-height:1.5}.layout{display:block;max-width:none}aside,.skip{display:none}main{padding:0;background:white}article{max-width:none}h1{font-size:26pt;max-width:none}h2{font-size:16pt;margin-top:24pt;padding-top:12pt;break-after:avoid}h3{break-after:avoid}li{break-inside:avoid}code{background:#f3f3f3;color:black}footer{color:#555}}
+</style>
+</head>
+<body>
+<a class="skip" href="#content">Skip to plan</a>
+<div class="layout">
+<aside aria-label="Document navigation"><div class="sidebar">
+<p class="brand">Blackwall</p>
+<nav aria-label="Plan sections"><a href="#scope-and-decisions">Scope and decisions</a>
+<a href="#1-postgresql-foundation">1. PostgreSQL foundation</a>
+<a href="#2-relational-schema">2. Relational schema</a>
+<a href="#3-feature-operations-and-frontend-contracts">3. Feature operations and frontend contracts</a>
+<a href="#4-postgresql-job-queue">4. PostgreSQL job queue</a>
+<a href="#5-reminders-and-periodic-work">5. Reminders and periodic work</a>
+<a href="#6-verification-and-cleanup">6. Verification and cleanup</a>
+<a href="#suggested-implementation-batches">Suggested implementation batches</a>
+<a href="#completion-checklist">Completion checklist</a></nav>
+<div class="actions"><a href="postgres-migration-plan.md">Markdown source</a><button type="button" id="print">Print / save PDF</button></div>
+</div></aside>
+<main id="content"><article><h1 id="postgresql-migration-plan">PostgreSQL migration plan</h1>
+<p>Replace Blackwall's current persistence with PostgreSQL-only relational storage and a durable PostgreSQL job queue. Keep Axum, Tokio, and the React frontend.</p>
+<p>The app is not deployed. Existing development data can be discarded. Change backend and frontend contracts together without supporting old versions.</p>
+<p>This is planned work, not completed implementation.</p>
+<h2 id="scope-and-decisions">Scope and decisions</h2>
+<ul>
+<li>PostgreSQL is the only runtime and integration-test database.</li>
+<li>Replace workspace snapshots with normalized records. A driver swap alone would keep workspace-wide write conflicts and in-memory queries.</li>
+<li>Start with a clean schema and recreate development databases. No legacy converter, dual writes, data preservation, or cutover procedure.</li>
+<li>Keep one Rust crate and one application deployment. Organize operations by feature rather than adding generic repository abstractions.</li>
+<li>Keep useful business rules, credential/session hashing, CSRF protection, and atomic job enqueueing.</li>
+<li>Use a PostgreSQL queue in the same database. No Redis, external broker, or workflow engine.</li>
+<li>Replace the workspace revision contract directly with per-entity versions. Update the frontend and tests in the same work.</li>
+</ul>
+<h2 id="1-postgresql-foundation">1. PostgreSQL foundation</h2>
+<ul>
+<li class="task"><span class="check" aria-hidden="true"></span>Replace SQLx <code>AnyPool</code> and portable connection types with <code>PgPool</code> and PostgreSQL types in storage, auth, and jobs.</li>
+<li class="task"><span class="check" aria-hidden="true"></span>Remove SQLx <code>any</code> and SQLite features. Enable PostgreSQL, migrations, macros, UUID, chrono, and JSON support as needed.</li>
+<li class="task"><span class="check" aria-hidden="true"></span>Require <code>DATABASE_URL</code> and reject non-PostgreSQL URLs. Remove the implicit SQLite default.</li>
+<li class="task"><span class="check" aria-hidden="true"></span>Add PostgreSQL to <code>compose.yaml</code> alongside Mailpit, with loopback ports, a health check, and persistent local storage. Pin a supported major version for development and CI.</li>
+<li class="task"><span class="check" aria-hidden="true"></span>Replace the custom migration runner with SQLx migrations in <code>migrations/</code>. Provide a simple migrate/reset workflow for development and tests.</li>
+<li class="task"><span class="check" aria-hidden="true"></span>Configure database pool size and acquisition timeout. Establish checked SQL queries and offline metadata where practical.</li>
+<li class="task"><span class="check" aria-hidden="true"></span>Update <code>.env.example</code> and startup instructions.</li>
+</ul>
+<p>Done when a fresh PostgreSQL database starts the app, migrations apply successfully, and no runtime SQLite path remains.</p>
+<h2 id="2-relational-schema">2. Relational schema</h2>
+<p>Build the new schema from the current domain model, preserving product behavior rather than existing storage formats.</p>
+<ul>
+<li class="task"><span class="check" aria-hidden="true"></span>Identity: users, sessions, password resets, workspace memberships, and invitations.</li>
+<li class="task"><span class="check" aria-hidden="true"></span>Planning: workspaces, teams, team memberships, workflow stages, labels, projects, project teams, milestones, sprints, and sprint outcomes.</li>
+<li class="task"><span class="check" aria-hidden="true"></span>Work: issues, labels, dependencies, followers, source links, ordering, and soft deletion.</li>
+<li class="task"><span class="check" aria-hidden="true"></span>Discussion: comments, mentions, time entries, attachment metadata, and attachment bytes stored as <code>bytea</code> instead of hexadecimal text.</li>
+<li class="task"><span class="check" aria-hidden="true"></span>Personal and integration data: saved views, alert preferences, notifications, activity, integrations, and inbound webhook deduplication.</li>
+<li class="task"><span class="check" aria-hidden="true"></span>Jobs: queue records as described in section 4.</li>
+</ul>
+<p>Use native UUIDs and <code>timestamptz</code>. Keep JSONB for flexible preferences, saved filters, job payloads, and historical details, not whole workspaces.</p>
+<p>Add foreign keys, uniqueness, and checks for domain invariants. Include workspace ownership in tenant-scoped records and prevent cross-workspace references, including issue/team/stage and project/milestone relationships. Preserve historical authorship when someone leaves a workspace.</p>
+<ul>
+<li class="task"><span class="check" aria-hidden="true"></span>Add per-entity versions for editable records and atomic issue-number allocation with uniqueness at the existing numbering scope.</li>
+<li class="task"><span class="check" aria-hidden="true"></span>Index actual list, detail, deadline, notification, session, and job queries.</li>
+<li class="task"><span class="check" aria-hidden="true"></span>Create deterministic fixtures for empty and feature-rich workspaces. Use these instead of migrating old development data.</li>
+</ul>
+<p>Done when fixtures load and database constraints reject invalid references and duplicate identities.</p>
+<h2 id="3-feature-operations-and-frontend-contracts">3. Feature operations and frontend contracts</h2>
+<ul>
+<li class="task"><span class="check" aria-hidden="true"></span>Move authorization, validation, affected-row reads, business writes, activity entries, and job creation into transaction-owning feature operations.</li>
+<li class="task"><span class="check" aria-hidden="true"></span>Start with issue create/update, then cover memberships, planning, discussion, uploads, bulk edits, imports, and integrations.</li>
+<li class="task"><span class="check" aria-hidden="true"></span>Extract reusable rules from <code>Workspace::apply</code> and workspace operations. Normal requests must not load or rewrite a full workspace.</li>
+<li class="task"><span class="check" aria-hidden="true"></span>Define one authorization locking protocol for mutations and member revocation. For example, mutations hold a shared membership-row lock through commit and revocation takes an exclusive lock. Recheck permissions after acquiring locks.</li>
+<li class="task"><span class="check" aria-hidden="true"></span>Replace workspace revision preconditions with versions on affected entities. Unrelated issue edits must succeed independently.</li>
+<li class="task"><span class="check" aria-hidden="true"></span>Lock affected rows in a deterministic order for multi-record operations. Preserve all-or-nothing bulk edits and sprint completion.</li>
+<li class="task"><span class="check" aria-hidden="true"></span>Replace whole-workspace frontend reads with targeted detail requests and paginated lists. Implement filtering, search, and reports in SQL.</li>
+<li class="task"><span class="check" aria-hidden="true"></span>Change command/request types, OpenAPI, frontend calls, conflict handling, uploads, imports, and tests together. Delete the old revision contract rather than maintaining compatibility.</li>
+<li class="task"><span class="check" aria-hidden="true"></span>Keep import/export behavior, security exclusions, and attachment handling. Transfer is a product capability, not a legacy database conversion mechanism.</li>
+<li class="task"><span class="check" aria-hidden="true"></span>Add operation idempotency where retrying creates or external submissions could duplicate work. Scope keys appropriately and record results atomically.</li>
+</ul>
+<p>Done when every existing capability uses relational operations and targeted queries, independent writes do not conflict, and stale edits and revoked permissions are handled correctly.</p>
+<h2 id="4-postgresql-job-queue">4. PostgreSQL job queue</h2>
+<p>Replace <code>src/store/outbox.rs</code> with a PostgreSQL-specific queue while retaining enqueueing in the business transaction. Start with email and webhook delivery.</p>
+<h3 id="storage-and-claiming">Storage and claiming</h3>
+<ul>
+<li class="task"><span class="check" aria-hidden="true"></span>Store job ID, kind, payload version, JSONB payload, queue, state, <code>run_at</code>, attempts, maximum attempts, claim token, lease expiry, timestamps, deduplication key, and bounded last error.</li>
+<li class="task"><span class="check" aria-hidden="true"></span>Define pending, running, succeeded, failed, and cancelled states. Index due pending jobs and expired running leases.</li>
+<li class="task"><span class="check" aria-hidden="true"></span>Enqueue through the operation's SQL transaction. Rollback must remove both business changes and queued work.</li>
+<li class="task"><span class="check" aria-hidden="true"></span>Claim due jobs in a short transaction with <code>FOR UPDATE SKIP LOCKED</code>. Assign a fresh claim token, lease, and incremented attempt count; commit before doing external I/O.</li>
+<li class="task"><span class="check" aria-hidden="true"></span>Recover expired leases safely. Require the current claim token for complete, retry, renew, and cancellation coordination so stale workers cannot overwrite a newer claim.</li>
+<li class="task"><span class="check" aria-hidden="true"></span>Use database time for due checks and leases. Claim only as many jobs as there are free execution slots.</li>
+</ul>
+<h3 id="execution-and-failures">Execution and failures</h3>
+<ul>
+<li class="task"><span class="check" aria-hidden="true"></span>Add bounded execution concurrency with separate email and webhook limits. Budget database connections for HTTP and workers.</li>
+<li class="task"><span class="check" aria-hidden="true"></span>Keep explicit per-kind timeouts. Start delivery with the existing 45-second timeout and 120-second lease. Add renewal only for job kinds that need longer execution.</li>
+<li class="task"><span class="check" aria-hidden="true"></span>Retry transient failures with capped exponential backoff and jitter. Fail malformed payloads and permanent errors visibly.</li>
+<li class="task"><span class="check" aria-hidden="true"></span>Enforce maximum attempts, including repeated lease expiry after crashes. Do not retry indefinitely.</li>
+<li class="task"><span class="check" aria-hidden="true"></span>Define missing SMTP behavior explicitly, such as pausing email delivery until configured.</li>
+<li class="task"><span class="check" aria-hidden="true"></span>Add restricted CLI commands for status, failed-job inspection, retry, and cancellation. Keep payloads and secrets out of routine logs.</li>
+<li class="task"><span class="check" aria-hidden="true"></span>Version job payloads for future upgrades and bound payload/error sizes. Clean up completed history using a documented retention setting.</li>
+</ul>
+<h3 id="wakeups-and-guarantees">Wakeups and guarantees</h3>
+<ul>
+<li class="task"><span class="check" aria-hidden="true"></span>Use transactionally emitted PostgreSQL <code>NOTIFY</code> and a dedicated <code>LISTEN</code> connection to wake workers across instances. Notifications carry no sensitive payload.</li>
+<li class="task"><span class="check" aria-hidden="true"></span>Retain indexed polling for correctness and scan after listener reconnection. Start with a configurable maximum five-second idle poll interval.</li>
+<li class="task"><span class="check" aria-hidden="true"></span>Document at-least-once delivery. Preserve webhook idempotency keys and stable email Message-IDs, without claiming SMTP deduplicates messages.</li>
+<li class="task"><span class="check" aria-hidden="true"></span>For database-only jobs, commit effects and completion together under claim ownership. Enforce notification deduplication with unique constraints.</li>
+<li class="task"><span class="check" aria-hidden="true"></span>Stop claiming on shutdown, drain for a bounded period, and let abandoned leases expire. An interrupted external request may already have succeeded.</li>
+<li class="task"><span class="check" aria-hidden="true"></span>Keep HTTP and workers together initially, with a worker-only run mode available from the same binary if needed.</li>
+</ul>
+<p>Done when multiple workers claim safely, restarts recover abandoned work, permanent failures are inspectable, and rolled-back operations enqueue nothing.</p>
+<h2 id="5-reminders-and-periodic-work">5. Reminders and periodic work</h2>
+<ul>
+<li class="task"><span class="check" aria-hidden="true"></span>Replace workspace ticks with scheduled reminder jobs. Remove <code>next_tick_at</code> and full-workspace reminder scans.</li>
+<li class="task"><span class="check" aria-hidden="true"></span>Track a reminder generation per issue. Deadline and status changes supersede old jobs and schedule the current generation in the same transaction.</li>
+<li class="task"><span class="check" aria-hidden="true"></span>Deduplicate reminders by issue, generation, recipient, and kind so rescheduling can legitimately produce a new reminder.</li>
+<li class="task"><span class="check" aria-hidden="true"></span>At execution, recheck generation, deadline, status, membership, and preferences. Commit inbox changes and job completion atomically.</li>
+<li class="task"><span class="check" aria-hidden="true"></span>Preserve the existing reminder window and define behavior for late jobs. Use UTC instants; introduce timezone rules only if calendar recurrence is added.</li>
+<li class="task"><span class="check" aria-hidden="true"></span>Expire invitations through indexed queries and transactional updates.</li>
+<li class="task"><span class="check" aria-hidden="true"></span>Run bounded session/reset-token cleanup through a unique periodic job or advisory-lock-protected sweep. Authentication still rejects expired credentials immediately without waiting for cleanup.</li>
+<li class="task"><span class="check" aria-hidden="true"></span>Coalesce missed cleanup runs and skip reminders that are no longer relevant.</li>
+</ul>
+<p>Done when reminders survive restart and rescheduling, stale jobs produce no inbox entries, and multiple workers do not duplicate maintenance effects.</p>
+<h2 id="6-verification-and-cleanup">6. Verification and cleanup</h2>
+<ul>
+<li class="task"><span class="check" aria-hidden="true"></span>Make PostgreSQL mandatory in <code>tests/api.rs</code>, <code>scripts/check.sh</code>, and CI. Remove optional PostgreSQL coverage and SQLite test loops.</li>
+<li class="task"><span class="check" aria-hidden="true"></span>Isolate tests with disposable databases or schemas visible to the application's pooled connections. Keep pure domain unit tests.</li>
+<li class="task"><span class="check" aria-hidden="true"></span>Update <code>scripts/smoke.py</code> for PostgreSQL, real HTTP, restart, and worker recovery checks.</li>
+<li class="task"><span class="check" aria-hidden="true"></span>Test clean database creation, migrations, fixture loading, and database reset.</li>
+<li class="task"><span class="check" aria-hidden="true"></span>Test independent issue edits, stale versions, membership revocation, issue numbering, tenant isolation, bulk rollback, and inbound webhook deduplication.</li>
+<li class="task"><span class="check" aria-hidden="true"></span>Test competing workers, expired leases, stale tokens, retries, permanent failure, maximum attempts, cancellation, listener loss, and shutdown.</li>
+<li class="task"><span class="check" aria-hidden="true"></span>Test deadline/status changes while reminders are running. Check atomic notification deduplication and duplicate external-delivery behavior.</li>
+<li class="task"><span class="check" aria-hidden="true"></span>Verify frontend create/edit, conflict recovery, lists, uploads, bulk actions, inbox, and transfer against the changed contracts.</li>
+<li class="task"><span class="check" aria-hidden="true"></span>Check query plans and representative large-workspace behavior. Track pool pressure, lock waits, queue depth, oldest overdue-job age, failures, and execution duration.</li>
+<li class="task"><span class="check" aria-hidden="true"></span>Delete snapshot storage, the old migration runner, portable outbox claims, old scheduler code, and obsolete workspace revision paths.</li>
+<li class="task"><span class="check" aria-hidden="true"></span>Update README, architecture and verification docs, and product-context references. Document fresh setup, reset, worker operation, and failed-job recovery.</li>
+</ul>
+<p>Done when checks pass against PostgreSQL, the frontend works with the new contracts, and normal operations have no SQLite or workspace-snapshot dependency.</p>
+<h2 id="suggested-implementation-batches">Suggested implementation batches</h2>
+<ol>
+<li>PostgreSQL configuration, local services, migrations, and mandatory test infrastructure.</li>
+<li>Relational schema and fixtures.</li>
+<li>Queue module, delivery workers, and multi-worker tests.</li>
+<li>Auth/membership and issue operations, including the new frontend contracts.</li>
+<li>Remaining planning, discussion, reporting, transfer, and integration operations, split by capability.</li>
+<li>Reminders, maintenance, end-to-end checks, and removal of obsolete code.</li>
+</ol>
+<p>The queue can proceed after its schema lands. The largest task is moving all product operations away from snapshots, not swapping the SQLx driver.</p>
+<h2 id="completion-checklist">Completion checklist</h2>
+<ul>
+<li class="task"><span class="check" aria-hidden="true"></span>PostgreSQL is the only runtime and integration-test database.</li>
+<li class="task"><span class="check" aria-hidden="true"></span>Normal reads and writes use relational records, not whole-workspace snapshots.</li>
+<li class="task"><span class="check" aria-hidden="true"></span>Entity versions, authorization, and bulk transactions preserve correct behavior.</li>
+<li class="task"><span class="check" aria-hidden="true"></span>Business changes and jobs commit together.</li>
+<li class="task"><span class="check" aria-hidden="true"></span>Workers recover across restarts and expose failures with bounded execution and retries.</li>
+<li class="task"><span class="check" aria-hidden="true"></span>Reminders handle rescheduling without stale or duplicate inbox entries.</li>
+<li class="task"><span class="check" aria-hidden="true"></span>Backend, frontend, tests, and documentation agree on the new model.</li>
+</ul><footer>Unreleased app. Development data can be discarded. No compatibility or data conversion work is planned. This page contains the full Markdown plan and works offline.</footer></article></main>
+</div>
+<script>document.getElementById("print").addEventListener("click",function(){window.print()});</script>
+</body>
+</html>
