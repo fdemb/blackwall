@@ -24,7 +24,7 @@ export default [
         route("issue/:issueId", "routes/issue.tsx"),
         route("projects", "routes/projects.tsx"),
         route("projects/:projectId", "routes/project.tsx"),
-        route("inbox", "routes/inbox.tsx"),
+        route("inbox", "routes/inbox.tsx", [route("issue/:issueId", "routes/inbox-issue.tsx")]),
         route("reports", "routes/reports.tsx"),
         route("people", "routes/people.tsx"),
         route("people/:userId", "routes/person.tsx"),
