@@ -17,7 +17,7 @@ import {
 } from "react-aria-components";
 import { CalendarDays, ChevronLeft, ChevronRight, X } from "lucide-react";
 import { parseDate, type CalendarDate } from "@internationalized/date";
-import { useT } from "~/lib/i18n";
+import { useI18n } from "~/lib/i18n";
 import { cn } from "~/lib/utils";
 import { Button } from "./button";
 import { Label } from "./field";
@@ -58,7 +58,7 @@ export function DatePicker({
   className,
   ...props
 }: Props) {
-  const t = useT();
+  const { t } = useI18n();
   return (
     <RACDatePicker
       {...props}

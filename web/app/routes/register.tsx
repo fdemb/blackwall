@@ -5,12 +5,12 @@ import { Loader2 } from "lucide-react";
 import { Button } from "~/components/ui/button";
 import { FormError, TextField } from "~/components/ui/field";
 import { auth, setCsrf } from "~/lib/api";
-import { useT } from "~/lib/i18n";
+import { useI18n } from "~/lib/i18n";
 import { useDocumentTitle } from "~/lib/title";
 import { formText } from "~/lib/utils";
 
 export default function Register() {
-  const t = useT();
+  const { t } = useI18n();
   const nav = useNavigate();
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);

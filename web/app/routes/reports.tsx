@@ -203,7 +203,7 @@ function Stat({ label, value, hint }: { label: string; value: string; hint?: str
 }
 
 function TimeLog({ lang }: { lang: string }) {
-  const t = useI18n().t;
+  const { t } = useI18n();
   const { ws, me, member, run, canAdmin } = useWorkspace();
   const [editing, setEditing] = useState<TimeEntry | null>(null);
   const [deleting, setDeleting] = useState<TimeEntry | null>(null);

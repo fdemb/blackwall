@@ -1,10 +1,10 @@
 import { Button } from "~/components/ui/button";
-import { useT } from "~/lib/i18n";
+import { useI18n } from "~/lib/i18n";
 import { ellipsis } from "~/lib/format";
 import type { PaginationState } from "~/lib/queries";
 
 export function QueryStatus({ query }: { query: PaginationState }) {
-  const t = useT();
+  const { t } = useI18n();
   if (query.error)
     return (
       <div role="alert" className="flex flex-wrap items-center gap-3 px-4 py-3 text-sm">

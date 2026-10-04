@@ -4,7 +4,7 @@ import { Button } from "~/components/ui/button";
 import { Tip } from "~/components/ui/tooltip";
 import { Avatar } from "~/components/ui/avatar";
 import { markdown } from "~/lib/api";
-import { useT } from "~/lib/i18n";
+import { useI18n } from "~/lib/i18n";
 import { useWorkspace } from "~/lib/workspace";
 import { cn } from "~/lib/utils";
 import { AtSign, Bold, Code, Italic, Link2, List, ListOrdered, Quote } from "lucide-react";
@@ -96,7 +96,7 @@ function MentionMenu({
   onInsert: (text: string) => void;
   isDisabled?: boolean;
 }) {
-  const t = useT();
+  const { t } = useI18n();
   const { members } = useWorkspace();
   return (
     <MenuTrigger>
@@ -146,7 +146,7 @@ export function MarkdownEditor({
   mentions?: boolean;
   label: string;
 }) {
-  const t = useT();
+  const { t } = useI18n();
   const ref = useRef<HTMLTextAreaElement>(null);
   const [preview, setPreview] = useState(false);
 

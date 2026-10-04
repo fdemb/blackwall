@@ -4,7 +4,7 @@ import { Avatar } from "~/components/ui/avatar";
 import { Badge } from "~/components/ui/badge";
 import { IssueList } from "~/components/app/issue-list";
 import { EmptyState, Page, PageHeader, Scroll } from "~/components/app/page";
-import { useT } from "~/lib/i18n";
+import { useI18n } from "~/lib/i18n";
 import { useIssues } from "~/lib/queries";
 import { QueryStatus } from "~/components/app/query-status";
 import { useWorkspace } from "~/lib/workspace";
@@ -13,7 +13,7 @@ const PHONE_LIKE = /^[+\d][\d\s()-]{5,}$/;
 const WHITESPACE = /\s/g;
 
 export default function Person() {
-  const t = useT();
+  const { t } = useI18n();
   const { userId, ws: wsId } = useParams();
   const { ws, member } = useWorkspace();
   const query = useIssues({ assignee: userId, open: true });

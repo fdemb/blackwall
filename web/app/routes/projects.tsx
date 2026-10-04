@@ -9,7 +9,7 @@ import { Menu, MenuItem, MenuPopover, MenuTrigger } from "~/components/ui/menu";
 import { Checkbox } from "~/components/ui/toggles";
 import { EmptyState, Page, PageHeader, Scroll } from "~/components/app/page";
 import { ProgressBar } from "~/components/app/progress";
-import { useT } from "~/lib/i18n";
+import { useI18n } from "~/lib/i18n";
 import { usePending } from "~/lib/use-pending";
 import { useWorkspace } from "~/lib/workspace";
 import type { Id, Project } from "~/lib/types";
@@ -17,7 +17,7 @@ import type { Id, Project } from "~/lib/types";
 type ProjectSort = "name" | "progress" | "recent";
 
 export default function Projects() {
-  const t = useT();
+  const { t } = useI18n();
   const { ws, canWrite, report } = useWorkspace();
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState("");
@@ -149,7 +149,7 @@ export default function Projects() {
 }
 
 export function ProjectForm({ project, close }: { project?: Project; close: () => void }) {
-  const t = useT();
+  const { t } = useI18n();
   const { ws, run } = useWorkspace();
   const [name, setName] = useState(project?.name ?? "");
   const [description, setDescription] = useState(project?.description ?? "");

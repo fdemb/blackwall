@@ -3,7 +3,7 @@ import { Plus } from "lucide-react";
 import { Button } from "~/components/ui/button";
 import { useIssues } from "~/lib/queries";
 import { QueryStatus } from "./query-status";
-import { useT } from "~/lib/i18n";
+import { useI18n } from "~/lib/i18n";
 import { useWorkspace } from "~/lib/workspace";
 import type { IssueFilter } from "~/lib/types";
 import { FilterBar } from "./filter-bar";
@@ -148,7 +148,7 @@ function WorkbenchHeader({
   base: IssueFilter;
   onNew: () => void;
 }) {
-  const t = useT();
+  const { t } = useI18n();
   const { canWrite } = useWorkspace();
   return (
     <PageHeader
@@ -199,7 +199,7 @@ function WorkbenchList({
   onClearFilter: () => void;
   onNew: () => void;
 }) {
-  const t = useT();
+  const { t } = useI18n();
   const { canWrite } = useWorkspace();
   return (
     <IssueList

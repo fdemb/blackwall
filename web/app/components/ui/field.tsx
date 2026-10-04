@@ -15,7 +15,7 @@ import {
   type SearchFieldProps,
 } from "react-aria-components";
 import { Search, X } from "lucide-react";
-import { useT } from "~/lib/i18n";
+import { useI18n } from "~/lib/i18n";
 import { cn } from "~/lib/utils";
 import { Button } from "./button";
 
@@ -125,7 +125,7 @@ export function SearchField({
   inputClassName,
   ...props
 }: SearchFieldProps & { placeholder?: string; inputClassName?: string }) {
-  const t = useT();
+  const { t } = useI18n();
   return (
     <RACSearchField
       {...props}

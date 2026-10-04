@@ -10,13 +10,13 @@ import { SettingsPage, SettingsSection } from "~/components/app/settings";
 import { MultiMemberPicker } from "~/components/app/pickers";
 import { StageIcon } from "~/components/app/icons";
 import { STAGE_KINDS } from "~/lib/format";
-import { useT } from "~/lib/i18n";
+import { useI18n } from "~/lib/i18n";
 import { usePending } from "~/lib/use-pending";
 import { useWorkspace } from "~/lib/workspace";
 import type { Id, Stage, StageKind, Team } from "~/lib/types";
 
 export default function Teams() {
-  const t = useT();
+  const { t } = useI18n();
   const { ws, canAdmin, canWrite, create, report } = useWorkspace();
   const [creating, setCreating] = useState(false);
   return (
@@ -76,7 +76,7 @@ export default function Teams() {
 }
 
 function CreateTeam({ close }: { close: () => void }) {
-  const t = useT();
+  const { t } = useI18n();
   const { run, me } = useWorkspace();
   const [name, setName] = useState("");
   const [members, setMembers] = useState<Id[]>([me]);
@@ -121,7 +121,7 @@ function CreateTeam({ close }: { close: () => void }) {
 }
 
 function TeamSection({ team }: { team: Team }) {
-  const t = useT();
+  const { t } = useI18n();
   const { run, canAdmin } = useWorkspace();
   const stages = [...team.stages].sort((a, b) => a.position - b.position);
   const [adding, setAdding] = useState(false);
@@ -224,7 +224,7 @@ function StageRow({
   onDown: () => void;
   onDelete: () => void;
 }) {
-  const t = useT();
+  const { t } = useI18n();
   const { run } = useWorkspace();
   const [name, setName] = useState(stage.name);
   const [status, setStatus] = useState<"idle" | "saving" | "saved" | "failed">("idle");
@@ -314,7 +314,7 @@ function StageRow({
 }
 
 function AddStage({ team, close }: { team: Team; close: () => void }) {
-  const t = useT();
+  const { t } = useI18n();
   const { run } = useWorkspace();
   const [name, setName] = useState("");
   const [kind, setKind] = useState<StageKind>("active");
@@ -360,7 +360,7 @@ function AddStage({ team, close }: { team: Team; close: () => void }) {
 }
 
 function DeleteStage({ team, stage, close }: { team: Team; stage: Stage; close: () => void }) {
-  const t = useT();
+  const { t } = useI18n();
   const { run } = useWorkspace();
   const others = team.stages.filter((s) => s.id !== stage.id);
   const [replacement, setReplacement] = useState<Id | undefined>(others[0]?.id);

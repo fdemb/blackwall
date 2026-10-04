@@ -10,7 +10,7 @@ import { queryClient } from "~/lib/query-client";
 import { startChangeFeed } from "~/lib/sync";
 import { clearLastWs, writeLastWs } from "~/lib/auth-guard";
 import { WorkspaceProvider, useWorkspace } from "~/lib/workspace";
-import { useT, type Key } from "~/lib/i18n";
+import { useI18n, type Key } from "~/lib/i18n";
 import { useShortcutsEnabled } from "~/lib/shortcuts";
 import type { WorkspaceSummary } from "~/lib/types";
 import type { Route } from "./+types/workspace";
@@ -73,7 +73,7 @@ const SHORTCUTS: [string[], Key][] = [
 
 /** Keyboard shortcuts and the overlays that work everywhere in a workspace, including settings. */
 function Workspace() {
-  const t = useT();
+  const { t } = useI18n();
   const nav = useNavigate();
   const { workspaces } = useOutletContext<{ workspaces: WorkspaceSummary[] }>();
   const { ws, create, canWrite } = useWorkspace();

@@ -1,9 +1,9 @@
 import { Layers } from "lucide-react";
 import { Workbench } from "~/components/app/workbench";
-import { useT } from "~/lib/i18n";
+import { useI18n } from "~/lib/i18n";
 
 export default function AllIssues() {
-  const t = useT();
+  const { t } = useI18n();
   return (
     <Workbench
       title={t("nav.allIssues")}

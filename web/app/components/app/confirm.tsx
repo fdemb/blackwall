@@ -1,6 +1,6 @@
 import { Button } from "~/components/ui/button";
 import { Dialog } from "~/components/ui/dialog";
-import { useT } from "~/lib/i18n";
+import { useI18n } from "~/lib/i18n";
 import { usePending } from "~/lib/use-pending";
 
 /**
@@ -24,7 +24,7 @@ export function ConfirmDialog({
   onOpenChange: (open: boolean) => void;
   onConfirm: () => Promise<unknown>;
 }) {
-  const t = useT();
+  const { t } = useI18n();
   return (
     <Dialog
       title={title}
@@ -53,7 +53,7 @@ function ConfirmBody({
   close: () => void;
   onConfirm: () => Promise<unknown>;
 }) {
-  const t = useT();
+  const { t } = useI18n();
   const { pending, error, guard } = usePending();
   return (
     <div className="space-y-3">
