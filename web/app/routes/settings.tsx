@@ -191,7 +191,7 @@ export default function SettingsLayout() {
         </div>
         <OfflineBanner />
         <div className="min-h-0 flex-1 overflow-y-auto">
-          <div className="mx-auto w-full max-w-2xl px-5 pb-16 pt-8 md:px-10 md:pt-14">
+          <div className="mx-auto w-full max-w-3xl px-4 pb-16 pt-6 sm:px-6 md:pt-10">
             <Outlet context={ctx} />
           </div>
         </div>

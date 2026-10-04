@@ -72,7 +72,7 @@ export default function General() {
 
 function Row({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <div className="flex min-h-11 items-center justify-between gap-6 py-2">
+    <div className="flex min-h-11 items-center justify-between gap-6 px-4 py-2 sm:px-5">
       <dt className="shrink-0 text-muted-foreground">{label}</dt>
       <dd className="flex min-w-0 justify-end">{children}</dd>
     </div>

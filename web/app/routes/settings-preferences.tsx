@@ -55,7 +55,7 @@ export default function Preferences() {
         <Switch
           isSelected={shortcuts}
           onChange={setShortcuts}
-          className="flex-row-reverse items-start justify-between gap-8 py-3"
+          className="flex-row-reverse items-start justify-between gap-8 px-4 py-4 sm:px-5"
         >
           <span>
             <span className="block font-medium">{t("account.shortcuts")}</span>

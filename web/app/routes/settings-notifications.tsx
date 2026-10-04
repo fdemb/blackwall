@@ -94,7 +94,7 @@ export default function Notifications() {
               key={k}
               isSelected={local[k]}
               onChange={(v) => set({ [k]: v })}
-              className="flex-row-reverse justify-between gap-8 py-3"
+              className="flex-row-reverse justify-between gap-8 px-4 py-4 sm:px-5"
             >
               <span>
                 <span className="block font-medium">{t(`alert.${k}`)}</span>

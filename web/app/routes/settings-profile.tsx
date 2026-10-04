@@ -25,7 +25,7 @@ export default function Profile() {
     <SettingsPage title={t("account.profile")} description={t("account.profileSub")}>
       <SettingsSection>
         <Form
-          className="space-y-5"
+          className="space-y-5 px-4 py-4 sm:px-5 sm:py-5"
           onSubmit={async (e) => {
             e.preventDefault();
             setError("");

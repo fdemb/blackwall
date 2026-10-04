@@ -100,34 +100,38 @@ export default function Data() {
   return (
     <SettingsPage title={t("settings.data")}>
       <SettingsSection title={t("data.export")} description={t("data.exportSub")}>
-        <Button variant="secondary" isDisabled={busy} onPress={exportAll}>
-          <Download />
-          {t("data.exportButton")}
-        </Button>
+        <div className="px-4 py-4 sm:px-5 sm:py-5">
+          <Button variant="secondary" isDisabled={busy} onPress={exportAll}>
+            <Download />
+            {t("data.exportButton")}
+          </Button>
+        </div>
       </SettingsSection>
       {canWrite && (
         <SettingsSection title={t("data.import")} description={t("data.importSub")}>
-          <DropZone
-            className="flex flex-col items-center gap-2 rounded-lg border border-dashed border-input px-6 py-10 text-center transition-colors drop-target:border-primary drop-target:bg-accent/50"
-            onDrop={async (e) => {
-              for (const item of e.items)
-                if (item.kind === "file") {
-                  await choose(await item.getFile());
-                  break;
-                }
-            }}
-          >
-            <FileUp className="size-5 text-muted-foreground" />
-            <Text slot="label" className="text-[13px] text-muted-foreground">
-              {t("data.drop")}
-            </Text>
-            <FileTrigger
-              acceptedFileTypes={["application/json", ".json"]}
-              onSelect={(l) => l?.[0] && void choose(l[0])}
+          <div className="px-4 py-4 sm:px-5 sm:py-5">
+            <DropZone
+              className="flex flex-col items-center gap-2 rounded-xl border border-dashed border-input px-6 py-10 text-center transition-colors drop-target:border-primary drop-target:bg-accent/50"
+              onDrop={async (e) => {
+                for (const item of e.items)
+                  if (item.kind === "file") {
+                    await choose(await item.getFile());
+                    break;
+                  }
+              }}
             >
-              <Button variant="secondary">{t("data.choose")}</Button>
-            </FileTrigger>
-          </DropZone>
+              <FileUp className="size-5 text-muted-foreground" />
+              <Text slot="label" className="text-[13px] text-muted-foreground">
+                {t("data.drop")}
+              </Text>
+              <FileTrigger
+                acceptedFileTypes={["application/json", ".json"]}
+                onSelect={(l) => l?.[0] && void choose(l[0])}
+              >
+                <Button variant="secondary">{t("data.choose")}</Button>
+              </FileTrigger>
+            </DropZone>
+          </div>
         </SettingsSection>
       )}
       <Dialog

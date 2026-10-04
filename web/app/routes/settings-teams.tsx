@@ -6,7 +6,7 @@ import { Dialog, useDialogDirty } from "~/components/ui/dialog";
 import { FormError, Input, TextField } from "~/components/ui/field";
 import { Select } from "~/components/ui/select";
 import { EmptyState } from "~/components/app/page";
-import { SettingsPage, SettingsSection } from "~/components/app/settings";
+import { SettingsBlock, SettingsPage, SettingsSection } from "~/components/app/settings";
 import { MultiMemberPicker } from "~/components/app/pickers";
 import { StageIcon } from "~/components/app/icons";
 import { STAGE_KINDS } from "~/lib/format";
@@ -33,7 +33,7 @@ export default function Teams() {
       }
     >
       {ws.teams.length > 0 && report.issue_count === 0 && canWrite && (
-        <SettingsSection>
+        <SettingsBlock>
           <div className="flex flex-wrap items-center gap-3 rounded-lg bg-accent/50 px-4 py-3">
             <div className="min-w-0 flex-1">
               <h2 className="text-[13px] font-semibold">{t("setup.issueTitle")}</h2>
@@ -47,7 +47,7 @@ export default function Teams() {
               {t("issue.new")}
             </Button>
           </div>
-        </SettingsSection>
+        </SettingsBlock>
       )}
       {ws.teams.length === 0 && (
         <SettingsSection>
@@ -162,31 +162,33 @@ function TeamSection({ team }: { team: Team }) {
         )
       }
     >
-      <div className="mb-2 flex items-center">
-        <h3 className="text-xs font-medium text-muted-foreground">{t("teams.workflow")}</h3>
-        {canAdmin && (
-          <Button variant="ghost" size="sm" className="ml-auto" onPress={() => setAdding(true)}>
-            <Plus />
-            {t("stage.add")}
-          </Button>
-        )}
+      <div className="px-4 py-4 sm:px-5 sm:py-5">
+        <div className="mb-2 flex items-center">
+          <h3 className="text-xs font-medium text-muted-foreground">{t("teams.workflow")}</h3>
+          {canAdmin && (
+            <Button variant="ghost" size="sm" className="ml-auto" onPress={() => setAdding(true)}>
+              <Plus />
+              {t("stage.add")}
+            </Button>
+          )}
+        </div>
+        <ul className="space-y-1">
+          {stages.map((s, i) => (
+            <StageRow
+              key={s.id}
+              team={team}
+              stage={s}
+              first={i === 0}
+              last={i === stages.length - 1}
+              canEdit={canAdmin}
+              busy={moving}
+              onUp={() => void swap(s, stages[i - 1])}
+              onDown={() => void swap(s, stages[i + 1])}
+              onDelete={() => setDeleting(s)}
+            />
+          ))}
+        </ul>
       </div>
-      <ul className="space-y-1">
-        {stages.map((s, i) => (
-          <StageRow
-            key={s.id}
-            team={team}
-            stage={s}
-            first={i === 0}
-            last={i === stages.length - 1}
-            canEdit={canAdmin}
-            busy={moving}
-            onUp={() => void swap(s, stages[i - 1])}
-            onDown={() => void swap(s, stages[i + 1])}
-            onDelete={() => setDeleting(s)}
-          />
-        ))}
-      </ul>
       <Dialog title={t("stage.add")} size="sm" isOpen={adding} onOpenChange={setAdding}>
         {(close) => <AddStage team={team} close={close} />}
       </Dialog>
