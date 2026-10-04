@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { FileTrigger, Form } from "react-aria-components";
 import { useNavigate } from "react-router";
 import { ChevronDown, Paperclip, X } from "lucide-react";
@@ -69,10 +69,10 @@ function CreateIssueForm() {
   const [more, setMore] = useState(Boolean(d.project_id || d.sprint_id || d.labels?.length));
   useDialogDirty(title.trim() !== "" || description !== "" || files.length > 0);
 
-  useEffect(() => {
-    if (!team) return;
-    if (!stageId || !team.stages.some((s) => s.id === stageId)) setStageId(firstStage?.id ?? null);
-  }, [team?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  // The picker always shows a stage from the current team. A stale choice, from the defaults or a
+  // previous team, falls back to the team's first stage.
+  const effectiveStageId =
+    stageId && team?.stages.some((s) => s.id === stageId) ? stageId : (firstStage?.id ?? null);
 
   if (ws.teams.length === 0)
     return (
@@ -103,7 +103,7 @@ function CreateIssueForm() {
         title: title.trim(),
         description,
         team_id: teamId,
-        stage_id: stageId,
+        stage_id: effectiveStageId,
         assignee,
         priority,
         labels,
@@ -200,7 +200,7 @@ function CreateIssueForm() {
           <StagePicker
             label={t("field.stage")}
             teamId={teamId}
-            value={stageId}
+            value={effectiveStageId}
             onChange={setStageId}
           />
         )}

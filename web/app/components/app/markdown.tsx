@@ -21,11 +21,17 @@ export function Markdown({
   className?: string;
   empty?: string;
 }) {
-  const [html, setHtml] = useState<string | null>(cache.get(text) ?? null);
+  const [html, setHtml] = useState<string | null>(() =>
+    text.trim() ? (cache.get(text) ?? null) : "",
+  );
+  const [prevText, setPrevText] = useState(text);
+  if (prevText !== text) {
+    setPrevText(text);
+    setHtml(text.trim() ? (cache.get(text) ?? null) : "");
+  }
   useEffect(() => {
-    if (!text.trim()) return setHtml("");
-    const hit = cache.get(text);
-    if (hit !== undefined) return setHtml(hit);
+    if (!text.trim()) return;
+    if (cache.get(text) !== undefined) return;
     let live = true;
     markdown(text)
       .then((h) => {
@@ -97,21 +103,45 @@ export function MarkdownEditor({
   const insert = (text: string) => wrap(text, "", "");
 
   const tools = [
-    { icon: Bold, label: t("editor.bold"), run: () => wrap("**", "**", "bold") },
-    { icon: Italic, label: t("editor.italic"), run: () => wrap("_", "_", "italic") },
-    { icon: Code, label: t("editor.code"), run: () => wrap("`", "`", "code") },
-    { icon: Link2, label: t("editor.link"), run: () => wrap("[", "](https://)", "link") },
-    { icon: List, label: t("editor.list"), run: () => linePrefix("- ") },
-    { icon: ListOrdered, label: t("editor.numbered"), run: () => linePrefix((i) => `${i + 1}. `) },
-    { icon: Quote, label: t("editor.quote"), run: () => linePrefix("> ") },
-  ];
+    { icon: Bold, label: t("editor.bold"), id: "bold" },
+    { icon: Italic, label: t("editor.italic"), id: "italic" },
+    { icon: Code, label: t("editor.code"), id: "code" },
+    { icon: Link2, label: t("editor.link"), id: "link" },
+    { icon: List, label: t("editor.list"), id: "list" },
+    { icon: ListOrdered, label: t("editor.numbered"), id: "numbered" },
+    { icon: Quote, label: t("editor.quote"), id: "quote" },
+  ] as const;
+  const runTool = (id: string) => {
+    switch (id) {
+      case "bold":
+        return wrap("**", "**", "bold");
+      case "italic":
+        return wrap("_", "_", "italic");
+      case "code":
+        return wrap("`", "`", "code");
+      case "link":
+        return wrap("[", "](https://)", "link");
+      case "list":
+        return linePrefix("- ");
+      case "numbered":
+        return linePrefix((i) => `${i + 1}. `);
+      case "quote":
+        return linePrefix("> ");
+    }
+  };
 
   return (
     <div className="rounded-lg border border-input bg-card shadow-xs transition-shadow focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/25">
       <div className="flex flex-wrap items-center gap-0.5 border-b border-border px-1.5 py-1">
-        {tools.map(({ icon: Icon, label: l, run }) => (
+        {tools.map(({ icon: Icon, label: l, id }) => (
           <Tip key={l} label={l}>
-            <Button variant="ghost" size="icon" aria-label={l} isDisabled={preview} onPress={run}>
+            <Button
+              variant="ghost"
+              size="icon"
+              aria-label={l}
+              isDisabled={preview}
+              onPress={() => runTool(id)}
+            >
               <Icon className="size-3.5" />
             </Button>
           </Tip>

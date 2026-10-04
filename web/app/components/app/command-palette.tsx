@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import {
   Autocomplete,
   Input,
@@ -59,10 +59,13 @@ export function CommandPalette({
   const { ws, members, create, canWrite } = useWorkspace();
   const [shortcuts] = useShortcutsEnabled();
   const [q, setQ] = useState("");
-  const go = (path: string) => () => {
-    onOpenChange(false);
-    void nav(`/${ws.id}/${path}`);
-  };
+  const go = useCallback(
+    (path: string) => () => {
+      onOpenChange(false);
+      void nav(`/${ws.id}/${path}`);
+    },
+    [onOpenChange, nav, ws.id],
+  );
 
   const actions: Entry[] = useMemo(
     () => [
@@ -150,9 +153,8 @@ export function CommandPalette({
         icon: <Layers className="size-4" />,
         run: go(`team/${tm.id}/board`),
       })),
-      // eslint-disable-next-line react-hooks/exhaustive-deps
     ],
-    [t, ws.id, ws.teams, canWrite, shortcuts],
+    [t, ws.teams, canWrite, shortcuts, go, onOpenChange, create, onHelp],
   );
 
   const query = q.trim().toLowerCase();

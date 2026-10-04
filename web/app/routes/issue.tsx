@@ -863,7 +863,9 @@ function Description({
   const baseVersion = useRef(issue.version);
   const box = useRef<HTMLDivElement>(null);
   const latest = useRef({ draft, saved: issue.description, version: issue.version, onSave });
-  latest.current = { draft, saved: issue.description, version: issue.version, onSave };
+  useEffect(() => {
+    latest.current = { draft, saved: issue.description, version: issue.version, onSave };
+  });
   const dirty = draft !== null && draft !== issue.description;
 
   // The editor closes only once the server has the text. A failed save leaves it open with the draft intact.

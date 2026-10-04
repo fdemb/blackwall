@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import {
   Collection,
   GridList,
@@ -125,12 +125,10 @@ export function IssueList({
       new Set(groups.filter((g) => !collapsed.has(g.id)).flatMap((g) => g.items.map((i) => i.id))),
     [groups, collapsed],
   );
-  useEffect(() => {
-    setSelected((prev) => {
-      const next = new Set([...prev].filter((id) => visible.has(id)));
-      return next.size === prev.size ? prev : next;
-    });
-  }, [visible]);
+  const visibleSelected = useMemo(
+    () => new Set([...selected].filter((id) => visible.has(id))),
+    [selected, visible],
+  );
 
   const toggle = (id: string) =>
     setCollapsed((c) => {
@@ -152,7 +150,7 @@ export function IssueList({
       aria-label={t("nav.issues")}
       selectionMode={canSelect ? "multiple" : "none"}
       selectionBehavior="toggle"
-      selectedKeys={selected}
+      selectedKeys={visibleSelected}
       onSelectionChange={(s: Selection) =>
         setSelected(new Set(s === "all" ? visible : ([...s] as Id[])))
       }
@@ -191,7 +189,9 @@ export function IssueList({
     </GridList>
   );
 
-  const bar = <BulkBar issues={issues} selected={selected} clear={() => setSelected(new Set())} />;
+  const bar = (
+    <BulkBar issues={issues} selected={visibleSelected} clear={() => setSelected(new Set())} />
+  );
   if (!fill)
     return (
       <>
