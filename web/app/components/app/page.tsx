@@ -1,4 +1,7 @@
+import { Link } from "react-router";
+import { Separator } from "~/components/ui/separator";
 import { useDocumentTitle } from "~/lib/title";
+import type { Team } from "~/lib/types";
 import { cn } from "~/lib/utils";
 
 export function Page({ children, className }: { children: React.ReactNode; className?: string }) {
@@ -9,30 +12,58 @@ export function PageHeader({
   title,
   icon,
   subtitle,
+  heading,
+  nav,
   actions,
   children,
 }: {
   title: React.ReactNode;
   icon?: React.ReactNode;
   subtitle?: React.ReactNode;
+  /** Replaces the icon, title and subtitle. `title` still names the document. */
+  heading?: React.ReactNode;
+  /** Sits between the heading and the actions, wrapping to its own line when they don't fit. */
+  nav?: React.ReactNode;
   actions?: React.ReactNode;
   children?: React.ReactNode;
 }) {
   useDocumentTitle(typeof title === "string" ? title : null);
   return (
     <header className="shrink-0 border-b border-border">
-      <div className="flex min-h-12 items-center gap-2 px-4 py-2">
-        {icon}
-        <h1 className="truncate text-[15px] font-semibold tracking-tight">{title}</h1>
-        {subtitle && (
-          <span className="hidden truncate text-[13px] text-muted-foreground sm:block">
-            {subtitle}
-          </span>
+      <div className="flex min-h-12 flex-wrap items-center gap-x-2 gap-y-1.5 px-4 py-2">
+        {heading ?? (
+          <>
+            {icon}
+            <h1 className="truncate text-[15px] font-semibold tracking-tight">{title}</h1>
+            {subtitle && (
+              <span className="hidden truncate text-[13px] text-muted-foreground sm:block">
+                {subtitle}
+              </span>
+            )}
+          </>
         )}
+        {nav}
         <div className="ml-auto flex items-center gap-1.5">{actions}</div>
       </div>
-      {children}
+      {children && (
+        <>
+          <Separator />
+          <div className="pt-2">{children}</div>
+        </>
+      )}
     </header>
+  );
+}
+
+/** The team a page belongs to, as shown at the start of the header. */
+export function TeamCrumb({ team, wsId }: { team: Pick<Team, "id" | "name">; wsId: string }) {
+  return (
+    <Link
+      to={`/${wsId}/team/${team.id}`}
+      className="text-[13px] text-muted-foreground hover:text-foreground hover:underline"
+    >
+      {team.name}
+    </Link>
   );
 }
 

@@ -239,7 +239,8 @@ export const en = {
   "my.followEmptyTitle": "You're not following anything",
   "my.followEmptySub": "Follow an issue to see it here and get updates.",
 
-  "team.issues": "List",
+  "team.list": "List",
+  "team.issues": "Issues",
   "team.board": "Board",
   "team.backlog": "Backlog",
   "team.sprints": "Sprints",

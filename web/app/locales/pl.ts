@@ -241,7 +241,8 @@ export const pl: Record<keyof typeof en, string> = {
   "my.followEmptyTitle": "Nic nie obserwujesz",
   "my.followEmptySub": "Obserwuj zadanie, aby widzieć je tutaj i dostawać powiadomienia.",
 
-  "team.issues": "Lista",
+  "team.list": "Lista",
+  "team.issues": "Zadania",
   "team.board": "Tablica",
   "team.backlog": "Backlog",
   "team.sprints": "Sprinty",

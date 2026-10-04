@@ -24,6 +24,8 @@ export function Workbench({
   title,
   icon,
   subtitle,
+  heading,
+  nav,
   base = {},
   initial = {},
   hide = [],
@@ -37,6 +39,8 @@ export function Workbench({
   title: React.ReactNode;
   icon?: React.ReactNode;
   subtitle?: React.ReactNode;
+  heading?: React.ReactNode;
+  nav?: React.ReactNode;
   base?: IssueFilter;
   initial?: IssueFilter;
   hide?: (keyof IssueFilter)[];
@@ -72,6 +76,8 @@ export function Workbench({
         title={title}
         icon={icon}
         subtitle={subtitle ?? t("count.issues", { n: issues.length })}
+        heading={heading}
+        nav={nav}
         actions={
           <>
             {actions}

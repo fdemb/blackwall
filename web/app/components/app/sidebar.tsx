@@ -250,18 +250,12 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 
 function TeamLinks({ id, name, base }: { id: string; name: string; base: string }) {
   const t = useT();
-  const { pathname, search } = useLocation();
+  const { pathname } = useLocation();
   // null follows the route (open while you're inside the team). Once clicked, the choice sticks.
   const [open, setOpen] = useState<boolean | null>(null);
   const inTeam = pathname.startsWith(`${base}/team/${id}`);
   const isOpen = open ?? inTeam;
-  const layout = new URLSearchParams(search).get("layout") ?? "list";
-  const onTeamPage = pathname === `${base}/team/${id}`;
-  const items = [
-    ["list", t("team.issues")],
-    ["board", t("team.board")],
-    ["backlog", t("team.backlog")],
-  ] as const;
+  const onSprints = pathname.startsWith(`${base}/team/${id}/sprints`);
   return (
     <div>
       <button
@@ -280,15 +274,9 @@ function TeamLinks({ id, name, base }: { id: string; name: string; base: string 
       </button>
       {isOpen && (
         <div className="ml-4 mt-0.5 space-y-0.5 border-l border-border pl-2">
-          {items.map(([key, label]) => (
-            <Link
-              key={key}
-              to={`${base}/team/${id}?layout=${key}`}
-              className={linkClass({ isActive: onTeamPage && layout === key })}
-            >
-              {label}
-            </Link>
-          ))}
+          <Link to={`${base}/team/${id}`} className={linkClass({ isActive: inTeam && !onSprints })}>
+            {t("team.issues")}
+          </Link>
           <NavLink to={`${base}/team/${id}/sprints`} className={linkClass}>
             {t("team.sprints")}
           </NavLink>

@@ -119,8 +119,9 @@ export function FormError({ children }: { children?: React.ReactNode }) {
 export function SearchField({
   placeholder,
   className,
+  inputClassName,
   ...props
-}: SearchFieldProps & { placeholder?: string }) {
+}: SearchFieldProps & { placeholder?: string; inputClassName?: string }) {
   const t = useT();
   return (
     <RACSearchField
@@ -133,6 +134,7 @@ export function SearchField({
         className={cn(
           fieldBase,
           "h-8 pl-8 pr-7 pointer-coarse:h-10 [&::-webkit-search-cancel-button]:hidden",
+          inputClassName,
         )}
       />
       <Button

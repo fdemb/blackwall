@@ -55,7 +55,7 @@ import {
   PriorityPicker,
   StagePicker,
 } from "~/components/app/pickers";
-import { EmptyState, Page } from "~/components/app/page";
+import { EmptyState, Page, TeamCrumb } from "~/components/app/page";
 import { isDone, stageOf } from "~/lib/filters";
 import { bytes, formatMinutes, fullDate, issueKey, MAX_UPLOAD, relativeTime } from "~/lib/format";
 import { useDocumentTitle } from "~/lib/title";
@@ -162,7 +162,7 @@ function IssueView({ issue, detail }: { issue: Issue; detail: IssueDetail }) {
   const [confirm, setConfirm] = useState(false);
   // Go back to wherever the issue was opened from. A fresh tab has no history, so use the team list.
   const goBack = () =>
-    location.key === "default" ? nav(`/${ws.id}/team/${issue.team_id}?layout=list`) : nav(-1);
+    location.key === "default" ? nav(`/${ws.id}/team/${issue.team_id}`) : nav(-1);
   const chip = "h-7 w-auto rounded-full border border-border px-2.5";
 
   return (
@@ -177,14 +177,7 @@ function IssueView({ issue, detail }: { issue: Issue; detail: IssueDetail }) {
         >
           <ChevronLeft />
         </Button>
-        {tm && (
-          <Link
-            to={`/${ws.id}/team/${tm.id}`}
-            className="text-[13px] text-muted-foreground hover:text-foreground hover:underline"
-          >
-            {tm.name}
-          </Link>
-        )}
+        {tm && <TeamCrumb team={tm} wsId={ws.id} />}
         <span className="text-muted-foreground/50">/</span>
         <span className="text-[13px] font-medium tabular-nums">{issueKey(issue.number)}</span>
         <div className="ml-auto flex items-center gap-1">

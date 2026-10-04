@@ -78,7 +78,7 @@ export default function Sprints() {
         subtitle={t("team.sprints")}
         icon={
           <Link
-            to={`/${ws.id}/team/${tm.id}?layout=board`}
+            to={`/${ws.id}/team/${tm.id}/board`}
             aria-label={t("action.back")}
             className="-ml-1 grid size-7 place-items-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
           >

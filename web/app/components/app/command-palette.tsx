@@ -148,7 +148,7 @@ export function CommandPalette({
         id: `t-${tm.id}`,
         label: `${tm.name} · ${t("team.board")}`,
         icon: <Layers className="size-4" />,
-        run: go(`team/${tm.id}?layout=board`),
+        run: go(`team/${tm.id}/board`),
       })),
       // eslint-disable-next-line react-hooks/exhaustive-deps
     ],

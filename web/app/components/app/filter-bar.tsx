@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useEffectEvent, useRef, useState } from "react";
 import {
   Autocomplete,
   DialogTrigger,
@@ -27,7 +27,7 @@ import { Avatar } from "~/components/ui/avatar";
 import { useToast } from "~/components/ui/toast";
 import { effectiveFilter, endOfDay } from "~/lib/filters";
 import { fullDate, PRIORITIES } from "~/lib/format";
-import { useI18n, type Key } from "~/lib/i18n";
+import { useI18n, useT, type Key } from "~/lib/i18n";
 import { usePending } from "~/lib/use-pending";
 import { useWorkspace } from "~/lib/workspace";
 import type { Id, IssueFilter, IssueSort } from "~/lib/types";
@@ -128,13 +128,7 @@ export function FilterBar({
 
   return (
     <div className="flex flex-wrap items-center gap-1.5 px-4 pb-2">
-      <SearchField
-        aria-label={t("action.search")}
-        placeholder={t("filter.search")}
-        value={filter.search ?? ""}
-        onChange={(v) => set({ search: v || undefined })}
-        className="w-full sm:w-48"
-      />
+      <SearchFilter value={filter.search} onChange={(search) => set({ search })} />
       <AddFilter filter={filter} set={set} hide={hide} />
       {active.map((k) => (
         <span
@@ -199,6 +193,47 @@ export function FilterBar({
         )}
       </div>
     </div>
+  );
+}
+
+const SEARCH_DEBOUNCE_MS = 250;
+
+/** Typing updates the field at once but the list only after a pause, since each refilter re-renders it. */
+function SearchFilter({
+  value,
+  onChange,
+}: {
+  value: string | undefined;
+  onChange: (v: string | undefined) => void;
+}) {
+  const t = useT();
+  const [text, setText] = useState(value ?? "");
+  const sent = useRef(value);
+  const commit = useEffectEvent((v: string | undefined) => {
+    sent.current = v;
+    onChange(v);
+  });
+  // Take changes made elsewhere, like clearing all filters.
+  useEffect(() => {
+    if (value === sent.current) return;
+    sent.current = value;
+    setText(value ?? "");
+  }, [value]);
+  useEffect(() => {
+    const next = text || undefined;
+    if (next === sent.current) return;
+    const id = setTimeout(() => commit(next), SEARCH_DEBOUNCE_MS);
+    return () => clearTimeout(id);
+  }, [text]);
+  return (
+    <SearchField
+      aria-label={t("action.search")}
+      placeholder={t("filter.search")}
+      value={text}
+      onChange={setText}
+      className="w-full sm:w-48"
+      inputClassName="h-7 pointer-coarse:h-9"
+    />
   );
 }
 
@@ -340,7 +375,12 @@ function AddFilter({
       <Popover placement="bottom start" className="w-64">
         <RACDialog aria-label={t("filter.add")} className="outline-none">
           {category === null ? (
-            <Menu aria-label={t("filter.add")} onAction={(k) => setCategory(k as Category)}>
+            // A menu inside a popover closes it on action by default, which would hide the second step.
+            <Menu
+              aria-label={t("filter.add")}
+              shouldCloseOnSelect={false}
+              onAction={(k) => setCategory(k as Category)}
+            >
               {categories.map((c) => (
                 <MenuItem key={c} id={c}>
                   <span className="flex-1">{t(CATEGORY_LABEL[c])}</span>
