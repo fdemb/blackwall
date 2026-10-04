@@ -207,6 +207,20 @@ impl Transfer {
             view.filter.label_id = optional(&ids, view.filter.label_id)?;
             view.filter.sprint_id = optional(&ids, view.filter.sprint_id)?;
             view.filter.project_id = optional(&ids, view.filter.project_id)?;
+            view.filter.parent_id = optional(&ids, view.filter.parent_id)?;
+            view.filter.dependency_id = optional(&ids, view.filter.dependency_id)?;
+            if let Some(filter_ids) = &view.filter.ids {
+                let remapped = filter_ids
+                    .split(',')
+                    .map(|value| {
+                        let id = value
+                            .parse()
+                            .map_err(|_| Error::BadRequest("filter ids must be UUIDs".into()))?;
+                        entity(&ids, id).map(|id| id.to_string())
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                view.filter.ids = Some(remapped.join(","));
+            }
         }
         for activity in &mut self.activity {
             activity.id = entity(&ids, activity.id)?;

@@ -133,7 +133,7 @@ function EditViewForm({ view, close }: { view: SavedView; close: () => void }) {
         void guard(async () => {
           await run(
             { type: "update_view", id: view.id, name: name.trim(), shared, filter: view.filter },
-            { quiet: true },
+            { quiet: true, expectedVersions: error ? undefined : { [view.id]: view.version } },
           );
           close();
         });

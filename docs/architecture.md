@@ -1,28 +1,34 @@
 # Backend design
 
-Clients register, create a workspace, then submit typed commands with the workspace revision. For example, `POST /api/workspaces/{id}/commands` carries `{"revision":0,"command":{"type":"create_team","name":"Infrastructure"}}`. Queries and commands authenticate through an opaque bearer token or an HttpOnly session cookie. Cookie mutations also require an `X-CSRF-Token` header.
+Blackwall uses PostgreSQL-only storage through SQLx. Identity records use native UUIDs, JSONB profiles, and UTC timestamps. Sessions and reset credentials store token hashes. Auth hashes passwords with Argon2 and requires CSRF headers for cookie mutations.
+
+## Transactions and versions
+
+Commands run feature operations that own their transactions. Operations authorize the actor, validate references, lock affected records, check entity versions, write changes, and enqueue jobs before commit. Unrelated issues have independent versions. Bulk edits require every affected version and commit together.
+
+Mutations take a shared authorization advisory lock and hold a shared lock on the actor's membership through commit. Revocation takes both locks exclusively. An operation that acquired the locks first can finish; operations after revocation cannot use stale membership.
+
+A separate graph advisory lock is shared for ordinary issue writes and exclusive for planning, deletion, and relationship mutations, preventing stage/issue lock inversion. Multi-entity operations lock affected rows in deterministic order. Workspace creation and commands record actor-scoped idempotency results in their business transactions.
+
+The API returns workspace summaries and paginated feature collections. It does not return or persist whole-workspace snapshots. Issues, planning, discussion, memberships, and personal state occupy relational tables. Composite foreign keys reject references across workspaces. Attachment bytes use `bytea`. JSONB holds flexible filters, profiles, job payloads, and historical fields.
 
 ## Modules
 
-- `auth` owns Argon2 credentials, hashed sessions, recovery tokens, profiles, and account preferences.
-- `domain` owns workspace permissions and work rules. `Workspace::apply` validates and executes a typed `Command`. HTTP cannot write arbitrary entity JSON.
-- `store` owns portable SQL, migrations, workspace revision checks, membership indexes, attachment data, and the delivery outbox.
-- `http` exposes typed JSON contracts and OpenAPI, scopes reads to current membership, and commits commands.
-- `jobs` runs three workers: workspace ticks for deadline reminders and invitation expiry, outbox delivery, and a sweep of expired sessions and reset tokens. `Job` types the outbox payloads.
-- `web` serves the compiled React Router app from `web/build/client` and hashes its inline bootstrap scripts into the page's CSP. The app calls the public API.
+- `auth` owns credentials, hashed sessions, recovery tokens, profiles, and account preferences.
+- `domain` defines commands, DTOs, permissions, and pure business rules.
+- `store` owns PostgreSQL feature transactions, queries, version checks, and migrations.
+- `http` authenticates requests and exposes JSON contracts and OpenAPI.
+- `jobs` claims persisted work, handles delivery and maintenance, and coordinates shutdown.
+- `web` serves the frontend build with CSP hashes for inline bootstrap scripts.
 
-A command loads the current workspace, checks current membership, applies domain rules, then saves with a compare-and-swap revision update. A competing member removal also changes that revision, so stale authorization cannot commit. Bulk edits and sprint completion change one snapshot and commit together. Membership indexes update in the same transaction. A conflict returns HTTP 409; callers reload before retrying.
+## Recovery and delivery
 
-## Design comparison
+Password-reset requests create the hashed credential and email job in one transaction. Password recovery consumes one valid reset token, updates the password, and invalidates sessions and remaining reset tokens atomically. Password changes compare the previous password hash before updating to reject competing changes.
 
-Two independent candidates considered normalized relational tables and typed aggregate snapshots with query projections. The cross-review preferred relational persistence for mature reporting, but rejected snapshots plus manually maintained projections as unnecessary duplication for this first build. This implementation takes the aggregate command boundary and atomic edits, and the relational design's credential isolation, session hashing, durable outbox, and membership index.
+The PostgreSQL queue uses due times, claim tokens, bounded attempts, and leases. Workers commit claims before external I/O. Completion checks claim ownership, so expired workers cannot overwrite a newer claim. `LISTEN` and `NOTIFY` wake other instances, while polling remains the correctness mechanism after missed notifications.
 
-Workspace snapshots simplify implementation across database engines but impose real limits. Every write serializes the workspace, unrelated editors compete on the same revision, and filters and reports scan workspace data. The initial backend targets small teams. Larger workspaces need normalized issue storage and indexed queries. The public command and query contracts can survive a later move to normalized issue tables. Imports and HTTP bodies are bounded.
+External delivery is at least once. Webhooks carry stable idempotency keys, and email keeps the same Message-ID across attempts. SMTP does not promise to suppress duplicates. Database-only reminder effects and job completion commit together.
 
-Viewer access means workspace-wide read access. Viewers cannot modify work or administration. There are no private teams in this version.
+SQLx migrations in `migrations/` define the clean schema. The application requires a PostgreSQL URL and applies migrations when it connects. Runtime queries bind native database types. Workspace metadata queries use checked SQLx macros and committed `.sqlx` metadata, with offline compilation enabled in `.cargo/config.toml`. PostgreSQL integration tests validate dynamic feature queries.
 
-SQLx selects SQLite or PostgreSQL from `DATABASE_URL`. Rust types with Serde serialization define persisted payloads and API requests. Utoipa derives JSON schemas from those types. SQLx checks SQL statements at runtime. Browser JavaScript is transport code, with server-side validation and an OpenAPI contract for future generated clients.
-
-Background work is scheduled by due time, not by scanning. Each commit stores `next_tick_at`, the earliest time `Workspace::tick` has work: a pending invitation expiring, a deadline entering the 24-hour reminder window, or a reminder already due. The tick worker sleeps until the earliest `next_tick_at` and only loads due workspaces. The delivery worker sleeps until the next outbox `due_at` or expired lease. Commits wake both workers, so new jobs go out right away. Sleeps are capped at five minutes, because work scheduled by another instance cannot wake this one.
-
-External delivery is at least once. Durable outbox IDs and leases prevent simultaneous workers from claiming the same attempt, while downstream tools must deduplicate retries. Deadlines recheck live issue state before generating inbox entries.
+Maintenance logs pool size and idle connections, lock waiters, queue depth, oldest overdue age, and failed-job counts. Job attempts log execution duration without payloads or credentials.

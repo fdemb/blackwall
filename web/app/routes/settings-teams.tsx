@@ -16,11 +16,11 @@ import type { Id, Stage, StageKind, Team } from "~/lib/types";
 
 export default function Teams() {
   const t = useT();
-  const { ws, canAdmin, canWrite, create } = useWorkspace();
+  const { ws, canAdmin, canWrite, create, report } = useWorkspace();
   const [creating, setCreating] = useState(false);
   return (
     <>
-      {ws.teams.length > 0 && ws.issues.length === 0 && canWrite && (
+      {ws.teams.length > 0 && report.issue_count === 0 && canWrite && (
         <Card className="flex flex-wrap items-center gap-3 border-primary/30 bg-accent/40 p-4">
           <div className="min-w-0 flex-1">
             <h2 className="text-[14px] font-semibold">{t("setup.issueTitle")}</h2>
@@ -369,7 +369,7 @@ function DeleteStage({ team, stage, close }: { team: Team; stage: Stage; close: 
           void guard(async () => {
             await run(
               { type: "delete_stage", team_id: team.id, id: stage.id, replacement },
-              { quiet: true },
+              { quiet: true, expectedVersions: error ? undefined : { [stage.id]: stage.version } },
             );
             close();
           });

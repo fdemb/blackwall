@@ -8,16 +8,31 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { ApiError, workspaces } from "./api";
+import { ApiError, collectPages, workspaces } from "./api";
+import { loadWorkspaceData, type WorkspaceData } from "./workspace-data";
+import { commandEntityIds, entityVersions, expectedVersions } from "./entity-versions";
 import { useSession } from "./session";
 import { useToast } from "~/components/ui/toast";
 import { useT } from "./i18n";
-import type { Command, Id, Issue, MemberProfile, Role, Stage, Team, Workspace } from "./types";
+import type {
+  Command,
+  EntityVersions,
+  Id,
+  Issue,
+  MemberProfile,
+  Report,
+  Role,
+  Stage,
+  Team,
+  Workspace,
+} from "./types";
 
 interface Ctx {
   ws: Workspace;
-  revision: number;
+  syncGeneration: number;
+  cache: (patch: Partial<Workspace> | ((ws: Workspace) => Partial<Workspace>)) => void;
   members: MemberProfile[];
+  report: Report;
   role: Role;
   canWrite: boolean;
   canAdmin: boolean;
@@ -29,7 +44,11 @@ interface Ctx {
   /** `quiet` skips the error toast, for forms that show the failure beside their own controls. */
   run: (
     command: Command,
-    opts?: { optimistic?: (ws: Workspace) => Workspace; quiet?: boolean },
+    opts?: {
+      optimistic?: (ws: Workspace) => Workspace;
+      quiet?: boolean;
+      expectedVersions?: EntityVersions;
+    },
   ) => Promise<Id | null>;
   reload: () => Promise<void>;
   /** Number of writes waiting on the server. */
@@ -52,7 +71,7 @@ export function WorkspaceProvider({
   initial,
   children,
 }: {
-  initial: { revision: number; workspace: Workspace; members: MemberProfile[] };
+  initial: WorkspaceData;
   children: ReactNode;
 }) {
   const { profile } = useSession();
@@ -63,27 +82,74 @@ export function WorkspaceProvider({
     open: boolean;
     defaults: Partial<import("./types").IssueInput>;
   }>({ open: false, defaults: {} });
-  const revisionRef = useRef(initial.revision);
+  const versionsRef = useRef(entityVersions(initial.workspace));
+  const [syncGeneration, setSyncGeneration] = useState(0);
+  const cache = useCallback(
+    (patch: Partial<Workspace> | ((ws: Workspace) => Partial<Workspace>)) => {
+      setState((state) => {
+        const workspace = {
+          ...state.workspace,
+          ...(typeof patch === "function" ? patch(state.workspace) : patch),
+        };
+        for (const [id, version] of Object.entries(entityVersions(workspace))) {
+          versionsRef.current[id] = Math.max(versionsRef.current[id] ?? 0, version);
+        }
+        return { ...state, workspace };
+      });
+    },
+    [],
+  );
+  const membershipVersions = useRef(
+    Object.fromEntries(initial.workspace.members.map((member) => [member.user_id, member.version])),
+  );
+  const preferenceVersions = useRef(
+    Object.fromEntries(
+      initial.workspace.alert_preferences.map((prefs) => [prefs.user_id, prefs.version]),
+    ),
+  );
+  const commandKeys = useRef(new Map<string, { key: string; versions?: EntityVersions }>());
+  const uploadKeys = useRef(
+    new WeakMap<File, Map<string, { key: string; versions?: EntityVersions }>>(),
+  );
   const queue = useRef<Promise<unknown>>(Promise.resolve());
   const inFlight = useRef(0);
   const [pending, setPending] = useState(0);
   const [offline, setOffline] = useState(false);
   const id = state.workspace.id;
   const canWriteNow =
-    state.workspace.members.find((m) => m.user_id === profile.id)?.role !== "viewer";
+    (state.workspace.members.find((m) => m.user_id === profile.id)?.role ?? "viewer") !== "viewer";
 
   useEffect(() => {
     setState(initial);
-    revisionRef.current = initial.revision;
+    versionsRef.current = entityVersions(initial.workspace);
   }, [initial]);
 
   const reload = useCallback(async () => {
-    const [w, members] = await Promise.all([workspaces.get(id), workspaces.members(id)]);
-    revisionRef.current = w.revision;
-    setState({ revision: w.revision, workspace: w.workspace, members });
+    const data = await loadWorkspaceData(id);
+    membershipVersions.current = Object.fromEntries(
+      data.workspace.members.map((member) => [member.user_id, member.version]),
+    );
+    preferenceVersions.current = Object.fromEntries(
+      data.workspace.alert_preferences.map((prefs) => [prefs.user_id, prefs.version]),
+    );
+    setState((state) => {
+      const workspace = {
+        ...state.workspace,
+        ...data.workspace,
+        issues: state.workspace.issues,
+        comments: state.workspace.comments,
+        time_entries: state.workspace.time_entries,
+        activity: state.workspace.activity,
+        notifications: state.workspace.notifications,
+      };
+      for (const [id, version] of Object.entries(entityVersions(workspace))) {
+        versionsRef.current[id] = Math.max(versionsRef.current[id] ?? 0, version);
+      }
+      return { ...data, workspace };
+    });
+    setSyncGeneration((n) => n + 1);
   }, [id]);
 
-  // Serialize writes: each command carries the revision the previous one produced.
   const enqueue = useCallback(<T,>(job: () => Promise<T>) => {
     inFlight.current += 1;
     setPending((n) => n + 1);
@@ -117,18 +183,15 @@ export function WorkspaceProvider({
     [t],
   );
 
-  // Teammates' changes arrive by polling the cheap workspace list for a newer revision.
   const poll = useCallback(async () => {
     if (document.visibilityState === "hidden" || inFlight.current > 0) return;
     try {
-      const list = await workspaces.list();
-      const mine = list.find((w) => w.id === id);
-      if (mine && mine.revision > revisionRef.current && inFlight.current === 0) await reload();
+      await reload();
       setOffline(false);
     } catch {
       setOffline(true);
     }
-  }, [id, reload]);
+  }, [reload]);
   useEffect(() => {
     const timer = setInterval(() => void poll(), 15000);
     const wake = () => void poll();
@@ -145,38 +208,108 @@ export function WorkspaceProvider({
 
   const run = useCallback<Ctx["run"]>(
     (command, opts) => {
-      if (opts?.optimistic) setState((s) => ({ ...s, workspace: opts.optimistic!(s.workspace) }));
+      const optimistic = opts?.optimistic;
+      if (optimistic) setState((s) => ({ ...s, workspace: optimistic(s.workspace) }));
+      const commandIdentity = JSON.stringify(command);
+      const operation = commandKeys.current.get(commandIdentity) ?? {
+        key: crypto.randomUUID(),
+        versions: undefined,
+      };
+      commandKeys.current.set(commandIdentity, operation);
       return enqueue(async () => {
         let res;
         try {
-          res = await workspaces.command(id, revisionRef.current, command);
+          let ids = commandEntityIds(command, profile.id);
+          if (command.type === "complete_sprint") {
+            const issues = await collectPages((offset) =>
+              workspaces.issues(id, { sprint_id: command.id }, offset),
+            );
+            for (const issue of issues) versionsRef.current[issue.id] = issue.version;
+            ids = [...ids, ...issues.map((issue) => issue.id)];
+          }
+          if (command.type === "delete_stage") {
+            const stagePages = await Promise.all([
+              collectPages((offset) => workspaces.issues(id, { stage_id: command.id }, offset)),
+              collectPages((offset) =>
+                workspaces.issues(id, { stage_id: command.id, trash: true }, offset),
+              ),
+            ]);
+            const issues = stagePages.flat();
+            for (const issue of issues) versionsRef.current[issue.id] = issue.version;
+            ids = [...ids, ...issues.map((issue) => issue.id)];
+          }
+          if (command.type === "mark_all_notifications_read") {
+            const notifications = await collectPages((offset) =>
+              workspaces.resource(id, "notifications", { offset }),
+            );
+            for (const notification of notifications)
+              versionsRef.current[notification.id] = notification.version;
+            ids = notifications
+              .filter((notification) => !notification.read_at)
+              .map((notification) => notification.id);
+          }
+          const versions =
+            command.type === "set_role" || command.type === "remove_member"
+              ? membershipVersions.current
+              : command.type === "configure_alerts"
+                ? preferenceVersions.current
+                : versionsRef.current;
+          operation.versions ??= { ...expectedVersions(ids, versions), ...opts?.expectedVersions };
+          res = await workspaces.command(id, operation.versions, command, operation.key);
+          if (command.type === "set_role" || command.type === "remove_member")
+            membershipVersions.current = { ...membershipVersions.current, ...res.versions };
+          if (command.type === "configure_alerts")
+            preferenceVersions.current = { ...preferenceVersions.current, ...res.versions };
         } catch (e) {
+          if (e instanceof ApiError && e.status < 500) commandKeys.current.delete(commandIdentity);
           await reload().catch(() => undefined);
           const err = describe(e);
           if (!opts?.quiet) toast.error(err.message);
           throw err;
         }
-        revisionRef.current = res.revision;
+        commandKeys.current.delete(commandIdentity);
+        versionsRef.current = { ...versionsRef.current, ...res.versions };
         await refreshAfterWrite();
         return res.result.id;
       });
     },
-    [enqueue, id, reload, refreshAfterWrite, describe, toast],
+    [enqueue, id, profile.id, reload, refreshAfterWrite, describe, toast],
   );
 
   const upload = useCallback(
     (issueId: Id, file: File, commentId?: Id) =>
       enqueue(async () => {
+        const target = commentId ?? issueId;
+        const keys =
+          uploadKeys.current.get(file) ??
+          new Map<string, { key: string; versions?: EntityVersions }>();
+        uploadKeys.current.set(file, keys);
+        const operation = keys.get(target) ?? { key: crypto.randomUUID(), versions: undefined };
+        keys.set(target, operation);
         let res;
         try {
-          res = await workspaces.upload(id, issueId, revisionRef.current, file, commentId);
+          if (versionsRef.current[issueId] === undefined) {
+            const issue = await workspaces.issue(id, issueId);
+            versionsRef.current[issueId] = issue.version;
+          }
+          operation.versions ??= expectedVersions([commentId ?? issueId], versionsRef.current);
+          res = await workspaces.upload(
+            id,
+            issueId,
+            operation.versions,
+            file,
+            commentId,
+            operation.key,
+          );
         } catch (e) {
+          if (e instanceof ApiError && e.status < 500) keys.delete(target);
           await reload().catch(() => undefined);
           const err = describe(e);
           toast.error(`${file.name}: ${err.message}`);
           throw err;
         }
-        revisionRef.current = res.revision;
+        keys.delete(target);
+        versionsRef.current = { ...versionsRef.current, ...res.versions };
         await refreshAfterWrite();
       }),
     [enqueue, id, reload, refreshAfterWrite, describe, toast],
@@ -188,8 +321,10 @@ export function WorkspaceProvider({
     const stages = new Map(ws.teams.flatMap((tm) => tm.stages.map((s) => [s.id, s] as const)));
     return {
       ws,
-      revision: state.revision,
+      syncGeneration,
+      cache,
       members: state.members,
+      report: state.report,
       role,
       canWrite: role !== "viewer",
       canAdmin: role === "owner" || role === "admin",
@@ -204,7 +339,7 @@ export function WorkspaceProvider({
       offline,
       retrySync: () => void poll(),
       upload,
-      unread: ws.notifications.filter((n) => !n.read_at).length,
+      unread: state.report.inbox_unread,
       create: {
         ...createState,
         show: (defaults = {}) => {
@@ -213,7 +348,20 @@ export function WorkspaceProvider({
         hide: () => setCreate({ open: false, defaults: {} }),
       },
     };
-  }, [state, profile.id, run, reload, upload, createState, pending, offline, poll, canWriteNow]);
+  }, [
+    state,
+    syncGeneration,
+    cache,
+    profile.id,
+    run,
+    reload,
+    upload,
+    createState,
+    pending,
+    offline,
+    poll,
+    canWriteNow,
+  ]);
 
   return <WorkspaceCtx value={value}>{children}</WorkspaceCtx>;
 }

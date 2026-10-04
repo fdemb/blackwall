@@ -21,11 +21,13 @@ import { Menu, MenuItem, MenuPopover, MenuTrigger } from "~/components/ui/menu";
 import { DndColumn } from "~/components/app/board";
 import { IssueList } from "~/components/app/issue-list";
 import { NullableSelect } from "~/components/app/pickers";
-import { EmptyState, Page, PageHeader, Card } from "~/components/app/page";
+import { Page, PageHeader, Card } from "~/components/app/page";
 import { isDone } from "~/lib/filters";
 import { fullDate, shortDate } from "~/lib/format";
 import { useI18n } from "~/lib/i18n";
 import { usePending } from "~/lib/use-pending";
+import { useIssues } from "~/lib/queries";
+import { QueryStatus } from "~/components/app/query-status";
 import { useWorkspace } from "~/lib/workspace";
 import type { Id, Sprint, Workspace } from "~/lib/types";
 
@@ -37,7 +39,8 @@ const setSprintOptimistic = (ws: Workspace, ids: Id[], sprint: Id | null): Works
 export default function Sprints() {
   const { t, lang } = useI18n();
   const { teamId, ws: wsId } = useParams();
-  const { ws, team, run, canWrite, create } = useWorkspace();
+  const { ws, team, run, canWrite, create, report } = useWorkspace();
+  const query = useIssues({ team_id: teamId });
   const tm = team(teamId!);
   const [editing, setEditing] = useState<Sprint | "new" | null>(null);
   const [completing, setCompleting] = useState<Sprint | null>(null);
@@ -57,7 +60,7 @@ export default function Sprints() {
   const past = sprints
     .filter((s) => s.state === "completed" || s.state === "archived")
     .sort((a, b) => +new Date(b.ends_at) - +new Date(a.ends_at));
-  const teamIssues = ws.issues.filter((i) => i.team_id === tm.id && !i.deleted_at);
+  const teamIssues = query.items;
   const backlog = teamIssues
     .filter((i) => !i.sprint_id && !isDone(ws, i))
     .sort((a, b) => a.position - b.position);
@@ -95,6 +98,7 @@ export default function Sprints() {
           )
         }
       />
+      <QueryStatus query={query} />
       <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
         <div className="flex min-h-[420px] flex-1 gap-3 overflow-x-auto p-3">
           <DndColumn
@@ -110,7 +114,9 @@ export default function Sprints() {
             const list = teamIssues
               .filter((i) => i.sprint_id === s.id)
               .sort((a, b) => a.position - b.position);
-            const done = list.filter((i) => isDone(ws, i)).length;
+            const stats = report.sprints.find((stats) => stats.id === s.id);
+            const total = stats?.total ?? 0;
+            const done = stats?.completed ?? 0;
             return (
               <DndColumn
                 key={s.id}
@@ -182,12 +188,12 @@ export default function Sprints() {
                     )}
                     <p className="tabular-nums">
                       {shortDate(s.starts_at, lang)} – {shortDate(s.ends_at, lang)} ·{" "}
-                      {t("sprint.progress", { done, total: list.length })}
+                      {t("sprint.progress", { done, total })}
                     </p>
                     <div className="h-1 overflow-hidden rounded-full bg-border">
                       <div
                         className="h-full rounded-full bg-primary transition-[width]"
-                        style={{ width: `${list.length ? (done / list.length) * 100 : 0}%` }}
+                        style={{ width: `${total ? (done / total) * 100 : 0}%` }}
                       />
                     </div>
                   </div>
@@ -266,14 +272,7 @@ export default function Sprints() {
         {() =>
           viewing && (
             <div className="-mx-5 -mb-5 max-h-[60vh] overflow-y-auto border-t border-border">
-              <IssueList
-                issues={teamIssues
-                  .filter((i) => i.sprint_id === viewing.id)
-                  .sort((a, b) => a.position - b.position)}
-                groupBy="stage"
-                selectable={false}
-                emptyState={<EmptyState title={t("sprint.noIssues")} />}
-              />
+              <SprintIssues sprintId={viewing.id} />
             </div>
           )
         }
@@ -328,7 +327,10 @@ function SprintForm({
           await (sprint
             ? run(
                 { type: "update_sprint", id: sprint.id, state: sprint.state, ...body },
-                { quiet: true },
+                {
+                  quiet: true,
+                  expectedVersions: error ? undefined : { [sprint.id]: sprint.version },
+                },
               )
             : run({ type: "create_sprint", team_id: teamId, ...body }, { quiet: true }));
           close();
@@ -387,9 +389,9 @@ function CompleteForm({ sprint, close }: { sprint: Sprint; close: () => void }) 
   const { ws, run } = useWorkspace();
   const [target, setTarget] = useState<Id | null>(null);
   const { pending, error, guard } = usePending();
-  const unfinished = ws.issues.filter(
-    (i) => i.sprint_id === sprint.id && !i.deleted_at && !isDone(ws, i),
-  ).length;
+  const query = useIssues({ sprint_id: sprint.id, open: true });
+  const stats = useWorkspace().report.sprints.find((stats) => stats.id === sprint.id);
+  const unfinished = (stats?.total ?? 0) - (stats?.completed ?? 0);
   const options = ws.sprints
     .filter(
       (s) =>
@@ -406,12 +408,13 @@ function CompleteForm({ sprint, close }: { sprint: Sprint; close: () => void }) 
         void guard(async () => {
           await run(
             { type: "complete_sprint", id: sprint.id, carryover_sprint_id: target },
-            { quiet: true },
+            { quiet: true, expectedVersions: error ? undefined : { [sprint.id]: sprint.version } },
           );
           close();
         });
       }}
     >
+      <QueryStatus query={query} />
       <p className="text-[13px] text-muted-foreground">
         {unfinished ? t("sprint.unfinished", { n: unfinished }) : t("sprint.allDone")}
       </p>
@@ -438,5 +441,15 @@ function CompleteForm({ sprint, close }: { sprint: Sprint; close: () => void }) 
         </Button>
       </div>
     </Form>
+  );
+}
+
+function SprintIssues({ sprintId }: { sprintId: Id }) {
+  const query = useIssues({ sprint_id: sprintId });
+  return (
+    <>
+      <IssueList issues={query.items} groupBy="none" selectable={false} />
+      <QueryStatus query={query} />
+    </>
   );
 }

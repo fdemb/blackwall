@@ -13,12 +13,14 @@ import { TimeForm } from "~/components/app/time-form";
 import { workspaces } from "~/lib/api";
 import { formatMinutes, fullDate, issueKey } from "~/lib/format";
 import { useI18n } from "~/lib/i18n";
+import { mergeRecords, useIssues, useResource } from "~/lib/queries";
+import { QueryStatus } from "~/components/app/query-status";
 import { useWorkspace } from "~/lib/workspace";
 import type { Report, TimeEntry } from "~/lib/types";
 
 export default function Reports() {
   const { t, lang } = useI18n();
-  const { ws, revision, member } = useWorkspace();
+  const { ws, syncGeneration, member } = useWorkspace();
   const [report, setReport] = useState<Report | null>(null);
   const [error, setError] = useState("");
   const [attempt, setAttempt] = useState(0);
@@ -33,7 +35,7 @@ export default function Reports() {
     return () => {
       live = false;
     };
-  }, [ws.id, revision, attempt, t]);
+  }, [ws.id, syncGeneration, attempt, t]);
 
   const nameOf = useMemo(
     () => ({
@@ -41,11 +43,11 @@ export default function Reports() {
       teams: (id: string) => ws.teams.find((x) => x.id === id)?.name ?? "?",
       projects: (id: string) => ws.projects.find((x) => x.id === id)?.name ?? "?",
       issues: (id: string) => {
-        const i = ws.issues.find((x) => x.id === id);
+        const i = report?.issues.find((x) => x.id === id);
         return i ? `${issueKey(i.number)} ${i.title}` : "?";
       },
     }),
-    [ws, member],
+    [ws, member, report],
   );
 
   const completed = report?.delivery.reduce((a, d) => a + d.completed, 0) ?? 0;
@@ -215,12 +217,18 @@ function Stat({ label, value, hint }: { label: string; value: string; hint?: str
 
 function TimeLog({ lang }: { lang: string }) {
   const t = useI18n().t;
-  const { ws, me, member, run, canAdmin } = useWorkspace();
+  const { ws, me, member, run, canAdmin, cache } = useWorkspace();
   const [editing, setEditing] = useState<TimeEntry | null>(null);
   const [deleting, setDeleting] = useState<TimeEntry | null>(null);
-  const entries = [...ws.time_entries].sort(
-    (a, b) => +new Date(b.logged_at) - +new Date(a.logged_at),
-  );
+  const query = useResource("time_entries");
+  useEffect(() => {
+    if (!query.loading && !query.error)
+      cache((ws) => ({ time_entries: mergeRecords(ws.time_entries, query.items) }));
+  }, [query.items, query.loading, query.error, cache]);
+  const ids = [...new Set(query.items.map((entry) => entry.issue_id))];
+  useIssues({ ids: ids.join(",") }, ids.length > 0);
+  const entries = [...query.items].sort((a, b) => +new Date(b.logged_at) - +new Date(a.logged_at));
+  if (!entries.length && (query.loading || query.error)) return <QueryStatus query={query} />;
   if (!entries.length)
     return (
       <EmptyState
@@ -231,6 +239,7 @@ function TimeLog({ lang }: { lang: string }) {
     );
   return (
     <Card>
+      <QueryStatus query={query} />
       <div className="overflow-x-auto">
         <table className="w-full min-w-[40rem] text-[13px]">
           <thead>

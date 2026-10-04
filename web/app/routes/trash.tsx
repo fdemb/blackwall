@@ -3,7 +3,10 @@ import { RotateCcw, Trash2 } from "lucide-react";
 import { Link } from "react-router";
 import { Button } from "~/components/ui/button";
 import { EmptyState, Page, PageHeader, Scroll } from "~/components/app/page";
-import { applyFilter } from "~/lib/filters";
+import { expectedVersions } from "~/lib/entity-versions";
+import { collectPages, workspaces } from "~/lib/api";
+import { useIssues, mergeRecords } from "~/lib/queries";
+import { QueryStatus } from "~/components/app/query-status";
 import { issueKey, relativeTime } from "~/lib/format";
 import { useI18n } from "~/lib/i18n";
 import { useWorkspace } from "~/lib/workspace";
@@ -11,17 +14,28 @@ import { useToast } from "~/components/ui/toast";
 
 export default function Trash() {
   const { t, lang } = useI18n();
-  const { ws, run, canWrite } = useWorkspace();
+  const { ws, run, canWrite, cache } = useWorkspace();
   const toast = useToast();
-  const issues = applyFilter(ws, { trash: true, sort: "updated" });
+  const query = useIssues({ trash: true, sort: "updated" });
+  const issues = query.items;
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
   // The server accepts at most 500 issues per bulk command, so a large Trash is restored in batches.
   const restoreAll = async () => {
-    const ids = issues.map((i) => i.id);
-    setProgress({ done: 0, total: ids.length });
+    setProgress({ done: 0, total: issues.length });
     try {
+      const all = await collectPages((offset) => workspaces.issues(ws.id, { trash: true }, offset));
+      cache((ws) => ({ issues: mergeRecords(ws.issues, all) }));
+      const ids = all.map((issue) => issue.id);
       for (let at = 0; at < ids.length; at += 500) {
-        await run({ type: "bulk_issues", ids: ids.slice(at, at + 500), action: "restore" });
+        await run(
+          { type: "bulk_issues", ids: ids.slice(at, at + 500), action: "restore" },
+          {
+            expectedVersions: expectedVersions(
+              ids.slice(at, at + 500),
+              Object.fromEntries(all.map((issue) => [issue.id, issue.version])),
+            ),
+          },
+        );
         setProgress({ done: Math.min(at + 500, ids.length), total: ids.length });
       }
       toast.show(t("trash.restoredN", { n: ids.length }));
@@ -52,7 +66,8 @@ export default function Trash() {
         }
       />
       <Scroll>
-        {issues.length === 0 ? (
+        <QueryStatus query={query} />
+        {query.loading || query.error ? null : issues.length === 0 ? (
           <EmptyState
             icon={<Trash2 />}
             title={t("trash.emptyTitle")}

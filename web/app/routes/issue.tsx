@@ -62,6 +62,8 @@ import { useDocumentTitle } from "~/lib/title";
 import { useI18n, type Key } from "~/lib/i18n";
 import { useMediaQuery } from "~/lib/media";
 import { usePending } from "~/lib/use-pending";
+import { useIssueDetail } from "~/lib/queries";
+import { QueryStatus } from "~/components/app/query-status";
 import { useWorkspace } from "~/lib/workspace";
 import { cn } from "~/lib/utils";
 import type { Activity, Comment, Id, Issue, IssuePatch, TimeEntry } from "~/lib/types";
@@ -75,11 +77,17 @@ const modKey =
 export default function IssuePage() {
   const { issueId, ws: wsId } = useParams();
   const { issue: find, ws } = useWorkspace();
-  const t = useI18n().t;
+  const detail = useIssueDetail(issueId!);
   const issue = find(issueId!);
-  if (!issue) return <Navigate to={`/${ws.id}/my-issues`} replace />;
+  if (detail.missing) return <Navigate to={`/${ws.id}/my-issues`} replace />;
+  if (!issue || detail.error)
+    return (
+      <Page>
+        <QueryStatus query={{ ...detail, hasMore: false, loadMore: detail.retry }} />
+      </Page>
+    );
   if (issue.deleted_at) return <DeletedIssue issue={issue} wsId={wsId!} />;
-  return <IssueView key={issue.id} issue={issue} />;
+  return <IssueView key={issue.id} issue={issue} detail={detail} />;
 }
 
 /** A link to a trashed issue still says which issue it was and offers the way back. */
@@ -119,7 +127,7 @@ function DeletedIssue({ issue, wsId }: { issue: Issue; wsId: string }) {
   );
 }
 
-function IssueView({ issue }: { issue: Issue }) {
+function IssueView({ issue, detail }: { issue: Issue; detail: ReturnType<typeof useIssueDetail> }) {
   const { t } = useI18n();
   const nav = useNavigate();
   const location = useLocation();
@@ -129,8 +137,11 @@ function IssueView({ issue }: { issue: Issue }) {
   const tm = team(issue.team_id);
   useDocumentTitle(`${issueKey(issue.number)} ${issue.title}`);
   // Resolves to whether the save landed, so editors can keep a draft that didn't.
-  const patch = (p: IssuePatch) =>
-    run({ type: "update_issue", id: issue.id, patch: p }).then(
+  const patch = (p: IssuePatch, version = issue.version) =>
+    run(
+      { type: "update_issue", id: issue.id, patch: p },
+      { expectedVersions: { [issue.id]: version } },
+    ).then(
       () => true,
       () => false,
     );
@@ -243,7 +254,7 @@ function IssueView({ issue }: { issue: Issue }) {
                   )}
                 </div>
               )}
-              <TitleField issue={issue} onSave={(title) => patch({ title })} />
+              <TitleField issue={issue} onSave={(title, version) => patch({ title }, version)} />
               <div className="flex flex-wrap items-center gap-1.5">
                 <StagePicker
                   variant="ghost"
@@ -308,7 +319,10 @@ function IssueView({ issue }: { issue: Issue }) {
 
             <div className="mt-6 space-y-8">
               <div className="space-y-2">
-                <Description issue={issue} onSave={(description) => patch({ description })} />
+                <Description
+                  issue={issue}
+                  onSave={(description, version) => patch({ description }, version)}
+                />
                 {canWrite && (
                   <div className="flex flex-wrap gap-1">
                     {!subs.length && !addingSubtask && (
@@ -351,6 +365,9 @@ function IssueView({ issue }: { issue: Issue }) {
               )}
               {issue.attachments.length > 0 && <Attachments issue={issue} uploader={uploader} />}
               <Timeline issue={issue} />
+              <QueryStatus query={detail.comments} />
+              <QueryStatus query={detail.activity} />
+              <QueryStatus query={detail.time} />
             </div>
           </div>
         </div>
@@ -398,8 +415,11 @@ function Properties({
 }) {
   const { t, lang } = useI18n();
   const { ws, run, canWrite, member } = useWorkspace();
-  const patch = (p: IssuePatch) =>
-    run({ type: "update_issue", id: issue.id, patch: p }).then(
+  const patch = (p: IssuePatch, version = issue.version) =>
+    run(
+      { type: "update_issue", id: issue.id, patch: p },
+      { expectedVersions: { [issue.id]: version } },
+    ).then(
       () => true,
       () => false,
     );
@@ -432,8 +452,11 @@ function Properties({
       <Prop label={t("field.estimate")}>
         <EstimateField
           value={issue.estimate}
+          version={issue.version}
           disabled={!canWrite}
-          onCommit={(v) => patch(v === null ? { clear_estimate: true } : { estimate: v })}
+          onCommit={(v, version) =>
+            patch(v === null ? { clear_estimate: true } : { estimate: v }, version)
+          }
         />
       </Prop>
       <TimeProp issue={issue} />
@@ -566,16 +589,19 @@ function Prop({ label, children }: { label: string; children: React.ReactNode })
 
 function EstimateField({
   value,
+  version,
   disabled,
   onCommit,
 }: {
   value: number | null;
+  version: number;
   disabled: boolean;
-  onCommit: (v: number | null) => void;
+  onCommit: (v: number | null, version: number) => void;
 }) {
   const t = useI18n().t;
   const [v, setV] = useState(value?.toString() ?? "");
   const field = useRef<HTMLInputElement>(null);
+  const baseVersion = useRef(version);
   useEffect(() => {
     if (document.activeElement !== field.current) setV(value?.toString() ?? "");
   }, [value]);
@@ -591,10 +617,13 @@ function EstimateField({
         disabled={disabled}
         value={v}
         placeholder={t("estimate.none")}
+        onFocus={() => {
+          baseVersion.current = version;
+        }}
         onChange={(e) => setV(e.target.value)}
         onBlur={() => {
           const n = v === "" ? null : Number(v);
-          if (n !== value) onCommit(n);
+          if (n !== value) onCommit(n, baseVersion.current);
         }}
         className="h-7 border-transparent bg-transparent pr-9 shadow-none hover:bg-muted focus:bg-card"
       />
@@ -611,11 +640,11 @@ type TimeView = { kind: "closed" } | { kind: "list" } | { kind: "form"; entry: T
 
 function TimeProp({ issue }: { issue: Issue }) {
   const { t, lang } = useI18n();
-  const { ws, me, run, member, canWrite, canAdmin } = useWorkspace();
+  const { ws, me, run, member, canWrite, canAdmin, report } = useWorkspace();
   const entries = ws.time_entries
     .filter((e) => e.issue_id === issue.id)
     .sort((a, b) => +new Date(b.logged_at) - +new Date(a.logged_at));
-  const total = entries.reduce((a, e) => a + e.minutes, 0);
+  const total = report.issues.find((total) => total.id === issue.id)?.minutes ?? 0;
   const [view, setView] = useState<TimeView>({ kind: "closed" });
   const [deleting, setDeleting] = useState<Id | null>(null);
   if (!entries.length && !canWrite) return null;
@@ -761,10 +790,17 @@ function Section({
   );
 }
 
-function TitleField({ issue, onSave }: { issue: Issue; onSave: (title: string) => void }) {
+function TitleField({
+  issue,
+  onSave,
+}: {
+  issue: Issue;
+  onSave: (title: string, version: number) => void;
+}) {
   const t = useI18n().t;
   const { canWrite } = useWorkspace();
   const [title, setTitle] = useState(issue.title);
+  const baseVersion = useRef(issue.version);
   const ref = useRef<HTMLTextAreaElement>(null);
   // A teammate's edit shouldn't overwrite a title you are in the middle of typing.
   useEffect(() => {
@@ -785,7 +821,7 @@ function TitleField({ issue, onSave }: { issue: Issue; onSave: (title: string) =
     const next = title.replace(/\s+/g, " ").trim();
     if (!next) return setTitle(issue.title);
     setTitle(next);
-    if (next !== issue.title) onSave(next);
+    if (next !== issue.title) onSave(next, baseVersion.current);
   };
   return (
     <textarea
@@ -795,6 +831,9 @@ function TitleField({ issue, onSave }: { issue: Issue; onSave: (title: string) =
       value={title}
       readOnly={!canWrite}
       maxLength={200}
+      onFocus={() => {
+        baseVersion.current = issue.version;
+      }}
       onChange={(e) => setTitle(e.target.value.replace(/\n/g, " "))}
       onBlur={commit}
       onKeyDown={(e) => {
@@ -815,7 +854,13 @@ function TitleField({ issue, onSave }: { issue: Issue; onSave: (title: string) =
 /** Descriptions that failed to save, by issue, so reopening the editor brings the text back. */
 const failedDrafts = new Map<Id, string>();
 
-function Description({ issue, onSave }: { issue: Issue; onSave: (d: string) => Promise<boolean> }) {
+function Description({
+  issue,
+  onSave,
+}: {
+  issue: Issue;
+  onSave: (d: string, version: number) => Promise<boolean>;
+}) {
   const t = useI18n().t;
   const { canWrite } = useWorkspace();
   // null while not editing.
@@ -823,9 +868,10 @@ function Description({ issue, onSave }: { issue: Issue; onSave: (d: string) => P
   const [saving, setSaving] = useState(false);
   const [discarding, setDiscarding] = useState(false);
   const busy = useRef(false);
+  const baseVersion = useRef(issue.version);
   const box = useRef<HTMLDivElement>(null);
-  const latest = useRef({ draft, saved: issue.description, onSave });
-  latest.current = { draft, saved: issue.description, onSave };
+  const latest = useRef({ draft, saved: issue.description, version: issue.version, onSave });
+  latest.current = { draft, saved: issue.description, version: issue.version, onSave };
   const dirty = draft !== null && draft !== issue.description;
 
   // The editor closes only once the server has the text. A failed save leaves it open with the draft intact.
@@ -838,7 +884,8 @@ function Description({ issue, onSave }: { issue: Issue; onSave: (d: string) => P
     }
     busy.current = true;
     setSaving(true);
-    const ok = await save(d);
+    if (failedDrafts.has(issue.id)) baseVersion.current = latest.current.version;
+    const ok = await save(d, baseVersion.current);
     busy.current = false;
     setSaving(false);
     if (ok) {
@@ -860,7 +907,7 @@ function Description({ issue, onSave }: { issue: Issue; onSave: (d: string) => P
     () => () => {
       const { draft: d, saved, onSave: save } = latest.current;
       if (d !== null && d !== saved && !busy.current)
-        void save(d).then((ok) =>
+        void save(d, baseVersion.current).then((ok) =>
           ok ? failedDrafts.delete(issue.id) : failedDrafts.set(issue.id, d),
         );
     },
@@ -940,10 +987,14 @@ function Description({ issue, onSave }: { issue: Issue; onSave: (d: string) => P
           getSelection()?.isCollapsed === false
         )
           return;
+        baseVersion.current = issue.version;
         setDraft(issue.description);
       }}
       onKeyDown={(e) => {
-        if (canWrite && e.key === "Enter") setDraft(issue.description);
+        if (canWrite && e.key === "Enter") {
+          baseVersion.current = issue.version;
+          setDraft(issue.description);
+        }
       }}
       className={cn(
         "-mx-3 min-h-16 rounded-lg px-3 py-2 outline-none",
@@ -1416,6 +1467,8 @@ function EventItem({ event, entries }: { event: Activity; entries: Map<Id, TimeE
 function CommentItem({ comment: c }: { comment: Comment }) {
   const { t, lang } = useI18n();
   const { ws, me, members, member, run, canAdmin } = useWorkspace();
+  const editVersion = useRef(c.version);
+  const retryEdit = useRef(false);
   const [editBody, setEditBody] = useState<string | null>(null);
   const [confirm, setConfirm] = useState(false);
   const [discarding, setDiscarding] = useState(false);
@@ -1425,14 +1478,19 @@ function CommentItem({ comment: c }: { comment: Comment }) {
     editBody !== null && editBody !== c.body ? setDiscarding(true) : setEditBody(null);
   const save = () => {
     if (!editBody?.trim()) return;
-    run({
-      type: "edit_comment",
-      id: c.id,
-      body: editBody.trim(),
-      mentions: mentionsIn(editBody, members),
-    })
+    run(
+      {
+        type: "edit_comment",
+        id: c.id,
+        body: editBody.trim(),
+        mentions: mentionsIn(editBody, members),
+      },
+      { expectedVersions: { [c.id]: retryEdit.current ? c.version : editVersion.current } },
+    )
       .then(() => setEditBody(null))
-      .catch(() => {});
+      .catch(() => {
+        retryEdit.current = true;
+      });
   };
   return (
     // The avatar takes the timeline dot's slot, so it sits on the line and the card lines up with event text.
@@ -1470,7 +1528,11 @@ function CommentItem({ comment: c }: { comment: Comment }) {
                   variant="ghost"
                   size="icon"
                   aria-label={t("action.edit")}
-                  onPress={() => setEditBody(c.body)}
+                  onPress={() => {
+                    editVersion.current = c.version;
+                    retryEdit.current = false;
+                    setEditBody(c.body);
+                  }}
                 >
                   <Pencil />
                 </Button>

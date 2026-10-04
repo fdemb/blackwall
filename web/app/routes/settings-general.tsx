@@ -5,12 +5,12 @@ import { useWorkspace } from "~/lib/workspace";
 
 export default function General() {
   const t = useT();
-  const { ws, role } = useWorkspace();
+  const { ws, role, report } = useWorkspace();
   const stats = [
     [t("settings.members"), ws.members.length],
     [t("nav.teams"), ws.teams.length],
     [t("nav.projects"), ws.projects.length],
-    [t("nav.issues"), ws.issues.filter((i) => !i.deleted_at).length],
+    [t("nav.issues"), report.issue_count],
   ] as const;
   return (
     <Card className="p-5">

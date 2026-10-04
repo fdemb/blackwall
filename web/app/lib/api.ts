@@ -7,7 +7,10 @@ import type {
   Profile,
   Report,
   WorkspaceSummary,
-  Workspace,
+  CommandResult,
+  EntityVersions,
+  PageResult,
+  WorkspaceResources,
 } from "./types";
 
 export interface SearchResult {
@@ -36,19 +39,15 @@ export async function api<T>(
 ): Promise<T> {
   const method = init.method ?? "GET";
   const headers: Record<string, string> = {};
-  const isForm = init.body instanceof FormData;
+  const form = init.body instanceof FormData ? init.body : undefined;
+  const isForm = form !== undefined;
   if (method !== "GET") headers["X-CSRF-Token"] = csrf;
   if (init.body !== undefined && !isForm) headers["Content-Type"] = "application/json";
   const response = await fetch(path, {
     method,
     credentials: "same-origin",
     headers,
-    body:
-      init.body === undefined
-        ? undefined
-        : isForm
-          ? (init.body as FormData)
-          : JSON.stringify(init.body),
+    body: init.body === undefined ? undefined : isForm ? form : JSON.stringify(init.body),
   });
   const token = response.headers.get("X-CSRF-Token");
   if (token) setCsrf(token);
@@ -60,8 +59,11 @@ export async function api<T>(
     data = null;
   }
   if (!response.ok) {
-    const body = data as { error?: string } | null;
-    throw new ApiError(body?.error ?? response.statusText, response.status);
+    const message =
+      data !== null && typeof data === "object" && "error" in data && typeof data.error === "string"
+        ? data.error
+        : response.statusText;
+    throw new ApiError(message, response.status);
   }
   return data as T;
 }
@@ -91,43 +93,91 @@ export const auth = {
 
 export const workspaces = {
   list: () => api<WorkspaceSummary[]>("/api/workspaces"),
-  create: (name: string) =>
-    api<{ revision: number; workspace: Workspace }>("/api/workspaces", {
+  create: (name: string, idempotency_key: string = crypto.randomUUID()) =>
+    api<{ workspace: WorkspaceSummary }>("/api/workspaces", {
       method: "POST",
-      body: { name },
+      body: { name, idempotency_key },
     }),
-  get: (id: string) => api<{ revision: number; workspace: Workspace }>(`/api/workspaces/${id}`),
+  get: (id: string) => api<{ workspace: WorkspaceSummary }>(`/api/workspaces/${id}`),
   members: (id: string) => api<MemberProfile[]>(`/api/workspaces/${id}/members`),
-  command: (id: string, revision: number, command: Command) =>
-    api<{ revision: number; result: { id: string | null } }>(`/api/workspaces/${id}/commands`, {
+  resource: <K extends keyof WorkspaceResources>(
+    id: string,
+    resource: K,
+    params: Record<string, string | number> = {},
+  ) =>
+    api<PageResult<WorkspaceResources[K]>>(
+      `/api/workspaces/${id}/${resource}?${new URLSearchParams(Object.entries({ limit: 200, ...params }).map(([k, v]) => [k, String(v)]))}`,
+    ),
+  issues: (id: string, filter: IssueFilter = {}, offset = 0, limit = 100) =>
+    api<PageResult<Issue>>(
+      `/api/workspaces/${id}/issues?${filterQuery(filter)}&limit=${limit}&offset=${offset}`,
+    ),
+  issue: (id: string, issueId: string) => api<Issue>(`/api/workspaces/${id}/issues/${issueId}`),
+  command: (
+    id: string,
+    expected_versions: EntityVersions,
+    command: Command,
+    idempotency_key: string = crypto.randomUUID(),
+  ) =>
+    api<CommandResult>(`/api/workspaces/${id}/commands`, {
       method: "POST",
-      body: { revision, command },
+      body: { expected_versions, idempotency_key, command },
     }),
   search: (id: string, q: string) =>
     api<SearchResult>(`/api/workspaces/${id}/search?q=${encodeURIComponent(q)}`),
   report: (id: string) => api<Report>(`/api/workspaces/${id}/report`),
   accept: (id: string, token: string) =>
-    api<{ revision: number; workspace: Workspace }>(`/api/workspaces/${id}/invitations/accept`, {
+    api<{ workspace: WorkspaceSummary }>(`/api/workspaces/${id}/invitations/accept`, {
       method: "POST",
       body: { token },
     }),
   export: (id: string) => api<unknown>(`/api/workspaces/${id}/export`),
-  import: (id: string, revision: number, body: { issues?: unknown[]; transfer?: unknown }) =>
-    api<{ revision: number; summary: ImportSummary | null }>(`/api/workspaces/${id}/import`, {
-      method: "POST",
-      body: { revision, ...body },
-    }),
-  upload: (id: string, issueId: string, revision: number, file: File, commentId?: string) => {
+  import: (
+    id: string,
+    body: { issues?: unknown[]; transfer?: unknown },
+    idempotency_key: string = crypto.randomUUID(),
+  ) =>
+    api<{ versions: EntityVersions; summary: ImportSummary | null }>(
+      `/api/workspaces/${id}/import`,
+      {
+        method: "POST",
+        body: { expected_versions: {}, idempotency_key, ...body },
+      },
+    ),
+  upload: (
+    id: string,
+    issueId: string,
+    expected_versions: EntityVersions,
+    file: File,
+    commentId?: string,
+    idempotency_key: string = crypto.randomUUID(),
+  ) => {
     const form = new FormData();
-    form.append("revision", String(revision));
+    form.append("expected_versions", JSON.stringify(expected_versions));
+    form.append("idempotency_key", idempotency_key);
     if (commentId) form.append("comment_id", commentId);
     form.append("file", file);
-    return api<{ revision: number }>(`/api/workspaces/${id}/issues/${issueId}/attachments`, {
+    return api<CommandResult>(`/api/workspaces/${id}/issues/${issueId}/attachments`, {
       method: "POST",
       body: form,
     });
   },
 };
+
+export async function collectPages<T>(
+  read: (offset: number) => Promise<PageResult<T>>,
+): Promise<T[]> {
+  const items: T[] = [];
+  let offset = 0;
+  while (true) {
+    const page = await read(offset);
+    items.push(...page.items);
+    if (!page.has_more) return items;
+    if (page.next_offset === null || page.next_offset <= offset)
+      throw new Error("Invalid pagination offset");
+    offset = page.next_offset;
+  }
+}
 
 export function markdown(text: string) {
   return api<{ html: string }>("/api/markdown", { method: "POST", body: { text } }).then(
