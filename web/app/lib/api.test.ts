@@ -2,8 +2,9 @@ import { createServer, type Server } from "node:http";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vite-plus/test";
 import { ApiError, collectPages, workspaces } from "./api";
 import { commandEntityIds, expectedVersions } from "./entity-versions";
-import { loadWorkspaceData } from "./workspace-data";
-import type { Command, Issue, PageResult } from "./types";
+import { QueryClient } from "@tanstack/react-query";
+import { keys, preloadWorkspace } from "./query-client";
+import type { Command, Issue, MemberProfile, PageResult, Report, SavedView } from "./types";
 
 interface ReceivedRequest {
   url: URL;
@@ -157,12 +158,20 @@ describe("frontend relational HTTP contract", () => {
         };
       return { body: page([]) };
     };
-    const loaded = await loadWorkspaceData("workspace-a");
-    expect(loaded.workspace.name).toBe("Operations");
-    expect(loaded.workspace.members).toEqual([{ user_id: "user-a", role: "owner", version: 3 }]);
-    expect(loaded.workspace.views.map((view) => view.id)).toEqual(["view-a", "view-b"]);
-    expect(loaded.workspace.issues).toEqual([]);
-    expect(loaded.report.issue_count).toBe(201);
+    const client = new QueryClient();
+    await preloadWorkspace(client, "workspace-a");
+    expect(client.getQueryData(keys.workspace("workspace-a"))).toEqual({
+      workspace: { id: "workspace-a", name: "Operations", version: 1 },
+    });
+    expect(
+      client.getQueryData<MemberProfile[]>(keys.members("workspace-a"))?.map((m) => m.version),
+    ).toEqual([3]);
+    expect(
+      client
+        .getQueryData<SavedView[]>(keys.collection("workspace-a", "views"))
+        ?.map((view) => view.id),
+    ).toEqual(["view-a", "view-b"]);
+    expect(client.getQueryData<Report>(keys.report("workspace-a"))?.issue_count).toBe(201);
     expect(
       requests.some(({ url }) =>
         /\/(issues|comments|activity|time_entries|notifications)$/.test(url.pathname),

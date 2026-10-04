@@ -14,35 +14,34 @@ import { useT } from "~/lib/i18n";
 import { useIssues } from "~/lib/queries";
 import { QueryStatus } from "~/components/app/query-status";
 import { useWorkspace } from "~/lib/workspace";
-import type { Id, Workspace } from "~/lib/types";
+import type { Id, Issue } from "~/lib/types";
 
 type Layout = "list" | "board" | "backlog";
 
+/** Where dropped issues land, as a patch for every cached copy until the server confirms the move. */
 export function moveOptimistic(
-  ws: Workspace,
+  issues: Issue[],
   ids: Id[],
   stageId: Id,
   beforeId: Id | null,
-): Workspace {
-  const before = beforeId ? ws.issues.find((i) => i.id === beforeId) : undefined;
-  const inStage = ws.issues.filter((i) => i.stage_id === stageId && !ids.includes(i.id));
+): (issue: Issue) => Issue {
+  const before = beforeId ? issues.find((i) => i.id === beforeId) : undefined;
+  const inStage = issues.filter((i) => i.stage_id === stageId && !ids.includes(i.id));
   const end = Math.max(0, ...inStage.map((i) => i.position)) + 1;
-  return {
-    ...ws,
-    issues: ws.issues.map((i) => {
-      const k = ids.indexOf(i.id);
-      return k < 0
-        ? i
-        : {
-            ...i,
-            stage_id: stageId,
-            position: before ? before.position - 0.5 + k * 0.01 : end + k,
-          };
-    }),
+  return (issue) => {
+    const k = ids.indexOf(issue.id);
+    return k < 0
+      ? issue
+      : {
+          ...issue,
+          stage_id: stageId,
+          position: before ? before.position - 0.5 + k * 0.01 : end + k,
+        };
   };
 }
 
-type SprintScope = Id | null | "all";
+/** A sprint id, `"none"` for issues outside every sprint, or `"all"`. */
+type SprintScope = Id;
 
 export default function Team() {
   const { teamId } = useParams();
@@ -154,7 +153,6 @@ function BoardView({
       (k) =>
         k !== "sort" && k !== "sprint_id" && k !== "team_id" && filter[k as keyof typeof filter],
     ) || sprint !== "all";
-  const teamHasIssues = ws.issues.some((i) => i.team_id === teamId && !i.deleted_at);
   const query = useIssues({
     ...filter,
     team_id: teamId,
@@ -163,17 +161,23 @@ function BoardView({
     no_sprint: sprint === "none",
   });
   const issues = query.items;
+  // Only asked when filters hide everything, to tell "no match" from "no issues yet".
+  const unfiltered = useIssues(
+    { team_id: teamId },
+    narrowed && !query.loading && issues.length === 0,
+  );
+  const teamHasIssues = unfiltered.items.length > 0;
 
   const onDrop = (stageId: Id) => (ids: Id[], beforeId: Id | null) => {
     if (!ids.length) return;
-    (async () => {
-      let before = beforeId;
+    void (async () => {
+      const before = beforeId;
       for (const id of ids) {
         if (id === before) continue;
         await run(
           { type: "move_issue", id, stage_id: stageId, before_id: before },
           id === ids[0]
-            ? { optimistic: (w) => moveOptimistic(w, ids, stageId, beforeId) }
+            ? { optimistic: moveOptimistic(issues, ids, stageId, beforeId) }
             : undefined,
         ).catch(() => {});
       }

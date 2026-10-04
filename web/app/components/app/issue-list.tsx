@@ -177,7 +177,7 @@ export function IssueList({
           </section>
         );
       })}
-      <BulkBar selected={selected} clear={() => setSelected(new Set())} />
+      <BulkBar issues={issues} selected={selected} clear={() => setSelected(new Set())} />
     </div>
   );
 }
@@ -285,16 +285,24 @@ function PriorityMenu({
   );
 }
 
-function BulkBar({ selected, clear }: { selected: Set<Id>; clear: () => void }) {
+function BulkBar({
+  issues,
+  selected,
+  clear,
+}: {
+  issues: Issue[];
+  selected: Set<Id>;
+  clear: () => void;
+}) {
   const t = useT();
   const toast = useToast();
   const { ws, members, run } = useWorkspace();
   const [confirm, setConfirm] = useState(false);
   if (selected.size === 0) return null;
   const ids = [...selected];
-  const first = ws.issues.find((i) => i.id === ids[0]);
+  const first = issues.find((i) => i.id === ids[0]);
   const team = ws.teams.find((tm) => tm.id === first?.team_id);
-  const same = ids.every((id) => ws.issues.find((i) => i.id === id)?.team_id === first?.team_id);
+  const same = ids.every((id) => issues.find((i) => i.id === id)?.team_id === first?.team_id);
   const update = (patch: IssuePatch) =>
     run({ type: "bulk_issues", ids, action: { update: patch } })
       .then(clear)

@@ -185,6 +185,7 @@ export interface Activity {
   fields?: string[];
 }
 
+/** Workspace records loaded once and kept current. Issues and their discussion load per page. */
 export interface Workspace {
   id: Id;
   name: string;
@@ -194,15 +195,10 @@ export interface Workspace {
   projects: Project[];
   milestones: Milestone[];
   sprints: Sprint[];
-  issues: Issue[];
-  comments: Comment[];
-  time_entries: TimeEntry[];
   invitations: Invitation[];
   views: SavedView[];
-  notifications: Notification[];
   alert_preferences: AlertPrefsWs[];
   integrations: Integration[];
-  activity: Activity[];
 }
 export interface WorkspaceSummary {
   id: Id;

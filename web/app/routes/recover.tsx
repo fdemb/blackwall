@@ -8,6 +8,7 @@ import { auth } from "~/lib/api";
 import { useT } from "~/lib/i18n";
 import { useDocumentTitle } from "~/lib/title";
 import { useToast } from "~/components/ui/toast";
+import { formText } from "~/lib/utils";
 
 export default function Recover() {
   const t = useT();
@@ -99,9 +100,9 @@ export default function Recover() {
           setBusy(true);
           setResetError("");
           try {
-            await auth.reset(String(f.get("token")).trim(), String(f.get("password")));
+            await auth.reset(formText(f, "token").trim(), formText(f, "password"));
             toast.show(t("auth.resetDone"));
-            nav("/login");
+            await nav("/login");
           } catch (err) {
             setResetError((err as Error).message);
             setBusy(false);

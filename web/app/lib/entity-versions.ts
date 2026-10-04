@@ -1,29 +1,4 @@
-import type { Command, EntityVersions, Id, Workspace } from "./types";
-
-export function entityVersions(ws: Workspace): EntityVersions {
-  return Object.fromEntries(
-    [
-      ...ws.issues,
-      ...ws.comments,
-      ...ws.time_entries,
-      ...ws.teams,
-      ...ws.teams.flatMap((team) => team.stages),
-      ...ws.labels,
-      ...ws.projects,
-      ...ws.milestones,
-      ...ws.sprints,
-      ...ws.views,
-      ...ws.invitations,
-      ...ws.integrations,
-      ...ws.notifications,
-    ]
-      .map((entity) => [entity.id, entity.version])
-      .concat(
-        ws.members.map((member) => [member.user_id, member.version]),
-        ws.alert_preferences.map((prefs) => [prefs.user_id, prefs.version]),
-      ),
-  );
-}
+import type { Command, EntityVersions, Id } from "./types";
 
 export function commandEntityIds(command: Command, me: Id): Id[] {
   if (command.type === "bulk_issues") return command.ids;

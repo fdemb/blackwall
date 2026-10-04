@@ -8,16 +8,21 @@ import {
   useState,
   type ReactNode,
 } from "react";
+import { useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { ApiError, collectPages, workspaces } from "./api";
-import { loadWorkspaceData, type WorkspaceData } from "./workspace-data";
-import { commandEntityIds, entityVersions, expectedVersions } from "./entity-versions";
+import { applyChanges, knownVersions, patchIssues } from "./changes";
+import { commandEntityIds, expectedVersions } from "./entity-versions";
+import { collectionQuery, keys, membersQuery, reportQuery, workspaceQuery } from "./query-client";
 import { useSession } from "./session";
 import { useToast } from "~/components/ui/toast";
 import { useT } from "./i18n";
 import type {
+  ChangeFeed,
   Command,
+  CommandResult,
   EntityVersions,
   Id,
+  IssueInput,
   Issue,
   MemberProfile,
   Report,
@@ -27,10 +32,18 @@ import type {
   Workspace,
 } from "./types";
 
+/** How often to ask for other people's changes while the tab is visible. */
+const POLL_MS = 5000;
+
+/** Change-feed cursors by workspace. A cursor is taken before the first load, so nothing slips between. */
+const cursors = new Map<Id, string>();
+
+export async function startChangeFeed(ws: Id) {
+  if (!cursors.has(ws)) cursors.set(ws, (await workspaces.changes(ws)).cursor);
+}
+
 interface Ctx {
   ws: Workspace;
-  syncGeneration: number;
-  cache: (patch: Partial<Workspace> | ((ws: Workspace) => Partial<Workspace>)) => void;
   members: MemberProfile[];
   report: Report;
   role: Role;
@@ -40,16 +53,19 @@ interface Ctx {
   member: (id: Id | null | undefined) => MemberProfile | undefined;
   team: (id: Id) => Team | undefined;
   stage: (id: Id) => Stage | undefined;
-  issue: (id: Id) => Issue | undefined;
-  /** `quiet` skips the error toast, for forms that show the failure beside their own controls. */
+  /**
+   * `optimistic` updates every cached copy of the issues it changes until the server answers.
+   * `quiet` skips the error toast, for forms that show the failure beside their own controls.
+   */
   run: (
     command: Command,
     opts?: {
-      optimistic?: (ws: Workspace) => Workspace;
+      optimistic?: (issue: Issue) => Issue;
       quiet?: boolean;
       expectedVersions?: EntityVersions;
     },
   ) => Promise<Id | null>;
+  /** Refetches everything on screen, after changes the feed can't describe such as imports. */
   reload: () => Promise<void>;
   /** Number of writes waiting on the server. */
   pending: number;
@@ -60,95 +76,84 @@ interface Ctx {
   unread: number;
   create: {
     open: boolean;
-    defaults: Partial<import("./types").IssueInput>;
-    show: (defaults?: Partial<import("./types").IssueInput>) => void;
+    defaults: Partial<IssueInput>;
+    show: (defaults?: Partial<IssueInput>) => void;
     hide: () => void;
   };
 }
 const WorkspaceCtx = createContext<Ctx | null>(null);
 
-export function WorkspaceProvider({
-  initial,
-  children,
-}: {
-  initial: WorkspaceData;
-  children: ReactNode;
-}) {
+type Operation = { key: string; versions?: EntityVersions };
+
+/** Reads the workspace's records from the query cache. The route loader has already fetched them. */
+function useWorkspaceRecords(id: Id) {
+  const workspace = useSuspenseQuery(workspaceQuery(id)).data.workspace;
+  const members = useSuspenseQuery(membersQuery(id)).data;
+  const report = useSuspenseQuery(reportQuery(id)).data;
+  const teams = useSuspenseQuery(collectionQuery(id, "teams")).data;
+  const labels = useSuspenseQuery(collectionQuery(id, "labels")).data;
+  const projects = useSuspenseQuery(collectionQuery(id, "projects")).data;
+  const milestones = useSuspenseQuery(collectionQuery(id, "milestones")).data;
+  const sprints = useSuspenseQuery(collectionQuery(id, "sprints")).data;
+  const views = useSuspenseQuery(collectionQuery(id, "views")).data;
+  const invitations = useSuspenseQuery(collectionQuery(id, "invitations")).data;
+  const alerts = useSuspenseQuery(collectionQuery(id, "alert_preferences")).data;
+  const integrations = useSuspenseQuery(collectionQuery(id, "integrations")).data;
+  const ws = useMemo<Workspace>(
+    () => ({
+      id,
+      name: workspace.name,
+      members: members.map((m) => ({ user_id: m.id, role: m.role, version: m.version })),
+      teams,
+      labels,
+      projects,
+      milestones,
+      sprints,
+      views,
+      invitations,
+      alert_preferences: alerts,
+      integrations,
+    }),
+    [
+      id,
+      workspace,
+      members,
+      teams,
+      labels,
+      projects,
+      milestones,
+      sprints,
+      views,
+      invitations,
+      alerts,
+      integrations,
+    ],
+  );
+  return { ws, members, report };
+}
+
+export function WorkspaceProvider({ id, children }: { id: Id; children: ReactNode }) {
   const { profile } = useSession();
   const toast = useToast();
   const t = useT();
-  const [state, setState] = useState(initial);
-  const [createState, setCreate] = useState<{
-    open: boolean;
-    defaults: Partial<import("./types").IssueInput>;
-  }>({ open: false, defaults: {} });
-  const versionsRef = useRef(entityVersions(initial.workspace));
-  const [syncGeneration, setSyncGeneration] = useState(0);
-  const cache = useCallback(
-    (patch: Partial<Workspace> | ((ws: Workspace) => Partial<Workspace>)) => {
-      setState((state) => {
-        const workspace = {
-          ...state.workspace,
-          ...(typeof patch === "function" ? patch(state.workspace) : patch),
-        };
-        for (const [id, version] of Object.entries(entityVersions(workspace))) {
-          versionsRef.current[id] = Math.max(versionsRef.current[id] ?? 0, version);
-        }
-        return { ...state, workspace };
-      });
-    },
-    [],
-  );
-  const membershipVersions = useRef(
-    Object.fromEntries(initial.workspace.members.map((member) => [member.user_id, member.version])),
-  );
-  const preferenceVersions = useRef(
-    Object.fromEntries(
-      initial.workspace.alert_preferences.map((prefs) => [prefs.user_id, prefs.version]),
-    ),
-  );
-  const commandKeys = useRef(new Map<string, { key: string; versions?: EntityVersions }>());
-  const uploadKeys = useRef(
-    new WeakMap<File, Map<string, { key: string; versions?: EntityVersions }>>(),
-  );
+  const client = useQueryClient();
+  const { ws, members, report } = useWorkspaceRecords(id);
+  const [createState, setCreate] = useState<{ open: boolean; defaults: Partial<IssueInput> }>({
+    open: false,
+    defaults: {},
+  });
+  const commandKeys = useRef(new Map<string, Operation>());
+  const uploadKeys = useRef(new WeakMap<File, Map<string, Operation>>());
   const queue = useRef<Promise<unknown>>(Promise.resolve());
   const inFlight = useRef(0);
   const [pending, setPending] = useState(0);
   const [offline, setOffline] = useState(false);
-  const id = state.workspace.id;
-  const canWriteNow =
-    (state.workspace.members.find((m) => m.user_id === profile.id)?.role ?? "viewer") !== "viewer";
+  const role = ws.members.find((m) => m.user_id === profile.id)?.role ?? "viewer";
 
-  useEffect(() => {
-    setState(initial);
-    versionsRef.current = entityVersions(initial.workspace);
-  }, [initial]);
-
-  const reload = useCallback(async () => {
-    const data = await loadWorkspaceData(id);
-    membershipVersions.current = Object.fromEntries(
-      data.workspace.members.map((member) => [member.user_id, member.version]),
-    );
-    preferenceVersions.current = Object.fromEntries(
-      data.workspace.alert_preferences.map((prefs) => [prefs.user_id, prefs.version]),
-    );
-    setState((state) => {
-      const workspace = {
-        ...state.workspace,
-        ...data.workspace,
-        issues: state.workspace.issues,
-        comments: state.workspace.comments,
-        time_entries: state.workspace.time_entries,
-        activity: state.workspace.activity,
-        notifications: state.workspace.notifications,
-      };
-      for (const [id, version] of Object.entries(entityVersions(workspace))) {
-        versionsRef.current[id] = Math.max(versionsRef.current[id] ?? 0, version);
-      }
-      return { ...data, workspace };
-    });
-    setSyncGeneration((n) => n + 1);
-  }, [id]);
+  const reload = useCallback(
+    () => client.invalidateQueries({ queryKey: keys.all(id) }),
+    [client, id],
+  );
 
   const enqueue = useCallback(<T,>(job: () => Promise<T>) => {
     inFlight.current += 1;
@@ -163,17 +168,6 @@ export function WorkspaceProvider({
     return next;
   }, []);
 
-  /** The write already succeeded, so a failed refresh must not read as a failed save. */
-  const refreshAfterWrite = useCallback(
-    () =>
-      reload().catch(() =>
-        toast.error(t("error.refresh"), {
-          label: t("action.retry"),
-          run: () => void reload().catch(() => undefined),
-        }),
-      ),
-    [reload, toast, t],
-  );
   const describe = useCallback(
     (e: unknown) => {
       if (!(e instanceof ApiError)) return new Error(t("error.network"));
@@ -183,17 +177,38 @@ export function WorkspaceProvider({
     [t],
   );
 
+  /** A failed write leaves guesses in the cache, so everything on screen is fetched again. */
+  const recover = useCallback(
+    async (e: unknown, quiet?: boolean) => {
+      await reload().catch(() => undefined);
+      const err = describe(e);
+      if (!quiet) toast.error(err.message);
+      return err;
+    },
+    [reload, describe, toast],
+  );
+
+  const polling = useRef(false);
   const poll = useCallback(async () => {
-    if (document.visibilityState === "hidden" || inFlight.current > 0) return;
+    // A pending write's optimistic state would flicker back to the server's older copy.
+    if (document.visibilityState === "hidden" || inFlight.current > 0 || polling.current) return;
+    polling.current = true;
     try {
-      await reload();
+      const since = cursors.get(id);
+      const feed: ChangeFeed = await workspaces.changes(id, since);
+      cursors.set(id, feed.cursor);
+      if (since === undefined || feed.reset) await reload();
+      else applyChanges(client, id, feed.changes);
       setOffline(false);
     } catch {
       setOffline(true);
+    } finally {
+      polling.current = false;
     }
-  }, [reload]);
+  }, [client, id, reload]);
+
   useEffect(() => {
-    const timer = setInterval(() => void poll(), 15000);
+    const timer = setInterval(() => void poll(), POLL_MS);
     const wake = () => void poll();
     addEventListener("focus", wake);
     addEventListener("online", wake);
@@ -206,152 +221,152 @@ export function WorkspaceProvider({
     };
   }, [poll]);
 
+  /** Versions of the records a command touches, including ones only the server can list. */
+  const versionsFor = useCallback(
+    async (command: Command) => {
+      const known = knownVersions(client, id);
+      if (command.type === "set_role" || command.type === "remove_member")
+        return expectedVersions([command.user_id], known.memberships);
+      if (command.type === "configure_alerts")
+        return expectedVersions([profile.id], known.preferences);
+      let ids = commandEntityIds(command, profile.id);
+      const fetched: EntityVersions = {};
+      const remember = (records: { id: Id; version: number }[]) => {
+        for (const record of records) fetched[record.id] = record.version;
+        return records.map((record) => record.id);
+      };
+      if (command.type === "complete_sprint")
+        ids = [
+          ...ids,
+          ...remember(
+            await collectPages((offset) =>
+              workspaces.issues(id, { sprint_id: command.id }, offset),
+            ),
+          ),
+        ];
+      if (command.type === "delete_stage") {
+        const pages = await Promise.all(
+          [false, true].map((trash) =>
+            collectPages((offset) =>
+              workspaces.issues(id, { stage_id: command.id, trash }, offset),
+            ),
+          ),
+        );
+        ids = [...ids, ...remember(pages.flat())];
+      }
+      if (command.type === "mark_all_notifications_read") {
+        const all = await collectPages((offset) =>
+          workspaces.resource(id, "notifications", { offset }),
+        );
+        remember(all);
+        ids = all.filter((n) => !n.read_at).map((n) => n.id);
+      }
+      return expectedVersions(ids, { ...known.records, ...fetched });
+    },
+    [client, id, profile.id],
+  );
+
+  const settle = useCallback(
+    (res: CommandResult) => {
+      applyChanges(client, id, res.changes);
+      return res;
+    },
+    [client, id],
+  );
+
   const run = useCallback<Ctx["run"]>(
     (command, opts) => {
-      const optimistic = opts?.optimistic;
-      if (optimistic) setState((s) => ({ ...s, workspace: optimistic(s.workspace) }));
-      const commandIdentity = JSON.stringify(command);
-      const operation = commandKeys.current.get(commandIdentity) ?? {
-        key: crypto.randomUUID(),
-        versions: undefined,
-      };
-      commandKeys.current.set(commandIdentity, operation);
+      if (opts?.optimistic) patchIssues(client, id, opts.optimistic);
+      const identity = JSON.stringify(command);
+      const operation = commandKeys.current.get(identity) ?? { key: crypto.randomUUID() };
+      commandKeys.current.set(identity, operation);
       return enqueue(async () => {
         let res;
         try {
-          let ids = commandEntityIds(command, profile.id);
-          if (command.type === "complete_sprint") {
-            const issues = await collectPages((offset) =>
-              workspaces.issues(id, { sprint_id: command.id }, offset),
-            );
-            for (const issue of issues) versionsRef.current[issue.id] = issue.version;
-            ids = [...ids, ...issues.map((issue) => issue.id)];
-          }
-          if (command.type === "delete_stage") {
-            const stagePages = await Promise.all([
-              collectPages((offset) => workspaces.issues(id, { stage_id: command.id }, offset)),
-              collectPages((offset) =>
-                workspaces.issues(id, { stage_id: command.id, trash: true }, offset),
-              ),
-            ]);
-            const issues = stagePages.flat();
-            for (const issue of issues) versionsRef.current[issue.id] = issue.version;
-            ids = [...ids, ...issues.map((issue) => issue.id)];
-          }
-          if (command.type === "mark_all_notifications_read") {
-            const notifications = await collectPages((offset) =>
-              workspaces.resource(id, "notifications", { offset }),
-            );
-            for (const notification of notifications)
-              versionsRef.current[notification.id] = notification.version;
-            ids = notifications
-              .filter((notification) => !notification.read_at)
-              .map((notification) => notification.id);
-          }
-          const versions =
-            command.type === "set_role" || command.type === "remove_member"
-              ? membershipVersions.current
-              : command.type === "configure_alerts"
-                ? preferenceVersions.current
-                : versionsRef.current;
-          operation.versions ??= { ...expectedVersions(ids, versions), ...opts?.expectedVersions };
-          res = await workspaces.command(id, operation.versions, command, operation.key);
-          if (command.type === "set_role" || command.type === "remove_member")
-            membershipVersions.current = { ...membershipVersions.current, ...res.versions };
-          if (command.type === "configure_alerts")
-            preferenceVersions.current = { ...preferenceVersions.current, ...res.versions };
+          operation.versions ??= { ...(await versionsFor(command)), ...opts?.expectedVersions };
+          res = settle(await workspaces.command(id, operation.versions, command, operation.key));
         } catch (e) {
-          if (e instanceof ApiError && e.status < 500) commandKeys.current.delete(commandIdentity);
-          await reload().catch(() => undefined);
-          const err = describe(e);
-          if (!opts?.quiet) toast.error(err.message);
-          throw err;
+          // A rejected request can't succeed with the same key; a lost response can.
+          if (e instanceof ApiError && e.status < 500) commandKeys.current.delete(identity);
+          throw await recover(e, opts?.quiet);
         }
-        commandKeys.current.delete(commandIdentity);
-        versionsRef.current = { ...versionsRef.current, ...res.versions };
-        await refreshAfterWrite();
+        commandKeys.current.delete(identity);
         return res.result.id;
       });
     },
-    [enqueue, id, profile.id, reload, refreshAfterWrite, describe, toast],
+    [client, id, enqueue, versionsFor, settle, recover],
   );
 
   const upload = useCallback(
     (issueId: Id, file: File, commentId?: Id) =>
       enqueue(async () => {
         const target = commentId ?? issueId;
-        const keys =
-          uploadKeys.current.get(file) ??
-          new Map<string, { key: string; versions?: EntityVersions }>();
-        uploadKeys.current.set(file, keys);
-        const operation = keys.get(target) ?? { key: crypto.randomUUID(), versions: undefined };
-        keys.set(target, operation);
-        let res;
+        const keyed = uploadKeys.current.get(file) ?? new Map<string, Operation>();
+        uploadKeys.current.set(file, keyed);
+        const operation = keyed.get(target) ?? { key: crypto.randomUUID() };
+        keyed.set(target, operation);
         try {
-          if (versionsRef.current[issueId] === undefined) {
-            const issue = await workspaces.issue(id, issueId);
-            versionsRef.current[issueId] = issue.version;
+          if (!operation.versions) {
+            const known = knownVersions(client, id).records;
+            if (known[issueId] === undefined)
+              known[issueId] = (await workspaces.issue(id, issueId)).version;
+            operation.versions = expectedVersions([target], known);
           }
-          operation.versions ??= expectedVersions([commentId ?? issueId], versionsRef.current);
-          res = await workspaces.upload(
-            id,
-            issueId,
-            operation.versions,
-            file,
-            commentId,
-            operation.key,
+          settle(
+            await workspaces.upload(
+              id,
+              issueId,
+              operation.versions,
+              file,
+              commentId,
+              operation.key,
+            ),
           );
         } catch (e) {
-          if (e instanceof ApiError && e.status < 500) keys.delete(target);
-          await reload().catch(() => undefined);
-          const err = describe(e);
+          if (e instanceof ApiError && e.status < 500) keyed.delete(target);
+          const err = await recover(e, true);
           toast.error(`${file.name}: ${err.message}`);
           throw err;
         }
-        keys.delete(target);
-        versionsRef.current = { ...versionsRef.current, ...res.versions };
-        await refreshAfterWrite();
+        keyed.delete(target);
       }),
-    [enqueue, id, reload, refreshAfterWrite, describe, toast],
+    [client, id, enqueue, settle, recover, toast],
   );
 
   const value = useMemo<Ctx>(() => {
-    const ws = state.workspace;
-    const role = ws.members.find((m) => m.user_id === profile.id)?.role ?? "viewer";
     const stages = new Map(ws.teams.flatMap((tm) => tm.stages.map((s) => [s.id, s] as const)));
+    const people = new Map(members.map((m) => [m.id, m]));
     return {
       ws,
-      syncGeneration,
-      cache,
-      members: state.members,
-      report: state.report,
+      members,
+      report,
       role,
       canWrite: role !== "viewer",
       canAdmin: role === "owner" || role === "admin",
       me: profile.id,
-      member: (uid) => (uid ? state.members.find((m) => m.id === uid) : undefined),
+      member: (uid) => (uid ? people.get(uid) : undefined),
       team: (tid) => ws.teams.find((tm) => tm.id === tid),
       stage: (sid) => stages.get(sid),
-      issue: (iid) => ws.issues.find((i) => i.id === iid),
       run,
       reload,
       pending,
       offline,
       retrySync: () => void poll(),
       upload,
-      unread: state.report.inbox_unread,
+      unread: report.inbox_unread,
       create: {
         ...createState,
         show: (defaults = {}) => {
-          if (canWriteNow) setCreate({ open: true, defaults });
+          if (role !== "viewer") setCreate({ open: true, defaults });
         },
         hide: () => setCreate({ open: false, defaults: {} }),
       },
     };
   }, [
-    state,
-    syncGeneration,
-    cache,
+    ws,
+    members,
+    report,
+    role,
     profile.id,
     run,
     reload,
@@ -360,7 +375,6 @@ export function WorkspaceProvider({
     pending,
     offline,
     poll,
-    canWriteNow,
   ]);
 
   return <WorkspaceCtx value={value}>{children}</WorkspaceCtx>;

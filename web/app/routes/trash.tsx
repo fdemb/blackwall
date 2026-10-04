@@ -5,7 +5,7 @@ import { Button } from "~/components/ui/button";
 import { EmptyState, Page, PageHeader, Scroll } from "~/components/app/page";
 import { expectedVersions } from "~/lib/entity-versions";
 import { collectPages, workspaces } from "~/lib/api";
-import { useIssues, mergeRecords } from "~/lib/queries";
+import { useIssues } from "~/lib/queries";
 import { QueryStatus } from "~/components/app/query-status";
 import { issueKey, relativeTime } from "~/lib/format";
 import { useI18n } from "~/lib/i18n";
@@ -14,7 +14,7 @@ import { useToast } from "~/components/ui/toast";
 
 export default function Trash() {
   const { t, lang } = useI18n();
-  const { ws, run, canWrite, cache } = useWorkspace();
+  const { ws, run, canWrite } = useWorkspace();
   const toast = useToast();
   const query = useIssues({ trash: true, sort: "updated" });
   const issues = query.items;
@@ -24,7 +24,6 @@ export default function Trash() {
     setProgress({ done: 0, total: issues.length });
     try {
       const all = await collectPages((offset) => workspaces.issues(ws.id, { trash: true }, offset));
-      cache((ws) => ({ issues: mergeRecords(ws.issues, all) }));
       const ids = all.map((issue) => issue.id);
       for (let at = 0; at < ids.length; at += 500) {
         await run(

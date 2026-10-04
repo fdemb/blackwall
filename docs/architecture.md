@@ -12,6 +12,8 @@ A separate graph advisory lock is shared for ordinary issue writes and exclusive
 
 The API returns workspace summaries and paginated feature collections. It does not return or persist whole-workspace snapshots. Issues, planning, discussion, memberships, and personal state occupy relational tables. Composite foreign keys reject references across workspaces. Attachment bytes use `bytea`. JSONB holds flexible filters, profiles, job payloads, and historical fields.
 
+The frontend keeps server data in TanStack Query (`web/app/lib/query-client.ts`). The workspace route takes a change-feed cursor, then loads metadata collections, members, and the report. Pages read issue lists, issue details, and issue discussion through their own queries, so a revisited page renders from cache. Command responses and the change feed, polled every five seconds, write changed records into every cached copy (`web/app/lib/changes.ts`). Lists whose membership may have changed refetch in the background. A failed write refetches the workspace's queries to drop optimistic guesses.
+
 ## Modules
 
 - `auth` owns credentials, hashed sessions, recovery tokens, profiles, and account preferences.

@@ -29,7 +29,7 @@ function ViewPage({ view }: { view: SavedView }) {
   const nav = useNavigate();
   const toast = useToast();
   const { ws: wsId } = useParams();
-  const { me, run, canAdmin, canWrite } = useWorkspace();
+  const { me, run, canAdmin } = useWorkspace();
   const state = useQueueState(view.filter);
   const [editing, setEditing] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -109,7 +109,7 @@ function ViewPage({ view }: { view: SavedView }) {
             onOpenChange={setDeleting}
             onConfirm={async () => {
               await run({ type: "delete_view", id: view.id }, { quiet: true });
-              nav(`/${wsId}/issues`);
+              await nav(`/${wsId}/issues`);
             }}
           />
         </>

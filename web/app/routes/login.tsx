@@ -6,6 +6,7 @@ import { FormError, TextField } from "~/components/ui/field";
 import { auth, setCsrf } from "~/lib/api";
 import { useT } from "~/lib/i18n";
 import { useDocumentTitle } from "~/lib/title";
+import { formText } from "~/lib/utils";
 
 export default function Login() {
   const t = useT();
@@ -25,9 +26,9 @@ export default function Login() {
           setBusy(true);
           setError("");
           try {
-            const s = await auth.login(String(f.get("email")), String(f.get("password")));
+            const s = await auth.login(formText(f, "email"), formText(f, "password"));
             setCsrf(s.csrf_token);
-            nav("/", { replace: true });
+            await nav("/", { replace: true });
           } catch (err) {
             setError((err as Error).message);
             setBusy(false);
