@@ -35,10 +35,10 @@ export function MenuItem({ className, children, ...props }: MenuItemProps) {
       {...props}
       className={composeRenderProps(className, (c, { isDisabled }) =>
         cn(
-          "flex cursor-default items-center gap-2 rounded-md px-2 py-1.5 text-[13px] outline-none focus-visible:bg-accent focus-visible:text-accent-foreground",
+          "flex cursor-default items-center gap-2 rounded-md px-2 py-1.5 text-[13px] outline-none focus:bg-accent focus:text-accent-foreground",
           isDisabled && "opacity-50",
           props.id === "delete" || props.id === "destructive"
-            ? "text-destructive focus-visible:bg-destructive/10 focus-visible:text-destructive"
+            ? "text-destructive focus:bg-destructive/10 focus:text-destructive"
             : "",
           "[&_svg:not([class*='size-'])]:size-4 [&_svg]:shrink-0 [&_svg]:text-muted-foreground",
           c,
