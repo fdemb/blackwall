@@ -170,6 +170,7 @@ impl Store {
     pub async fn register(&self, input: Register) -> Result<Session> {
         let email = email(&input.email)?;
         let display_name = input.display_name.trim().to_owned();
+
         if display_name.is_empty() || display_name.len() > 120 {
             return Err(Error::BadRequest(
                 "display name must contain 1 to 120 bytes".into(),
@@ -197,6 +198,7 @@ impl Store {
         .bind(Json(&profile))
         .execute(&self.pool)
         .await;
+
         match insert {
             Err(sqlx::Error::Database(ref e)) if e.is_unique_violation() => {
                 return Err(Error::Conflict("email already registered".into()));
@@ -233,20 +235,32 @@ impl Store {
             .bind(input.email.trim().to_lowercase())
             .fetch_optional(&self.pool)
             .await?;
+
         let Some(row) = row else {
             // Missing accounts still perform the password KDF.
             let _ = password_hash("dummy-password-for-timing".into()).await?;
             return Err(Error::Unauthorized);
         };
+
         if !verify(input.password, row.try_get("password_hash")?).await? {
             return Err(Error::Unauthorized);
         }
+
         self.create_session(row.try_get::<Json<Profile>, _>("profile")?.0)
             .await
     }
 
     pub async fn authenticate(&self, token: &str) -> Result<Profile> {
-        let row = sqlx::query("SELECT users.profile FROM sessions JOIN users ON users.id = sessions.user_id WHERE token_hash = $1 AND expires_at > $2").bind(hash(token)).bind(Utc::now()).fetch_optional(&self.pool).await?.ok_or(Error::Unauthorized)?;
+        let row = sqlx::query(
+            "SELECT users.profile FROM sessions JOIN users ON users.id = sessions.user_id \
+             WHERE token_hash = $1 AND expires_at > $2",
+        )
+        .bind(hash(token))
+        .bind(Utc::now())
+        .fetch_optional(&self.pool)
+        .await?
+        .ok_or(Error::Unauthorized)?;
+
         Ok(row.try_get::<Json<Profile>, _>("profile")?.0)
     }
 
@@ -256,6 +270,7 @@ impl Store {
             .fetch_optional(&self.pool)
             .await?
             .ok_or(Error::NotFound)?;
+
         Ok(row.try_get::<Json<Profile>, _>("profile")?.0)
     }
 
@@ -266,6 +281,7 @@ impl Store {
         {
             return Err(Error::BadRequest("invalid profile fields".into()));
         }
+
         if edit.avatar_url.as_ref().is_some_and(|url| {
             !(url.starts_with("https://") || url.starts_with("/api/")) || url.len() > 2048
         }) {
@@ -304,7 +320,9 @@ impl Store {
             .bind(user)
             .fetch_one(&self.pool)
             .await?;
+
         let previous: String = row.try_get("password_hash")?;
+
         if !verify(input.current_password, previous.clone()).await? {
             return Err(Error::Unauthorized);
         }
@@ -318,6 +336,7 @@ impl Store {
                 .bind(previous)
                 .execute(&mut *tx)
                 .await?;
+
         if result.rows_affected() != 1 {
             return Err(Error::Conflict("password changed concurrently".into()));
         }
@@ -326,6 +345,7 @@ impl Store {
             .bind(user)
             .execute(&mut *tx)
             .await?;
+
         sqlx::query("DELETE FROM password_resets WHERE user_id = $1")
             .bind(user)
             .execute(&mut *tx)
@@ -342,6 +362,7 @@ impl Store {
             .bind(input.email.trim().to_lowercase())
             .fetch_optional(&mut *tx)
             .await?;
+
         if let Some(row) = row {
             let user: Uuid = row.try_get("id")?;
             let email: String = row.try_get("email")?;
@@ -356,6 +377,7 @@ impl Store {
             .bind(now + Duration::hours(1))
             .execute(&mut *tx)
             .await?;
+
             let job = Job::Email(Email {
                 to: email,
                 subject: "Reset your Blackwall password".into(),
@@ -379,12 +401,17 @@ impl Store {
 
         let mut tx = self.pool.begin().await?;
         let token_hash = hash(&input.token);
-        let user: Uuid = sqlx::query_scalar("SELECT users.id FROM users JOIN password_resets ON password_resets.user_id=users.id WHERE password_resets.token_hash=$1 AND password_resets.expires_at>$2 FOR UPDATE OF users")
-            .bind(&token_hash)
-            .bind(Utc::now())
-            .fetch_optional(&mut *tx)
-            .await?
-            .ok_or(Error::BadRequest("reset token invalid or expired".into()))?;
+        let user: Uuid = sqlx::query_scalar(
+            "SELECT users.id FROM users JOIN password_resets ON password_resets.user_id=users.id \
+             WHERE password_resets.token_hash=$1 AND password_resets.expires_at>$2 \
+             FOR UPDATE OF users",
+        )
+        .bind(&token_hash)
+        .bind(Utc::now())
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or(Error::BadRequest("reset token invalid or expired".into()))?;
+
         let consumed = sqlx::query(
             "DELETE FROM password_resets WHERE token_hash=$1 AND user_id=$2 AND expires_at>$3",
         )
@@ -393,9 +420,11 @@ impl Store {
         .bind(Utc::now())
         .execute(&mut *tx)
         .await?;
+
         if consumed.rows_affected() != 1 {
             return Err(Error::BadRequest("reset token invalid or expired".into()));
         }
+
         sqlx::query("UPDATE users SET password_hash = $1 WHERE id = $2")
             .bind(encoded)
             .bind(user)

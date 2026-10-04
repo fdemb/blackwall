@@ -16,13 +16,16 @@ impl TestDatabase {
             url.starts_with("postgres://") || url.starts_with("postgresql://"),
             "TEST_POSTGRES_URL must use PostgreSQL"
         );
+
         let options = PgConnectOptions::from_str(&url).unwrap();
         let mut admin = PgConnection::connect_with(&options).await.unwrap();
         let name = format!("blackwall_test_{}", Uuid::new_v4().simple());
+
         sqlx::query(&format!("CREATE DATABASE {name}"))
             .execute(&mut admin)
             .await
             .unwrap();
+
         Self {
             url: options.database(&name).to_url_lossy().to_string(),
             name,
@@ -35,6 +38,7 @@ impl TestDatabase {
             .execute(&mut self.admin)
             .await
             .unwrap();
+
         self.admin.close().await.unwrap();
     }
 }

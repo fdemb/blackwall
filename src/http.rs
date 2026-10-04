@@ -105,7 +105,9 @@ pub struct CommandRequest {
     pub idempotency_key: Option<String>,
     pub command: Command,
 }
+
 pub type CommandResponse = OperationResult;
+
 #[derive(Deserialize, utoipa::ToSchema)]
 pub struct AcceptInvitation {
     pub token: String,
@@ -125,6 +127,7 @@ pub struct ImportResponse {
     pub versions: BTreeMap<Uuid, i64>,
     pub summary: Option<crate::exchange::ImportSummary>,
 }
+
 #[derive(Deserialize, utoipa::IntoParams)]
 #[into_params(parameter_in = Query)]
 pub struct PageQuery {
@@ -135,9 +138,11 @@ pub struct PageQuery {
     pub issue_id: Option<Uuid>,
     pub entity_id: Option<Uuid>,
 }
+
 fn default_limit() -> i64 {
     100
 }
+
 #[derive(Deserialize)]
 pub struct SearchQuery {
     pub q: String,
@@ -498,7 +503,12 @@ async fn health(State(store): State<Store>) -> Result<Json<Health>> {
         status: "ok".into(),
     }))
 }
-#[utoipa::path(get,path="/api/workspaces",responses((status=200,body=Vec<WorkspaceSummary>)))]
+
+#[utoipa::path(
+    get,
+    path = "/api/workspaces",
+    responses((status = 200, body = Vec<WorkspaceSummary>))
+)]
 async fn workspaces(State(store): State<Store>, actor: Actor) -> Result<Json<Vec<Value>>> {
     Ok(Json(store.list_workspaces(actor.profile.id).await?))
 }
@@ -514,9 +524,11 @@ async fn create_workspace(
     actor: Actor,
     Json(input): Json<CreateWorkspace>,
 ) -> Result<Json<Value>> {
-    Ok(Json(
-        json!({"workspace":store.create_workspace_with_key(input.name,actor.profile.id,input.idempotency_key).await?}),
-    ))
+    Ok(Json(json!({
+        "workspace": store
+            .create_workspace_with_key(input.name, actor.profile.id, input.idempotency_key)
+            .await?
+    })))
 }
 
 #[utoipa::path(
@@ -557,6 +569,7 @@ async fn command(
             "use the attachment upload endpoint".into(),
         ));
     }
+
     Ok(Json(
         store
             .operation(
@@ -570,7 +583,13 @@ async fn command(
             .await?,
     ))
 }
-#[utoipa::path(get,path="/api/workspaces/{id}/issues",params(("id"=Uuid,Path),IssueFilter,PageQuery),responses((status=200,body=Value)))]
+
+#[utoipa::path(
+    get,
+    path = "/api/workspaces/{id}/issues",
+    params(("id" = Uuid, Path), IssueFilter, PageQuery),
+    responses((status = 200, body = Value))
+)]
 async fn issues(
     State(store): State<Store>,
     actor: Actor,
@@ -601,7 +620,14 @@ async fn issue_detail(
 ) -> Result<Json<Issue>> {
     Ok(Json(store.get_issue(id, actor.profile.id, issue).await?))
 }
-#[utoipa::path(get,path="/api/workspaces/{id}/{collection}",params(("id"=Uuid,Path),("collection"=String,Path),PageQuery),responses((status=200,body=Value)),description="Paginated teams, labels, projects, milestones, sprints, views, notifications, alert_preferences, invitations, integrations, activity, comments or time_entries. Private records are restricted to their owner or workspace administrators.")]
+
+#[utoipa::path(
+    get,
+    path = "/api/workspaces/{id}/{collection}",
+    params(("id" = Uuid, Path), ("collection" = String, Path), PageQuery),
+    responses((status = 200, body = Value)),
+    description = "Paginated teams, labels, projects, milestones, sprints, views, notifications, alert_preferences, invitations, integrations, activity, comments or time_entries. Private records are restricted to their owner or workspace administrators."
+)]
 async fn collection(
     State(store): State<Store>,
     actor: Actor,
@@ -659,6 +685,7 @@ async fn search(
     if input.q.len() > 200 {
         return Err(Error::BadRequest("search query too long".into()));
     }
+
     let issue_page = store
         .list_issues(
             id,
@@ -674,9 +701,18 @@ async fn search(
     let people = store
         .member_profiles(id, actor.profile.id, Some(&input.q))
         .await?;
-    Ok(Json(json!({"issues":issue_page["items"],"people":people})))
+
+    Ok(Json(
+        json!({"issues": issue_page["items"], "people": people}),
+    ))
 }
-#[utoipa::path(get,path="/api/workspaces/{id}/report",params(("id"=Uuid,Path)),responses((status=200,body=Value)))]
+
+#[utoipa::path(
+    get,
+    path = "/api/workspaces/{id}/report",
+    params(("id" = Uuid, Path)),
+    responses((status = 200, body = Value))
+)]
 async fn report(
     State(store): State<Store>,
     actor: Actor,
@@ -701,6 +737,7 @@ async fn accept_invitation(
     store
         .accept_invitation(id, actor.profile.id, &actor.profile.email, &input.token)
         .await?;
+
     Ok(Json(store.workspace_metadata(id, actor.profile.id).await?))
 }
 
@@ -731,7 +768,14 @@ async fn markdown(
         html: ammonia::clean(&html),
     }))
 }
-#[utoipa::path(post,path="/api/workspaces/{id}/issues/{issue}/attachments",params(("id"=Uuid,Path),("issue"=Uuid,Path)),responses((status=200,body=CommandResponse)),description="Multipart file up to 5 MiB, expected_versions JSON map, optional idempotency_key and comment_id.")]
+
+#[utoipa::path(
+    post,
+    path = "/api/workspaces/{id}/issues/{issue}/attachments",
+    params(("id" = Uuid, Path), ("issue" = Uuid, Path)),
+    responses((status = 200, body = CommandResponse)),
+    description = "Multipart file up to 5 MiB, expected_versions JSON map, optional idempotency_key and comment_id."
+)]
 async fn upload(
     State(store): State<Store>,
     actor: Actor,
@@ -742,6 +786,7 @@ async fn upload(
     let mut expected = BTreeMap::new();
     let mut comment_id = None;
     let mut key = None;
+
     while let Some(field) = multipart
         .next_field()
         .await
@@ -812,6 +857,7 @@ async fn upload(
             }
         }
     }
+
     let file = uploaded.ok_or_else(|| Error::BadRequest("file field required".into()))?;
     let metadata = Attachment {
         id: file.id,
@@ -819,6 +865,7 @@ async fn upload(
         content_type: file.content_type.clone(),
         size: file.bytes.len() as u64,
     };
+
     let command = if let Some(comment_id) = comment_id {
         Command::AttachCommentFile {
             comment_id,
@@ -830,6 +877,7 @@ async fn upload(
             attachment: metadata,
         }
     };
+
     Ok(Json(
         store
             .operation(id, actor.profile.id, command, expected, key, Some(file))
@@ -851,14 +899,29 @@ async fn download(
     actor: Actor,
     Path((id, attachment)): Path<(Uuid, Uuid)>,
 ) -> Result<Response> {
-    let row=sqlx::query("SELECT a.filename,a.bytes FROM attachments a JOIN issues i ON i.id=a.issue_id JOIN workspace_members m ON m.workspace_id=a.workspace_id WHERE a.workspace_id=$1 AND a.id=$2 AND m.user_id=$3 AND i.deleted_at IS NULL").bind(id).bind(attachment).bind(actor.profile.id).fetch_optional(&store.pool).await?.ok_or(Error::NotFound)?;
+    let row = sqlx::query(
+        "SELECT a.filename, a.bytes FROM attachments a \
+         JOIN issues i ON i.id = a.issue_id \
+         JOIN workspace_members m ON m.workspace_id = a.workspace_id \
+         WHERE a.workspace_id = $1 AND a.id = $2 AND m.user_id = $3 \
+         AND i.deleted_at IS NULL",
+    )
+    .bind(id)
+    .bind(attachment)
+    .bind(actor.profile.id)
+    .fetch_optional(&store.pool)
+    .await?
+    .ok_or(Error::NotFound)?;
+
     let name: String = row.try_get("filename")?;
     let bytes: Vec<u8> = row.try_get("bytes")?;
+
     let mut response = bytes.into_response();
     response.headers_mut().insert(
         header::CONTENT_TYPE,
         HeaderValue::from_static("application/octet-stream"),
     );
+
     let safe_name: String = name
         .chars()
         .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | ' '))
@@ -936,7 +999,15 @@ async fn import(
         )),
     }
 }
-#[utoipa::path(post,path="/api/workspaces/{id}/integrations/{integration}/webhook",params(("id"=Uuid,Path),("integration"=Uuid,Path)),request_body=IncomingLink,responses((status=200,body=CommandResponse)),description="HMAC-SHA256 X-Blackwall-Signature over raw request bytes, with delivery_id idempotency.")]
+
+#[utoipa::path(
+    post,
+    path = "/api/workspaces/{id}/integrations/{integration}/webhook",
+    params(("id" = Uuid, Path), ("integration" = Uuid, Path)),
+    request_body = IncomingLink,
+    responses((status = 200, body = CommandResponse)),
+    description = "HMAC-SHA256 X-Blackwall-Signature over raw request bytes, with delivery_id idempotency."
+)]
 async fn incoming(
     State(store): State<Store>,
     Path((id, integration_id)): Path<(Uuid, Uuid)>,
@@ -945,7 +1016,17 @@ async fn incoming(
 ) -> Result<Json<CommandResponse>> {
     use hmac::{Hmac, Mac};
     use sha2::{Digest, Sha256};
-    let owner:Uuid=sqlx::query_scalar("SELECT user_id FROM workspace_members WHERE workspace_id=$1 AND role='owner' ORDER BY user_id LIMIT 1").bind(id).fetch_optional(&store.pool).await?.ok_or(Error::NotFound)?;
+
+    let owner: Uuid = sqlx::query_scalar(
+        "SELECT user_id FROM workspace_members \
+         WHERE workspace_id = $1 AND role = 'owner' \
+         ORDER BY user_id LIMIT 1",
+    )
+    .bind(id)
+    .fetch_optional(&store.pool)
+    .await?
+    .ok_or(Error::NotFound)?;
+
     let mut op = store
         .begin_operation(id, owner, BTreeMap::new(), false)
         .await?;
@@ -958,11 +1039,13 @@ async fn incoming(
     .await?
     .ok_or(Error::NotFound)?;
     let secret: String = row.try_get("secret")?;
+
     let signature = headers
         .get("x-blackwall-signature")
         .and_then(|s| s.to_str().ok())
         .and_then(|s| hex::decode(s.strip_prefix("sha256=").unwrap_or(s)).ok())
         .ok_or(Error::Unauthorized)?;
+
     let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes())
         .map_err(|e| Error::Internal(e.to_string()))?;
     mac.update(&body);
@@ -972,8 +1055,27 @@ async fn incoming(
     let input: IncomingLink =
         serde_json::from_slice(&body).map_err(|e| Error::BadRequest(e.to_string()))?;
     let hash = hex::encode(Sha256::digest(&body));
-    sqlx::query("INSERT INTO inbound_deliveries(workspace_id,integration_id,delivery_id,request_hash) VALUES($1,$2,$3,$4) ON CONFLICT DO NOTHING").bind(id).bind(integration_id).bind(input.delivery_id).bind(&hash).execute(&mut *op.tx).await?;
-    let row=sqlx::query("SELECT request_hash,result FROM inbound_deliveries WHERE integration_id=$1 AND delivery_id=$2 FOR UPDATE").bind(integration_id).bind(input.delivery_id).fetch_one(&mut *op.tx).await?;
+
+    sqlx::query(
+        "INSERT INTO inbound_deliveries(workspace_id, integration_id, delivery_id, request_hash) \
+         VALUES($1, $2, $3, $4) ON CONFLICT DO NOTHING",
+    )
+    .bind(id)
+    .bind(integration_id)
+    .bind(input.delivery_id)
+    .bind(&hash)
+    .execute(&mut *op.tx)
+    .await?;
+
+    let row = sqlx::query(
+        "SELECT request_hash, result FROM inbound_deliveries \
+         WHERE integration_id = $1 AND delivery_id = $2 FOR UPDATE",
+    )
+    .bind(integration_id)
+    .bind(input.delivery_id)
+    .fetch_one(&mut *op.tx)
+    .await?;
+
     if row.try_get::<String, _>("request_hash")? != hash {
         return Err(Error::Conflict(
             "delivery ID reused for a different request".into(),
@@ -982,6 +1084,7 @@ async fn incoming(
     if let Some(result) = row.try_get::<Option<Value>, _>("result")? {
         return Ok(Json(serde_json::from_value(result)?));
     }
+
     let version: i64 =
         sqlx::query_scalar("SELECT version FROM issues WHERE workspace_id=$1 AND id=$2 FOR UPDATE")
             .bind(id)
@@ -989,7 +1092,9 @@ async fn incoming(
             .fetch_optional(&mut *op.tx)
             .await?
             .ok_or(Error::NotFound)?;
+
     op.expected.insert(input.issue_id, version);
+
     let entity = op
         .issues(Command::AddSourceLink {
             issue_id: input.issue_id,
@@ -999,6 +1104,7 @@ async fn incoming(
         .await?;
     op.activity("integration.source_link", entity, vec![])
         .await?;
+
     let result = OperationResult {
         result: CommandResult { id: entity },
         versions: op.versions,
@@ -1011,8 +1117,10 @@ async fn incoming(
     .bind(serde_json::to_value(&result)?)
     .execute(&mut *op.tx)
     .await?;
+
     op.tx.commit().await?;
     store.outbox.ready();
+
     Ok(Json(result))
 }
 

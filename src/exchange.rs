@@ -51,6 +51,7 @@ impl Transfer {
         for issue in &mut issues {
             issue.attachments.clear();
         }
+
         let mut comments = workspace.comments.clone();
         for comment in &mut comments {
             comment.attachments.clear();
@@ -82,9 +83,11 @@ impl Transfer {
         if !matches!(workspace.member(actor)?.role, Role::Owner | Role::Admin) {
             return Err(Error::Forbidden);
         }
+
         if self.version != 1 {
             return Err(Error::BadRequest("unsupported transfer version".into()));
         }
+
         if self.issues.len() > 5000
             || self.comments.len() > 20000
             || self.time_entries.len() > 20000
@@ -99,6 +102,7 @@ impl Transfer {
         {
             return Err(Error::BadRequest("transfer exceeds import limits".into()));
         }
+
         for user in mapping.values() {
             workspace.member(*user)?;
         }
@@ -172,20 +176,25 @@ impl Transfer {
                 .checked_add(1)
                 .ok_or(Error::BadRequest("issue number overflow".into()))?;
             issue.number = number;
+
             issue.id = entity(&ids, issue.id)?;
             issue.team_id = entity(&ids, issue.team_id)?;
             issue.stage_id = entity(&ids, issue.stage_id)?;
             issue.assignee = issue.assignee.and_then(|u| mapping.get(&u).copied());
+
             for id in &mut issue.labels {
                 *id = entity(&ids, *id)?;
             }
+
             issue.project_id = optional(&ids, issue.project_id)?;
             issue.milestone_id = optional(&ids, issue.milestone_id)?;
             issue.sprint_id = optional(&ids, issue.sprint_id)?;
             issue.parent_id = optional(&ids, issue.parent_id)?;
+
             for id in &mut issue.dependencies {
                 *id = entity(&ids, *id)?;
             }
+
             issue.followers = issue
                 .followers
                 .iter()
@@ -193,6 +202,7 @@ impl Transfer {
                 .collect::<BTreeSet<_>>()
                 .into_iter()
                 .collect();
+
             issue.attachments.clear();
         }
 
@@ -200,11 +210,13 @@ impl Transfer {
             comment.id = entity(&ids, comment.id)?;
             comment.issue_id = entity(&ids, comment.issue_id)?;
             comment.author = identity(comment.author, actor, mapping, &mut identities);
+
             comment.mentions = comment
                 .mentions
                 .iter()
                 .filter_map(|u| mapping.get(u).copied())
                 .collect();
+
             comment.attachments.clear();
         }
 
@@ -218,6 +230,7 @@ impl Transfer {
             view.id = entity(&ids, view.id)?;
             view.owner = identity(view.owner, actor, mapping, &mut identities);
             view.filter.assignee = view.filter.assignee.and_then(|u| mapping.get(&u).copied());
+
             view.filter.team_id = optional(&ids, view.filter.team_id)?;
             view.filter.stage_id = optional(&ids, view.filter.stage_id)?;
             view.filter.label_id = optional(&ids, view.filter.label_id)?;
@@ -225,6 +238,7 @@ impl Transfer {
             view.filter.project_id = optional(&ids, view.filter.project_id)?;
             view.filter.parent_id = optional(&ids, view.filter.parent_id)?;
             view.filter.dependency_id = optional(&ids, view.filter.dependency_id)?;
+
             if let Some(filter_ids) = &view.filter.ids {
                 let remapped = filter_ids
                     .split(',')
@@ -265,6 +279,7 @@ impl Transfer {
         candidate.time_entries.extend(self.time_entries);
         candidate.views.extend(self.views);
         candidate.activity.extend(self.activity);
+
         candidate.activity.push(Activity {
             id: Uuid::new_v4(),
             actor,
@@ -298,6 +313,7 @@ fn identity(
     identities: &mut BTreeMap<Uuid, IdentityRemap>,
 ) -> Uuid {
     let target = mapping.get(&source).copied().unwrap_or(actor);
+
     identities.entry(source).or_insert(IdentityRemap {
         source,
         target,

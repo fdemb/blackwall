@@ -70,6 +70,7 @@ pub fn default_dir() -> PathBuf {
 
 pub fn service(dir: PathBuf) -> ServeDir<Router> {
     let shell = load_shell(&dir).map(Arc::new);
+
     if shell.is_none() {
         tracing::warn!(dir = %dir.display(), "frontend build not found; run `npm run build` in web/");
     }
@@ -86,6 +87,7 @@ pub fn service(dir: PathBuf) -> ServeDir<Router> {
 
 fn shell_response(shell: Option<Arc<Shell>>, uri: Uri) -> Response {
     let path = uri.path();
+
     if path.starts_with("/api/") || path.contains('.') {
         return StatusCode::NOT_FOUND.into_response();
     }

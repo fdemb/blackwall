@@ -513,6 +513,7 @@ mod tests {
         let mut next = input(team);
         next.dependencies.push(first);
         next.parent_id = Some(first);
+
         let second = w
             .apply(owner, Command::CreateIssue { input: next }, Utc::now())
             .unwrap()
@@ -552,6 +553,7 @@ mod tests {
     #[test]
     fn protects_last_owner_and_read_only_member() {
         let (mut w, owner, team) = setup();
+
         assert!(
             w.apply(owner, Command::RemoveMember { user_id: owner }, Utc::now())
                 .is_err()
@@ -592,6 +594,7 @@ mod tests {
         let now = Utc::now();
         let mut mine = input(team);
         mine.assignee = Some(owner);
+
         w.apply(owner, Command::CreateIssue { input: mine }, now)
             .unwrap();
         w.apply(owner, Command::CreateIssue { input: input(team) }, now)
@@ -802,6 +805,7 @@ mod tests {
         let (mut w, owner, _) = setup();
         let hash = "a".repeat(64);
         let now = Utc::now();
+
         w.apply(
             owner,
             Command::Invite {
@@ -851,12 +855,15 @@ mod tests {
 
         let mut i = input(team);
         i.sprint_id = Some(sprint);
+
         let unfinished = w
             .apply(owner, Command::CreateIssue { input: i.clone() }, now)
             .unwrap()
             .id
             .unwrap();
+
         i.stage_id = Some(w.teams[0].stages[3].id);
+
         let finished = w
             .apply(owner, Command::CreateIssue { input: i }, now)
             .unwrap()
@@ -906,6 +913,7 @@ mod tests {
         dependent.dependencies = vec![blocker];
         dependent.assignee = Some(owner);
         dependent.priority = Priority::High;
+
         let id = w
             .apply(owner, Command::CreateIssue { input: dependent }, now)
             .unwrap()

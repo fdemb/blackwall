@@ -1753,6 +1753,7 @@ impl Workspace {
 
         Ok(issues)
     }
+
     pub fn report(&self, actor: Uuid) -> Result<Report> {
         self.member(actor)?;
 
