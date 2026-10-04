@@ -7,6 +7,7 @@ import type {
   Profile,
   Report,
   WorkspaceSummary,
+  ChangeFeed,
   CommandResult,
   EntityVersions,
   PageResult,
@@ -126,6 +127,11 @@ export const workspaces = {
   search: (id: string, q: string) =>
     api<SearchResult>(`/api/workspaces/${id}/search?q=${encodeURIComponent(q)}`),
   report: (id: string) => api<Report>(`/api/workspaces/${id}/report`),
+  /** Omit `since` to get a starting cursor; take it before loading records. */
+  changes: (id: string, since?: string) =>
+    api<ChangeFeed>(
+      `/api/workspaces/${id}/changes${since === undefined ? "" : `?since=${encodeURIComponent(since)}`}`,
+    ),
   accept: (id: string, token: string) =>
     api<{ workspace: WorkspaceSummary }>(`/api/workspaces/${id}/invitations/accept`, {
       method: "POST",
