@@ -20,15 +20,15 @@ export function Checkbox({ className, children, ...props }: CheckboxProps) {
         <>
           <span
             className={cn(
-              "flex size-4 shrink-0 items-center justify-center rounded-[5px] border border-input bg-card text-primary-foreground transition-colors group-hover:border-muted-foreground group-focus-visible:ring-2 group-focus-visible:ring-ring/60",
+              "flex size-4 shrink-0 items-center justify-center rounded-[5px] border border-input bg-card text-primary-foreground transition-[transform,opacity] group-hover:border-muted-foreground group-focus-visible:ring-2 group-focus-visible:ring-ring/60",
               (isSelected || isIndeterminate) &&
                 "border-primary-solid bg-primary-solid group-hover:border-primary-solid",
             )}
           >
             {isIndeterminate ? (
-              <Minus className="size-3" strokeWidth={3} />
+              <Minus aria-hidden="true" className="size-3" strokeWidth={3} />
             ) : isSelected ? (
-              <Check className="size-3" strokeWidth={3} />
+              <Check aria-hidden="true" className="size-3" strokeWidth={3} />
             ) : null}
           </span>
           {children}
@@ -48,7 +48,7 @@ export function Switch({ className, children, ...props }: SwitchProps) {
     >
       {composeRenderProps(children, (children) => (
         <>
-          <span className="flex h-5 w-9 shrink-0 items-center rounded-full bg-input p-0.5 transition-colors group-selected:bg-primary group-focus-visible:ring-2 group-focus-visible:ring-ring/60">
+          <span className="flex h-5 w-9 shrink-0 items-center rounded-full bg-input p-0.5 transition-[transform,opacity] group-selected:bg-primary group-focus-visible:ring-2 group-focus-visible:ring-ring/60">
             <span className="size-4 rounded-full bg-white shadow-sm transition-transform group-selected:translate-x-4" />
           </span>
           {children}

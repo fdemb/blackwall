@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useMemo, useState, type ReactNode } from "react";
+import { createContext, useCallback, use, useMemo, useState, type ReactNode } from "react";
 import { AlertCircle, Check, X } from "lucide-react";
 import { useT } from "~/lib/i18n";
 import { cn } from "~/lib/utils";
@@ -54,11 +54,11 @@ export function ToastProvider({ children }: { children: ReactNode }) {
             )}
           >
             {i.kind === "error" ? (
-              <AlertCircle className="mt-0.5 size-4 shrink-0 text-destructive" />
+              <AlertCircle aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-destructive" />
             ) : (
-              <Check className="mt-0.5 size-4 shrink-0 text-primary" />
+              <Check aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-primary" />
             )}
-            <span className="flex-1">{i.text}</span>
+            <span className="min-w-0 flex-1 break-words">{i.text}</span>
             {i.action && (
               <button
                 type="button"
@@ -77,7 +77,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
               className="grid size-5 shrink-0 place-items-center text-muted-foreground hover:text-foreground pointer-coarse:size-8"
               onClick={() => dismiss(i.id)}
             >
-              <X className="size-3.5" />
+              <X aria-hidden="true" className="size-3.5" />
             </button>
           </div>
         ))}
@@ -86,7 +86,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   );
 }
 export function useToast() {
-  const v = useContext(Ctx);
+  const v = use(Ctx);
   if (!v) throw new Error("ToastProvider missing");
   return v;
 }

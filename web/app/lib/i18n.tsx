@@ -10,7 +10,10 @@ import {
 import { I18nProvider as AriaLocale } from "react-aria-components";
 import { en } from "~/locales/en";
 import { pl } from "~/locales/pl";
+import { safeGet, safeSet } from "./storage";
 import type { Language } from "./types";
+
+export const LANG_KEY = "bw-lang:v1";
 
 export type Key = keyof typeof en;
 const dictionaries: Record<Language, Record<Key, string>> = { en, pl };
@@ -31,7 +34,7 @@ const Ctx = createContext<I18n | null>(null);
 export function I18nProvider({ initial, children }: { initial: Language; children: ReactNode }) {
   const [lang, setLangState] = useState<Language>(initial);
   const setLang = useCallback((next: Language) => {
-    localStorage.setItem("bw-lang", next);
+    safeSet("local", LANG_KEY, next);
     setLangState(next);
   }, []);
   // One source for the document language, so a first visit from a Polish browser doesn't get English metadata.
@@ -56,7 +59,7 @@ export function useI18n() {
 export const useT = () => useI18n().t;
 
 export function initialLanguage(): Language {
-  const saved = typeof localStorage === "undefined" ? null : localStorage.getItem("bw-lang");
+  const saved = safeGet("local", LANG_KEY);
   if (saved === "en" || saved === "pl") return saved;
   return typeof navigator !== "undefined" && navigator.language.startsWith("pl") ? "pl" : "en";
 }

@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Form } from "react-aria-components";
-import { Copy, Plug, Plus, Trash2 } from "lucide-react";
+import { Copy, Loader2, Plug, Plus, Trash2 } from "lucide-react";
 import { Button } from "~/components/ui/button";
 import { Dialog, useDialogDirty } from "~/components/ui/dialog";
 import { FormError, TextField } from "~/components/ui/field";
@@ -28,8 +28,9 @@ export default function Integrations() {
         </SettingsSection>
       </SettingsPage>
     );
+  const origin = typeof window === "undefined" ? "" : window.location.origin;
   const endpoint = (i: Integration) =>
-    `${location.origin}/api/workspaces/${ws.id}/integrations/${i.id}/webhook`;
+    `${origin}/api/workspaces/${ws.id}/integrations/${i.id}/webhook`;
   const copy = (text: string) =>
     navigator.clipboard.writeText(text).then(
       () => toast.show(t("action.copied")),
@@ -37,7 +38,7 @@ export default function Integrations() {
     );
   const sample = ws.integrations[0]
     ? endpoint(ws.integrations[0])
-    : `${location.origin}/api/workspaces/${ws.id}/integrations/<id>/webhook`;
+    : `${origin}/api/workspaces/${ws.id}/integrations/<id>/webhook`;
   return (
     <SettingsPage
       title={t("settings.integrations")}
@@ -160,6 +161,8 @@ function IntegrationForm({ close }: { close: () => void }) {
         label={t("field.name")}
         value={name}
         onChange={setName}
+        autoComplete="off"
+        spellCheck="false"
         autoFocus
         isRequired
         placeholder={t("integrations.namePlaceholder")}
@@ -169,6 +172,9 @@ function IntegrationForm({ close }: { close: () => void }) {
         label={t("integrations.url")}
         value={url}
         onChange={setUrl}
+        autoComplete="off"
+        spellCheck="false"
+        inputMode="url"
         isRequired
         placeholder="https://"
         description={t("integrations.urlHint")}
@@ -178,6 +184,8 @@ function IntegrationForm({ close }: { close: () => void }) {
         label={t("integrations.secret")}
         value={secret}
         onChange={setSecret}
+        autoComplete="new-password"
+        spellCheck="false"
         isRequired
         minLength={16}
         description={t("integrations.secretHint")}
@@ -190,8 +198,10 @@ function IntegrationForm({ close }: { close: () => void }) {
         <Button
           type="submit"
           variant="primary"
-          isDisabled={!name.trim() || !url.trim() || secret.length < 16 || pending}
+          isDisabled={!name.trim() || !url.trim() || secret.length < 16}
+          isPending={pending}
         >
+          {pending && <Loader2 aria-hidden className="animate-spin" />}
           {pending ? t("action.saving") : t("action.save")}
         </Button>
       </div>

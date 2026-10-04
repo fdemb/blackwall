@@ -14,6 +14,9 @@ export const MAX_UPLOAD = 5 * 1024 * 1024;
 
 export const issueKey = (number: number) => `BW-${number}`;
 
+/** Normalizes a trailing "..." to "…". (The locale strings still carry "..."; fix them at the source when those files are touched.) */
+export const ellipsis = (s: string) => s.replace(/\.\.\.$/, "…");
+
 export function formatMinutes(minutes: number) {
   if (!minutes) return "0m";
   const h = Math.floor(minutes / 60);
@@ -22,15 +25,19 @@ export function formatMinutes(minutes: number) {
 }
 
 /** Accepts "90", "1h 30m", "1.5h", "45m", "1:30". Returns minutes or null. */
+const PLAIN_MINUTES_RE = /^\d+$/;
+const COLON_RE = /^(\d+):(\d{1,2})$/;
+const DECIMAL_HOURS_RE = /^(\d+(?:[.,]\d+)?)\s*h$/;
+const FULL_RE = /^(?:(\d+)\s*h)?\s*(?:(\d+)\s*m(?:in)?)?$/;
 export function parseMinutes(input: string): number | null {
   const s = input.trim().toLowerCase();
   if (!s) return null;
-  if (/^\d+$/.test(s)) return Number(s);
-  const colon = s.match(/^(\d+):(\d{1,2})$/);
+  if (PLAIN_MINUTES_RE.test(s)) return Number(s);
+  const colon = s.match(COLON_RE);
   if (colon) return Number(colon[1]) * 60 + Number(colon[2]);
-  const dec = s.match(/^(\d+(?:[.,]\d+)?)\s*h$/);
+  const dec = s.match(DECIMAL_HOURS_RE);
   if (dec) return Math.round(Number(dec[1].replace(",", ".")) * 60);
-  const full = s.match(/^(?:(\d+)\s*h)?\s*(?:(\d+)\s*m(?:in)?)?$/);
+  const full = s.match(FULL_RE);
   if (full && (full[1] || full[2])) return Number(full[1] ?? 0) * 60 + Number(full[2] ?? 0);
   return null;
 }

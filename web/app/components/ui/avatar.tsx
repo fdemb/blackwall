@@ -25,6 +25,9 @@ export function Avatar({
         src={src}
         alt={named ? name : ""}
         title={named ? name : undefined}
+        width={size}
+        height={size}
+        loading="lazy"
         style={style}
         className={cn("shrink-0 rounded-full object-cover", className)}
       />
@@ -41,4 +44,22 @@ export function Avatar({
       {initials(name)}
     </span>
   );
+}
+
+/**
+ * Standalone variant for when the avatar is the only sign of who someone is. Same as
+ * `<Avatar named />`; the `named` prop stays for compat.
+ */
+export function NamedAvatar({
+  name,
+  src,
+  size,
+  className,
+}: {
+  name: string;
+  src?: string | null;
+  size?: number;
+  className?: string;
+}) {
+  return <Avatar name={name} src={src} size={size} className={className} named />;
 }

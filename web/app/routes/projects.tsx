@@ -114,7 +114,7 @@ export default function Projects() {
                 <li key={p.id}>
                   <Link
                     to={`/${ws.id}/projects/${p.id}`}
-                    className="group block rounded-xl border border-border bg-card p-4 shadow-xs outline-none transition hover:border-primary/40 hover:shadow-md focus-visible:ring-2 focus-visible:ring-ring/60"
+                    className="group block rounded-xl border border-border bg-card p-4 shadow-xs outline-none transition-colors hover:border-primary/40 hover:shadow-md focus-visible:ring-2 focus-visible:ring-ring/60"
                   >
                     <h2 className="font-semibold tracking-tight group-hover:text-primary">
                       {p.name}

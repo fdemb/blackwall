@@ -1,20 +1,24 @@
-import { useState } from "react";
+import { lazy, Suspense, useState } from "react";
 import { FileTrigger, Form } from "react-aria-components";
 import { useNavigate } from "react-router";
-import { ChevronDown, Paperclip, X } from "lucide-react";
+import { ChevronDown, Loader2, Paperclip, X } from "lucide-react";
 import { Dialog, useDialogDirty } from "~/components/ui/dialog";
 import { Button } from "~/components/ui/button";
 import { Input, Label } from "~/components/ui/field";
 import { DatePicker } from "~/components/ui/date-picker";
 import { Select } from "~/components/ui/select";
 import { useToast } from "~/components/ui/toast";
-import { bytes, MAX_UPLOAD } from "~/lib/format";
+import { bytes, ellipsis, MAX_UPLOAD } from "~/lib/format";
 import { usePending } from "~/lib/use-pending";
 import { cn } from "~/lib/utils";
 import { useT } from "~/lib/i18n";
 import { useWorkspace } from "~/lib/workspace";
 import type { Id, IssueInput, Priority } from "~/lib/types";
-import { MarkdownEditor } from "./markdown";
+// Loaded on demand: the editor (and the markdown renderer it pulls in) is the heaviest part of
+// this dialog, and most opens never touch the description.
+const MarkdownEditor = lazy(() =>
+  import("./markdown").then((m) => ({ default: m.MarkdownEditor })),
+);
 import {
   AssigneePicker,
   LabelsPicker,
@@ -154,31 +158,42 @@ function CreateIssueForm() {
         value={title}
         onChange={(e) => setTitle(e.target.value)}
         maxLength={200}
-        className="h-10 border-transparent bg-transparent px-0 text-base font-semibold shadow-none focus:ring-0 focus:border-transparent"
+        className="h-10 rounded border-transparent bg-transparent px-0 text-base font-semibold shadow-none focus:border-transparent focus:ring-2 focus:ring-ring/60"
       />
-      <MarkdownEditor
-        label={t("field.description")}
-        value={description}
-        onChange={setDescription}
-        placeholder={t("issue.descriptionPlaceholder")}
-        onSubmit={submit}
-      />
+      <Suspense
+        fallback={
+          <div
+            aria-busy
+            className="grid h-24 animate-pulse place-items-center rounded-lg border border-input bg-muted/40 text-xs text-muted-foreground"
+          >
+            {ellipsis(t("action.loading"))}
+          </div>
+        }
+      >
+        <MarkdownEditor
+          label={t("field.description")}
+          value={description}
+          onChange={setDescription}
+          placeholder={t("issue.descriptionPlaceholder")}
+          onSubmit={submit}
+        />
+      </Suspense>
       {files.length > 0 && (
         <ul className="flex flex-wrap gap-1.5">
           {files.map((f, i) => (
             <li
               key={i}
-              className="inline-flex items-center gap-1.5 rounded-md border border-border bg-muted px-2 py-1 text-xs"
+              className="inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-md border border-border bg-muted px-2 py-1 text-xs"
             >
-              <Paperclip className="size-3" />
-              {f.name}
-              <span className="text-muted-foreground">{bytes(f.size)}</span>
+              <Paperclip aria-hidden className="size-3 shrink-0" />
+              <span className="min-w-0 flex-1 truncate break-all">{f.name}</span>
+              <span className="shrink-0 text-muted-foreground">{bytes(f.size)}</span>
               <button
                 type="button"
                 aria-label={t("action.remove")}
                 onClick={() => setFiles((l) => l.filter((_, j) => j !== i))}
               >
-                <X className="size-3" />
+                <X aria-hidden className="size-3" />
               </button>
             </li>
           ))}
@@ -220,44 +235,24 @@ function CreateIssueForm() {
           aria-expanded={more}
           onPress={() => setMore(!more)}
         >
-          <ChevronDown className={cn("transition-transform", !more && "-rotate-90")} />
+          <ChevronDown aria-hidden className={cn("transition-transform", !more && "-rotate-90")} />
           {more ? t("issue.fewerProperties") : t("issue.moreProperties")}
         </Button>
         {more && (
-          <div className="mt-2 grid grid-cols-2 gap-3 sm:grid-cols-3">
-            <NullableSelect
-              label={t("field.project")}
-              noneLabel={t("project.none")}
-              value={projectId}
-              onChange={setProjectId}
-              options={projects.map((p) => ({ id: p.id, label: p.name }))}
-            />
-            <NullableSelect
-              label={t("field.sprint")}
-              noneLabel={t("sprint.none")}
-              value={sprintId}
-              onChange={setSprintId}
-              options={sprints.map((s) => ({ id: s.id, label: s.name }))}
-            />
-            <DatePicker label={t("field.deadline")} value={deadline} onChange={setDeadline} />
-            <div>
-              <Label>{t("field.estimate")}</Label>
-              <Input
-                aria-label={t("field.estimate")}
-                type="number"
-                min={0}
-                max={1000}
-                inputMode="numeric"
-                placeholder="0"
-                value={estimate}
-                onChange={(e) => setEstimate(e.target.value)}
-              />
-            </div>
-            <div className="col-span-2 sm:col-span-1">
-              <Label>{t("field.labels")}</Label>
-              <LabelsPicker variant="field" value={labels} onChange={setLabels} />
-            </div>
-          </div>
+          <ExtendedProperties
+            projects={projects}
+            sprints={sprints}
+            projectId={projectId}
+            setProjectId={setProjectId}
+            sprintId={sprintId}
+            setSprintId={setSprintId}
+            deadline={deadline}
+            setDeadline={setDeadline}
+            estimate={estimate}
+            setEstimate={setEstimate}
+            labels={labels}
+            setLabels={setLabels}
+          />
         )}
       </div>
       {error && (
@@ -268,7 +263,7 @@ function CreateIssueForm() {
       <div className="mt-1 flex flex-wrap items-center gap-2">
         <FileTrigger allowsMultiple onSelect={addFiles}>
           <Button variant="ghost">
-            <Paperclip />
+            <Paperclip aria-hidden />
             {t("attachments.add")}
           </Button>
         </FileTrigger>
@@ -276,11 +271,87 @@ function CreateIssueForm() {
           <Button variant="ghost" onPress={create.hide}>
             {t("action.cancel")}
           </Button>
-          <Button type="submit" variant="primary" isDisabled={!title.trim() || pending}>
+          <Button
+            type="submit"
+            variant="primary"
+            isDisabled={!title.trim() || pending}
+            aria-busy={pending || undefined}
+          >
+            {pending && <Loader2 aria-hidden className="animate-spin" />}
             {pending ? t("issue.creating") : t("issue.create")}
           </Button>
         </div>
       </div>
     </Form>
+  );
+}
+
+/**
+ * The extended property grid behind the "more" toggle. Composed by `CreateIssueForm` instead of a
+ * boolean branch so the basic and extended variants stay separate pieces.
+ */
+function ExtendedProperties({
+  projects,
+  sprints,
+  projectId,
+  setProjectId,
+  sprintId,
+  setSprintId,
+  deadline,
+  setDeadline,
+  estimate,
+  setEstimate,
+  labels,
+  setLabels,
+}: {
+  projects: { id: Id; name: string }[];
+  sprints: { id: Id; name: string }[];
+  projectId: Id | null;
+  setProjectId: (id: Id | null) => void;
+  sprintId: Id | null;
+  setSprintId: (id: Id | null) => void;
+  deadline: string | null;
+  setDeadline: (v: string | null) => void;
+  estimate: string;
+  setEstimate: (v: string) => void;
+  labels: Id[];
+  setLabels: (ids: Id[]) => void;
+}) {
+  const t = useT();
+  return (
+    <div className="mt-2 grid grid-cols-2 gap-3 sm:grid-cols-3">
+      <NullableSelect
+        label={t("field.project")}
+        noneLabel={t("project.none")}
+        value={projectId}
+        onChange={setProjectId}
+        options={projects.map((p) => ({ id: p.id, label: p.name }))}
+      />
+      <NullableSelect
+        label={t("field.sprint")}
+        noneLabel={t("sprint.none")}
+        value={sprintId}
+        onChange={setSprintId}
+        options={sprints.map((s) => ({ id: s.id, label: s.name }))}
+      />
+      <DatePicker label={t("field.deadline")} value={deadline} onChange={setDeadline} />
+      <div>
+        <Label>{t("field.estimate")}</Label>
+        <Input
+          aria-label={t("field.estimate")}
+          type="number"
+          min={0}
+          max={1000}
+          inputMode="numeric"
+          placeholder="0"
+          value={estimate}
+          onChange={(e) => setEstimate(e.target.value)}
+        />
+      </div>
+      <div className="col-span-2 sm:col-span-1">
+        <Label>{t("field.labels")}</Label>
+        <LabelsPicker variant="field" value={labels} onChange={setLabels} />
+      </div>
+    </div>
   );
 }

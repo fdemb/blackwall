@@ -40,6 +40,12 @@ interface Group {
   items: Issue[];
 }
 
+/** Rank of a stage kind for group ordering. Precomputed so sorting groups never scans per compare. */
+const GROUP_KIND_RANK = new Map(
+  ["active", "planned", "backlog", "done", "cancelled"].map((k, i) => [k, i]),
+);
+const groupRankOf = (key: string) => GROUP_KIND_RANK.get(key.split(":")[0]) ?? 99;
+
 export function useGroups(issues: Issue[], groupBy: GroupBy): Group[] {
   const t = useT();
   const { ws, members } = useWorkspace();
@@ -67,7 +73,6 @@ export function useGroups(issues: Issue[], groupBy: GroupBy): Group[] {
     }
     // Stage: merge same-named stages across teams so cross-team lists stay compact.
     const order = new Map<string, Group>();
-    const kinds = ["active", "planned", "backlog", "done", "cancelled"];
     for (const i of issues) {
       const s = stageOf(ws, i);
       const key = s ? `${s.kind}:${s.name.toLowerCase()}` : "unknown";
@@ -80,9 +85,7 @@ export function useGroups(issues: Issue[], groupBy: GroupBy): Group[] {
         });
       order.get(key)!.items.push(i);
     }
-    return [...order.entries()]
-      .sort(([a], [b]) => kinds.indexOf(a.split(":")[0]) - kinds.indexOf(b.split(":")[0]))
-      .map(([, g]) => g);
+    return [...order.values()].sort((a, b) => groupRankOf(a.id) - groupRankOf(b.id));
   }, [issues, groupBy, ws, members, t]);
 }
 
@@ -111,11 +114,86 @@ export function IssueList({
   selectable?: boolean;
   fill?: boolean;
 }) {
+  if (fill)
+    return (
+      <FillIssueList
+        issues={issues}
+        groupBy={groupBy}
+        showTeam={showTeam}
+        emptyState={emptyState}
+        selectable={selectable}
+      />
+    );
+  return (
+    <PlainIssueList
+      issues={issues}
+      groupBy={groupBy}
+      showTeam={showTeam}
+      emptyState={emptyState}
+      selectable={selectable}
+    />
+  );
+}
+
+interface IssueListProps {
+  issues: Issue[];
+  groupBy?: GroupBy;
+  showTeam?: boolean;
+  emptyState?: React.ReactNode;
+  selectable?: boolean;
+}
+
+/** Grows with its content. For dialogs, drawers and short lists. */
+export function PlainIssueList({
+  issues,
+  groupBy = "stage",
+  showTeam,
+  emptyState,
+  selectable = true,
+}: IssueListProps) {
+  const { grid, bar } = useIssueGrid({ issues, groupBy, showTeam, selectable, fill: false });
+  if (issues.length === 0) return <>{emptyState}</>;
+  return (
+    <>
+      {grid}
+      {bar}
+    </>
+  );
+}
+
+/** Own scroll area with row virtualization. For full-page lists with thousands of issues. */
+export function FillIssueList({
+  issues,
+  groupBy = "stage",
+  showTeam,
+  emptyState,
+  selectable = true,
+}: IssueListProps) {
+  const { grid, bar } = useIssueGrid({ issues, groupBy, showTeam, selectable, fill: true });
+  if (issues.length === 0) return <>{emptyState}</>;
+  return (
+    <div className="flex min-h-0 flex-1 flex-col">
+      <Virtualizer layout={ListLayout} layoutOptions={LAYOUT_OPTIONS}>
+        {grid}
+      </Virtualizer>
+      {bar}
+    </div>
+  );
+}
+
+function useIssueGrid({
+  issues,
+  groupBy,
+  showTeam,
+  selectable,
+  fill,
+}: Required<Pick<IssueListProps, "issues" | "groupBy" | "selectable">> &
+  Pick<IssueListProps, "showTeam"> & { fill: boolean }) {
   const t = useT();
   const groups = useGroups(issues, groupBy);
-  const [selected, setSelected] = useState<Set<Id>>(new Set());
+  const [selected, setSelected] = useState<Set<Id>>(() => new Set());
   const { canWrite } = useWorkspace();
-  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
   const canSelect = selectable && canWrite;
 
   // Selection follows what is on screen. Filtering an issue out, or collapsing its group, drops it
@@ -138,13 +216,6 @@ export function IssueList({
       return n;
     });
 
-  if (issues.length === 0) return <>{emptyState}</>;
-
-  const rows = (items: Issue[]) => (
-    <Collection items={items}>
-      {(issue) => <IssueRow issue={issue} showTeam={showTeam} canSelect={canSelect} />}
-    </Collection>
-  );
   const grid = (
     <GridList
       aria-label={t("nav.issues")}
@@ -156,56 +227,66 @@ export function IssueList({
       }
       className={cn("outline-none", fill ? "min-h-0 flex-1 overflow-y-auto" : "pb-24")}
     >
-      {groupBy === "none"
-        ? rows(issues)
-        : groups.map((g) => {
-            const isCollapsed = collapsed.has(g.id);
-            return (
-              <GridListSection key={g.id} id={g.id} aria-label={g.title}>
-                <GridListHeader>
-                  <button
-                    type="button"
-                    onClick={() => toggle(g.id)}
-                    aria-expanded={!isCollapsed}
-                    className="flex h-9 w-full items-center gap-2 border-b border-border bg-muted/40 px-4 text-left text-[13px] font-medium outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/60"
-                  >
-                    <ChevronDown
-                      className={cn(
-                        "size-3.5 text-muted-foreground transition-transform",
-                        isCollapsed && "-rotate-90",
-                      )}
-                    />
-                    {g.icon}
-                    {g.title}
-                    <span className="text-xs tabular-nums text-muted-foreground">
-                      {g.items.length}
-                    </span>
-                  </button>
-                </GridListHeader>
-                {rows(isCollapsed ? [] : g.items)}
-              </GridListSection>
-            );
-          })}
+      {groupBy === "none" ? (
+        <IssueRows items={issues} showTeam={showTeam} canSelect={canSelect} />
+      ) : (
+        groups.map((g) => {
+          const isCollapsed = collapsed.has(g.id);
+          return (
+            <GridListSection key={g.id} id={g.id} aria-label={g.title}>
+              <GridListHeader>
+                <button
+                  type="button"
+                  onClick={() => toggle(g.id)}
+                  aria-expanded={!isCollapsed}
+                  className="flex h-9 w-full items-center gap-2 border-b border-border bg-muted/40 px-4 text-left text-[13px] font-medium outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/60"
+                >
+                  <ChevronDown
+                    aria-hidden
+                    className={cn(
+                      "size-3.5 text-muted-foreground transition-transform",
+                      isCollapsed && "-rotate-90",
+                    )}
+                  />
+                  {g.icon}
+                  {g.title}
+                  <span className="text-xs tabular-nums text-muted-foreground">
+                    {g.items.length}
+                  </span>
+                </button>
+              </GridListHeader>
+              <IssueRows
+                items={isCollapsed ? [] : g.items}
+                showTeam={showTeam}
+                canSelect={canSelect}
+              />
+            </GridListSection>
+          );
+        })
+      )}
     </GridList>
   );
 
   const bar = (
     <BulkBar issues={issues} selected={visibleSelected} clear={() => setSelected(new Set())} />
   );
-  if (!fill)
-    return (
-      <>
-        {grid}
-        {bar}
-      </>
-    );
+  return { grid, bar };
+}
+
+/** Hoisted so the row collection keeps its identity across parent renders. */
+function IssueRows({
+  items,
+  showTeam,
+  canSelect,
+}: {
+  items: Issue[];
+  showTeam?: boolean;
+  canSelect?: boolean;
+}) {
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
-      <Virtualizer layout={ListLayout} layoutOptions={LAYOUT_OPTIONS}>
-        {grid}
-      </Virtualizer>
-      {bar}
-    </div>
+    <Collection items={items}>
+      {(issue) => <IssueRow issue={issue} showTeam={showTeam} canSelect={canSelect} />}
+    </Collection>
   );
 }
 
@@ -218,8 +299,7 @@ export function IssueRow({
   showTeam?: boolean;
   canSelect?: boolean;
 }) {
-  const { ws, team, run, canWrite } = useWorkspace();
-  const t = useT();
+  const { ws, run, canWrite } = useWorkspace();
   const stage = stageOf(ws, issue);
   const project = ws.projects.find((p) => p.id === issue.project_id);
   return (
@@ -229,13 +309,7 @@ export function IssueRow({
       href={`/${ws.id}/issue/${issue.id}`}
       className="group flex h-10 cursor-default items-center gap-2.5 border-b border-border/70 px-4 text-[13px] outline-none hover:bg-muted/60 focus-visible:bg-muted/60 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/60 selected:bg-accent/60"
     >
-      {canSelect && (
-        <Checkbox
-          slot="selection"
-          aria-label={t("bulk.select")}
-          className="relative w-4 after:absolute after:-inset-3 after:content-[''] [@media(hover:hover)]:opacity-0 group-hover:opacity-100 group-selected:opacity-100 group-focus-visible:opacity-100 [&:has([data-selected])]:opacity-100"
-        />
-      )}
+      {canSelect && <RowSelectBox />}
       <PriorityMenu
         issue={issue}
         disabled={!canWrite}
@@ -255,11 +329,7 @@ export function IssueRow({
       <span className="hidden md:block">
         <LabelChips issue={issue} />
       </span>
-      {showTeam && (
-        <span className="hidden text-xs text-muted-foreground lg:block">
-          {team(issue.team_id)?.name}
-        </span>
-      )}
+      {showTeam && <TeamCell issue={issue} />}
       {project && (
         <span className="hidden max-w-32 truncate text-xs text-muted-foreground xl:block">
           {project.name}
@@ -271,6 +341,26 @@ export function IssueRow({
       <AssigneeAvatar issue={issue} />
     </GridListItem>
   );
+}
+
+/** The row's selection checkbox. Separated so `IssueRow` stays a pure composition of pieces. */
+function RowSelectBox() {
+  const t = useT();
+  return (
+    <Checkbox
+      slot="selection"
+      aria-label={t("bulk.select")}
+      className="relative w-4 after:absolute after:-inset-3 after:content-[''] [@media(hover:hover)]:opacity-0 group-hover:opacity-100 group-selected:opacity-100 group-focus-visible:opacity-100 [&:has([data-selected])]:opacity-100"
+    />
+  );
+}
+
+/** Team name cell. Renders nothing when the issue has no resolvable team. */
+export function TeamCell({ issue }: { issue: Issue }) {
+  const { team } = useWorkspace();
+  const name = team(issue.team_id)?.name;
+  if (!name) return null;
+  return <span className="hidden text-xs text-muted-foreground lg:block">{name}</span>;
 }
 
 function PriorityMenu({
@@ -325,11 +415,12 @@ function BulkBar({
   const toast = useToast();
   const { ws, members, run } = useWorkspace();
   const [confirm, setConfirm] = useState(false);
+  const byId = useMemo(() => new Map(issues.map((i) => [i.id, i] as const)), [issues]);
   if (selected.size === 0) return null;
   const ids = [...selected];
-  const first = issues.find((i) => i.id === ids[0]);
+  const first = byId.get(ids[0]);
   const team = ws.teams.find((tm) => tm.id === first?.team_id);
-  const same = ids.every((id) => issues.find((i) => i.id === id)?.team_id === first?.team_id);
+  const same = ids.every((id) => byId.get(id)?.team_id === first?.team_id);
   const update = (patch: IssuePatch) =>
     run({ type: "bulk_issues", ids, action: { update: patch } })
       .then(clear)
@@ -417,11 +508,11 @@ function BulkBar({
         className="text-destructive hover:bg-destructive/10 hover:text-destructive"
         onPress={() => setConfirm(true)}
       >
-        <Trash2 />
+        <Trash2 aria-hidden />
         {t("action.delete")}
       </Button>
       <Button variant="ghost" size="icon" aria-label={t("action.clear")} onPress={clear}>
-        <X />
+        <X aria-hidden />
       </Button>
       <ConfirmDialog
         title={t("bulk.deleteTitle", { n: ids.length })}

@@ -1,12 +1,13 @@
 import { useRef, useState } from "react";
 import { Form } from "react-aria-components";
 import { useNavigate, useOutletContext, useRevalidator, useSearchParams } from "react-router";
+import { Loader2 } from "lucide-react";
 import { Button } from "~/components/ui/button";
 import { FormError, TextField } from "~/components/ui/field";
 import { Logo } from "~/components/app/logo";
 import { LanguageToggle } from "~/components/app/preferences";
 import { auth, workspaces } from "~/lib/api";
-import { LAST_WS } from "~/lib/auth-guard";
+import { writeLastWs } from "~/lib/auth-guard";
 import { useT } from "~/lib/i18n";
 import { useSession } from "~/lib/session";
 import { useDocumentTitle } from "~/lib/title";
@@ -60,6 +61,7 @@ export default function Welcome() {
           className="flex flex-col gap-4"
           onSubmit={async (e) => {
             e.preventDefault();
+            if (busy) return;
             const f = new FormData(e.currentTarget);
             setBusy(true);
             setError("");
@@ -70,13 +72,13 @@ export default function Welcome() {
                 if (creation.current?.name !== name)
                   creation.current = { name, key: crypto.randomUUID() };
                 const r = await workspaces.create(name, creation.current.key);
-                localStorage.setItem(LAST_WS, r.workspace.id);
+                writeLastWs(r.workspace.id);
                 await revalidate();
                 await nav(`/${r.workspace.id}/settings/teams`);
               } else {
                 const id = formText(f, "id").trim();
                 await workspaces.accept(id, formText(f, "token").trim());
-                localStorage.setItem(LAST_WS, id);
+                writeLastWs(id);
                 await revalidate();
                 await nav(`/${id}/my-issues`);
               }
@@ -91,6 +93,8 @@ export default function Welcome() {
               name="name"
               label={t("workspace.name")}
               placeholder={t("workspace.namePlaceholder")}
+              autoComplete="off"
+              spellCheck="false"
               autoFocus
               isRequired
             />
@@ -101,6 +105,8 @@ export default function Welcome() {
                 label={t("workspace.id")}
                 description={t("workspace.idHint")}
                 defaultValue={params.get("workspace") ?? ""}
+                autoComplete="off"
+                spellCheck="false"
                 autoFocus
                 isRequired
               />
@@ -108,12 +114,15 @@ export default function Welcome() {
                 name="token"
                 label={t("invite.token")}
                 defaultValue={params.get("token") ?? ""}
+                autoComplete="off"
+                spellCheck="false"
                 isRequired
               />
             </>
           )}
           <FormError>{error}</FormError>
-          <Button type="submit" variant="primary" size="lg" isDisabled={busy}>
+          <Button type="submit" variant="primary" size="lg" isPending={busy}>
+            {busy && <Loader2 aria-hidden className="animate-spin" />}
             {busy
               ? mode === "create"
                 ? t("workspace.creating")

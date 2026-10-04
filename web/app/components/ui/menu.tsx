@@ -21,7 +21,7 @@ export function Menu<T extends object>({ className, ...props }: MenuProps<T>) {
     <RACMenu
       {...props}
       className={composeRenderProps(className, (c) =>
-        cn("max-h-80 min-w-44 overflow-auto p-1 outline-none", c),
+        cn("max-h-80 min-w-44 overflow-auto overscroll-contain p-1 outline-none", c),
       )}
     />
   );
@@ -35,10 +35,10 @@ export function MenuItem({ className, children, ...props }: MenuItemProps) {
       {...props}
       className={composeRenderProps(className, (c, { isDisabled }) =>
         cn(
-          "flex cursor-default items-center gap-2 rounded-md px-2 py-1.5 text-[13px] outline-none focus:bg-accent focus:text-accent-foreground",
+          "flex cursor-default items-center gap-2 rounded-md px-2 py-1.5 text-[13px] outline-none focus-visible:bg-accent focus-visible:text-accent-foreground",
           isDisabled && "opacity-50",
           props.id === "delete" || props.id === "destructive"
-            ? "text-destructive focus:bg-destructive/10 focus:text-destructive"
+            ? "text-destructive focus-visible:bg-destructive/10 focus-visible:text-destructive"
             : "",
           "[&_svg:not([class*='size-'])]:size-4 [&_svg]:shrink-0 [&_svg]:text-muted-foreground",
           c,
@@ -50,7 +50,7 @@ export function MenuItem({ className, children, ...props }: MenuItemProps) {
           {children}
           {selectionMode !== "none" && (
             <span className="ml-auto w-4">
-              {isSelected && <Check className="size-3.5 text-primary" />}
+              {isSelected && <Check aria-hidden="true" className="size-3.5 text-primary" />}
             </span>
           )}
         </>

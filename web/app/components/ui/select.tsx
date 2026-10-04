@@ -34,7 +34,7 @@ export function SelectItem({
       textValue={props.textValue ?? (typeof children === "string" ? children : undefined)}
       className={composeRenderProps(className, (c) =>
         cn(
-          "flex cursor-default items-center gap-2 rounded-md px-2 py-1.5 text-[13px] outline-none focus:bg-accent focus:text-accent-foreground disabled:opacity-50",
+          "flex cursor-default items-center gap-2 rounded-md px-2 py-1.5 text-[13px] outline-none focus-visible:bg-accent focus-visible:text-accent-foreground disabled:opacity-50",
           c,
         ),
       )}
@@ -42,7 +42,9 @@ export function SelectItem({
       {composeRenderProps(children, (children, { isSelected }) => (
         <>
           <span className="flex flex-1 items-center gap-2 truncate">{children}</span>
-          <span className="w-4">{isSelected && <Check className="size-3.5 text-primary" />}</span>
+          <span className="w-4">
+            {isSelected && <Check aria-hidden="true" className="size-3.5 text-primary" />}
+          </span>
         </>
       ))}
     </ListBoxItem>
@@ -54,6 +56,9 @@ interface SelectProps extends Omit<RACSelectProps<Option>, "children"> {
   options: Option[];
   placeholder?: string;
   triggerClassName?: string;
+  // One component for both triggers: the variants only swap the trigger button's tone and the
+  // chevron, while popover/listbox wiring stays shared. Splitting into FieldSelect/GhostSelect
+  // would duplicate that for no composition gain.
   /** Renders as a borderless chip for use in property rows. */
   variant?: "field" | "ghost";
 }
@@ -90,10 +95,15 @@ export function Select({
             )
           }
         </SelectValue>
-        {variant === "field" && <ChevronsUpDown className="size-3.5 text-muted-foreground" />}
+        {variant === "field" && (
+          <ChevronsUpDown aria-hidden="true" className="size-3.5 text-muted-foreground" />
+        )}
       </Button>
       <Popover placement="bottom start" className="min-w-48">
-        <ListBox items={options} className="max-h-72 overflow-auto p-1 outline-none">
+        <ListBox
+          items={options}
+          className="max-h-72 overflow-auto overscroll-contain p-1 outline-none"
+        >
           {(o) => (
             <SelectItem id={o.id} textValue={o.label}>
               {o.icon}

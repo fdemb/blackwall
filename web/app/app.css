@@ -103,6 +103,17 @@
   body {
     @apply bg-background text-foreground font-sans text-[13px] leading-5;
   }
+  /* Drop the tap delay / double-tap zoom on interactive elements. */
+  button,
+  a {
+    touch-action: manipulation;
+  }
+  /* Keep scroll chaining inside overlays instead of moving the page behind them. */
+  [role="dialog"],
+  [role="menu"],
+  [role="listbox"] {
+    overscroll-behavior: contain;
+  }
   ::selection {
     background: color-mix(in oklch, var(--primary) 30%, transparent);
   }

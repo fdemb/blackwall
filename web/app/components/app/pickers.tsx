@@ -79,7 +79,12 @@ export function AssigneePicker({ teamId, ...rest }: PickProps & { teamId?: Id })
   const { members, team } = useWorkspace();
   const ids = teamId ? team(teamId)?.members : undefined;
   const pool =
-    ids && ids.length ? members.filter((m) => ids.includes(m.id) || m.id === rest.value) : members;
+    ids && ids.length
+      ? (() => {
+          const wanted = new Set(ids);
+          return members.filter((m) => wanted.has(m.id) || m.id === rest.value);
+        })()
+      : members;
   const options = pool.map((m) => ({
     id: m.id,
     label: m.display_name,
@@ -133,7 +138,53 @@ export function LabelDot({ color, className }: { color: string; className?: stri
   );
 }
 
+/** Labels picker as a form field. Prefer this over `variant="field"` so the mode is explicit. */
+export function FieldLabelsPicker({
+  value,
+  onChange,
+  isDisabled,
+}: {
+  value: Id[];
+  onChange: (ids: Id[]) => void;
+  isDisabled?: boolean;
+}) {
+  return (
+    <LabelsPickerBase value={value} onChange={onChange} variant="field" isDisabled={isDisabled} />
+  );
+}
+
+/** Labels picker as a borderless trigger. Prefer this over `variant="ghost"` so the mode is explicit. */
+export function GhostLabelsPicker({
+  value,
+  onChange,
+  isDisabled,
+}: {
+  value: Id[];
+  onChange: (ids: Id[]) => void;
+  isDisabled?: boolean;
+}) {
+  return (
+    <LabelsPickerBase value={value} onChange={onChange} variant="ghost" isDisabled={isDisabled} />
+  );
+}
+
 export function LabelsPicker({
+  value,
+  onChange,
+  variant = "ghost",
+  isDisabled,
+}: {
+  value: Id[];
+  onChange: (ids: Id[]) => void;
+  variant?: "field" | "ghost";
+  isDisabled?: boolean;
+}) {
+  return (
+    <LabelsPickerBase value={value} onChange={onChange} variant={variant} isDisabled={isDisabled} />
+  );
+}
+
+function LabelsPickerBase({
   value,
   onChange,
   variant = "ghost",
@@ -147,7 +198,8 @@ export function LabelsPicker({
   const t = useT();
   const { ws } = useWorkspace();
   const [open, setOpen] = useState(false);
-  const chosen = ws.labels.filter((l) => value.includes(l.id));
+  const wanted = new Set(value);
+  const chosen = ws.labels.filter((l) => wanted.has(l.id));
   return (
     <DialogTrigger isOpen={open} onOpenChange={setOpen}>
       <Button
@@ -162,7 +214,7 @@ export function LabelsPicker({
       >
         {chosen.length === 0 ? (
           <span className="flex items-center gap-2 text-muted-foreground">
-            <Tag className="size-3.5" />
+            <Tag aria-hidden className="size-3.5" />
             {t("labels.none")}
           </span>
         ) : (
@@ -226,7 +278,12 @@ export function MultiMemberPicker({
 }) {
   const t = useT();
   const { members } = useWorkspace();
-  const list = pool ? members.filter((m) => pool.includes(m.id)) : members;
+  const list = pool
+    ? (() => {
+        const wanted = new Set(pool);
+        return members.filter((m) => wanted.has(m.id));
+      })()
+    : members;
   return (
     <DialogTrigger>
       <Button variant="secondary" className="min-h-8 w-full justify-start px-2.5 font-normal">

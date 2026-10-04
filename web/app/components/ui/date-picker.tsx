@@ -96,7 +96,7 @@ export function DatePicker({
             aria-label={t("action.clearField")}
             onPress={() => onChange(null)}
           >
-            <X className="size-3" />
+            <X aria-hidden="true" className="size-3" />
           </Button>
         )}
         <Button
@@ -105,19 +105,21 @@ export function DatePicker({
           className="size-6"
           aria-label={t("action.openCalendar")}
         >
-          <CalendarDays className="size-3.5" />
+          <CalendarDays aria-hidden="true" className="size-3.5" />
         </Button>
       </Group>
       <Popover placement="bottom start" className="w-auto min-w-0">
         <Dialog className="p-3 outline-none">
           <Calendar>
             <header className="mb-2 flex items-center justify-between">
+              {/* RAC wires localized labels + navigation into slot="previous"/"next" buttons, so no
+                  explicit aria-label here — that would override the localized one. */}
               <Button slot="previous" variant="ghost" size="icon">
-                <ChevronLeft />
+                <ChevronLeft aria-hidden="true" />
               </Button>
               <Heading className="text-[13px] font-semibold" />
               <Button slot="next" variant="ghost" size="icon">
-                <ChevronRight />
+                <ChevronRight aria-hidden="true" />
               </Button>
             </header>
             <CalendarGrid className="border-separate border-spacing-0.5">

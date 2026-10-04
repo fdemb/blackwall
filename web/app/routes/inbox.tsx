@@ -1,5 +1,4 @@
-import { useState } from "react";
-import { useNavigate } from "react-router";
+import { useNavigate, useSearchParams } from "react-router";
 import {
   AtSign,
   Bell,
@@ -36,7 +35,18 @@ export default function Inbox() {
   const { t, lang } = useI18n();
   const nav = useNavigate();
   const { ws, run, unread } = useWorkspace();
-  const [view, setView] = useState<"all" | "unread">("all");
+  const [params, setParams] = useSearchParams();
+  const view = params.get("view") === "unread" ? "unread" : "all";
+  const setView = (v: "all" | "unread") =>
+    setParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        if (v === "all") next.delete("view");
+        else next.set("view", v);
+        return next;
+      },
+      { preventScrollReset: true },
+    );
   const query = useNotifications();
   const unreadOnly = useNotifications(true);
   const sorted = query.items;
@@ -96,7 +106,7 @@ export default function Inbox() {
             description={t("inbox.noUnreadSub")}
           />
         ) : (
-          <ul>
+          <ul className="[content-visibility:auto] [contain-intrinsic-size:auto_40rem]">
             {list.map((n) => {
               const Icon = ICONS[n.kind];
               const issue = n.issue_id ? issues.get(n.issue_id) : undefined;
@@ -115,6 +125,7 @@ export default function Inbox() {
                     className="flex min-w-0 flex-1 items-center gap-3 px-4 py-3 text-left outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/60"
                   >
                     <span
+                      aria-hidden="true"
                       className={cn(
                         "grid size-8 shrink-0 place-items-center rounded-full",
                         n.read_at

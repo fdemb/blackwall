@@ -1,4 +1,3 @@
-import { useState } from "react";
 import {
   Link,
   Navigate,
@@ -7,6 +6,7 @@ import {
   useNavigate,
   useOutletContext,
   useParams,
+  useSearchParams,
 } from "react-router";
 import { CalendarRange, KanbanSquare, List, ListTodo } from "lucide-react";
 import { Tab, TabList, Tabs } from "~/components/ui/tabs";
@@ -48,7 +48,28 @@ function TeamLayout() {
   const { ws, team } = useWorkspace();
   const state = useQueueState();
   const activeSprint = ws.sprints.find((s) => s.team_id === teamId && s.state === "active");
-  const [sprint, setSprint] = useState<SprintScope>(activeSprint ? activeSprint.id : "all");
+  // Sprint scope lives in the URL so a board link opens the same slice.
+  const [params, setParams] = useSearchParams();
+  const teamSprints = ws.sprints.filter((s) => s.team_id === teamId);
+  const rawSprint = params.get("sprint");
+  const sprint: SprintScope =
+    rawSprint === "none" ||
+    rawSprint === "all" ||
+    (rawSprint !== null && teamSprints.some((s) => s.id === rawSprint))
+      ? rawSprint
+      : activeSprint
+        ? activeSprint.id
+        : "all";
+  const setSprint = (s: SprintScope) =>
+    setParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        if (s === "all") next.delete("sprint");
+        else next.set("sprint", s);
+        return next;
+      },
+      { preventScrollReset: true },
+    );
   const tm = team(teamId!);
   useDocumentTitle(tm?.name ?? null);
   if (!tm) return <Navigate to={`/${wsId}/my-issues`} replace />;

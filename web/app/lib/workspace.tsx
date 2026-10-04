@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useMemo, useState, type ReactNode } from "react";
-import { useIsMutating, useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
+import { useIsMutating, useQuery, useQueryClient, useSuspenseQueries } from "@tanstack/react-query";
 import { lower, useLiveQuery } from "@tanstack/react-db";
 import { ApiError } from "./api";
 import { createCommandRunner } from "./commands";
@@ -63,8 +63,11 @@ const WorkspaceCtx = createContext<Ctx | null>(null);
 
 /** Workspace records from the collections, in the order the API lists them. */
 function useWorkspaceRecords(db: WorkspaceDb) {
-  const name = useSuspenseQuery(workspaceQuery(db.id)).data.workspace.name;
-  const report = useSuspenseQuery(reportQuery(db.id)).data;
+  // One round-trip shape, fetched in parallel instead of two serial suspense queries.
+  const [{ data: wsData }, { data: report }] = useSuspenseQueries({
+    queries: [workspaceQuery(db.id), reportQuery(db.id)],
+  });
+  const name = wsData.workspace.name;
   const teams = useLiveQuery({ query: (q) => q.from({ t: db.teams }).orderBy(({ t }) => t.name) });
   const labels = useLiveQuery({
     query: (q) => q.from({ l: db.labels }).orderBy(({ l }) => l.name),
@@ -134,6 +137,8 @@ export function WorkspaceProvider({ id, children }: { id: Id; children: ReactNod
   const db = workspaceDb(id, client);
   const { ws, members, report } = useWorkspaceRecords(db);
   const feed = useQuery(changeFeedQuery(client, db));
+  const feedError = feed.isError;
+  const feedRefetch = feed.refetch;
   const pending = useIsMutating({ mutationKey: keys.commands(id) });
   const runner = useMemo(
     () => createCommandRunner(client, db, profile.id),
@@ -204,8 +209,8 @@ export function WorkspaceProvider({ id, children }: { id: Id; children: ReactNod
       run,
       reload,
       pending,
-      offline: feed.isError,
-      retrySync: () => void feed.refetch(),
+      offline: feedError,
+      retrySync: () => void feedRefetch(),
       upload,
       unread: report.inbox_unread,
       create: {
@@ -216,7 +221,21 @@ export function WorkspaceProvider({ id, children }: { id: Id; children: ReactNod
         hide: () => setCreate({ open: false, defaults: {} }),
       },
     };
-  }, [ws, db, members, report, role, profile.id, run, reload, pending, feed, upload, createState]);
+  }, [
+    ws,
+    db,
+    members,
+    report,
+    role,
+    profile.id,
+    run,
+    reload,
+    pending,
+    feedError,
+    feedRefetch,
+    upload,
+    createState,
+  ]);
 
   return <WorkspaceCtx value={value}>{children}</WorkspaceCtx>;
 }

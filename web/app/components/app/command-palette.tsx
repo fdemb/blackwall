@@ -58,6 +58,8 @@ export function CommandPalette({
   const nav = useNavigate();
   const { ws, members, create, canWrite } = useWorkspace();
   const [shortcuts] = useShortcutsEnabled();
+  // `open` stays controlled by the parent (the global shortcut owns it). `q` stays local: nothing
+  // outside the modal reads it, so a provider would add indirection without sharing.
   const [q, setQ] = useState("");
   const go = useCallback(
     (path: string) => () => {
@@ -188,9 +190,9 @@ export function CommandPalette({
             <SearchField
               autoFocus
               aria-label={t("search.title")}
-              className="flex items-center gap-2 border-b border-border px-4"
+              className="flex items-center gap-2 border-b border-border px-4 focus-within:ring-2 focus-within:ring-inset focus-within:ring-ring/60"
             >
-              <Search className="size-4 text-muted-foreground" />
+              <Search aria-hidden className="size-4 text-muted-foreground" />
               <Input
                 placeholder={t("search.placeholder")}
                 className="h-12 flex-1 bg-transparent text-[15px] outline-none placeholder:text-muted-foreground/70 [&::-webkit-search-cancel-button]:hidden"
@@ -200,7 +202,7 @@ export function CommandPalette({
             <QueryStatus query={{ ...issueQuery, hasMore: false }} />
             <Menu
               aria-label={t("search.title")}
-              className="max-h-[50vh] overflow-auto p-1.5 outline-none"
+              className="max-h-[50vh] overflow-auto overscroll-contain p-1.5 outline-none"
               renderEmptyState={() => (
                 <p className="px-3 py-8 text-center text-[13px] text-muted-foreground">
                   {t("search.empty")}
@@ -264,7 +266,9 @@ export function CommandPalette({
                   </Header>
                   {acts.map((a) => (
                     <Row key={a.id} id={a.id} text={a.label} onAction={a.run}>
-                      <span className="text-muted-foreground">{a.icon}</span>
+                      <span aria-hidden className="text-muted-foreground">
+                        {a.icon}
+                      </span>
                       <span className="flex-1">{a.label}</span>
                       {a.hint && <Kbd>{a.hint}</Kbd>}
                     </Row>
