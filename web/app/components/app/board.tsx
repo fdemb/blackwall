@@ -1,4 +1,12 @@
-import { ListBox, ListBoxItem, useDragAndDrop, type DropTarget } from "react-aria-components";
+import {
+  DropIndicator,
+  ListBox,
+  ListBoxItem,
+  ListLayout,
+  useDragAndDrop,
+  Virtualizer,
+  type DropTarget,
+} from "react-aria-components";
 import { Plus } from "lucide-react";
 import { Button } from "~/components/ui/button";
 import { cn } from "~/lib/utils";
@@ -16,6 +24,12 @@ import {
 } from "./issue-parts";
 
 const TYPE = "application/x-blackwall-issue";
+
+/**
+ * Columns render only the cards in view. Cards vary in height, so the layout starts from an
+ * estimate and measures each card; gap and padding replace the column's CSS spacing.
+ */
+const COLUMN_LAYOUT = { estimatedRowSize: 92, gap: 6, padding: 6, dropIndicatorThickness: 2 };
 
 export function DndColumn({
   id,
@@ -104,32 +118,31 @@ export function DndColumn({
           )}
         </span>
       </header>
-      <ListBox
-        aria-label={title}
-        items={issues}
-        selectionMode="none"
-        dragAndDropHooks={dragAndDropHooks}
-        className="flex min-h-16 flex-1 flex-col gap-1.5 overflow-y-auto p-1.5 outline-none drop-target:bg-accent/60 drop-target:ring-2 drop-target:ring-primary/40 rounded-b-xl transition-colors"
-        renderEmptyState={() => (
-          <p className="px-2 py-6 text-center text-xs text-muted-foreground">
-            {emptyText ?? t("board.empty")}
-          </p>
-        )}
-      >
-        {(issue) => <BoardCard issue={issue} />}
-      </ListBox>
+      <Virtualizer layout={ListLayout} layoutOptions={COLUMN_LAYOUT}>
+        <ListBox
+          aria-label={title}
+          items={issues}
+          selectionMode="none"
+          dragAndDropHooks={dragAndDropHooks}
+          className="min-h-16 flex-1 overflow-y-auto rounded-b-xl outline-none transition-colors drop-target:bg-accent/60 drop-target:ring-2 drop-target:ring-primary/40"
+          renderEmptyState={() => (
+            <p className="px-2 py-6 text-center text-xs text-muted-foreground">
+              {emptyText ?? t("board.empty")}
+            </p>
+          )}
+        >
+          {(issue) => <BoardCard issue={issue} />}
+        </ListBox>
+      </Virtualizer>
       {footer}
     </section>
   );
 }
 
-import { DropIndicator } from "react-aria-components";
 function DropLine({ target }: { target: DropTarget }) {
   return (
-    <DropIndicator
-      target={target}
-      className="relative z-10 h-0.5 rounded-full bg-primary dragging:opacity-0 drop-target:h-1 -my-0.5 [&[data-drop-target]]:bg-primary"
-    />
+    // The layout sizes the indicator's slot; only the active drop target is rendered.
+    <DropIndicator target={target} className="z-10 h-full rounded-full bg-primary" />
   );
 }
 
@@ -141,7 +154,7 @@ export function BoardCard({ issue }: { issue: Issue }) {
       id={issue.id}
       textValue={issue.title}
       href={`/${ws.id}/issue/${issue.id}`}
-      className="group cursor-default rounded-lg border border-border bg-card p-2.5 text-[13px] shadow-xs outline-none transition-[box-shadow,border-color,opacity] hover:border-primary/40 hover:shadow-sm focus-visible:ring-2 focus-visible:ring-ring/60 dragging:opacity-40"
+      className="group block cursor-default rounded-lg border border-border bg-card p-2.5 text-[13px] shadow-xs outline-none transition-[box-shadow,border-color,opacity] hover:border-primary/40 hover:shadow-sm focus-visible:ring-2 focus-visible:ring-ring/60 dragging:opacity-40"
     >
       <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
         <span className="tabular-nums">{issueKey(issue.number)}</span>

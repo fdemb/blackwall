@@ -89,7 +89,7 @@ export function useGroups(issues: Issue[], groupBy: GroupBy): Group[] {
 /** Row and group heading heights. The virtualizer positions rows from these, so CSS must match. */
 const ROW_HEIGHT = 40;
 const HEADING_HEIGHT = 36;
-const LAYOUT_OPTIONS = { rowHeight: ROW_HEIGHT, headingHeight: HEADING_HEIGHT };
+const LAYOUT_OPTIONS = { rowSize: ROW_HEIGHT, headingSize: HEADING_HEIGHT };
 
 /**
  * Issues in one grid, grouped into collapsible sections.
