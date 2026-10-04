@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Form } from "react-aria-components";
-import { Link, Navigate, useParams } from "react-router";
-import { CalendarDays, ChevronLeft, Flag, Pencil, Plus } from "lucide-react";
+import { Navigate, useParams } from "react-router";
+import { CalendarDays, Flag, Pencil, Plus } from "lucide-react";
 import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
 import { DatePicker } from "~/components/ui/date-picker";
@@ -10,7 +10,7 @@ import { TextField } from "~/components/ui/field";
 import { FilterBar } from "~/components/app/filter-bar";
 import { IssueList } from "~/components/app/issue-list";
 import { useQueueState } from "~/components/app/workbench";
-import { EmptyState, Page, PageHeader, Scroll } from "~/components/app/page";
+import { EmptyState, Page, PageHeader, PageHeading, Scroll } from "~/components/app/page";
 import { ProgressBar } from "~/components/app/progress";
 import { daysUntil, fullDate } from "~/lib/format";
 import { useI18n } from "~/lib/i18n";
@@ -51,14 +51,10 @@ export default function ProjectPage() {
     <Page>
       <PageHeader
         title={project.name}
-        icon={
-          <Link
-            to={`/${ws.id}/projects`}
-            aria-label={t("action.back")}
-            className="-ml-1 grid size-7 place-items-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
-          >
-            <ChevronLeft className="size-4" />
-          </Link>
+        heading={
+          <PageHeading parent={{ to: `/${ws.id}/projects`, label: t("nav.projects") }}>
+            {project.name}
+          </PageHeading>
         }
         actions={
           <>

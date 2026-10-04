@@ -79,22 +79,21 @@ function TeamLayout() {
     : pathname.endsWith("/backlog")
       ? "backlog"
       : "list";
-  const tab = "h-6 gap-1 px-2 text-xs pointer-coarse:h-8 [&_svg]:size-3";
   const tabs = (
     <Tabs
       selectedKey={layout}
       onSelectionChange={(k) => navigate(k === "list" ? base : `${base}/${String(k)}`)}
     >
       <TabList aria-label={tm.name}>
-        <Tab id="list" className={tab}>
+        <Tab id="list" size="compact">
           <List />
           {t("team.list")}
         </Tab>
-        <Tab id="board" className={tab}>
+        <Tab id="board" size="compact">
           <KanbanSquare />
           {t("team.board")}
         </Tab>
-        <Tab id="backlog" className={tab}>
+        <Tab id="backlog" size="compact">
           <ListTodo />
           {t("team.backlog")}
         </Tab>

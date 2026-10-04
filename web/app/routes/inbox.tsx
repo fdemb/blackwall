@@ -74,23 +74,29 @@ export default function Inbox() {
             </Button>
           )
         }
-      >
-        {sorted.length > 0 && (
-          <Tabs
-            selectedKey={view}
-            onSelectionChange={(k) => setView(k as "all" | "unread")}
-            className="px-4 pb-2"
-          >
-            <TabList aria-label={t("nav.inbox")}>
-              <Tab id="all">{t("inbox.all")}</Tab>
-              <Tab id="unread">
-                {t("inbox.unreadOnly")}
-                {unread > 0 && <span className="tabular-nums text-muted-foreground">{unread}</span>}
-              </Tab>
-            </TabList>
-          </Tabs>
-        )}
-      </PageHeader>
+        nav={
+          sorted.length > 0 && (
+            <Tabs
+              selectedKey={view}
+              onSelectionChange={(k) => {
+                if (k === "all" || k === "unread") setView(k);
+              }}
+            >
+              <TabList aria-label={t("nav.inbox")}>
+                <Tab id="all" size="compact">
+                  {t("inbox.all")}
+                </Tab>
+                <Tab id="unread" size="compact">
+                  {t("inbox.unreadOnly")}
+                  {unread > 0 && (
+                    <span className="tabular-nums text-muted-foreground">{unread}</span>
+                  )}
+                </Tab>
+              </TabList>
+            </Tabs>
+          )
+        }
+      />
       <Scroll>
         <QueryStatus query={query} />
         {sorted.length === 0 ? (

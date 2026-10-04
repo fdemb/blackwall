@@ -1,9 +1,9 @@
 import { Link, Navigate, useParams } from "react-router";
-import { ChevronLeft, Mail, Phone } from "lucide-react";
+import { Mail, Phone } from "lucide-react";
 import { Avatar } from "~/components/ui/avatar";
 import { Badge } from "~/components/ui/badge";
 import { IssueList } from "~/components/app/issue-list";
-import { EmptyState, Page, PageHeader, Scroll } from "~/components/app/page";
+import { EmptyState, Page, PageHeader, PageHeading, Scroll } from "~/components/app/page";
 import { useI18n } from "~/lib/i18n";
 import { useIssues } from "~/lib/queries";
 import { QueryStatus } from "~/components/app/query-status";
@@ -27,14 +27,10 @@ export default function Person() {
     <Page>
       <PageHeader
         title={m.display_name}
-        icon={
-          <Link
-            to={`/${ws.id}/people`}
-            aria-label={t("action.back")}
-            className="-ml-1 grid size-7 place-items-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
-          >
-            <ChevronLeft className="size-4" />
-          </Link>
+        heading={
+          <PageHeading parent={{ to: `/${ws.id}/people`, label: t("nav.people") }}>
+            {m.display_name}
+          </PageHeading>
         }
       />
       <Scroll>

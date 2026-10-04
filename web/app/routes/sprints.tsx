@@ -1,10 +1,9 @@
 import { useState } from "react";
 import { Form } from "react-aria-components";
-import { Link, Navigate, useParams } from "react-router";
+import { Navigate, useParams } from "react-router";
 import {
   Archive,
   CheckCheck,
-  ChevronLeft,
   List,
   MoreHorizontal,
   Pencil,
@@ -21,7 +20,7 @@ import { Menu, MenuItem, MenuPopover, MenuTrigger } from "~/components/ui/menu";
 import { DndColumn } from "~/components/app/board";
 import { IssueList } from "~/components/app/issue-list";
 import { NullableSelect } from "~/components/app/pickers";
-import { Page, PageHeader, Card } from "~/components/app/page";
+import { Page, PageHeader, PageHeading, Card } from "~/components/app/page";
 import { isDone } from "~/lib/filters";
 import { fullDate, shortDate } from "~/lib/format";
 import { useI18n } from "~/lib/i18n";
@@ -74,16 +73,11 @@ export default function Sprints() {
   return (
     <Page>
       <PageHeader
-        title={tm.name}
-        subtitle={t("team.sprints")}
-        icon={
-          <Link
-            to={`/${ws.id}/team/${tm.id}/board`}
-            aria-label={t("action.back")}
-            className="-ml-1 grid size-7 place-items-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
-          >
-            <ChevronLeft className="size-4" />
-          </Link>
+        title={t("team.sprints")}
+        heading={
+          <PageHeading parent={{ to: `/${ws.id}/team/${tm.id}`, label: tm.name }}>
+            {t("team.sprints")}
+          </PageHeading>
         }
         actions={
           canWrite && (

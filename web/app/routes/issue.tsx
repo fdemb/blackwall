@@ -179,8 +179,14 @@ function IssueView({ issue, detail }: { issue: Issue; detail: IssueDetail }) {
         >
           <ChevronLeft />
         </Button>
-        {tm && <TeamCrumb team={tm} wsId={ws.id} />}
-        <span className="text-muted-foreground/50">/</span>
+        {tm && (
+          <>
+            <TeamCrumb team={tm} wsId={ws.id} />
+            <span aria-hidden="true" className="text-muted-foreground/50">
+              /
+            </span>
+          </>
+        )}
         <span className="text-[13px] font-medium tabular-nums">{issueKey(issue.number)}</span>
         <div className="ml-auto flex items-center gap-1">
           <SaveStatus />

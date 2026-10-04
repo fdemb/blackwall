@@ -57,16 +57,43 @@ export function PageHeader({
   );
 }
 
-/** The team a page belongs to, as shown at the start of the header. */
-export function TeamCrumb({ team, wsId }: { team: Pick<Team, "id" | "name">; wsId: string }) {
+/** A compact heading with an optional link to the parent view. */
+export function PageHeading({
+  children,
+  parent,
+}: {
+  children: React.ReactNode;
+  parent?: { to: string; label: string };
+}) {
+  return (
+    <h1 className="mr-2 flex min-w-0 items-center gap-2 text-[13px]">
+      {parent && (
+        <>
+          <PageCrumb to={parent.to}>{parent.label}</PageCrumb>
+          <span aria-hidden="true" className="text-muted-foreground/50">
+            /
+          </span>
+        </>
+      )}
+      <span className="truncate font-medium">{children}</span>
+    </h1>
+  );
+}
+
+export function PageCrumb({ to, children }: { to: string; children: React.ReactNode }) {
   return (
     <Link
-      to={`/${wsId}/team/${team.id}`}
-      className="text-[13px] text-muted-foreground hover:text-foreground hover:underline"
+      to={to}
+      className="truncate text-[13px] text-muted-foreground hover:text-foreground hover:underline"
     >
-      {team.name}
+      {children}
     </Link>
   );
+}
+
+/** The team a page belongs to, as shown at the start of the header. */
+export function TeamCrumb({ team, wsId }: { team: Pick<Team, "id" | "name">; wsId: string }) {
+  return <PageCrumb to={`/${wsId}/team/${team.id}`}>{team.name}</PageCrumb>;
 }
 
 export function EmptyState({

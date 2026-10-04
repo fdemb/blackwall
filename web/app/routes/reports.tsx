@@ -52,17 +52,27 @@ export default function Reports() {
 
   return (
     <Page>
-      <PageHeader
-        title={t("nav.reports")}
-        icon={<BarChart3 className="size-4 text-muted-foreground" />}
-      />
-      <Scroll>
-        <Tabs selectedKey={tab} onSelectionChange={(k) => setTab(String(k))} className="p-4">
-          <TabList aria-label={t("nav.reports")}>
-            <Tab id="overview">{t("reports.overview")}</Tab>
-            <Tab id="time">{t("reports.time")}</Tab>
-          </TabList>
-          <TabPanel id="overview" className="space-y-4">
+      <Tabs
+        selectedKey={tab}
+        onSelectionChange={(k) => setTab(String(k))}
+        className="min-h-0 flex-1 gap-0"
+      >
+        <PageHeader
+          title={t("nav.reports")}
+          icon={<BarChart3 className="size-4 text-muted-foreground" />}
+          nav={
+            <TabList aria-label={t("nav.reports")}>
+              <Tab id="overview" size="compact">
+                {t("reports.overview")}
+              </Tab>
+              <Tab id="time" size="compact">
+                {t("reports.time")}
+              </Tab>
+            </TabList>
+          }
+        />
+        <Scroll>
+          <TabPanel id="overview" className="space-y-4 p-4">
             {error ? (
               <div role="alert" className="flex flex-wrap items-center gap-3">
                 <p className="text-destructive">{error}</p>
@@ -185,9 +195,11 @@ export default function Reports() {
               </>
             )}
           </TabPanel>
-          <TabPanel id="time">{tab === "time" && <TimeLog lang={lang} />}</TabPanel>
-        </Tabs>
-      </Scroll>
+          <TabPanel id="time" className="p-4">
+            {tab === "time" && <TimeLog lang={lang} />}
+          </TabPanel>
+        </Scroll>
+      </Tabs>
     </Page>
   );
 }

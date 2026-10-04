@@ -30,11 +30,20 @@ export default function MyIssues() {
       extraFilter={tab === "following" ? (i) => i.followers.includes(me) : undefined}
       hide={tab === "assigned" ? ["assignee"] : []}
       saveable={tab === "assigned"}
-      headerExtra={
-        <Tabs selectedKey={tab} onSelectionChange={(k) => setTab(k as never)} className="px-4 pb-2">
+      nav={
+        <Tabs
+          selectedKey={tab}
+          onSelectionChange={(k) => {
+            if (k === "assigned" || k === "following") setTab(k);
+          }}
+        >
           <TabList aria-label={t("nav.myIssues")}>
-            <Tab id="assigned">{t("my.assigned")}</Tab>
-            <Tab id="following">{t("my.following")}</Tab>
+            <Tab id="assigned" size="compact">
+              {t("my.assigned")}
+            </Tab>
+            <Tab id="following" size="compact">
+              {t("my.following")}
+            </Tab>
           </TabList>
         </Tabs>
       }
