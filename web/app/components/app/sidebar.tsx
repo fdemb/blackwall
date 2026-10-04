@@ -27,7 +27,7 @@ import { Kbd } from "~/components/ui/tooltip";
 import { Menu, MenuItem, MenuPopover, MenuSeparator, MenuTrigger } from "~/components/ui/menu";
 import { auth } from "~/lib/api";
 import { LAST_WS } from "~/lib/auth-guard";
-import { useT } from "~/lib/i18n";
+import { useI18n } from "~/lib/i18n";
 import { useSession } from "~/lib/session";
 import { useWorkspace } from "~/lib/workspace";
 import { cn } from "~/lib/utils";
@@ -48,7 +48,7 @@ export function Sidebar({
   onSearch: () => void;
   onNavigate?: () => void;
 }) {
-  const t = useT();
+  const { t } = useI18n();
   const nav = useNavigate();
   const { ws, unread, create, canWrite } = useWorkspace();
   const { profile } = useSession();
@@ -254,7 +254,7 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 }
 
 function TeamLinks({ id, name, base }: { id: string; name: string; base: string }) {
-  const t = useT();
+  const { t } = useI18n();
   const { pathname } = useLocation();
   // null follows the route (open while you're inside the team). Once clicked, the choice sticks.
   const [open, setOpen] = useState<boolean | null>(null);

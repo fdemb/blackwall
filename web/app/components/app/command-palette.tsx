@@ -29,7 +29,7 @@ import {
 import { Avatar } from "~/components/ui/avatar";
 import { Kbd } from "~/components/ui/tooltip";
 import { issueKey } from "~/lib/format";
-import { useT } from "~/lib/i18n";
+import { useI18n } from "~/lib/i18n";
 import { useShortcutsEnabled } from "~/lib/shortcuts";
 import { useIssues } from "~/lib/queries";
 import { QueryStatus } from "./query-status";
@@ -54,7 +54,7 @@ export function CommandPalette({
   onOpenChange: (o: boolean) => void;
   onHelp: () => void;
 }) {
-  const t = useT();
+  const { t } = useI18n();
   const nav = useNavigate();
   const { ws, members, create, canWrite } = useWorkspace();
   const [shortcuts] = useShortcutsEnabled();

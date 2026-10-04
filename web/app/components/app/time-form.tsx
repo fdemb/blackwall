@@ -20,7 +20,7 @@ export function TimeForm({
   entry: TimeEntry | null;
   close: () => void;
 }) {
-  const t = useI18n().t;
+  const { t } = useI18n();
   const { run } = useWorkspace();
   const [dur, setDur] = useState(entry ? formatMinutes(entry.minutes) : "");
   const [note, setNote] = useState(entry?.note ?? "");

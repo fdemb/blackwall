@@ -6,13 +6,13 @@ import { Button } from "~/components/ui/button";
 import { OfflineBanner } from "~/components/app/offline-banner";
 import { Sidebar } from "~/components/app/sidebar";
 import { rememberAppPath } from "~/lib/settings-nav";
-import { useT } from "~/lib/i18n";
+import { useI18n } from "~/lib/i18n";
 import { useWorkspace } from "~/lib/workspace";
 import type { WorkspaceOutlet } from "./workspace";
 
 /** The everyday app: workspace sidebar on the left, one page on the right. */
 export default function AppShell() {
-  const t = useT();
+  const { t } = useI18n();
   const ctx = useOutletContext<WorkspaceOutlet>();
   const { ws } = useWorkspace();
   const { pathname, search } = useLocation();

@@ -1,10 +1,10 @@
 import { WifiOff } from "lucide-react";
 import { Button } from "~/components/ui/button";
-import { useT } from "~/lib/i18n";
+import { useI18n } from "~/lib/i18n";
 import { useWorkspace } from "~/lib/workspace";
 
 export function OfflineBanner() {
-  const t = useT();
+  const { t } = useI18n();
   const { offline, retrySync } = useWorkspace();
   if (!offline) return null;
   return (

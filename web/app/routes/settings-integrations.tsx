@@ -8,14 +8,14 @@ import { Switch } from "~/components/ui/toggles";
 import { EmptyState } from "~/components/app/page";
 import { SettingsList, SettingsPage, SettingsSection } from "~/components/app/settings";
 import { ConfirmDialog } from "~/components/app/confirm";
-import { useT } from "~/lib/i18n";
+import { useI18n } from "~/lib/i18n";
 import { usePending } from "~/lib/use-pending";
 import { useWorkspace } from "~/lib/workspace";
 import { useToast } from "~/components/ui/toast";
 import type { Integration } from "~/lib/types";
 
 export default function Integrations() {
-  const t = useT();
+  const { t } = useI18n();
   const { ws, run, canAdmin } = useWorkspace();
   const toast = useToast();
   const [open, setOpen] = useState(false);
@@ -138,7 +138,7 @@ curl -X POST "${sample}" \\
 }
 
 function IntegrationForm({ close }: { close: () => void }) {
-  const t = useT();
+  const { t } = useI18n();
   const { run } = useWorkspace();
   const { pending, error, guard } = usePending();
   const [name, setName] = useState("");

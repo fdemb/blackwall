@@ -6,11 +6,11 @@ import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
 import { SearchField } from "~/components/ui/field";
 import { EmptyState, Page, PageHeader, Scroll } from "~/components/app/page";
-import { useT } from "~/lib/i18n";
+import { useI18n } from "~/lib/i18n";
 import { useWorkspace } from "~/lib/workspace";
 
 export default function People() {
-  const t = useT();
+  const { t } = useI18n();
   const { ws, members } = useWorkspace();
   const [q, setQ] = useState("");
   const list = members.filter((m) =>

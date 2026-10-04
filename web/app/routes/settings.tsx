@@ -28,7 +28,7 @@ import { Kbd } from "~/components/ui/tooltip";
 import { OfflineBanner } from "~/components/app/offline-banner";
 import { linkClass } from "~/components/app/sidebar";
 import { lastAppPath } from "~/lib/settings-nav";
-import { useT, type Key } from "~/lib/i18n";
+import { useI18n, type Key } from "~/lib/i18n";
 import { useWorkspace } from "~/lib/workspace";
 import type { WorkspaceOutlet } from "./workspace";
 
@@ -45,7 +45,7 @@ interface Group {
 
 /** Account and workspace settings in one full-screen place, bound to the current workspace. */
 export default function SettingsLayout() {
-  const t = useT();
+  const { t } = useI18n();
   const nav = useNavigate();
   const ctx = useOutletContext<WorkspaceOutlet>();
   const { ws, canAdmin } = useWorkspace();

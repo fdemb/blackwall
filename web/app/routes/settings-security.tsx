@@ -6,10 +6,10 @@ import { TextField } from "~/components/ui/field";
 import { useToast } from "~/components/ui/toast";
 import { SettingsPage, SettingsRow, SettingsSection } from "~/components/app/settings";
 import { auth } from "~/lib/api";
-import { useT } from "~/lib/i18n";
+import { useI18n } from "~/lib/i18n";
 
 export default function Security() {
-  const t = useT();
+  const { t } = useI18n();
   const toast = useToast();
   const [error, setError] = useState("");
   return (

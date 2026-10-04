@@ -2,14 +2,14 @@ import { Select } from "~/components/ui/select";
 import { Switch } from "~/components/ui/toggles";
 import { useToast } from "~/components/ui/toast";
 import { SettingsPage, SettingsRow, SettingsSection } from "~/components/app/settings";
-import { useT } from "~/lib/i18n";
+import { useI18n } from "~/lib/i18n";
 import { useSession } from "~/lib/session";
 import { useShortcutsEnabled } from "~/lib/shortcuts";
 import { usePending } from "~/lib/use-pending";
 import type { Language, Profile, Theme } from "~/lib/types";
 
 export default function Preferences() {
-  const t = useT();
+  const { t } = useI18n();
   const { profile, saveProfile } = useSession();
   const toast = useToast();
   const [shortcuts, setShortcuts] = useShortcutsEnabled();

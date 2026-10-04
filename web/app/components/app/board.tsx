@@ -12,7 +12,7 @@ import { Plus } from "lucide-react";
 import { Button } from "~/components/ui/button";
 import { cn } from "~/lib/utils";
 import { issueKey } from "~/lib/format";
-import { useT } from "~/lib/i18n";
+import { useI18n } from "~/lib/i18n";
 import { useWorkspace } from "~/lib/workspace";
 import type { Id, Issue } from "~/lib/types";
 import { PriorityIcon } from "./icons";
@@ -61,7 +61,7 @@ export function DndColumn({
   emptyText,
   footer,
 }: DndColumnProps) {
-  const t = useT();
+  const { t } = useI18n();
   const { canWrite } = useWorkspace();
   const beforeFor = useCallback(
     (target: DropTarget): Id | null => {
@@ -167,7 +167,7 @@ export function ReadOnlyColumn(props: Omit<DndColumnProps, "canDrop">) {
 
 export function BoardCard({ issue }: { issue: Issue }) {
   const { ws } = useWorkspace();
-  const t = useT();
+  const { t } = useI18n();
   return (
     <ListBoxItem
       id={issue.id}

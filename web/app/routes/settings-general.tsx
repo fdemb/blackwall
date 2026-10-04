@@ -4,11 +4,11 @@ import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
 import { useToast } from "~/components/ui/toast";
 import { SettingsPage, SettingsSection } from "~/components/app/settings";
-import { useT } from "~/lib/i18n";
+import { useI18n } from "~/lib/i18n";
 import { useWorkspace } from "~/lib/workspace";
 
 export default function General() {
-  const t = useT();
+  const { t } = useI18n();
   const toast = useToast();
   const { ws, role, report } = useWorkspace();
   const base = `/${ws.id}/settings`;

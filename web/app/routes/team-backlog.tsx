@@ -4,13 +4,13 @@ import { FilterBar } from "~/components/app/filter-bar";
 import { IssueList } from "~/components/app/issue-list";
 import { EmptyState, Page, PageHeader } from "~/components/app/page";
 import { QueryStatus } from "~/components/app/query-status";
-import { useT } from "~/lib/i18n";
+import { useI18n } from "~/lib/i18n";
 import { useIssues } from "~/lib/queries";
 import { useWorkspace } from "~/lib/workspace";
 import { useTeamContext } from "./team";
 
 export default function TeamBacklog() {
-  const t = useT();
+  const { t } = useI18n();
   const { team, state, heading, tabs, sprintLink } = useTeamContext();
   const teamId = team.id;
   const { create, canWrite } = useWorkspace();

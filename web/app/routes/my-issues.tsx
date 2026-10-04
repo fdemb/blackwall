@@ -3,12 +3,12 @@ import { UserRound } from "lucide-react";
 import { Tab, TabList, Tabs } from "~/components/ui/tabs";
 import { Workbench } from "~/components/app/workbench";
 import { EmptyState } from "~/components/app/page";
-import { useT } from "~/lib/i18n";
+import { useI18n } from "~/lib/i18n";
 import { useWorkspace } from "~/lib/workspace";
 import { CheckCheck } from "lucide-react";
 
 export default function MyIssues() {
-  const t = useT();
+  const { t } = useI18n();
   const { me } = useWorkspace();
   const [params, setParams] = useSearchParams();
   const tab = params.get("tab") === "following" ? "following" : "assigned";

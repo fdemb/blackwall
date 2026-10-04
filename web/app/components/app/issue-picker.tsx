@@ -12,7 +12,7 @@ import { Search } from "lucide-react";
 import { Popover } from "~/components/ui/popover";
 import { stageOf } from "~/lib/filters";
 import { issueKey } from "~/lib/format";
-import { useT } from "~/lib/i18n";
+import { useI18n } from "~/lib/i18n";
 import { useIssues } from "~/lib/queries";
 import { QueryStatus } from "./query-status";
 import { useWorkspace } from "~/lib/workspace";
@@ -28,7 +28,7 @@ export function IssuePicker({
   onPick: (id: Id) => void;
   exclude?: Id[];
 }) {
-  const t = useT();
+  const { t } = useI18n();
   const { ws } = useWorkspace();
   const [q, setQ] = useState("");
   const [open, setOpen] = useState(false);

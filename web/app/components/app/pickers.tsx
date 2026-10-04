@@ -13,7 +13,7 @@ import { Button } from "~/components/ui/button";
 import { Avatar } from "~/components/ui/avatar";
 import { cn, selectedIds } from "~/lib/utils";
 import { PRIORITIES } from "~/lib/format";
-import { useT } from "~/lib/i18n";
+import { useI18n } from "~/lib/i18n";
 import { useWorkspace } from "~/lib/workspace";
 import type { Id, Priority } from "~/lib/types";
 import { PriorityIcon, StageIcon } from "./icons";
@@ -57,7 +57,7 @@ export function PriorityPicker({
   onChange,
   ...rest
 }: Omit<PickProps, "value" | "onChange"> & { value: Priority; onChange: (p: Priority) => void }) {
-  const t = useT();
+  const { t } = useI18n();
   const options = PRIORITIES.map((p) => ({
     id: p,
     label: t(`priority.${p}`),
@@ -75,7 +75,7 @@ export function PriorityPicker({
 }
 
 export function AssigneePicker({ teamId, ...rest }: PickProps & { teamId?: Id }) {
-  const t = useT();
+  const { t } = useI18n();
   const { members, team } = useWorkspace();
   const ids = teamId ? team(teamId)?.members : undefined;
   const pool =
@@ -110,7 +110,7 @@ export function StagePicker({
   value: Id | null | undefined;
   onChange: (id: Id) => void;
 }) {
-  const t = useT();
+  const { t } = useI18n();
   const { team } = useWorkspace();
   const stages = [...(team(teamId)?.stages ?? [])].sort((a, b) => a.position - b.position);
   const options = stages.map((s) => ({
@@ -195,7 +195,7 @@ function LabelsPickerBase({
   variant?: "field" | "ghost";
   isDisabled?: boolean;
 }) {
-  const t = useT();
+  const { t } = useI18n();
   const { ws } = useWorkspace();
   const [open, setOpen] = useState(false);
   const wanted = new Set(value);
@@ -276,7 +276,7 @@ export function MultiMemberPicker({
   onChange: (ids: Id[]) => void;
   pool?: Id[];
 }) {
-  const t = useT();
+  const { t } = useI18n();
   const { members } = useWorkspace();
   const list = pool
     ? (() => {

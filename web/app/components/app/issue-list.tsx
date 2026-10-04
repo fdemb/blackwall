@@ -19,7 +19,7 @@ import { ConfirmDialog } from "./confirm";
 import { cn } from "~/lib/utils";
 import { issueKey, PRIORITIES } from "~/lib/format";
 import { stageOf } from "~/lib/filters";
-import { useT } from "~/lib/i18n";
+import { useI18n } from "~/lib/i18n";
 import { useWorkspace } from "~/lib/workspace";
 import type { Id, Issue, IssueGroup, IssuePatch } from "~/lib/types";
 import { PriorityIcon, StageIcon } from "./icons";
@@ -47,7 +47,7 @@ const GROUP_KIND_RANK = new Map(
 const groupRankOf = (key: string) => GROUP_KIND_RANK.get(key.split(":")[0]) ?? 99;
 
 export function useGroups(issues: Issue[], groupBy: GroupBy): Group[] {
-  const t = useT();
+  const { t } = useI18n();
   const { ws, members } = useWorkspace();
   return useMemo(() => {
     if (groupBy === "none") return [{ id: "all", title: t("group.all"), items: issues }];
@@ -189,7 +189,7 @@ function useIssueGrid({
   fill,
 }: Required<Pick<IssueListProps, "issues" | "groupBy" | "selectable">> &
   Pick<IssueListProps, "showTeam"> & { fill: boolean }) {
-  const t = useT();
+  const { t } = useI18n();
   const groups = useGroups(issues, groupBy);
   const [selected, setSelected] = useState<Set<Id>>(() => new Set());
   const { canWrite } = useWorkspace();
@@ -345,7 +345,7 @@ export function IssueRow({
 
 /** The row's selection checkbox. Separated so `IssueRow` stays a pure composition of pieces. */
 function RowSelectBox() {
-  const t = useT();
+  const { t } = useI18n();
   return (
     <Checkbox
       slot="selection"
@@ -372,7 +372,7 @@ function PriorityMenu({
   disabled: boolean;
   run: (p: IssuePatch) => Promise<unknown>;
 }) {
-  const t = useT();
+  const { t } = useI18n();
   return (
     <MenuTrigger>
       <Button
@@ -411,7 +411,7 @@ function BulkBar({
   selected: Set<Id>;
   clear: () => void;
 }) {
-  const t = useT();
+  const { t } = useI18n();
   const toast = useToast();
   const { ws, members, run } = useWorkspace();
   const [confirm, setConfirm] = useState(false);

@@ -10,7 +10,7 @@ import {
 } from "react-aria-components";
 import { X } from "lucide-react";
 import { cn } from "~/lib/utils";
-import { useT } from "~/lib/i18n";
+import { useI18n } from "~/lib/i18n";
 import { Button, type ButtonProps } from "./button";
 
 export { DialogTrigger, Heading };
@@ -45,7 +45,7 @@ const CloseCtx = createContext<() => void>(() => {});
 /** Composable close button; reads `close` from context so it can live anywhere inside a Dialog. */
 export function DialogClose({ className, children, ...props }: ButtonProps) {
   const close = use(CloseCtx);
-  const t = useT();
+  const { t } = useI18n();
   return (
     <Button
       variant="ghost"

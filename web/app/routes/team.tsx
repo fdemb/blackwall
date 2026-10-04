@@ -12,7 +12,7 @@ import { CalendarRange, KanbanSquare, List, ListTodo } from "lucide-react";
 import { Tab, TabList, Tabs } from "~/components/ui/tabs";
 import { useQueueState, type QueueState } from "~/components/app/workbench";
 import { TeamCrumb } from "~/components/app/page";
-import { useT } from "~/lib/i18n";
+import { useI18n } from "~/lib/i18n";
 import { useDocumentTitle } from "~/lib/title";
 import { useWorkspace } from "~/lib/workspace";
 import type { Id, Team as TeamT } from "~/lib/types";
@@ -41,7 +41,7 @@ export default function Team() {
 }
 
 function TeamLayout() {
-  const t = useT();
+  const { t } = useI18n();
   const { teamId, ws: wsId } = useParams();
   const { pathname } = useLocation();
   const navigate = useNavigate();

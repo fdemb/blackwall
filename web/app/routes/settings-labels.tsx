@@ -6,7 +6,7 @@ import { Dialog, useDialogDirty } from "~/components/ui/dialog";
 import { FormError, TextField } from "~/components/ui/field";
 import { SettingsList, SettingsPage, SettingsSection } from "~/components/app/settings";
 import { LabelDot } from "~/components/app/pickers";
-import { useT, type Key } from "~/lib/i18n";
+import { useI18n, type Key } from "~/lib/i18n";
 import { usePending } from "~/lib/use-pending";
 import { useWorkspace } from "~/lib/workspace";
 import type { Label } from "~/lib/types";
@@ -26,7 +26,7 @@ const COLORS: [string, Key][] = [
 
 /** A radio group, so arrow keys move between colors and a screen reader hears each color's name. */
 function ColorPicker({ value, onChange }: { value: string; onChange: (c: string) => void }) {
-  const t = useT();
+  const { t } = useI18n();
   // A label saved with a color outside the palette keeps showing as its own choice instead of vanishing.
   const options = COLORS.some(([c]) => c === value)
     ? COLORS.map(([c, k]) => [c, t(k)] as const)
@@ -57,7 +57,7 @@ function ColorPicker({ value, onChange }: { value: string; onChange: (c: string)
 }
 
 export default function Labels() {
-  const t = useT();
+  const { t } = useI18n();
   const { ws, run, canWrite, report } = useWorkspace();
   const [name, setName] = useState("");
   const [color, setColor] = useState(COLORS[0][0]);
@@ -140,7 +140,7 @@ export default function Labels() {
 }
 
 function EditLabel({ label, close }: { label: Label; close: () => void }) {
-  const t = useT();
+  const { t } = useI18n();
   const { run } = useWorkspace();
   const { pending, error, guard } = usePending();
   const [name, setName] = useState(label.name);

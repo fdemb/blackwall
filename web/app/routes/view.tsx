@@ -11,7 +11,7 @@ import { ConfirmDialog } from "~/components/app/confirm";
 import { Workbench, useQueueState } from "~/components/app/workbench";
 import { Badge } from "~/components/ui/badge";
 import { effectiveFilter, sameFilter } from "~/lib/filters";
-import { useT } from "~/lib/i18n";
+import { useI18n } from "~/lib/i18n";
 import { usePending } from "~/lib/use-pending";
 import { useWorkspace } from "~/lib/workspace";
 import type { SavedView } from "~/lib/types";
@@ -25,7 +25,7 @@ export default function View() {
 }
 
 function ViewPage({ view }: { view: SavedView }) {
-  const t = useT();
+  const { t } = useI18n();
   const nav = useNavigate();
   const toast = useToast();
   const { ws: wsId } = useParams();
@@ -119,7 +119,7 @@ function ViewPage({ view }: { view: SavedView }) {
 }
 
 function EditViewForm({ view, close }: { view: SavedView; close: () => void }) {
-  const t = useT();
+  const { t } = useI18n();
   const { run, canWrite } = useWorkspace();
   const { pending, error, guard } = usePending();
   const [name, setName] = useState(view.name);

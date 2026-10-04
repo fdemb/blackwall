@@ -1,6 +1,6 @@
 import { createContext, useCallback, use, useMemo, useState, type ReactNode } from "react";
 import { AlertCircle, Check, X } from "lucide-react";
-import { useT } from "~/lib/i18n";
+import { useI18n } from "~/lib/i18n";
 import { cn } from "~/lib/utils";
 
 export interface ToastAction {
@@ -21,7 +21,7 @@ const Ctx = createContext<ToastApi | null>(null);
 let counter = 0;
 
 export function ToastProvider({ children }: { children: ReactNode }) {
-  const t = useT();
+  const { t } = useI18n();
   const [items, setItems] = useState<Item[]>([]);
   const dismiss = useCallback((id: number) => setItems((l) => l.filter((i) => i.id !== id)), []);
   const push = useCallback(

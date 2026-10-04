@@ -5,11 +5,11 @@ import { Button } from "~/components/ui/button";
 import { TextField } from "~/components/ui/field";
 import { useToast } from "~/components/ui/toast";
 import { SettingsPage, SettingsSection } from "~/components/app/settings";
-import { useT } from "~/lib/i18n";
+import { useI18n } from "~/lib/i18n";
 import { useSession } from "~/lib/session";
 
 export default function Profile() {
-  const t = useT();
+  const { t } = useI18n();
   const { profile, saveProfile } = useSession();
   const toast = useToast();
   const [name, setName] = useState(profile.display_name);
