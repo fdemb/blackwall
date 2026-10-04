@@ -79,6 +79,7 @@ impl Job {
         if !self.is_current(store).await? {
             return Ok(());
         }
+
         match self {
             Job::Email(email) => mailer.send(id, email).await,
             Job::Webhook(webhook) => send_webhook(id, webhook).await,
@@ -97,6 +98,7 @@ impl Job {
                 ..
             }) => {
                 let (workspace, _) = load(store, *workspace_id).await?;
+
                 Ok(workspace.invitations.iter().any(|i| {
                     i.id == *invitation_id
                         && i.state == crate::domain::InvitationState::Pending
@@ -112,11 +114,23 @@ impl Job {
                     },
                 ..
             }) => {
-                let live = sqlx::query("SELECT token_hash FROM password_resets WHERE user_id=$1 AND token_hash=$2 AND expires_at>$3").bind(user_id.to_string()).bind(token_hash).bind(Utc::now().timestamp()).fetch_optional(&store.pool).await.map_err(|_|"recovery lookup failed")?;
+                let live = sqlx::query(
+                    "SELECT token_hash \
+                     FROM password_resets \
+                     WHERE user_id = $1 AND token_hash = $2 AND expires_at > $3",
+                )
+                .bind(user_id.to_string())
+                .bind(token_hash)
+                .bind(Utc::now().timestamp())
+                .fetch_optional(&store.pool)
+                .await
+                .map_err(|_| "recovery lookup failed")?;
+
                 Ok(live.is_some())
             }
             Job::Webhook(webhook) => {
                 let (workspace, _) = load(store, webhook.workspace_id).await?;
+
                 Ok(workspace.integrations.iter().any(|i| {
                     i.id == webhook.integration_id
                         && i.enabled
@@ -138,14 +152,17 @@ async fn load(store: &Store, id: Uuid) -> Result<(crate::domain::Workspace, i64)
 async fn send_webhook(id: &str, webhook: &Webhook) -> Result<(), String> {
     use hmac::{Hmac, Mac};
     use sha2::Sha256;
+
     let url = reqwest::Url::parse(&webhook.url).map_err(|_| "invalid webhook URL")?;
     if url.scheme() != "https" || !url.username().is_empty() || url.password().is_some() {
         return Err("webhooks require HTTPS without URL credentials".into());
     }
+
     let body = serde_json::to_vec(&webhook.event).map_err(|_| "invalid webhook event")?;
     let mut mac = Hmac::<Sha256>::new_from_slice(webhook.secret.as_bytes())
         .map_err(|_| "invalid webhook secret")?;
     mac.update(&body);
+
     let client = webhook_client(&url).await?;
     client
         .post(url)
@@ -161,6 +178,7 @@ async fn send_webhook(id: &str, webhook: &Webhook) -> Result<(), String> {
         .map_err(|_| "webhook request failed")?
         .error_for_status()
         .map_err(|_| "webhook rejected delivery")?;
+
     Ok(())
 }
 
@@ -187,6 +205,7 @@ fn public_address(ip: IpAddr) -> bool {
             if let Some(v4) = ip.to_ipv4_mapped() {
                 return public_address(IpAddr::V4(v4));
             }
+
             !ip.is_loopback()
                 && !ip.is_unspecified()
                 && !ip.is_multicast()
@@ -197,6 +216,7 @@ fn public_address(ip: IpAddr) -> bool {
         }
     }
 }
+
 async fn webhook_client(url: &reqwest::Url) -> Result<reqwest::Client, String> {
     let host = url.host_str().ok_or("webhook host missing")?;
     let addresses: Vec<SocketAddr> =
@@ -207,6 +227,7 @@ async fn webhook_client(url: &reqwest::Url) -> Result<reqwest::Client, String> {
     if addresses.is_empty() || addresses.iter().any(|a| !public_address(a.ip())) {
         return Err("webhook must resolve to public addresses".into());
     }
+
     reqwest::Client::builder()
         .timeout(Duration::from_secs(15))
         .redirect(reqwest::redirect::Policy::none())
@@ -215,9 +236,11 @@ async fn webhook_client(url: &reqwest::Url) -> Result<reqwest::Client, String> {
         .build()
         .map_err(|_| "webhook client failed".into())
 }
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
     #[test]
     fn webhook_blocks_private_targets() {
         for address in [
@@ -231,8 +254,10 @@ mod tests {
         ] {
             assert!(!public_address(address.parse().unwrap()));
         }
+
         assert!(public_address("1.1.1.1".parse().unwrap()));
     }
+
     #[test]
     fn decodes_stored_rows() {
         let workspace = Uuid::new_v4();
@@ -240,13 +265,16 @@ mod tests {
         let invite = format!(
             r#"{{"to":"a@example.com","subject":"Join","workspace_id":"{workspace}","invitation_id":"{invitation}","token_hash":"h","token":"t"}}"#
         );
+
         assert!(matches!(
             Job::decode("email", &invite),
             Ok(Job::Email(Email { grant: Grant::Invitation { invitation_id, .. }, .. })) if invitation_id == invitation
         ));
+
         let reset = format!(
             r#"{{"to":"a@example.com","subject":"Reset","user_id":"{workspace}","token_hash":"h","token":"t"}}"#
         );
+
         assert!(matches!(
             Job::decode("email", &reset),
             Ok(Job::Email(Email {
@@ -254,6 +282,7 @@ mod tests {
                 ..
             }))
         ));
+
         assert!(Job::decode("email", "{}").is_err());
         assert!(Job::decode("unknown_kind", "{}").is_err());
     }
