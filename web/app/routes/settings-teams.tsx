@@ -17,7 +17,7 @@ import type { Id, Stage, StageKind, Team } from "~/lib/types";
 
 export default function Teams() {
   const t = useT();
-  const { ws, canAdmin, canWrite, create } = useWorkspace();
+  const { ws, canAdmin, canWrite, create, report } = useWorkspace();
   const [creating, setCreating] = useState(false);
   return (
     <SettingsPage
@@ -32,7 +32,7 @@ export default function Teams() {
         )
       }
     >
-      {ws.teams.length > 0 && ws.issues.length === 0 && canWrite && (
+      {ws.teams.length > 0 && report.issue_count === 0 && canWrite && (
         <SettingsSection>
           <div className="flex flex-wrap items-center gap-3 rounded-lg bg-accent/50 px-4 py-3">
             <div className="min-w-0 flex-1">
@@ -374,7 +374,7 @@ function DeleteStage({ team, stage, close }: { team: Team; stage: Stage; close: 
           void guard(async () => {
             await run(
               { type: "delete_stage", team_id: team.id, id: stage.id, replacement },
-              { quiet: true },
+              { quiet: true, expectedVersions: error ? undefined : { [stage.id]: stage.version } },
             );
             close();
           });

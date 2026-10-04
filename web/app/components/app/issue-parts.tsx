@@ -73,17 +73,12 @@ export function AssigneeAvatar({ issue, size = 20 }: { issue: Issue; size?: numb
 }
 
 export function BlockedBadge({ issue }: { issue: Issue }) {
-  const { ws } = useWorkspace();
   const t = useI18nT();
-  const open = issue.dependencies.filter((id) => {
-    const d = ws.issues.find((i) => i.id === id);
-    return d && !d.deleted_at && !isDone(ws, d);
-  });
-  if (!open.length) return null;
+  if (!issue.blocked_count) return null;
   return (
     <Badge tone="danger" title={t("issue.blockedBy")}>
       <Lock className="size-3" />
-      {open.length}
+      {issue.blocked_count}
     </Badge>
   );
 }
@@ -92,14 +87,11 @@ function useI18nT() {
 }
 
 export function SubtaskProgress({ issue }: { issue: Issue }) {
-  const { ws } = useWorkspace();
-  const subs = ws.issues.filter((i) => i.parent_id === issue.id && !i.deleted_at);
-  if (!subs.length) return null;
-  const done = subs.filter((s) => isDone(ws, s)).length;
+  if (!issue.subtask_total) return null;
   return (
     <span className="inline-flex items-center gap-1 text-xs tabular-nums text-muted-foreground">
       <Link2 className="size-3" />
-      {done}/{subs.length}
+      {issue.subtask_completed}/{issue.subtask_total}
     </span>
   );
 }

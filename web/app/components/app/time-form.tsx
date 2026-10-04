@@ -39,7 +39,13 @@ export function TimeForm({
         const body = { minutes: minutes!, note: note.trim(), logged_at: when! };
         void guard(async () => {
           await (entry
-            ? run({ type: "update_time", id: entry.id, ...body }, { quiet: true })
+            ? run(
+                { type: "update_time", id: entry.id, ...body },
+                {
+                  quiet: true,
+                  expectedVersions: error ? undefined : { [entry.id]: entry.version },
+                },
+              )
             : run({ type: "log_time", issue_id: issueId, ...body }, { quiet: true }));
           close();
         });

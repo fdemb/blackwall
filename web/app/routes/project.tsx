@@ -12,10 +12,11 @@ import { IssueList } from "~/components/app/issue-list";
 import { useQueueState } from "~/components/app/workbench";
 import { EmptyState, Page, PageHeader, Scroll } from "~/components/app/page";
 import { ProgressBar } from "~/components/app/progress";
-import { applyFilter, isDone } from "~/lib/filters";
 import { daysUntil, fullDate } from "~/lib/format";
 import { useI18n } from "~/lib/i18n";
 import { usePending } from "~/lib/use-pending";
+import { useIssues } from "~/lib/queries";
+import { QueryStatus } from "~/components/app/query-status";
 import { useWorkspace } from "~/lib/workspace";
 import { ProjectForm } from "./projects";
 import type { Milestone } from "~/lib/types";
@@ -23,24 +24,25 @@ import type { Milestone } from "~/lib/types";
 export default function ProjectPage() {
   const { t, lang } = useI18n();
   const { projectId, ws: wsId } = useParams();
-  const { ws, canWrite, create } = useWorkspace();
+  const { ws, canWrite, create, report } = useWorkspace();
   const [editing, setEditing] = useState(false);
   const [milestoneForm, setMilestoneForm] = useState<Milestone | "new" | null>(null);
   const { filter, setFilter } = useQueueState();
+  const query = useIssues({ ...filter, project_id: projectId });
   const project = ws.projects.find((p) => p.id === projectId);
   if (!project) return <Navigate to={`/${wsId}/projects`} replace />;
-  // Progress and milestones always count the whole project. Only the list below follows the filters.
-  const issues = applyFilter(ws, { project_id: project.id });
-  const shown = applyFilter(ws, { ...filter, project_id: project.id });
+  const stats = report.project_stats.find((stats) => stats.id === project.id);
+  const total = stats?.total ?? 0;
+  const shown = query.items;
   const narrowed = Object.keys(filter).some(
     (k) => k !== "sort" && filter[k as keyof typeof filter],
   );
-  const done = issues.filter((i) => isDone(ws, i)).length;
+  const done = stats?.completed ?? 0;
   const milestones = ws.milestones
     .filter((m) => m.project_id === project.id)
     .sort((a, b) => (a.deadline ?? "9").localeCompare(b.deadline ?? "9"));
   const teams = (
-    project.team_ids.length ? project.team_ids : [...new Set(issues.map((i) => i.team_id))]
+    project.team_ids.length ? project.team_ids : (stats?.teams ?? []).map((team) => team.id)
   )
     .map((id) => ws.teams.find((x) => x.id === id))
     .filter((x): x is NonNullable<typeof x> => Boolean(x));
@@ -87,7 +89,7 @@ export default function ProjectPage() {
                 {project.description}
               </p>
             )}
-            {issues.length > 0 && (
+            {total > 0 && (
               <div className="-mx-4">
                 <FilterBar
                   filter={filter}
@@ -97,6 +99,7 @@ export default function ProjectPage() {
                 />
               </div>
             )}
+            <QueryStatus query={query} />
             <div className="overflow-hidden rounded-xl border border-border">
               <IssueList
                 issues={shown}
@@ -119,23 +122,24 @@ export default function ProjectPage() {
           <aside className="space-y-6 lg:order-2">
             <section>
               <h2 className="mb-2 text-[13px] font-semibold">{t("project.progress")}</h2>
-              <ProgressBar value={done} total={issues.length} label={t("project.progress")} />
+              <ProgressBar value={done} total={total} label={t("project.progress")} />
               <p className="mt-1.5 text-xs tabular-nums text-muted-foreground">
-                {t("project.doneOf", { done, total: issues.length })}
+                {t("project.doneOf", { done, total: total })}
               </p>
               <ul className="mt-3 space-y-2">
                 {teams.map((tm) => {
-                  const list = issues.filter((i) => i.team_id === tm.id);
-                  const d = list.filter((i) => isDone(ws, i)).length;
+                  const teamStats = stats?.teams.find((stats) => stats.id === tm.id);
+                  const count = teamStats?.total ?? 0;
+                  const d = teamStats?.completed ?? 0;
                   return (
                     <li key={tm.id} className="text-xs">
                       <div className="mb-1 flex justify-between">
                         <span className="font-medium">{tm.name}</span>
                         <span className="tabular-nums text-muted-foreground">
-                          {d}/{list.length}
+                          {d}/{count}
                         </span>
                       </div>
-                      <ProgressBar value={d} total={list.length} label={tm.name} className="h-1" />
+                      <ProgressBar value={d} total={count} label={tm.name} className="h-1" />
                     </li>
                   );
                 })}
@@ -161,9 +165,10 @@ export default function ProjectPage() {
               ) : (
                 <ul className="space-y-2">
                   {milestones.map((m) => {
-                    const list = issues.filter((i) => i.milestone_id === m.id);
-                    const d = list.filter((i) => isDone(ws, i)).length;
-                    const late = m.deadline && daysUntil(m.deadline) < 0 && d < list.length;
+                    const milestoneStats = stats?.milestones.find((stats) => stats.id === m.id);
+                    const count = milestoneStats?.total ?? 0;
+                    const d = milestoneStats?.completed ?? 0;
+                    const late = m.deadline && daysUntil(m.deadline) < 0 && d < count;
                     return (
                       <li key={m.id} className="rounded-lg border border-border bg-card p-3">
                         <div className="flex items-center gap-2 text-[13px] font-medium">
@@ -188,14 +193,9 @@ export default function ProjectPage() {
                             {fullDate(m.deadline, lang)}
                           </p>
                         )}
-                        <ProgressBar
-                          value={d}
-                          total={list.length}
-                          label={m.name}
-                          className="mt-2 h-1"
-                        />
+                        <ProgressBar value={d} total={count} label={m.name} className="mt-2 h-1" />
                         <p className="mt-1 text-xs tabular-nums text-muted-foreground">
-                          {d}/{list.length}
+                          {d}/{count}
                         </p>
                       </li>
                     );
@@ -253,7 +253,14 @@ function MilestoneForm({
             milestone
               ? { type: "update_milestone", id: milestone.id, ...body }
               : { type: "create_milestone", project_id: projectId, ...body },
-            { quiet: true },
+            {
+              quiet: true,
+              expectedVersions: error
+                ? undefined
+                : milestone
+                  ? { [milestone.id]: milestone.version }
+                  : {},
+            },
           );
           close();
         });

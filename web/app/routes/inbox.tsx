@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useNavigate } from "react-router";
 import {
   AtSign,
@@ -18,6 +18,8 @@ import { Tab, TabList, Tabs } from "~/components/ui/tabs";
 import { EmptyState, Page, PageHeader, Scroll } from "~/components/app/page";
 import { issueKey, relativeTime } from "~/lib/format";
 import { useI18n } from "~/lib/i18n";
+import { useIssues, useResource } from "~/lib/queries";
+import { QueryStatus } from "~/components/app/query-status";
 import { useWorkspace } from "~/lib/workspace";
 import { cn } from "~/lib/utils";
 import type { AlertKind } from "~/lib/types";
@@ -33,11 +35,17 @@ const ICONS: Record<AlertKind, React.ComponentType<{ className?: string }>> = {
 export default function Inbox() {
   const { t, lang } = useI18n();
   const nav = useNavigate();
-  const { ws, run, unread } = useWorkspace();
+  const { ws, run, unread, cache } = useWorkspace();
   const [view, setView] = useState<"all" | "unread">("all");
-  const sorted = [...ws.notifications].sort(
-    (a, b) => +new Date(b.created_at) - +new Date(a.created_at),
+  const query = useResource("notifications");
+  useEffect(() => {
+    if (!query.loading && !query.error) cache({ notifications: query.items });
+  }, [query.items, query.loading, query.error, cache]);
+  const ids = query.items.flatMap((notification) =>
+    notification.issue_id ? [notification.issue_id] : [],
   );
+  useIssues({ ids: [...new Set(ids)].join(",") }, ids.length > 0);
+  const sorted = [...query.items].sort((a, b) => +new Date(b.created_at) - +new Date(a.created_at));
   const list = view === "unread" ? sorted.filter((n) => !n.read_at) : sorted;
   return (
     <Page>
@@ -75,6 +83,7 @@ export default function Inbox() {
         )}
       </PageHeader>
       <Scroll>
+        <QueryStatus query={query} />
         {sorted.length === 0 ? (
           <EmptyState
             icon={<Bell />}

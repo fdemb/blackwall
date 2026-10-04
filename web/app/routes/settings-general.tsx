@@ -10,7 +10,7 @@ import { useWorkspace } from "~/lib/workspace";
 export default function General() {
   const t = useT();
   const toast = useToast();
-  const { ws, role } = useWorkspace();
+  const { ws, role, report } = useWorkspace();
   const base = `/${ws.id}/settings`;
   const copyId = () =>
     navigator.clipboard.writeText(ws.id).then(
@@ -21,7 +21,7 @@ export default function General() {
     [t("settings.members"), ws.members.length, `${base}/members`],
     [t("nav.teams"), ws.teams.length, `${base}/teams`],
     [t("nav.projects"), ws.projects.length],
-    [t("nav.issues"), ws.issues.filter((i) => !i.deleted_at).length],
+    [t("nav.issues"), report.issue_count],
   ];
   return (
     <SettingsPage title={t("settings.general")} description={t("settings.generalSub")}>

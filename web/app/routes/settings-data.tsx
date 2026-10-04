@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { DropZone, FileTrigger, Text } from "react-aria-components";
 import { Download, FileUp } from "lucide-react";
 import { Button } from "~/components/ui/button";
@@ -62,9 +62,10 @@ function inspect(name: string, parsed: unknown): Preview | null {
 
 export default function Data() {
   const t = useT();
-  const { ws, revision, canWrite, canAdmin, reload } = useWorkspace();
+  const { ws, canWrite, canAdmin, reload } = useWorkspace();
   const toast = useToast();
   const [busy, setBusy] = useState(false);
+  const importKey = useRef(crypto.randomUUID());
   const [preview, setPreview] = useState<Preview | null>(null);
   const [result, setResult] = useState<ImportSummary | null | undefined>(undefined);
 
@@ -82,6 +83,7 @@ export default function Data() {
     setBusy(false);
   };
   const choose = async (file: File) => {
+    importKey.current = crypto.randomUUID();
     try {
       const found = inspect(file.name, JSON.parse(await file.text()));
       if (!found) return toast.error(t("data.emptyFile"));
@@ -149,7 +151,7 @@ export default function Data() {
               allowed={preview.kind === "issues" || canAdmin}
               onCancel={close}
               onImport={async () => {
-                const res = await workspaces.import(ws.id, revision, preview.body);
+                const res = await workspaces.import(ws.id, preview.body, importKey.current);
                 await reload().catch(() => undefined);
                 setResult(res.summary);
                 toast.show(t("data.imported"));

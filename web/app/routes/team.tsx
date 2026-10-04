@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { Link, Navigate, useParams, useSearchParams } from "react-router";
 import { CalendarRange, KanbanSquare, List, ListTodo, Plus } from "lucide-react";
 import { Button } from "~/components/ui/button";
@@ -10,8 +10,9 @@ import { FilterBar } from "~/components/app/filter-bar";
 import { IssueList } from "~/components/app/issue-list";
 import { Workbench, useQueueState, type QueueState } from "~/components/app/workbench";
 import { EmptyState, Page, PageHeader, Scroll } from "~/components/app/page";
-import { applyFilter, isDone } from "~/lib/filters";
 import { useT } from "~/lib/i18n";
+import { useIssues } from "~/lib/queries";
+import { QueryStatus } from "~/components/app/query-status";
 import { useWorkspace } from "~/lib/workspace";
 import type { Id, Workspace } from "~/lib/types";
 
@@ -154,17 +155,14 @@ function BoardView({
         k !== "sort" && k !== "sprint_id" && k !== "team_id" && filter[k as keyof typeof filter],
     ) || sprint !== "all";
   const teamHasIssues = ws.issues.some((i) => i.team_id === teamId && !i.deleted_at);
-  const issues = useMemo(() => {
-    let list = applyFilter(ws, {
-      ...filter,
-      team_id: teamId,
-      sprint_id: undefined,
-      sort: "position",
-    });
-    if (sprint === "none") list = list.filter((i) => !i.sprint_id);
-    else if (sprint !== "all" && sprint) list = list.filter((i) => i.sprint_id === sprint);
-    return list;
-  }, [ws, filter, teamId, sprint]);
+  const query = useIssues({
+    ...filter,
+    team_id: teamId,
+    sort: "position",
+    sprint_id: sprint && sprint !== "all" && sprint !== "none" ? sprint : undefined,
+    no_sprint: sprint === "none",
+  });
+  const issues = query.items;
 
   const onDrop = (stageId: Id) => (ids: Id[], beforeId: Id | null) => {
     if (!ids.length) return;
@@ -209,6 +207,7 @@ function BoardView({
           </div>
         </div>
       </PageHeader>
+      <QueryStatus query={query} />
       {issues.length === 0 && narrowed && teamHasIssues ? (
         <EmptyState
           title={t("empty.noMatch")}
@@ -269,21 +268,21 @@ function BacklogView({
   state: QueueState;
 }) {
   const t = useT();
-  const { ws, create, canWrite } = useWorkspace();
+  const { create, canWrite } = useWorkspace();
   const { filter, setFilter } = state;
   const narrowed = Object.keys(filter).some(
     (k) => k !== "sort" && k !== "sprint_id" && k !== "team_id" && filter[k as keyof typeof filter],
   );
-  const issues = useMemo(
-    () =>
-      applyFilter(ws, {
-        ...filter,
-        team_id: teamId,
-        sprint_id: undefined,
-        sort: filter.sort ?? "priority",
-      }).filter((i) => !i.sprint_id && !isDone(ws, i)),
-    [ws, filter, teamId],
-  );
+  const query = useIssues({
+    ...filter,
+    team_id: teamId,
+    sprint_id: undefined,
+    no_sprint: true,
+    open: true,
+    sort: filter.sort ?? "priority",
+  });
+  const issues = query.items;
+
   return (
     <Page>
       <PageHeader
@@ -309,6 +308,7 @@ function BacklogView({
           saveable={false}
         />
       </PageHeader>
+      <QueryStatus query={query} />
       <Scroll>
         <IssueList
           issues={issues}

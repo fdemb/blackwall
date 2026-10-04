@@ -1,7 +1,8 @@
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { Plus } from "lucide-react";
 import { Button } from "~/components/ui/button";
-import { applyFilter } from "~/lib/filters";
+import { useIssues } from "~/lib/queries";
+import { QueryStatus } from "./query-status";
 import { useT } from "~/lib/i18n";
 import { useWorkspace } from "~/lib/workspace";
 import type { IssueFilter } from "~/lib/types";
@@ -48,13 +49,11 @@ export function Workbench({
   state?: QueueState;
 }) {
   const t = useT();
-  const { ws, create, canWrite } = useWorkspace();
+  const { create, canWrite } = useWorkspace();
   const own = useQueueState(initial);
   const { filter, setFilter, groupBy, setGroupBy } = state ?? own;
-  const issues = useMemo(() => {
-    const list = applyFilter(ws, { ...filter, ...base });
-    return extraFilter ? list.filter(extraFilter) : list;
-  }, [ws, filter, base, extraFilter]);
+  const query = useIssues({ ...filter, ...base });
+  const issues = extraFilter ? query.items.filter(extraFilter) : query.items;
   const filtered = Object.keys(filter).some(
     (k) => k !== "sort" && !hide.includes(k as keyof IssueFilter) && filter[k as keyof IssueFilter],
   );
@@ -97,37 +96,41 @@ export function Workbench({
         />
       </PageHeader>
       <Scroll>
-        <IssueList
-          issues={issues}
-          groupBy={groupBy}
-          showTeam
-          emptyState={
-            empty && !filtered ? (
-              empty
-            ) : (
-              <EmptyState
-                title={filtered ? t("empty.noMatch") : t("empty.issues")}
-                description={
-                  filtered
-                    ? t("empty.noMatchSub")
-                    : canWrite
-                      ? t("empty.issuesSub")
-                      : t("empty.issuesViewerSub")
-                }
-                action={
-                  filtered ? (
-                    <Button onPress={() => setFilter({})}>{t("filter.clear")}</Button>
-                  ) : canWrite ? (
-                    <Button variant="primary" onPress={createDefaults}>
-                      <Plus />
-                      {t("issue.new")}
-                    </Button>
-                  ) : undefined
-                }
-              />
-            )
-          }
-        />
+        {query.loading || query.error ? <QueryStatus query={query} /> : null}
+        {(!query.loading || query.items.length > 0) && !query.error && (
+          <IssueList
+            issues={issues}
+            groupBy={groupBy}
+            showTeam
+            emptyState={
+              empty && !filtered ? (
+                empty
+              ) : (
+                <EmptyState
+                  title={filtered ? t("empty.noMatch") : t("empty.issues")}
+                  description={
+                    filtered
+                      ? t("empty.noMatchSub")
+                      : canWrite
+                        ? t("empty.issuesSub")
+                        : t("empty.issuesViewerSub")
+                  }
+                  action={
+                    filtered ? (
+                      <Button onPress={() => setFilter({})}>{t("filter.clear")}</Button>
+                    ) : canWrite ? (
+                      <Button variant="primary" onPress={createDefaults}>
+                        <Plus />
+                        {t("issue.new")}
+                      </Button>
+                    ) : undefined
+                  }
+                />
+              )
+            }
+          />
+        )}
+        {!query.loading && !query.error && <QueryStatus query={query} />}
       </Scroll>
     </Page>
   );
