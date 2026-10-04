@@ -21,7 +21,7 @@ export default function People() {
       <PageHeader
         title={t("nav.people")}
         icon={<Users className="size-4 text-muted-foreground" />}
-        subtitle={t("count.members", { n: members.length })}
+        subtitle={t("count.members", { count: members.length })}
       >
         <div className="px-4 pb-2">
           <SearchField

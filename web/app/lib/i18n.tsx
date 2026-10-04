@@ -1,60 +1,43 @@
-import {
-  createContext,
-  useCallback,
-  useContext,
-  useEffect,
-  useMemo,
-  useState,
-  type ReactNode,
-} from "react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { I18nextProvider, useTranslation } from "react-i18next";
 import { I18nProvider as AriaLocale } from "react-aria-components";
-import { en } from "~/locales/en";
-import { pl } from "~/locales/pl";
+import { createI18n } from "./i18n-instance";
 import { safeGet, safeSet } from "./storage";
 import type { Language } from "./types";
 
+export { createI18n, isTranslationKey, type Key } from "./i18n-instance";
 export const LANG_KEY = "bw-lang:v1";
 
-export type Key = keyof typeof en;
-const dictionaries: Record<Language, Record<Key, string>> = { en, pl };
-
-export function translate(lang: Language, key: Key, vars?: Record<string, string | number>) {
-  let text: string = dictionaries[lang][key] ?? en[key] ?? key;
-  if (vars) for (const [k, v] of Object.entries(vars)) text = text.replaceAll(`{${k}}`, String(v));
-  return text;
-}
-
-interface I18n {
-  lang: Language;
-  setLang: (lang: Language) => void;
-  t: (key: Key, vars?: Record<string, string | number>) => string;
-}
-const Ctx = createContext<I18n | null>(null);
-
 export function I18nProvider({ initial, children }: { initial: Language; children: ReactNode }) {
-  const [lang, setLangState] = useState<Language>(initial);
-  const setLang = useCallback((next: Language) => {
-    safeSet("local", LANG_KEY, next);
-    setLangState(next);
-  }, []);
-  // One source for the document language, so a first visit from a Polish browser doesn't get English metadata.
-  useEffect(() => {
-    document.documentElement.lang = lang;
-  }, [lang]);
-  const t = useCallback<I18n["t"]>((key, vars) => translate(lang, key, vars), [lang]);
-  const value = useMemo(() => ({ lang, setLang, t }), [lang, setLang, t]);
-  // React Aria formats dates, calendars and number fields from its own locale, so feed it the same language.
+  const [instance] = useState(() => createI18n(initial));
   return (
-    <Ctx value={value}>
-      <AriaLocale locale={lang}>{children}</AriaLocale>
-    </Ctx>
+    <I18nextProvider i18n={instance}>
+      <LocaleBoundary>{children}</LocaleBoundary>
+    </I18nextProvider>
   );
 }
 
+function LocaleBoundary({ children }: { children: ReactNode }) {
+  const { lang } = useI18n();
+  useEffect(() => {
+    document.documentElement.lang = lang;
+  }, [lang]);
+  return <AriaLocale locale={lang}>{children}</AriaLocale>;
+}
+
+/** App locale preferences around react-i18next's typed translation hook. */
 export function useI18n() {
-  const v = useContext(Ctx);
-  if (!v) throw new Error("I18nProvider missing");
-  return v;
+  const { t, i18n } = useTranslation();
+  const setLang = useCallback(
+    (next: Language) => {
+      safeSet("local", LANG_KEY, next);
+      void i18n.changeLanguage(next);
+    },
+    [i18n],
+  );
+  if (!i18n.isInitialized) throw new Error("I18nProvider missing");
+  const lang: Language = i18n.resolvedLanguage === "pl" ? "pl" : "en";
+  return { lang, setLang, t };
 }
 
 export function initialLanguage(): Language {

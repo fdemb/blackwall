@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import {
   Links,
   Meta,
@@ -14,7 +14,7 @@ import { RouterProvider } from "react-aria-components";
 import { QueryClientProvider } from "@tanstack/react-query";
 import "./app.css";
 import { ToastProvider } from "~/components/ui/toast";
-import { I18nProvider, initialLanguage, translate } from "~/lib/i18n";
+import { I18nProvider, initialLanguage, createI18n } from "~/lib/i18n";
 import { queryClient } from "~/lib/query-client";
 import { watchSystemTheme } from "~/lib/theme";
 import type { Route } from "./+types/root";
@@ -27,9 +27,10 @@ const QueryDevtools = import.meta.env.DEV
   : () => null;
 
 export function Layout({ children }: { children: React.ReactNode }) {
-  // initialLanguage() mirrors public/theme.js, which already sets <html lang> before first paint.
+  // The pre-paint script applies browser preferences to the prerendered document.
+  // Only <html>'s language and theme attributes can intentionally differ during hydration.
   return (
-    <html lang={initialLanguage()}>
+    <html lang={initialLanguage()} suppressHydrationWarning>
       <head>
         <meta charSet="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -82,8 +83,8 @@ export default function App() {
 
 export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {
   // The error page replaces the app, including its i18n provider, so it reads the language directly.
-  const lang = initialLanguage();
-  const t = (key: Parameters<typeof translate>[1]) => translate(lang, key);
+  const [instance] = useState(() => createI18n(initialLanguage()));
+  const t = instance.t;
   const message = isRouteErrorResponse(error)
     ? `${error.status} ${error.statusText}`
     : error instanceof Error

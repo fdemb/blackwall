@@ -306,7 +306,9 @@ export function MultiMemberPicker({
           <span className="text-muted-foreground">{t("team.pickMembers")}</span>
         )}
         {value.length > 0 && (
-          <span className="text-muted-foreground">{t("count.members", { n: value.length })}</span>
+          <span className="text-muted-foreground">
+            {t("count.members", { count: value.length })}
+          </span>
         )}
       </Button>
       <Popover placement="bottom start" className="min-w-56">

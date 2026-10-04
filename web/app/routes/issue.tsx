@@ -59,7 +59,7 @@ import { EmptyState, Page, TeamCrumb } from "~/components/app/page";
 import { isDone, stageOf } from "~/lib/filters";
 import { bytes, formatMinutes, fullDate, issueKey, MAX_UPLOAD, relativeTime } from "~/lib/format";
 import { useDocumentTitle } from "~/lib/title";
-import { useI18n, type Key } from "~/lib/i18n";
+import { useI18n, isTranslationKey, type Key } from "~/lib/i18n";
 import { useMediaQuery } from "~/lib/media";
 import { usePending } from "~/lib/use-pending";
 import {
@@ -1762,7 +1762,6 @@ function Composer({ issue, hasItems }: { issue: Issue; hasItems: boolean }) {
 }
 
 function activityLabel(t: ReturnType<typeof useI18n>["t"], action: string) {
-  const key = `activity.${action}` as Parameters<typeof t>[0];
-  const text = t(key);
-  return text === key ? action.replaceAll("_", " ").replace(/\./g, " ") : text;
+  const key = `activity.${action}`;
+  return isTranslationKey(key) ? t(key) : action.replaceAll("_", " ").replace(/\./g, " ");
 }

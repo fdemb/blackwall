@@ -10,4 +10,6 @@ Components are shadcn-style wrappers over React Aria Components in `web/app/comp
 
 Everything is reachable from Ctrl/Cmd+K. `C` creates an issue, `/` searches, `G` then `I`, `M`, `A`, `P`, or `R` jumps between pages. The single-key shortcuts can be turned off in Account, and Ctrl/Cmd+K keeps working. Empty states name the next action. Motion is short and disabled under `prefers-reduced-motion`.
 
-English and Polish share one typed dictionary in `web/app/locales`. Markdown is rendered and sanitized by the backend.
+English and Polish use i18next and react-i18next with typed catalogs in `web/app/locales`. `useI18n()` exposes the native typed `t` function and app language preferences. Use `{{name}}` for interpolation and `t("count.issues", { count })` for plural messages. English defines `_one` and `_other`; Polish defines `_one`, `_few`, `_many`, and `_other`. Each React root owns an i18next instance, and its resolved language drives React Aria and `<html lang>`. The saved `bw-lang:v1` preference takes precedence over the browser language until the signed-in profile loads. Dates and numbers use native `Intl` formatting.
+
+Markdown is rendered and sanitized by the backend.
