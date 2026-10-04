@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useState } from "react";
+import { createContext, use, useEffect, useState } from "react";
 import {
   Modal,
   ModalOverlay,
@@ -11,7 +11,7 @@ import {
 import { X } from "lucide-react";
 import { cn } from "~/lib/utils";
 import { useT } from "~/lib/i18n";
-import { Button } from "./button";
+import { Button, type ButtonProps } from "./button";
 
 export { DialogTrigger, Heading };
 
@@ -23,7 +23,7 @@ const DirtyCtx = createContext<(dirty: boolean) => void>(() => {});
  * close buttons still work.
  */
 export function useDialogDirty(dirty: boolean) {
-  const set = useContext(DirtyCtx);
+  const set = use(DirtyCtx);
   useEffect(() => {
     set(dirty);
     return () => set(false);
@@ -36,7 +36,28 @@ interface DialogProps extends Omit<ModalOverlayProps, "children"> {
   size?: "sm" | "md" | "lg";
   position?: "center" | "top";
   children: React.ReactNode | ((close: () => void) => React.ReactNode);
+  // Kept for compat. Prefer composing <DialogClose /> wherever the default slot doesn't fit.
   hideClose?: boolean;
+}
+
+const CloseCtx = createContext<() => void>(() => {});
+
+/** Composable close button; reads `close` from context so it can live anywhere inside a Dialog. */
+export function DialogClose({ className, children, ...props }: ButtonProps) {
+  const close = use(CloseCtx);
+  const t = useT();
+  return (
+    <Button
+      variant="ghost"
+      size="icon"
+      aria-label={t("action.close")}
+      {...props}
+      onPress={close}
+      className={cn("-mr-2 -mt-1", className)}
+    >
+      {children ?? <X aria-hidden="true" />}
+    </Button>
+  );
 }
 
 export function Dialog({
@@ -49,7 +70,6 @@ export function Dialog({
   hideClose,
   ...props
 }: DialogProps) {
-  const t = useT();
   const [dirty, setDirty] = useState(false);
   return (
     <ModalOverlay
@@ -75,30 +95,22 @@ export function Dialog({
         <RACDialog className="flex max-h-[85vh] flex-col outline-none">
           {({ close }) => (
             <DirtyCtx value={setDirty}>
-              <div className="flex items-start justify-between gap-4 px-5 pb-1 pt-4">
-                <div>
-                  <Heading slot="title" className="text-[15px] font-semibold tracking-tight">
-                    {title}
-                  </Heading>
-                  {description && (
-                    <p className="mt-0.5 text-xs text-muted-foreground">{description}</p>
-                  )}
+              <CloseCtx value={close}>
+                <div className="flex items-start justify-between gap-4 px-5 pb-1 pt-4">
+                  <div>
+                    <Heading slot="title" className="text-[15px] font-semibold tracking-tight">
+                      {title}
+                    </Heading>
+                    {description && (
+                      <p className="mt-0.5 text-xs text-muted-foreground">{description}</p>
+                    )}
+                  </div>
+                  {!hideClose && <DialogClose />}
                 </div>
-                {!hideClose && (
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    onPress={close}
-                    aria-label={t("action.close")}
-                    className="-mr-2 -mt-1"
-                  >
-                    <X />
-                  </Button>
-                )}
-              </div>
-              <div className="overflow-auto px-5 pb-5 pt-3">
-                {typeof children === "function" ? children(close) : children}
-              </div>
+                <div className="overflow-auto overscroll-contain px-5 pb-5 pt-3">
+                  {typeof children === "function" ? children(close) : children}
+                </div>
+              </CloseCtx>
             </DirtyCtx>
           )}
         </RACDialog>

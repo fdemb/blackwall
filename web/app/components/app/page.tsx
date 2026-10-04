@@ -34,7 +34,9 @@ export function PageHeader({
         {heading ?? (
           <>
             {icon}
-            <h1 className="truncate text-[15px] font-semibold tracking-tight">{title}</h1>
+            <h1 className="truncate text-balance text-[15px] font-semibold tracking-tight">
+              {title}
+            </h1>
             {subtitle && (
               <span className="hidden truncate text-[13px] text-muted-foreground sm:block">
                 {subtitle}

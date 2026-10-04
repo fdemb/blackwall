@@ -3,7 +3,12 @@ import { Dialog } from "~/components/ui/dialog";
 import { useT } from "~/lib/i18n";
 import { usePending } from "~/lib/use-pending";
 
-/** Asks before something destructive. Stays open and shows the error if the action fails. */
+/**
+ * Asks before something destructive. Stays open and shows the error if the action fails.
+ *
+ * `isOpen`/`onOpenChange` stay the public API; closing delegates to the `close` render-prop from
+ * `Dialog` (its Close equivalent), so both buttons and the dialog chrome dismiss the same way.
+ */
 export function ConfirmDialog({
   title,
   description,

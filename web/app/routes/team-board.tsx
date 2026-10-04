@@ -1,3 +1,4 @@
+import { useMemo } from "react";
 import { Button } from "~/components/ui/button";
 import { NullableSelect } from "~/components/app/pickers";
 import { DndColumn } from "~/components/app/board";
@@ -40,15 +41,24 @@ export default function TeamBoard() {
   const teamHasIssues = unfiltered.items.length > 0;
 
   const onDrop = (stageId: Id) => (ids: Id[], beforeId: Id | null) => {
-    if (!ids.length) return;
-    void (async () => {
-      const before = beforeId;
-      for (const id of ids) {
-        if (id === before) continue;
-        await run({ type: "move_issue", id, stage_id: stageId, before_id: before }).catch(() => {});
-      }
-    })();
+    const moves = ids.filter((id) => id !== beforeId);
+    if (!moves.length) return;
+    void Promise.all(
+      moves.map((id) =>
+        run({ type: "move_issue", id, stage_id: stageId, before_id: beforeId }).catch(() => {}),
+      ),
+    );
   };
+  // One pass over the issues instead of a filter per column.
+  const byStage = useMemo(() => {
+    const groups = new Map<Id, typeof issues>();
+    for (const issue of issues) {
+      const list = groups.get(issue.stage_id);
+      if (list) list.push(issue);
+      else groups.set(issue.stage_id, [issue]);
+    }
+    return groups;
+  }, [issues]);
 
   return (
     <Page>
@@ -95,7 +105,7 @@ export default function TeamBoard() {
       ) : (
         <div className="flex min-h-0 flex-1 gap-3 overflow-x-auto p-3">
           {stages.map((s) => {
-            const list = issues.filter((i) => i.stage_id === s.id);
+            const list = byStage.get(s.id) ?? [];
             return (
               <DndColumn
                 key={s.id}

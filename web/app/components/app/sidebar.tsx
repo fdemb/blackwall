@@ -58,6 +58,8 @@ export function Sidebar({
   const otherTeams = ws.teams.filter((tm) => !tm.members.includes(profile.id));
 
   return (
+    // Delegation only closes the drawer on navigation: links stay semantic NavLink/Link elements,
+    // and this handler never prevents or reroutes them.
     <nav
       aria-label={t("nav.main")}
       onClick={(e) => (e.target as HTMLElement).closest("a") && onNavigate?.()}
@@ -71,7 +73,7 @@ export function Sidebar({
           >
             <Logo size={20} />
             <span className="truncate">{ws.name}</span>
-            <ChevronDown className="ml-auto size-3.5 text-muted-foreground" />
+            <ChevronDown aria-hidden className="ml-auto size-3.5 text-muted-foreground" />
           </Button>
           <MenuPopover placement="bottom start" className="w-60">
             <Menu
@@ -97,33 +99,33 @@ export function Sidebar({
               <MenuSeparator />
               {workspaces.map((w) => (
                 <MenuItem key={w.id} id={`ws:${w.id}`} textValue={w.name}>
-                  <Building2 />
+                  <Building2 aria-hidden />
                   <span className="flex-1 truncate">{w.name}</span>
-                  {w.id === ws.id && <Check className="!text-primary" />}
+                  {w.id === ws.id && <Check aria-hidden className="!text-primary" />}
                 </MenuItem>
               ))}
               <MenuItem id="new">
-                <Plus />
+                <Plus aria-hidden />
                 {t("workspace.newOrJoin")}
               </MenuItem>
               <MenuSeparator />
               <MenuItem id="settings">
-                <Settings />
+                <Settings aria-hidden />
                 {t("nav.settings")}
               </MenuItem>
               <MenuItem id="account">
-                <UserCog />
+                <UserCog aria-hidden />
                 {t("nav.account")}
               </MenuItem>
               <MenuItem id="signout">
-                <LogOut />
+                <LogOut aria-hidden />
                 {t("nav.signOut")}
               </MenuItem>
             </Menu>
           </MenuPopover>
         </MenuTrigger>
         <Button variant="ghost" size="icon-lg" aria-label={t("search.title")} onPress={onSearch}>
-          <Search />
+          <Search aria-hidden />
         </Button>
         {canWrite && (
           <Button
@@ -132,7 +134,7 @@ export function Sidebar({
             aria-label={t("issue.new")}
             onPress={() => create.show()}
           >
-            <SquarePen />
+            <SquarePen aria-hidden />
           </Button>
         )}
       </div>
@@ -140,7 +142,7 @@ export function Sidebar({
       <div className="flex-1 space-y-4 overflow-y-auto px-2 pb-2 pt-1">
         <div className="space-y-0.5">
           <NavLink to={`${base}/inbox`} className={linkClass}>
-            <Inbox />
+            <Inbox aria-hidden />
             {t("nav.inbox")}
             {unread > 0 && (
               <span className="ml-auto rounded-full bg-primary-solid px-1.5 text-[11px] font-semibold tabular-nums text-primary-foreground">
@@ -149,26 +151,26 @@ export function Sidebar({
             )}
           </NavLink>
           <NavLink to={`${base}/my-issues`} className={linkClass}>
-            <UserRound />
+            <UserRound aria-hidden />
             {t("nav.myIssues")}
           </NavLink>
         </div>
 
         <Section title={t("nav.workspace")}>
           <NavLink to={`${base}/issues`} end className={linkClass}>
-            <Layers />
+            <Layers aria-hidden />
             {t("nav.allIssues")}
           </NavLink>
           <NavLink to={`${base}/projects`} className={linkClass}>
-            <FolderKanban />
+            <FolderKanban aria-hidden />
             {t("nav.projects")}
           </NavLink>
           <NavLink to={`${base}/people`} className={linkClass}>
-            <Users />
+            <Users aria-hidden />
             {t("nav.people")}
           </NavLink>
           <NavLink to={`${base}/reports`} className={linkClass}>
-            <BarChart3 />
+            <BarChart3 aria-hidden />
             {t("nav.reports")}
           </NavLink>
         </Section>
@@ -191,7 +193,7 @@ export function Sidebar({
           <Section title={t("nav.views")}>
             {ws.views.map((v) => (
               <NavLink key={v.id} to={`${base}/views/${v.id}`} className={linkClass}>
-                <Eye />
+                <Eye aria-hidden />
                 <span className="truncate">{v.name}</span>
               </NavLink>
             ))}
@@ -212,14 +214,14 @@ export function Sidebar({
           aria-label={t("nav.trash")}
           className={(s) => cn(linkClass(s), "size-7 justify-center px-0")}
         >
-          <Trash2 />
+          <Trash2 aria-hidden />
         </NavLink>
         <NavLink
           to={`${base}/settings/general`}
           aria-label={t("nav.settings")}
           className={(s) => cn(linkClass(s), "size-7 justify-center px-0")}
         >
-          <Settings />
+          <Settings aria-hidden />
         </NavLink>
         <ThemeToggle />
       </div>
@@ -238,7 +240,10 @@ function Section({ title, children }: { title: string; children: React.ReactNode
           className="mb-0.5 h-6 w-full justify-start gap-1 px-2 text-xs font-medium text-muted-foreground"
         >
           {title}
-          <ChevronRight className={cn("size-3 transition-transform", open && "rotate-90")} />
+          <ChevronRight
+            aria-hidden
+            className={cn("size-3 transition-transform", open && "rotate-90")}
+          />
         </Button>
       </Heading>
       <DisclosurePanel>
@@ -269,6 +274,7 @@ function TeamLinks({ id, name, base }: { id: string; name: string; base: string 
         </span>
         <span className="truncate">{name}</span>
         <ChevronRight
+          aria-hidden
           className={cn("ml-auto size-3 transition-transform", isOpen && "rotate-90")}
         />
       </button>

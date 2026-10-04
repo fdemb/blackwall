@@ -55,7 +55,7 @@ export function applyChanges(client: QueryClient, db: WorkspaceDb, changes: Chan
       // A delete for a row that isn't synced here, or a collection that hasn't started.
     }
   }
-  // Totals depend on almost everything.
+  // Totals depend on almost everything, but only when something actually changed.
   void client.invalidateQueries({ queryKey: keys.report(db.id) });
 }
 
@@ -84,6 +84,7 @@ export const changeFeedQuery = (client: QueryClient, db: WorkspaceDb) =>
     refetchInterval: POLL_MS,
     refetchOnWindowFocus: true,
     refetchOnReconnect: true,
-    staleTime: 0,
+    // Polling drives freshness; keep data stale-free between polls without refetching on focus.
+    staleTime: POLL_MS,
     retry: false,
   });

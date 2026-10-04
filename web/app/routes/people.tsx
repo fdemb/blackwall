@@ -49,7 +49,7 @@ export default function People() {
                 <li key={m.id}>
                   <Link
                     to={`/${ws.id}/people/${m.id}`}
-                    className="flex items-center gap-3 rounded-xl border border-border bg-card p-3.5 shadow-xs outline-none transition hover:border-primary/40 hover:shadow-md focus-visible:ring-2 focus-visible:ring-ring/60"
+                    className="flex items-center gap-3 rounded-xl border border-border bg-card p-3.5 shadow-xs outline-none transition-colors hover:border-primary/40 hover:shadow-md focus-visible:ring-2 focus-visible:ring-ring/60"
                   >
                     <Avatar name={m.display_name} src={m.avatar_url} size={40} />
                     <div className="min-w-0 flex-1">

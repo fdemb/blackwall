@@ -1,3 +1,4 @@
+import { useCallback } from "react";
 import {
   DropIndicator,
   ListBox,
@@ -31,6 +32,21 @@ const TYPE = "application/x-blackwall-issue";
  */
 const COLUMN_LAYOUT = { estimatedRowSize: 92, gap: 6, padding: 6, dropIndicatorThickness: 2 };
 
+export interface DndColumnProps {
+  id: string;
+  title: string;
+  icon?: React.ReactNode;
+  count?: number;
+  issues: Issue[];
+  onDrop: (ids: Id[], beforeId: Id | null, source: Id | null) => void;
+  onCreate?: () => void;
+  canDrop?: boolean;
+  className?: string;
+  aside?: React.ReactNode;
+  emptyText?: string;
+  footer?: React.ReactNode;
+}
+
 export function DndColumn({
   id,
   title,
@@ -44,43 +60,36 @@ export function DndColumn({
   aside,
   emptyText,
   footer,
-}: {
-  id: string;
-  title: string;
-  icon?: React.ReactNode;
-  count?: number;
-  issues: Issue[];
-  onDrop: (ids: Id[], beforeId: Id | null, source: Id | null) => void;
-  onCreate?: () => void;
-  canDrop?: boolean;
-  className?: string;
-  aside?: React.ReactNode;
-  emptyText?: string;
-  footer?: React.ReactNode;
-}) {
+}: DndColumnProps) {
   const t = useT();
   const { canWrite } = useWorkspace();
-  const beforeFor = (target: DropTarget): Id | null => {
-    if (target.type !== "item") return null;
-    const index = issues.findIndex((i) => i.id === target.key);
-    if (index < 0) return null;
-    return target.dropPosition === "before" ? issues[index].id : (issues[index + 1]?.id ?? null);
-  };
-  const read = async (items: { kind: string; getText?: (t: string) => Promise<string> }[]) => {
-    const ids: Id[] = [];
-    let source: Id | null = null;
-    for (const item of items) {
-      if (item.kind !== "text" || !item.getText) continue;
-      try {
-        const data = JSON.parse(await item.getText(TYPE)) as { id: Id; column: string };
-        ids.push(data.id);
-        source = data.column;
-      } catch {
-        /* not ours */
+  const beforeFor = useCallback(
+    (target: DropTarget): Id | null => {
+      if (target.type !== "item") return null;
+      const index = issues.findIndex((i) => i.id === target.key);
+      if (index < 0) return null;
+      return target.dropPosition === "before" ? issues[index].id : (issues[index + 1]?.id ?? null);
+    },
+    [issues],
+  );
+  const read = useCallback(
+    async (items: { kind: string; getText?: (t: string) => Promise<string> }[]) => {
+      const ids: Id[] = [];
+      let source: Id | null = null;
+      for (const item of items) {
+        if (item.kind !== "text" || !item.getText) continue;
+        try {
+          const data = JSON.parse(await item.getText(TYPE)) as { id: Id; column: string };
+          ids.push(data.id);
+          source = data.column;
+        } catch {
+          /* not ours */
+        }
       }
-    }
-    return { ids, source };
-  };
+      return { ids, source };
+    },
+    [],
+  );
   const { dragAndDropHooks } = useDragAndDrop({
     isDisabled: !canWrite || !canDrop,
     getItems: (keys) =>
@@ -113,7 +122,7 @@ export function DndColumn({
           {aside}
           {onCreate && canWrite && (
             <Button variant="ghost" size="icon" aria-label={t("issue.new")} onPress={onCreate}>
-              <Plus />
+              <Plus aria-hidden />
             </Button>
           )}
         </span>
@@ -124,7 +133,7 @@ export function DndColumn({
           items={issues}
           selectionMode="none"
           dragAndDropHooks={dragAndDropHooks}
-          className="min-h-16 flex-1 overflow-y-auto rounded-b-xl outline-none transition-colors drop-target:bg-accent/60 drop-target:ring-2 drop-target:ring-primary/40"
+          className="min-h-16 flex-1 overflow-y-auto overscroll-contain rounded-b-xl outline-none transition-colors drop-target:bg-accent/60 drop-target:ring-2 drop-target:ring-primary/40"
           renderEmptyState={() => (
             <p className="px-2 py-6 text-center text-xs text-muted-foreground">
               {emptyText ?? t("board.empty")}
@@ -146,6 +155,16 @@ function DropLine({ target }: { target: DropTarget }) {
   );
 }
 
+/** Column that accepts drops. Prefer this over `canDrop` so the mode is explicit at the call site. */
+export function DroppableColumn(props: Omit<DndColumnProps, "canDrop">) {
+  return <DndColumn {...props} canDrop />;
+}
+
+/** Column that never accepts drops (viewers, archived boards). */
+export function ReadOnlyColumn(props: Omit<DndColumnProps, "canDrop">) {
+  return <DndColumn {...props} canDrop={false} />;
+}
+
 export function BoardCard({ issue }: { issue: Issue }) {
   const { ws } = useWorkspace();
   const t = useT();
@@ -154,7 +173,7 @@ export function BoardCard({ issue }: { issue: Issue }) {
       id={issue.id}
       textValue={issue.title}
       href={`/${ws.id}/issue/${issue.id}`}
-      className="group block cursor-default rounded-lg border border-border bg-card p-2.5 text-[13px] shadow-xs outline-none transition-[box-shadow,border-color,opacity] hover:border-primary/40 hover:shadow-sm focus-visible:ring-2 focus-visible:ring-ring/60 dragging:opacity-40"
+      className="group block cursor-default rounded-lg border border-border bg-card p-2.5 text-[13px] shadow-xs outline-none transition-[transform,opacity] hover:border-primary/40 hover:shadow-sm focus-visible:ring-2 focus-visible:ring-ring/60 dragging:opacity-40"
     >
       <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
         <span className="tabular-nums">{issueKey(issue.number)}</span>

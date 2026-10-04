@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Form } from "react-aria-components";
 import { Link, useNavigate, useSearchParams } from "react-router";
-import { MailCheck } from "lucide-react";
+import { Loader2, MailCheck } from "lucide-react";
 import { Button } from "~/components/ui/button";
 import { FormError, TextField } from "~/components/ui/field";
 import { auth } from "~/lib/api";
@@ -59,11 +59,13 @@ export default function Recover() {
             value={email}
             onChange={setEmail}
             autoComplete="email"
+            spellCheck="false"
             autoFocus
             isRequired
           />
           <FormError>{requestError}</FormError>
-          <Button type="submit" variant="primary" size="lg" isDisabled={busy}>
+          <Button type="submit" variant="primary" size="lg" isPending={busy}>
+            {busy && <Loader2 aria-hidden className="animate-spin" />}
             {busy ? t("auth.sending") : t("auth.sendLink")}
           </Button>
         </Form>
@@ -87,7 +89,7 @@ export default function Recover() {
 
   return (
     <>
-      <MailCheck className="mb-3 size-7 text-primary" />
+      <MailCheck aria-hidden className="mb-3 size-7 text-primary" />
       <h1 className="text-xl font-semibold tracking-tight">{t("auth.checkMail")}</h1>
       <p className="mb-6 mt-1 text-muted-foreground">
         {email ? t("auth.checkMailSub", { email }) : t("auth.checkMailNoEmail")}
@@ -96,6 +98,7 @@ export default function Recover() {
         className="flex flex-col gap-4"
         onSubmit={async (e) => {
           e.preventDefault();
+          if (busy) return;
           const f = new FormData(e.currentTarget);
           setBusy(true);
           setResetError("");
@@ -113,6 +116,9 @@ export default function Recover() {
           name="token"
           label={t("auth.token")}
           defaultValue={params.get("token") ?? ""}
+          autoComplete="one-time-code"
+          spellCheck="false"
+          inputMode="text"
           autoFocus
           isRequired
         />
@@ -126,7 +132,8 @@ export default function Recover() {
           description={t("auth.passwordHint")}
         />
         <FormError>{resetError}</FormError>
-        <Button type="submit" variant="primary" size="lg" isDisabled={busy}>
+        <Button type="submit" variant="primary" size="lg" isPending={busy}>
+          {busy && <Loader2 aria-hidden className="animate-spin" />}
           {busy ? t("auth.updating") : t("auth.resetPassword")}
         </Button>
       </Form>

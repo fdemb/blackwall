@@ -42,7 +42,9 @@ function listState<T>(
   };
 }
 
-const escapeLike = (text: string) => text.replace(/[\\%_]/g, (c) => `\\${c}`);
+const LIKE_ESCAPE_RE = /[\\%_]/g;
+const escapeLike = (text: string) => text.replace(LIKE_ESCAPE_RE, (c) => `\\${c}`);
+const ISSUE_NUMBER_RE = /^(?:#|bw-)?(\d+)$/i;
 
 /** Stages whose issues still need work, so `open` stays a plain membership test. */
 export function openStageIds(teams: Team[]) {
@@ -97,7 +99,7 @@ export function issueQuery(
   const search = f.search?.trim();
   if (search) {
     const pattern = `%${escapeLike(search)}%`;
-    const number = /^(?:#|bw-)?(\d+)$/i.exec(search)?.[1];
+    const number = ISSUE_NUMBER_RE.exec(search)?.[1];
     query = query.where(({ i }) =>
       number
         ? or(ilike(i.title, pattern), ilike(i.description, pattern), eq(i.number, Number(number)))
@@ -221,7 +223,10 @@ export function useIssueDetail(issueId: Id) {
   const children = useIssues({ parent_id: issueId });
   const dependents = useIssues({ dependency_id: issueId });
   const references = useIssues({ ids: related.join(",") }, related.length > 0);
-  const lookup = new Map(references.items.map((i) => [i.id, i]));
+  const lookup = useMemo(
+    () => new Map(references.items.map((i) => [i.id, i] as const)),
+    [references.items],
+  );
   return {
     issue,
     loading: live.isLoading,

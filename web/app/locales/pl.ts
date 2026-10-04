@@ -107,7 +107,7 @@ export const pl: Record<keyof typeof en, string> = {
   "issue.new": "Nowe zadanie",
   "issue.create": "Utwórz zadanie",
   "issue.created": "Zadanie utworzone",
-  "issue.titlePlaceholder": "Tytuł zadania",
+  "issue.titlePlaceholder": "Tytuł zadania…",
   "issue.descriptionPlaceholder": "Dodaj opis. Możesz używać Markdown.",
   "issue.needTeam": "Zadania należą do zespołów. Najpierw utwórz zespół.",
   "issue.properties": "Właściwości",
@@ -249,7 +249,7 @@ export const pl: Record<keyof typeof en, string> = {
   "team.backlogSub": "Otwarta praca poza sprintami",
   "team.create": "Utwórz zespół",
   "team.createFirst": "Utwórz pierwszy zespół",
-  "team.namePlaceholder": "Platforma",
+  "team.namePlaceholder": "Platforma…",
   "team.pickMembers": "Wybierz osoby",
   "board.empty": "Brak zadań",
   "board.allSprints": "Wszystkie zadania",
@@ -462,7 +462,7 @@ export const pl: Record<keyof typeof en, string> = {
   "action.close": "Zamknij",
   "action.dismiss": "Odrzuć",
   "action.loadMore": "Wczytaj więcej",
-  "action.loading": "Wczytywanie...",
+  "action.loading": "Wczytywanie…",
   "action.retry": "Spróbuj ponownie",
   "action.undo": "Cofnij",
   "action.saving": "Zapisywanie…",
@@ -610,7 +610,7 @@ export const pl: Record<keyof typeof en, string> = {
   "integrations.setupIn":
     "Przychodzące: wyślij odnośnik źródłowy metodą POST na powyższy adres. Podpisz surową treść tym samym sekretem.",
   "integrations.example": "Przykład",
-  "integrations.namePlaceholder": "Powiadomienia o wdrożeniach",
+  "integrations.namePlaceholder": "Powiadomienia o wdrożeniach…",
 
   "data.previewTitle": "Sprawdź import",
   "data.previewSub":

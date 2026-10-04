@@ -9,7 +9,7 @@ import {
 import { cn } from "~/lib/utils";
 
 export const popoverSurface =
-  "rounded-lg border border-border bg-popover text-popover-foreground shadow-lg shadow-black/10 outline-none dark:shadow-black/40 entering:animate-in entering:fade-in-0 entering:zoom-in-95 exiting:animate-out exiting:fade-out-0 exiting:zoom-out-95 placement-bottom:slide-in-from-top-1 placement-top:slide-in-from-bottom-1";
+  "rounded-lg border border-border bg-popover text-popover-foreground overscroll-contain shadow-lg shadow-black/10 outline-none dark:shadow-black/40 entering:animate-in entering:fade-in-0 entering:zoom-in-95 exiting:animate-out exiting:fade-out-0 exiting:zoom-out-95 placement-bottom:slide-in-from-top-1 placement-top:slide-in-from-bottom-1";
 
 export function Popover({ className, offset = 6, ...props }: PopoverProps) {
   return (

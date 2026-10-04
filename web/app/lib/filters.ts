@@ -1,19 +1,24 @@
-import type { Issue, IssueFilter, IssueGroup, Workspace } from "./types";
+import type { Id, Issue, IssueFilter, IssueGroup, Stage, Workspace } from "./types";
+
+/** Stage lookup for one workspace. Built once per workspace object, so per-row scans stay O(1). */
+const stageIndexCache = new WeakMap<Workspace, Map<Id, Stage>>();
+
+export function stageIndexOf(ws: Workspace): Map<Id, Stage> {
+  const hit = stageIndexCache.get(ws);
+  if (hit) return hit;
+  const index = new Map<Id, Stage>();
+  for (const t of ws.teams) for (const s of t.stages) index.set(s.id, s);
+  stageIndexCache.set(ws, index);
+  return index;
+}
 
 export function isDone(ws: Workspace, issue: Issue) {
-  for (const t of ws.teams) {
-    const s = t.stages.find((s) => s.id === issue.stage_id);
-    if (s) return s.kind === "done" || s.kind === "cancelled";
-  }
-  return false;
+  const s = stageIndexOf(ws).get(issue.stage_id);
+  return s ? s.kind === "done" || s.kind === "cancelled" : false;
 }
 
 export function stageOf(ws: Workspace, issue: Issue) {
-  for (const t of ws.teams) {
-    const s = t.stages.find((s) => s.id === issue.stage_id);
-    if (s) return s;
-  }
-  return undefined;
+  return stageIndexOf(ws).get(issue.stage_id);
 }
 
 /** What a queue really shows: the person's filters plus the scope the page adds (team, assignee). */

@@ -14,6 +14,7 @@ import {
   ChevronRight,
   LayoutList,
   ListFilter,
+  Loader2,
   Search,
   X,
 } from "lucide-react";
@@ -80,8 +81,7 @@ export function FilterBar({
   scope?: IssueFilter;
 }) {
   const { t, lang } = useI18n();
-  const { ws, members, canWrite } = useWorkspace();
-  const [saving, setSaving] = useState(false);
+  const { ws, members } = useWorkspace();
   const set = (patch: Partial<IssueFilter>) => onChange({ ...filter, ...patch });
   const clear = (k: Chip) => {
     const n = { ...filter };
@@ -140,9 +140,9 @@ export function FilterBar({
             type="button"
             aria-label={`${t("action.remove")}: ${chipLabel(k)}`}
             onClick={() => clear(k)}
-            className="grid size-5 place-items-center rounded hover:bg-primary/15 pointer-coarse:size-7"
+            className="grid size-5 place-items-center rounded outline-none hover:bg-primary/15 focus-visible:ring-2 focus-visible:ring-ring/60 pointer-coarse:size-7"
           >
-            <X className="size-3" />
+            <X aria-hidden className="size-3" />
           </button>
         </span>
       ))}
@@ -168,31 +168,56 @@ export function FilterBar({
           }))}
           onPick={(k) => set({ sort: k as IssueSort })}
         />
-        {saveable && (
-          <>
-            <Button variant="ghost" size="sm" onPress={() => setSaving(true)}>
-              <Bookmark />
-              {t("view.save")}
-            </Button>
-            <Dialog
-              title={t("view.save")}
-              description={t("view.saveSub")}
-              size="sm"
-              isOpen={saving}
-              onOpenChange={setSaving}
-            >
-              {(close) => (
-                <SaveViewForm
-                  close={close}
-                  filter={effectiveFilter(filter, scope, groupBy)}
-                  canShare={canWrite}
-                />
-              )}
-            </Dialog>
-          </>
-        )}
+        {saveable && <SaveViewAction filter={filter} scope={scope} groupBy={groupBy} />}
       </div>
     </div>
+  );
+}
+
+/** Filter bar that can always save the current filter as a view. Prefer this over `saveable`. */
+export function SaveableFilterBar(props: Omit<React.ComponentProps<typeof FilterBar>, "saveable">) {
+  return <FilterBar {...props} saveable />;
+}
+
+/**
+ * Save-as-view button and dialog. Composed by `FilterBar` when `saveable` is set, or by
+ * `SaveableFilterBar`. The open state stays here: only this button reads it, so lifting it into a
+ * `FilterBarProvider` would add indirection without sharing.
+ */
+function SaveViewAction({
+  filter,
+  scope,
+  groupBy,
+}: {
+  filter: IssueFilter;
+  scope?: IssueFilter;
+  groupBy?: GroupBy;
+}) {
+  const { t } = useI18n();
+  const { canWrite } = useWorkspace();
+  const [saving, setSaving] = useState(false);
+  return (
+    <>
+      <Button variant="ghost" size="sm" onPress={() => setSaving(true)}>
+        <Bookmark aria-hidden />
+        {t("view.save")}
+      </Button>
+      <Dialog
+        title={t("view.save")}
+        description={t("view.saveSub")}
+        size="sm"
+        isOpen={saving}
+        onOpenChange={setSaving}
+      >
+        {(close) => (
+          <SaveViewForm
+            close={close}
+            filter={effectiveFilter(filter, scope, groupBy)}
+            canShare={canWrite}
+          />
+        )}
+      </Dialog>
+    </>
   );
 }
 
@@ -369,10 +394,10 @@ function AddFilter({
       }}
     >
       <Button variant="secondary" size="sm">
-        <ListFilter />
+        <ListFilter aria-hidden />
         {t("filter.add")}
       </Button>
-      <Popover placement="bottom start" className="w-64">
+      <Popover placement="bottom start" className="w-64 overscroll-contain">
         <RACDialog aria-label={t("filter.add")} className="outline-none">
           {category === null ? (
             // A menu inside a popover closes it on action by default, which would hide the second step.
@@ -384,7 +409,7 @@ function AddFilter({
               {categories.map((c) => (
                 <MenuItem key={c} id={c}>
                   <span className="flex-1">{t(CATEGORY_LABEL[c])}</span>
-                  <ChevronRight className="size-3.5" />
+                  <ChevronRight aria-hidden className="size-3.5" />
                 </MenuItem>
               ))}
             </Menu>
@@ -397,17 +422,20 @@ function AddFilter({
                   aria-label={t("filter.back")}
                   onPress={() => setCategory(null)}
                 >
-                  <ChevronLeft />
+                  <ChevronLeft aria-hidden />
                 </Button>
                 <RACSearch
                   autoFocus
                   aria-label={t(CATEGORY_LABEL[category])}
                   className="relative flex flex-1 items-center"
                 >
-                  <Search className="pointer-events-none absolute left-2 size-3.5 text-muted-foreground" />
+                  <Search
+                    aria-hidden
+                    className="pointer-events-none absolute left-2 size-3.5 text-muted-foreground"
+                  />
                   <Input
                     placeholder={t(CATEGORY_LABEL[category])}
-                    className="h-8 w-full bg-transparent pl-7 pr-2 text-[13px] outline-none placeholder:text-muted-foreground/70 [&::-webkit-search-cancel-button]:hidden"
+                    className="h-8 w-full rounded bg-transparent pl-7 pr-2 text-[13px] outline-none placeholder:text-muted-foreground/70 focus-visible:ring-2 focus-visible:ring-ring/60 [&::-webkit-search-cancel-button]:hidden"
                   />
                 </RACSearch>
               </div>
@@ -415,6 +443,7 @@ function AddFilter({
                 aria-label={t(CATEGORY_LABEL[category])}
                 items={choices[category]}
                 onAction={(k) => pick(category, String(k))}
+                className="max-h-64 overflow-auto overscroll-contain"
                 renderEmptyState={() => (
                   <p className="px-2 py-1.5 text-xs text-muted-foreground">
                     {t("filter.noValues")}
@@ -484,7 +513,13 @@ function SaveViewForm({
         <Button variant="ghost" onPress={close}>
           {t("action.cancel")}
         </Button>
-        <Button type="submit" variant="primary" isDisabled={!name.trim() || pending}>
+        <Button
+          type="submit"
+          variant="primary"
+          isDisabled={!name.trim() || pending}
+          aria-busy={pending || undefined}
+        >
+          {pending && <Loader2 aria-hidden className="animate-spin" />}
           {pending ? t("action.saving") : t("action.save")}
         </Button>
       </div>

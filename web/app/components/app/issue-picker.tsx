@@ -33,7 +33,8 @@ export function IssuePicker({
   const [q, setQ] = useState("");
   const [open, setOpen] = useState(false);
   const query = useIssues({ search: q, sort: "updated" }, open);
-  const results = query.items.filter((i) => !exclude.includes(i.id)).slice(0, 30);
+  const excluded = new Set(exclude);
+  const results = query.items.filter((i) => !excluded.has(i.id)).slice(0, 30);
   return (
     <DialogTrigger
       onOpenChange={(o) => {
@@ -51,7 +52,7 @@ export function IssuePicker({
                 aria-label={t("issue.find")}
                 className="flex items-center gap-2 border-b border-border px-3"
               >
-                <Search className="size-3.5 text-muted-foreground" />
+                <Search aria-hidden className="size-3.5 text-muted-foreground" />
                 <Input
                   placeholder={t("issue.findPlaceholder")}
                   className="h-9 flex-1 bg-transparent text-[13px] outline-none placeholder:text-muted-foreground/70 [&::-webkit-search-cancel-button]:hidden"
@@ -64,7 +65,7 @@ export function IssuePicker({
                   onPick(String(k));
                   close();
                 }}
-                className="max-h-64 overflow-auto p-1 outline-none"
+                className="max-h-64 overflow-auto overscroll-contain p-1 outline-none"
                 renderEmptyState={() => (
                   <p className="px-3 py-4 text-center text-xs text-muted-foreground">
                     {t("search.empty")}

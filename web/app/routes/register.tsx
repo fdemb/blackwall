@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Form } from "react-aria-components";
 import { Link, useNavigate } from "react-router";
+import { Loader2 } from "lucide-react";
 import { Button } from "~/components/ui/button";
 import { FormError, TextField } from "~/components/ui/field";
 import { auth, setCsrf } from "~/lib/api";
@@ -22,6 +23,7 @@ export default function Register() {
         className="flex flex-col gap-4"
         onSubmit={async (e) => {
           e.preventDefault();
+          if (busy) return;
           const f = new FormData(e.currentTarget);
           setBusy(true);
           setError("");
@@ -51,6 +53,7 @@ export default function Register() {
           type="email"
           label={t("field.email")}
           autoComplete="email"
+          spellCheck="false"
           isRequired
         />
         <TextField
@@ -63,7 +66,8 @@ export default function Register() {
           description={t("auth.passwordHint")}
         />
         <FormError>{error}</FormError>
-        <Button type="submit" variant="primary" size="lg" isDisabled={busy}>
+        <Button type="submit" variant="primary" size="lg" isPending={busy}>
+          {busy && <Loader2 aria-hidden className="animate-spin" />}
           {busy ? t("auth.creating") : t("auth.register")}
         </Button>
       </Form>

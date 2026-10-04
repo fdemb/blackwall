@@ -10,7 +10,39 @@ import { cn } from "~/lib/utils";
 import { AtSign, Bold, Code, Italic, Link2, List, ListOrdered, Quote } from "lucide-react";
 import type { Id } from "~/lib/types";
 
+const CACHE_LIMIT = 100;
 const cache = new Map<string, string>();
+/** In-flight renders, so concurrent mounts for the same text share one request. */
+const inflight = new Map<string, Promise<string>>();
+
+function cacheSet(key: string, html: string) {
+  cache.delete(key);
+  cache.set(key, html);
+  // Oldest first: evict until back under the cap, so long sessions can't grow without bound.
+  while (cache.size > CACHE_LIMIT) {
+    const oldest = cache.keys().next();
+    if (oldest.done) break;
+    cache.delete(oldest.value);
+  }
+}
+
+function renderMarkdown(text: string): Promise<string> {
+  const hit = inflight.get(text);
+  if (hit) return hit;
+  const task = markdown(text).then(
+    (h) => {
+      inflight.delete(text);
+      cacheSet(text, h);
+      return h;
+    },
+    (e) => {
+      inflight.delete(text);
+      throw e;
+    },
+  );
+  inflight.set(text, task);
+  return task;
+}
 
 export function Markdown({
   text,
@@ -21,22 +53,27 @@ export function Markdown({
   className?: string;
   empty?: string;
 }) {
-  const [html, setHtml] = useState<string | null>(cache.get(text) ?? null);
+  // Derived during render: the cached HTML (or "" for blank text), if we have it.
+  const key = text.trim() ? text : "";
+  const cached = key ? (cache.get(key) ?? null) : "";
+  const [fetched, setFetched] = useState<{ key: string; html: string | null }>({
+    key,
+    html: null,
+  });
   useEffect(() => {
-    if (!text.trim()) return setHtml("");
-    const hit = cache.get(text);
-    if (hit !== undefined) return setHtml(hit);
+    // Cache hits render directly via `cached` below; only fetch on a miss.
+    if (!key || cache.get(key) !== undefined) return;
     let live = true;
-    markdown(text)
+    renderMarkdown(key)
       .then((h) => {
-        cache.set(text, h);
-        if (live) setHtml(h);
+        if (live) setFetched({ key, html: h });
       })
-      .catch(() => live && setHtml(null));
+      .catch(() => live && setFetched({ key, html: null }));
     return () => {
       live = false;
     };
-  }, [text]);
+  }, [key, cached]);
+  const html = cached ?? (fetched.key === key ? fetched.html : null);
   if (!text.trim()) return empty ? <p className="text-muted-foreground">{empty}</p> : null;
   if (html === null)
     return <p className={cn("whitespace-pre-wrap text-[14px]", className)}>{text}</p>;
@@ -46,6 +83,48 @@ export function Markdown({
 
 export function mentionsIn(text: string, members: { id: Id; display_name: string }[]) {
   return members.filter((m) => text.includes(`@${m.display_name}`)).map((m) => m.id);
+}
+
+/**
+ * Mention picker composed into `MarkdownEditor` when `mentions` is set. Kept as a child piece so
+ * the editor stays a composition of toolbar + menu + field instead of a boolean switch.
+ */
+function MentionMenu({
+  onInsert,
+  isDisabled,
+}: {
+  onInsert: (text: string) => void;
+  isDisabled?: boolean;
+}) {
+  const t = useT();
+  const { members } = useWorkspace();
+  return (
+    <MenuTrigger>
+      <Tip label={t("editor.mention")}>
+        <Button
+          variant="ghost"
+          size="icon"
+          aria-label={t("editor.mention")}
+          isDisabled={isDisabled}
+        >
+          <AtSign aria-hidden className="size-3.5" />
+        </Button>
+      </Tip>
+      <MenuPopover placement="bottom start">
+        <Menu
+          items={members}
+          onAction={(id) => onInsert(`@${members.find((m) => m.id === id)?.display_name ?? ""} `)}
+        >
+          {(m) => (
+            <MenuItem id={m.id} textValue={m.display_name}>
+              <Avatar name={m.display_name} src={m.avatar_url} size={16} />
+              {m.display_name}
+            </MenuItem>
+          )}
+        </Menu>
+      </MenuPopover>
+    </MenuTrigger>
+  );
 }
 
 export function MarkdownEditor({
@@ -68,7 +147,6 @@ export function MarkdownEditor({
   label: string;
 }) {
   const t = useT();
-  const { members } = useWorkspace();
   const ref = useRef<HTMLTextAreaElement>(null);
   const [preview, setPreview] = useState(false);
 
@@ -97,54 +175,50 @@ export function MarkdownEditor({
   const insert = (text: string) => wrap(text, "", "");
 
   const tools = [
-    { icon: Bold, label: t("editor.bold"), run: () => wrap("**", "**", "bold") },
-    { icon: Italic, label: t("editor.italic"), run: () => wrap("_", "_", "italic") },
-    { icon: Code, label: t("editor.code"), run: () => wrap("`", "`", "code") },
-    { icon: Link2, label: t("editor.link"), run: () => wrap("[", "](https://)", "link") },
-    { icon: List, label: t("editor.list"), run: () => linePrefix("- ") },
-    { icon: ListOrdered, label: t("editor.numbered"), run: () => linePrefix((i) => `${i + 1}. `) },
-    { icon: Quote, label: t("editor.quote"), run: () => linePrefix("> ") },
-  ];
+    { icon: Bold, label: t("editor.bold"), id: "bold" },
+    { icon: Italic, label: t("editor.italic"), id: "italic" },
+    { icon: Code, label: t("editor.code"), id: "code" },
+    { icon: Link2, label: t("editor.link"), id: "link" },
+    { icon: List, label: t("editor.list"), id: "list" },
+    { icon: ListOrdered, label: t("editor.numbered"), id: "numbered" },
+    { icon: Quote, label: t("editor.quote"), id: "quote" },
+  ] as const;
+  const runTool = (id: string) => {
+    switch (id) {
+      case "bold":
+        return wrap("**", "**", "bold");
+      case "italic":
+        return wrap("_", "_", "italic");
+      case "code":
+        return wrap("`", "`", "code");
+      case "link":
+        return wrap("[", "](https://)", "link");
+      case "list":
+        return linePrefix("- ");
+      case "numbered":
+        return linePrefix((i) => `${i + 1}. `);
+      case "quote":
+        return linePrefix("> ");
+    }
+  };
 
   return (
     <div className="rounded-lg border border-input bg-card shadow-xs transition-shadow focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/25">
       <div className="flex flex-wrap items-center gap-0.5 border-b border-border px-1.5 py-1">
-        {tools.map(({ icon: Icon, label: l, run }) => (
+        {tools.map(({ icon: Icon, label: l, id }) => (
           <Tip key={l} label={l}>
-            <Button variant="ghost" size="icon" aria-label={l} isDisabled={preview} onPress={run}>
-              <Icon className="size-3.5" />
+            <Button
+              variant="ghost"
+              size="icon"
+              aria-label={l}
+              isDisabled={preview}
+              onPress={() => runTool(id)}
+            >
+              <Icon aria-hidden className="size-3.5" />
             </Button>
           </Tip>
         ))}
-        {mentions && (
-          <MenuTrigger>
-            <Tip label={t("editor.mention")}>
-              <Button
-                variant="ghost"
-                size="icon"
-                aria-label={t("editor.mention")}
-                isDisabled={preview}
-              >
-                <AtSign className="size-3.5" />
-              </Button>
-            </Tip>
-            <MenuPopover placement="bottom start">
-              <Menu
-                items={members}
-                onAction={(id) =>
-                  insert(`@${members.find((m) => m.id === id)?.display_name ?? ""} `)
-                }
-              >
-                {(m) => (
-                  <MenuItem id={m.id} textValue={m.display_name}>
-                    <Avatar name={m.display_name} src={m.avatar_url} size={16} />
-                    {m.display_name}
-                  </MenuItem>
-                )}
-              </Menu>
-            </MenuPopover>
-          </MenuTrigger>
-        )}
+        {mentions && <MentionMenu onInsert={insert} isDisabled={preview} />}
         <div className="ml-auto flex rounded-md bg-muted p-0.5 text-xs">
           {[false, true].map((p) => (
             <button
@@ -189,7 +263,7 @@ export function MarkdownEditor({
               wrap("_", "_", "italic");
             }
           }}
-          className="block w-full resize-y bg-transparent px-3 py-2.5 text-[14px] leading-6 outline-none placeholder:text-muted-foreground/70"
+          className="block w-full resize-y touch-manipulation bg-transparent px-3 py-2.5 text-[14px] leading-6 outline-none placeholder:text-muted-foreground/70"
         />
       )}
     </div>

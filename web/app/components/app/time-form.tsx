@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Form } from "react-aria-components";
+import { Loader2 } from "lucide-react";
 import { Button } from "~/components/ui/button";
 import { useDialogDirty } from "~/components/ui/dialog";
 import { DatePicker } from "~/components/ui/date-picker";
@@ -58,6 +59,7 @@ export function TimeForm({
         onChange={setDur}
         autoFocus
         isRequired
+        inputMode="decimal"
         isInvalid={dur !== "" && minutes === null}
       />
       <TextField
@@ -76,7 +78,13 @@ export function TimeForm({
         <Button variant="ghost" onPress={close}>
           {t("action.cancel")}
         </Button>
-        <Button type="submit" variant="primary" isDisabled={invalid || pending}>
+        <Button
+          type="submit"
+          variant="primary"
+          isDisabled={invalid || pending}
+          aria-busy={pending || undefined}
+        >
+          {pending && <Loader2 aria-hidden className="animate-spin" />}
           {pending ? t("action.saving") : t("action.save")}
         </Button>
       </div>

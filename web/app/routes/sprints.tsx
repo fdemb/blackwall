@@ -301,7 +301,8 @@ function SprintForm({
   const [goal, setGoal] = useState(sprint?.goal ?? "");
   const [start, setStart] = useState<string | null>(sprint?.starts_at ?? new Date().toISOString());
   const [end, setEnd] = useState<string | null>(
-    sprint?.ends_at ?? new Date(Date.now() + 14 * 86400000).toISOString(),
+    sprint?.ends_at ??
+      (start ? new Date(new Date(start).getTime() + 14 * 86400000).toISOString() : null),
   );
   const { pending, error, guard } = usePending();
   const reversed = Boolean(start && end && new Date(end) < new Date(start));

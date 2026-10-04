@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useSearchParams } from "react-router";
 import { UserRound } from "lucide-react";
 import { Tab, TabList, Tabs } from "~/components/ui/tabs";
 import { Workbench } from "~/components/app/workbench";
@@ -10,7 +10,18 @@ import { CheckCheck } from "lucide-react";
 export default function MyIssues() {
   const t = useT();
   const { me } = useWorkspace();
-  const [tab, setTab] = useState<"assigned" | "following">("assigned");
+  const [params, setParams] = useSearchParams();
+  const tab = params.get("tab") === "following" ? "following" : "assigned";
+  const setTab = (v: "assigned" | "following") =>
+    setParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        if (v === "assigned") next.delete("tab");
+        else next.set("tab", v);
+        return next;
+      },
+      { preventScrollReset: true },
+    );
   return (
     <Workbench
       title={t("nav.myIssues")}

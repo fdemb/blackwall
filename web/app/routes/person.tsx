@@ -9,6 +9,9 @@ import { useIssues } from "~/lib/queries";
 import { QueryStatus } from "~/components/app/query-status";
 import { useWorkspace } from "~/lib/workspace";
 
+const PHONE_LIKE = /^[+\d][\d\s()-]{5,}$/;
+const WHITESPACE = /\s/g;
+
 export default function Person() {
   const t = useT();
   const { userId, ws: wsId } = useParams();
@@ -19,7 +22,7 @@ export default function Person() {
   const role = ws.members.find((x) => x.user_id === m.id)?.role;
   const issues = query.items;
   const teams = ws.teams.filter((x) => x.members.includes(m.id));
-  const looksLikePhone = /^[+\d][\d\s()-]{5,}$/.test(m.contact);
+  const looksLikePhone = PHONE_LIKE.test(m.contact);
   return (
     <Page>
       <PageHeader
@@ -57,7 +60,7 @@ export default function Person() {
               {m.contact &&
                 (looksLikePhone ? (
                   <a
-                    href={`tel:${m.contact.replace(/\s/g, "")}`}
+                    href={`tel:${m.contact.replace(WHITESPACE, "")}`}
                     className="flex items-start gap-2 break-words text-[13px] text-muted-foreground hover:text-foreground"
                   >
                     <Phone className="mt-0.5 size-3.5 shrink-0" />

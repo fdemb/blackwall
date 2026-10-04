@@ -1,3 +1,4 @@
+import { safeGet, safeSet } from "./storage";
 import type {
   Command,
   ImportSummary,
@@ -28,10 +29,11 @@ export class ApiError extends Error {
   }
 }
 
-let csrf = typeof sessionStorage === "undefined" ? "" : (sessionStorage.getItem("bw-csrf") ?? "");
+const CSRF_KEY = "bw-csrf:v1";
+let csrf = safeGet("session", CSRF_KEY) ?? "";
 export function setCsrf(token: string) {
   csrf = token;
-  sessionStorage.setItem("bw-csrf", token);
+  safeSet("session", CSRF_KEY, token);
 }
 
 export async function api<T>(

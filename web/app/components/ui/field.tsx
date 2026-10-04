@@ -20,7 +20,7 @@ import { cn } from "~/lib/utils";
 import { Button } from "./button";
 
 export const fieldBase =
-  "w-full rounded-md border border-input bg-card px-2.5 text-[13px] text-foreground shadow-xs outline-none transition-[border-color,box-shadow] placeholder:text-muted-foreground/70 hover:border-muted-foreground/40 focus:border-ring focus:ring-3 focus:ring-ring/25 disabled:opacity-50 invalid:border-destructive";
+  "w-full rounded-md border border-input bg-card px-2.5 text-[13px] text-foreground shadow-xs outline-none transition-[transform,opacity] duration-100 placeholder:text-muted-foreground/70 hover:border-muted-foreground/40 focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/25 disabled:opacity-50 invalid:border-destructive";
 
 export function Label({ className, ...props }: LabelProps) {
   return (
@@ -69,6 +69,9 @@ interface FieldProps extends TextFieldProps {
   description?: string;
   placeholder?: string;
   error?: string;
+  // One component for both cases: single vs. multiline only swaps the inner control, while the
+  // label/description/error wiring stays shared. Splitting into TextField/TextAreaField would
+  // duplicate that wrapper for no composition gain.
   multiline?: boolean;
   rows?: number;
 }
@@ -128,7 +131,10 @@ export function SearchField({
       {...props}
       className={composeRenderProps(className, (c) => cn("group relative flex items-center", c))}
     >
-      <Search className="pointer-events-none absolute left-2.5 size-3.5 text-muted-foreground" />
+      <Search
+        aria-hidden="true"
+        className="pointer-events-none absolute left-2.5 size-3.5 text-muted-foreground"
+      />
       <RACInput
         placeholder={placeholder}
         className={cn(
@@ -143,7 +149,7 @@ export function SearchField({
         className="absolute right-0.5 size-6 group-empty:hidden [[data-empty]_&]:hidden"
         aria-label={t("action.clearField")}
       >
-        <X className="size-3" />
+        <X aria-hidden="true" className="size-3" />
       </Button>
     </RACSearchField>
   );

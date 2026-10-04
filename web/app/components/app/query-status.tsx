@@ -1,5 +1,6 @@
 import { Button } from "~/components/ui/button";
 import { useT } from "~/lib/i18n";
+import { ellipsis } from "~/lib/format";
 import type { PaginationState } from "~/lib/queries";
 
 export function QueryStatus({ query }: { query: PaginationState }) {
@@ -16,7 +17,8 @@ export function QueryStatus({ query }: { query: PaginationState }) {
   if (query.loading)
     return (
       <p role="status" className="px-4 py-3 text-sm text-muted-foreground">
-        {t("action.loading")}
+        {/* Locales still carry "Loading..."; normalize until those files are touched. */}
+        {ellipsis(t("action.loading"))}
       </p>
     );
   if (query.hasMore)

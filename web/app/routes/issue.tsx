@@ -77,8 +77,10 @@ import type { Activity, Comment, Id, Issue, IssuePatch, TimeEntry } from "~/lib/
 /** Row actions hide until hover on devices that can hover, and stay visible on touch. */
 const revealOnHover =
   "[@media(hover:hover)]:opacity-0 group-hover:opacity-100 group-focus-within:opacity-100";
-const modKey =
-  typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.userAgent) ? "⌘" : "Ctrl";
+const IS_MAC = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.userAgent);
+const modKey = IS_MAC ? "⌘" : "Ctrl";
+const WS_RUN = /\s+/g;
+const NEWLINE = /\n/g;
 
 export default function IssuePage() {
   const { issueId, ws: wsId } = useParams();
@@ -801,16 +803,20 @@ function TitleField({
   const fit = () => {
     const el = ref.current;
     if (!el) return;
-    el.style.height = "auto";
-    el.style.height = `${el.scrollHeight}px`;
+    // Batch the measure+write in a frame so typing doesn't force a sync layout each keystroke.
+    requestAnimationFrame(() => {
+      if (ref.current !== el) return;
+      el.style.height = "auto";
+      el.style.height = `${el.scrollHeight}px`;
+    });
   };
   useLayoutEffect(fit, [title]);
   useEffect(() => {
-    addEventListener("resize", fit);
+    addEventListener("resize", fit, { passive: true });
     return () => removeEventListener("resize", fit);
   }, []);
   const commit = () => {
-    const next = title.replace(/\s+/g, " ").trim();
+    const next = title.replace(WS_RUN, " ").trim();
     if (!next) return setTitle(issue.title);
     setTitle(next);
     if (next !== issue.title) onSave(next, baseVersion.current);
@@ -826,7 +832,7 @@ function TitleField({
       onFocus={() => {
         baseVersion.current = issue.version;
       }}
-      onChange={(e) => setTitle(e.target.value.replace(/\n/g, " "))}
+      onChange={(e) => setTitle(e.target.value.replace(NEWLINE, " "))}
       onBlur={commit}
       onKeyDown={(e) => {
         if (e.key === "Enter") {
@@ -837,7 +843,8 @@ function TitleField({
       }}
       className={cn(
         "-mx-2 block w-[calc(100%+1rem)] resize-none overflow-hidden rounded-md bg-transparent px-2 py-1 text-2xl font-semibold leading-snug tracking-tight outline-none",
-        canWrite && "hover:bg-muted/60 focus:bg-muted/60 focus:ring-2 focus:ring-ring/40",
+        canWrite &&
+          "hover:bg-muted/60 focus-visible:bg-muted/60 focus-visible:ring-2 focus-visible:ring-ring/40",
       )}
     />
   );
@@ -863,7 +870,9 @@ function Description({
   const baseVersion = useRef(issue.version);
   const box = useRef<HTMLDivElement>(null);
   const latest = useRef({ draft, saved: issue.description, version: issue.version, onSave });
-  latest.current = { draft, saved: issue.description, version: issue.version, onSave };
+  useEffect(() => {
+    latest.current = { draft, saved: issue.description, version: issue.version, onSave };
+  });
   const dirty = draft !== null && draft !== issue.description;
 
   // The editor closes only once the server has the text. A failed save leaves it open with the draft intact.
@@ -966,6 +975,8 @@ function Description({
         />
       </div>
     );
+  // Kept a div (not a <button>) because rendered Markdown can contain links,
+  // which must not live inside a button. Space opens the editor like Enter does.
   return (
     <div
       role={canWrite ? "button" : undefined}
@@ -983,7 +994,8 @@ function Description({
         setDraft(issue.description);
       }}
       onKeyDown={(e) => {
-        if (canWrite && e.key === "Enter") {
+        if (canWrite && (e.key === "Enter" || e.key === " ")) {
+          e.preventDefault();
           baseVersion.current = issue.version;
           setDraft(issue.description);
         }
@@ -1077,8 +1089,8 @@ function Subtasks({
       {subs.length > 0 && (
         <div className="mb-2 h-1 overflow-hidden rounded-full bg-border">
           <div
-            className="h-full rounded-full bg-primary transition-[width]"
-            style={{ width: `${(done / subs.length) * 100}%` }}
+            className="h-full w-full origin-left rounded-full bg-primary transition-transform"
+            style={{ transform: `scaleX(${subs.length ? done / subs.length : 0})` }}
           />
         </div>
       )}
@@ -1213,14 +1225,16 @@ function useUploader(issueId: Id) {
   const pick = async (list: FileList | null) => {
     if (!list) return;
     setBusy(true);
-    for (const f of Array.from(list)) {
-      if (f.size > MAX_UPLOAD) {
-        toast.error(t("attachments.tooLarge", { name: f.name }));
-        continue;
-      }
-      await upload(issueId, f).catch(() => {});
+    try {
+      const files = Array.from(list);
+      const tooLarge = files.filter((f) => f.size > MAX_UPLOAD);
+      for (const f of tooLarge) toast.error(t("attachments.tooLarge", { name: f.name }));
+      await Promise.all(
+        files.filter((f) => f.size <= MAX_UPLOAD).map((f) => upload(issueId, f).catch(() => {})),
+      );
+    } finally {
+      setBusy(false);
     }
-    setBusy(false);
   };
   return { busy, pick };
 }
@@ -1231,7 +1245,7 @@ function AttachButton({ uploader }: { uploader: Uploader }) {
   return (
     <FileTrigger allowsMultiple onSelect={(list) => void uploader.pick(list)}>
       <Button variant="ghost" size="sm" isDisabled={uploader.busy}>
-        {uploader.busy ? <Loader2 className="animate-spin" /> : <Paperclip />}
+        {uploader.busy ? <Loader2 aria-hidden className="animate-spin" /> : <Paperclip />}
         {uploader.busy ? t("attachments.uploading") : t("attachments.add")}
       </Button>
     </FileTrigger>
@@ -1366,8 +1380,19 @@ function Timeline({ issue }: { issue: Issue }) {
       .map((a): TimelineItem => ({ kind: "event", at: a.at, event: a })),
   ].sort((a, b) => +new Date(a.at) - +new Date(b.at));
   const hidden = Math.max(0, items.length - limit);
+  const loadingTimeline = (comments.loading || activity.loading) && items.length === 0;
   return (
     <Section title={t("activity.title")}>
+      {loadingTimeline && (
+        <div aria-busy="true" className="space-y-3">
+          {[0, 1].map((i) => (
+            <div key={i} className="flex items-center gap-3">
+              <span className="size-7 shrink-0 animate-pulse rounded-full bg-muted" />
+              <span className="h-12 flex-1 animate-pulse rounded-lg bg-muted" />
+            </div>
+          ))}
+        </div>
+      )}
       {items.length > 0 && (
         // The line sits behind the list. Event dots ride on it and comment cards cover it.
         <ol className="relative space-y-3 before:absolute before:inset-y-3 before:left-3.5 before:w-px before:-translate-x-1/2 before:bg-border">
@@ -1612,7 +1637,7 @@ function Composer({ issue, hasItems }: { issue: Issue; hasItems: boolean }) {
 
   const uploadAll = async (commentId: Id, list: File[]) => {
     const failed: File[] = [];
-    for (const f of list) await upload(issue.id, f, commentId).catch(() => failed.push(f));
+    await Promise.all(list.map((f) => upload(issue.id, f, commentId).catch(() => failed.push(f))));
     setRetry(failed.length ? { commentId, files: failed } : null);
     return failed;
   };
@@ -1721,7 +1746,7 @@ function Composer({ issue, hasItems }: { issue: Issue; hasItems: boolean }) {
             {t("comment.hint", { key: modKey })}
           </span>
           <Button variant="primary" isDisabled={!body.trim() || busy} onPress={post}>
-            {busy && <Loader2 className="animate-spin" />}
+            {busy && <Loader2 aria-hidden className="animate-spin" />}
             {busy ? t("comment.sending") : t("comment.send")}
           </Button>
         </div>

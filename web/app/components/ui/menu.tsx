@@ -21,7 +21,7 @@ export function Menu<T extends object>({ className, ...props }: MenuProps<T>) {
     <RACMenu
       {...props}
       className={composeRenderProps(className, (c) =>
-        cn("max-h-80 min-w-44 overflow-auto p-1 outline-none", c),
+        cn("max-h-80 min-w-44 overflow-auto overscroll-contain p-1 outline-none", c),
       )}
     />
   );
@@ -50,7 +50,7 @@ export function MenuItem({ className, children, ...props }: MenuItemProps) {
           {children}
           {selectionMode !== "none" && (
             <span className="ml-auto w-4">
-              {isSelected && <Check className="size-3.5 text-primary" />}
+              {isSelected && <Check aria-hidden="true" className="size-3.5 text-primary" />}
             </span>
           )}
         </>

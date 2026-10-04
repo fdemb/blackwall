@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Switch } from "~/components/ui/toggles";
 import { useToast } from "~/components/ui/toast";
 import { SettingsPage, SettingsSection } from "~/components/app/settings";
@@ -24,7 +24,9 @@ export default function Notifications() {
   };
   type Prefs = typeof stored;
   const storedRef = useRef(stored);
-  storedRef.current = stored;
+  useEffect(() => {
+    storedRef.current = stored;
+  });
   // The switches show `local` at once. Saves go one at a time and always send the newest choice, so two
   // quick toggles can't overwrite each other with a stale snapshot.
   const [local, setLocal] = useState<Prefs>(stored);

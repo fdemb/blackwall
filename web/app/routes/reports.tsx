@@ -22,6 +22,8 @@ import type { TimeEntry } from "~/lib/types";
 export default function Reports() {
   const { t, lang } = useI18n();
   const { ws, member } = useWorkspace();
+  // Time entries only load when the tab is open, so the overview never pays for them.
+  const [tab, setTab] = useState("overview");
   const query = useQuery(reportQuery(ws.id));
   const report = query.data;
   const error = query.isError && !report ? query.error.message || t("reports.loadFailed") : "";
@@ -39,7 +41,14 @@ export default function Reports() {
     [ws, member, report],
   );
 
-  const completed = report?.delivery.reduce((a, d) => a + d.completed, 0) ?? 0;
+  // Single pass for the header numbers instead of three separate reductions.
+  const stats = useMemo(() => {
+    let completed = 0;
+    let open = 0;
+    for (const d of report?.delivery ?? []) completed += d.completed;
+    for (const tm of report?.teams ?? []) open += tm.open_issues;
+    return { completed, open };
+  }, [report]);
 
   return (
     <Page>
@@ -48,7 +57,7 @@ export default function Reports() {
         icon={<BarChart3 className="size-4 text-muted-foreground" />}
       />
       <Scroll>
-        <Tabs className="p-4">
+        <Tabs selectedKey={tab} onSelectionChange={(k) => setTab(String(k))} className="p-4">
           <TabList aria-label={t("nav.reports")}>
             <Tab id="overview">{t("reports.overview")}</Tab>
             <Tab id="time">{t("reports.time")}</Tab>
@@ -72,13 +81,10 @@ export default function Reports() {
                   />
                   <Stat
                     label={t("reports.delivered")}
-                    value={String(completed)}
+                    value={String(stats.completed)}
                     hint={t("reports.last30")}
                   />
-                  <Stat
-                    label={t("reports.openIssues")}
-                    value={String(report.teams.reduce((a, x) => a + x.open_issues, 0))}
-                  />
+                  <Stat label={t("reports.openIssues")} value={String(stats.open)} />
                 </div>
                 <div className="grid gap-4 lg:grid-cols-2">
                   <Card className="p-4">
@@ -179,9 +185,7 @@ export default function Reports() {
               </>
             )}
           </TabPanel>
-          <TabPanel id="time">
-            <TimeLog lang={lang} />
-          </TabPanel>
+          <TabPanel id="time">{tab === "time" && <TimeLog lang={lang} />}</TabPanel>
         </Tabs>
       </Scroll>
     </Page>

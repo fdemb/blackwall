@@ -8,6 +8,7 @@ import {
   isRouteErrorResponse,
   useHref,
   useNavigate,
+  Link,
 } from "react-router";
 import { RouterProvider } from "react-aria-components";
 import { QueryClientProvider } from "@tanstack/react-query";
@@ -26,13 +27,15 @@ const QueryDevtools = import.meta.env.DEV
   : () => null;
 
 export function Layout({ children }: { children: React.ReactNode }) {
+  // initialLanguage() mirrors public/theme.js, which already sets <html lang> before first paint.
   return (
-    <html lang="en">
+    <html lang={initialLanguage()}>
       <head>
         <meta charSet="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
         <meta name="color-scheme" content="light dark" />
         <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+        {/* Intentionally render-blocking: applies the theme before first paint to avoid a flash. */}
         <script src="/theme.js" />
         <Meta />
         <Links />
@@ -52,7 +55,7 @@ export function meta() {
 
 export function HydrateFallback() {
   return (
-    <div className="grid h-dvh place-items-center">
+    <div role="status" className="grid h-dvh place-items-center">
       <div className="size-8 animate-pulse rounded-lg bg-primary" />
     </div>
   );
@@ -86,7 +89,8 @@ export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {
     : error instanceof Error
       ? error.message
       : t("error.unknown");
-  const action = "inline-flex h-9 items-center rounded-md px-3 text-[13px] font-medium";
+  const action =
+    "inline-flex h-9 items-center rounded-md px-3 text-[13px] font-medium outline-none focus-visible:ring-2 focus-visible:ring-ring/60";
   return (
     <div role="alert" className="grid h-dvh place-items-center p-6 text-center">
       <div>
@@ -101,12 +105,12 @@ export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {
           >
             {t("action.reload")}
           </button>
-          <a href="/welcome" className={`${action} border border-input hover:bg-muted`}>
+          <Link to="/welcome" className={`${action} border border-input hover:bg-muted`}>
             {t("error.switch")}
-          </a>
-          <a href="/" className={`${action} text-primary hover:underline`}>
+          </Link>
+          <Link to="/" className={`${action} text-primary hover:underline`}>
             {t("error.home")}
-          </a>
+          </Link>
         </div>
       </div>
     </div>

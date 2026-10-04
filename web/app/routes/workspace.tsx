@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Outlet, redirect, useNavigate, useOutletContext } from "react-router";
 import { CommandPalette } from "~/components/app/command-palette";
 import { CreateIssueDialog } from "~/components/app/create-issue";
@@ -8,7 +8,7 @@ import { ApiError } from "~/lib/api";
 import { preloadWorkspace } from "~/lib/db";
 import { queryClient } from "~/lib/query-client";
 import { startChangeFeed } from "~/lib/sync";
-import { LAST_WS } from "~/lib/auth-guard";
+import { clearLastWs, writeLastWs } from "~/lib/auth-guard";
 import { WorkspaceProvider, useWorkspace } from "~/lib/workspace";
 import { useT, type Key } from "~/lib/i18n";
 import { useShortcutsEnabled } from "~/lib/shortcuts";
@@ -20,11 +20,11 @@ export async function clientLoader({ params }: Route.ClientLoaderArgs) {
     // The cursor comes first, so changes made while the records load still reach the client.
     await startChangeFeed(params.ws);
     await preloadWorkspace(queryClient, params.ws);
-    localStorage.setItem(LAST_WS, params.ws);
+    writeLastWs(params.ws);
     return { id: params.ws };
   } catch (e) {
     if (e instanceof ApiError && (e.status === 404 || e.status === 403)) {
-      localStorage.removeItem(LAST_WS);
+      clearLastWs();
       throw redirect("/");
     }
     throw e;
@@ -80,6 +80,12 @@ function Workspace() {
   const [shortcuts] = useShortcutsEnabled();
   const [palette, setPalette] = useState(false);
   const [help, setHelp] = useState(false);
+  // The keydown handler reads through a ref so the single window listener never re-registers.
+  const keyState = useRef({ canWrite, shortcuts, wsId: ws.id, show: create.show, nav });
+  useEffect(() => {
+    keyState.current = { canWrite, shortcuts, wsId: ws.id, show: create.show, nav };
+  });
+  const gTimer = useRef(0);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -88,35 +94,40 @@ function Workspace() {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
         e.preventDefault();
         setPalette((o) => !o);
-      } else if (shortcuts && !typing && !e.metaKey && !e.ctrlKey && !e.altKey) {
-        if (e.key === "c" && canWrite) {
-          e.preventDefault();
-          create.show();
-        }
-        if (e.key === "/") {
-          e.preventDefault();
-          setPalette(true);
-        }
-        if (e.key === "g") {
-          const once = (ev: KeyboardEvent) => {
-            const map: Record<string, string> = {
-              i: "inbox",
-              m: "my-issues",
-              a: "issues",
-              p: "projects",
-              r: "reports",
-            };
-            if (map[ev.key]) void nav(`/${ws.id}/${map[ev.key]}`);
-            window.removeEventListener("keydown", once);
+        return;
+      }
+      const { canWrite: writable, shortcuts: enabled, wsId, show, nav: go } = keyState.current;
+      if (!enabled || typing || e.metaKey || e.ctrlKey || e.altKey) return;
+      if (e.key === "c" && writable) {
+        e.preventDefault();
+        show();
+      } else if (e.key === "/") {
+        e.preventDefault();
+        setPalette(true);
+      } else if (e.key === "g") {
+        const once = (ev: KeyboardEvent) => {
+          const map: Record<string, string> = {
+            i: "inbox",
+            m: "my-issues",
+            a: "issues",
+            p: "projects",
+            r: "reports",
           };
-          window.addEventListener("keydown", once);
-          setTimeout(() => window.removeEventListener("keydown", once), 1200);
-        }
+          if (map[ev.key]) void go(`/${wsId}/${map[ev.key]}`);
+          window.removeEventListener("keydown", once);
+          window.clearTimeout(gTimer.current);
+        };
+        window.addEventListener("keydown", once);
+        window.clearTimeout(gTimer.current);
+        gTimer.current = window.setTimeout(() => window.removeEventListener("keydown", once), 1200);
       }
     };
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [canWrite, create, nav, ws.id, shortcuts]);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      window.clearTimeout(gTimer.current);
+    };
+  }, []);
 
   return (
     <>
