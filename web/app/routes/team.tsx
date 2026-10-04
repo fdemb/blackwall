@@ -9,7 +9,7 @@ import { StageIcon } from "~/components/app/icons";
 import { FilterBar } from "~/components/app/filter-bar";
 import { IssueList } from "~/components/app/issue-list";
 import { Workbench, useQueueState, type QueueState } from "~/components/app/workbench";
-import { EmptyState, Page, PageHeader, Scroll } from "~/components/app/page";
+import { EmptyState, Page, PageHeader } from "~/components/app/page";
 import { useT } from "~/lib/i18n";
 import { useIssues } from "~/lib/queries";
 import { QueryStatus } from "~/components/app/query-status";
@@ -286,10 +286,11 @@ function BacklogView({
         />
       </PageHeader>
       <QueryStatus query={query} />
-      <Scroll>
+      <div className="flex min-h-0 flex-1 flex-col">
         <IssueList
           issues={issues}
           groupBy="none"
+          fill
           emptyState={
             narrowed ? (
               <EmptyState
@@ -306,7 +307,7 @@ function BacklogView({
             )
           }
         />
-      </Scroll>
+      </div>
     </Page>
   );
 }

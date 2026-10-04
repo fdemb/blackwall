@@ -243,3 +243,21 @@ describe("scoped collections", () => {
     expect(asked).toEqual(["i1"]);
   });
 });
+
+describe("issue collection", () => {
+  it("indexes the fields live queries filter on, so large workspaces don't scan", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const many = Array.from({ length: 1500 }, (_, k) =>
+      issue(`n${k + 1}`, { parent_id: k % 10 === 0 ? null : "n1" }),
+    );
+    const db = await open({ issues: () => Promise.resolve(many) });
+    const { eq } = await import("@tanstack/react-db");
+    await queryOnce((q) => q.from({ i: db.issues }).where(({ i }) => eq(i.id, "n42")));
+    await queryOnce((q) => q.from({ i: db.issues }).where(({ i }) => eq(i.parent_id, "n1")));
+    expect(db.issues.getIndexMetadata().map((index) => index.name)).toEqual(
+      expect.arrayContaining(["auto:id", "auto:parent_id"]),
+    );
+    expect(warn.mock.calls.flat().join(" ")).not.toContain("Index suggestion");
+    warn.mockRestore();
+  });
+});

@@ -1,4 +1,5 @@
 import {
+  BasicIndex,
   createCollection,
   extractSimpleComparisons,
   type LoadSubsetOptions,
@@ -105,6 +106,7 @@ function createWorkspaceDb(ws: Id, client: QueryClient, source: Source) {
     kind: string,
     read: () => Promise<T[]>,
     getKey: (record: T) => Id,
+    indexed = false,
   ) =>
     createCollection(
       queryCollectionOptions({
@@ -113,6 +115,8 @@ function createWorkspaceDb(ws: Id, client: QueryClient, source: Source) {
         queryFn: read,
         queryClient: client,
         getKey,
+        // Large collections index each field a live query filters on, the first time it does.
+        ...(indexed ? { autoIndex: "eager" as const, defaultIndexType: BasicIndex } : {}),
       }),
     );
   // Discussion loads per issue, when a live query asks for it.
@@ -146,7 +150,7 @@ function createWorkspaceDb(ws: Id, client: QueryClient, source: Source) {
     integrations: eager("integrations", source.integrations, byId),
     notifications: eager("notifications", source.notifications, byId),
     members: eager("members", source.members, byId),
-    issues: eager("issues", async () => (await source.issues()).map(normalizeIssue), byId),
+    issues: eager("issues", async () => (await source.issues()).map(normalizeIssue), byId, true),
     comments: scoped("comments", "issue_id", source.comments),
     time_entries: scoped("time_entries", "issue_id", source.time_entries),
     activity: scoped("activity", "entity_id", source.activity),
