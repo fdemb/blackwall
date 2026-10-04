@@ -236,7 +236,7 @@ function MilestoneForm({
   milestone: Milestone | null;
   close: () => void;
 }) {
-  const t = useI18n().t;
+  const { t } = useI18n();
   const { run } = useWorkspace();
   const { pending, error, guard } = usePending();
   const [name, setName] = useState(milestone?.name ?? "");

@@ -5,13 +5,13 @@ import { Loader2, MailCheck } from "lucide-react";
 import { Button } from "~/components/ui/button";
 import { FormError, TextField } from "~/components/ui/field";
 import { auth } from "~/lib/api";
-import { useT } from "~/lib/i18n";
+import { useI18n } from "~/lib/i18n";
 import { useDocumentTitle } from "~/lib/title";
 import { useToast } from "~/components/ui/toast";
 import { formText } from "~/lib/utils";
 
 export default function Recover() {
-  const t = useT();
+  const { t } = useI18n();
   const nav = useNavigate();
   const toast = useToast();
   const [params] = useSearchParams();

@@ -56,7 +56,6 @@ export function useI18n() {
   if (!v) throw new Error("I18nProvider missing");
   return v;
 }
-export const useT = () => useI18n().t;
 
 export function initialLanguage(): Language {
   const saved = safeGet("local", LANG_KEY);

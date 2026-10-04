@@ -28,7 +28,7 @@ import { Avatar } from "~/components/ui/avatar";
 import { useToast } from "~/components/ui/toast";
 import { effectiveFilter, endOfDay } from "~/lib/filters";
 import { fullDate, PRIORITIES } from "~/lib/format";
-import { useI18n, useT, type Key } from "~/lib/i18n";
+import { useI18n, type Key } from "~/lib/i18n";
 import { usePending } from "~/lib/use-pending";
 import { useWorkspace } from "~/lib/workspace";
 import type { Id, IssueFilter, IssueSort } from "~/lib/types";
@@ -231,7 +231,7 @@ function SearchFilter({
   value: string | undefined;
   onChange: (v: string | undefined) => void;
 }) {
-  const t = useT();
+  const { t } = useI18n();
   const [text, setText] = useState(value ?? "");
   const sent = useRef(value);
   const commit = useEffectEvent((v: string | undefined) => {

@@ -8,14 +8,14 @@ import { Logo } from "~/components/app/logo";
 import { LanguageToggle } from "~/components/app/preferences";
 import { auth, workspaces } from "~/lib/api";
 import { writeLastWs } from "~/lib/auth-guard";
-import { useT } from "~/lib/i18n";
+import { useI18n } from "~/lib/i18n";
 import { useSession } from "~/lib/session";
 import { useDocumentTitle } from "~/lib/title";
 import type { WorkspaceSummary } from "~/lib/types";
 import { formText } from "~/lib/utils";
 
 export default function Welcome() {
-  const t = useT();
+  const { t } = useI18n();
   const nav = useNavigate();
   const { profile } = useSession();
   const { revalidate } = useRevalidator();

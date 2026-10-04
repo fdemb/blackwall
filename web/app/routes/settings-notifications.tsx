@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Switch } from "~/components/ui/toggles";
 import { useToast } from "~/components/ui/toast";
 import { SettingsPage, SettingsSection } from "~/components/app/settings";
-import { useT } from "~/lib/i18n";
+import { useI18n } from "~/lib/i18n";
 import { useSession } from "~/lib/session";
 import { useWorkspace } from "~/lib/workspace";
 import { cn } from "~/lib/utils";
@@ -10,7 +10,7 @@ import { cn } from "~/lib/utils";
 const KINDS = ["assignment", "reply", "change", "mention", "deadline"] as const;
 
 export default function Notifications() {
-  const t = useT();
+  const { t } = useI18n();
   const toast = useToast();
   const { profile, saveProfile } = useSession();
   const { ws, me, run } = useWorkspace();

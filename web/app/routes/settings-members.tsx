@@ -208,7 +208,7 @@ function InviteForm({
   close: () => void;
   roles: { id: string; label: string }[];
 }) {
-  const t = useI18n().t;
+  const { t } = useI18n();
   const { run } = useWorkspace();
   const toast = useToast();
   const [email, setEmail] = useState("");

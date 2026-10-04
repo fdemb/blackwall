@@ -8,7 +8,7 @@ import { keys, refreshWorkspace, reportQuery, workspaceQuery } from "./query-cli
 import { changeFeedQuery } from "./sync";
 import { useSession } from "./session";
 import { useToast } from "~/components/ui/toast";
-import { useT } from "./i18n";
+import { useI18n } from "./i18n";
 import type {
   Command,
   EntityVersions,
@@ -132,7 +132,7 @@ function useWorkspaceRecords(db: WorkspaceDb) {
 export function WorkspaceProvider({ id, children }: { id: Id; children: ReactNode }) {
   const { profile } = useSession();
   const toast = useToast();
-  const t = useT();
+  const { t } = useI18n();
   const client = useQueryClient();
   const db = workspaceDb(id, client);
   const { ws, members, report } = useWorkspaceRecords(db);

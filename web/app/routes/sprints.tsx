@@ -295,7 +295,7 @@ function SprintForm({
   sprint: Sprint | null;
   close: () => void;
 }) {
-  const t = useI18n().t;
+  const { t } = useI18n();
   const { run } = useWorkspace();
   const [name, setName] = useState(sprint?.name ?? "");
   const [goal, setGoal] = useState(sprint?.goal ?? "");
@@ -382,7 +382,7 @@ function SprintForm({
 }
 
 function CompleteForm({ sprint, close }: { sprint: Sprint; close: () => void }) {
-  const t = useI18n().t;
+  const { t } = useI18n();
   const { ws, run } = useWorkspace();
   const [target, setTarget] = useState<Id | null>(null);
   const { pending, error, guard } = usePending();

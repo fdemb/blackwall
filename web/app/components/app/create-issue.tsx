@@ -11,7 +11,7 @@ import { useToast } from "~/components/ui/toast";
 import { bytes, ellipsis, MAX_UPLOAD } from "~/lib/format";
 import { usePending } from "~/lib/use-pending";
 import { cn } from "~/lib/utils";
-import { useT } from "~/lib/i18n";
+import { useI18n } from "~/lib/i18n";
 import { useWorkspace } from "~/lib/workspace";
 import type { Id, IssueInput, Priority } from "~/lib/types";
 // Loaded on demand: the editor (and the markdown renderer it pulls in) is the heaviest part of
@@ -30,7 +30,7 @@ import { Link } from "react-router";
 
 export function CreateIssueDialog() {
   const { create } = useWorkspace();
-  const t = useT();
+  const { t } = useI18n();
   return (
     <Dialog
       title={t("issue.new")}
@@ -45,7 +45,7 @@ export function CreateIssueDialog() {
 }
 
 function CreateIssueForm() {
-  const t = useT();
+  const { t } = useI18n();
   const nav = useNavigate();
   const toast = useToast();
   const { ws, me, create, run, upload } = useWorkspace();
@@ -317,7 +317,7 @@ function ExtendedProperties({
   labels: Id[];
   setLabels: (ids: Id[]) => void;
 }) {
-  const t = useT();
+  const { t } = useI18n();
   return (
     <div className="mt-2 grid grid-cols-2 gap-3 sm:grid-cols-3">
       <NullableSelect

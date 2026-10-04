@@ -8,7 +8,7 @@ import { useToast } from "~/components/ui/toast";
 import { SettingsPage, SettingsSection } from "~/components/app/settings";
 import { workspaces } from "~/lib/api";
 import { download } from "~/lib/format";
-import { useT, type Key } from "~/lib/i18n";
+import { useI18n, type Key } from "~/lib/i18n";
 import { usePending } from "~/lib/use-pending";
 import { useWorkspace } from "~/lib/workspace";
 import type { ImportSummary } from "~/lib/types";
@@ -61,7 +61,7 @@ function inspect(name: string, parsed: unknown): Preview | null {
 }
 
 export default function Data() {
-  const t = useT();
+  const { t } = useI18n();
   const { ws, canWrite, canAdmin, reload } = useWorkspace();
   const toast = useToast();
   const [busy, setBusy] = useState(false);
@@ -175,7 +175,7 @@ function Review({
   onCancel: () => void;
   onImport: () => Promise<void>;
 }) {
-  const t = useT();
+  const { t } = useI18n();
   const { pending, error, guard } = usePending();
   return (
     <div className="space-y-4">
@@ -215,7 +215,7 @@ function Review({
 }
 
 function Finished({ summary, onDone }: { summary: ImportSummary | null; onDone: () => void }) {
-  const t = useT();
+  const { t } = useI18n();
   const fallback = summary?.identities.filter((i) => i.fallback).length ?? 0;
   const matched = (summary?.identities.length ?? 0) - fallback;
   return (

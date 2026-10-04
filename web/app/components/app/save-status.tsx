@@ -1,11 +1,11 @@
 import { useEffect, useState } from "react";
 import { Check, Loader2 } from "lucide-react";
-import { useT } from "~/lib/i18n";
+import { useI18n } from "~/lib/i18n";
 import { useWorkspace } from "~/lib/workspace";
 
 /** Says "Saving…" while writes are in flight and "Saved" for a moment after, for pages that save as you edit. */
 export function SaveStatus() {
-  const t = useT();
+  const { t } = useI18n();
   const { pending } = useWorkspace();
   const [saved, setSaved] = useState(false);
   const [prevPending, setPrevPending] = useState(pending);

@@ -594,7 +594,7 @@ function EstimateField({
   disabled: boolean;
   onCommit: (v: number | null, version: number) => void;
 }) {
-  const t = useI18n().t;
+  const { t } = useI18n();
   const [v, setV] = useState(value?.toString() ?? "");
   const field = useRef<HTMLInputElement>(null);
   const baseVersion = useRef(version);
@@ -791,7 +791,7 @@ function TitleField({
   issue: Issue;
   onSave: (title: string, version: number) => void;
 }) {
-  const t = useI18n().t;
+  const { t } = useI18n();
   const { canWrite } = useWorkspace();
   const [title, setTitle] = useState(issue.title);
   const baseVersion = useRef(issue.version);
@@ -860,7 +860,7 @@ function Description({
   issue: Issue;
   onSave: (d: string, version: number) => Promise<boolean>;
 }) {
-  const t = useI18n().t;
+  const { t } = useI18n();
   const { canWrite } = useWorkspace();
   // null while not editing.
   const [draft, setDraft] = useState<string | null>(failedDrafts.get(issue.id) ?? null);
@@ -1150,7 +1150,7 @@ function Dependencies({
   blocking: Issue[];
   onAdd: (id: Id) => void;
 }) {
-  const t = useI18n().t;
+  const { t } = useI18n();
   const { run, canWrite } = useWorkspace();
   const remove = (id: Id) =>
     run({
@@ -1218,7 +1218,7 @@ export function attachmentUrl(wsId: Id, id: Id) {
 }
 
 function useUploader(issueId: Id) {
-  const t = useI18n().t;
+  const { t } = useI18n();
   const { upload } = useWorkspace();
   const toast = useToast();
   const [busy, setBusy] = useState(false);
@@ -1241,7 +1241,7 @@ function useUploader(issueId: Id) {
 type Uploader = ReturnType<typeof useUploader>;
 
 function AttachButton({ uploader }: { uploader: Uploader }) {
-  const t = useI18n().t;
+  const { t } = useI18n();
   return (
     <FileTrigger allowsMultiple onSelect={(list) => void uploader.pick(list)}>
       <Button variant="ghost" size="sm" isDisabled={uploader.busy}>
@@ -1261,7 +1261,7 @@ function AttachmentChip({
   a: { id: Id; name: string; size: number };
   onRemove?: () => void;
 }) {
-  const t = useI18n().t;
+  const { t } = useI18n();
   return (
     <li className="group flex items-center gap-2 rounded-lg border border-border bg-card px-2.5 py-1.5 text-[13px]">
       <FileText className="size-4 shrink-0 text-muted-foreground" />
@@ -1296,7 +1296,7 @@ function AttachmentChip({
 }
 
 function Attachments({ issue, uploader }: { issue: Issue; uploader: Uploader }) {
-  const t = useI18n().t;
+  const { t } = useI18n();
   const { ws, run, canWrite } = useWorkspace();
   return (
     <Section

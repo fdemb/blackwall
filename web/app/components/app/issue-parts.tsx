@@ -73,7 +73,7 @@ export function AssigneeAvatar({ issue, size = 20 }: { issue: Issue; size?: numb
 }
 
 export function BlockedBadge({ issue }: { issue: Issue }) {
-  const t = useI18nT();
+  const { t } = useI18n();
   if (!issue.blocked_count) return null;
   return (
     <Badge tone="danger" title={t("issue.blockedBy")}>
@@ -82,10 +82,6 @@ export function BlockedBadge({ issue }: { issue: Issue }) {
     </Badge>
   );
 }
-function useI18nT() {
-  return useI18n().t;
-}
-
 export function SubtaskProgress({ issue }: { issue: Issue }) {
   if (!issue.subtask_total) return null;
   return (
