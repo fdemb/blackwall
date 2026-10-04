@@ -3,6 +3,7 @@
 //! The SPA shell contains a few inline bootstrap scripts. Instead of allowing
 //! `unsafe-inline`, the server hashes each one at startup and puts the hashes
 //! in the page's Content-Security-Policy.
+
 use axum::{
     Router,
     http::{HeaderValue, StatusCode, Uri, header},
@@ -21,22 +22,27 @@ struct Shell {
 fn inline_script_hashes(html: &str) -> Vec<String> {
     let mut hashes = Vec::new();
     let mut rest = html;
+
     while let Some(start) = rest.find("<script") {
         let after = &rest[start..];
         let Some(open_end) = after.find('>') else {
             break;
         };
+
         let tag = &after[..open_end];
         let body = &after[open_end + 1..];
         let Some(close) = body.find("</script>") else {
             break;
         };
+
         if !tag.contains(" src=") {
             let digest = Sha256::digest(&body.as_bytes()[..close]);
             hashes.push(format!("'sha256-{}'", STANDARD.encode(digest)));
         }
+
         rest = &body[close + "</script>".len()..];
     }
+
     hashes
 }
 
@@ -51,6 +57,7 @@ fn load_shell(dir: &std::path::Path) -> Option<Shell> {
          img-src 'self' https:; font-src 'self' data:; connect-src 'self'; \
          frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
     );
+
     Some(Shell {
         html,
         csp: HeaderValue::from_str(&csp).ok()?,
@@ -63,13 +70,16 @@ pub fn default_dir() -> PathBuf {
 
 pub fn service(dir: PathBuf) -> ServeDir<Router> {
     let shell = load_shell(&dir).map(Arc::new);
+
     if shell.is_none() {
         tracing::warn!(dir = %dir.display(), "frontend build not found; run `npm run build` in web/");
     }
+
     let fallback = Router::new().fallback(move |uri: Uri| {
         let shell = shell.clone();
         async move { shell_response(shell, uri) }
     });
+
     ServeDir::new(dir)
         .append_index_html_on_directories(false)
         .fallback(fallback)
@@ -77,9 +87,11 @@ pub fn service(dir: PathBuf) -> ServeDir<Router> {
 
 fn shell_response(shell: Option<Arc<Shell>>, uri: Uri) -> Response {
     let path = uri.path();
+
     if path.starts_with("/api/") || path.contains('.') {
         return StatusCode::NOT_FOUND.into_response();
     }
+
     match shell {
         Some(shell) => (
             [
@@ -107,6 +119,7 @@ mod tests {
     #[test]
     fn hashes_only_inline_scripts() {
         let html = r#"<script src="/a.js"></script><script>let a=1</script><script type="module" async>import "/x.js"</script>"#;
+
         assert_eq!(inline_script_hashes(html).len(), 2);
     }
 }

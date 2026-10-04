@@ -73,7 +73,9 @@ async fn command(
         "POST",
         &format!("/api/workspaces/{workspace}/commands"),
         Some(json!({
-            "command":command,"expected_versions":versions,"idempotency_key":key
+            "command": command,
+            "expected_versions": versions,
+            "idempotency_key": key,
         })),
     )
     .await
@@ -91,7 +93,7 @@ async fn workspace(app: &axum::Router, owner: &Session, name: &str) -> Uuid {
         owner,
         "POST",
         "/api/workspaces",
-        Some(json!({"name":name})),
+        Some(json!({"name": name})),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{result}");
@@ -117,52 +119,56 @@ async fn independent_writes_stale_versions_atomic_bulk_and_idempotency() {
         &app,
         &owner,
         ws,
-        json!({"type":"create_team","name":"Team","members":[owner.profile.id]}),
+        json!({"type": "create_team", "name": "Team", "members": [owner.profile.id]}),
     )
     .await;
     let first = created(
         &app,
         &owner,
         ws,
-        json!({"type":"create_issue","input":{"team_id":team,"title":"First"}}),
+        json!({"type": "create_issue", "input": {"team_id": team, "title": "First"}}),
     )
     .await;
     let second = created(
         &app,
         &owner,
         ws,
-        json!({"type":"create_issue","input":{"team_id":team,"title":"Second"}}),
+        json!({"type": "create_issue", "input": {"team_id": team, "title": "Second"}}),
     )
     .await;
+
     let first_version = version(&store, first).await;
     let second_version = version(&store, second).await;
+
     let first_edit = command(
         &app,
         &owner,
         ws,
-        json!({"type":"update_issue","id":first,"patch":{"title":"First edited"}}),
-        json!({first.to_string():first_version}),
+        json!({"type": "update_issue", "id": first, "patch": {"title": "First edited"}}),
+        json!({first.to_string(): first_version}),
         None,
     );
     let second_edit = command(
         &app,
         &owner,
         ws,
-        json!({"type":"update_issue","id":second,"patch":{"title":"Second edited"}}),
-        json!({second.to_string():second_version}),
+        json!({"type": "update_issue", "id": second, "patch": {"title": "Second edited"}}),
+        json!({second.to_string(): second_version}),
         None,
     );
+
     let (a, b) = tokio::join!(first_edit, second_edit);
     assert_eq!(a.0, StatusCode::OK, "{}", a.1);
     assert_eq!(b.0, StatusCode::OK, "{}", b.1);
     assert_eq!(version(&store, first).await, first_version + 1);
     assert_eq!(version(&store, second).await, second_version + 1);
+
     let stale = command(
         &app,
         &owner,
         ws,
-        json!({"type":"update_issue","id":first,"patch":{"title":"Stale"}}),
-        json!({first.to_string():first_version}),
+        json!({"type": "update_issue", "id": first, "patch": {"title": "Stale"}}),
+        json!({first.to_string(): first_version}),
         None,
     )
     .await;
@@ -173,12 +179,13 @@ async fn independent_writes_stale_versions_atomic_bulk_and_idempotency() {
         &app,
         &owner,
         ws,
-        json!({"type":"bulk_issues","ids":[first,missing],"action":"delete"}),
-        json!({first.to_string():first_version+1,missing.to_string():1}),
+        json!({"type": "bulk_issues", "ids": [first, missing], "action": "delete"}),
+        json!({first.to_string(): first_version + 1, missing.to_string(): 1}),
         None,
     )
     .await;
     assert!(bulk.0.is_client_error(), "{}", bulk.1);
+
     let row = sqlx::query("SELECT title,deleted_at,version FROM issues WHERE id=$1")
         .bind(first)
         .fetch_one(&store.pool)
@@ -191,7 +198,8 @@ async fn independent_writes_stale_versions_atomic_bulk_and_idempotency() {
     );
     assert_eq!(row.get::<i64, _>("version"), first_version + 1);
 
-    let create = json!({"type":"create_issue","input":{"team_id":team,"title":"Exactly one"}});
+    let create =
+        json!({"type": "create_issue", "input": {"team_id": team, "title": "Exactly one"}});
     let one = command(
         &app,
         &owner,
@@ -201,14 +209,16 @@ async fn independent_writes_stale_versions_atomic_bulk_and_idempotency() {
         Some("same-create"),
     )
     .await;
+
     let replay = command(&app, &owner, ws, create, json!({}), Some("same-create")).await;
     assert_eq!(one.0, StatusCode::OK, "{}", one.1);
     assert_eq!(replay, one);
+
     let changed = command(
         &app,
         &owner,
         ws,
-        json!({"type":"create_issue","input":{"team_id":team,"title":"Different"}}),
+        json!({"type": "create_issue", "input": {"team_id": team, "title": "Different"}}),
         json!({}),
         Some("same-create"),
     )
@@ -224,6 +234,7 @@ async fn independent_writes_stale_versions_atomic_bulk_and_idempotency() {
     );
 
     drop(app);
+
     store.pool.close().await;
     database.cleanup().await;
 }
@@ -240,30 +251,47 @@ async fn parallel_number_allocation_and_database_tenant_constraints() {
         &app,
         &owner,
         ws,
-        json!({"type":"create_team","name":"Team","members":[]}),
+        json!({"type": "create_team", "name": "Team", "members": []}),
     )
     .await;
     let foreign_team = created(
         &app,
         &owner,
         other,
-        json!({"type":"create_team","name":"Foreign","members":[]}),
+        json!({"type": "create_team", "name": "Foreign", "members": []}),
     )
     .await;
+
     let mut tasks = tokio::task::JoinSet::new();
     for n in 0..16 {
         let app = app.clone();
         let token = owner.token.clone();
         let profile = owner.profile.clone();
         tasks.spawn(async move {
-            let owner = Session {token,profile,csrf_token:String::new()};
-            created(&app, &owner, ws, json!({"type":"create_issue","input":{"team_id":team,"title":format!("Issue {n}")}})).await
+            let owner = Session {
+                token,
+                profile,
+                csrf_token: String::new(),
+            };
+
+            created(
+                &app,
+                &owner,
+                ws,
+                json!({
+                    "type": "create_issue",
+                    "input": {"team_id": team, "title": format!("Issue {n}")}
+                }),
+            )
+            .await
         });
     }
+
     let mut ids = Vec::new();
     while let Some(result) = tasks.join_next().await {
         ids.push(result.unwrap());
     }
+
     let numbers: Vec<i64> = sqlx::query_scalar(
         "SELECT number::bigint FROM issues WHERE workspace_id=$1 ORDER BY number",
     )
@@ -272,13 +300,17 @@ async fn parallel_number_allocation_and_database_tenant_constraints() {
     .await
     .unwrap();
     assert_eq!(numbers, (1..=16).collect::<Vec<_>>());
+
     let invalid = sqlx::query("UPDATE issues SET team_id=$1 WHERE id=$2")
         .bind(foreign_team)
         .bind(ids[0])
         .execute(&store.pool)
         .await
         .unwrap_err();
-    assert!(matches!(invalid,sqlx::Error::Database(ref error) if error.is_foreign_key_violation()));
+    assert!(
+        matches!(invalid, sqlx::Error::Database(ref error) if error.is_foreign_key_violation())
+    );
+
     let duplicate =
         sqlx::query("UPDATE issues SET number=(SELECT number FROM issues WHERE id=$1) WHERE id=$2")
             .bind(ids[0])
@@ -286,12 +318,21 @@ async fn parallel_number_allocation_and_database_tenant_constraints() {
             .execute(&store.pool)
             .await
             .unwrap_err();
-    assert!(matches!(duplicate,sqlx::Error::Database(ref error) if error.is_unique_violation()));
-    let columns: Vec<String> = sqlx::query_scalar("SELECT column_name FROM information_schema.columns WHERE table_name='workspaces' AND table_schema=current_schema()").fetch_all(&store.pool).await.unwrap();
+    assert!(matches!(duplicate, sqlx::Error::Database(ref error) if error.is_unique_violation()));
+
+    let columns: Vec<String> = sqlx::query_scalar(
+        "SELECT column_name FROM information_schema.columns \
+         WHERE table_name='workspaces' AND table_schema=current_schema()",
+    )
+    .fetch_all(&store.pool)
+    .await
+    .unwrap();
     for obsolete in ["data", "revision", "next_tick_at"] {
         assert!(!columns.iter().any(|column| column == obsolete));
     }
+
     drop(app);
+
     store.pool.close().await;
     database.cleanup().await;
 }
@@ -308,15 +349,17 @@ async fn revocation_waits_for_membership_lock_and_blocks_later_writes() {
         &app,
         &owner,
         ws,
-        json!({"type":"create_team","name":"Team","members":[]}),
+        json!({"type": "create_team", "name": "Team", "members": []}),
     )
     .await;
+
     sqlx::query("INSERT INTO workspace_members(workspace_id,user_id,role) VALUES($1,$2,'member')")
         .bind(ws)
         .bind(member.profile.id)
         .execute(&store.pool)
         .await
         .unwrap();
+
     let member_version: i64 = sqlx::query_scalar(
         "SELECT version FROM workspace_members WHERE workspace_id=$1 AND user_id=$2",
     )
@@ -325,7 +368,9 @@ async fn revocation_waits_for_membership_lock_and_blocks_later_writes() {
     .fetch_one(&store.pool)
     .await
     .unwrap();
+
     let mut mutation = store.pool.begin().await.unwrap();
+
     sqlx::query(
         "SELECT role FROM workspace_members WHERE workspace_id=$1 AND user_id=$2 FOR SHARE",
     )
@@ -339,8 +384,8 @@ async fn revocation_waits_for_membership_lock_and_blocks_later_writes() {
             &app,
             &owner,
             ws,
-            json!({"type":"remove_member","user_id":member.profile.id}),
-            json!({member.profile.id.to_string():member_version}),
+            json!({"type": "remove_member", "user_id": member.profile.id}),
+            json!({member.profile.id.to_string(): member_version}),
             None,
         );
         tokio::pin!(revoke);
@@ -355,11 +400,12 @@ async fn revocation_waits_for_membership_lock_and_blocks_later_writes() {
             .unwrap();
         assert_eq!(result.0, StatusCode::OK, "{}", result.1);
     }
+
     let denied = command(
         &app,
         &member,
         ws,
-        json!({"type":"create_issue","input":{"team_id":team,"title":"Too late"}}),
+        json!({"type": "create_issue", "input": {"team_id": team, "title": "Too late"}}),
         json!({}),
         None,
     )
@@ -373,7 +419,9 @@ async fn revocation_waits_for_membership_lock_and_blocks_later_writes() {
             .unwrap(),
         0
     );
+
     drop(app);
+
     store.pool.close().await;
     database.cleanup().await;
 }
@@ -393,11 +441,28 @@ async fn superseded_running_reminders_skip_inbox_and_current_generation_deduplic
         &app,
         &owner,
         ws,
-        json!({"type":"create_team","name":"Team","members":[owner.profile.id]}),
+        json!({"type": "create_team", "name": "Team", "members": [owner.profile.id]}),
     )
     .await;
+
     let deadline = chrono::Utc::now() + chrono::Duration::hours(1);
-    let issue = created(&app, &owner, ws, json!({"type":"create_issue","input":{"team_id":team,"title":"Due soon","assignee":owner.profile.id,"deadline":deadline}})).await;
+
+    let issue = created(
+        &app,
+        &owner,
+        ws,
+        json!({
+            "type": "create_issue",
+            "input": {
+                "team_id": team,
+                "title": "Due soon",
+                "assignee": owner.profile.id,
+                "deadline": deadline
+            }
+        }),
+    )
+    .await;
+
     let old = store
         .outbox
         .claim("database", 1)
@@ -405,12 +470,28 @@ async fn superseded_running_reminders_skip_inbox_and_current_generation_deduplic
         .unwrap()
         .pop()
         .unwrap();
+
     let Job::Reminder(reminder) = Job::decode(&old.kind, &old.payload).unwrap() else {
         panic!("expected reminder")
     };
-    let edit = command(&app,&owner,ws,json!({"type":"update_issue","id":issue,"patch":{"deadline":deadline+chrono::Duration::days(2)}}),json!({issue.to_string():version(&store,issue).await}),None).await;
+
+    let edit = command(
+        &app,
+        &owner,
+        ws,
+        json!({
+            "type": "update_issue",
+            "id": issue,
+            "patch": {"deadline": deadline + chrono::Duration::days(2)}
+        }),
+        json!({issue.to_string(): version(&store, issue).await}),
+        None,
+    )
+    .await;
     assert_eq!(edit.0, StatusCode::OK, "{}", edit.1);
+
     let mut tx = store.pool.begin().await.unwrap();
+
     sqlx::query("SELECT id FROM jobs WHERE id=$1 AND claim_token=$2 FOR UPDATE")
         .bind(old.id)
         .bind(old.token)
@@ -427,19 +508,22 @@ async fn superseded_running_reminders_skip_inbox_and_current_generation_deduplic
             .unwrap(),
         0
     );
+
     let edit = command(
         &app,
         &owner,
         ws,
-        json!({"type":"update_issue","id":issue,"patch":{"deadline":deadline}}),
-        json!({issue.to_string():version(&store,issue).await}),
+        json!({"type": "update_issue", "id": issue, "patch": {"deadline": deadline}}),
+        json!({issue.to_string(): version(&store, issue).await}),
         None,
     )
     .await;
     assert_eq!(edit.0, StatusCode::OK, "{}", edit.1);
+
     blackwall::jobs::tick(&store, &Mailer::Disabled)
         .await
         .unwrap();
+
     blackwall::jobs::tick(&store, &Mailer::Disabled)
         .await
         .unwrap();
@@ -450,24 +534,39 @@ async fn superseded_running_reminders_skip_inbox_and_current_generation_deduplic
             .unwrap(),
         1
     );
+
     let generation: i64 = sqlx::query_scalar("SELECT reminder_generation FROM issues WHERE id=$1")
         .bind(issue)
         .fetch_one(&store.pool)
         .await
         .unwrap();
+
     let current = Reminder {
         workspace_id: ws,
         issue_id: issue,
         generation,
     };
+
     let mut tx = store.pool.begin().await.unwrap();
     Store::execute_reminder(&mut tx, &current).await.unwrap();
     Store::execute_reminder(&mut tx, &current).await.unwrap();
     tx.commit().await.unwrap();
-    let edit = command(&app, &owner, ws,
-        json!({"type":"update_issue","id":issue,"patch":{"deadline":deadline+chrono::Duration::hours(1)}}),
-        json!({issue.to_string():version(&store,issue).await}), None).await;
+
+    let edit = command(
+        &app,
+        &owner,
+        ws,
+        json!({
+            "type": "update_issue",
+            "id": issue,
+            "patch": {"deadline": deadline + chrono::Duration::hours(1)}
+        }),
+        json!({issue.to_string(): version(&store, issue).await}),
+        None,
+    )
+    .await;
     assert_eq!(edit.0, StatusCode::OK, "{}", edit.1);
+
     let claim = store
         .outbox
         .claim("database", 1)
@@ -475,9 +574,11 @@ async fn superseded_running_reminders_skip_inbox_and_current_generation_deduplic
         .unwrap()
         .pop()
         .unwrap();
+
     let Job::Reminder(reminder) = Job::decode(&claim.kind, &claim.payload).unwrap() else {
         panic!("expected reminder")
     };
+
     sqlx::query(
         "UPDATE users SET profile=jsonb_set(profile,'{alerts,deadlines}','false') WHERE id=$1",
     )
@@ -485,7 +586,9 @@ async fn superseded_running_reminders_skip_inbox_and_current_generation_deduplic
     .execute(&store.pool)
     .await
     .unwrap();
+
     let mut tx = store.pool.begin().await.unwrap();
+
     sqlx::query("SELECT id FROM jobs WHERE id=$1 AND claim_token=$2 FOR UPDATE")
         .bind(claim.id)
         .bind(claim.token)
@@ -495,6 +598,7 @@ async fn superseded_running_reminders_skip_inbox_and_current_generation_deduplic
     Store::execute_reminder(&mut tx, &reminder).await.unwrap();
     assert!(Outbox::complete_in(&mut tx, &claim).await.unwrap());
     tx.commit().await.unwrap();
+
     sqlx::query(
         "UPDATE users SET profile=jsonb_set(profile,'{alerts,deadlines}','true') WHERE id=$1",
     )
@@ -502,16 +606,18 @@ async fn superseded_running_reminders_skip_inbox_and_current_generation_deduplic
     .execute(&store.pool)
     .await
     .unwrap();
+
     let edit = command(
         &app,
         &owner,
         ws,
-        json!({"type":"update_issue","id":issue,"patch":{"deadline":deadline}}),
-        json!({issue.to_string():version(&store,issue).await}),
+        json!({"type": "update_issue", "id": issue, "patch": {"deadline": deadline}}),
+        json!({issue.to_string(): version(&store, issue).await}),
         None,
     )
     .await;
     assert_eq!(edit.0, StatusCode::OK, "{}", edit.1);
+
     let running = store
         .outbox
         .claim("database", 1)
@@ -519,25 +625,30 @@ async fn superseded_running_reminders_skip_inbox_and_current_generation_deduplic
         .unwrap()
         .pop()
         .unwrap();
+
     let Job::Reminder(reminder) = Job::decode(&running.kind, &running.payload).unwrap() else {
         panic!("expected reminder")
     };
+
     let done: Uuid = sqlx::query_scalar("SELECT id FROM stages WHERE team_id=$1 AND kind='done'")
         .bind(team)
         .fetch_one(&store.pool)
         .await
         .unwrap();
+
     let complete = command(
         &app,
         &owner,
         ws,
-        json!({"type":"move_issue","id":issue,"stage_id":done}),
-        json!({issue.to_string():version(&store,issue).await}),
+        json!({"type": "move_issue", "id": issue, "stage_id": done}),
+        json!({issue.to_string(): version(&store, issue).await}),
         None,
     )
     .await;
     assert_eq!(complete.0, StatusCode::OK, "{}", complete.1);
+
     let mut tx = store.pool.begin().await.unwrap();
+
     sqlx::query("SELECT id FROM jobs WHERE id=$1 AND claim_token=$2 FOR UPDATE")
         .bind(running.id)
         .bind(running.token)
@@ -554,7 +665,9 @@ async fn superseded_running_reminders_skip_inbox_and_current_generation_deduplic
             .unwrap(),
         1
     );
+
     drop(app);
+
     store.pool.close().await;
     database.cleanup().await;
 }
@@ -565,6 +678,7 @@ async fn fixtures_load_transactionally_and_migrations_are_repeatable() {
     let store = Store::connect(&database.url).await.unwrap();
     blackwall::fixtures::load(&store, "empty").await.unwrap();
     blackwall::fixtures::load(&store, "rich").await.unwrap();
+
     let login = store
         .login(blackwall::auth::Login {
             email: "owner@example.com".into(),
@@ -576,7 +690,15 @@ async fn fixtures_load_transactionally_and_migrations_are_repeatable() {
         login.profile.id,
         Uuid::from_u128(0x20000000_0000_0000_0000_000000000001)
     );
-    let counts: Vec<i64> = sqlx::query_scalar("SELECT count(i.id) FROM workspaces w LEFT JOIN issues i ON i.workspace_id=w.id GROUP BY w.id ORDER BY w.id").fetch_all(&store.pool).await.unwrap();
+
+    let counts: Vec<i64> = sqlx::query_scalar(
+        "SELECT count(i.id) FROM workspaces w \
+         LEFT JOIN issues i ON i.workspace_id=w.id \
+         GROUP BY w.id ORDER BY w.id",
+    )
+    .fetch_all(&store.pool)
+    .await
+    .unwrap();
     assert_eq!(counts, vec![0, 3]);
     assert_eq!(
         sqlx::query_scalar::<_, Vec<u8>>("SELECT bytes FROM attachments")
@@ -594,11 +716,18 @@ async fn fixtures_load_transactionally_and_migrations_are_repeatable() {
         .unwrap(),
         1
     );
-    let foreign_assignment = sqlx::query("UPDATE issues SET assignee='10000000-0000-0000-0000-000000000001' WHERE id='20000000-0000-0000-0000-000000000062'")
-        .execute(&store.pool).await.unwrap_err();
+
+    let foreign_assignment = sqlx::query(
+        "UPDATE issues SET assignee='10000000-0000-0000-0000-000000000001' \
+         WHERE id='20000000-0000-0000-0000-000000000062'",
+    )
+    .execute(&store.pool)
+    .await
+    .unwrap_err();
     assert!(
         matches!(foreign_assignment, sqlx::Error::Database(ref error) if error.is_foreign_key_violation())
     );
+
     let excessive_time = sqlx::query(
         "UPDATE time_entries SET minutes=1441 WHERE id='20000000-0000-0000-0000-000000000071'",
     )
@@ -608,6 +737,7 @@ async fn fixtures_load_transactionally_and_migrations_are_repeatable() {
     assert!(
         matches!(excessive_time, sqlx::Error::Database(ref error) if error.is_check_violation())
     );
+
     assert!(blackwall::fixtures::load(&store, "rich").await.is_err());
     assert_eq!(
         sqlx::query_scalar::<_, i64>("SELECT count(*) FROM users")
@@ -616,7 +746,9 @@ async fn fixtures_load_transactionally_and_migrations_are_repeatable() {
             .unwrap(),
         3
     );
+
     store.pool.close().await;
+
     let reopened = Store::connect(&database.url).await.unwrap();
     assert_eq!(
         sqlx::query_scalar::<_, i64>("SELECT count(*) FROM workspaces")
@@ -625,6 +757,7 @@ async fn fixtures_load_transactionally_and_migrations_are_repeatable() {
             .unwrap(),
         2
     );
+
     reopened.pool.close().await;
     database.cleanup().await;
 }
@@ -639,18 +772,33 @@ async fn representative_workspace_lists_reports_and_indexed_board_plan() {
     let owner = Uuid::from_u128(0x20000000_0000_0000_0000_000000000001);
     let team = Uuid::from_u128(0x20000000_0000_0000_0000_000000000020);
     let stage = Uuid::from_u128(0x20000000_0000_0000_0000_000000000021);
-    sqlx::query("INSERT INTO issues(id,workspace_id,number,title,description,team_id,stage_id,priority,position,created_at,updated_at) SELECT gen_random_uuid(),$1,n,'Representative issue '||n,'SQL list and report fixture',$2,$3,'normal',n*1024,now(),now() FROM generate_series(4,5000) n")
-        .bind(ws).bind(team).bind(stage).execute(&store.pool).await.unwrap();
+
+    sqlx::query(
+        "INSERT INTO issues(id,workspace_id,number,title,description,team_id,stage_id,priority,\
+         position,created_at,updated_at) \
+         SELECT gen_random_uuid(),$1,n,'Representative issue '||n,'SQL list and report fixture',\
+         $2,$3,'normal',n*1024,now(),now() FROM generate_series(4,5000) n",
+    )
+    .bind(ws)
+    .bind(team)
+    .bind(stage)
+    .execute(&store.pool)
+    .await
+    .unwrap();
+
     sqlx::query("UPDATE workspaces SET next_issue_number=5001 WHERE id=$1")
         .bind(ws)
         .execute(&store.pool)
         .await
         .unwrap();
+
     sqlx::query("ANALYZE issues")
         .execute(&store.pool)
         .await
         .unwrap();
+
     let start = std::time::Instant::now();
+
     let page = store
         .list_issues(ws, owner, IssueFilter::default(), 100, 0)
         .await
@@ -658,6 +806,7 @@ async fn representative_workspace_lists_reports_and_indexed_board_plan() {
     assert_eq!(page["items"].as_array().unwrap().len(), 100);
     assert_eq!(page["has_more"], true);
     assert_eq!(page["next_offset"], 100);
+
     let found = store
         .list_issues(
             ws,
@@ -673,16 +822,28 @@ async fn representative_workspace_lists_reports_and_indexed_board_plan() {
         .unwrap();
     assert_eq!(found["items"].as_array().unwrap().len(), 1);
     assert_eq!(found["items"][0]["number"], 4210);
+
     let report = store.report_sql(ws, owner).await.unwrap();
     assert_eq!(report["issue_count"], 4999);
-    let plan: Value = sqlx::query_scalar("EXPLAIN (ANALYZE,BUFFERS,FORMAT JSON) SELECT id FROM issues WHERE workspace_id=$1 AND team_id=$2 AND stage_id=$3 AND deleted_at IS NULL ORDER BY position,id LIMIT 100")
-        .bind(ws).bind(team).bind(stage).fetch_one(&store.pool).await.unwrap();
+
+    let plan: Value = sqlx::query_scalar(
+        "EXPLAIN (ANALYZE,BUFFERS,FORMAT JSON) SELECT id FROM issues \
+         WHERE workspace_id=$1 AND team_id=$2 AND stage_id=$3 AND deleted_at IS NULL \
+         ORDER BY position,id LIMIT 100",
+    )
+    .bind(ws)
+    .bind(team)
+    .bind(stage)
+    .fetch_one(&store.pool)
+    .await
+    .unwrap();
     assert!(plan.to_string().contains("issues_board"), "{plan}");
     eprintln!(
         "5000-issue list/search/report verification took {:?}; board plan {}",
         start.elapsed(),
         plan
     );
+
     store.pool.close().await;
     database.cleanup().await;
 }
@@ -694,7 +855,9 @@ async fn workspace_creation_retries_are_actor_scoped_and_atomic() {
     let app = router(store.clone());
     let owner = account(&store, "owner").await;
     let other = account(&store, "other").await;
-    let payload = json!({"name":"One workspace","idempotency_key":"ambiguous-create"});
+
+    let payload = json!({"name": "One workspace", "idempotency_key": "ambiguous-create"});
+
     let (a, b) = tokio::join!(
         call(
             &app,
@@ -707,21 +870,23 @@ async fn workspace_creation_retries_are_actor_scoped_and_atomic() {
     );
     assert_eq!(a.0, StatusCode::OK, "{}", a.1);
     assert_eq!(a, b);
+
     let mismatch = call(
         &app,
         &owner,
         "POST",
         "/api/workspaces",
-        Some(json!({"name":"Another name","idempotency_key":"ambiguous-create"})),
+        Some(json!({"name": "Another name", "idempotency_key": "ambiguous-create"})),
     )
     .await;
     assert_eq!(mismatch.0, StatusCode::CONFLICT, "{}", mismatch.1);
+
     let other = call(
         &app,
         &other,
         "POST",
         "/api/workspaces",
-        Some(json!({"name":"Another actor","idempotency_key":"ambiguous-create"})),
+        Some(json!({"name": "Another actor", "idempotency_key": "ambiguous-create"})),
     )
     .await;
     assert_eq!(other.0, StatusCode::OK, "{}", other.1);
@@ -739,7 +904,9 @@ async fn workspace_creation_retries_are_actor_scoped_and_atomic() {
             .unwrap(),
         2
     );
+
     drop(app);
+
     store.pool.close().await;
     database.cleanup().await;
 }

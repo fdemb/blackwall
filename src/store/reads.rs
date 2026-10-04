@@ -51,6 +51,7 @@ pub async fn issue_on(
         .fetch_optional(conn)
         .await?
         .ok_or(Error::NotFound)?;
+
     Ok(serde_json::from_value(value)?)
 }
 
@@ -60,13 +61,18 @@ fn bounds(limit: i64, offset: i64) -> Result<()> {
             "limit must be 1..200 and offset must be nonnegative".into(),
         ));
     }
+
     Ok(())
 }
 
 pub(super) fn page(mut items: Vec<Value>, limit: i64, offset: i64) -> Value {
     let has_more = items.len() > limit as usize;
     items.truncate(limit as usize);
-    json!({"items":items,"has_more":has_more,"next_offset":if has_more {Some(offset+limit)} else {None}})
+    json!({
+        "items": items,
+        "has_more": has_more,
+        "next_offset": if has_more { Some(offset + limit) } else { None }
+    })
 }
 
 pub(super) fn collection_select(kind: &str) -> Result<(&'static str, &'static str, &'static str)> {
@@ -143,6 +149,7 @@ pub(super) async fn collection_on(
         "SELECT {expression} FROM {table} WHERE t.workspace_id="
     ));
     q.push_bind(workspace);
+
     match kind {
         "views" => {
             q.push(" AND (t.shared OR t.owner=")
@@ -154,7 +161,8 @@ pub(super) async fn collection_on(
         }
         "invitations" | "integrations" => {
             q.push(" AND EXISTS(SELECT 1 FROM workspace_members m WHERE m.workspace_id=t.workspace_id AND m.user_id=")
-                .push_bind(actor).push(" AND m.role IN ('owner','admin'))");
+                .push_bind(actor)
+                .push(" AND m.role IN ('owner','admin'))");
         }
         "comments" | "time_entries" => {
             if let Some(id) = issue_id {
@@ -168,6 +176,7 @@ pub(super) async fn collection_on(
         }
         _ => {}
     }
+
     q.push(format!(" ORDER BY {order}"));
     if let Some(query) = query {
         q.push(" LIMIT ")
@@ -175,6 +184,7 @@ pub(super) async fn collection_on(
             .push(" OFFSET ")
             .push_bind(query.offset);
     }
+
     Ok(q.build_query_scalar::<Value>().fetch_all(conn).await?)
 }
 
@@ -183,7 +193,10 @@ impl Store {
         let rows = sqlx::query!(
             "SELECT w.id,w.name,w.version FROM workspaces w JOIN workspace_members m ON m.workspace_id=w.id WHERE m.user_id=$1 ORDER BY w.name,w.id",
             actor,
-        ).fetch_all(&self.pool).await?;
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
         Ok(rows
             .into_iter()
             .map(|row| json!({"id":row.id,"name":row.name,"version":row.version}))
@@ -193,12 +206,14 @@ impl Store {
     pub async fn workspace_metadata(&self, workspace: Uuid, actor: Uuid) -> Result<Value> {
         let mut conn = self.pool.acquire().await?;
         authorize(&mut conn, workspace, actor).await?;
+
         let row = sqlx::query!(
             "SELECT id,name,version FROM workspaces WHERE id=$1",
             workspace,
         )
         .fetch_one(&mut *conn)
         .await?;
+
         Ok(json!({"workspace":{"id":row.id,"name":row.name,"version":row.version}}))
     }
 
@@ -213,13 +228,21 @@ impl Store {
         key: Option<String>,
     ) -> Result<Value> {
         text(&name, 200)?;
+
         let mut tx = self.pool.begin().await?;
         if let Some(key) = &key {
             text(key, 200)?;
             sqlx::query("INSERT INTO workspace_creation_keys(actor,key,name) VALUES($1,$2,$3) ON CONFLICT DO NOTHING")
-                .bind(actor).bind(key).bind(&name).execute(&mut *tx).await?;
+                .bind(actor)
+                .bind(key)
+                .bind(&name)
+                .execute(&mut *tx)
+                .await?;
             let row = sqlx::query("SELECT name,result FROM workspace_creation_keys WHERE actor=$1 AND key=$2 FOR UPDATE")
-                .bind(actor).bind(key).fetch_one(&mut *tx).await?;
+                .bind(actor)
+                .bind(key)
+                .fetch_one(&mut *tx)
+                .await?;
             if row.try_get::<String, _>("name")? != name {
                 return Err(Error::Conflict(
                     "idempotency key reused for a different workspace".into(),
@@ -229,6 +252,7 @@ impl Store {
                 return Ok(result);
             }
         }
+
         let id = Uuid::new_v4();
         sqlx::query("INSERT INTO workspaces(id,name) VALUES($1,$2)")
             .bind(id)
@@ -242,6 +266,7 @@ impl Store {
         .bind(actor)
         .execute(&mut *tx)
         .await?;
+
         let result = json!({"id":id,"name":name,"version":1});
         if let Some(key) = key {
             sqlx::query("UPDATE workspace_creation_keys SET result=$3 WHERE actor=$1 AND key=$2")
@@ -252,6 +277,7 @@ impl Store {
                 .await?;
         }
         tx.commit().await?;
+
         Ok(result)
     }
 
@@ -270,12 +296,15 @@ impl Store {
         offset: i64,
     ) -> Result<Value> {
         bounds(limit, offset)?;
+
         let mut conn = self.pool.acquire().await?;
         authorize(&mut conn, workspace, actor).await?;
+
         let mut q = QueryBuilder::<Postgres>::new(format!(
             "SELECT {ISSUE_JSON} FROM issues i WHERE i.workspace_id="
         ));
         q.push_bind(workspace);
+
         q.push(if filter.trash {
             " AND i.deleted_at IS NOT NULL"
         } else {
@@ -301,7 +330,9 @@ impl Store {
             .push(")");
         }
         if let Some(id) = filter.dependency_id {
-            q.push(" AND EXISTS(SELECT 1 FROM issue_dependencies d WHERE d.issue_id=i.id AND d.dependency_id=").push_bind(id).push(")");
+            q.push(" AND EXISTS(SELECT 1 FROM issue_dependencies d WHERE d.issue_id=i.id AND d.dependency_id=")
+                .push_bind(id)
+                .push(")");
         }
         if let Some(priority) = filter.priority {
             q.push(" AND i.priority=").push_bind(enum_text(&priority));
@@ -346,10 +377,15 @@ impl Store {
                         .replace('_', "\\_")
                 );
                 q.push(" AND (to_tsvector('simple',i.title || ' ' || i.description) @@ plainto_tsquery('simple',")
-                    .push_bind(search.clone()).push(") OR i.title || ' ' || i.description ILIKE ").push_bind(pattern)
-                    .push(" OR i.number::text=").push_bind(search.trim_start_matches('#').to_owned()).push(")");
+                    .push_bind(search.clone())
+                    .push(") OR i.title || ' ' || i.description ILIKE ")
+                    .push_bind(pattern)
+                    .push(" OR i.number::text=")
+                    .push_bind(search.trim_start_matches('#').to_owned())
+                    .push(")");
             }
         }
+
         q.push(" ORDER BY ");
         match filter.group_by {
             Some(IssueGroup::Stage) => {
@@ -363,6 +399,7 @@ impl Store {
             }
             _ => {}
         }
+
         q.push(match filter.sort {
             IssueSort::Position => "i.position,i.number,i.id",
             IssueSort::Deadline => "i.deadline ASC NULLS LAST,i.position,i.id",
@@ -373,6 +410,7 @@ impl Store {
             .push_bind(limit + 1)
             .push(" OFFSET ")
             .push_bind(offset);
+
         Ok(page(
             q.build_query_scalar::<Value>()
                 .fetch_all(&mut *conn)
@@ -390,8 +428,10 @@ impl Store {
         query: CollectionQuery,
     ) -> Result<Value> {
         bounds(query.limit, query.offset)?;
+
         let mut conn = self.pool.acquire().await?;
         authorize(&mut conn, workspace, actor).await?;
+
         let rows = collection_on(
             &mut conn,
             workspace,
@@ -403,6 +443,7 @@ impl Store {
             }),
         )
         .await?;
+
         Ok(page(rows, query.limit, query.offset))
     }
 
@@ -415,8 +456,10 @@ impl Store {
         if search.is_some_and(|s| s.len() > 200) {
             return Err(Error::BadRequest("search query too long".into()));
         }
+
         let mut conn = self.pool.acquire().await?;
         authorize(&mut conn, workspace, actor).await?;
+
         let search = search.map(|s| {
             format!(
                 "%{}%",
@@ -425,8 +468,12 @@ impl Store {
                     .replace('_', "\\_")
             )
         });
-        let rows: Vec<Value>=sqlx::query_scalar(r#"SELECT jsonb_build_object('id',u.id,'email',u.email,'display_name',u.profile->>'display_name','avatar_url',u.profile->'avatar_url','contact',u.profile->>'contact','role',m.role,'version',m.version,'team_ids',COALESCE((SELECT jsonb_agg(tm.team_id ORDER BY tm.team_id) FROM team_members tm WHERE tm.workspace_id=m.workspace_id AND tm.user_id=u.id),'[]'::jsonb)) FROM workspace_members m JOIN users u ON u.id=m.user_id WHERE m.workspace_id=$1 AND ($2::text IS NULL OR u.email ILIKE $2 OR u.profile->>'display_name' ILIKE $2) ORDER BY lower(u.profile->>'display_name'),u.id LIMIT 2000"#)
-            .bind(workspace).bind(search).fetch_all(&mut *conn).await?;
+        let rows: Vec<Value> = sqlx::query_scalar(r#"SELECT jsonb_build_object('id',u.id,'email',u.email,'display_name',u.profile->>'display_name','avatar_url',u.profile->'avatar_url','contact',u.profile->>'contact','role',m.role,'version',m.version,'team_ids',COALESCE((SELECT jsonb_agg(tm.team_id ORDER BY tm.team_id) FROM team_members tm WHERE tm.workspace_id=m.workspace_id AND tm.user_id=u.id),'[]'::jsonb)) FROM workspace_members m JOIN users u ON u.id=m.user_id WHERE m.workspace_id=$1 AND ($2::text IS NULL OR u.email ILIKE $2 OR u.profile->>'display_name' ILIKE $2) ORDER BY lower(u.profile->>'display_name'),u.id LIMIT 2000"#)
+            .bind(workspace)
+            .bind(search)
+            .fetch_all(&mut *conn)
+            .await?;
+
         Ok(json!(rows))
     }
 }
@@ -435,6 +482,7 @@ impl Store {
     pub async fn report_sql(&self, workspace: Uuid, actor: Uuid) -> Result<Value> {
         let mut conn = self.pool.acquire().await?;
         authorize(&mut conn, workspace, actor).await?;
+
         let sql = r#"
 WITH work AS (
  SELECT i.*,s.kind IN ('done','cancelled') AS done FROM issues i JOIN stages s ON s.id=i.stage_id WHERE i.workspace_id=$1
@@ -478,6 +526,7 @@ SELECT jsonb_build_object(
  'label_counts',COALESCE((SELECT jsonb_object_agg(id::text,count) FROM label_rows),'{}'::jsonb),
  'project_stats',COALESCE((SELECT jsonb_agg(to_jsonb(p) ORDER BY p.id) FROM project_rows p),'[]'::jsonb))
 "#;
+
         Ok(sqlx::query_scalar(sql)
             .bind(workspace)
             .bind(actor)

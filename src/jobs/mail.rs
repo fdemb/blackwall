@@ -26,6 +26,7 @@ impl Mailer {
         if let Ok(directory) = std::env::var("DEV_MAIL_DIR") {
             return Ok(Self::Spool(directory.into()));
         }
+
         let Ok(url) = std::env::var("SMTP_URL") else {
             return Ok(Self::Disabled);
         };
@@ -33,11 +34,13 @@ impl Mailer {
             .map_err(|_| "SMTP_FROM is required with SMTP_URL")?
             .parse()
             .map_err(|_| "SMTP_FROM must be an address like Blackwall <noreply@example.com>")?;
+
         // The URL can hold credentials, so errors leave it out.
         let transport = AsyncSmtpTransport::<Tokio1Executor>::from_url(&url)
             .map_err(|_| "SMTP_URL is not a valid smtp:// or smtps:// URL")?
             .timeout(Some(Duration::from_secs(15)))
             .build();
+
         Ok(Self::Smtp { transport, from })
     }
 
@@ -64,6 +67,7 @@ impl Mailer {
                         DeliveryError::Transient("smtp delivery failed")
                     }
                 })?;
+
                 Ok(())
             }
             Self::Spool(directory) => spool(directory, id, email)
@@ -77,6 +81,7 @@ impl Mailer {
 fn message(id: &str, from: &Mailbox, email: &Email) -> Result<Message, &'static str> {
     // Stable across retries. SMTP still permits duplicate delivery.
     let message_id = format!("<{}@{}>", crate::auth::hash(id), from.email.domain());
+
     Message::builder()
         .from(from.clone())
         .to(email.to.parse().map_err(|_| "invalid recipient address")?)
@@ -110,22 +115,27 @@ fn body(email: &Email) -> String {
 
 async fn spool(directory: &PathBuf, id: &str, email: &Email) -> Result<(), &'static str> {
     use tokio::io::AsyncWriteExt;
+
     tokio::fs::create_dir_all(directory)
         .await
         .map_err(|_| "mail spool unavailable")?;
+
     let path = directory.join(format!("{}.json", crate::auth::hash(id)));
     let mut options = tokio::fs::OpenOptions::new();
     options.write(true).create(true).truncate(true);
     #[cfg(unix)]
     options.mode(0o600);
+
     let mut file = options
         .open(path)
         .await
         .map_err(|_| "mail spool write failed")?;
+
     let body = serde_json::to_vec(email).map_err(|_| "invalid email")?;
     file.write_all(&body)
         .await
         .map_err(|_| "mail spool write failed")?;
+
     Ok(())
 }
 
@@ -143,18 +153,22 @@ mod tests {
         let (stream, _) = listener.accept().await.unwrap();
         let (read, mut write) = stream.into_split();
         let mut lines = BufReader::new(read).lines();
+
         write.write_all(b"220 sink ESMTP\r\n").await.unwrap();
         let mut data = None::<String>;
+
         while let Some(line) = lines.next_line().await.unwrap() {
             if let Some(received) = &mut data {
                 if line == "." {
                     write.write_all(b"250 queued\r\n").await.unwrap();
                     return data.unwrap();
                 }
+
                 received.push_str(&line);
                 received.push('\n');
                 continue;
             }
+
             let reply: &[u8] = match line.to_ascii_uppercase().get(..4) {
                 Some("EHLO") => b"250-sink\r\n250 8BITMIME\r\n",
                 Some("DATA") => {
@@ -165,6 +179,7 @@ mod tests {
             };
             write.write_all(reply).await.unwrap();
         }
+
         panic!("client closed before sending data");
     }
 
@@ -179,6 +194,7 @@ mod tests {
                 .build(),
             from: "Blackwall <noreply@example.com>".parse().unwrap(),
         };
+
         let workspace_id = Uuid::new_v4();
         let email = Email {
             to: "colleague@example.com".into(),
@@ -190,8 +206,10 @@ mod tests {
                 token_hash: "hash".into(),
             },
         };
+
         mailer.send("job-1", &email).await.unwrap();
         let data = sink.await.unwrap();
+
         assert!(data.contains("To: colleague@example.com"), "{data}");
         assert!(
             data.contains("Subject: Join a Blackwall workspace"),

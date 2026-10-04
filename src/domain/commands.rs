@@ -1,4 +1,5 @@
 use super::*;
+
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct IssueInput {
     pub title: String,
@@ -20,6 +21,7 @@ pub struct IssueInput {
     #[serde(default)]
     pub dependencies: Vec<Uuid>,
 }
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize, ToSchema)]
 pub struct IssuePatch {
     pub title: Option<String>,
@@ -50,6 +52,7 @@ pub struct IssuePatch {
     pub clear_parent: bool,
     pub dependencies: Option<Vec<Uuid>>,
 }
+
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum BulkAction {
@@ -57,6 +60,7 @@ pub enum BulkAction {
     Delete,
     Restore,
 }
+
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Command {

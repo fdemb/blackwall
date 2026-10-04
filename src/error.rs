@@ -31,6 +31,7 @@ pub enum Error {
 pub struct ErrorBody {
     pub error: String,
 }
+
 impl IntoResponse for Error {
     fn into_response(self) -> Response {
         let status = match self {
@@ -41,12 +42,14 @@ impl IntoResponse for Error {
             Self::Conflict(_) => StatusCode::CONFLICT,
             _ => StatusCode::INTERNAL_SERVER_ERROR,
         };
+
         let message = if status.is_server_error() {
             tracing::error!(error = %self, "request failed");
             "internal server error".into()
         } else {
             self.to_string()
         };
+
         (status, Json(ErrorBody { error: message })).into_response()
     }
 }

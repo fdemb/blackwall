@@ -3,8 +3,10 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use uuid::Uuid;
+
 mod commands;
 mod operations;
+
 pub use commands::*;
 
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema, PartialEq, Eq)]
@@ -15,6 +17,7 @@ pub enum Role {
     Member,
     Viewer,
 }
+
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct Member {
     #[serde(default = "initial_version")]
@@ -22,6 +25,7 @@ pub struct Member {
     pub user_id: Uuid,
     pub role: Role,
 }
+
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum StageKind {
@@ -31,6 +35,7 @@ pub enum StageKind {
     Done,
     Cancelled,
 }
+
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct Stage {
     #[serde(default = "initial_version")]
@@ -40,6 +45,7 @@ pub struct Stage {
     pub kind: StageKind,
     pub position: i64,
 }
+
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct Team {
     #[serde(default = "initial_version")]
@@ -49,6 +55,7 @@ pub struct Team {
     pub members: Vec<Uuid>,
     pub stages: Vec<Stage>,
 }
+
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct Label {
     #[serde(default = "initial_version")]
@@ -57,6 +64,7 @@ pub struct Label {
     pub name: String,
     pub color: String,
 }
+
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct Project {
     #[serde(default = "initial_version")]
@@ -66,6 +74,7 @@ pub struct Project {
     pub description: String,
     pub team_ids: Vec<Uuid>,
 }
+
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct Milestone {
     #[serde(default = "initial_version")]
@@ -75,6 +84,7 @@ pub struct Milestone {
     pub name: String,
     pub deadline: Option<DateTime<Utc>>,
 }
+
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum SprintState {
@@ -83,6 +93,7 @@ pub enum SprintState {
     Completed,
     Archived,
 }
+
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct Sprint {
     #[serde(default = "initial_version")]
@@ -96,12 +107,14 @@ pub struct Sprint {
     pub state: SprintState,
     pub outcome: Option<SprintOutcome>,
 }
+
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct SprintOutcome {
     pub total: u64,
     pub completed: u64,
     pub effort: u64,
 }
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize, ToSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Priority {
@@ -112,6 +125,7 @@ pub enum Priority {
     High,
     Urgent,
 }
+
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct Attachment {
     pub id: Uuid,
@@ -119,11 +133,13 @@ pub struct Attachment {
     pub content_type: String,
     pub size: u64,
 }
+
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct SourceLink {
     pub url: String,
     pub title: String,
 }
+
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct Issue {
     #[serde(default)]
@@ -158,6 +174,7 @@ pub struct Issue {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
+
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct Comment {
     #[serde(default = "initial_version")]
@@ -171,6 +188,7 @@ pub struct Comment {
     pub created_at: DateTime<Utc>,
     pub edited_at: Option<DateTime<Utc>>,
 }
+
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct TimeEntry {
     #[serde(default = "initial_version")]
@@ -182,6 +200,7 @@ pub struct TimeEntry {
     pub note: String,
     pub logged_at: DateTime<Utc>,
 }
+
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct Invitation {
     #[serde(default = "initial_version")]
@@ -193,6 +212,7 @@ pub struct Invitation {
     pub expires_at: DateTime<Utc>,
     pub state: InvitationState,
 }
+
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum InvitationState {
@@ -201,6 +221,7 @@ pub enum InvitationState {
     Cancelled,
     Expired,
 }
+
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct SavedView {
     #[serde(default = "initial_version")]
@@ -211,6 +232,7 @@ pub struct SavedView {
     pub shared: bool,
     pub filter: IssueFilter,
 }
+
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum AlertKind {
@@ -220,6 +242,7 @@ pub enum AlertKind {
     Mention,
     Deadline,
 }
+
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct AlertPreferences {
     #[serde(default = "initial_version")]
@@ -231,6 +254,7 @@ pub struct AlertPreferences {
     pub mention: bool,
     pub deadline: bool,
 }
+
 impl AlertPreferences {
     fn enabled(&self, kind: &AlertKind) -> bool {
         match kind {
@@ -242,6 +266,7 @@ impl AlertPreferences {
         }
     }
 }
+
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct Notification {
     #[serde(default = "initial_version")]
@@ -255,6 +280,7 @@ pub struct Notification {
     pub created_at: DateTime<Utc>,
     pub dedup_key: String,
 }
+
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct Activity {
     pub id: Uuid,
@@ -266,6 +292,7 @@ pub struct Activity {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub fields: Vec<String>,
 }
+
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct Integration {
     #[serde(default = "initial_version")]
@@ -276,6 +303,7 @@ pub struct Integration {
     pub secret: String,
     pub enabled: bool,
 }
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize, ToSchema, utoipa::IntoParams)]
 #[into_params(parameter_in = Query)]
 pub struct IssueFilter {
@@ -303,6 +331,7 @@ pub struct IssueFilter {
     pub sort: IssueSort,
     pub group_by: Option<IssueGroup>,
 }
+
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum IssueGroup {
@@ -311,6 +340,7 @@ pub enum IssueGroup {
     Assignee,
     None,
 }
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum IssueSort {
@@ -320,6 +350,7 @@ pub enum IssueSort {
     Updated,
     Priority,
 }
+
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct Workspace {
     #[serde(default = "initial_version")]
@@ -342,10 +373,12 @@ pub struct Workspace {
     pub integrations: Vec<Integration>,
     pub activity: Vec<Activity>,
 }
+
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct CommandResult {
     pub id: Option<Uuid>,
 }
+
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct Total {
     pub id: Uuid,
@@ -353,6 +386,7 @@ pub struct Total {
     pub open_issues: u64,
     pub effort: u64,
 }
+
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct SprintReport {
     pub id: Uuid,
@@ -360,11 +394,13 @@ pub struct SprintReport {
     pub completed: u64,
     pub effort: u64,
 }
+
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct DeliveryDay {
     pub date: String,
     pub completed: u64,
 }
+
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct Report {
     pub total_minutes: u64,
@@ -393,9 +429,11 @@ pub(crate) fn text(value: &str, max: usize) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
     fn setup() -> (Workspace, Uuid, Uuid) {
         let owner = Uuid::new_v4();
         let mut w = Workspace::new("Blackwall".into(), owner).unwrap();
+
         let team = w
             .apply(
                 owner,
@@ -408,8 +446,10 @@ mod tests {
             .unwrap()
             .id
             .unwrap();
+
         (w, owner, team)
     }
+
     fn input(team_id: Uuid) -> IssueInput {
         IssueInput {
             title: "Rotate keys".into(),
@@ -428,6 +468,7 @@ mod tests {
             dependencies: vec![],
         }
     }
+
     #[test]
     fn bulk_rolls_back_when_a_target_is_invalid() {
         let (mut w, owner, team) = setup();
@@ -441,6 +482,7 @@ mod tests {
             .id
             .unwrap();
         let before = serde_json::to_string(&w).unwrap();
+
         assert!(
             w.apply(
                 owner,
@@ -454,6 +496,7 @@ mod tests {
         );
         assert_eq!(before, serde_json::to_string(&w).unwrap());
     }
+
     #[test]
     fn rejects_dependency_and_parent_cycles() {
         let (mut w, owner, team) = setup();
@@ -466,14 +509,17 @@ mod tests {
             .unwrap()
             .id
             .unwrap();
+
         let mut next = input(team);
         next.dependencies.push(first);
         next.parent_id = Some(first);
+
         let second = w
             .apply(owner, Command::CreateIssue { input: next }, Utc::now())
             .unwrap()
             .id
             .unwrap();
+
         assert!(
             w.apply(
                 owner,
@@ -503,9 +549,11 @@ mod tests {
             .is_err()
         );
     }
+
     #[test]
     fn protects_last_owner_and_read_only_member() {
         let (mut w, owner, team) = setup();
+
         assert!(
             w.apply(owner, Command::RemoveMember { user_id: owner }, Utc::now())
                 .is_err()
@@ -521,12 +569,14 @@ mod tests {
             )
             .is_err()
         );
+
         let viewer = Uuid::new_v4();
         w.members.push(Member {
             version: 1,
             user_id: viewer,
             role: Role::Viewer,
         });
+
         assert!(
             w.apply(
                 viewer,
@@ -537,16 +587,19 @@ mod tests {
         );
         assert!(w.query(viewer, IssueFilter::default()).is_ok());
     }
+
     #[test]
     fn views_update_and_filter_unassigned() {
         let (mut w, owner, team) = setup();
         let now = Utc::now();
         let mut mine = input(team);
         mine.assignee = Some(owner);
+
         w.apply(owner, Command::CreateIssue { input: mine }, now)
             .unwrap();
         w.apply(owner, Command::CreateIssue { input: input(team) }, now)
             .unwrap();
+
         let open = w
             .query(
                 owner,
@@ -556,8 +609,10 @@ mod tests {
                 },
             )
             .unwrap();
+
         assert_eq!(open.len(), 1);
         assert!(open[0].assignee.is_none());
+
         let view = w
             .apply(
                 owner,
@@ -574,6 +629,7 @@ mod tests {
             .unwrap()
             .id
             .unwrap();
+
         w.apply(
             owner,
             Command::UpdateView {
@@ -588,15 +644,18 @@ mod tests {
             now,
         )
         .unwrap();
+
         assert_eq!(w.views[0].name, "Renamed");
         assert!(w.views[0].shared);
         assert_eq!(w.views[0].filter.group_by, Some(IssueGroup::Priority));
+
         let viewer = Uuid::new_v4();
         w.members.push(Member {
             version: 1,
             user_id: viewer,
             role: Role::Viewer,
         });
+
         let personal = w
             .apply(
                 viewer,
@@ -610,6 +669,7 @@ mod tests {
             .unwrap()
             .id
             .unwrap();
+
         assert!(
             w.apply(
                 viewer,
@@ -637,6 +697,7 @@ mod tests {
             .is_err()
         );
     }
+
     #[test]
     fn corrects_labels_milestones_and_unread_state() {
         let (mut w, owner, _) = setup();
@@ -653,6 +714,7 @@ mod tests {
             .unwrap()
             .id
             .unwrap();
+
         w.apply(
             owner,
             Command::UpdateLabel {
@@ -663,7 +725,9 @@ mod tests {
             now,
         )
         .unwrap();
+
         assert_eq!(w.labels[0].name, "defect");
+
         let project = w
             .apply(
                 owner,
@@ -690,6 +754,7 @@ mod tests {
             .unwrap()
             .id
             .unwrap();
+
         w.apply(
             owner,
             Command::UpdateMilestone {
@@ -700,6 +765,7 @@ mod tests {
             now,
         )
         .unwrap();
+
         assert_eq!(w.milestones[0].name, "Public beta");
         assert!(w.milestones[0].deadline.is_some());
         assert!(
@@ -714,6 +780,7 @@ mod tests {
             )
             .is_err()
         );
+
         let note = Uuid::new_v4();
         w.notifications.push(Notification {
             version: 1,
@@ -726,15 +793,19 @@ mod tests {
             created_at: now,
             dedup_key: String::new(),
         });
+
         w.apply(owner, Command::MarkNotificationUnread { id: note }, now)
             .unwrap();
+
         assert!(w.notifications[0].read_at.is_none());
     }
+
     #[test]
     fn invitation_is_one_use_and_public_snapshot_hides_hash() {
         let (mut w, owner, _) = setup();
         let hash = "a".repeat(64);
         let now = Utc::now();
+
         w.apply(
             owner,
             Command::Invite {
@@ -745,19 +816,23 @@ mod tests {
             now,
         )
         .unwrap();
+
         assert!(
             w.public(owner).unwrap().invitations[0]
                 .token_hash
                 .is_empty()
         );
+
         let user = Uuid::new_v4();
         w.accept_invitation(user, "colleague@example.com", &hash, now)
             .unwrap();
+
         assert!(
             w.accept_invitation(user, "colleague@example.com", &hash, now)
                 .is_err()
         );
     }
+
     #[test]
     fn completion_carries_unfinished_work_only() {
         let (mut w, owner, team) = setup();
@@ -777,19 +852,24 @@ mod tests {
             .unwrap()
             .id
             .unwrap();
+
         let mut i = input(team);
         i.sprint_id = Some(sprint);
+
         let unfinished = w
             .apply(owner, Command::CreateIssue { input: i.clone() }, now)
             .unwrap()
             .id
             .unwrap();
+
         i.stage_id = Some(w.teams[0].stages[3].id);
+
         let finished = w
             .apply(owner, Command::CreateIssue { input: i }, now)
             .unwrap()
             .id
             .unwrap();
+
         w.apply(
             owner,
             Command::CompleteSprint {
@@ -799,6 +879,7 @@ mod tests {
             now,
         )
         .unwrap();
+
         assert!(
             w.issues
                 .iter()
@@ -816,6 +897,7 @@ mod tests {
             Some(sprint)
         );
     }
+
     #[test]
     fn filters_and_workflow_respect_blockers() {
         let (mut w, owner, team) = setup();
@@ -825,16 +907,19 @@ mod tests {
             .unwrap()
             .id
             .unwrap();
+
         let mut dependent = input(team);
         dependent.title = "Renew certificates".into();
         dependent.dependencies = vec![blocker];
         dependent.assignee = Some(owner);
         dependent.priority = Priority::High;
+
         let id = w
             .apply(owner, Command::CreateIssue { input: dependent }, now)
             .unwrap()
             .id
             .unwrap();
+
         let done = w.teams[0].stages[3].id;
         assert!(
             w.apply(
@@ -848,6 +933,7 @@ mod tests {
             )
             .is_err()
         );
+
         let rows = w
             .query(
                 owner,
@@ -859,8 +945,10 @@ mod tests {
                 },
             )
             .unwrap();
+
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].id, id);
+
         w.apply(
             owner,
             Command::MoveIssue {
@@ -881,7 +969,9 @@ mod tests {
             now,
         )
         .unwrap();
+
         assert_eq!(w.report(owner).unwrap().delivery[0].completed, 2);
+
         w.apply(
             owner,
             Command::UpdateIssue {
@@ -894,6 +984,7 @@ mod tests {
             now + chrono::Duration::days(2),
         )
         .unwrap();
+
         assert_eq!(w.report(owner).unwrap().delivery.len(), 1);
     }
 }

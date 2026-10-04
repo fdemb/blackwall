@@ -26,8 +26,10 @@ pub struct Actor {
     pub profile: Profile,
     pub token: String,
 }
+
 impl FromRequestParts<Store> for Actor {
     type Rejection = Error;
+
     async fn from_request_parts(parts: &mut Parts, store: &Store) -> Result<Self> {
         let bearer = parts
             .headers
@@ -43,6 +45,7 @@ impl FromRequestParts<Store> for Actor {
                     .find_map(|p| p.trim().strip_prefix("blackwall_session="))
             });
         let token = bearer.or(cookie).ok_or(Error::Unauthorized)?;
+
         if bearer.is_none()
             && !matches!(
                 parts.method,
@@ -58,36 +61,43 @@ impl FromRequestParts<Store> for Actor {
                 return Err(Error::Forbidden);
             }
         }
+
         Ok(Self {
             profile: store.authenticate(token).await?,
             token: token.into(),
         })
     }
 }
+
 fn constant_eq(left: &[u8], right: &[u8]) -> bool {
     if left.len() != right.len() {
         return false;
     }
+
     left.iter()
         .zip(right)
         .fold(0u8, |diff, (a, b)| diff | (a ^ b))
         == 0
 }
+
 #[derive(Serialize, utoipa::ToSchema)]
 pub struct WorkspaceSummary {
     pub id: Uuid,
     pub name: String,
     pub version: i64,
 }
+
 #[derive(Serialize, utoipa::ToSchema)]
 pub struct WorkspaceResponse {
     pub workspace: WorkspaceSummary,
 }
+
 #[derive(Deserialize, utoipa::ToSchema)]
 pub struct CreateWorkspace {
     pub name: String,
     pub idempotency_key: Option<String>,
 }
+
 #[derive(Deserialize, utoipa::ToSchema)]
 pub struct CommandRequest {
     #[serde(default)]
@@ -95,11 +105,14 @@ pub struct CommandRequest {
     pub idempotency_key: Option<String>,
     pub command: Command,
 }
+
 pub type CommandResponse = OperationResult;
+
 #[derive(Deserialize, utoipa::ToSchema)]
 pub struct AcceptInvitation {
     pub token: String,
 }
+
 #[derive(Deserialize, utoipa::ToSchema)]
 pub struct ImportRequest {
     #[serde(default)]
@@ -108,11 +121,13 @@ pub struct ImportRequest {
     pub issues: Option<Vec<IssueInput>>,
     pub transfer: Option<crate::exchange::Transfer>,
 }
+
 #[derive(Serialize, utoipa::ToSchema)]
 pub struct ImportResponse {
     pub versions: BTreeMap<Uuid, i64>,
     pub summary: Option<crate::exchange::ImportSummary>,
 }
+
 #[derive(Deserialize, utoipa::IntoParams)]
 #[into_params(parameter_in = Query)]
 pub struct PageQuery {
@@ -123,18 +138,22 @@ pub struct PageQuery {
     pub issue_id: Option<Uuid>,
     pub entity_id: Option<Uuid>,
 }
+
 fn default_limit() -> i64 {
     100
 }
+
 #[derive(Deserialize)]
 pub struct SearchQuery {
     pub q: String,
 }
+
 #[derive(Serialize, utoipa::ToSchema)]
 pub struct SearchResult {
     pub issues: Vec<Issue>,
     pub people: Vec<MemberProfile>,
 }
+
 #[derive(Serialize, utoipa::ToSchema)]
 pub struct MemberProfile {
     pub role: Role,
@@ -146,18 +165,22 @@ pub struct MemberProfile {
     pub contact: String,
     pub team_ids: Vec<Uuid>,
 }
+
 #[derive(Deserialize, utoipa::ToSchema)]
 pub struct MarkdownRequest {
     pub text: String,
 }
+
 #[derive(Serialize, utoipa::ToSchema)]
 pub struct MarkdownResponse {
     pub html: String,
 }
+
 #[derive(Serialize, utoipa::ToSchema)]
 pub struct Health {
     pub status: String,
 }
+
 #[derive(Deserialize, utoipa::ToSchema)]
 pub struct IncomingLink {
     pub delivery_id: Uuid,
@@ -218,6 +241,7 @@ pub fn router_with_web(store: Store, web_dir: std::path::PathBuf) -> Router {
         .layer(middleware::from_fn(auth_rate_limit))
         .with_state(store)
 }
+
 async fn security_headers(request: Request, next: Next) -> Response {
     if !matches!(
         *request.method(),
@@ -245,6 +269,7 @@ async fn security_headers(request: Request, next: Next) -> Response {
             return Error::Forbidden.into_response();
         }
     }
+
     let mut response = next.run(request).await;
     if response.status().is_client_error()
         && !response
@@ -262,6 +287,7 @@ async fn security_headers(request: Request, next: Next) -> Response {
             .unwrap_or_else(|| status.to_string());
         response = (status, Json(crate::error::ErrorBody { error: message })).into_response();
     }
+
     let headers = response.headers_mut();
     headers.insert(
         "x-content-type-options",
@@ -269,17 +295,28 @@ async fn security_headers(request: Request, next: Next) -> Response {
     );
     headers.insert("referrer-policy", HeaderValue::from_static("same-origin"));
     if !headers.contains_key(header::CONTENT_SECURITY_POLICY) {
-        headers.insert(header::CONTENT_SECURITY_POLICY, HeaderValue::from_static("default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' https:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"));
+        headers.insert(
+            header::CONTENT_SECURITY_POLICY,
+            HeaderValue::from_static(
+                "default-src 'self'; script-src 'self'; style-src 'self'; \
+                 img-src 'self' https:; frame-ancestors 'none'; \
+                 base-uri 'none'; form-action 'self'",
+            ),
+        );
     }
     headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+
     response
 }
+
 async fn auth_rate_limit(request: Request, next: Next) -> Response {
     use std::{
         collections::HashMap,
         sync::{Mutex, OnceLock},
     };
+
     static LIMIT: OnceLock<Mutex<HashMap<String, (i64, u32)>>> = OnceLock::new();
+
     if request.uri().path().starts_with("/api/auth/")
         && request.method() == axum::http::Method::POST
     {
@@ -289,6 +326,7 @@ async fn auth_rate_limit(request: Request, next: Next) -> Response {
             .map(|i| i.0.ip().to_string())
             .unwrap_or_else(|| "local".into());
         let now = Utc::now().timestamp();
+
         let limited = {
             let mut limits = LIMIT
                 .get_or_init(|| Mutex::new(HashMap::new()))
@@ -309,36 +347,65 @@ async fn auth_rate_limit(request: Request, next: Next) -> Response {
                 .into_response();
         }
     }
+
     next.run(request).await
 }
+
 fn cookie(token: &str) -> Result<HeaderValue> {
     let secure = if std::env::var("COOKIE_SECURE").as_deref() == Ok("true") {
         "; Secure"
     } else {
         ""
     };
+
     HeaderValue::from_str(&format!(
         "blackwall_session={token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=2592000{secure}"
     ))
     .map_err(|e| Error::Internal(e.to_string()))
 }
+
 fn session_response(session: Session) -> Result<Response> {
     let header = cookie(&session.token)?;
     let mut response = Json(session).into_response();
     response.headers_mut().insert(header::SET_COOKIE, header);
+
     Ok(response)
 }
-#[utoipa::path(post,path="/api/auth/register",request_body=Register,responses((status=200,body=Session),(status=409,body=crate::error::ErrorBody)))]
+
+#[utoipa::path(
+    post,
+    path = "/api/auth/register",
+    request_body = Register,
+    responses(
+        (status = 200, body = Session),
+        (status = 409, body = crate::error::ErrorBody)
+    )
+)]
 async fn register(State(store): State<Store>, Json(input): Json<Register>) -> Result<Response> {
     session_response(store.register(input).await?)
 }
-#[utoipa::path(post,path="/api/auth/login",request_body=Login,responses((status=200,body=Session),(status=401,body=crate::error::ErrorBody)))]
+
+#[utoipa::path(
+    post,
+    path = "/api/auth/login",
+    request_body = Login,
+    responses(
+        (status = 200, body = Session),
+        (status = 401, body = crate::error::ErrorBody)
+    )
+)]
 async fn login(State(store): State<Store>, Json(input): Json<Login>) -> Result<Response> {
     session_response(store.login(input).await?)
 }
-#[utoipa::path(post,path="/api/auth/logout",responses((status=204)))]
+
+#[utoipa::path(
+    post,
+    path = "/api/auth/logout",
+    responses((status = 204))
+)]
 async fn logout(State(store): State<Store>, actor: Actor) -> Result<Response> {
     store.logout(&actor.token).await?;
+
     let mut response = StatusCode::NO_CONTENT.into_response();
     response.headers_mut().insert(
         header::SET_COOKIE,
@@ -346,17 +413,30 @@ async fn logout(State(store): State<Store>, actor: Actor) -> Result<Response> {
             "blackwall_session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0",
         ),
     );
+
     Ok(response)
 }
-#[utoipa::path(get,path="/api/me",responses((status=200,body=Profile)))]
+
+#[utoipa::path(
+    get,
+    path = "/api/me",
+    responses((status = 200, body = Profile))
+)]
 async fn me(actor: Actor) -> Result<Response> {
     let csrf = HeaderValue::from_str(&auth::csrf(&actor.token))
         .map_err(|e| Error::Internal(e.to_string()))?;
     let mut response = Json(actor.profile).into_response();
     response.headers_mut().insert("x-csrf-token", csrf);
+
     Ok(response)
 }
-#[utoipa::path(patch,path="/api/me",request_body=ProfileEdit,responses((status=200,body=Profile)))]
+
+#[utoipa::path(
+    patch,
+    path = "/api/me",
+    request_body = ProfileEdit,
+    responses((status = 200, body = Profile))
+)]
 async fn edit_profile(
     State(store): State<Store>,
     actor: Actor,
@@ -364,53 +444,99 @@ async fn edit_profile(
 ) -> Result<Json<Profile>> {
     Ok(Json(store.edit_profile(actor.profile, input).await?))
 }
-#[utoipa::path(post,path="/api/auth/password",request_body=PasswordChange,responses((status=204)))]
+
+#[utoipa::path(
+    post,
+    path = "/api/auth/password",
+    request_body = PasswordChange,
+    responses((status = 204))
+)]
 async fn change_password(
     State(store): State<Store>,
     actor: Actor,
     Json(input): Json<PasswordChange>,
 ) -> Result<StatusCode> {
     store.change_password(actor.profile.id, input).await?;
+
     Ok(StatusCode::NO_CONTENT)
 }
-#[utoipa::path(post,path="/api/auth/reset-request",request_body=ResetRequest,responses((status=202)))]
+
+#[utoipa::path(
+    post,
+    path = "/api/auth/reset-request",
+    request_body = ResetRequest,
+    responses((status = 202))
+)]
 async fn reset_request(
     State(store): State<Store>,
     Json(input): Json<ResetRequest>,
 ) -> Result<StatusCode> {
     store.request_reset(input).await?;
+
     Ok(StatusCode::ACCEPTED)
 }
-#[utoipa::path(post,path="/api/auth/reset",request_body=ResetPassword,responses((status=204)))]
+
+#[utoipa::path(
+    post,
+    path = "/api/auth/reset",
+    request_body = ResetPassword,
+    responses((status = 204))
+)]
 async fn reset_password(
     State(store): State<Store>,
     Json(input): Json<ResetPassword>,
 ) -> Result<StatusCode> {
     store.reset_password(input).await?;
+
     Ok(StatusCode::NO_CONTENT)
 }
-#[utoipa::path(get,path="/health",responses((status=200,body=Health)))]
+
+#[utoipa::path(
+    get,
+    path = "/health",
+    responses((status = 200, body = Health))
+)]
 async fn health(State(store): State<Store>) -> Result<Json<Health>> {
     sqlx::query("SELECT 1").execute(&store.pool).await?;
+
     Ok(Json(Health {
         status: "ok".into(),
     }))
 }
-#[utoipa::path(get,path="/api/workspaces",responses((status=200,body=Vec<WorkspaceSummary>)))]
+
+#[utoipa::path(
+    get,
+    path = "/api/workspaces",
+    responses((status = 200, body = Vec<WorkspaceSummary>))
+)]
 async fn workspaces(State(store): State<Store>, actor: Actor) -> Result<Json<Vec<Value>>> {
     Ok(Json(store.list_workspaces(actor.profile.id).await?))
 }
-#[utoipa::path(post,path="/api/workspaces",request_body=CreateWorkspace,responses((status=200,body=WorkspaceResponse)))]
+
+#[utoipa::path(
+    post,
+    path = "/api/workspaces",
+    request_body = CreateWorkspace,
+    responses((status = 200, body = WorkspaceResponse))
+)]
 async fn create_workspace(
     State(store): State<Store>,
     actor: Actor,
     Json(input): Json<CreateWorkspace>,
 ) -> Result<Json<Value>> {
-    Ok(Json(
-        json!({"workspace":store.create_workspace_with_key(input.name,actor.profile.id,input.idempotency_key).await?}),
-    ))
+    Ok(Json(json!({
+        "workspace": store
+            .create_workspace_with_key(input.name, actor.profile.id, input.idempotency_key)
+            .await?
+    })))
 }
-#[utoipa::path(get,path="/api/workspaces/{id}",params(("id"=Uuid,Path)),responses((status=200,body=WorkspaceResponse)))]
+
+#[utoipa::path(
+    get,
+    path = "/api/workspaces/{id}",
+    params(("id" = Uuid, Path)),
+    responses((status = 200, body = WorkspaceResponse))
+)]
 async fn workspace(
     State(store): State<Store>,
     actor: Actor,
@@ -418,7 +544,17 @@ async fn workspace(
 ) -> Result<Json<Value>> {
     Ok(Json(store.workspace_metadata(id, actor.profile.id).await?))
 }
-#[utoipa::path(post,path="/api/workspaces/{id}/commands",params(("id"=Uuid,Path)),request_body=CommandRequest,responses((status=200,body=CommandResponse),(status=409,body=crate::error::ErrorBody)))]
+
+#[utoipa::path(
+    post,
+    path = "/api/workspaces/{id}/commands",
+    params(("id" = Uuid, Path)),
+    request_body = CommandRequest,
+    responses(
+        (status = 200, body = CommandResponse),
+        (status = 409, body = crate::error::ErrorBody)
+    )
+)]
 async fn command(
     State(store): State<Store>,
     actor: Actor,
@@ -433,6 +569,7 @@ async fn command(
             "use the attachment upload endpoint".into(),
         ));
     }
+
     Ok(Json(
         store
             .operation(
@@ -446,7 +583,13 @@ async fn command(
             .await?,
     ))
 }
-#[utoipa::path(get,path="/api/workspaces/{id}/issues",params(("id"=Uuid,Path),IssueFilter,PageQuery),responses((status=200,body=Value)))]
+
+#[utoipa::path(
+    get,
+    path = "/api/workspaces/{id}/issues",
+    params(("id" = Uuid, Path), IssueFilter, PageQuery),
+    responses((status = 200, body = Value))
+)]
 async fn issues(
     State(store): State<Store>,
     actor: Actor,
@@ -460,7 +603,16 @@ async fn issues(
             .await?,
     ))
 }
-#[utoipa::path(get,path="/api/workspaces/{id}/issues/{issue}",params(("id"=Uuid,Path),("issue"=Uuid,Path)),responses((status=200,body=Issue)))]
+
+#[utoipa::path(
+    get,
+    path = "/api/workspaces/{id}/issues/{issue}",
+    params(
+        ("id" = Uuid, Path),
+        ("issue" = Uuid, Path)
+    ),
+    responses((status = 200, body = Issue))
+)]
 async fn issue_detail(
     State(store): State<Store>,
     actor: Actor,
@@ -468,7 +620,14 @@ async fn issue_detail(
 ) -> Result<Json<Issue>> {
     Ok(Json(store.get_issue(id, actor.profile.id, issue).await?))
 }
-#[utoipa::path(get,path="/api/workspaces/{id}/{collection}",params(("id"=Uuid,Path),("collection"=String,Path),PageQuery),responses((status=200,body=Value)),description="Paginated teams, labels, projects, milestones, sprints, views, notifications, alert_preferences, invitations, integrations, activity, comments or time_entries. Private records are restricted to their owner or workspace administrators.")]
+
+#[utoipa::path(
+    get,
+    path = "/api/workspaces/{id}/{collection}",
+    params(("id" = Uuid, Path), ("collection" = String, Path), PageQuery),
+    responses((status = 200, body = Value)),
+    description = "Paginated teams, labels, projects, milestones, sprints, views, notifications, alert_preferences, invitations, integrations, activity, comments or time_entries. Private records are restricted to their owner or workspace administrators."
+)]
 async fn collection(
     State(store): State<Store>,
     actor: Actor,
@@ -491,7 +650,13 @@ async fn collection(
             .await?,
     ))
 }
-#[utoipa::path(get,path="/api/workspaces/{id}/members",params(("id"=Uuid,Path)),responses((status=200,body=Vec<MemberProfile>)))]
+
+#[utoipa::path(
+    get,
+    path = "/api/workspaces/{id}/members",
+    params(("id" = Uuid, Path)),
+    responses((status = 200, body = Vec<MemberProfile>))
+)]
 async fn members(
     State(store): State<Store>,
     actor: Actor,
@@ -501,7 +666,16 @@ async fn members(
         store.member_profiles(id, actor.profile.id, None).await?,
     ))
 }
-#[utoipa::path(get,path="/api/workspaces/{id}/search",params(("id"=Uuid,Path),("q"=String,Query)),responses((status=200,body=SearchResult)))]
+
+#[utoipa::path(
+    get,
+    path = "/api/workspaces/{id}/search",
+    params(
+        ("id" = Uuid, Path),
+        ("q" = String, Query)
+    ),
+    responses((status = 200, body = SearchResult))
+)]
 async fn search(
     State(store): State<Store>,
     actor: Actor,
@@ -511,6 +685,7 @@ async fn search(
     if input.q.len() > 200 {
         return Err(Error::BadRequest("search query too long".into()));
     }
+
     let issue_page = store
         .list_issues(
             id,
@@ -526,9 +701,18 @@ async fn search(
     let people = store
         .member_profiles(id, actor.profile.id, Some(&input.q))
         .await?;
-    Ok(Json(json!({"issues":issue_page["items"],"people":people})))
+
+    Ok(Json(
+        json!({"issues": issue_page["items"], "people": people}),
+    ))
 }
-#[utoipa::path(get,path="/api/workspaces/{id}/report",params(("id"=Uuid,Path)),responses((status=200,body=Value)))]
+
+#[utoipa::path(
+    get,
+    path = "/api/workspaces/{id}/report",
+    params(("id" = Uuid, Path)),
+    responses((status = 200, body = Value))
+)]
 async fn report(
     State(store): State<Store>,
     actor: Actor,
@@ -536,7 +720,14 @@ async fn report(
 ) -> Result<Json<Value>> {
     Ok(Json(store.report_sql(id, actor.profile.id).await?))
 }
-#[utoipa::path(post,path="/api/workspaces/{id}/invitations/accept",params(("id"=Uuid,Path)),request_body=AcceptInvitation,responses((status=200,body=WorkspaceResponse)))]
+
+#[utoipa::path(
+    post,
+    path = "/api/workspaces/{id}/invitations/accept",
+    params(("id" = Uuid, Path)),
+    request_body = AcceptInvitation,
+    responses((status = 200, body = WorkspaceResponse))
+)]
 async fn accept_invitation(
     State(store): State<Store>,
     actor: Actor,
@@ -546,9 +737,16 @@ async fn accept_invitation(
     store
         .accept_invitation(id, actor.profile.id, &actor.profile.email, &input.token)
         .await?;
+
     Ok(Json(store.workspace_metadata(id, actor.profile.id).await?))
 }
-#[utoipa::path(post,path="/api/markdown",request_body=MarkdownRequest,responses((status=200,body=MarkdownResponse)))]
+
+#[utoipa::path(
+    post,
+    path = "/api/markdown",
+    request_body = MarkdownRequest,
+    responses((status = 200, body = MarkdownResponse))
+)]
 async fn markdown(
     _actor: Actor,
     Json(input): Json<MarkdownRequest>,
@@ -556,6 +754,7 @@ async fn markdown(
     if input.text.len() > 100_000 {
         return Err(Error::BadRequest("markdown exceeds 100 KB".into()));
     }
+
     let mut html = String::new();
     pulldown_cmark::html::push_html(
         &mut html,
@@ -564,11 +763,19 @@ async fn markdown(
             pulldown_cmark::Options::ENABLE_TABLES | pulldown_cmark::Options::ENABLE_STRIKETHROUGH,
         ),
     );
+
     Ok(Json(MarkdownResponse {
         html: ammonia::clean(&html),
     }))
 }
-#[utoipa::path(post,path="/api/workspaces/{id}/issues/{issue}/attachments",params(("id"=Uuid,Path),("issue"=Uuid,Path)),responses((status=200,body=CommandResponse)),description="Multipart file up to 5 MiB, expected_versions JSON map, optional idempotency_key and comment_id.")]
+
+#[utoipa::path(
+    post,
+    path = "/api/workspaces/{id}/issues/{issue}/attachments",
+    params(("id" = Uuid, Path), ("issue" = Uuid, Path)),
+    responses((status = 200, body = CommandResponse)),
+    description = "Multipart file up to 5 MiB, expected_versions JSON map, optional idempotency_key and comment_id."
+)]
 async fn upload(
     State(store): State<Store>,
     actor: Actor,
@@ -579,6 +786,7 @@ async fn upload(
     let mut expected = BTreeMap::new();
     let mut comment_id = None;
     let mut key = None;
+
     while let Some(field) = multipart
         .next_field()
         .await
@@ -649,6 +857,7 @@ async fn upload(
             }
         }
     }
+
     let file = uploaded.ok_or_else(|| Error::BadRequest("file field required".into()))?;
     let metadata = Attachment {
         id: file.id,
@@ -656,6 +865,7 @@ async fn upload(
         content_type: file.content_type.clone(),
         size: file.bytes.len() as u64,
     };
+
     let command = if let Some(comment_id) = comment_id {
         Command::AttachCommentFile {
             comment_id,
@@ -667,26 +877,51 @@ async fn upload(
             attachment: metadata,
         }
     };
+
     Ok(Json(
         store
             .operation(id, actor.profile.id, command, expected, key, Some(file))
             .await?,
     ))
 }
-#[utoipa::path(get,path="/api/workspaces/{id}/attachments/{attachment}",params(("id"=Uuid,Path),("attachment"=Uuid,Path)),responses((status=200,description="Authenticated binary attachment")))]
+
+#[utoipa::path(
+    get,
+    path = "/api/workspaces/{id}/attachments/{attachment}",
+    params(
+        ("id" = Uuid, Path),
+        ("attachment" = Uuid, Path)
+    ),
+    responses((status = 200, description = "Authenticated binary attachment"))
+)]
 async fn download(
     State(store): State<Store>,
     actor: Actor,
     Path((id, attachment)): Path<(Uuid, Uuid)>,
 ) -> Result<Response> {
-    let row=sqlx::query("SELECT a.filename,a.bytes FROM attachments a JOIN issues i ON i.id=a.issue_id JOIN workspace_members m ON m.workspace_id=a.workspace_id WHERE a.workspace_id=$1 AND a.id=$2 AND m.user_id=$3 AND i.deleted_at IS NULL").bind(id).bind(attachment).bind(actor.profile.id).fetch_optional(&store.pool).await?.ok_or(Error::NotFound)?;
+    let row = sqlx::query(
+        "SELECT a.filename, a.bytes FROM attachments a \
+         JOIN issues i ON i.id = a.issue_id \
+         JOIN workspace_members m ON m.workspace_id = a.workspace_id \
+         WHERE a.workspace_id = $1 AND a.id = $2 AND m.user_id = $3 \
+         AND i.deleted_at IS NULL",
+    )
+    .bind(id)
+    .bind(attachment)
+    .bind(actor.profile.id)
+    .fetch_optional(&store.pool)
+    .await?
+    .ok_or(Error::NotFound)?;
+
     let name: String = row.try_get("filename")?;
     let bytes: Vec<u8> = row.try_get("bytes")?;
+
     let mut response = bytes.into_response();
     response.headers_mut().insert(
         header::CONTENT_TYPE,
         HeaderValue::from_static("application/octet-stream"),
     );
+
     let safe_name: String = name
         .chars()
         .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | ' '))
@@ -696,9 +931,16 @@ async fn download(
         HeaderValue::from_str(&format!("attachment; filename=\"{safe_name}\""))
             .map_err(|e| Error::Internal(e.to_string()))?,
     );
+
     Ok(response)
 }
-#[utoipa::path(get,path="/api/workspaces/{id}/export",params(("id"=Uuid,Path)),responses((status=200,body=crate::exchange::Transfer)))]
+
+#[utoipa::path(
+    get,
+    path = "/api/workspaces/{id}/export",
+    params(("id" = Uuid, Path)),
+    responses((status = 200, body = crate::exchange::Transfer))
+)]
 async fn export(
     State(store): State<Store>,
     actor: Actor,
@@ -706,7 +948,14 @@ async fn export(
 ) -> Result<Json<crate::exchange::Transfer>> {
     Ok(Json(store.export_transfer(id, actor.profile.id).await?))
 }
-#[utoipa::path(post,path="/api/workspaces/{id}/import",params(("id"=Uuid,Path)),request_body=ImportRequest,responses((status=200,body=ImportResponse)))]
+
+#[utoipa::path(
+    post,
+    path = "/api/workspaces/{id}/import",
+    params(("id" = Uuid, Path)),
+    request_body = ImportRequest,
+    responses((status = 200, body = ImportResponse))
+)]
 async fn import(
     State(store): State<Store>,
     actor: Actor,
@@ -750,7 +999,15 @@ async fn import(
         )),
     }
 }
-#[utoipa::path(post,path="/api/workspaces/{id}/integrations/{integration}/webhook",params(("id"=Uuid,Path),("integration"=Uuid,Path)),request_body=IncomingLink,responses((status=200,body=CommandResponse)),description="HMAC-SHA256 X-Blackwall-Signature over raw request bytes, with delivery_id idempotency.")]
+
+#[utoipa::path(
+    post,
+    path = "/api/workspaces/{id}/integrations/{integration}/webhook",
+    params(("id" = Uuid, Path), ("integration" = Uuid, Path)),
+    request_body = IncomingLink,
+    responses((status = 200, body = CommandResponse)),
+    description = "HMAC-SHA256 X-Blackwall-Signature over raw request bytes, with delivery_id idempotency."
+)]
 async fn incoming(
     State(store): State<Store>,
     Path((id, integration_id)): Path<(Uuid, Uuid)>,
@@ -759,7 +1016,17 @@ async fn incoming(
 ) -> Result<Json<CommandResponse>> {
     use hmac::{Hmac, Mac};
     use sha2::{Digest, Sha256};
-    let owner:Uuid=sqlx::query_scalar("SELECT user_id FROM workspace_members WHERE workspace_id=$1 AND role='owner' ORDER BY user_id LIMIT 1").bind(id).fetch_optional(&store.pool).await?.ok_or(Error::NotFound)?;
+
+    let owner: Uuid = sqlx::query_scalar(
+        "SELECT user_id FROM workspace_members \
+         WHERE workspace_id = $1 AND role = 'owner' \
+         ORDER BY user_id LIMIT 1",
+    )
+    .bind(id)
+    .fetch_optional(&store.pool)
+    .await?
+    .ok_or(Error::NotFound)?;
+
     let mut op = store
         .begin_operation(id, owner, BTreeMap::new(), false)
         .await?;
@@ -772,21 +1039,43 @@ async fn incoming(
     .await?
     .ok_or(Error::NotFound)?;
     let secret: String = row.try_get("secret")?;
+
     let signature = headers
         .get("x-blackwall-signature")
         .and_then(|s| s.to_str().ok())
         .and_then(|s| hex::decode(s.strip_prefix("sha256=").unwrap_or(s)).ok())
         .ok_or(Error::Unauthorized)?;
+
     let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes())
         .map_err(|e| Error::Internal(e.to_string()))?;
     mac.update(&body);
     mac.verify_slice(&signature)
         .map_err(|_| Error::Unauthorized)?;
+
     let input: IncomingLink =
         serde_json::from_slice(&body).map_err(|e| Error::BadRequest(e.to_string()))?;
     let hash = hex::encode(Sha256::digest(&body));
-    sqlx::query("INSERT INTO inbound_deliveries(workspace_id,integration_id,delivery_id,request_hash) VALUES($1,$2,$3,$4) ON CONFLICT DO NOTHING").bind(id).bind(integration_id).bind(input.delivery_id).bind(&hash).execute(&mut *op.tx).await?;
-    let row=sqlx::query("SELECT request_hash,result FROM inbound_deliveries WHERE integration_id=$1 AND delivery_id=$2 FOR UPDATE").bind(integration_id).bind(input.delivery_id).fetch_one(&mut *op.tx).await?;
+
+    sqlx::query(
+        "INSERT INTO inbound_deliveries(workspace_id, integration_id, delivery_id, request_hash) \
+         VALUES($1, $2, $3, $4) ON CONFLICT DO NOTHING",
+    )
+    .bind(id)
+    .bind(integration_id)
+    .bind(input.delivery_id)
+    .bind(&hash)
+    .execute(&mut *op.tx)
+    .await?;
+
+    let row = sqlx::query(
+        "SELECT request_hash, result FROM inbound_deliveries \
+         WHERE integration_id = $1 AND delivery_id = $2 FOR UPDATE",
+    )
+    .bind(integration_id)
+    .bind(input.delivery_id)
+    .fetch_one(&mut *op.tx)
+    .await?;
+
     if row.try_get::<String, _>("request_hash")? != hash {
         return Err(Error::Conflict(
             "delivery ID reused for a different request".into(),
@@ -795,6 +1084,7 @@ async fn incoming(
     if let Some(result) = row.try_get::<Option<Value>, _>("result")? {
         return Ok(Json(serde_json::from_value(result)?));
     }
+
     let version: i64 =
         sqlx::query_scalar("SELECT version FROM issues WHERE workspace_id=$1 AND id=$2 FOR UPDATE")
             .bind(id)
@@ -802,7 +1092,9 @@ async fn incoming(
             .fetch_optional(&mut *op.tx)
             .await?
             .ok_or(Error::NotFound)?;
+
     op.expected.insert(input.issue_id, version);
+
     let entity = op
         .issues(Command::AddSourceLink {
             issue_id: input.issue_id,
@@ -812,6 +1104,7 @@ async fn incoming(
         .await?;
     op.activity("integration.source_link", entity, vec![])
         .await?;
+
     let result = OperationResult {
         result: CommandResult { id: entity },
         versions: op.versions,
@@ -824,10 +1117,13 @@ async fn incoming(
     .bind(serde_json::to_value(&result)?)
     .execute(&mut *op.tx)
     .await?;
+
     op.tx.commit().await?;
     store.outbox.ready();
+
     Ok(Json(result))
 }
+
 #[derive(OpenApi)]
 #[openapi(
     paths(
@@ -874,6 +1170,7 @@ async fn incoming(
     )
 )]
 pub struct ApiDoc;
+
 async fn schema() -> Json<utoipa::openapi::OpenApi> {
     Json(ApiDoc::openapi())
 }

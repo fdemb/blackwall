@@ -27,23 +27,28 @@ async fn call(
     if let Some(token) = token {
         request = request.header("Authorization", format!("Bearer {token}"));
     }
+
     let body = if let Some(input) = input {
         request = request.header("Content-Type", "application/json");
         Body::from(input.to_string())
     } else {
         Body::empty()
     };
+
     let response = app
         .clone()
         .oneshot(request.body(body).unwrap())
         .await
         .unwrap();
+
     let status = response.status();
     let bytes = response.into_body().collect().await.unwrap().to_bytes();
     let value = serde_json::from_slice(&bytes)
         .unwrap_or_else(|_| json!({"raw":String::from_utf8_lossy(&bytes)}));
+
     (status, value)
 }
+
 async fn account(store: &Store, name: &str) -> Session {
     store
         .register(Register {
@@ -54,6 +59,7 @@ async fn account(store: &Store, name: &str) -> Session {
         .await
         .unwrap()
 }
+
 async fn page(app: &axum::Router, user: &Session, id: &str, resource: &str) -> Value {
     let separator = if resource.contains('?') { '&' } else { '?' };
     let (status, value) = call(
@@ -64,6 +70,7 @@ async fn page(app: &axum::Router, user: &Session, id: &str, resource: &str) -> V
         None,
     )
     .await;
+
     assert_eq!(status, StatusCode::OK, "{resource}: {value}");
     assert!(value["items"].is_array(), "{value}");
     assert_eq!(value["has_more"], false);
@@ -79,6 +86,7 @@ async fn workspace_state(app: &axum::Router, user: &Session, id: &str) -> Value 
         None,
     )
     .await;
+
     assert_eq!(status, StatusCode::OK, "{value}");
     assert!(value.get("revision").is_none());
     assert!(value["workspace"].get("issues").is_none());
@@ -99,6 +107,7 @@ async fn workspace_state(app: &axum::Router, user: &Session, id: &str) -> Value 
     ] {
         value["workspace"][resource] = page(app, user, id, resource).await;
     }
+
     let (status, members) = call(
         app,
         "GET",
@@ -107,6 +116,7 @@ async fn workspace_state(app: &axum::Router, user: &Session, id: &str) -> Value 
         None,
     )
     .await;
+
     assert_eq!(status, StatusCode::OK, "{members}");
     value["workspace"]["members"] = members;
     value["trash"] = page(app, user, id, "issues?trash=true").await;
@@ -136,6 +146,7 @@ fn versions(value: &Value) -> Value {
             _ => {}
         }
     }
+
     collect(value, &mut versions);
     Value::Object(versions)
 }
@@ -150,14 +161,17 @@ async fn change(app: &axum::Router, user: &Session, id: &str, command: Command) 
         Some(json!({"expected_versions":expected_versions,"command":command})),
     )
     .await;
+
     assert_eq!(status, StatusCode::OK, "{value}");
     assert!(value["versions"].is_object());
     assert!(value.get("revision").is_none());
     value
 }
+
 fn uuid(value: &Value) -> Uuid {
     Uuid::parse_str(value.as_str().unwrap()).unwrap()
 }
+
 fn issue(team: Uuid, title: &str) -> IssueInput {
     serde_json::from_value(json!({"team_id":team,"title":title})).unwrap()
 }
@@ -175,10 +189,12 @@ async fn complete_contract_on_postgres() {
         "<!DOCTYPE html><script src=\"/theme.js\"></script><script>window.boot=1</script>",
     )
     .unwrap();
+
     let app = router_with_web(store.clone(), web);
     let owner = account(&store, "owner").await;
     let colleague = account(&store, "colleague").await;
     let outsider = account(&store, "outsider").await;
+
     let (status, value) = call(
         &app,
         "POST",
@@ -187,6 +203,7 @@ async fn complete_contract_on_postgres() {
         Some(json!({"name":"Infrastructure"})),
     )
     .await;
+
     assert_eq!(status, StatusCode::OK, "{value}");
     let id = value["workspace"]["id"].as_str().unwrap().to_owned();
     assert_eq!(
@@ -201,6 +218,7 @@ async fn complete_contract_on_postgres() {
         .0,
         StatusCode::FORBIDDEN
     );
+
     let result = change(
         &app,
         &owner,
@@ -211,7 +229,9 @@ async fn complete_contract_on_postgres() {
         },
     )
     .await;
+
     let team = uuid(&result["result"]["id"]);
+
     let result = change(
         &app,
         &owner,
@@ -223,7 +243,9 @@ async fn complete_contract_on_postgres() {
         },
     )
     .await;
+
     let project = uuid(&result["result"]["id"]);
+
     let result = change(
         &app,
         &owner,
@@ -235,7 +257,9 @@ async fn complete_contract_on_postgres() {
         },
     )
     .await;
+
     let milestone = uuid(&result["result"]["id"]);
+
     let result = change(
         &app,
         &owner,
@@ -246,7 +270,9 @@ async fn complete_contract_on_postgres() {
         },
     )
     .await;
+
     let label = uuid(&result["result"]["id"]);
+
     let result = change(
         &app,
         &owner,
@@ -260,7 +286,9 @@ async fn complete_contract_on_postgres() {
         },
     )
     .await;
+
     let sprint = uuid(&result["result"]["id"]);
+
     let mut input = issue(team, "Rotate signing key");
     input.assignee = Some(owner.profile.id);
     input.project_id = Some(project);
@@ -271,12 +299,15 @@ async fn complete_contract_on_postgres() {
     input.deadline = Some(Utc::now() + Duration::hours(4));
     input.labels = vec![label];
     input.description = "**Rotate** before Friday".into();
+
     let result = change(&app, &owner, &id, Command::CreateIssue { input }).await;
     let first = uuid(&result["result"]["id"]);
+
     let mut input = issue(team, "Deploy new certificate");
     input.parent_id = Some(first);
     input.dependencies = vec![first];
     input.sprint_id = Some(sprint);
+
     let result = change(&app, &owner, &id, Command::CreateIssue { input }).await;
     let child = uuid(&result["result"]["id"]);
     let (status, value) = call(
@@ -284,10 +315,15 @@ async fn complete_contract_on_postgres() {
         "POST",
         &format!("/api/workspaces/{id}/commands"),
         Some(&owner.token),
-        Some(json!({"expected_versions":{first.to_string():-1},"command":{"type":"delete_issue","id":first}})),
+        Some(json!({
+            "expected_versions": {first.to_string(): -1},
+            "command": {"type": "delete_issue", "id": first},
+        })),
     )
     .await;
+
     assert_eq!(status, StatusCode::CONFLICT, "{value}");
+
     let result = change(
         &app,
         &owner,
@@ -300,7 +336,9 @@ async fn complete_contract_on_postgres() {
         },
     )
     .await;
+
     let comment = uuid(&result["result"]["id"]);
+
     change(
         &app,
         &owner,
@@ -312,6 +350,7 @@ async fn complete_contract_on_postgres() {
         },
     )
     .await;
+
     let result = change(
         &app,
         &owner,
@@ -324,7 +363,9 @@ async fn complete_contract_on_postgres() {
         },
     )
     .await;
+
     let time = uuid(&result["result"]["id"]);
+
     change(
         &app,
         &owner,
@@ -337,6 +378,7 @@ async fn complete_contract_on_postgres() {
         },
     )
     .await;
+
     let (status, report) = call(
         &app,
         "GET",
@@ -345,9 +387,11 @@ async fn complete_contract_on_postgres() {
         None,
     )
     .await;
+
     assert_eq!(status, StatusCode::OK);
     assert_eq!(report["total_minutes"], 60);
     assert_eq!(report["projects"][0]["id"], project.to_string());
+
     let (status, filtered) = call(
         &app,
         "GET",
@@ -359,16 +403,34 @@ async fn complete_contract_on_postgres() {
         None,
     )
     .await;
+
     assert_eq!(status, StatusCode::OK, "{filtered}");
     assert_eq!(filtered["items"].as_array().unwrap().len(), 1);
     let before = workspace_state(&app, &owner, &id).await;
     let expected_versions = versions(&before);
-    let(status,_)=call(&app,"POST",&format!("/api/workspaces/{id}/commands"),Some(&owner.token),Some(json!({"expected_versions":expected_versions,"command":{"type":"bulk_issues","ids":[first,Uuid::new_v4()],"action":{"update":{"title":"Should roll back"}}}}))).await;
+
+    let (status, _) = call(
+        &app,
+        "POST",
+        &format!("/api/workspaces/{id}/commands"),
+        Some(&owner.token),
+        Some(json!({
+            "expected_versions": expected_versions,
+            "command": {
+                "type": "bulk_issues",
+                "ids": [first, Uuid::new_v4()],
+                "action": {"update": {"title": "Should roll back"}},
+            },
+        })),
+    )
+    .await;
+
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert_eq!(
         workspace_state(&app, &owner, &id).await["workspace"]["issues"][0]["title"],
         "Rotate signing key"
     );
+
     change(
         &app,
         &owner,
@@ -382,6 +444,7 @@ async fn complete_contract_on_postgres() {
         },
     )
     .await;
+
     change(&app, &owner, &id, Command::DeleteIssue { id: child }).await;
     let (status, trash) = call(
         &app,
@@ -391,9 +454,11 @@ async fn complete_contract_on_postgres() {
         None,
     )
     .await;
+
     assert_eq!(status, StatusCode::OK, "{trash}");
     assert_eq!(trash["items"].as_array().unwrap().len(), 1);
     change(&app, &owner, &id, Command::RestoreIssue { id: child }).await;
+
     change(
         &app,
         &owner,
@@ -404,6 +469,7 @@ async fn complete_contract_on_postgres() {
         },
     )
     .await;
+
     let current = workspace_state(&app, &owner, &id).await;
     assert!(
         current["workspace"]["issues"]
@@ -412,7 +478,9 @@ async fn complete_contract_on_postgres() {
             .iter()
             .all(|i| i["sprint_id"].is_null())
     );
+
     assert_eq!(current["workspace"]["sprints"][0]["outcome"]["total"], 2);
+
     change(
         &app,
         &owner,
@@ -424,7 +492,17 @@ async fn complete_contract_on_postgres() {
         },
     )
     .await;
-    let invite_row=sqlx::query("SELECT payload FROM jobs WHERE kind='email' AND payload->>'to'=$1 ORDER BY created_at DESC LIMIT 1").bind(&colleague.profile.email).fetch_one(&store.pool).await.unwrap();
+
+    let invite_row = sqlx::query(
+        "SELECT payload FROM jobs \
+         WHERE kind='email' AND payload->>'to'=$1 \
+         ORDER BY created_at DESC LIMIT 1",
+    )
+    .bind(&colleague.profile.email)
+    .fetch_one(&store.pool)
+    .await
+    .unwrap();
+
     let mail: Value = invite_row.try_get("payload").unwrap();
     let (status, value) = call(
         &app,
@@ -434,6 +512,7 @@ async fn complete_contract_on_postgres() {
         Some(json!({"token":mail["token"]})),
     )
     .await;
+
     assert_eq!(status, StatusCode::OK, "{value}");
     assert_eq!(
         call(
@@ -447,6 +526,7 @@ async fn complete_contract_on_postgres() {
         .0,
         StatusCode::BAD_REQUEST
     );
+
     change(
         &app,
         &owner,
@@ -460,12 +540,14 @@ async fn complete_contract_on_postgres() {
         },
     )
     .await;
+
     let activity = workspace_state(&app, &owner, &id).await["workspace"]["activity"].clone();
     let assignment_recorded = activity
         .as_array()
         .unwrap()
         .iter()
         .any(|entry| entry["fields"] == json!(["assignee"]));
+
     change(
         &app,
         &owner,
@@ -478,6 +560,7 @@ async fn complete_contract_on_postgres() {
         },
     )
     .await;
+
     assert!(
         workspace_state(&app, &colleague, &id).await["workspace"]["notifications"]
             .as_array()
@@ -485,6 +568,7 @@ async fn complete_contract_on_postgres() {
             .iter()
             .all(|n| n["user_id"] == colleague.profile.id.to_string())
     );
+
     change(
         &app,
         &owner,
@@ -495,6 +579,7 @@ async fn complete_contract_on_postgres() {
         },
     )
     .await;
+
     assert_eq!(
         call(
             &app,
@@ -507,6 +592,7 @@ async fn complete_contract_on_postgres() {
         .0,
         StatusCode::FORBIDDEN
     );
+
     change(
         &app,
         &owner,
@@ -516,6 +602,7 @@ async fn complete_contract_on_postgres() {
         },
     )
     .await;
+
     assert_eq!(
         call(
             &app,
@@ -528,12 +615,14 @@ async fn complete_contract_on_postgres() {
         .0,
         StatusCode::FORBIDDEN
     );
+
     let current = workspace_state(&app, &owner, &id).await;
     let expected_versions = versions(&current);
     let boundary = "blackwall-test-boundary";
     let upload = format!(
         "--{boundary}\r\nContent-Disposition: form-data; name=\"expected_versions\"\r\n\r\n{expected_versions}\r\n--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"notes.txt\"\r\nContent-Type: text/plain\r\n\r\nrotation notes\r\n--{boundary}--\r\n"
     );
+
     let response = app
         .clone()
         .oneshot(
@@ -550,11 +639,13 @@ async fn complete_contract_on_postgres() {
         )
         .await
         .unwrap();
+
     assert_eq!(response.status(), StatusCode::OK);
     let current = workspace_state(&app, &owner, &id).await;
     let attachment = current["workspace"]["issues"][0]["attachments"][0]["id"]
         .as_str()
         .unwrap();
+
     let response = app
         .clone()
         .oneshot(
@@ -566,11 +657,13 @@ async fn complete_contract_on_postgres() {
         )
         .await
         .unwrap();
+
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(
         response.into_body().collect().await.unwrap().to_bytes(),
         "rotation notes"
     );
+
     assert_eq!(
         call(
             &app,
@@ -583,6 +676,7 @@ async fn complete_contract_on_postgres() {
         .0,
         StatusCode::NOT_FOUND
     );
+
     let (status, html) = call(
         &app,
         "POST",
@@ -591,6 +685,7 @@ async fn complete_contract_on_postgres() {
         Some(json!({"text":"**Hello** <script>alert(1)</script> [x](javascript:alert(1))"})),
     )
     .await;
+
     assert_eq!(status, StatusCode::OK);
     assert!(
         html["html"]
@@ -598,8 +693,10 @@ async fn complete_contract_on_postgres() {
             .unwrap()
             .contains("<strong>Hello</strong>")
     );
+
     assert!(!html["html"].as_str().unwrap().contains("<script>"));
     assert!(!html["html"].as_str().unwrap().contains("javascript:"));
+
     let (status, export) = call(
         &app,
         "GET",
@@ -608,8 +705,10 @@ async fn complete_contract_on_postgres() {
         None,
     )
     .await;
+
     assert_eq!(status, StatusCode::OK);
     assert_eq!(export["issues"].as_array().unwrap().len(), 2);
+
     // Portable JSON export can rebuild the work in a different workspace.
     let (status, target) = call(
         &app,
@@ -619,8 +718,10 @@ async fn complete_contract_on_postgres() {
         Some(json!({"name":"Imported workspace"})),
     )
     .await;
+
     assert_eq!(status, StatusCode::OK);
     let target_id = target["workspace"]["id"].as_str().unwrap();
+
     let (status, imported) = call(
         &app,
         "POST",
@@ -629,10 +730,12 @@ async fn complete_contract_on_postgres() {
         Some(json!({"expected_versions":{},"transfer":export})),
     )
     .await;
+
     assert_eq!(status, StatusCode::OK, "{imported}");
     assert_eq!(imported["summary"]["issues"], 2);
     let imported = workspace_state(&app, &owner, target_id).await;
     let imported_issues = imported["workspace"]["issues"].as_array().unwrap();
+
     assert_ne!(imported_issues[0]["id"], first.to_string());
     assert_eq!(imported_issues[1]["parent_id"], imported_issues[0]["id"]);
     assert_eq!(imported["workspace"]["time_entries"][0]["minutes"], 60);
@@ -649,18 +752,29 @@ async fn complete_contract_on_postgres() {
         },
     )
     .await;
+
     let integration = uuid(&configured["result"]["id"]);
     assert_eq!(
         workspace_state(&app, &owner, &id).await["workspace"]["integrations"][0]["secret"],
         ""
     );
-    let body=json!({"delivery_id":Uuid::new_v4(),"issue_id":first,"url":"https://git.example.com/pull/1","title":"Rotation PR"}).to_string();
+
+    let body = json!({
+        "delivery_id": Uuid::new_v4(),
+        "issue_id": first,
+        "url": "https://git.example.com/pull/1",
+        "title": "Rotation PR",
+    })
+    .to_string();
+
     use hmac::{Hmac, Mac};
     use sha2::Sha256;
+
     let mut mac = Hmac::<Sha256>::new_from_slice(b"integration-test-secret").unwrap();
     mac.update(body.as_bytes());
     let signature = hex::encode(mac.finalize().into_bytes());
     let path = format!("/api/workspaces/{id}/integrations/{integration}/webhook");
+
     let make_request = |signature: &str| {
         Request::builder()
             .method("POST")
@@ -670,6 +784,7 @@ async fn complete_contract_on_postgres() {
             .body(Body::from(body.clone()))
             .unwrap()
     };
+
     assert_eq!(
         app.clone()
             .oneshot(make_request("00"))
@@ -678,6 +793,7 @@ async fn complete_contract_on_postgres() {
             .status(),
         StatusCode::UNAUTHORIZED
     );
+
     assert_eq!(
         app.clone()
             .oneshot(make_request(&signature))
@@ -686,8 +802,10 @@ async fn complete_contract_on_postgres() {
             .status(),
         StatusCode::OK
     );
+
     let original_links =
         workspace_state(&app, &owner, &id).await["workspace"]["issues"][0]["source_links"].clone();
+
     assert_eq!(
         app.clone()
             .oneshot(make_request(&signature))
@@ -696,10 +814,12 @@ async fn complete_contract_on_postgres() {
             .status(),
         StatusCode::OK
     );
+
     assert_eq!(
         workspace_state(&app, &owner, &id).await["workspace"]["issues"][0]["source_links"],
         original_links
     );
+
     change(
         &app,
         &owner,
@@ -710,6 +830,7 @@ async fn complete_contract_on_postgres() {
         },
     )
     .await;
+
     // Account alert preferences suppress scheduled reminders without rewriting state each tick.
     store
         .edit_profile(
@@ -728,9 +849,11 @@ async fn complete_contract_on_postgres() {
         )
         .await
         .unwrap();
+
     let mut quiet_input = issue(team, "No deadline alert");
     quiet_input.assignee = Some(owner.profile.id);
     quiet_input.deadline = Some(Utc::now() + Duration::hours(1));
+
     let quiet = change(
         &app,
         &owner,
@@ -738,6 +861,7 @@ async fn complete_contract_on_postgres() {
         Command::CreateIssue { input: quiet_input },
     )
     .await;
+
     let quiet_id = quiet["result"]["id"].clone();
     jobs::tick(&store, &Mailer::Disabled).await.unwrap();
     let current = workspace_state(&app, &owner, &id).await;
@@ -748,6 +872,7 @@ async fn complete_contract_on_postgres() {
             .iter()
             .any(|n| n["issue_id"] == quiet_id && n["kind"] == "deadline")
     );
+
     let foreign_login = Request::builder()
         .method("POST")
         .uri("/api/auth/login")
@@ -756,10 +881,12 @@ async fn complete_contract_on_postgres() {
         .header("Content-Type", "application/json")
         .body(Body::from("{}"))
         .unwrap();
+
     assert_eq!(
         app.clone().oneshot(foreign_login).await.unwrap().status(),
         StatusCode::FORBIDDEN
     );
+
     let cookie_request = Request::builder()
         .method("POST")
         .uri("/api/workspaces")
@@ -767,10 +894,12 @@ async fn complete_contract_on_postgres() {
         .header("Content-Type", "application/json")
         .body(Body::from("{\"name\":\"CSRF\"}"))
         .unwrap();
+
     assert_eq!(
         app.clone().oneshot(cookie_request).await.unwrap().status(),
         StatusCode::FORBIDDEN
     );
+
     let cookie_request = Request::builder()
         .method("POST")
         .uri("/api/workspaces")
@@ -779,19 +908,24 @@ async fn complete_contract_on_postgres() {
         .header("Content-Type", "application/json")
         .body(Body::from("{\"name\":\"CSRF\"}"))
         .unwrap();
+
     assert_eq!(
         app.clone().oneshot(cookie_request).await.unwrap().status(),
         StatusCode::OK
     );
+
     let (status, schema) = call(&app, "GET", "/api/schema.json", None, None).await;
+
     assert_eq!(status, StatusCode::OK);
     assert!(schema["components"]["schemas"]["Command"].is_object());
+
     for path in ["/", "/some/client/route"] {
         let response = app
             .clone()
             .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
             .await
             .unwrap();
+
         assert_eq!(response.status(), StatusCode::OK);
         let csp = response.headers()["content-security-policy"]
             .to_str()
@@ -812,8 +946,11 @@ async fn complete_contract_on_postgres() {
                 .starts_with(b"<!DOCTYPE html>")
         );
     }
+
     let (status, _) = call(&app, "GET", "/api/nope", None, None).await;
+
     assert_eq!(status, StatusCode::NOT_FOUND);
+
     let result = store
         .register(Register {
             email: owner.profile.email.clone(),
@@ -821,16 +958,29 @@ async fn complete_contract_on_postgres() {
             display_name: "duplicate".into(),
         })
         .await;
+
     assert!(result.is_err());
+
     store
         .request_reset(blackwall::auth::ResetRequest {
             email: owner.profile.email.clone(),
         })
         .await
         .unwrap();
-    let row=sqlx::query("SELECT payload FROM jobs WHERE kind='email' AND payload->>'to'=$1 AND payload->>'subject'='Reset your Blackwall password' LIMIT 1").bind(&owner.profile.email).fetch_one(&store.pool).await.unwrap();
+
+    let row = sqlx::query(
+        "SELECT payload FROM jobs \
+         WHERE kind='email' AND payload->>'to'=$1 \
+         AND payload->>'subject'='Reset your Blackwall password' LIMIT 1",
+    )
+    .bind(&owner.profile.email)
+    .fetch_one(&store.pool)
+    .await
+    .unwrap();
+
     let payload: Value = row.try_get("payload").unwrap();
     let token = payload["token"].as_str().unwrap().to_owned();
+
     store
         .reset_password(blackwall::auth::ResetPassword {
             token: token.clone(),
@@ -838,6 +988,7 @@ async fn complete_contract_on_postgres() {
         })
         .await
         .unwrap();
+
     assert!(store.authenticate(&owner.token).await.is_err());
     assert!(
         store
@@ -848,6 +999,7 @@ async fn complete_contract_on_postgres() {
             .await
             .is_err()
     );
+
     assert!(
         store
             .login(blackwall::auth::Login {
@@ -857,10 +1009,12 @@ async fn complete_contract_on_postgres() {
             .await
             .is_ok()
     );
+
     assert!(
         assignment_recorded,
         "assignment activity must name the changed field"
     );
+
     store.pool.close().await;
     database.cleanup().await;
 }
@@ -881,8 +1035,17 @@ async fn native_identity_and_atomic_password_recovery() {
         })
         .await
         .unwrap();
-    let row = sqlx::query("SELECT users.id,users.profile,sessions.token_hash,sessions.expires_at FROM users JOIN sessions ON sessions.user_id=users.id WHERE sessions.token_hash=$1")
-        .bind(hash(&session.token)).fetch_one(&store.pool).await.unwrap();
+
+    let row = sqlx::query(
+        "SELECT users.id,users.profile,sessions.token_hash,sessions.expires_at \
+         FROM users JOIN sessions ON sessions.user_id=users.id \
+         WHERE sessions.token_hash=$1",
+    )
+    .bind(hash(&session.token))
+    .fetch_one(&store.pool)
+    .await
+    .unwrap();
+
     assert_eq!(row.try_get::<Uuid, _>("id").unwrap(), session.profile.id);
     assert_eq!(
         row.try_get::<Json<blackwall::auth::Profile>, _>("profile")
@@ -891,13 +1054,16 @@ async fn native_identity_and_atomic_password_recovery() {
             .email,
         session.profile.email
     );
+
     assert_ne!(
         row.try_get::<String, _>("token_hash").unwrap(),
         session.token
     );
+
     assert!(
         row.try_get::<DateTime<Utc>, _>("expires_at").unwrap() > Utc::now() + Duration::days(29)
     );
+
     let updated = store
         .edit_profile(
             session.profile.clone(),
@@ -915,6 +1081,7 @@ async fn native_identity_and_atomic_password_recovery() {
         )
         .await
         .unwrap();
+
     assert_eq!(
         store
             .authenticate(&session.token)
@@ -923,12 +1090,14 @@ async fn native_identity_and_atomic_password_recovery() {
             .display_name,
         updated.display_name
     );
+
     store
         .request_reset(ResetRequest {
             email: "missing@example.com".into(),
         })
         .await
         .unwrap();
+
     assert_eq!(
         sqlx::query_scalar::<_, i64>("SELECT count(*) FROM password_resets")
             .fetch_one(&store.pool)
@@ -944,6 +1113,7 @@ async fn native_identity_and_atomic_password_recovery() {
     .execute(&store.pool)
     .await
     .unwrap();
+
     assert!(
         store
             .request_reset(ResetRequest {
@@ -952,6 +1122,7 @@ async fn native_identity_and_atomic_password_recovery() {
             .await
             .is_err()
     );
+
     assert_eq!(
         sqlx::query_scalar::<_, i64>("SELECT count(*) FROM password_resets")
             .fetch_one(&store.pool)
@@ -959,22 +1130,26 @@ async fn native_identity_and_atomic_password_recovery() {
             .unwrap(),
         0
     );
+
     sqlx::query("ALTER TABLE jobs DROP CONSTRAINT reject_test_email")
         .execute(&store.pool)
         .await
         .unwrap();
+
     store
         .request_reset(ResetRequest {
             email: session.profile.email.clone(),
         })
         .await
         .unwrap();
+
     let payload: Value =
         sqlx::query_scalar("SELECT payload FROM jobs WHERE kind='email' AND payload->>'to'=$1")
             .bind(&session.profile.email)
             .fetch_one(&store.pool)
             .await
             .unwrap();
+
     let reset_token = payload["token"].as_str().unwrap().to_owned();
     assert_eq!(
         sqlx::query_scalar::<_, String>("SELECT token_hash FROM password_resets WHERE user_id=$1")
@@ -984,6 +1159,7 @@ async fn native_identity_and_atomic_password_recovery() {
             .unwrap(),
         hash(&reset_token)
     );
+
     let (first, second_reset) = tokio::join!(
         store.reset_password(ResetPassword {
             token: reset_token.clone(),
@@ -994,6 +1170,7 @@ async fn native_identity_and_atomic_password_recovery() {
             password: "recovered-password-123".into()
         }),
     );
+
     assert_ne!(first.is_ok(), second_reset.is_ok());
     assert!(store.authenticate(&session.token).await.is_err());
     assert!(store.authenticate(&second.token).await.is_err());
@@ -1004,12 +1181,14 @@ async fn native_identity_and_atomic_password_recovery() {
         })
         .await
         .unwrap();
+
     store
         .request_reset(ResetRequest {
             email: session.profile.email.clone(),
         })
         .await
         .unwrap();
+
     store
         .change_password(
             session.profile.id,
@@ -1020,6 +1199,7 @@ async fn native_identity_and_atomic_password_recovery() {
         )
         .await
         .unwrap();
+
     assert!(store.authenticate(&recovered.token).await.is_err());
     assert_eq!(
         sqlx::query_scalar::<_, i64>("SELECT count(*) FROM password_resets WHERE user_id=$1")
@@ -1029,6 +1209,7 @@ async fn native_identity_and_atomic_password_recovery() {
             .unwrap(),
         0
     );
+
     for _ in 0..2 {
         store
             .request_reset(ResetRequest {
@@ -1037,12 +1218,14 @@ async fn native_identity_and_atomic_password_recovery() {
             .await
             .unwrap();
     }
+
     let competing: Vec<Value> = sqlx::query_scalar(
         "SELECT payload FROM jobs WHERE kind='email' ORDER BY created_at DESC LIMIT 2",
     )
     .fetch_all(&store.pool)
     .await
     .unwrap();
+
     let (left, right) = tokio::time::timeout(std::time::Duration::from_secs(10), async {
         tokio::join!(
             store.reset_password(ResetPassword {
@@ -1057,12 +1240,14 @@ async fn native_identity_and_atomic_password_recovery() {
     })
     .await
     .unwrap();
+
     assert_ne!(left.is_ok(), right.is_ok());
     let rejected = left.err().or(right.err()).unwrap();
     assert!(
         matches!(rejected, blackwall::error::Error::BadRequest(_)),
         "{rejected}"
     );
+
     let final_session = store
         .login(Login {
             email: session.profile.email.clone(),
@@ -1070,6 +1255,7 @@ async fn native_identity_and_atomic_password_recovery() {
         })
         .await
         .unwrap();
+
     sqlx::query(
         "UPDATE sessions SET expires_at=clock_timestamp()-interval '1 second' WHERE token_hash=$1",
     )
@@ -1077,6 +1263,7 @@ async fn native_identity_and_atomic_password_recovery() {
     .execute(&store.pool)
     .await
     .unwrap();
+
     assert!(store.authenticate(&final_session.token).await.is_err());
     store
         .request_reset(ResetRequest {
@@ -1084,16 +1271,19 @@ async fn native_identity_and_atomic_password_recovery() {
         })
         .await
         .unwrap();
+
     let payload: Value = sqlx::query_scalar(
         "SELECT payload FROM jobs WHERE kind='email' ORDER BY created_at DESC LIMIT 1",
     )
     .fetch_one(&store.pool)
     .await
     .unwrap();
+
     sqlx::query("UPDATE password_resets SET expires_at=clock_timestamp()-interval '1 second'")
         .execute(&store.pool)
         .await
         .unwrap();
+
     assert!(
         store
             .reset_password(ResetPassword {
@@ -1103,6 +1293,7 @@ async fn native_identity_and_atomic_password_recovery() {
             .await
             .is_err()
     );
+
     store.pool.close().await;
     database.cleanup().await;
 }
