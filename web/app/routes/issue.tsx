@@ -60,7 +60,6 @@ import { isDone, stageOf } from "~/lib/filters";
 import { bytes, formatMinutes, fullDate, issueKey, MAX_UPLOAD, relativeTime } from "~/lib/format";
 import { useDocumentTitle } from "~/lib/title";
 import { useI18n, isTranslationKey, type Key } from "~/lib/i18n";
-import { useMediaQuery } from "~/lib/media";
 import { usePending } from "~/lib/use-pending";
 import {
   useActivity,
@@ -85,9 +84,17 @@ const NEWLINE = /\n/g;
 export default function IssuePage() {
   const { issueId, ws: wsId } = useParams();
   const { ws } = useWorkspace();
+  const location = useLocation();
+  const inInbox = location.pathname.startsWith(`/${ws.id}/inbox/`);
   const detail = useIssueDetail(issueId!);
   const issue = detail.issue;
-  if (detail.missing) return <Navigate to={`/${ws.id}/my-issues`} replace />;
+  if (detail.missing)
+    return (
+      <Navigate
+        to={inInbox ? `/${ws.id}/inbox${location.search}` : `/${ws.id}/my-issues`}
+        replace
+      />
+    );
   if (!issue || detail.error)
     return (
       <Page>
@@ -141,7 +148,7 @@ function IssueView({ issue, detail }: { issue: Issue; detail: IssueDetail }) {
   const location = useLocation();
   const toast = useToast();
   const { ws, me, run, team, canWrite } = useWorkspace();
-  const wide = useMediaQuery("(min-width: 1024px)");
+  const inInbox = location.pathname.startsWith(`/${ws.id}/inbox/`);
   const tm = team(issue.team_id);
   useDocumentTitle(`${issueKey(issue.number)} ${issue.title}`);
   // Resolves to whether the save landed, so editors can keep a draft that didn't.
@@ -164,11 +171,15 @@ function IssueView({ issue, detail }: { issue: Issue; detail: IssueDetail }) {
   const [confirm, setConfirm] = useState(false);
   // Go back to wherever the issue was opened from. A fresh tab has no history, so use the team list.
   const goBack = () =>
-    location.key === "default" ? nav(`/${ws.id}/team/${issue.team_id}`) : nav(-1);
+    inInbox
+      ? nav(`/${ws.id}/inbox${location.search}`, { preventScrollReset: true })
+      : location.key === "default"
+        ? nav(`/${ws.id}/team/${issue.team_id}`)
+        : nav(-1);
   const chip = "h-7 w-auto rounded-full border border-border px-2.5";
 
   return (
-    <Page className="overflow-hidden">
+    <Page className="@container/issue min-w-0 overflow-hidden">
       <header className="flex h-12 shrink-0 items-center gap-2 border-b border-border px-4">
         <Button
           variant="ghost"
@@ -289,38 +300,36 @@ function IssueView({ issue, detail }: { issue: Issue; detail: IssueDetail }) {
                 />
               </div>
             </div>
-            {!wide && (
-              <Disclosure className="mt-4 rounded-lg border border-border">
-                {({ isExpanded }) => (
-                  <>
-                    <Heading>
-                      <Button
-                        slot="trigger"
-                        variant="ghost"
-                        className="h-9 w-full justify-start px-3"
-                      >
-                        {t("issue.allProperties")}
-                        <ChevronRight
-                          className={cn(
-                            "ml-auto size-3.5 transition-transform",
-                            isExpanded && "rotate-90",
-                          )}
-                        />
-                      </Button>
-                    </Heading>
-                    <DisclosurePanel>
-                      <div className="space-y-1 border-t border-border p-2">
-                        <Properties
-                          issue={issue}
-                          hasParent={Boolean(parent)}
-                          excludeIds={subs.map((s) => s.id)}
-                        />
-                      </div>
-                    </DisclosurePanel>
-                  </>
-                )}
-              </Disclosure>
-            )}
+            <Disclosure className="mt-4 rounded-lg border border-border @min-[64rem]/issue:hidden">
+              {({ isExpanded }) => (
+                <>
+                  <Heading>
+                    <Button
+                      slot="trigger"
+                      variant="ghost"
+                      className="h-9 w-full justify-start px-3"
+                    >
+                      {t("issue.allProperties")}
+                      <ChevronRight
+                        className={cn(
+                          "ml-auto size-3.5 transition-transform",
+                          isExpanded && "rotate-90",
+                        )}
+                      />
+                    </Button>
+                  </Heading>
+                  <DisclosurePanel>
+                    <div className="space-y-1 border-t border-border p-2">
+                      <Properties
+                        issue={issue}
+                        hasParent={Boolean(parent)}
+                        excludeIds={subs.map((s) => s.id)}
+                      />
+                    </div>
+                  </DisclosurePanel>
+                </>
+              )}
+            </Disclosure>
 
             <div className="mt-6 space-y-8">
               <div className="space-y-2">
@@ -374,18 +383,16 @@ function IssueView({ issue, detail }: { issue: Issue; detail: IssueDetail }) {
           </div>
         </div>
 
-        {wide && (
-          <aside
-            aria-label={t("issue.properties")}
-            className="w-72 shrink-0 space-y-1 overflow-y-auto border-l border-border p-4"
-          >
-            <Properties
-              issue={issue}
-              hasParent={Boolean(parent)}
-              excludeIds={subs.map((s) => s.id)}
-            />
-          </aside>
-        )}
+        <aside
+          aria-label={t("issue.properties")}
+          className="hidden w-72 shrink-0 space-y-1 overflow-y-auto border-l border-border p-4 @min-[64rem]/issue:block"
+        >
+          <Properties
+            issue={issue}
+            hasParent={Boolean(parent)}
+            excludeIds={subs.map((s) => s.id)}
+          />
+        </aside>
       </div>
 
       <ConfirmDialog
