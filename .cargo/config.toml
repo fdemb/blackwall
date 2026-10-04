@@ -1,0 +1,3 @@
+[env]
+# Compile checked SQL without a live database. Override to regenerate .sqlx metadata.
+SQLX_OFFLINE = "true"

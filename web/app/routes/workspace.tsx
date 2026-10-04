@@ -8,7 +8,8 @@ import { Dialog } from "~/components/ui/dialog";
 import { Kbd } from "~/components/ui/tooltip";
 import { Sidebar } from "~/components/app/sidebar";
 import { ModalOverlay, Modal, Dialog as RACDialog } from "react-aria-components";
-import { ApiError, workspaces } from "~/lib/api";
+import { ApiError } from "~/lib/api";
+import { loadWorkspaceData } from "~/lib/workspace-data";
 import { LAST_WS } from "~/lib/auth-guard";
 import { WorkspaceProvider, useWorkspace } from "~/lib/workspace";
 import { useT, type Key } from "~/lib/i18n";
@@ -17,12 +18,9 @@ import type { Route } from "./+types/workspace";
 
 export async function clientLoader({ params }: Route.ClientLoaderArgs) {
   try {
-    const [w, members] = await Promise.all([
-      workspaces.get(params.ws),
-      workspaces.members(params.ws),
-    ]);
+    const data = await loadWorkspaceData(params.ws);
     localStorage.setItem(LAST_WS, params.ws);
-    return { revision: w.revision, workspace: w.workspace, members };
+    return data;
   } catch (e) {
     if (e instanceof ApiError && (e.status === 404 || e.status === 403)) {
       localStorage.removeItem(LAST_WS);
@@ -48,7 +46,7 @@ export function shouldRevalidate({
 
 export default function WorkspaceLayout({ loaderData }: Route.ComponentProps) {
   return (
-    <WorkspaceProvider initial={loaderData}>
+    <WorkspaceProvider key={loaderData.workspace.id} initial={loaderData}>
       <Shell />
     </WorkspaceProvider>
   );

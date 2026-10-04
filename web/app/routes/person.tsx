@@ -4,18 +4,20 @@ import { Avatar } from "~/components/ui/avatar";
 import { Badge } from "~/components/ui/badge";
 import { IssueList } from "~/components/app/issue-list";
 import { EmptyState, Page, PageHeader, Scroll } from "~/components/app/page";
-import { applyFilter, isDone } from "~/lib/filters";
 import { useT } from "~/lib/i18n";
+import { useIssues } from "~/lib/queries";
+import { QueryStatus } from "~/components/app/query-status";
 import { useWorkspace } from "~/lib/workspace";
 
 export default function Person() {
   const t = useT();
   const { userId, ws: wsId } = useParams();
   const { ws, member } = useWorkspace();
+  const query = useIssues({ assignee: userId, open: true });
   const m = member(userId);
   if (!m) return <Navigate to={`/${wsId}/people`} replace />;
   const role = ws.members.find((x) => x.user_id === m.id)?.role;
-  const issues = applyFilter(ws, { assignee: m.id }).filter((i) => !isDone(ws, i));
+  const issues = query.items;
   const teams = ws.teams.filter((x) => x.members.includes(m.id));
   const looksLikePhone = /^[+\d][\d\s()-]{5,}$/.test(m.contact);
   return (
@@ -97,6 +99,7 @@ export default function Person() {
                 emptyState={<EmptyState title={t("person.noIssues")} />}
               />
             </div>
+            <QueryStatus query={query} />
           </section>
         </div>
       </Scroll>

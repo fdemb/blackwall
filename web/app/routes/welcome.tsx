@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Form } from "react-aria-components";
 import { useNavigate, useOutletContext, useRevalidator, useSearchParams } from "react-router";
 import { Button } from "~/components/ui/button";
@@ -25,6 +25,7 @@ export default function Welcome() {
     params.get("workspace") || params.get("token") ? "join" : "create",
   );
   const [busy, setBusy] = useState(false);
+  const creation = useRef<{ name: string; key: string } | null>(null);
   useDocumentTitle(t("workspace.newOrJoin"));
   return (
     <div className="relative grid min-h-dvh place-items-center overflow-hidden px-4 py-10">
@@ -63,7 +64,11 @@ export default function Welcome() {
             setError("");
             try {
               if (mode === "create") {
-                const r = await workspaces.create(String(f.get("name")));
+                const name = f.get("name");
+                if (typeof name !== "string") throw new Error(t("error.generic"));
+                if (creation.current?.name !== name)
+                  creation.current = { name, key: crypto.randomUUID() };
+                const r = await workspaces.create(name, creation.current.key);
                 localStorage.setItem(LAST_WS, r.workspace.id);
                 await revalidate();
                 nav(`/${r.workspace.id}/settings/teams`);

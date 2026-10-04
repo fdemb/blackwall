@@ -439,12 +439,14 @@ export const en = {
   "data.imported": "Import finished",
   "data.invalidJson": "That file isn't valid JSON.",
 
-  "error.conflict": "Someone else changed this workspace. We reloaded it. Try again.",
+  "error.conflict": "Someone else changed this item. Review the latest changes, then try again.",
   "error.generic": "Something went wrong.",
 
   "action.clearField": "Clear",
   "action.close": "Close",
   "action.dismiss": "Dismiss",
+  "action.loadMore": "Load more",
+  "action.loading": "Loading...",
   "action.retry": "Try again",
   "action.undo": "Undo",
   "action.saving": "Saving…",

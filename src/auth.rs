@@ -7,10 +7,10 @@ use argon2::{
     Argon2, PasswordHash, PasswordHasher, PasswordVerifier,
     password_hash::{SaltString, rand_core::OsRng},
 };
-use chrono::Utc;
+use chrono::{Duration, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use sqlx::Row;
+use sqlx::{Row, types::Json};
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
@@ -168,10 +168,10 @@ impl Store {
         let insert = sqlx::query(
             "INSERT INTO users (id, email, password_hash, profile) VALUES ($1,$2,$3,$4)",
         )
-        .bind(profile.id.to_string())
+        .bind(profile.id)
         .bind(email)
         .bind(encoded)
-        .bind(serde_json::to_string(&profile)?)
+        .bind(Json(&profile))
         .execute(&self.pool)
         .await;
         match insert {
@@ -187,8 +187,8 @@ impl Store {
         let token = token();
         sqlx::query("INSERT INTO sessions (token_hash,user_id,expires_at) VALUES ($1,$2,$3)")
             .bind(hash(&token))
-            .bind(profile.id.to_string())
-            .bind(Utc::now().timestamp() + 60 * 60 * 24 * 30)
+            .bind(profile.id)
+            .bind(Utc::now() + Duration::days(30))
             .execute(&self.pool)
             .await?;
         Ok(Session {
@@ -213,20 +213,20 @@ impl Store {
         if !verify(input.password, row.try_get("password_hash")?).await? {
             return Err(Error::Unauthorized);
         }
-        self.create_session(serde_json::from_str(row.try_get::<&str, _>("profile")?)?)
+        self.create_session(row.try_get::<Json<Profile>, _>("profile")?.0)
             .await
     }
     pub async fn authenticate(&self, token: &str) -> Result<Profile> {
-        let row = sqlx::query("SELECT users.profile FROM sessions JOIN users ON users.id = sessions.user_id WHERE token_hash = $1 AND expires_at > $2").bind(hash(token)).bind(Utc::now().timestamp()).fetch_optional(&self.pool).await?.ok_or(Error::Unauthorized)?;
-        Ok(serde_json::from_str(row.try_get::<&str, _>("profile")?)?)
+        let row = sqlx::query("SELECT users.profile FROM sessions JOIN users ON users.id = sessions.user_id WHERE token_hash = $1 AND expires_at > $2").bind(hash(token)).bind(Utc::now()).fetch_optional(&self.pool).await?.ok_or(Error::Unauthorized)?;
+        Ok(row.try_get::<Json<Profile>, _>("profile")?.0)
     }
     pub async fn profile(&self, id: Uuid) -> Result<Profile> {
         let row = sqlx::query("SELECT profile FROM users WHERE id = $1")
-            .bind(id.to_string())
+            .bind(id)
             .fetch_optional(&self.pool)
             .await?
             .ok_or(Error::NotFound)?;
-        Ok(serde_json::from_str(row.try_get::<&str, _>("profile")?)?)
+        Ok(row.try_get::<Json<Profile>, _>("profile")?.0)
     }
     pub async fn edit_profile(&self, mut profile: Profile, edit: ProfileEdit) -> Result<Profile> {
         if edit.display_name.trim().is_empty()
@@ -249,8 +249,8 @@ impl Store {
         profile.theme = edit.theme;
         profile.alerts = edit.alerts;
         sqlx::query("UPDATE users SET profile = $1 WHERE id = $2")
-            .bind(serde_json::to_string(&profile)?)
-            .bind(profile.id.to_string())
+            .bind(Json(&profile))
+            .bind(profile.id)
             .execute(&self.pool)
             .await?;
         Ok(profile)
@@ -264,7 +264,7 @@ impl Store {
     }
     pub async fn change_password(&self, user: Uuid, input: PasswordChange) -> Result<()> {
         let row = sqlx::query("SELECT password_hash FROM users WHERE id = $1")
-            .bind(user.to_string())
+            .bind(user)
             .fetch_one(&self.pool)
             .await?;
         let previous: String = row.try_get("password_hash")?;
@@ -276,7 +276,7 @@ impl Store {
         let result =
             sqlx::query("UPDATE users SET password_hash = $1 WHERE id = $2 AND password_hash = $3")
                 .bind(encoded)
-                .bind(user.to_string())
+                .bind(user)
                 .bind(previous)
                 .execute(&mut *tx)
                 .await?;
@@ -284,41 +284,40 @@ impl Store {
             return Err(Error::Conflict("password changed concurrently".into()));
         }
         sqlx::query("DELETE FROM sessions WHERE user_id = $1")
-            .bind(user.to_string())
+            .bind(user)
             .execute(&mut *tx)
             .await?;
         sqlx::query("DELETE FROM password_resets WHERE user_id = $1")
-            .bind(user.to_string())
+            .bind(user)
             .execute(&mut *tx)
             .await?;
         tx.commit().await?;
         Ok(())
     }
     pub async fn request_reset(&self, input: ResetRequest) -> Result<()> {
-        let row = sqlx::query("SELECT id,email FROM users WHERE email = $1")
+        let mut tx = self.pool.begin().await?;
+        let row = sqlx::query("SELECT id,email FROM users WHERE email = $1 FOR UPDATE")
             .bind(input.email.trim().to_lowercase())
-            .fetch_optional(&self.pool)
+            .fetch_optional(&mut *tx)
             .await?;
         if let Some(row) = row {
-            let user: String = row.try_get("id")?;
+            let user: Uuid = row.try_get("id")?;
             let email: String = row.try_get("email")?;
             let token = token();
-            let now = Utc::now().timestamp();
-            let mut tx = self.pool.begin().await?;
+            let now = Utc::now();
             sqlx::query(
                 "INSERT INTO password_resets (token_hash,user_id,expires_at) VALUES ($1,$2,$3)",
             )
             .bind(hash(&token))
-            .bind(&user)
-            .bind(now + 3600)
+            .bind(user)
+            .bind(now + Duration::hours(1))
             .execute(&mut *tx)
             .await?;
-            let user_id = Uuid::parse_str(&user).map_err(|e| Error::Internal(e.to_string()))?;
             let job = Job::Email(Email {
                 to: email,
                 subject: "Reset your Blackwall password".into(),
                 grant: Grant::Reset {
-                    user_id,
+                    user_id: user,
                     token_hash: hash(&token),
                 },
                 token,
@@ -332,55 +331,38 @@ impl Store {
     pub async fn reset_password(&self, input: ResetPassword) -> Result<()> {
         let encoded = password_hash(input.password).await?;
         let mut tx = self.pool.begin().await?;
-        let row = sqlx::query("DELETE FROM password_resets WHERE token_hash = $1 AND expires_at > $2 RETURNING user_id").bind(hash(&input.token)).bind(Utc::now().timestamp()).fetch_optional(&mut *tx).await?.ok_or(Error::BadRequest("reset token invalid or expired".into()))?;
-        let user: String = row.try_get("user_id")?;
+        let token_hash = hash(&input.token);
+        let user: Uuid = sqlx::query_scalar("SELECT users.id FROM users JOIN password_resets ON password_resets.user_id=users.id WHERE password_resets.token_hash=$1 AND password_resets.expires_at>$2 FOR UPDATE OF users")
+            .bind(&token_hash)
+            .bind(Utc::now())
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or(Error::BadRequest("reset token invalid or expired".into()))?;
+        let consumed = sqlx::query(
+            "DELETE FROM password_resets WHERE token_hash=$1 AND user_id=$2 AND expires_at>$3",
+        )
+        .bind(token_hash)
+        .bind(user)
+        .bind(Utc::now())
+        .execute(&mut *tx)
+        .await?;
+        if consumed.rows_affected() != 1 {
+            return Err(Error::BadRequest("reset token invalid or expired".into()));
+        }
         sqlx::query("UPDATE users SET password_hash = $1 WHERE id = $2")
             .bind(encoded)
-            .bind(&user)
+            .bind(user)
             .execute(&mut *tx)
             .await?;
         sqlx::query("DELETE FROM sessions WHERE user_id = $1")
-            .bind(&user)
+            .bind(user)
             .execute(&mut *tx)
             .await?;
         sqlx::query("DELETE FROM password_resets WHERE user_id = $1")
-            .bind(&user)
+            .bind(user)
             .execute(&mut *tx)
             .await?;
         tx.commit().await?;
         Ok(())
     }
-}
-
-pub(crate) async fn filter_notifications(
-    store: &Store,
-    before: &crate::domain::Workspace,
-    after: &mut crate::domain::Workspace,
-) -> Result<()> {
-    use std::collections::{HashMap, HashSet};
-    let old: HashSet<_> = before.notifications.iter().map(|n| n.id).collect();
-    let recipients: HashSet<_> = after
-        .notifications
-        .iter()
-        .filter(|n| !old.contains(&n.id))
-        .map(|n| n.user_id)
-        .collect();
-    let mut preferences = HashMap::new();
-    for user in recipients {
-        preferences.insert(user, store.profile(user).await?.alerts);
-    }
-    after.notifications.retain(|notification| {
-        old.contains(&notification.id)
-            || preferences
-                .get(&notification.user_id)
-                .is_some_and(|p| match notification.kind {
-                    crate::domain::AlertKind::Assignment => p.assignments,
-                    crate::domain::AlertKind::Reply | crate::domain::AlertKind::Mention => {
-                        p.replies
-                    }
-                    crate::domain::AlertKind::Change => p.changes,
-                    crate::domain::AlertKind::Deadline => p.deadlines,
-                })
-    });
-    Ok(())
 }

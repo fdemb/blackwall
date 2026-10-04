@@ -9,7 +9,6 @@ import { Menu, MenuItem, MenuPopover, MenuTrigger } from "~/components/ui/menu";
 import { Checkbox } from "~/components/ui/toggles";
 import { EmptyState, Page, PageHeader, Scroll } from "~/components/app/page";
 import { ProgressBar } from "~/components/app/progress";
-import { isDone } from "~/lib/filters";
 import { useT } from "~/lib/i18n";
 import { usePending } from "~/lib/use-pending";
 import { useWorkspace } from "~/lib/workspace";
@@ -19,15 +18,16 @@ type ProjectSort = "name" | "progress" | "recent";
 
 export default function Projects() {
   const t = useT();
-  const { ws, canWrite } = useWorkspace();
+  const { ws, canWrite, report } = useWorkspace();
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState("");
   const [sort, setSort] = useState<ProjectSort>("name");
   const rows = ws.projects.map((p) => {
-    const issues = ws.issues.filter((i) => i.project_id === p.id && !i.deleted_at);
-    const done = issues.filter((i) => isDone(ws, i)).length;
-    const touched = Math.max(0, ...issues.map((i) => +new Date(i.updated_at)));
-    return { p, issues, done, ratio: issues.length ? done / issues.length : 0, touched };
+    const stats = report.project_stats.find((stats) => stats.id === p.id);
+    const total = stats?.total ?? 0;
+    const done = stats?.completed ?? 0;
+    const touched = stats?.updated_at ? +new Date(stats.updated_at) : 0;
+    return { p, total, done, ratio: total ? done / total : 0, touched };
   });
   const needle = q.trim().toLowerCase();
   const list = rows
@@ -109,7 +109,7 @@ export default function Projects() {
           />
         ) : (
           <ul className="grid gap-3 p-4 sm:grid-cols-2 xl:grid-cols-3">
-            {list.map(({ p, issues, done }) => {
+            {list.map(({ p, total, done }) => {
               return (
                 <li key={p.id}>
                   <Link
@@ -123,14 +123,9 @@ export default function Projects() {
                       {p.description || t("project.noDescription")}
                     </p>
                     <div className="mt-3 flex items-center gap-3 text-xs text-muted-foreground">
-                      <ProgressBar
-                        value={done}
-                        total={issues.length}
-                        className="flex-1"
-                        label={p.name}
-                      />
+                      <ProgressBar value={done} total={total} className="flex-1" label={p.name} />
                       <span className="tabular-nums">
-                        {done}/{issues.length}
+                        {done}/{total}
                       </span>
                     </div>
                     <p className="mt-2 truncate text-xs text-muted-foreground">
@@ -173,7 +168,13 @@ export function ProjectForm({ project, close }: { project?: Project; close: () =
         const body = { name: name.trim(), description: description.trim(), team_ids: teams };
         void guard(async () => {
           await (project
-            ? run({ type: "update_project", id: project.id, ...body }, { quiet: true })
+            ? run(
+                { type: "update_project", id: project.id, ...body },
+                {
+                  quiet: true,
+                  expectedVersions: error ? undefined : { [project.id]: project.version },
+                },
+              )
             : run({ type: "create_project", ...body }, { quiet: true }));
           close();
         });

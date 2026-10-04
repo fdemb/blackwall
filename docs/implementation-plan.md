@@ -1,10 +1,7 @@
-# Implementation plan
+# Implementation status
 
-- [x] Ground: empty repository; no existing integration constraints.
-- [x] Sketch: compare relational and aggregate designs.
-- [x] Agree: synthesize design and proceed under existing authorization.
-- [x] Implement: typed Rust domain, persistence, auth, work API, scheduler, HTML client.
-- [x] Verify: compile, integration tests, real HTTP flows on SQLite and PostgreSQL.
-- [x] Scrap: reviewed persistence and API boundaries; retained snapshots with explicit limits and upgraded portable transfer after verification.
+The PostgreSQL migration replaces the initial portable snapshot design. Existing development data is discarded; no SQLite runtime path or conversion tool is supported.
 
-Design evaluation: capability coverage, tenant isolation, portable persistence, atomic updates, typed contracts, and maintainability.
+Implemented modules and verification procedures are documented in [backend design](architecture.md), [verification](verification.md), and the [README](../README.md). The original [PostgreSQL migration plan](postgres-migration-plan.md) remains the scope record.
+
+The application keeps one Rust crate and deployment. PostgreSQL stores relational work records and durable jobs. Frontend and API contracts use entity versions and targeted collections.

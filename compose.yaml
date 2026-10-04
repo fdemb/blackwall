@@ -1,10 +1,27 @@
-# Local development services. Start with `docker compose up -d`.
+# Local development services. Start with `docker compose up -d --wait`.
 services:
-  # Catches all outgoing mail. The app sends to SMTP on localhost:1025, and the inbox is at
-  # http://localhost:8025. Ports bind to loopback only.
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: blackwall
+      POSTGRES_PASSWORD: blackwall
+      POSTGRES_DB: blackwall
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U blackwall -d blackwall"]
+      interval: 2s
+      timeout: 5s
+      retries: 15
+    restart: unless-stopped
   mailpit:
     image: axllent/mailpit:v1.31.3
     ports:
       - "127.0.0.1:1025:1025"
       - "127.0.0.1:8025:8025"
     restart: unless-stopped
+
+volumes:
+  postgres-data:

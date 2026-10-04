@@ -58,7 +58,7 @@ function ColorPicker({ value, onChange }: { value: string; onChange: (c: string)
 
 export default function Labels() {
   const t = useT();
-  const { ws, run, canWrite } = useWorkspace();
+  const { ws, run, canWrite, report } = useWorkspace();
   const [name, setName] = useState("");
   const [color, setColor] = useState(COLORS[0][0]);
   const [editing, setEditing] = useState<Label | null>(null);
@@ -113,7 +113,7 @@ export default function Labels() {
                 <span className="min-w-0 flex-1 truncate">{l.name}</span>
                 <span className="text-xs tabular-nums text-muted-foreground">
                   {t("labels.used", {
-                    n: ws.issues.filter((i) => !i.deleted_at && i.labels.includes(l.id)).length,
+                    n: report.label_counts[l.id] ?? 0,
                   })}
                 </span>
                 {canWrite && (
@@ -158,7 +158,7 @@ function EditLabel({ label, close }: { label: Label; close: () => void }) {
         void guard(async () => {
           await run(
             { type: "update_label", id: label.id, name: name.trim(), color },
-            { quiet: true },
+            { quiet: true, expectedVersions: error ? undefined : { [label.id]: label.version } },
           );
           close();
         });

@@ -442,13 +442,14 @@ export const pl: Record<keyof typeof en, string> = {
   "data.imported": "Import zakończony",
   "data.invalidJson": "Ten plik nie jest poprawnym JSON-em.",
 
-  "error.conflict":
-    "Ktoś inny zmienił tę przestrzeń. Wczytaliśmy ją ponownie. Spróbuj jeszcze raz.",
+  "error.conflict": "Ktoś inny zmienił ten element. Sprawdź najnowsze zmiany i spróbuj ponownie.",
   "error.generic": "Coś poszło nie tak.",
 
   "action.clearField": "Wyczyść",
   "action.close": "Zamknij",
   "action.dismiss": "Odrzuć",
+  "action.loadMore": "Wczytaj więcej",
+  "action.loading": "Wczytywanie...",
   "action.retry": "Spróbuj ponownie",
   "action.undo": "Cofnij",
   "action.saving": "Zapisywanie…",

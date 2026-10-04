@@ -2,8 +2,7 @@ use crate::{
     auth::{self, *},
     domain::*,
     error::{Error, Result},
-    jobs::{Email, Grant, Job, Webhook},
-    store::{NewAttachment, NewJob, Store},
+    store::{CollectionQuery, NewAttachment, OperationResult, Store},
 };
 use axum::{
     Json, Router,
@@ -17,7 +16,9 @@ use axum::{
 };
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
 use sqlx::Row;
+use std::collections::BTreeMap;
 use utoipa::OpenApi;
 use uuid::Uuid;
 
@@ -76,41 +77,54 @@ fn constant_eq(left: &[u8], right: &[u8]) -> bool {
 pub struct WorkspaceSummary {
     pub id: Uuid,
     pub name: String,
-    pub revision: i64,
+    pub version: i64,
 }
 #[derive(Serialize, utoipa::ToSchema)]
 pub struct WorkspaceResponse {
-    pub revision: i64,
-    pub workspace: Workspace,
+    pub workspace: WorkspaceSummary,
 }
 #[derive(Deserialize, utoipa::ToSchema)]
 pub struct CreateWorkspace {
     pub name: String,
+    pub idempotency_key: Option<String>,
 }
 #[derive(Deserialize, utoipa::ToSchema)]
 pub struct CommandRequest {
-    pub revision: i64,
+    #[serde(default)]
+    pub expected_versions: BTreeMap<Uuid, i64>,
+    pub idempotency_key: Option<String>,
     pub command: Command,
 }
-#[derive(Serialize, utoipa::ToSchema)]
-pub struct CommandResponse {
-    pub revision: i64,
-    pub result: CommandResult,
-}
+pub type CommandResponse = OperationResult;
 #[derive(Deserialize, utoipa::ToSchema)]
 pub struct AcceptInvitation {
     pub token: String,
 }
 #[derive(Deserialize, utoipa::ToSchema)]
 pub struct ImportRequest {
-    pub revision: i64,
+    #[serde(default)]
+    pub expected_versions: BTreeMap<Uuid, i64>,
+    pub idempotency_key: Option<String>,
     pub issues: Option<Vec<IssueInput>>,
     pub transfer: Option<crate::exchange::Transfer>,
 }
 #[derive(Serialize, utoipa::ToSchema)]
 pub struct ImportResponse {
-    pub revision: i64,
+    pub versions: BTreeMap<Uuid, i64>,
     pub summary: Option<crate::exchange::ImportSummary>,
+}
+#[derive(Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct PageQuery {
+    #[serde(default = "default_limit")]
+    pub limit: i64,
+    #[serde(default)]
+    pub offset: i64,
+    pub issue_id: Option<Uuid>,
+    pub entity_id: Option<Uuid>,
+}
+fn default_limit() -> i64 {
+    100
 }
 #[derive(Deserialize)]
 pub struct SearchQuery {
@@ -123,6 +137,8 @@ pub struct SearchResult {
 }
 #[derive(Serialize, utoipa::ToSchema)]
 pub struct MemberProfile {
+    pub role: Role,
+    pub version: i64,
     pub id: Uuid,
     pub email: String,
     pub display_name: String,
@@ -173,6 +189,7 @@ pub fn router_with_web(store: Store, web_dir: std::path::PathBuf) -> Router {
         .route("/api/workspaces/{id}/members", get(members))
         .route("/api/workspaces/{id}/search", get(search))
         .route("/api/workspaces/{id}/report", get(report))
+        .route("/api/workspaces/{id}/{collection}", get(collection))
         .route(
             "/api/workspaces/{id}/invitations/accept",
             post(accept_invitation),
@@ -380,166 +397,68 @@ async fn health(State(store): State<Store>) -> Result<Json<Health>> {
     }))
 }
 #[utoipa::path(get,path="/api/workspaces",responses((status=200,body=Vec<WorkspaceSummary>)))]
-async fn workspaces(
-    State(store): State<Store>,
-    actor: Actor,
-) -> Result<Json<Vec<WorkspaceSummary>>> {
-    let mut out = Vec::new();
-    for id in store.workspace_ids(Some(actor.profile.id)).await? {
-        let (w, revision) = store.load_workspace(id).await?;
-        if w.member(actor.profile.id).is_ok() {
-            out.push(WorkspaceSummary {
-                id,
-                name: w.name,
-                revision,
-            });
-        }
-    }
-    Ok(Json(out))
+async fn workspaces(State(store): State<Store>, actor: Actor) -> Result<Json<Vec<Value>>> {
+    Ok(Json(store.list_workspaces(actor.profile.id).await?))
 }
 #[utoipa::path(post,path="/api/workspaces",request_body=CreateWorkspace,responses((status=200,body=WorkspaceResponse)))]
 async fn create_workspace(
     State(store): State<Store>,
     actor: Actor,
     Json(input): Json<CreateWorkspace>,
-) -> Result<Json<WorkspaceResponse>> {
-    let workspace = Workspace::new(input.name, actor.profile.id)?;
-    store.insert_workspace(&workspace, actor.profile.id).await?;
-    Ok(Json(WorkspaceResponse {
-        revision: 0,
-        workspace,
-    }))
+) -> Result<Json<Value>> {
+    Ok(Json(
+        json!({"workspace":store.create_workspace_with_key(input.name,actor.profile.id,input.idempotency_key).await?}),
+    ))
 }
 #[utoipa::path(get,path="/api/workspaces/{id}",params(("id"=Uuid,Path)),responses((status=200,body=WorkspaceResponse)))]
 async fn workspace(
     State(store): State<Store>,
     actor: Actor,
     Path(id): Path<Uuid>,
-) -> Result<Json<WorkspaceResponse>> {
-    let (w, revision) = store.load_workspace(id).await?;
-    w.member(actor.profile.id)?;
-    Ok(Json(WorkspaceResponse {
-        revision,
-        workspace: w.public(actor.profile.id)?,
-    }))
-}
-
-fn outgoing(before: &Workspace, after: &Workspace) -> Vec<NewJob> {
-    let mut jobs = Vec::new();
-    let previous: std::collections::HashSet<_> =
-        before.activity.iter().map(|event| event.id).collect();
-    for event in after.activity.iter().filter(|e| !previous.contains(&e.id)) {
-        for integration in after.integrations.iter().filter(|i| i.enabled) {
-            jobs.push(NewJob::now(
-                format!("{}:{}", event.id, integration.id),
-                Job::Webhook(Webhook {
-                    workspace_id: after.id,
-                    integration_id: integration.id,
-                    url: integration.webhook_url.clone(),
-                    secret: integration.secret.clone(),
-                    event: serde_json::json!({"workspace_id":after.id,"activity":event}),
-                }),
-            ));
-        }
-    }
-    jobs
-}
-async fn validate_attachments(
-    store: &Store,
-    workspace: Uuid,
-    issue: Uuid,
-    attachments: &mut [Attachment],
-) -> Result<()> {
-    for attachment in attachments {
-        let row=sqlx::query("SELECT filename,content_type,bytes_hex FROM attachments WHERE id=$1 AND workspace_id=$2 AND issue_id=$3").bind(attachment.id.to_string()).bind(workspace.to_string()).bind(issue.to_string()).fetch_optional(&store.pool).await?.ok_or(Error::BadRequest("attachment must be uploaded to this issue first".into()))?;
-        attachment.name = row.try_get("filename")?;
-        attachment.content_type = row.try_get("content_type")?;
-        attachment.size = (row.try_get::<String, _>("bytes_hex")?.len() / 2) as u64;
-    }
-    Ok(())
+) -> Result<Json<Value>> {
+    Ok(Json(store.workspace_metadata(id, actor.profile.id).await?))
 }
 #[utoipa::path(post,path="/api/workspaces/{id}/commands",params(("id"=Uuid,Path)),request_body=CommandRequest,responses((status=200,body=CommandResponse),(status=409,body=crate::error::ErrorBody)))]
 async fn command(
     State(store): State<Store>,
     actor: Actor,
     Path(id): Path<Uuid>,
-    Json(mut input): Json<CommandRequest>,
+    Json(input): Json<CommandRequest>,
 ) -> Result<Json<CommandResponse>> {
-    let (before, revision) = store.load_workspace(id).await?;
-    before.member(actor.profile.id)?;
-    if revision != input.revision {
-        return Err(Error::Conflict(
-            "workspace changed; reload and retry".into(),
+    if matches!(
+        input.command,
+        Command::AddAttachment { .. } | Command::AttachCommentFile { .. }
+    ) {
+        return Err(Error::BadRequest(
+            "use the attachment upload endpoint".into(),
         ));
     }
-    let mut workspace = before.clone();
-    let mut jobs = Vec::new();
-    let invite_token = match &mut input.command {
-        Command::Invite { token_hash, .. } | Command::ResendInvitation { token_hash, .. } => {
-            let raw = auth::token();
-            *token_hash = auth::hash(&raw);
-            Some(raw)
-        }
-        Command::AddAttachment { .. } | Command::AttachCommentFile { .. } => {
-            return Err(Error::BadRequest(
-                "use the attachment upload endpoint".into(),
-            ));
-        }
-        Command::AddComment {
-            issue_id,
-            attachments,
-            ..
-        } => {
-            validate_attachments(&store, id, *issue_id, attachments).await?;
-            None
-        }
-        _ => None,
-    };
-    // Referenced members must exist in the global identity store before membership commit.
-    if let Command::CreateTeam { members, .. } | Command::SetTeamMembers { members, .. } =
-        &input.command
-    {
-        for user in members {
-            store.profile(*user).await?;
-        }
-    }
-    let result = workspace.apply(actor.profile.id, input.command, Utc::now())?;
-    if let Some(token) = invite_token {
-        let invitation = workspace
-            .invitations
-            .iter()
-            .find(|i| Some(i.id) == result.id)
-            .ok_or_else(|| Error::Internal("invitation result missing".into()))?;
-        jobs.push(NewJob::now(
-            Uuid::new_v4().to_string(),
-            Job::Email(Email {
-                to: invitation.email.clone(),
-                subject: "Join a Blackwall workspace".into(),
-                token,
-                grant: Grant::Invitation {
-                    workspace_id: id,
-                    invitation_id: invitation.id,
-                    token_hash: invitation.token_hash.clone(),
-                },
-            }),
-        ));
-    }
-    auth::filter_notifications(&store, &before, &mut workspace).await?;
-    jobs.extend(outgoing(&before, &workspace));
-    let revision = store
-        .commit_workspace(&workspace, revision, &jobs, None)
-        .await?;
-    Ok(Json(CommandResponse { revision, result }))
+    Ok(Json(
+        store
+            .operation(
+                id,
+                actor.profile.id,
+                input.command,
+                input.expected_versions,
+                input.idempotency_key,
+                None,
+            )
+            .await?,
+    ))
 }
-#[utoipa::path(get,path="/api/workspaces/{id}/issues",params(("id"=Uuid,Path), IssueFilter),responses((status=200,body=Vec<Issue>)))]
+#[utoipa::path(get,path="/api/workspaces/{id}/issues",params(("id"=Uuid,Path),IssueFilter,PageQuery),responses((status=200,body=Value)))]
 async fn issues(
     State(store): State<Store>,
     actor: Actor,
     Path(id): Path<Uuid>,
     Query(filter): Query<IssueFilter>,
-) -> Result<Json<Vec<Issue>>> {
-    let (w, _) = store.load_workspace(id).await?;
-    Ok(Json(w.query(actor.profile.id, filter)?))
+    Query(input): Query<PageQuery>,
+) -> Result<Json<Value>> {
+    Ok(Json(
+        store
+            .list_issues(id, actor.profile.id, filter, input.limit, input.offset)
+            .await?,
+    ))
 }
 #[utoipa::path(get,path="/api/workspaces/{id}/issues/{issue}",params(("id"=Uuid,Path),("issue"=Uuid,Path)),responses((status=200,body=Issue)))]
 async fn issue_detail(
@@ -547,13 +466,29 @@ async fn issue_detail(
     actor: Actor,
     Path((id, issue)): Path<(Uuid, Uuid)>,
 ) -> Result<Json<Issue>> {
-    let (w, _) = store.load_workspace(id).await?;
-    w.member(actor.profile.id)?;
+    Ok(Json(store.get_issue(id, actor.profile.id, issue).await?))
+}
+#[utoipa::path(get,path="/api/workspaces/{id}/{collection}",params(("id"=Uuid,Path),("collection"=String,Path),PageQuery),responses((status=200,body=Value)),description="Paginated teams, labels, projects, milestones, sprints, views, notifications, alert_preferences, invitations, integrations, activity, comments or time_entries. Private records are restricted to their owner or workspace administrators.")]
+async fn collection(
+    State(store): State<Store>,
+    actor: Actor,
+    Path((id, kind)): Path<(Uuid, String)>,
+    Query(input): Query<PageQuery>,
+) -> Result<Json<Value>> {
     Ok(Json(
-        w.issues
-            .into_iter()
-            .find(|i| i.id == issue && i.deleted_at.is_none())
-            .ok_or(Error::NotFound)?,
+        store
+            .collection(
+                id,
+                actor.profile.id,
+                &kind,
+                CollectionQuery {
+                    limit: input.limit,
+                    offset: input.offset,
+                    issue_id: input.issue_id,
+                    entity_id: input.entity_id,
+                },
+            )
+            .await?,
     ))
 }
 #[utoipa::path(get,path="/api/workspaces/{id}/members",params(("id"=Uuid,Path)),responses((status=200,body=Vec<MemberProfile>)))]
@@ -561,52 +496,45 @@ async fn members(
     State(store): State<Store>,
     actor: Actor,
     Path(id): Path<Uuid>,
-) -> Result<Json<Vec<MemberProfile>>> {
-    let (w, _) = store.load_workspace(id).await?;
-    w.member(actor.profile.id)?;
-    let mut out = Vec::new();
-    for m in &w.members {
-        out.push(public_profile(store.profile(m.user_id).await?, &w));
-    }
-    Ok(Json(out))
+) -> Result<Json<Value>> {
+    Ok(Json(
+        store.member_profiles(id, actor.profile.id, None).await?,
+    ))
 }
 #[utoipa::path(get,path="/api/workspaces/{id}/search",params(("id"=Uuid,Path),("q"=String,Query)),responses((status=200,body=SearchResult)))]
 async fn search(
     State(store): State<Store>,
     actor: Actor,
     Path(id): Path<Uuid>,
-    Query(query): Query<SearchQuery>,
-) -> Result<Json<SearchResult>> {
-    if query.q.len() > 200 {
+    Query(input): Query<SearchQuery>,
+) -> Result<Json<Value>> {
+    if input.q.len() > 200 {
         return Err(Error::BadRequest("search query too long".into()));
     }
-    let (w, _) = store.load_workspace(id).await?;
-    w.member(actor.profile.id)?;
-    let q = query.q.to_lowercase();
-    let mut people = Vec::new();
-    for m in &w.members {
-        let p = store.profile(m.user_id).await?;
-        if p.email.to_lowercase().contains(&q) || p.display_name.to_lowercase().contains(&q) {
-            people.push(public_profile(p, &w));
-        }
-    }
-    let issues = w.query(
-        actor.profile.id,
-        IssueFilter {
-            search: Some(query.q),
-            ..Default::default()
-        },
-    )?;
-    Ok(Json(SearchResult { issues, people }))
+    let issue_page = store
+        .list_issues(
+            id,
+            actor.profile.id,
+            IssueFilter {
+                search: Some(input.q.clone()),
+                ..Default::default()
+            },
+            100,
+            0,
+        )
+        .await?;
+    let people = store
+        .member_profiles(id, actor.profile.id, Some(&input.q))
+        .await?;
+    Ok(Json(json!({"issues":issue_page["items"],"people":people})))
 }
-#[utoipa::path(get,path="/api/workspaces/{id}/report",params(("id"=Uuid,Path)),responses((status=200,body=Report)))]
+#[utoipa::path(get,path="/api/workspaces/{id}/report",params(("id"=Uuid,Path)),responses((status=200,body=Value)))]
 async fn report(
     State(store): State<Store>,
     actor: Actor,
     Path(id): Path<Uuid>,
-) -> Result<Json<Report>> {
-    let (w, _) = store.load_workspace(id).await?;
-    Ok(Json(w.report(actor.profile.id)?))
+) -> Result<Json<Value>> {
+    Ok(Json(store.report_sql(id, actor.profile.id).await?))
 }
 #[utoipa::path(post,path="/api/workspaces/{id}/invitations/accept",params(("id"=Uuid,Path)),request_body=AcceptInvitation,responses((status=200,body=WorkspaceResponse)))]
 async fn accept_invitation(
@@ -614,19 +542,11 @@ async fn accept_invitation(
     actor: Actor,
     Path(id): Path<Uuid>,
     Json(input): Json<AcceptInvitation>,
-) -> Result<Json<WorkspaceResponse>> {
-    let (mut w, revision) = store.load_workspace(id).await?;
-    w.accept_invitation(
-        actor.profile.id,
-        &actor.profile.email,
-        &auth::hash(&input.token),
-        Utc::now(),
-    )?;
-    let revision = store.save_workspace(&w, revision).await?;
-    Ok(Json(WorkspaceResponse {
-        revision,
-        workspace: w.public(actor.profile.id)?,
-    }))
+) -> Result<Json<Value>> {
+    store
+        .accept_invitation(id, actor.profile.id, &actor.profile.email, &input.token)
+        .await?;
+    Ok(Json(store.workspace_metadata(id, actor.profile.id).await?))
 }
 #[utoipa::path(post,path="/api/markdown",request_body=MarkdownRequest,responses((status=200,body=MarkdownResponse)))]
 async fn markdown(
@@ -648,100 +568,95 @@ async fn markdown(
         html: ammonia::clean(&html),
     }))
 }
-#[utoipa::path(post,path="/api/workspaces/{id}/issues/{issue}/attachments",params(("id"=Uuid,Path),("issue"=Uuid,Path)),responses((status=200,body=CommandResponse)),description="Upload a multipart file field, at most 5 MiB. The optional revision field detects stale uploads.")]
+#[utoipa::path(post,path="/api/workspaces/{id}/issues/{issue}/attachments",params(("id"=Uuid,Path),("issue"=Uuid,Path)),responses((status=200,body=CommandResponse)),description="Multipart file up to 5 MiB, expected_versions JSON map, optional idempotency_key and comment_id.")]
 async fn upload(
     State(store): State<Store>,
     actor: Actor,
     Path((id, issue)): Path<(Uuid, Uuid)>,
     mut multipart: Multipart,
 ) -> Result<Json<CommandResponse>> {
-    let (before, revision) = store.load_workspace(id).await?;
-    before.member(actor.profile.id)?;
     let mut uploaded = None;
-    let mut expected = None;
+    let mut expected = BTreeMap::new();
     let mut comment_id = None;
+    let mut key = None;
     while let Some(field) = multipart
         .next_field()
         .await
         .map_err(|e| Error::BadRequest(e.to_string()))?
     {
-        if field.name() == Some("comment_id") {
-            comment_id = Some(
-                Uuid::parse_str(
-                    &field
+        match field.name() {
+            Some("expected_versions") => {
+                let value = field
+                    .text()
+                    .await
+                    .map_err(|e| Error::BadRequest(e.to_string()))?;
+                expected = serde_json::from_str(&value)
+                    .map_err(|_| Error::BadRequest("invalid expected_versions JSON".into()))?;
+            }
+            Some("idempotency_key") => {
+                key = Some(
+                    field
                         .text()
                         .await
                         .map_err(|e| Error::BadRequest(e.to_string()))?,
-                )
-                .map_err(|_| Error::BadRequest("invalid comment_id".into()))?,
-            );
-            continue;
-        }
-        if field.name() == Some("revision") {
-            expected = Some(
-                field
-                    .text()
+                );
+            }
+            Some("comment_id") => {
+                comment_id = Some(
+                    field
+                        .text()
+                        .await
+                        .map_err(|e| Error::BadRequest(e.to_string()))?
+                        .parse::<Uuid>()
+                        .map_err(|_| Error::BadRequest("invalid comment_id".into()))?,
+                );
+            }
+            Some("file") if uploaded.is_none() => {
+                let filename = field
+                    .file_name()
+                    .unwrap_or("attachment")
+                    .rsplit(['/', '\\'])
+                    .next()
+                    .unwrap_or("attachment")
+                    .chars()
+                    .filter(|c| !c.is_control())
+                    .take(200)
+                    .collect::<String>();
+                let content_type = field
+                    .content_type()
+                    .unwrap_or("application/octet-stream")
+                    .to_owned();
+                let bytes = field
+                    .bytes()
                     .await
-                    .map_err(|e| Error::BadRequest(e.to_string()))?
-                    .parse::<i64>()
-                    .map_err(|_| Error::BadRequest("invalid revision".into()))?,
-            );
-            continue;
+                    .map_err(|e| Error::BadRequest(e.to_string()))?;
+                if bytes.len() > 5 * 1024 * 1024 {
+                    return Err(Error::BadRequest("attachment limit is 5 MiB".into()));
+                }
+                uploaded = Some(NewAttachment {
+                    id: Uuid::new_v4(),
+                    issue_id: issue,
+                    uploader_id: actor.profile.id,
+                    filename,
+                    content_type,
+                    bytes: bytes.to_vec(),
+                });
+            }
+            _ => {
+                return Err(Error::BadRequest(
+                    "upload one file and valid metadata fields".into(),
+                ));
+            }
         }
-        if field.name() != Some("file") || uploaded.is_some() {
-            return Err(Error::BadRequest("upload one file field".into()));
-        }
-        let name = field
-            .file_name()
-            .unwrap_or("attachment")
-            .rsplit(['/', '\\'])
-            .next()
-            .unwrap_or("attachment")
-            .chars()
-            .filter(|c| !c.is_control())
-            .take(200)
-            .collect::<String>();
-        let content_type = field
-            .content_type()
-            .unwrap_or("application/octet-stream")
-            .to_owned();
-        let bytes = field
-            .bytes()
-            .await
-            .map_err(|e| Error::BadRequest(e.to_string()))?;
-        if bytes.len() > 5 * 1024 * 1024 {
-            return Err(Error::BadRequest("attachment limit is 5 MiB".into()));
-        }
-        uploaded = Some(NewAttachment {
-            id: Uuid::new_v4(),
-            issue_id: issue,
-            uploader_id: actor.profile.id,
-            filename: name,
-            content_type,
-            bytes: bytes.to_vec(),
-        });
     }
-    if expected.is_some_and(|e| e != revision) {
-        return Err(Error::Conflict(
-            "workspace changed; reload and retry".into(),
-        ));
-    }
-    let attachment = uploaded.ok_or_else(|| Error::BadRequest("file field required".into()))?;
-    let mut workspace = before.clone();
+    let file = uploaded.ok_or_else(|| Error::BadRequest("file field required".into()))?;
     let metadata = Attachment {
-        id: attachment.id,
-        name: attachment.filename.clone(),
-        content_type: attachment.content_type.clone(),
-        size: attachment.bytes.len() as u64,
+        id: file.id,
+        name: file.filename.clone(),
+        content_type: file.content_type.clone(),
+        size: file.bytes.len() as u64,
     };
     let command = if let Some(comment_id) = comment_id {
-        if !before
-            .comments
-            .iter()
-            .any(|c| c.id == comment_id && c.issue_id == issue)
-        {
-            return Err(Error::BadRequest("comment belongs to another issue".into()));
-        }
         Command::AttachCommentFile {
             comment_id,
             attachment: metadata,
@@ -752,12 +667,11 @@ async fn upload(
             attachment: metadata,
         }
     };
-    let result = workspace.apply(actor.profile.id, command, Utc::now())?;
-    let jobs = outgoing(&before, &workspace);
-    let revision = store
-        .commit_workspace(&workspace, revision, &jobs, Some(attachment))
-        .await?;
-    Ok(Json(CommandResponse { revision, result }))
+    Ok(Json(
+        store
+            .operation(id, actor.profile.id, command, expected, key, Some(file))
+            .await?,
+    ))
 }
 #[utoipa::path(get,path="/api/workspaces/{id}/attachments/{attachment}",params(("id"=Uuid,Path),("attachment"=Uuid,Path)),responses((status=200,description="Authenticated binary attachment")))]
 async fn download(
@@ -765,28 +679,9 @@ async fn download(
     actor: Actor,
     Path((id, attachment)): Path<(Uuid, Uuid)>,
 ) -> Result<Response> {
-    let (w, _) = store.load_workspace(id).await?;
-    w.member(actor.profile.id)?;
-    let attached = w.issues.iter().any(|i| {
-        i.deleted_at.is_none()
-            && (i.attachments.iter().any(|a| a.id == attachment)
-                || w.comments.iter().any(|c| {
-                    c.issue_id == i.id && c.attachments.iter().any(|a| a.id == attachment)
-                }))
-    });
-    if !attached {
-        return Err(Error::NotFound);
-    }
-    let row =
-        sqlx::query("SELECT filename,bytes_hex FROM attachments WHERE id=$1 AND workspace_id=$2")
-            .bind(attachment.to_string())
-            .bind(id.to_string())
-            .fetch_optional(&store.pool)
-            .await?
-            .ok_or(Error::NotFound)?;
+    let row=sqlx::query("SELECT a.filename,a.bytes FROM attachments a JOIN issues i ON i.id=a.issue_id JOIN workspace_members m ON m.workspace_id=a.workspace_id WHERE a.workspace_id=$1 AND a.id=$2 AND m.user_id=$3 AND i.deleted_at IS NULL").bind(id).bind(attachment).bind(actor.profile.id).fetch_optional(&store.pool).await?.ok_or(Error::NotFound)?;
     let name: String = row.try_get("filename")?;
-    let bytes = hex::decode(row.try_get::<&str, _>("bytes_hex")?)
-        .map_err(|e| Error::Internal(e.to_string()))?;
+    let bytes: Vec<u8> = row.try_get("bytes")?;
     let mut response = bytes.into_response();
     response.headers_mut().insert(
         header::CONTENT_TYPE,
@@ -809,26 +704,7 @@ async fn export(
     actor: Actor,
     Path(id): Path<Uuid>,
 ) -> Result<Json<crate::exchange::Transfer>> {
-    use std::collections::BTreeSet;
-    let (w, _) = store.load_workspace(id).await?;
-    let w = w.public(actor.profile.id)?;
-    let users: BTreeSet<_> = w
-        .members
-        .iter()
-        .map(|m| m.user_id)
-        .chain(w.comments.iter().map(|c| c.author))
-        .chain(w.time_entries.iter().map(|t| t.user_id))
-        .chain(w.activity.iter().map(|a| a.actor))
-        .collect();
-    let mut members = Vec::new();
-    for user in users {
-        let p = store.profile(user).await?;
-        members.push(crate::exchange::TransferMember {
-            id: user,
-            email: p.email,
-        });
-    }
-    Ok(Json(crate::exchange::Transfer::export(&w, members)))
+    Ok(Json(store.export_transfer(id, actor.profile.id).await?))
 }
 #[utoipa::path(post,path="/api/workspaces/{id}/import",params(("id"=Uuid,Path)),request_body=ImportRequest,responses((status=200,body=ImportResponse)))]
 async fn import(
@@ -839,47 +715,33 @@ async fn import(
 ) -> Result<Json<ImportResponse>> {
     match (input.issues, input.transfer) {
         (Some(issues), None) => {
-            let response = command(
-                State(store),
-                actor,
-                Path(id),
-                Json(CommandRequest {
-                    revision: input.revision,
-                    command: Command::ImportIssues { issues },
-                }),
-            )
-            .await?;
+            let out = store
+                .operation(
+                    id,
+                    actor.profile.id,
+                    Command::ImportIssues { issues },
+                    input.expected_versions,
+                    input.idempotency_key,
+                    None,
+                )
+                .await?;
             Ok(Json(ImportResponse {
-                revision: response.0.revision,
+                versions: out.versions,
                 summary: None,
             }))
         }
         (None, Some(transfer)) => {
-            let (before, revision) = store.load_workspace(id).await?;
-            before.member(actor.profile.id)?;
-            if input.revision != revision {
-                return Err(Error::Conflict(
-                    "workspace changed; reload and retry".into(),
-                ));
-            }
-            let mut emails = std::collections::HashMap::new();
-            for member in &before.members {
-                let p = store.profile(member.user_id).await?;
-                emails.insert(p.email.to_lowercase(), p.id);
-            }
-            let mut mapping = std::collections::BTreeMap::new();
-            for member in &transfer.members {
-                if let Some(user) = emails.get(&member.email.to_lowercase()) {
-                    mapping.insert(member.id, *user);
-                }
-            }
-            let mut workspace = before.clone();
-            let summary =
-                transfer.import(&mut workspace, actor.profile.id, &mapping, Utc::now())?;
-            // Historical imported events do not trigger outbound integrations.
-            let revision = store.save_workspace(&workspace, revision).await?;
+            let (summary, versions) = store
+                .import_transfer(
+                    id,
+                    actor.profile.id,
+                    transfer,
+                    input.expected_versions,
+                    input.idempotency_key,
+                )
+                .await?;
             Ok(Json(ImportResponse {
-                revision,
+                versions,
                 summary: Some(summary),
             }))
         }
@@ -888,7 +750,7 @@ async fn import(
         )),
     }
 }
-#[utoipa::path(post,path="/api/workspaces/{id}/integrations/{integration}/webhook",params(("id"=Uuid,Path),("integration"=Uuid,Path)),request_body=IncomingLink,responses((status=200,body=CommandResponse)),description="Sign raw body bytes with HMAC-SHA256 in X-Blackwall-Signature. delivery_id provides deduplication.")]
+#[utoipa::path(post,path="/api/workspaces/{id}/integrations/{integration}/webhook",params(("id"=Uuid,Path),("integration"=Uuid,Path)),request_body=IncomingLink,responses((status=200,body=CommandResponse)),description="HMAC-SHA256 X-Blackwall-Signature over raw request bytes, with delivery_id idempotency.")]
 async fn incoming(
     State(store): State<Store>,
     Path((id, integration_id)): Path<(Uuid, Uuid)>,
@@ -896,56 +758,75 @@ async fn incoming(
     body: Bytes,
 ) -> Result<Json<CommandResponse>> {
     use hmac::{Hmac, Mac};
-    use sha2::Sha256;
-    let (before, revision) = store.load_workspace(id).await?;
-    let integration = before
-        .integrations
-        .iter()
-        .find(|i| i.id == integration_id && i.enabled)
-        .ok_or(Error::NotFound)?;
+    use sha2::{Digest, Sha256};
+    let owner:Uuid=sqlx::query_scalar("SELECT user_id FROM workspace_members WHERE workspace_id=$1 AND role='owner' ORDER BY user_id LIMIT 1").bind(id).fetch_optional(&store.pool).await?.ok_or(Error::NotFound)?;
+    let mut op = store
+        .begin_operation(id, owner, BTreeMap::new(), false)
+        .await?;
+    let row = sqlx::query(
+        "SELECT secret FROM integrations WHERE workspace_id=$1 AND id=$2 AND enabled FOR SHARE",
+    )
+    .bind(id)
+    .bind(integration_id)
+    .fetch_optional(&mut *op.tx)
+    .await?
+    .ok_or(Error::NotFound)?;
+    let secret: String = row.try_get("secret")?;
     let signature = headers
         .get("x-blackwall-signature")
         .and_then(|s| s.to_str().ok())
         .and_then(|s| hex::decode(s.strip_prefix("sha256=").unwrap_or(s)).ok())
         .ok_or(Error::Unauthorized)?;
-    let mut mac = Hmac::<Sha256>::new_from_slice(integration.secret.as_bytes())
+    let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes())
         .map_err(|e| Error::Internal(e.to_string()))?;
     mac.update(&body);
     mac.verify_slice(&signature)
         .map_err(|_| Error::Unauthorized)?;
     let input: IncomingLink =
         serde_json::from_slice(&body).map_err(|e| Error::BadRequest(e.to_string()))?;
-    if before.activity.iter().any(|a| a.id == input.delivery_id) {
-        return Ok(Json(CommandResponse {
-            revision,
-            result: CommandResult {
-                id: Some(input.issue_id),
-            },
-        }));
+    let hash = hex::encode(Sha256::digest(&body));
+    sqlx::query("INSERT INTO inbound_deliveries(workspace_id,integration_id,delivery_id,request_hash) VALUES($1,$2,$3,$4) ON CONFLICT DO NOTHING").bind(id).bind(integration_id).bind(input.delivery_id).bind(&hash).execute(&mut *op.tx).await?;
+    let row=sqlx::query("SELECT request_hash,result FROM inbound_deliveries WHERE integration_id=$1 AND delivery_id=$2 FOR UPDATE").bind(integration_id).bind(input.delivery_id).fetch_one(&mut *op.tx).await?;
+    if row.try_get::<String, _>("request_hash")? != hash {
+        return Err(Error::Conflict(
+            "delivery ID reused for a different request".into(),
+        ));
     }
-    let owner = before
-        .members
-        .iter()
-        .find(|m| m.role == Role::Owner)
-        .ok_or(Error::Forbidden)?
-        .user_id;
-    let mut w = before.clone();
-    let result = w.apply(
-        owner,
-        Command::AddSourceLink {
+    if let Some(result) = row.try_get::<Option<Value>, _>("result")? {
+        return Ok(Json(serde_json::from_value(result)?));
+    }
+    let version: i64 =
+        sqlx::query_scalar("SELECT version FROM issues WHERE workspace_id=$1 AND id=$2 FOR UPDATE")
+            .bind(id)
+            .bind(input.issue_id)
+            .fetch_optional(&mut *op.tx)
+            .await?
+            .ok_or(Error::NotFound)?;
+    op.expected.insert(input.issue_id, version);
+    let entity = op
+        .issues(Command::AddSourceLink {
             issue_id: input.issue_id,
             url: input.url,
             title: input.title,
-        },
-        Utc::now(),
-    )?;
-    if let Some(activity) = w.activity.last_mut() {
-        activity.id = input.delivery_id;
-        activity.action = "integration.source_link".into();
-    }
-    let jobs = outgoing(&before, &w);
-    let revision = store.commit_workspace(&w, revision, &jobs, None).await?;
-    Ok(Json(CommandResponse { revision, result }))
+        })
+        .await?;
+    op.activity("integration.source_link", entity, vec![])
+        .await?;
+    let result = OperationResult {
+        result: CommandResult { id: entity },
+        versions: op.versions,
+    };
+    sqlx::query(
+        "UPDATE inbound_deliveries SET result=$3 WHERE integration_id=$1 AND delivery_id=$2",
+    )
+    .bind(integration_id)
+    .bind(input.delivery_id)
+    .bind(serde_json::to_value(&result)?)
+    .execute(&mut *op.tx)
+    .await?;
+    op.tx.commit().await?;
+    store.outbox.ready();
+    Ok(Json(result))
 }
 #[derive(OpenApi)]
 #[openapi(
@@ -968,6 +849,7 @@ async fn incoming(
         members,
         search,
         report,
+        collection,
         accept_invitation,
         markdown,
         upload,
@@ -988,25 +870,10 @@ async fn incoming(
     info(
         title = "Blackwall API",
         version = "0.1.0",
-        description = "Workspace-scoped work management. Commands require the current workspace revision. Authenticate with Authorization: Bearer <token> or the HttpOnly session cookie plus X-CSRF-Token for mutations."
+        description = "Workspace-scoped work management. Commands require versions of affected entities. Authenticate with Authorization: Bearer <token> or the HttpOnly session cookie plus X-CSRF-Token for mutations."
     )
 )]
 pub struct ApiDoc;
 async fn schema() -> Json<utoipa::openapi::OpenApi> {
     Json(ApiDoc::openapi())
-}
-fn public_profile(p: Profile, w: &Workspace) -> MemberProfile {
-    MemberProfile {
-        id: p.id,
-        email: p.email,
-        display_name: p.display_name,
-        avatar_url: p.avatar_url,
-        contact: p.contact,
-        team_ids: w
-            .teams
-            .iter()
-            .filter(|t| t.members.contains(&p.id))
-            .map(|t| t.id)
-            .collect(),
-    }
 }

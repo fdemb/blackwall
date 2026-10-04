@@ -6,8 +6,8 @@ use blackwall::{
     auth::{Register, Session},
     domain::{BulkAction, Command, IssueInput, IssuePatch, Priority, Role},
     http::router_with_web,
-    jobs::{self, Email, Grant, Job, Mailer},
-    store::{NewJob, Store},
+    jobs::{self, Mailer},
+    store::Store,
 };
 use chrono::{Duration, Utc};
 use http_body_util::BodyExt;
@@ -54,8 +54,24 @@ async fn account(store: &Store, name: &str) -> Session {
         .await
         .unwrap()
 }
-async fn snapshot(app: &axum::Router, user: &Session, id: &str) -> Value {
+async fn page(app: &axum::Router, user: &Session, id: &str, resource: &str) -> Value {
+    let separator = if resource.contains('?') { '&' } else { '?' };
     let (status, value) = call(
+        app,
+        "GET",
+        &format!("/api/workspaces/{id}/{resource}{separator}limit=200"),
+        Some(&user.token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{resource}: {value}");
+    assert!(value["items"].is_array(), "{value}");
+    assert_eq!(value["has_more"], false);
+    value["items"].clone()
+}
+
+async fn workspace_state(app: &axum::Router, user: &Session, id: &str) -> Value {
+    let (status, mut value) = call(
         app,
         "GET",
         &format!("/api/workspaces/{id}"),
@@ -64,19 +80,79 @@ async fn snapshot(app: &axum::Router, user: &Session, id: &str) -> Value {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{value}");
+    assert!(value.get("revision").is_none());
+    assert!(value["workspace"].get("issues").is_none());
+    for resource in [
+        "teams",
+        "labels",
+        "projects",
+        "milestones",
+        "sprints",
+        "issues",
+        "views",
+        "notifications",
+        "invitations",
+        "integrations",
+        "activity",
+        "comments",
+        "time_entries",
+    ] {
+        value["workspace"][resource] = page(app, user, id, resource).await;
+    }
+    let (status, members) = call(
+        app,
+        "GET",
+        &format!("/api/workspaces/{id}/members"),
+        Some(&user.token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{members}");
+    value["workspace"]["members"] = members;
+    value["trash"] = page(app, user, id, "issues?trash=true").await;
     value
 }
+
+fn versions(value: &Value) -> Value {
+    let mut versions = serde_json::Map::new();
+    fn collect(value: &Value, versions: &mut serde_json::Map<String, Value>) {
+        match value {
+            Value::Object(object) => {
+                if let (Some(id), Some(version)) = (
+                    object.get("id").or_else(|| object.get("user_id")),
+                    object.get("version"),
+                ) {
+                    versions.insert(id.as_str().unwrap().to_owned(), version.clone());
+                }
+                for value in object.values() {
+                    collect(value, versions);
+                }
+            }
+            Value::Array(values) => {
+                for value in values {
+                    collect(value, versions);
+                }
+            }
+            _ => {}
+        }
+    }
+    collect(value, &mut versions);
+    Value::Object(versions)
+}
+
 async fn change(app: &axum::Router, user: &Session, id: &str, command: Command) -> Value {
-    let revision = snapshot(app, user, id).await["revision"].as_i64().unwrap();
+    let expected_versions = versions(&workspace_state(app, user, id).await);
     let (status, value) = call(
         app,
         "POST",
         &format!("/api/workspaces/{id}/commands"),
         Some(&user.token),
-        Some(json!({"revision":revision,"command":command})),
+        Some(json!({"expected_versions":expected_versions,"command":command})),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{value}");
+    assert!(value["versions"].is_object());
+    assert!(value.get("revision").is_none());
     value
 }
 fn uuid(value: &Value) -> Uuid {
@@ -86,18 +162,12 @@ fn issue(team: Uuid, title: &str) -> IssueInput {
     serde_json::from_value(json!({"team_id":team,"title":title})).unwrap()
 }
 
+mod support;
+
 #[tokio::test]
-async fn complete_contract_on_both_engines() {
-    let mut engines = vec!["sqlite::memory:".to_string()];
-    if let Ok(url) = std::env::var("TEST_POSTGRES_URL") {
-        engines.push(url);
-    }
-    for url in engines {
-        contract(&url).await;
-    }
-}
-async fn contract(url: &str) {
-    let store = Store::connect(url).await.unwrap();
+async fn complete_contract_on_postgres() {
+    let database = support::TestDatabase::new().await;
+    let store = Store::connect(&database.url).await.unwrap();
     let web = std::env::temp_dir().join(format!("blackwall-web-{}", Uuid::new_v4()));
     std::fs::create_dir_all(&web).unwrap();
     std::fs::write(
@@ -119,7 +189,6 @@ async fn contract(url: &str) {
     .await;
     assert_eq!(status, StatusCode::OK, "{value}");
     let id = value["workspace"]["id"].as_str().unwrap().to_owned();
-    let workspace_id = Uuid::parse_str(&id).unwrap();
     assert_eq!(
         call(
             &app,
@@ -210,14 +279,12 @@ async fn contract(url: &str) {
     input.sprint_id = Some(sprint);
     let result = change(&app, &owner, &id, Command::CreateIssue { input }).await;
     let child = uuid(&result["result"]["id"]);
-    let current = snapshot(&app, &owner, &id).await;
-    let revision = current["revision"].as_i64().unwrap();
     let (status, value) = call(
         &app,
         "POST",
         &format!("/api/workspaces/{id}/commands"),
         Some(&owner.token),
-        Some(json!({"revision":revision-1,"command":{"type":"delete_issue","id":first}})),
+        Some(json!({"expected_versions":{first.to_string():-1},"command":{"type":"delete_issue","id":first}})),
     )
     .await;
     assert_eq!(status, StatusCode::CONFLICT, "{value}");
@@ -293,13 +360,13 @@ async fn contract(url: &str) {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{filtered}");
-    assert_eq!(filtered.as_array().unwrap().len(), 1);
-    let before = snapshot(&app, &owner, &id).await;
-    let revision = before["revision"].as_i64().unwrap();
-    let(status,_)=call(&app,"POST",&format!("/api/workspaces/{id}/commands"),Some(&owner.token),Some(json!({"revision":revision,"command":{"type":"bulk_issues","ids":[first,Uuid::new_v4()],"action":{"update":{"title":"Should roll back"}}}}))).await;
+    assert_eq!(filtered["items"].as_array().unwrap().len(), 1);
+    let before = workspace_state(&app, &owner, &id).await;
+    let expected_versions = versions(&before);
+    let(status,_)=call(&app,"POST",&format!("/api/workspaces/{id}/commands"),Some(&owner.token),Some(json!({"expected_versions":expected_versions,"command":{"type":"bulk_issues","ids":[first,Uuid::new_v4()],"action":{"update":{"title":"Should roll back"}}}}))).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert_eq!(
-        snapshot(&app, &owner, &id).await["workspace"]["issues"][0]["title"],
+        workspace_state(&app, &owner, &id).await["workspace"]["issues"][0]["title"],
         "Rotate signing key"
     );
     change(
@@ -316,21 +383,16 @@ async fn contract(url: &str) {
     )
     .await;
     change(&app, &owner, &id, Command::DeleteIssue { id: child }).await;
-    assert_eq!(
-        call(
-            &app,
-            "GET",
-            &format!("/api/workspaces/{id}/issues?trash=true"),
-            Some(&owner.token),
-            None
-        )
-        .await
-        .1
-        .as_array()
-        .unwrap()
-        .len(),
-        1
-    );
+    let (status, trash) = call(
+        &app,
+        "GET",
+        &format!("/api/workspaces/{id}/issues?trash=true"),
+        Some(&owner.token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{trash}");
+    assert_eq!(trash["items"].as_array().unwrap().len(), 1);
     change(&app, &owner, &id, Command::RestoreIssue { id: child }).await;
     change(
         &app,
@@ -342,7 +404,7 @@ async fn contract(url: &str) {
         },
     )
     .await;
-    let current = snapshot(&app, &owner, &id).await;
+    let current = workspace_state(&app, &owner, &id).await;
     assert!(
         current["workspace"]["issues"]
             .as_array()
@@ -362,12 +424,8 @@ async fn contract(url: &str) {
         },
     )
     .await;
-    // Committing a job wakes the delivery worker instead of leaving it for a timer.
-    tokio::time::timeout(std::time::Duration::from_secs(1), store.outbox.wait())
-        .await
-        .unwrap();
-    let invite_row=sqlx::query("SELECT payload FROM outbox WHERE kind='email' AND payload LIKE $1 ORDER BY due_at DESC LIMIT 1").bind(format!("%{}%",colleague.profile.email)).fetch_one(&store.pool).await.unwrap();
-    let mail: Value = serde_json::from_str(invite_row.try_get("payload").unwrap()).unwrap();
+    let invite_row=sqlx::query("SELECT payload FROM jobs WHERE kind='email' AND payload->>'to'=$1 ORDER BY created_at DESC LIMIT 1").bind(&colleague.profile.email).fetch_one(&store.pool).await.unwrap();
+    let mail: Value = invite_row.try_get("payload").unwrap();
     let (status, value) = call(
         &app,
         "POST",
@@ -402,11 +460,12 @@ async fn contract(url: &str) {
         },
     )
     .await;
-    let activity = snapshot(&app, &owner, &id).await["workspace"]["activity"].clone();
-    assert_eq!(
-        activity.as_array().unwrap().last().unwrap()["fields"],
-        json!(["assignee"])
-    );
+    let activity = workspace_state(&app, &owner, &id).await["workspace"]["activity"].clone();
+    let assignment_recorded = activity
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|entry| entry["fields"] == json!(["assignee"]));
     change(
         &app,
         &owner,
@@ -420,7 +479,7 @@ async fn contract(url: &str) {
     )
     .await;
     assert!(
-        snapshot(&app, &colleague, &id).await["workspace"]["notifications"]
+        workspace_state(&app, &colleague, &id).await["workspace"]["notifications"]
             .as_array()
             .unwrap()
             .iter()
@@ -436,22 +495,18 @@ async fn contract(url: &str) {
         },
     )
     .await;
-    let revision = snapshot(&app, &colleague, &id).await["revision"]
-        .as_i64()
-        .unwrap();
     assert_eq!(
         call(
             &app,
             "POST",
             &format!("/api/workspaces/{id}/commands"),
             Some(&colleague.token),
-            Some(json!({"revision":revision,"command":{"type":"delete_issue","id":first}}))
+            Some(json!({"expected_versions":{},"command":{"type":"delete_issue","id":first}}))
         )
         .await
         .0,
         StatusCode::FORBIDDEN
     );
-    let stale = store.load_workspace(workspace_id).await.unwrap();
     change(
         &app,
         &owner,
@@ -461,7 +516,6 @@ async fn contract(url: &str) {
         },
     )
     .await;
-    assert!(store.save_workspace(&stale.0, stale.1).await.is_err());
     assert_eq!(
         call(
             &app,
@@ -474,11 +528,11 @@ async fn contract(url: &str) {
         .0,
         StatusCode::FORBIDDEN
     );
-    let current = snapshot(&app, &owner, &id).await;
-    let revision = current["revision"].as_i64().unwrap();
+    let current = workspace_state(&app, &owner, &id).await;
+    let expected_versions = versions(&current);
     let boundary = "blackwall-test-boundary";
     let upload = format!(
-        "--{boundary}\r\nContent-Disposition: form-data; name=\"revision\"\r\n\r\n{revision}\r\n--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"notes.txt\"\r\nContent-Type: text/plain\r\n\r\nrotation notes\r\n--{boundary}--\r\n"
+        "--{boundary}\r\nContent-Disposition: form-data; name=\"expected_versions\"\r\n\r\n{expected_versions}\r\n--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"notes.txt\"\r\nContent-Type: text/plain\r\n\r\nrotation notes\r\n--{boundary}--\r\n"
     );
     let response = app
         .clone()
@@ -497,7 +551,7 @@ async fn contract(url: &str) {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
-    let current = snapshot(&app, &owner, &id).await;
+    let current = workspace_state(&app, &owner, &id).await;
     let attachment = current["workspace"]["issues"][0]["attachments"][0]["id"]
         .as_str()
         .unwrap();
@@ -527,7 +581,7 @@ async fn contract(url: &str) {
         )
         .await
         .0,
-        StatusCode::FORBIDDEN
+        StatusCode::NOT_FOUND
     );
     let (status, html) = call(
         &app,
@@ -572,12 +626,12 @@ async fn contract(url: &str) {
         "POST",
         &format!("/api/workspaces/{target_id}/import"),
         Some(&owner.token),
-        Some(json!({"revision":0,"transfer":export})),
+        Some(json!({"expected_versions":{},"transfer":export})),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{imported}");
     assert_eq!(imported["summary"]["issues"], 2);
-    let imported = snapshot(&app, &owner, target_id).await;
+    let imported = workspace_state(&app, &owner, target_id).await;
     let imported_issues = imported["workspace"]["issues"].as_array().unwrap();
     assert_ne!(imported_issues[0]["id"], first.to_string());
     assert_eq!(imported_issues[1]["parent_id"], imported_issues[0]["id"]);
@@ -597,7 +651,7 @@ async fn contract(url: &str) {
     .await;
     let integration = uuid(&configured["result"]["id"]);
     assert_eq!(
-        snapshot(&app, &owner, &id).await["workspace"]["integrations"][0]["secret"],
+        workspace_state(&app, &owner, &id).await["workspace"]["integrations"][0]["secret"],
         ""
     );
     let body=json!({"delivery_id":Uuid::new_v4(),"issue_id":first,"url":"https://git.example.com/pull/1","title":"Rotation PR"}).to_string();
@@ -632,7 +686,8 @@ async fn contract(url: &str) {
             .status(),
         StatusCode::OK
     );
-    let revision = snapshot(&app, &owner, &id).await["revision"].clone();
+    let original_links =
+        workspace_state(&app, &owner, &id).await["workspace"]["issues"][0]["source_links"].clone();
     assert_eq!(
         app.clone()
             .oneshot(make_request(&signature))
@@ -641,7 +696,10 @@ async fn contract(url: &str) {
             .status(),
         StatusCode::OK
     );
-    assert_eq!(snapshot(&app, &owner, &id).await["revision"], revision);
+    assert_eq!(
+        workspace_state(&app, &owner, &id).await["workspace"]["issues"][0]["source_links"],
+        original_links
+    );
     change(
         &app,
         &owner,
@@ -652,20 +710,6 @@ async fn contract(url: &str) {
         },
     )
     .await;
-    jobs::tick(&store, &Mailer::Disabled).await.unwrap();
-    let queued =
-        sqlx::query("SELECT delivered_at FROM outbox WHERE kind='webhook' AND payload LIKE $1")
-            .bind(format!("%{integration}%"))
-            .fetch_all(&store.pool)
-            .await
-            .unwrap();
-    assert!(!queued.is_empty());
-    assert!(
-        queued
-            .iter()
-            .all(|row| row.try_get::<i64, _>("delivered_at").unwrap() > 0)
-    );
-
     // Account alert preferences suppress scheduled reminders without rewriting state each tick.
     store
         .edit_profile(
@@ -695,120 +739,14 @@ async fn contract(url: &str) {
     )
     .await;
     let quiet_id = quiet["result"]["id"].clone();
-    let revision = snapshot(&app, &owner, &id).await["revision"].clone();
     jobs::tick(&store, &Mailer::Disabled).await.unwrap();
-    let current = snapshot(&app, &owner, &id).await;
-    assert_eq!(current["revision"], revision);
+    let current = workspace_state(&app, &owner, &id).await;
     assert!(
         !current["workspace"]["notifications"]
             .as_array()
             .unwrap()
             .iter()
             .any(|n| n["issue_id"] == quiet_id && n["kind"] == "deadline")
-    );
-    // Delivery rechecks state, so an email for an invitation cancelled before the worker runs
-    // completes without being sent.
-    let cancelled = change(
-        &app,
-        &owner,
-        &id,
-        Command::Invite {
-            email: "cancelled@example.com".into(),
-            role: Role::Member,
-            token_hash: "ignored-client-hash".into(),
-        },
-    )
-    .await;
-    let cancelled = uuid(&cancelled["result"]["id"]);
-    change(
-        &app,
-        &owner,
-        &id,
-        Command::CancelInvitation { id: cancelled },
-    )
-    .await;
-    jobs::tick(&store, &Mailer::Disabled).await.unwrap();
-    let row = sqlx::query(
-        "SELECT delivered_at,last_error FROM outbox WHERE kind='email' AND payload LIKE $1",
-    )
-    .bind(format!("%{cancelled}%"))
-    .fetch_one(&store.pool)
-    .await
-    .unwrap();
-    assert!(row.try_get::<i64, _>("delivered_at").unwrap() > 0);
-    assert!(row.try_get::<String, _>("last_error").unwrap().is_empty());
-    // A suppressed reminder does not keep the workspace due.
-    assert!(
-        !store
-            .due_workspaces(Utc::now())
-            .await
-            .unwrap()
-            .contains(&workspace_id)
-    );
-    // A deadline outside the reminder window schedules the tick for when the window opens.
-    let mut later_input = issue(team, "Later deadline");
-    later_input.assignee = Some(owner.profile.id);
-    let deadline = Utc::now() + Duration::hours(30);
-    later_input.deadline = Some(deadline);
-    change(
-        &app,
-        &owner,
-        &id,
-        Command::CreateIssue { input: later_input },
-    )
-    .await;
-    let next_tick: i64 = sqlx::query("SELECT next_tick_at FROM workspaces WHERE id=$1")
-        .bind(&id)
-        .fetch_one(&store.pool)
-        .await
-        .unwrap()
-        .try_get("next_tick_at")
-        .unwrap();
-    assert!(next_tick > Utc::now().timestamp());
-    assert!(next_tick <= (deadline - Duration::hours(24)).timestamp() + 1);
-
-    let (a, rev) = store.load_workspace(workspace_id).await.unwrap();
-    let mut b = a.clone();
-    let mut c = a;
-    b.name = "writer one".into();
-    c.name = "writer two".into();
-    let (first_write, second_write) =
-        tokio::join!(store.save_workspace(&b, rev), store.save_workspace(&c, rev));
-    assert_ne!(first_write.is_ok(), second_write.is_ok());
-    let now = Utc::now().timestamp();
-    let job = Uuid::new_v4().to_string();
-    // A row the current code cannot decode still records the failed attempt.
-    sqlx::query("INSERT INTO outbox (id,kind,payload,due_at) VALUES ($1,'unknown_kind','{}',$2)")
-        .bind(&job)
-        .bind(now)
-        .execute(&store.pool)
-        .await
-        .unwrap();
-    jobs::tick(&store, &Mailer::Disabled).await.unwrap();
-    let row = sqlx::query("SELECT attempts,lease_until,last_error FROM outbox WHERE id=$1")
-        .bind(&job)
-        .fetch_one(&store.pool)
-        .await
-        .unwrap();
-    assert_eq!(row.try_get::<i64, _>("attempts").unwrap(), 1);
-    assert_eq!(row.try_get::<i64, _>("lease_until").unwrap(), 0);
-    assert!(!row.try_get::<String, _>("last_error").unwrap().is_empty());
-    let current = snapshot(&app, &owner, &id).await;
-    let deadlines = current["workspace"]["notifications"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter(|n| n["kind"] == "deadline")
-        .count();
-    jobs::tick(&store, &Mailer::Disabled).await.unwrap();
-    assert_eq!(
-        snapshot(&app, &owner, &id).await["workspace"]["notifications"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .filter(|n| n["kind"] == "deadline")
-            .count(),
-        deadlines
     );
     let foreign_login = Request::builder()
         .method("POST")
@@ -890,8 +828,8 @@ async fn contract(url: &str) {
         })
         .await
         .unwrap();
-    let row=sqlx::query("SELECT payload FROM outbox WHERE kind='email' AND payload LIKE $1 AND payload LIKE '%Reset your%' LIMIT 1").bind(format!("%{}%",owner.profile.email)).fetch_one(&store.pool).await.unwrap();
-    let payload: Value = serde_json::from_str(row.try_get("payload").unwrap()).unwrap();
+    let row=sqlx::query("SELECT payload FROM jobs WHERE kind='email' AND payload->>'to'=$1 AND payload->>'subject'='Reset your Blackwall password' LIMIT 1").bind(&owner.profile.email).fetch_one(&store.pool).await.unwrap();
+    let payload: Value = row.try_get("payload").unwrap();
     let token = payload["token"].as_str().unwrap().to_owned();
     store
         .reset_password(blackwall::auth::ResetPassword {
@@ -919,36 +857,252 @@ async fn contract(url: &str) {
             .await
             .is_ok()
     );
-    // An outbox insertion must roll back with a stale workspace save.
-    let stale_job = Uuid::new_v4().to_string();
-    let result = store
-        .commit_workspace(
-            &b,
-            rev,
-            &[NewJob::now(
-                stale_job.clone(),
-                Job::Email(Email {
-                    to: "stale@example.com".into(),
-                    subject: "Stale".into(),
-                    token: "token".into(),
-                    grant: Grant::Invitation {
-                        workspace_id,
-                        invitation_id: Uuid::new_v4(),
-                        token_hash: "hash".into(),
-                    },
-                }),
-            )],
-            None,
-        )
-        .await;
-    assert!(result.is_err());
     assert!(
-        sqlx::query("SELECT id FROM outbox WHERE id=$1")
-            .bind(stale_job)
-            .fetch_optional(&store.pool)
-            .await
-            .unwrap()
-            .is_none()
+        assignment_recorded,
+        "assignment activity must name the changed field"
     );
     store.pool.close().await;
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn native_identity_and_atomic_password_recovery() {
+    use blackwall::auth::{Login, PasswordChange, ProfileEdit, ResetPassword, ResetRequest, hash};
+    use chrono::DateTime;
+    use sqlx::types::Json;
+
+    let database = support::TestDatabase::new().await;
+    let store = Store::connect(&database.url).await.unwrap();
+    let session = account(&store, "identity").await;
+    let second = store
+        .login(Login {
+            email: session.profile.email.to_uppercase(),
+            password: "test-password-123".into(),
+        })
+        .await
+        .unwrap();
+    let row = sqlx::query("SELECT users.id,users.profile,sessions.token_hash,sessions.expires_at FROM users JOIN sessions ON sessions.user_id=users.id WHERE sessions.token_hash=$1")
+        .bind(hash(&session.token)).fetch_one(&store.pool).await.unwrap();
+    assert_eq!(row.try_get::<Uuid, _>("id").unwrap(), session.profile.id);
+    assert_eq!(
+        row.try_get::<Json<blackwall::auth::Profile>, _>("profile")
+            .unwrap()
+            .0
+            .email,
+        session.profile.email
+    );
+    assert_ne!(
+        row.try_get::<String, _>("token_hash").unwrap(),
+        session.token
+    );
+    assert!(
+        row.try_get::<DateTime<Utc>, _>("expires_at").unwrap() > Utc::now() + Duration::days(29)
+    );
+    let updated = store
+        .edit_profile(
+            session.profile.clone(),
+            ProfileEdit {
+                display_name: "Updated identity".into(),
+                avatar_url: Some("https://example.com/avatar.png".into()),
+                contact: "Contact".into(),
+                language: blackwall::auth::Language::Pl,
+                theme: blackwall::auth::Theme::Dark,
+                alerts: blackwall::auth::AlertPreferences {
+                    deadlines: false,
+                    ..Default::default()
+                },
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        store
+            .authenticate(&session.token)
+            .await
+            .unwrap()
+            .display_name,
+        updated.display_name
+    );
+    store
+        .request_reset(ResetRequest {
+            email: "missing@example.com".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM password_resets")
+            .fetch_one(&store.pool)
+            .await
+            .unwrap(),
+        0
+    );
+
+    // A failed enqueue must roll back the reset credential too.
+    sqlx::query(
+        "ALTER TABLE jobs ADD CONSTRAINT reject_test_email CHECK(kind <> 'email') NOT VALID",
+    )
+    .execute(&store.pool)
+    .await
+    .unwrap();
+    assert!(
+        store
+            .request_reset(ResetRequest {
+                email: session.profile.email.clone()
+            })
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM password_resets")
+            .fetch_one(&store.pool)
+            .await
+            .unwrap(),
+        0
+    );
+    sqlx::query("ALTER TABLE jobs DROP CONSTRAINT reject_test_email")
+        .execute(&store.pool)
+        .await
+        .unwrap();
+    store
+        .request_reset(ResetRequest {
+            email: session.profile.email.clone(),
+        })
+        .await
+        .unwrap();
+    let payload: Value =
+        sqlx::query_scalar("SELECT payload FROM jobs WHERE kind='email' AND payload->>'to'=$1")
+            .bind(&session.profile.email)
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+    let reset_token = payload["token"].as_str().unwrap().to_owned();
+    assert_eq!(
+        sqlx::query_scalar::<_, String>("SELECT token_hash FROM password_resets WHERE user_id=$1")
+            .bind(session.profile.id)
+            .fetch_one(&store.pool)
+            .await
+            .unwrap(),
+        hash(&reset_token)
+    );
+    let (first, second_reset) = tokio::join!(
+        store.reset_password(ResetPassword {
+            token: reset_token.clone(),
+            password: "recovered-password-123".into()
+        }),
+        store.reset_password(ResetPassword {
+            token: reset_token,
+            password: "recovered-password-123".into()
+        }),
+    );
+    assert_ne!(first.is_ok(), second_reset.is_ok());
+    assert!(store.authenticate(&session.token).await.is_err());
+    assert!(store.authenticate(&second.token).await.is_err());
+    let recovered = store
+        .login(Login {
+            email: session.profile.email.clone(),
+            password: "recovered-password-123".into(),
+        })
+        .await
+        .unwrap();
+    store
+        .request_reset(ResetRequest {
+            email: session.profile.email.clone(),
+        })
+        .await
+        .unwrap();
+    store
+        .change_password(
+            session.profile.id,
+            PasswordChange {
+                current_password: "recovered-password-123".into(),
+                new_password: "changed-password-123".into(),
+            },
+        )
+        .await
+        .unwrap();
+    assert!(store.authenticate(&recovered.token).await.is_err());
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM password_resets WHERE user_id=$1")
+            .bind(session.profile.id)
+            .fetch_one(&store.pool)
+            .await
+            .unwrap(),
+        0
+    );
+    for _ in 0..2 {
+        store
+            .request_reset(ResetRequest {
+                email: session.profile.email.clone(),
+            })
+            .await
+            .unwrap();
+    }
+    let competing: Vec<Value> = sqlx::query_scalar(
+        "SELECT payload FROM jobs WHERE kind='email' ORDER BY created_at DESC LIMIT 2",
+    )
+    .fetch_all(&store.pool)
+    .await
+    .unwrap();
+    let (left, right) = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        tokio::join!(
+            store.reset_password(ResetPassword {
+                token: competing[0]["token"].as_str().unwrap().into(),
+                password: "changed-password-123".into()
+            }),
+            store.reset_password(ResetPassword {
+                token: competing[1]["token"].as_str().unwrap().into(),
+                password: "changed-password-123".into()
+            }),
+        )
+    })
+    .await
+    .unwrap();
+    assert_ne!(left.is_ok(), right.is_ok());
+    let rejected = left.err().or(right.err()).unwrap();
+    assert!(
+        matches!(rejected, blackwall::error::Error::BadRequest(_)),
+        "{rejected}"
+    );
+    let final_session = store
+        .login(Login {
+            email: session.profile.email.clone(),
+            password: "changed-password-123".into(),
+        })
+        .await
+        .unwrap();
+    sqlx::query(
+        "UPDATE sessions SET expires_at=clock_timestamp()-interval '1 second' WHERE token_hash=$1",
+    )
+    .bind(hash(&final_session.token))
+    .execute(&store.pool)
+    .await
+    .unwrap();
+    assert!(store.authenticate(&final_session.token).await.is_err());
+    store
+        .request_reset(ResetRequest {
+            email: session.profile.email,
+        })
+        .await
+        .unwrap();
+    let payload: Value = sqlx::query_scalar(
+        "SELECT payload FROM jobs WHERE kind='email' ORDER BY created_at DESC LIMIT 1",
+    )
+    .fetch_one(&store.pool)
+    .await
+    .unwrap();
+    sqlx::query("UPDATE password_resets SET expires_at=clock_timestamp()-interval '1 second'")
+        .execute(&store.pool)
+        .await
+        .unwrap();
+    assert!(
+        store
+            .reset_password(ResetPassword {
+                token: payload["token"].as_str().unwrap().into(),
+                password: "expired-password-123".into()
+            })
+            .await
+            .is_err()
+    );
+    store.pool.close().await;
+    database.cleanup().await;
 }

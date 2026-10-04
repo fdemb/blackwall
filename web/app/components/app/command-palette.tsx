@@ -28,10 +28,11 @@ import {
 } from "lucide-react";
 import { Avatar } from "~/components/ui/avatar";
 import { Kbd } from "~/components/ui/tooltip";
-import { applyFilter } from "~/lib/filters";
 import { issueKey } from "~/lib/format";
 import { useT } from "~/lib/i18n";
 import { useShortcutsEnabled } from "~/lib/shortcuts";
+import { useIssues } from "~/lib/queries";
+import { QueryStatus } from "./query-status";
 import { useWorkspace } from "~/lib/workspace";
 import { PriorityIcon, StageIcon } from "./icons";
 import { stageOf } from "~/lib/filters";
@@ -155,9 +156,8 @@ export function CommandPalette({
   );
 
   const query = q.trim().toLowerCase();
-  const issues = query
-    ? applyFilter(ws, { search: query, sort: "updated" }).slice(0, 8)
-    : applyFilter(ws, { sort: "updated" }).slice(0, 5);
+  const issueQuery = useIssues({ search: query, sort: "updated" }, open);
+  const issues = issueQuery.items.slice(0, query ? 8 : 5);
   const people = query
     ? members
         .filter(
@@ -195,6 +195,7 @@ export function CommandPalette({
               />
               <Kbd>esc</Kbd>
             </SearchField>
+            <QueryStatus query={{ ...issueQuery, hasMore: false }} />
             <Menu
               aria-label={t("search.title")}
               className="max-h-[50vh] overflow-auto p-1.5 outline-none"

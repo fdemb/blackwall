@@ -10,9 +10,11 @@ import {
 } from "react-aria-components";
 import { Search } from "lucide-react";
 import { Popover } from "~/components/ui/popover";
-import { applyFilter, stageOf } from "~/lib/filters";
+import { stageOf } from "~/lib/filters";
 import { issueKey } from "~/lib/format";
 import { useT } from "~/lib/i18n";
+import { useIssues } from "~/lib/queries";
+import { QueryStatus } from "./query-status";
 import { useWorkspace } from "~/lib/workspace";
 import type { Id } from "~/lib/types";
 import { StageIcon } from "./icons";
@@ -29,11 +31,16 @@ export function IssuePicker({
   const t = useT();
   const { ws } = useWorkspace();
   const [q, setQ] = useState("");
-  const results = applyFilter(ws, { search: q, sort: "updated" })
-    .filter((i) => !exclude.includes(i.id))
-    .slice(0, 30);
+  const [open, setOpen] = useState(false);
+  const query = useIssues({ search: q, sort: "updated" }, open);
+  const results = query.items.filter((i) => !exclude.includes(i.id)).slice(0, 30);
   return (
-    <DialogTrigger onOpenChange={(o) => !o && setQ("")}>
+    <DialogTrigger
+      onOpenChange={(o) => {
+        setOpen(o);
+        if (!o) setQ("");
+      }}
+    >
       {trigger}
       <Popover placement="bottom start" className="w-80">
         <Dialog aria-label={t("issue.find")} className="outline-none">
@@ -81,6 +88,7 @@ export function IssuePicker({
                   );
                 }}
               </Menu>
+              <QueryStatus query={query} />
             </Autocomplete>
           )}
         </Dialog>
