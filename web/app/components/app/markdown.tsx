@@ -56,7 +56,7 @@ export function Markdown({
   // Derived during render: the cached HTML (or "" for blank text), if we have it.
   const key = text.trim() ? text : "";
   const cached = key ? (cache.get(key) ?? null) : "";
-  const [fetched, setFetched] = useState<{ key: string, html: string | null }>({
+  const [fetched, setFetched] = useState<{ key: string; html: string | null }>({
     key,
     html: null,
   });
