@@ -11,7 +11,7 @@ import { Select, type Option } from "~/components/ui/select";
 import { Popover } from "~/components/ui/popover";
 import { Button } from "~/components/ui/button";
 import { Avatar } from "~/components/ui/avatar";
-import { cn } from "~/lib/utils";
+import { cn, selectedIds } from "~/lib/utils";
 import { PRIORITIES } from "~/lib/format";
 import { useT } from "~/lib/i18n";
 import { useWorkspace } from "~/lib/workspace";
@@ -182,7 +182,7 @@ export function LabelsPicker({
           aria-label={t("field.labels")}
           selectionMode="multiple"
           selectedKeys={new Set(value)}
-          onSelectionChange={(keys) => onChange([...keys] as Id[])}
+          onSelectionChange={(keys) => onChange(selectedIds(keys, ws.labels))}
           items={ws.labels}
           renderEmptyState={() => (
             <p className="px-3 py-2 text-xs text-muted-foreground">{t("labels.empty")}</p>
@@ -257,7 +257,7 @@ export function MultiMemberPicker({
           aria-label={t("nav.people")}
           selectionMode="multiple"
           selectedKeys={new Set(value)}
-          onSelectionChange={(k) => onChange([...k] as Id[])}
+          onSelectionChange={(k) => onChange(selectedIds(k, list))}
           items={list}
           className="max-h-72 overflow-auto p-1 outline-none"
         >

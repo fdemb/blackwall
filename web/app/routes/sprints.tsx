@@ -29,12 +29,7 @@ import { usePending } from "~/lib/use-pending";
 import { useIssues } from "~/lib/queries";
 import { QueryStatus } from "~/components/app/query-status";
 import { useWorkspace } from "~/lib/workspace";
-import type { Id, Sprint, Workspace } from "~/lib/types";
-
-const setSprintOptimistic = (ws: Workspace, ids: Id[], sprint: Id | null): Workspace => ({
-  ...ws,
-  issues: ws.issues.map((i) => (ids.includes(i.id) ? { ...i, sprint_id: sprint } : i)),
-});
+import type { Id, Sprint } from "~/lib/types";
 
 export default function Sprints() {
   const { t, lang } = useI18n();
@@ -69,10 +64,11 @@ export default function Sprints() {
     const to = target;
     if (source === (target ?? "backlog")) return;
     for (const id of ids)
-      run(
-        { type: "update_issue", id, patch: to ? { sprint_id: to } : { clear_sprint: true } },
-        { optimistic: (w) => setSprintOptimistic(w, [id], to) },
-      ).catch(() => {});
+      run({
+        type: "update_issue",
+        id,
+        patch: to ? { sprint_id: to } : { clear_sprint: true },
+      }).catch(() => {});
   };
 
   return (

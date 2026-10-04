@@ -7,6 +7,7 @@ use sqlx::{PgConnection, PgPool, Postgres, Row, Transaction, postgres::PgPoolOpt
 use std::{collections::BTreeMap, time::Duration};
 use uuid::Uuid;
 
+mod changes;
 mod discussion;
 mod issues;
 mod planning;
@@ -14,6 +15,7 @@ mod queue;
 mod reads;
 mod transfer;
 
+pub use changes::{Change, ChangeFeed};
 pub use queue::{Claim, NewJob, Outbox};
 pub use reads::CollectionQuery;
 
@@ -36,6 +38,10 @@ pub struct NewAttachment {
 pub struct OperationResult {
     pub result: CommandResult,
     pub versions: BTreeMap<Uuid, i64>,
+    /// Every record the operation changed that the caller can see, including side effects such
+    /// as a parent's subtask counts. A null record was deleted or is no longer visible.
+    #[serde(default)]
+    pub changes: Vec<Change>,
 }
 
 pub(super) struct Operation<'a> {
@@ -152,7 +158,10 @@ impl Store {
             }
 
             if let Some(value) = row.try_get::<Option<serde_json::Value>, _>("result")? {
-                return Ok(serde_json::from_value(value)?);
+                // Replays report the records as they are now, not as the first attempt saw them.
+                let mut result: OperationResult = serde_json::from_value(value)?;
+                changes::render(&mut op.tx, workspace_id, actor, &mut result.changes).await?;
+                return Ok(result);
             }
         }
 
@@ -204,11 +213,13 @@ impl Store {
         let fields = std::mem::take(&mut op.activity_fields);
         op.activity(action, id, fields).await?;
 
-        let result = OperationResult {
+        let mut result = OperationResult {
             result: CommandResult { id },
             versions: op.versions.clone(),
+            changes: changes::pending(&mut op.tx, workspace_id, actor).await?,
         };
 
+        // Store only which records changed; rendering them again on replay keeps keys small.
         if let Some(key) = key {
             sqlx::query(
                 "UPDATE operation_keys SET result=$4 WHERE workspace_id=$1 AND actor=$2 AND key=$3",
@@ -221,6 +232,7 @@ impl Store {
             .await?;
         }
 
+        changes::render(&mut op.tx, workspace_id, actor, &mut result.changes).await?;
         op.tx.commit().await?;
         self.outbox.ready();
 

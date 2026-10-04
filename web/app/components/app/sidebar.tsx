@@ -76,18 +76,18 @@ export function Sidebar({
           <MenuPopover placement="bottom start" className="w-60">
             <Menu
               onAction={(k) => {
-                if (k === "new") nav("/welcome");
+                if (k === "new") void nav("/welcome");
                 else if (k === "signout")
-                  auth.logout().finally(() => {
+                  void auth.logout().finally(() => {
                     sessionStorage.clear();
                     location.href = "/login";
                   });
-                else if (k === "account") nav(`${base}/settings/profile`);
-                else if (k === "settings") nav(`${base}/settings/general`);
+                else if (k === "account") void nav(`${base}/settings/profile`);
+                else if (k === "settings") void nav(`${base}/settings/general`);
                 else if (String(k).startsWith("ws:")) {
                   const id = String(k).slice(3);
                   localStorage.setItem(LAST_WS, id);
-                  nav(`/${id}/my-issues`);
+                  void nav(`/${id}/my-issues`);
                 }
               }}
             >

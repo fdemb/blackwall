@@ -2,7 +2,7 @@ use crate::{
     auth::{self, *},
     domain::*,
     error::{Error, Result},
-    store::{CollectionQuery, NewAttachment, OperationResult, Store},
+    store::{ChangeFeed, CollectionQuery, NewAttachment, OperationResult, Store},
 };
 use axum::{
     Json, Router,
@@ -212,6 +212,7 @@ pub fn router_with_web(store: Store, web_dir: std::path::PathBuf) -> Router {
         .route("/api/workspaces/{id}/members", get(members))
         .route("/api/workspaces/{id}/search", get(search))
         .route("/api/workspaces/{id}/report", get(report))
+        .route("/api/workspaces/{id}/changes", get(changes))
         .route("/api/workspaces/{id}/{collection}", get(collection))
         .route(
             "/api/workspaces/{id}/invitations/accept",
@@ -619,6 +620,33 @@ async fn issue_detail(
     Path((id, issue)): Path<(Uuid, Uuid)>,
 ) -> Result<Json<Issue>> {
     Ok(Json(store.get_issue(id, actor.profile.id, issue).await?))
+}
+
+#[derive(Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct ChangesQuery {
+    /// Cursor from the previous response. Omit to get a starting cursor.
+    pub since: Option<String>,
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/workspaces/{id}/changes",
+    params(("id" = Uuid, Path), ChangesQuery),
+    responses((status = 200, body = ChangeFeed)),
+    description = "Records changed since a cursor, in the same shape as the list endpoints. Request a cursor before loading records, then poll with it. Changes may repeat. A null record was deleted or is no longer visible. When `reset` is true, reload everything and continue from the returned cursor."
+)]
+async fn changes(
+    State(store): State<Store>,
+    actor: Actor,
+    Path(id): Path<Uuid>,
+    Query(input): Query<ChangesQuery>,
+) -> Result<Json<ChangeFeed>> {
+    Ok(Json(
+        store
+            .changes(id, actor.profile.id, input.since.as_deref())
+            .await?,
+    ))
 }
 
 #[utoipa::path(
@@ -1108,6 +1136,7 @@ async fn incoming(
     let result = OperationResult {
         result: CommandResult { id: entity },
         versions: op.versions,
+        changes: Vec::new(),
     };
     sqlx::query(
         "UPDATE inbound_deliveries SET result=$3 WHERE integration_id=$1 AND delivery_id=$2",
@@ -1145,6 +1174,7 @@ async fn incoming(
         members,
         search,
         report,
+        changes,
         collection,
         accept_invitation,
         markdown,
@@ -1157,6 +1187,7 @@ async fn incoming(
     components(schemas(
         CommandRequest,
         CommandResponse,
+        ChangeFeed,
         Command,
         WorkspaceResponse,
         Workspace,

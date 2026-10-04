@@ -1,9 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
 import {
+  Collection,
   GridList,
-  GridListItem,
   GridListHeader,
+  GridListItem,
   GridListSection,
+  ListLayout,
+  Virtualizer,
   type Selection,
 } from "react-aria-components";
 import { ChevronDown, Trash2, X } from "lucide-react";
@@ -83,19 +86,32 @@ export function useGroups(issues: Issue[], groupBy: GroupBy): Group[] {
   }, [issues, groupBy, ws, members, t]);
 }
 
+/** Row and group heading heights. The virtualizer positions rows from these, so CSS must match. */
+const ROW_HEIGHT = 40;
+const HEADING_HEIGHT = 36;
+const LAYOUT_OPTIONS = { rowSize: ROW_HEIGHT, headingSize: HEADING_HEIGHT };
+
+/**
+ * Issues in one grid, grouped into collapsible sections.
+ * `fill` makes the list its own scroll area and renders only the rows in view, for full-page
+ * lists that can hold thousands of issues. Without it the list grows with its content.
+ */
 export function IssueList({
   issues,
   groupBy = "stage",
   showTeam,
   emptyState,
   selectable = true,
+  fill = false,
 }: {
   issues: Issue[];
   groupBy?: GroupBy;
   showTeam?: boolean;
   emptyState?: React.ReactNode;
   selectable?: boolean;
+  fill?: boolean;
 }) {
+  const t = useT();
   const groups = useGroups(issues, groupBy);
   const [selected, setSelected] = useState<Set<Id>>(new Set());
   const { canWrite } = useWorkspace();
@@ -116,68 +132,79 @@ export function IssueList({
     });
   }, [visible]);
 
-  const onGroupSelection = (group: Group, sel: Selection) => {
-    setSelected((prev) => {
-      const next = new Set(prev);
-      for (const i of group.items) next.delete(i.id);
-      const keys = sel === "all" ? group.items.map((i) => i.id) : [...sel];
-      for (const k of keys) next.add(k as Id);
-      return next;
+  const toggle = (id: string) =>
+    setCollapsed((c) => {
+      const n = new Set(c);
+      if (n.has(id)) n.delete(id);
+      else n.add(id);
+      return n;
     });
-  };
 
   if (issues.length === 0) return <>{emptyState}</>;
 
+  const rows = (items: Issue[]) => (
+    <Collection items={items}>
+      {(issue) => <IssueRow issue={issue} showTeam={showTeam} canSelect={canSelect} />}
+    </Collection>
+  );
+  const grid = (
+    <GridList
+      aria-label={t("nav.issues")}
+      selectionMode={canSelect ? "multiple" : "none"}
+      selectionBehavior="toggle"
+      selectedKeys={selected}
+      onSelectionChange={(s: Selection) =>
+        setSelected(new Set(s === "all" ? visible : ([...s] as Id[])))
+      }
+      className={cn("outline-none", fill ? "min-h-0 flex-1 overflow-y-auto" : "pb-24")}
+    >
+      {groupBy === "none"
+        ? rows(issues)
+        : groups.map((g) => {
+            const isCollapsed = collapsed.has(g.id);
+            return (
+              <GridListSection key={g.id} id={g.id} aria-label={g.title}>
+                <GridListHeader>
+                  <button
+                    type="button"
+                    onClick={() => toggle(g.id)}
+                    aria-expanded={!isCollapsed}
+                    className="flex h-9 w-full items-center gap-2 border-b border-border bg-muted/40 px-4 text-left text-[13px] font-medium outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/60"
+                  >
+                    <ChevronDown
+                      className={cn(
+                        "size-3.5 text-muted-foreground transition-transform",
+                        isCollapsed && "-rotate-90",
+                      )}
+                    />
+                    {g.icon}
+                    {g.title}
+                    <span className="text-xs tabular-nums text-muted-foreground">
+                      {g.items.length}
+                    </span>
+                  </button>
+                </GridListHeader>
+                {rows(isCollapsed ? [] : g.items)}
+              </GridListSection>
+            );
+          })}
+    </GridList>
+  );
+
+  const bar = <BulkBar issues={issues} selected={selected} clear={() => setSelected(new Set())} />;
+  if (!fill)
+    return (
+      <>
+        {grid}
+        {bar}
+      </>
+    );
   return (
-    <div className="pb-24">
-      {groups.map((g) => {
-        const isCollapsed = collapsed.has(g.id);
-        return (
-          <section key={g.id}>
-            {groupBy !== "none" && (
-              <button
-                type="button"
-                onClick={() =>
-                  setCollapsed((c) => {
-                    const n = new Set(c);
-                    if (n.has(g.id)) {
-                      n.delete(g.id);
-                    } else {
-                      n.add(g.id);
-                    }
-                    return n;
-                  })
-                }
-                aria-expanded={!isCollapsed}
-                className="flex h-9 w-full items-center gap-2 border-b border-border bg-muted/40 px-4 text-left text-[13px] font-medium outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/60"
-              >
-                <ChevronDown
-                  className={cn(
-                    "size-3.5 text-muted-foreground transition-transform",
-                    isCollapsed && "-rotate-90",
-                  )}
-                />
-                {g.icon}
-                {g.title}
-                <span className="text-xs tabular-nums text-muted-foreground">{g.items.length}</span>
-              </button>
-            )}
-            {!isCollapsed && (
-              <GridList
-                aria-label={g.title}
-                items={g.items}
-                selectionMode={canSelect ? "multiple" : "none"}
-                selectionBehavior="toggle"
-                selectedKeys={selected}
-                onSelectionChange={(s) => onGroupSelection(g, s)}
-              >
-                {(issue) => <IssueRow issue={issue} showTeam={showTeam} canSelect={canSelect} />}
-              </GridList>
-            )}
-          </section>
-        );
-      })}
-      <BulkBar selected={selected} clear={() => setSelected(new Set())} />
+    <div className="flex min-h-0 flex-1 flex-col">
+      <Virtualizer layout={ListLayout} layoutOptions={LAYOUT_OPTIONS}>
+        {grid}
+      </Virtualizer>
+      {bar}
     </div>
   );
 }
@@ -285,16 +312,24 @@ function PriorityMenu({
   );
 }
 
-function BulkBar({ selected, clear }: { selected: Set<Id>; clear: () => void }) {
+function BulkBar({
+  issues,
+  selected,
+  clear,
+}: {
+  issues: Issue[];
+  selected: Set<Id>;
+  clear: () => void;
+}) {
   const t = useT();
   const toast = useToast();
   const { ws, members, run } = useWorkspace();
   const [confirm, setConfirm] = useState(false);
   if (selected.size === 0) return null;
   const ids = [...selected];
-  const first = ws.issues.find((i) => i.id === ids[0]);
+  const first = issues.find((i) => i.id === ids[0]);
   const team = ws.teams.find((tm) => tm.id === first?.team_id);
-  const same = ids.every((id) => ws.issues.find((i) => i.id === id)?.team_id === first?.team_id);
+  const same = ids.every((id) => issues.find((i) => i.id === id)?.team_id === first?.team_id);
   const update = (patch: IssuePatch) =>
     run({ type: "bulk_issues", ids, action: { update: patch } })
       .then(clear)
@@ -398,4 +433,3 @@ function BulkBar({ selected, clear }: { selected: Set<Id>; clear: () => void }) 
     </div>
   );
 }
-export { GridListHeader, GridListSection };

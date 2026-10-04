@@ -127,7 +127,7 @@ function CreateIssueForm() {
             names: failed.map((f) => f.name).join(", "),
           }),
         );
-      if (id) nav(`/${ws.id}/issue/${id}`);
+      if (id) void nav(`/${ws.id}/issue/${id}`);
     });
   const addFiles = (list: FileList | null) => {
     if (!list) return;

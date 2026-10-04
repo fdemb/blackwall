@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useNavigate } from "react-router";
 import {
   AtSign,
@@ -18,7 +18,7 @@ import { Tab, TabList, Tabs } from "~/components/ui/tabs";
 import { EmptyState, Page, PageHeader, Scroll } from "~/components/app/page";
 import { issueKey, relativeTime } from "~/lib/format";
 import { useI18n } from "~/lib/i18n";
-import { useIssues, useResource } from "~/lib/queries";
+import { useIssues, useNotifications } from "~/lib/queries";
 import { QueryStatus } from "~/components/app/query-status";
 import { useWorkspace } from "~/lib/workspace";
 import { cn } from "~/lib/utils";
@@ -35,18 +35,17 @@ const ICONS: Record<AlertKind, React.ComponentType<{ className?: string }>> = {
 export default function Inbox() {
   const { t, lang } = useI18n();
   const nav = useNavigate();
-  const { ws, run, unread, cache } = useWorkspace();
+  const { ws, run, unread } = useWorkspace();
   const [view, setView] = useState<"all" | "unread">("all");
-  const query = useResource("notifications");
-  useEffect(() => {
-    if (!query.loading && !query.error) cache({ notifications: query.items });
-  }, [query.items, query.loading, query.error, cache]);
-  const ids = query.items.flatMap((notification) =>
+  const query = useNotifications();
+  const unreadOnly = useNotifications(true);
+  const sorted = query.items;
+  const list = view === "unread" ? unreadOnly.items : sorted;
+  const ids = sorted.flatMap((notification) =>
     notification.issue_id ? [notification.issue_id] : [],
   );
-  useIssues({ ids: [...new Set(ids)].join(",") }, ids.length > 0);
-  const sorted = [...query.items].sort((a, b) => +new Date(b.created_at) - +new Date(a.created_at));
-  const list = view === "unread" ? sorted.filter((n) => !n.read_at) : sorted;
+  const related = useIssues({ ids: [...new Set(ids)].join(",") }, ids.length > 0);
+  const issues = new Map(related.items.map((issue) => [issue.id, issue]));
   return (
     <Page>
       <PageHeader
@@ -100,7 +99,7 @@ export default function Inbox() {
           <ul>
             {list.map((n) => {
               const Icon = ICONS[n.kind];
-              const issue = n.issue_id ? ws.issues.find((i) => i.id === n.issue_id) : undefined;
+              const issue = n.issue_id ? issues.get(n.issue_id) : undefined;
               return (
                 <li
                   key={n.id}
@@ -111,7 +110,7 @@ export default function Inbox() {
                     onClick={() => {
                       if (!n.read_at)
                         run({ type: "mark_notification_read", id: n.id }).catch(() => {});
-                      if (n.issue_id) nav(`/${ws.id}/issue/${n.issue_id}`);
+                      if (n.issue_id) void nav(`/${ws.id}/issue/${n.issue_id}`);
                     }}
                     className="flex min-w-0 flex-1 items-center gap-3 px-4 py-3 text-left outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/60"
                   >

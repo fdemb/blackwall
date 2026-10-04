@@ -2,8 +2,10 @@ import { createServer, type Server } from "node:http";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vite-plus/test";
 import { ApiError, collectPages, workspaces } from "./api";
 import { commandEntityIds, expectedVersions } from "./entity-versions";
-import { loadWorkspaceData } from "./workspace-data";
-import type { Command, Issue, PageResult } from "./types";
+import { QueryClient } from "@tanstack/react-query";
+import { preloadWorkspace } from "./db";
+import { keys } from "./query-client";
+import type { Command, Issue, PageResult, Report } from "./types";
 
 interface ReceivedRequest {
   url: URL;
@@ -91,7 +93,7 @@ const issue: Issue = {
 };
 
 describe("frontend relational HTTP contract", () => {
-  it("loads metadata and planning pages without a workspace snapshot or issue scan", async () => {
+  it("loads workspace records into collections, leaving discussion for the issue that needs it", async () => {
     respond = ({ url }) => {
       const resource = url.pathname.split("/").at(-1);
       if (resource === "workspace-a")
@@ -157,16 +159,23 @@ describe("frontend relational HTTP contract", () => {
         };
       return { body: page([]) };
     };
-    const loaded = await loadWorkspaceData("workspace-a");
-    expect(loaded.workspace.name).toBe("Operations");
-    expect(loaded.workspace.members).toEqual([{ user_id: "user-a", role: "owner", version: 3 }]);
-    expect(loaded.workspace.views.map((view) => view.id)).toEqual(["view-a", "view-b"]);
-    expect(loaded.workspace.issues).toEqual([]);
-    expect(loaded.report.issue_count).toBe(201);
+    const client = new QueryClient();
+    const db = await preloadWorkspace(client, "workspace-a");
+    expect(client.getQueryData(keys.workspace("workspace-a"))).toEqual({
+      workspace: { id: "workspace-a", name: "Operations", version: 1 },
+    });
+    expect(db.members.toArray.map((m) => m.version)).toEqual([3]);
+    expect(db.views.toArray.map((view) => view.id).sort()).toEqual(["view-a", "view-b"]);
+    expect(client.getQueryData<Report>(keys.report("workspace-a"))?.issue_count).toBe(201);
+    // Issues load whole, trash included; discussion waits for an issue page.
     expect(
-      requests.some(({ url }) =>
-        /\/(issues|comments|activity|time_entries|notifications)$/.test(url.pathname),
-      ),
+      requests
+        .filter(({ url }) => url.pathname.endsWith("/issues"))
+        .map(({ url }) => url.searchParams.get("trash") ?? "")
+        .sort((a, b) => a.localeCompare(b)),
+    ).toEqual(["", "true"]);
+    expect(
+      requests.some(({ url }) => /\/(comments|activity|time_entries)$/.test(url.pathname)),
     ).toBe(false);
     expect(
       requests

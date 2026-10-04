@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { lazy, Suspense, useEffect } from "react";
 import {
   Links,
   Meta,
@@ -10,11 +10,20 @@ import {
   useNavigate,
 } from "react-router";
 import { RouterProvider } from "react-aria-components";
+import { QueryClientProvider } from "@tanstack/react-query";
 import "./app.css";
 import { ToastProvider } from "~/components/ui/toast";
 import { I18nProvider, initialLanguage, translate } from "~/lib/i18n";
+import { queryClient } from "~/lib/query-client";
 import { watchSystemTheme } from "~/lib/theme";
 import type { Route } from "./+types/root";
+
+/** Query cache inspector, only in development. Production builds drop the import entirely. */
+const QueryDevtools = import.meta.env.DEV
+  ? lazy(() =>
+      import("@tanstack/react-query-devtools").then((m) => ({ default: m.ReactQueryDevtools })),
+    )
+  : () => null;
 
 export function Layout({ children }: { children: React.ReactNode }) {
   return (
@@ -53,13 +62,18 @@ export default function App() {
   const navigate = useNavigate();
   useEffect(() => watchSystemTheme(), []);
   return (
-    <RouterProvider navigate={navigate} useHref={useHref}>
-      <I18nProvider initial={initialLanguage()}>
-        <ToastProvider>
-          <Outlet />
-        </ToastProvider>
-      </I18nProvider>
-    </RouterProvider>
+    <QueryClientProvider client={queryClient}>
+      <RouterProvider navigate={navigate} useHref={useHref}>
+        <I18nProvider initial={initialLanguage()}>
+          <ToastProvider>
+            <Outlet />
+          </ToastProvider>
+        </I18nProvider>
+      </RouterProvider>
+      <Suspense>
+        <QueryDevtools buttonPosition="bottom-left" />
+      </Suspense>
+    </QueryClientProvider>
   );
 }
 

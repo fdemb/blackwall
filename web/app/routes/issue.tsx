@@ -62,7 +62,13 @@ import { useDocumentTitle } from "~/lib/title";
 import { useI18n, type Key } from "~/lib/i18n";
 import { useMediaQuery } from "~/lib/media";
 import { usePending } from "~/lib/use-pending";
-import { useIssueDetail } from "~/lib/queries";
+import {
+  useActivity,
+  useComments,
+  useIssueDetail,
+  useTimeEntries,
+  type IssueDetail,
+} from "~/lib/queries";
 import { QueryStatus } from "~/components/app/query-status";
 import { useWorkspace } from "~/lib/workspace";
 import { cn } from "~/lib/utils";
@@ -76,9 +82,9 @@ const modKey =
 
 export default function IssuePage() {
   const { issueId, ws: wsId } = useParams();
-  const { issue: find, ws } = useWorkspace();
+  const { ws } = useWorkspace();
   const detail = useIssueDetail(issueId!);
-  const issue = find(issueId!);
+  const issue = detail.issue;
   if (detail.missing) return <Navigate to={`/${ws.id}/my-issues`} replace />;
   if (!issue || detail.error)
     return (
@@ -127,7 +133,7 @@ function DeletedIssue({ issue, wsId }: { issue: Issue; wsId: string }) {
   );
 }
 
-function IssueView({ issue, detail }: { issue: Issue; detail: ReturnType<typeof useIssueDetail> }) {
+function IssueView({ issue, detail }: { issue: Issue; detail: IssueDetail }) {
   const { t } = useI18n();
   const nav = useNavigate();
   const location = useLocation();
@@ -146,12 +152,10 @@ function IssueView({ issue, detail }: { issue: Issue; detail: ReturnType<typeof 
       () => false,
     );
   const following = issue.followers.includes(me);
-  const subs = ws.issues.filter((i) => i.parent_id === issue.id && !i.deleted_at);
-  const parent = ws.issues.find((i) => i.id === issue.parent_id);
-  const blockers = issue.dependencies
-    .map((id) => ws.issues.find((i) => i.id === id))
-    .filter((i): i is Issue => Boolean(i && !i.deleted_at));
-  const blocking = ws.issues.filter((i) => !i.deleted_at && i.dependencies.includes(issue.id));
+  const subs = detail.children.filter((i) => !i.deleted_at);
+  const parent = detail.parent;
+  const blockers = detail.blockers.filter((i) => !i.deleted_at);
+  const blocking = detail.dependents.filter((i) => !i.deleted_at);
   const addBlocker = (id: Id) => patch({ dependencies: [...issue.dependencies, id] });
   const uploader = useUploader(issue.id);
   const [addingSubtask, setAddingSubtask] = useState(false);
@@ -203,7 +207,7 @@ function IssueView({ issue, detail }: { issue: Issue; detail: ReturnType<typeof 
               <Menu
                 onAction={(k) => {
                   if (k === "copy")
-                    navigator.clipboard
+                    void navigator.clipboard
                       .writeText(window.location.href)
                       .then(() => toast.show(t("issue.linkCopied")));
                   if (k === "delete") setConfirm(true);
@@ -365,9 +369,6 @@ function IssueView({ issue, detail }: { issue: Issue; detail: ReturnType<typeof 
               )}
               {issue.attachments.length > 0 && <Attachments issue={issue} uploader={uploader} />}
               <Timeline issue={issue} />
-              <QueryStatus query={detail.comments} />
-              <QueryStatus query={detail.activity} />
-              <QueryStatus query={detail.time} />
             </div>
           </div>
         </div>
@@ -397,7 +398,7 @@ function IssueView({ issue, detail }: { issue: Issue; detail: ReturnType<typeof 
             label: t("action.undo"),
             run: () => void run({ type: "restore_issue", id: issue.id }).catch(() => {}),
           });
-          goBack();
+          void goBack();
         }}
       />
     </Page>
@@ -640,10 +641,8 @@ type TimeView = { kind: "closed" } | { kind: "list" } | { kind: "form"; entry: T
 
 function TimeProp({ issue }: { issue: Issue }) {
   const { t, lang } = useI18n();
-  const { ws, me, run, member, canWrite, canAdmin, report } = useWorkspace();
-  const entries = ws.time_entries
-    .filter((e) => e.issue_id === issue.id)
-    .sort((a, b) => +new Date(b.logged_at) - +new Date(a.logged_at));
+  const { me, run, member, canWrite, canAdmin, report } = useWorkspace();
+  const entries = useTimeEntries(issue.id).items;
   const total = report.issues.find((total) => total.id === issue.id)?.minutes ?? 0;
   const [view, setView] = useState<TimeView>({ kind: "closed" });
   const [deleting, setDeleting] = useState<Id | null>(null);
@@ -1357,16 +1356,14 @@ type TimelineItem =
 
 function Timeline({ issue }: { issue: Issue }) {
   const { t } = useI18n();
-  const { ws } = useWorkspace();
   const [limit, setLimit] = useState(PAGE);
-  const entries = new Map(
-    ws.time_entries.filter((e) => e.issue_id === issue.id).map((e) => [e.id, e]),
-  );
+  const comments = useComments(issue.id);
+  const activity = useActivity(issue.id);
+  const time = useTimeEntries(issue.id);
+  const entries = new Map(time.items.map((e) => [e.id, e]));
   const items = [
-    ...ws.comments
-      .filter((c) => c.issue_id === issue.id)
-      .map((c): TimelineItem => ({ kind: "comment", at: c.created_at, comment: c })),
-    ...ws.activity
+    ...comments.items.map((c): TimelineItem => ({ kind: "comment", at: c.created_at, comment: c })),
+    ...activity.items
       .filter(
         (a) =>
           a.entity_id !== null &&
@@ -1407,6 +1404,8 @@ function Timeline({ issue }: { issue: Issue }) {
             )}
         </ol>
       )}
+      <QueryStatus query={comments} />
+      <QueryStatus query={activity} />
       <Composer issue={issue} hasItems={items.length > 0} />
     </Section>
   );

@@ -20,6 +20,8 @@ pub(super) const ISSUE_JSON: &str = r#"(to_jsonb(i)-'workspace_id'-'reminder_gen
  'attachments',COALESCE((SELECT jsonb_agg(jsonb_build_object('id',a.id,'name',a.filename,'content_type',a.content_type,'size',octet_length(a.bytes)) ORDER BY a.id) FROM attachments a WHERE a.workspace_id=i.workspace_id AND a.issue_id=i.id AND a.comment_id IS NULL),'[]'::jsonb),
  'source_links',COALESCE((SELECT jsonb_agg(jsonb_build_object('url',s.url,'title',s.title) ORDER BY s.id) FROM source_links s WHERE s.workspace_id=i.workspace_id AND s.issue_id=i.id),'[]'::jsonb))"#;
 
+pub(super) const MEMBER_JSON: &str = r#"jsonb_build_object('id',u.id,'email',u.email,'display_name',u.profile->>'display_name','avatar_url',u.profile->'avatar_url','contact',u.profile->>'contact','role',m.role,'version',m.version,'team_ids',COALESCE((SELECT jsonb_agg(tm.team_id ORDER BY tm.team_id) FROM team_members tm WHERE tm.workspace_id=m.workspace_id AND tm.user_id=u.id),'[]'::jsonb))"#;
+
 pub(super) async fn authorize(
     conn: &mut PgConnection,
     workspace: Uuid,
@@ -135,21 +137,8 @@ pub(super) fn collection_select(kind: &str) -> Result<(&'static str, &'static st
     })
 }
 
-pub(super) async fn collection_on(
-    conn: &mut PgConnection,
-    workspace: Uuid,
-    actor: Uuid,
-    kind: &str,
-    query: Option<CollectionQuery>,
-) -> Result<Vec<Value>> {
-    let issue_id = query.and_then(|q| q.issue_id);
-    let entity_id = query.and_then(|q| q.entity_id);
-    let (table, expression, order) = collection_select(kind)?;
-    let mut q = QueryBuilder::<Postgres>::new(format!(
-        "SELECT {expression} FROM {table} WHERE t.workspace_id="
-    ));
-    q.push_bind(workspace);
-
+/// Restricts private records to their owner and administrative records to administrators.
+pub(super) fn push_visibility(q: &mut QueryBuilder<'_, Postgres>, kind: &str, actor: Uuid) {
     match kind {
         "views" => {
             q.push(" AND (t.shared OR t.owner=")
@@ -164,6 +153,27 @@ pub(super) async fn collection_on(
                 .push_bind(actor)
                 .push(" AND m.role IN ('owner','admin'))");
         }
+        _ => {}
+    }
+}
+
+pub(super) async fn collection_on(
+    conn: &mut PgConnection,
+    workspace: Uuid,
+    actor: Uuid,
+    kind: &str,
+    query: Option<CollectionQuery>,
+) -> Result<Vec<Value>> {
+    let issue_id = query.and_then(|q| q.issue_id);
+    let entity_id = query.and_then(|q| q.entity_id);
+    let (table, expression, order) = collection_select(kind)?;
+    let mut q = QueryBuilder::<Postgres>::new(format!(
+        "SELECT {expression} FROM {table} WHERE t.workspace_id="
+    ));
+    q.push_bind(workspace);
+    push_visibility(&mut q, kind, actor);
+
+    match kind {
         "comments" | "time_entries" => {
             if let Some(id) = issue_id {
                 q.push(" AND t.issue_id=").push_bind(id);
@@ -468,7 +478,7 @@ impl Store {
                     .replace('_', "\\_")
             )
         });
-        let rows: Vec<Value> = sqlx::query_scalar(r#"SELECT jsonb_build_object('id',u.id,'email',u.email,'display_name',u.profile->>'display_name','avatar_url',u.profile->'avatar_url','contact',u.profile->>'contact','role',m.role,'version',m.version,'team_ids',COALESCE((SELECT jsonb_agg(tm.team_id ORDER BY tm.team_id) FROM team_members tm WHERE tm.workspace_id=m.workspace_id AND tm.user_id=u.id),'[]'::jsonb)) FROM workspace_members m JOIN users u ON u.id=m.user_id WHERE m.workspace_id=$1 AND ($2::text IS NULL OR u.email ILIKE $2 OR u.profile->>'display_name' ILIKE $2) ORDER BY lower(u.profile->>'display_name'),u.id LIMIT 2000"#)
+        let rows: Vec<Value> = sqlx::query_scalar(&format!("SELECT {MEMBER_JSON} FROM workspace_members m JOIN users u ON u.id=m.user_id WHERE m.workspace_id=$1 AND ($2::text IS NULL OR u.email ILIKE $2 OR u.profile->>'display_name' ILIKE $2) ORDER BY lower(u.profile->>'display_name'),u.id LIMIT 2000"))
             .bind(workspace)
             .bind(search)
             .fetch_all(&mut *conn)

@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router";
 import { BarChart3, Pencil, Trash2 } from "lucide-react";
 import { Avatar } from "~/components/ui/avatar";
@@ -10,32 +11,20 @@ import { ConfirmDialog } from "~/components/app/confirm";
 import { Card, EmptyState, Page, PageHeader, Scroll } from "~/components/app/page";
 import { ProgressBar } from "~/components/app/progress";
 import { TimeForm } from "~/components/app/time-form";
-import { workspaces } from "~/lib/api";
 import { formatMinutes, fullDate, issueKey } from "~/lib/format";
 import { useI18n } from "~/lib/i18n";
-import { mergeRecords, useIssues, useResource } from "~/lib/queries";
+import { useIssues, useTimeEntries } from "~/lib/queries";
+import { reportQuery } from "~/lib/query-client";
 import { QueryStatus } from "~/components/app/query-status";
 import { useWorkspace } from "~/lib/workspace";
-import type { Report, TimeEntry } from "~/lib/types";
+import type { TimeEntry } from "~/lib/types";
 
 export default function Reports() {
   const { t, lang } = useI18n();
-  const { ws, syncGeneration, member } = useWorkspace();
-  const [report, setReport] = useState<Report | null>(null);
-  const [error, setError] = useState("");
-  const [attempt, setAttempt] = useState(0);
-  useEffect(() => {
-    let live = true;
-    // A new load clears the last failure, so an old error can't sit on top of fresh data.
-    setError("");
-    workspaces
-      .report(ws.id)
-      .then((r) => live && setReport(r))
-      .catch((e) => live && setError(e.message || t("reports.loadFailed")));
-    return () => {
-      live = false;
-    };
-  }, [ws.id, syncGeneration, attempt, t]);
+  const { ws, member } = useWorkspace();
+  const query = useQuery(reportQuery(ws.id));
+  const report = query.data;
+  const error = query.isError && !report ? query.error.message || t("reports.loadFailed") : "";
 
   const nameOf = useMemo(
     () => ({
@@ -68,13 +57,7 @@ export default function Reports() {
             {error ? (
               <div role="alert" className="flex flex-wrap items-center gap-3">
                 <p className="text-destructive">{error}</p>
-                <Button
-                  size="sm"
-                  onPress={() => {
-                    setReport(null);
-                    setAttempt((n) => n + 1);
-                  }}
-                >
+                <Button size="sm" onPress={() => void query.refetch()}>
                   {t("action.retry")}
                 </Button>
               </div>
@@ -217,17 +200,14 @@ function Stat({ label, value, hint }: { label: string; value: string; hint?: str
 
 function TimeLog({ lang }: { lang: string }) {
   const t = useI18n().t;
-  const { ws, me, member, run, canAdmin, cache } = useWorkspace();
+  const { ws, me, member, run, canAdmin } = useWorkspace();
   const [editing, setEditing] = useState<TimeEntry | null>(null);
   const [deleting, setDeleting] = useState<TimeEntry | null>(null);
-  const query = useResource("time_entries");
-  useEffect(() => {
-    if (!query.loading && !query.error)
-      cache((ws) => ({ time_entries: mergeRecords(ws.time_entries, query.items) }));
-  }, [query.items, query.loading, query.error, cache]);
+  const query = useTimeEntries();
   const ids = [...new Set(query.items.map((entry) => entry.issue_id))];
-  useIssues({ ids: ids.join(",") }, ids.length > 0);
-  const entries = [...query.items].sort((a, b) => +new Date(b.logged_at) - +new Date(a.logged_at));
+  const related = useIssues({ ids: ids.join(",") }, ids.length > 0);
+  const issues = new Map(related.items.map((issue) => [issue.id, issue]));
+  const entries = query.items;
   if (!entries.length && (query.loading || query.error)) return <QueryStatus query={query} />;
   if (!entries.length)
     return (
@@ -254,7 +234,7 @@ function TimeLog({ lang }: { lang: string }) {
           </thead>
           <tbody>
             {entries.map((e) => {
-              const issue = ws.issues.find((i) => i.id === e.issue_id);
+              const issue = issues.get(e.issue_id);
               const m = member(e.user_id);
               return (
                 <tr

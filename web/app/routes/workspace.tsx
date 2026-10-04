@@ -5,7 +5,9 @@ import { CreateIssueDialog } from "~/components/app/create-issue";
 import { Dialog } from "~/components/ui/dialog";
 import { Kbd } from "~/components/ui/tooltip";
 import { ApiError } from "~/lib/api";
-import { loadWorkspaceData } from "~/lib/workspace-data";
+import { preloadWorkspace } from "~/lib/db";
+import { queryClient } from "~/lib/query-client";
+import { startChangeFeed } from "~/lib/sync";
 import { LAST_WS } from "~/lib/auth-guard";
 import { WorkspaceProvider, useWorkspace } from "~/lib/workspace";
 import { useT, type Key } from "~/lib/i18n";
@@ -15,9 +17,11 @@ import type { Route } from "./+types/workspace";
 
 export async function clientLoader({ params }: Route.ClientLoaderArgs) {
   try {
-    const data = await loadWorkspaceData(params.ws);
+    // The cursor comes first, so changes made while the records load still reach the client.
+    await startChangeFeed(params.ws);
+    await preloadWorkspace(queryClient, params.ws);
     localStorage.setItem(LAST_WS, params.ws);
-    return data;
+    return { id: params.ws };
   } catch (e) {
     if (e instanceof ApiError && (e.status === 404 || e.status === 403)) {
       localStorage.removeItem(LAST_WS);
@@ -43,7 +47,7 @@ export function shouldRevalidate({
 
 export default function WorkspaceLayout({ loaderData }: Route.ComponentProps) {
   return (
-    <WorkspaceProvider key={loaderData.workspace.id} initial={loaderData}>
+    <WorkspaceProvider key={loaderData.id} id={loaderData.id}>
       <Workspace />
     </WorkspaceProvider>
   );
@@ -102,7 +106,7 @@ function Workspace() {
               p: "projects",
               r: "reports",
             };
-            if (map[ev.key]) nav(`/${ws.id}/${map[ev.key]}`);
+            if (map[ev.key]) void nav(`/${ws.id}/${map[ev.key]}`);
             window.removeEventListener("keydown", once);
           };
           window.addEventListener("keydown", once);

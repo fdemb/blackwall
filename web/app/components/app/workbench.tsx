@@ -8,7 +8,7 @@ import { useWorkspace } from "~/lib/workspace";
 import type { IssueFilter } from "~/lib/types";
 import { FilterBar } from "./filter-bar";
 import { IssueList, type GroupBy } from "./issue-list";
-import { EmptyState, Page, PageHeader, Scroll } from "./page";
+import { EmptyState, Page, PageHeader } from "./page";
 
 /** Filter and grouping state for a queue. Hoist it above a layout switch to keep it across tabs. */
 export function useQueueState(initial: IssueFilter = {}) {
@@ -95,13 +95,14 @@ export function Workbench({
           scope={base}
         />
       </PageHeader>
-      <Scroll>
+      <div className="flex min-h-0 flex-1 flex-col">
         {query.loading || query.error ? <QueryStatus query={query} /> : null}
         {(!query.loading || query.items.length > 0) && !query.error && (
           <IssueList
             issues={issues}
             groupBy={groupBy}
             showTeam
+            fill
             emptyState={
               empty && !filtered ? (
                 empty
@@ -131,7 +132,7 @@ export function Workbench({
           />
         )}
         {!query.loading && !query.error && <QueryStatus query={query} />}
-      </Scroll>
+      </div>
     </Page>
   );
 }

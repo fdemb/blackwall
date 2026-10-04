@@ -12,6 +12,8 @@ A separate graph advisory lock is shared for ordinary issue writes and exclusive
 
 The API returns workspace summaries and paginated feature collections. It does not return or persist whole-workspace snapshots. Issues, planning, discussion, memberships, and personal state occupy relational tables. Composite foreign keys reject references across workspaces. Attachment bytes use `bytea`. JSONB holds flexible filters, profiles, job payloads, and historical fields.
 
+The frontend keeps workspace data in TanStack DB collections backed by TanStack Query (`web/app/lib/db.ts`). Opening a workspace takes a change-feed cursor, then loads metadata collections, members, notifications, and every issue, trash included. Issue lists, search, and filters are live queries over the local issue collection (`web/app/lib/queries.ts`). Comments, time entries, and activity load per issue: their live queries push the issue id down to the API. Commands run as TanStack Query mutations in one per-workspace scope, so they reach the server in order. Commands with a predictable local effect apply it through `createOptimisticAction`, and a refused write rolls it back (`web/app/lib/commands.ts`). Command responses and the change feed, polled every five seconds as a query, write changed records into the collections (`web/app/lib/sync.ts`). Loading every issue suits workspaces up to roughly ten thousand issues; beyond that the issue collection should switch to on-demand loading.
+
 ## Modules
 
 - `auth` owns credentials, hashed sessions, recovery tokens, profiles, and account preferences.

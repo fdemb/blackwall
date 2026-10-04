@@ -474,6 +474,7 @@ async fn maintenance(store: &Store, retention_days: i32) -> Result<()> {
 
     tx.commit().await?;
     store.outbox.cleanup(retention_days).await?;
+    store.prune_changes(retention_days).await?;
 
     Ok(())
 }

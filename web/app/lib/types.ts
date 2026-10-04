@@ -185,6 +185,7 @@ export interface Activity {
   fields?: string[];
 }
 
+/** Workspace records loaded once and kept current. Issues and their discussion load per page. */
 export interface Workspace {
   id: Id;
   name: string;
@@ -194,15 +195,10 @@ export interface Workspace {
   projects: Project[];
   milestones: Milestone[];
   sprints: Sprint[];
-  issues: Issue[];
-  comments: Comment[];
-  time_entries: TimeEntry[];
   invitations: Invitation[];
   views: SavedView[];
-  notifications: Notification[];
   alert_preferences: AlertPrefsWs[];
   integrations: Integration[];
-  activity: Activity[];
 }
 export interface WorkspaceSummary {
   id: Id;
@@ -376,9 +372,23 @@ export interface PageResult<T> {
   has_more: boolean;
   next_offset: number | null;
 }
+/** A changed record in the shape its list endpoint returns. `null` means deleted or no longer visible. */
+export interface Change {
+  entity: "workspace" | "members" | "issues" | keyof WorkspaceResources;
+  id: Id;
+  record: unknown;
+}
 export interface CommandResult {
   result: { id: Id | null };
   versions: EntityVersions;
+  /** Every record the command changed, including side effects such as a parent's subtask counts. */
+  changes: Change[];
+}
+/** When `reset` is true, reload everything and continue from `cursor`. */
+export interface ChangeFeed {
+  cursor: string;
+  reset: boolean;
+  changes: Change[];
 }
 export interface WorkspaceResources {
   teams: Team;

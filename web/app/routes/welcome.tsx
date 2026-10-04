@@ -11,6 +11,7 @@ import { useT } from "~/lib/i18n";
 import { useSession } from "~/lib/session";
 import { useDocumentTitle } from "~/lib/title";
 import type { WorkspaceSummary } from "~/lib/types";
+import { formText } from "~/lib/utils";
 
 export default function Welcome() {
   const t = useT();
@@ -71,13 +72,13 @@ export default function Welcome() {
                 const r = await workspaces.create(name, creation.current.key);
                 localStorage.setItem(LAST_WS, r.workspace.id);
                 await revalidate();
-                nav(`/${r.workspace.id}/settings/teams`);
+                await nav(`/${r.workspace.id}/settings/teams`);
               } else {
-                const id = String(f.get("id")).trim();
-                await workspaces.accept(id, String(f.get("token")).trim());
+                const id = formText(f, "id").trim();
+                await workspaces.accept(id, formText(f, "token").trim());
                 localStorage.setItem(LAST_WS, id);
                 await revalidate();
-                nav(`/${id}/my-issues`);
+                await nav(`/${id}/my-issues`);
               }
             } catch (err) {
               setError((err as Error).message);

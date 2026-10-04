@@ -6,12 +6,14 @@ case "$TEST_POSTGRES_URL" in
     postgres://*|postgresql://*) ;;
     *) echo "TEST_POSTGRES_URL must use PostgreSQL" >&2; exit 2 ;;
 esac
-if command -v cargo >/dev/null 2>&1; then
-    blackwall_cargo=cargo
-else
-    blackwall_cargo="$HOME/.cargo/bin/cargo"
-fi
-"$blackwall_cargo" fmt --check
-"$blackwall_cargo" clippy --all-targets -- -D warnings
-"$blackwall_cargo" test --locked
-(cd web && pnpm install --frozen-lockfile && pnpm exec vp check && pnpm exec vp test run && pnpm run typecheck && pnpm run build)
+
+cargo fmt --check
+cargo clippy --all-targets -- -D warnings
+cargo test --locked
+
+cd web
+pnpm install --frozen-lockfile
+pnpm run typecheck
+pnpm exec vp check
+pnpm exec vp test run
+pnpm run build

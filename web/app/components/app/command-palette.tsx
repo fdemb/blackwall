@@ -61,7 +61,7 @@ export function CommandPalette({
   const [q, setQ] = useState("");
   const go = (path: string) => () => {
     onOpenChange(false);
-    nav(`/${ws.id}/${path}`);
+    void nav(`/${ws.id}/${path}`);
   };
 
   const actions: Entry[] = useMemo(
@@ -219,7 +219,7 @@ export function CommandPalette({
                         text={`${issueKey(i.number)} ${i.title}`}
                         onAction={() => {
                           onOpenChange(false);
-                          nav(`/${ws.id}/issue/${i.id}`);
+                          void nav(`/${ws.id}/issue/${i.id}`);
                         }}
                       >
                         <PriorityIcon priority={i.priority} />
@@ -245,7 +245,7 @@ export function CommandPalette({
                       text={m.display_name}
                       onAction={() => {
                         onOpenChange(false);
-                        nav(`/${ws.id}/people/${m.id}`);
+                        void nav(`/${ws.id}/people/${m.id}`);
                       }}
                     >
                       <Avatar name={m.display_name} src={m.avatar_url} size={18} />
