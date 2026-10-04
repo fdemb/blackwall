@@ -5,7 +5,8 @@ import { Button } from "~/components/ui/button";
 import { Dialog, useDialogDirty } from "~/components/ui/dialog";
 import { FormError, TextField } from "~/components/ui/field";
 import { Switch } from "~/components/ui/toggles";
-import { Card, EmptyState } from "~/components/app/page";
+import { EmptyState } from "~/components/app/page";
+import { SettingsList, SettingsPage, SettingsSection } from "~/components/app/settings";
 import { ConfirmDialog } from "~/components/app/confirm";
 import { useT } from "~/lib/i18n";
 import { usePending } from "~/lib/use-pending";
@@ -21,9 +22,11 @@ export default function Integrations() {
   const [removing, setRemoving] = useState<Integration | null>(null);
   if (!canAdmin)
     return (
-      <Card>
-        <EmptyState icon={<Plug />} title={t("integrations.adminOnly")} />
-      </Card>
+      <SettingsPage title={t("settings.integrations")} description={t("integrations.sub")}>
+        <SettingsSection>
+          <EmptyState icon={<Plug />} title={t("integrations.adminOnly")} />
+        </SettingsSection>
+      </SettingsPage>
     );
   const endpoint = (i: Integration) =>
     `${location.origin}/api/workspaces/${ws.id}/integrations/${i.id}/webhook`;
@@ -32,29 +35,36 @@ export default function Integrations() {
       () => toast.show(t("action.copied")),
       () => toast.error(t("error.generic")),
     );
+  const sample = ws.integrations[0]
+    ? endpoint(ws.integrations[0])
+    : `${location.origin}/api/workspaces/${ws.id}/integrations/<id>/webhook`;
   return (
-    <>
-      <div className="flex items-center">
-        <div>
-          <h2 className="text-[14px] font-semibold">{t("settings.integrations")}</h2>
-          <p className="text-xs text-muted-foreground">{t("integrations.sub")}</p>
-        </div>
-        <Button variant="primary" size="sm" className="ml-auto" onPress={() => setOpen(true)}>
+    <SettingsPage
+      title={t("settings.integrations")}
+      description={t("integrations.sub")}
+      actions={
+        <Button variant="primary" size="sm" onPress={() => setOpen(true)}>
           <Plus />
           {t("integrations.add")}
         </Button>
-      </div>
-      <Card>
+      }
+    >
+      <SettingsSection>
         {ws.integrations.length === 0 ? (
           <EmptyState
             icon={<Plug />}
             title={t("integrations.emptyTitle")}
             description={t("integrations.emptySub")}
+            action={
+              <Button variant="primary" onPress={() => setOpen(true)}>
+                {t("integrations.add")}
+              </Button>
+            }
           />
         ) : (
-          <ul className="divide-y divide-border">
+          <SettingsList>
             {ws.integrations.map((i) => (
-              <li key={i.id} className="flex flex-wrap items-center gap-3 px-4 py-3 text-[13px]">
+              <li key={i.id} className="flex flex-wrap items-center gap-3 py-3 text-[13px]">
                 <div className="min-w-0 flex-1 basis-60">
                   <p className="font-medium">{i.name}</p>
                   <p className="truncate text-xs text-muted-foreground">{i.webhook_url}</p>
@@ -93,21 +103,20 @@ export default function Integrations() {
                 </Button>
               </li>
             ))}
-          </ul>
+          </SettingsList>
         )}
-      </Card>
-      <details className="rounded-lg border border-border bg-card px-4 py-3 text-xs text-muted-foreground">
-        <summary className="cursor-pointer font-medium text-foreground">
-          {t("integrations.setup")}
-        </summary>
-        <p className="mt-2">{t("integrations.setupOut")}</p>
-        <p className="mt-2">{t("integrations.setupIn")}</p>
-        <p className="mt-2 font-medium text-foreground">{t("integrations.example")}</p>
-        <pre className="mt-1 overflow-x-auto rounded-md bg-muted p-3 font-mono text-[11px] leading-5 text-foreground">{`body='{"delivery_id":"<uuid>","issue_id":"<issue uuid>","url":"https://git.example/pr/7","title":"Fix login"}'
+      </SettingsSection>
+      <SettingsSection title={t("integrations.setup")}>
+        <div className="max-w-prose space-y-2 text-[13px] text-muted-foreground">
+          <p>{t("integrations.setupOut")}</p>
+          <p>{t("integrations.setupIn")}</p>
+        </div>
+        <p className="mt-4 text-xs font-medium">{t("integrations.example")}</p>
+        <pre className="mt-1.5 overflow-x-auto rounded-lg bg-muted p-3 font-mono text-[11px] leading-5">{`body='{"delivery_id":"<uuid>","issue_id":"<issue uuid>","url":"https://git.example/pr/7","title":"Fix login"}'
 sig=$(printf '%s' "$body" | openssl dgst -sha256 -hmac "$SECRET" | sed 's/^.* //')
-curl -X POST "${ws.integrations[0] ? endpoint(ws.integrations[0]) : `${location.origin}/api/workspaces/${ws.id}/integrations/<id>/webhook`}" \\
+curl -X POST "${sample}" \\
   -H "X-Blackwall-Signature: sha256=$sig" -H "Content-Type: application/json" -d "$body"`}</pre>
-      </details>
+      </SettingsSection>
       <Dialog title={t("integrations.add")} size="sm" isOpen={open} onOpenChange={setOpen}>
         {(close) => <IntegrationForm close={close} />}
       </Dialog>
@@ -121,7 +130,7 @@ curl -X POST "${ws.integrations[0] ? endpoint(ws.integrations[0]) : `${location.
           toast.show(t("integrations.deleted"));
         }}
       />
-    </>
+    </SettingsPage>
   );
 }
 

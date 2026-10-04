@@ -1,4 +1,4 @@
-use super::{Email, Grant};
+use super::{DeliveryError, Email, Grant};
 use lettre::{
     AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor,
     message::{Mailbox, header::ContentType},
@@ -14,7 +14,7 @@ pub enum Mailer {
     },
     /// Writes each email's JSON payload to a private directory instead of sending it.
     Spool(PathBuf),
-    /// Email jobs fail and retry until mail is configured.
+    /// Email jobs stay pending until mail is configured.
     Disabled,
 }
 
@@ -52,28 +52,34 @@ impl Mailer {
         }
     }
 
-    pub(super) async fn send(&self, id: &str, email: &Email) -> Result<(), String> {
+    pub fn enabled(&self) -> bool {
+        !matches!(self, Self::Disabled)
+    }
+
+    pub(super) async fn send(&self, id: &str, email: &Email) -> Result<(), DeliveryError> {
         match self {
             Self::Smtp { transport, from } => {
-                let message = message(id, from, email)?;
+                let message = message(id, from, email).map_err(DeliveryError::Permanent)?;
                 transport.send(message).await.map_err(|error| {
                     if error.is_permanent() {
-                        "smtp server rejected the message"
+                        DeliveryError::Permanent("smtp server rejected the message")
                     } else {
-                        "smtp delivery failed"
+                        DeliveryError::Transient("smtp delivery failed")
                     }
                 })?;
 
                 Ok(())
             }
-            Self::Spool(directory) => spool(directory, id, email).await,
-            Self::Disabled => Err("email is not configured".into()),
+            Self::Spool(directory) => spool(directory, id, email)
+                .await
+                .map_err(DeliveryError::Transient),
+            Self::Disabled => Err(DeliveryError::Transient("email is not configured")),
         }
     }
 }
 
-fn message(id: &str, from: &Mailbox, email: &Email) -> Result<Message, String> {
-    // A stable Message-ID lets receivers drop duplicates when a retry repeats a delivery.
+fn message(id: &str, from: &Mailbox, email: &Email) -> Result<Message, &'static str> {
+    // Stable across retries. SMTP still permits duplicate delivery.
     let message_id = format!("<{}@{}>", crate::auth::hash(id), from.email.domain());
 
     Message::builder()
@@ -83,7 +89,7 @@ fn message(id: &str, from: &Mailbox, email: &Email) -> Result<Message, String> {
         .message_id(Some(message_id))
         .header(ContentType::TEXT_PLAIN)
         .body(body(email))
-        .map_err(|_| "invalid email".into())
+        .map_err(|_| "invalid email")
 }
 
 fn body(email: &Email) -> String {
@@ -107,7 +113,7 @@ fn body(email: &Email) -> String {
     }
 }
 
-async fn spool(directory: &PathBuf, id: &str, email: &Email) -> Result<(), String> {
+async fn spool(directory: &PathBuf, id: &str, email: &Email) -> Result<(), &'static str> {
     use tokio::io::AsyncWriteExt;
 
     tokio::fs::create_dir_all(directory)

@@ -1,23 +1,16 @@
 use super::*;
 use std::collections::{BTreeMap, BTreeSet};
 
-const REMINDER_LEAD: chrono::Duration = chrono::Duration::hours(24);
-
-struct Reminder {
-    issue_id: Uuid,
-    user: Uuid,
-    message: String,
-    key: String,
-}
-
 impl Workspace {
     pub fn new(name: String, owner: Uuid) -> Result<Self> {
         text(&name, 200)?;
 
         Ok(Self {
+            version: 1,
             id: Uuid::new_v4(),
             name,
             members: vec![Member {
+                version: 1,
                 user_id: owner,
                 role: Role::Owner,
             }],
@@ -104,6 +97,7 @@ impl Workspace {
         }
 
         self.notifications.push(Notification {
+            version: 1,
             id: Uuid::new_v4(),
             user_id: user,
             issue_id,
@@ -157,6 +151,7 @@ impl Workspace {
 
         if !self.members.iter().any(|m| m.user_id == user) {
             self.members.push(Member {
+                version: 1,
                 user_id: user,
                 role: invitation.role.clone(),
             });
@@ -288,6 +283,10 @@ impl Workspace {
         };
 
         let issue = Issue {
+            blocked_count: 0,
+            subtask_total: 0,
+            subtask_completed: 0,
+            version: 1,
             id: Uuid::new_v4(),
             number: self.issues.iter().map(|i| i.number).max().unwrap_or(0) + 1,
             title: input.title,
@@ -674,6 +673,7 @@ impl Workspace {
                 .into_iter()
                 .enumerate()
                 .map(|(p, (name, kind))| Stage {
+                    version: 1,
                     id: Uuid::new_v4(),
                     name: name.into(),
                     kind,
@@ -681,6 +681,7 @@ impl Workspace {
                 })
                 .collect();
                 self.teams.push(Team {
+                    version: 1,
                     id,
                     name,
                     members,
@@ -719,6 +720,7 @@ impl Workspace {
                     .ok_or(Error::NotFound)?
                     .stages
                     .push(Stage {
+                        version: 1,
                         id,
                         name,
                         kind,
@@ -791,7 +793,12 @@ impl Workspace {
                 }
 
                 let id = Uuid::new_v4();
-                self.labels.push(Label { id, name, color });
+                self.labels.push(Label {
+                    version: 1,
+                    id,
+                    name,
+                    color,
+                });
                 result = Some(id)
             }
 
@@ -823,6 +830,7 @@ impl Workspace {
 
                 let id = Uuid::new_v4();
                 self.projects.push(Project {
+                    version: 1,
                     id,
                     name,
                     description,
@@ -872,6 +880,7 @@ impl Workspace {
 
                 let id = Uuid::new_v4();
                 self.milestones.push(Milestone {
+                    version: 1,
                     id,
                     project_id,
                     name,
@@ -908,6 +917,7 @@ impl Workspace {
 
                 let id = Uuid::new_v4();
                 self.sprints.push(Sprint {
+                    version: 1,
                     id,
                     team_id,
                     name,
@@ -1212,6 +1222,7 @@ impl Workspace {
                 }
 
                 self.comments.push(Comment {
+                    version: 1,
                     id,
                     issue_id,
                     author: actor,
@@ -1283,6 +1294,7 @@ impl Workspace {
 
                 let id = Uuid::new_v4();
                 self.time_entries.push(TimeEntry {
+                    version: 1,
                     id,
                     issue_id,
                     user_id: actor,
@@ -1340,6 +1352,7 @@ impl Workspace {
 
                 let id = Uuid::new_v4();
                 self.views.push(SavedView {
+                    version: 1,
                     id,
                     owner: actor,
                     name,
@@ -1417,6 +1430,7 @@ impl Workspace {
 
                 let id = Uuid::new_v4();
                 self.invitations.push(Invitation {
+                    version: 1,
                     id,
                     email: email.to_lowercase(),
                     role,
@@ -1562,6 +1576,7 @@ impl Workspace {
             } => {
                 self.alert_preferences.retain(|p| p.user_id != actor);
                 self.alert_preferences.push(AlertPreferences {
+                    version: 1,
                     user_id: actor,
                     assignment,
                     reply,
@@ -1583,6 +1598,7 @@ impl Workspace {
 
                 let id = Uuid::new_v4();
                 self.integrations.push(Integration {
+                    version: 1,
                     id,
                     name,
                     webhook_url,
@@ -1737,100 +1753,6 @@ impl Workspace {
 
         Ok(issues)
     }
-
-    pub fn tick(&mut self, now: DateTime<Utc>) -> bool {
-        let mut changed = false;
-        for i in &mut self.invitations {
-            if i.state == InvitationState::Pending && i.expires_at <= now {
-                i.state = InvitationState::Expired;
-                i.token_hash.clear();
-                changed = true;
-            }
-        }
-
-        for reminder in self.due_reminders(now) {
-            let len = self.notifications.len();
-            self.notify(
-                reminder.user,
-                Some(reminder.issue_id),
-                AlertKind::Deadline,
-                reminder.message,
-                reminder.key,
-                now,
-            );
-            changed |= self.notifications.len() != len;
-        }
-
-        changed
-    }
-
-    /// When `tick` next has work, given that it already ran at `now`. Reminders that were due
-    /// but suppressed stay suppressed until a command changes the workspace.
-    pub fn next_tick(&self, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
-        let expiries = self
-            .invitations
-            .iter()
-            .filter(|i| i.state == InvitationState::Pending)
-            .map(|i| i.expires_at);
-        let reminders = self
-            .open_deadlines()
-            .map(|(_, deadline)| deadline - REMINDER_LEAD)
-            .filter(|at| *at > now);
-
-        expiries.chain(reminders).min()
-    }
-
-    /// When `tick` next has work after a command changed the workspace at `now`.
-    pub fn tick_due(&self, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
-        if self.due_reminders(now).is_empty() {
-            self.next_tick(now)
-        } else {
-            Some(now)
-        }
-    }
-
-    fn open_deadlines(&self) -> impl Iterator<Item = (&Issue, DateTime<Utc>)> {
-        self.issues
-            .iter()
-            .filter(|i| i.deleted_at.is_none() && !self.done(i))
-            .filter_map(|i| Some((i, i.deadline?)))
-    }
-
-    fn due_reminders(&self, now: DateTime<Utc>) -> Vec<Reminder> {
-        let sent: BTreeSet<_> = self
-            .notifications
-            .iter()
-            .map(|n| n.dedup_key.as_str())
-            .collect();
-
-        let mut due = Vec::new();
-        for (issue, deadline) in self.open_deadlines() {
-            if deadline > now + REMINDER_LEAD {
-                continue;
-            }
-
-            let users: BTreeSet<_> = issue
-                .followers
-                .iter()
-                .copied()
-                .chain(issue.assignee)
-                .collect();
-            for user in users {
-                let key = format!("deadline:{}:{deadline}:{user}", issue.id);
-                if self.wants(user, &AlertKind::Deadline) && !sent.contains(key.as_str()) {
-                    due.push(Reminder {
-                        issue_id: issue.id,
-                        user,
-                        message: format!("Deadline approaching: {}", issue.title),
-                        key,
-                    });
-                }
-            }
-        }
-
-        due
-    }
-
     pub fn report(&self, actor: Uuid) -> Result<Report> {
         self.member(actor)?;
 

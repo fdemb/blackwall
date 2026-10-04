@@ -1,37 +1,60 @@
 # Blackwall
 
-A Rust work-management API with a React Router frontend (React Aria Components, Tailwind), SQLite or PostgreSQL, and durable background jobs.
+A Rust work-management API with a React Router frontend, PostgreSQL, and durable background jobs.
 
 ## Run locally
 
-Install stable Rust and Node 20+. Build the frontend once, then run the server. If `cargo` is not on your shell path after installation, first run `source "$HOME/.cargo/env"`.
+Install stable Rust, Node 22+, pnpm, and Docker. Start PostgreSQL 17 and Mailpit, then build the frontend and run the server.
 
 ```sh
-(cd web && pnpm install && pnpm run build)
+docker compose up -d --wait
+cp .env.example .env
+(cd web && pnpm install --frozen-lockfile && pnpm run build)
 cargo run
 ```
 
-The server reads the build from `web/build/client`. Set `WEB_DIR` to serve it from elsewhere. For frontend work, run `cargo run` and `pnpm run dev` inside `web/`; Vite proxies `/api` to port 3000 and serves the app on port 5173. Frontend checks run through Vite+ (`vp check` for format and lint, backed by oxfmt and oxlint).
+The server requires a PostgreSQL `DATABASE_URL` and applies SQLx migrations at startup. `DATABASE_MAX_CONNECTIONS` defaults to 16 and `DATABASE_ACQUIRE_TIMEOUT_SECONDS` to 10. `.env.example` uses `postgres://blackwall:blackwall@127.0.0.1:5432/blackwall`. The Compose services bind to loopback, and PostgreSQL keeps local data in the `postgres-data` volume. Set `POSTGRES_PORT` to change the host port and update your database URLs to match.
 
-Open `http://127.0.0.1:3000`, register an account, and create a workspace. Create a team under Planning before adding issues. SQLite creates `blackwall.db` in the working directory.
+Open `http://127.0.0.1:3000`, register an account, and create a workspace. Create a team before adding issues.
 
-For PostgreSQL, create an empty database and run:
+The server serves `web/build/client`. Set `WEB_DIR` to use another build. For frontend development, run `cargo run` and `pnpm run dev` inside `web/`. Vite proxies `/api` to port 3000 and serves the app on port 5173.
+
+Apply migrations without starting HTTP or workers:
 
 ```sh
-DATABASE_URL=postgres://blackwall:password@localhost/blackwall cargo run
+DATABASE_URL=postgres://blackwall:blackwall@127.0.0.1:5432/blackwall ./scripts/database.sh migrate
 ```
 
-Startup applies the same portable schema to either engine. Configuration comes from environment variables; `.env.example` documents the options. The application does not automatically read `.env` files.
+Stop the app before running `./scripts/database.sh reset`. Reset deletes and recreates only the local Compose `blackwall` database, then applies migrations. Load a deterministic workspace after reset:
+
+```sh
+cargo run -- fixtures empty
+# Or load the feature-rich fixture into a fresh database.
+cargo run -- fixtures rich
+```
+
+Fixtures use `fixture-password-123`. The empty fixture account is `empty@example.com`; the rich fixture accounts are `owner@example.com` and `member@example.com`. Load each fixture once per fresh database.
+
+There is no converter for old development databases.
+
+Checked SQL compiles offline using the committed `.sqlx` metadata. After changing a checked query, regenerate its metadata against a migrated PostgreSQL database:
+
+```sh
+SQLX_OFFLINE=false SQLX_OFFLINE_DIR=.sqlx DATABASE_URL=postgres://blackwall:blackwall@127.0.0.1:5432/blackwall cargo check --all-targets
+```
 
 ## API
 
-`GET /api/schema.json` exposes OpenAPI generated from Rust request, command, and response types. Authenticated requests use `Authorization: Bearer <session token>`. The browser uses an HttpOnly, SameSite=Strict cookie. Cookie mutations require the CSRF token returned at login or in the `X-CSRF-Token` header from `GET /api/me`.
+`GET /api/schema.json` exposes OpenAPI generated from Rust types. API clients use `Authorization: Bearer <session token>`. The browser uses an HttpOnly, SameSite=Strict cookie. Cookie mutations require `X-CSRF-Token`, returned at login and by `GET /api/me`.
 
-The work API uses explicit commands. Each request includes the current workspace revision:
+Workspace creation accepts an optional `idempotency_key`, scoped to the authenticated user. The frontend keeps this key across an ambiguous creation failure.
+
+Commands carry versions for the entities they edit. Creates usually use an empty map. For example:
 
 ```json
 {
-  "revision": 0,
+  "expected_versions": {},
+  "idempotency_key": "create-infrastructure-team",
   "command": {
     "type": "create_team",
     "name": "Infrastructure",
@@ -40,21 +63,34 @@ The work API uses explicit commands. Each request includes the current workspace
 }
 ```
 
-Send that request to `POST /api/workspaces/{id}/commands`. Read `GET /api/workspaces/{id}` to obtain the revision. HTTP 409 means another change committed first; reload before retrying.
+Send commands to `POST /api/workspaces/{id}/commands`. Responses contain `result` and a UUID-to-version `versions` map. Issue edits require the issue's current version. Bulk edits require every affected issue's version. HTTP 409 means a stale version or conflicting idempotency key; fetch the affected entities before retrying. Idempotency keys are optional strings scoped to the workspace and actor. Reusing a key with the same request returns the recorded result.
 
-The API implements workspace membership and invitations, custom team workflows, labels, issue relations, projects, milestones, sprint carryover, saved views, comments and mentions, attachment uploads, inbox preferences, time corrections, reports, search, bulk actions, trash, activity, JSON transfer, signed webhooks, and account recovery.
+`GET /api/workspaces/{id}` returns workspace metadata. Read work through `/issues`, `/issues/{issue}`, `/teams`, `/projects`, and the other feature collections. Collections return `{items,has_more,next_offset}` with `limit` and `offset`. The default limit is 100 and the maximum is 200. `/members` returns an array. Comments and time entries accept `issue_id`; activity accepts `entity_id`.
+
+Uploads send `expected_versions` as multipart JSON alongside the file. Imports send `expected_versions` and `issues` or `transfer`. A create-only import accepts `{}`.
+
+The API includes membership and invitations, workflows, labels, issue relations, projects, milestones, sprint carryover, saved views, comments, uploads, inbox preferences, time corrections, reports, search, bulk actions, trash, activity, JSON transfer, signed webhooks, and account recovery.
 
 ## Background delivery
 
-Background workers add due-date reminders to the inbox, expire invitations, sessions, and reset tokens, and deliver persisted email and webhook jobs. Each worker sleeps until its next due time, and commits wake it, so new mail and webhooks go out right away. Delivery retries use backoff and leases. Email jobs stay queued with a recorded error until mail is configured.
+Workers claim PostgreSQL jobs with leases and bounded attempts. Database changes and their jobs commit together. Workers use separate limits for email, webhook, and database jobs. `.env.example` documents concurrency, idle polling, shutdown drain time, and history retention. The idle poll interval is at most five seconds. Failed jobs remain available for inspection.
 
-Email goes out over SMTP. Set `SMTP_URL`, for example `smtps://user:password@smtp.example.com` or `smtp://smtp.example.com:587?tls=required`, with credentials percent-encoded, and set `SMTP_FROM` to the sender address. Each message gets a Message-ID derived from its job, so a retried delivery repeats the same ID. Cancelled, expired, accepted, or superseded invitations do not deliver queued messages.
+Run `cargo run -- worker` for workers without HTTP. Queue administration requires shell and database access:
 
-For local development, `docker compose up -d` starts [Mailpit](https://mailpit.axllent.org). Point the app at `SMTP_URL=smtp://127.0.0.1:1025` and read mail at http://localhost:8025. Copy the workspace ID and token into the join form, or the reset token into the recovery form.
+```sh
+cargo run -- queue status
+cargo run -- queue failed 50
+cargo run -- queue retry <job-uuid>
+cargo run -- queue cancel <job-uuid>
+```
 
-Setting `DEV_MAIL_DIR=./dev-mail` instead writes each email as a JSON file with mode 0600. It takes precedence over SMTP. Keep that directory private and never enable it on a public host.
+Delivery is at least once. A crash after an external service accepts a request can cause another delivery.
 
-Integrations send activity events to configured public HTTPS endpoints. Outgoing requests include `Idempotency-Key` and `X-Blackwall-Signature: sha256=<hex HMAC-SHA256>`. Incoming source-control links use `POST /api/workspaces/{id}/integrations/{integration}/webhook`, signed over the exact request body with the integration secret:
+Set `SMTP_URL`, such as `smtps://user:password@smtp.example.com` or `smtp://smtp.example.com:587?tls=required`, and `SMTP_FROM`. Percent-encode URL credentials. Email uses a stable Message-ID derived from the job. SMTP servers do not guarantee deduplication. Invalidated invitation and password-reset grants suppress queued mail. Without SMTP or a development spool, workers leave email jobs pending without consuming attempts.
+
+For local mail, set `SMTP_URL=smtp://127.0.0.1:1025` and read Mailpit at `http://127.0.0.1:8025`. Alternatively, set `DEV_MAIL_DIR=./dev-mail` to write private JSON files with mode 0600. The spool takes precedence over SMTP. Keep the directory private.
+
+Outgoing integration requests use `Idempotency-Key` and `X-Blackwall-Signature: sha256=<hex HMAC-SHA256>`. Incoming source links use `POST /api/workspaces/{id}/integrations/{integration}/webhook`, signed over the exact request body:
 
 ```json
 {
@@ -65,25 +101,26 @@ Integrations send activity events to configured public HTTPS endpoints. Outgoing
 }
 ```
 
-Generic signed webhooks and source links are included. Provider-specific OAuth and automatic GitHub or GitLab synchronization are not included.
+Generic signed webhooks and source links are included. Provider-specific OAuth and automatic repository synchronization are not included.
 
-## Verification
+## Verify
+
+Integration tests require PostgreSQL and a role with `CREATEDB`. Each test creates a disposable database visible to all application pool connections.
 
 ```sh
+export DATABASE_URL=postgres://blackwall:blackwall@127.0.0.1:5432/blackwall
+export TEST_POSTGRES_URL="$DATABASE_URL"
 ./scripts/check.sh
-TEST_POSTGRES_URL=postgres://user:password@localhost/blackwall_test cargo test
+cargo build --locked
+python3 scripts/smoke.py
 ```
 
-The same API workflow suite runs on in-memory SQLite and, when configured, PostgreSQL. It creates test users and workspaces in the selected database, so use a dedicated test database. Checks cover permission isolation, stale writes, revocation, atomic bulk changes, issue relations, sprint carryover, comments, time totals, uploads, CSRF, password recovery, and durable job retries. No browser verification is required.
-
-For a real HTTP and restart check, run `cargo build && python3 scripts/smoke.py`.
+`check.sh` runs formatting, Clippy, Rust tests, and frontend checks. The smoke script runs real HTTP, applies migrations twice, restarts the server, and exercises expired job lease recovery. It requires `psql` or the local Compose PostgreSQL service. No browser verification is required. See [verification](docs/verification.md) for coverage and limits.
 
 ## Current limits
 
-The initial persistence strategy stores typed workspace snapshots with revision checks. Writes serialize the whole workspace, and queries scan it. Limits include 5,000 issues, a 16 MiB workspace document, 1,000 issues per issue-only import, 5,000 issues per full transfer, 500 issues per bulk request, and 5 MiB per upload. Attachments are stored separately in the database. This keeps database switching straightforward for small teams; larger workspaces need normalized issue storage and indexed queries.
+Roles are owner, admin, member, and viewer. Viewers read the workspace and manage personal views, follows, and their inbox. Teams do not have separate visibility rules. Markdown output is sanitized. English and Polish localization covers frontend labels; domain validation messages remain English.
 
-JSON transfer remaps workspace entity IDs and preserves work relationships, comments, time entries, trash, and planning history. Full transfer imports require owner or admin access. Imported comments and time entries from unknown people use the importing user as author. The import summary lists these identity replacements. Attachments require a separate database backup because transfer omits file bytes. Credentials, integration secrets, invitations, and inbox contents never enter exports. Unknown source people cannot become members through an import.
+JSON transfer remaps entity IDs and preserves work relationships, comments, time entries, trash, and planning history. Unknown comment and time authors become the importing user. Credentials, integration secrets, invitations, and inbox contents stay out of exports. Transfer omits attachment bytes, so use a database backup to preserve uploads.
 
-Roles are owner, admin, member, and viewer. Viewers read the whole workspace and manage their personal views, follows, and inbox. Teams do not have separate visibility rules. The API accepts Markdown and sanitizes rendered HTML. English/Polish localization currently covers frontend labels; domain validation messages remain English.
-
-For deployment, use HTTPS, set `COOKIE_SECURE=true`, configure email delivery, and back up the database. [Backend design](docs/architecture.md) records the persistence decision and its concurrency limits.
+Use HTTPS, set `COOKIE_SECURE=true`, configure mail, and back up PostgreSQL before deployment. [Backend design](docs/architecture.md) describes transaction boundaries and concurrency.

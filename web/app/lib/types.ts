@@ -12,35 +12,41 @@ export type Theme = "light" | "dark" | "system";
 
 export interface Stage {
   id: Id;
+  version: number;
   name: string;
   kind: StageKind;
   position: number;
 }
 export interface Team {
   id: Id;
+  version: number;
   name: string;
   members: Id[];
   stages: Stage[];
 }
 export interface Label {
   id: Id;
+  version: number;
   name: string;
   color: string;
 }
 export interface Project {
   id: Id;
+  version: number;
   name: string;
   description: string;
   team_ids: Id[];
 }
 export interface Milestone {
   id: Id;
+  version: number;
   project_id: Id;
   name: string;
   deadline: string | null;
 }
 export interface Sprint {
   id: Id;
+  version: number;
   team_id: Id;
   name: string;
   goal: string;
@@ -61,6 +67,10 @@ export interface SourceLink {
 }
 export interface Issue {
   id: Id;
+  version: number;
+  blocked_count: number;
+  subtask_total: number;
+  subtask_completed: number;
   number: number;
   title: string;
   description: string;
@@ -86,6 +96,7 @@ export interface Issue {
 }
 export interface Comment {
   id: Id;
+  version: number;
   issue_id: Id;
   author: Id;
   body: string;
@@ -96,6 +107,7 @@ export interface Comment {
 }
 export interface TimeEntry {
   id: Id;
+  version: number;
   issue_id: Id;
   user_id: Id;
   minutes: number;
@@ -104,6 +116,7 @@ export interface TimeEntry {
 }
 export interface Invitation {
   id: Id;
+  version: number;
   email: string;
   role: Role;
   expires_at: string;
@@ -120,12 +133,18 @@ export interface IssueFilter {
   due_before?: string;
   search?: string;
   trash?: boolean;
+  parent_id?: Id;
+  dependency_id?: Id;
+  ids?: string;
+  no_sprint?: boolean;
+  open?: boolean;
   sort?: IssueSort;
   unassigned?: boolean;
   group_by?: IssueGroup;
 }
 export interface SavedView {
   id: Id;
+  version: number;
   owner: Id;
   name: string;
   shared: boolean;
@@ -133,6 +152,7 @@ export interface SavedView {
 }
 export interface Notification {
   id: Id;
+  version: number;
   user_id: Id;
   issue_id: Id | null;
   kind: AlertKind;
@@ -142,6 +162,7 @@ export interface Notification {
 }
 export interface AlertPrefsWs {
   user_id: Id;
+  version: number;
   assignment: boolean;
   reply: boolean;
   change: boolean;
@@ -150,6 +171,7 @@ export interface AlertPrefsWs {
 }
 export interface Integration {
   id: Id;
+  version: number;
   name: string;
   webhook_url: string;
   enabled: boolean;
@@ -166,7 +188,7 @@ export interface Activity {
 export interface Workspace {
   id: Id;
   name: string;
-  members: { user_id: Id; role: Role }[];
+  members: { user_id: Id; role: Role; version: number }[];
   teams: Team[];
   labels: Label[];
   projects: Project[];
@@ -185,10 +207,12 @@ export interface Workspace {
 export interface WorkspaceSummary {
   id: Id;
   name: string;
-  revision: number;
+  version: number;
 }
 export interface MemberProfile {
   id: Id;
+  role: Role;
+  version: number;
   email: string;
   display_name: string;
   avatar_url: string | null;
@@ -217,9 +241,21 @@ export interface Total {
   open_issues: number;
   effort: number;
 }
+export interface ProjectStats {
+  id: Id;
+  total: number;
+  completed: number;
+  updated_at: string | null;
+  teams: { id: Id; total: number; completed: number }[];
+  milestones: { id: Id; total: number; completed: number }[];
+}
 export interface Report {
+  issue_count: number;
+  inbox_unread: number;
+  label_counts: Record<Id, number>;
+  project_stats: ProjectStats[];
   total_minutes: number;
-  issues: Total[];
+  issues: (Total & { number: number; title: string })[];
   people: Total[];
   teams: Total[];
   projects: Total[];
@@ -333,3 +369,29 @@ export type Command =
   | { type: "delete_integration"; id: Id }
   | { type: "add_source_link"; issue_id: Id; url: string; title: string }
   | { type: "import_issues"; issues: IssueInput[] };
+
+export type EntityVersions = Record<Id, number>;
+export interface PageResult<T> {
+  items: T[];
+  has_more: boolean;
+  next_offset: number | null;
+}
+export interface CommandResult {
+  result: { id: Id | null };
+  versions: EntityVersions;
+}
+export interface WorkspaceResources {
+  teams: Team;
+  labels: Label;
+  projects: Project;
+  milestones: Milestone;
+  sprints: Sprint;
+  views: SavedView;
+  notifications: Notification;
+  alert_preferences: AlertPrefsWs;
+  invitations: Invitation;
+  integrations: Integration;
+  activity: Activity;
+  comments: Comment;
+  time_entries: TimeEntry;
+}

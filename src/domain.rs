@@ -20,6 +20,8 @@ pub enum Role {
 
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct Member {
+    #[serde(default = "initial_version")]
+    pub version: i64,
     pub user_id: Uuid,
     pub role: Role,
 }
@@ -36,6 +38,8 @@ pub enum StageKind {
 
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct Stage {
+    #[serde(default = "initial_version")]
+    pub version: i64,
     pub id: Uuid,
     pub name: String,
     pub kind: StageKind,
@@ -44,6 +48,8 @@ pub struct Stage {
 
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct Team {
+    #[serde(default = "initial_version")]
+    pub version: i64,
     pub id: Uuid,
     pub name: String,
     pub members: Vec<Uuid>,
@@ -52,6 +58,8 @@ pub struct Team {
 
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct Label {
+    #[serde(default = "initial_version")]
+    pub version: i64,
     pub id: Uuid,
     pub name: String,
     pub color: String,
@@ -59,6 +67,8 @@ pub struct Label {
 
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct Project {
+    #[serde(default = "initial_version")]
+    pub version: i64,
     pub id: Uuid,
     pub name: String,
     pub description: String,
@@ -67,6 +77,8 @@ pub struct Project {
 
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct Milestone {
+    #[serde(default = "initial_version")]
+    pub version: i64,
     pub id: Uuid,
     pub project_id: Uuid,
     pub name: String,
@@ -84,6 +96,8 @@ pub enum SprintState {
 
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct Sprint {
+    #[serde(default = "initial_version")]
+    pub version: i64,
     pub id: Uuid,
     pub team_id: Uuid,
     pub name: String,
@@ -128,6 +142,14 @@ pub struct SourceLink {
 
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct Issue {
+    #[serde(default)]
+    pub blocked_count: u64,
+    #[serde(default)]
+    pub subtask_total: u64,
+    #[serde(default)]
+    pub subtask_completed: u64,
+    #[serde(default = "initial_version")]
+    pub version: i64,
     pub id: Uuid,
     pub number: u64,
     pub title: String,
@@ -155,6 +177,8 @@ pub struct Issue {
 
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct Comment {
+    #[serde(default = "initial_version")]
+    pub version: i64,
     pub id: Uuid,
     pub issue_id: Uuid,
     pub author: Uuid,
@@ -167,6 +191,8 @@ pub struct Comment {
 
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct TimeEntry {
+    #[serde(default = "initial_version")]
+    pub version: i64,
     pub id: Uuid,
     pub issue_id: Uuid,
     pub user_id: Uuid,
@@ -177,6 +203,8 @@ pub struct TimeEntry {
 
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct Invitation {
+    #[serde(default = "initial_version")]
+    pub version: i64,
     pub id: Uuid,
     pub email: String,
     pub role: Role,
@@ -196,6 +224,8 @@ pub enum InvitationState {
 
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct SavedView {
+    #[serde(default = "initial_version")]
+    pub version: i64,
     pub id: Uuid,
     pub owner: Uuid,
     pub name: String,
@@ -215,6 +245,8 @@ pub enum AlertKind {
 
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct AlertPreferences {
+    #[serde(default = "initial_version")]
+    pub version: i64,
     pub user_id: Uuid,
     pub assignment: bool,
     pub reply: bool,
@@ -237,6 +269,8 @@ impl AlertPreferences {
 
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct Notification {
+    #[serde(default = "initial_version")]
+    pub version: i64,
     pub id: Uuid,
     pub user_id: Uuid,
     pub issue_id: Option<Uuid>,
@@ -261,6 +295,8 @@ pub struct Activity {
 
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct Integration {
+    #[serde(default = "initial_version")]
+    pub version: i64,
     pub id: Uuid,
     pub name: String,
     pub webhook_url: String,
@@ -271,6 +307,13 @@ pub struct Integration {
 #[derive(Clone, Debug, Default, Serialize, Deserialize, ToSchema, utoipa::IntoParams)]
 #[into_params(parameter_in = Query)]
 pub struct IssueFilter {
+    pub parent_id: Option<Uuid>,
+    pub dependency_id: Option<Uuid>,
+    pub ids: Option<String>,
+    #[serde(default)]
+    pub no_sprint: bool,
+    #[serde(default)]
+    pub open: bool,
     pub assignee: Option<Uuid>,
     pub team_id: Option<Uuid>,
     pub stage_id: Option<Uuid>,
@@ -310,6 +353,8 @@ pub enum IssueSort {
 
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct Workspace {
+    #[serde(default = "initial_version")]
+    pub version: i64,
     pub id: Uuid,
     pub name: String,
     pub members: Vec<Member>,
@@ -365,6 +410,10 @@ pub struct Report {
     pub projects: Vec<Total>,
     pub sprints: Vec<SprintReport>,
     pub delivery: Vec<DeliveryDay>,
+}
+
+pub fn initial_version() -> i64 {
+    1
 }
 
 pub(crate) fn text(value: &str, max: usize) -> Result<()> {
@@ -521,6 +570,7 @@ mod tests {
 
         let viewer = Uuid::new_v4();
         w.members.push(Member {
+            version: 1,
             user_id: viewer,
             role: Role::Viewer,
         });
@@ -598,6 +648,7 @@ mod tests {
 
         let viewer = Uuid::new_v4();
         w.members.push(Member {
+            version: 1,
             user_id: viewer,
             role: Role::Viewer,
         });
@@ -729,6 +780,7 @@ mod tests {
 
         let note = Uuid::new_v4();
         w.notifications.push(Notification {
+            version: 1,
             id: note,
             user_id: owner,
             issue_id: None,
@@ -743,20 +795,6 @@ mod tests {
             .unwrap();
 
         assert!(w.notifications[0].read_at.is_none());
-    }
-
-    #[test]
-    fn scheduler_deduplicates_deadline_notifications() {
-        let (mut w, owner, team) = setup();
-        let mut i = input(team);
-        let now = Utc::now();
-        i.deadline = Some(now + chrono::Duration::hours(1));
-        w.apply(owner, Command::CreateIssue { input: i }, now)
-            .unwrap();
-
-        assert!(w.tick(now));
-        assert!(!w.tick(now));
-        assert_eq!(w.notifications.len(), 1);
     }
 
     #[test]

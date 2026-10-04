@@ -1,11 +1,11 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { DropZone, FileTrigger, Text } from "react-aria-components";
 import { Download, FileUp } from "lucide-react";
 import { Button } from "~/components/ui/button";
 import { Dialog } from "~/components/ui/dialog";
 import { FormError } from "~/components/ui/field";
 import { useToast } from "~/components/ui/toast";
-import { Card } from "~/components/app/page";
+import { SettingsPage, SettingsSection } from "~/components/app/settings";
 import { workspaces } from "~/lib/api";
 import { download } from "~/lib/format";
 import { useT, type Key } from "~/lib/i18n";
@@ -62,9 +62,10 @@ function inspect(name: string, parsed: unknown): Preview | null {
 
 export default function Data() {
   const t = useT();
-  const { ws, revision, canWrite, canAdmin, reload } = useWorkspace();
+  const { ws, canWrite, canAdmin, reload } = useWorkspace();
   const toast = useToast();
   const [busy, setBusy] = useState(false);
+  const importKey = useRef(crypto.randomUUID());
   const [preview, setPreview] = useState<Preview | null>(null);
   const [result, setResult] = useState<ImportSummary | null | undefined>(undefined);
 
@@ -82,6 +83,7 @@ export default function Data() {
     setBusy(false);
   };
   const choose = async (file: File) => {
+    importKey.current = crypto.randomUUID();
     try {
       const found = inspect(file.name, JSON.parse(await file.text()));
       if (!found) return toast.error(t("data.emptyFile"));
@@ -96,21 +98,17 @@ export default function Data() {
     setResult(undefined);
   };
   return (
-    <>
-      <Card className="p-5">
-        <h2 className="text-[14px] font-semibold">{t("data.export")}</h2>
-        <p className="mt-0.5 text-[13px] text-muted-foreground">{t("data.exportSub")}</p>
-        <Button className="mt-4" variant="secondary" isDisabled={busy} onPress={exportAll}>
+    <SettingsPage title={t("settings.data")}>
+      <SettingsSection title={t("data.export")} description={t("data.exportSub")}>
+        <Button variant="secondary" isDisabled={busy} onPress={exportAll}>
           <Download />
           {t("data.exportButton")}
         </Button>
-      </Card>
+      </SettingsSection>
       {canWrite && (
-        <Card className="p-5">
-          <h2 className="text-[14px] font-semibold">{t("data.import")}</h2>
-          <p className="mt-0.5 text-[13px] text-muted-foreground">{t("data.importSub")}</p>
+        <SettingsSection title={t("data.import")} description={t("data.importSub")}>
           <DropZone
-            className="mt-4 flex flex-col items-center gap-2 rounded-xl border-2 border-dashed border-border p-8 text-center transition-colors drop-target:border-primary drop-target:bg-accent/50"
+            className="flex flex-col items-center gap-2 rounded-lg border border-dashed border-input px-6 py-10 text-center transition-colors drop-target:border-primary drop-target:bg-accent/50"
             onDrop={async (e) => {
               for (const item of e.items)
                 if (item.kind === "file") {
@@ -119,7 +117,7 @@ export default function Data() {
                 }
             }}
           >
-            <FileUp className="size-6 text-muted-foreground" />
+            <FileUp className="size-5 text-muted-foreground" />
             <Text slot="label" className="text-[13px] text-muted-foreground">
               {t("data.drop")}
             </Text>
@@ -130,7 +128,7 @@ export default function Data() {
               <Button variant="secondary">{t("data.choose")}</Button>
             </FileTrigger>
           </DropZone>
-        </Card>
+        </SettingsSection>
       )}
       <Dialog
         title={result !== undefined ? t("data.resultTitle") : t("data.previewTitle")}
@@ -153,7 +151,7 @@ export default function Data() {
               allowed={preview.kind === "issues" || canAdmin}
               onCancel={close}
               onImport={async () => {
-                const res = await workspaces.import(ws.id, revision, preview.body);
+                const res = await workspaces.import(ws.id, preview.body, importKey.current);
                 await reload().catch(() => undefined);
                 setResult(res.summary);
                 toast.show(t("data.imported"));
@@ -162,7 +160,7 @@ export default function Data() {
           ))
         }
       </Dialog>
-    </>
+    </SettingsPage>
   );
 }
 

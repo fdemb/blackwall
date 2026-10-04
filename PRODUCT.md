@@ -8,7 +8,7 @@ web
 
 ## Stack
 
-Rust API. React Router (framework mode, SPA) with React Aria Components and Tailwind CSS in `web/`. SQLite and PostgreSQL are selectable at deployment.
+Rust API. React Router (framework mode, SPA) with React Aria Components and Tailwind CSS in `web/`. PostgreSQL is the only database; background jobs use the same database.
 
 ## Users
 

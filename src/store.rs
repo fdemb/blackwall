@@ -1,23 +1,24 @@
 use crate::{
-    domain::Workspace,
+    domain::*,
     error::{Error, Result},
 };
 use chrono::{DateTime, Utc};
-use sqlx::{AnyPool, Row, any::AnyPoolOptions};
-use std::sync::Arc;
-use tokio::sync::Notify;
+use sqlx::{PgConnection, PgPool, Postgres, Row, Transaction, postgres::PgPoolOptions};
+use std::{collections::BTreeMap, time::Duration};
 use uuid::Uuid;
-
-mod outbox;
-
-pub use outbox::{Claim, NewJob, Outbox};
+mod discussion;
+mod issues;
+mod planning;
+mod queue;
+mod reads;
+mod transfer;
+pub use queue::{Claim, NewJob, Outbox};
+pub use reads::CollectionQuery;
 
 #[derive(Clone)]
 pub struct Store {
-    pub pool: AnyPool,
+    pub pool: PgPool,
     pub outbox: Outbox,
-    /// Fires when a commit may have moved a workspace's next tick earlier.
-    pub(crate) ticks_changed: Arc<Notify>,
 }
 
 pub struct NewAttachment {
@@ -28,322 +29,349 @@ pub struct NewAttachment {
     pub content_type: String,
     pub bytes: Vec<u8>,
 }
-
-impl Store {
-    pub async fn connect(url: &str) -> Result<Self> {
-        sqlx::any::install_default_drivers();
-
-        let pool = AnyPoolOptions::new()
-            .max_connections(if url.contains(":memory:") { 1 } else { 8 })
-            .connect(url)
-            .await?;
-        if url.starts_with("sqlite:") && !url.contains(":memory:") {
-            sqlx::query("PRAGMA journal_mode = WAL")
-                .execute(&pool)
-                .await?;
-        }
-
-        let store = Self {
-            outbox: Outbox::new(pool.clone()),
-            pool,
-            ticks_changed: Arc::new(Notify::new()),
-        };
-        store.migrate().await?;
-
-        Ok(store)
-    }
-
-    async fn migrate(&self) -> Result<()> {
-        let statements = [
-            "CREATE TABLE IF NOT EXISTS schema_migrations (\
-                 version BIGINT PRIMARY KEY, \
-                 applied_at BIGINT NOT NULL\
-             )",
-            "CREATE TABLE IF NOT EXISTS users (\
-                 id TEXT PRIMARY KEY, \
-                 email TEXT NOT NULL UNIQUE, \
-                 password_hash TEXT NOT NULL, \
-                 profile TEXT NOT NULL\
-             )",
-            "CREATE TABLE IF NOT EXISTS sessions (\
-                 token_hash TEXT PRIMARY KEY, \
-                 user_id TEXT NOT NULL REFERENCES users(id), \
-                 expires_at BIGINT NOT NULL\
-             )",
-            "CREATE INDEX IF NOT EXISTS sessions_user ON sessions(user_id)",
-            "CREATE TABLE IF NOT EXISTS password_resets (\
-                 token_hash TEXT PRIMARY KEY, \
-                 user_id TEXT NOT NULL REFERENCES users(id), \
-                 expires_at BIGINT NOT NULL\
-             )",
-            "CREATE TABLE IF NOT EXISTS workspaces (\
-                 id TEXT PRIMARY KEY, \
-                 revision BIGINT NOT NULL, \
-                 data TEXT NOT NULL\
-             )",
-            "CREATE TABLE IF NOT EXISTS workspace_members (\
-                 workspace_id TEXT NOT NULL REFERENCES workspaces(id), \
-                 user_id TEXT NOT NULL REFERENCES users(id), \
-                 PRIMARY KEY (workspace_id, user_id)\
-             )",
-            "CREATE INDEX IF NOT EXISTS memberships_user ON workspace_members(user_id)",
-            "CREATE TABLE IF NOT EXISTS outbox (\
-                 id TEXT PRIMARY KEY, \
-                 kind TEXT NOT NULL, \
-                 payload TEXT NOT NULL, \
-                 due_at BIGINT NOT NULL, \
-                 attempts BIGINT NOT NULL DEFAULT 0, \
-                 lease_until BIGINT NOT NULL DEFAULT 0, \
-                 delivered_at BIGINT NOT NULL DEFAULT 0, \
-                 last_error TEXT NOT NULL DEFAULT ''\
-             )",
-            "CREATE INDEX IF NOT EXISTS outbox_due ON outbox(delivered_at, due_at, lease_until)",
-            "CREATE TABLE IF NOT EXISTS attachments (\
-                 id TEXT PRIMARY KEY, \
-                 workspace_id TEXT NOT NULL REFERENCES workspaces(id), \
-                 issue_id TEXT NOT NULL, \
-                 uploader_id TEXT NOT NULL REFERENCES users(id), \
-                 filename TEXT NOT NULL, \
-                 content_type TEXT NOT NULL, \
-                 bytes_hex TEXT NOT NULL, \
-                 created_at BIGINT NOT NULL\
-             )",
-        ];
-
-        let mut tx = self.pool.begin().await?;
-        for statement in statements {
-            sqlx::query(statement).execute(&mut *tx).await?;
-        }
-        sqlx::query(
-            "INSERT INTO schema_migrations (version, applied_at) \
-             VALUES (1, $1) \
-             ON CONFLICT (version) DO NOTHING",
-        )
-        .bind(Utc::now().timestamp())
-        .execute(&mut *tx)
-        .await?;
-
-        let scheduled = sqlx::query("SELECT version FROM schema_migrations WHERE version = 2")
-            .fetch_optional(&mut *tx)
-            .await?
-            .is_some();
-        if !scheduled {
-            // Existing workspaces start due so the first tick computes their real schedule.
-            sqlx::query("ALTER TABLE workspaces ADD COLUMN next_tick_at BIGINT DEFAULT 0")
-                .execute(&mut *tx)
-                .await?;
-            sqlx::query("CREATE INDEX workspaces_next_tick ON workspaces(next_tick_at)")
-                .execute(&mut *tx)
-                .await?;
-            sqlx::query("INSERT INTO schema_migrations (version, applied_at) VALUES (2, $1)")
-                .bind(Utc::now().timestamp())
-                .execute(&mut *tx)
-                .await?;
-        }
-
-        tx.commit().await?;
-
-        Ok(())
-    }
-
-    pub async fn load_workspace(&self, id: Uuid) -> Result<(Workspace, i64)> {
-        let row = sqlx::query("SELECT revision, data FROM workspaces WHERE id = $1")
-            .bind(id.to_string())
-            .fetch_optional(&self.pool)
-            .await?
-            .ok_or(Error::NotFound)?;
-
-        Ok((
-            serde_json::from_str(row.try_get::<&str, _>("data")?)?,
-            row.try_get("revision")?,
-        ))
-    }
-
-    pub async fn workspace_ids(&self, user: Option<Uuid>) -> Result<Vec<Uuid>> {
-        let rows = if let Some(user) = user {
-            sqlx::query(
-                "SELECT workspace_id AS id \
-                 FROM workspace_members \
-                 WHERE user_id = $1 \
-                 ORDER BY workspace_id",
-            )
-            .bind(user.to_string())
-            .fetch_all(&self.pool)
-            .await?
-        } else {
-            sqlx::query("SELECT id FROM workspaces ORDER BY id")
-                .fetch_all(&self.pool)
-                .await?
-        };
-
-        rows.into_iter()
-            .map(|row| {
-                Uuid::parse_str(row.try_get::<&str, _>("id")?)
-                    .map_err(|e| Error::Internal(e.to_string()))
-            })
-            .collect()
-    }
-
-    pub async fn insert_workspace(&self, workspace: &Workspace, creator: Uuid) -> Result<()> {
-        let mut tx = self.pool.begin().await?;
-        let next_tick = workspace.tick_due(Utc::now()).map(ceil_seconds);
-        sqlx::query(
-            "INSERT INTO workspaces (id, revision, data, next_tick_at) \
-             VALUES ($1, 0, $2, $3)",
-        )
-        .bind(workspace.id.to_string())
-        .bind(serde_json::to_string(workspace)?)
-        .bind(next_tick)
-        .execute(&mut *tx)
-        .await?;
-        sqlx::query("INSERT INTO workspace_members (workspace_id, user_id) VALUES ($1, $2)")
-            .bind(workspace.id.to_string())
-            .bind(creator.to_string())
-            .execute(&mut *tx)
-            .await?;
-
-        tx.commit().await?;
-        self.tick_scheduled(next_tick);
-
-        Ok(())
-    }
-
-    pub async fn save_workspace(
-        &self,
-        workspace: &Workspace,
-        expected_revision: i64,
-    ) -> Result<i64> {
-        self.commit_workspace(workspace, expected_revision, &[], None)
-            .await
-    }
-
-    pub async fn commit_workspace(
-        &self,
-        workspace: &Workspace,
-        expected_revision: i64,
-        jobs: &[NewJob],
-        attachment: Option<NewAttachment>,
-    ) -> Result<i64> {
-        if serde_json::to_vec(workspace)?.len() > 16 * 1024 * 1024 {
-            return Err(Error::BadRequest(
-                "workspace storage limit is 16 MiB".into(),
-            ));
-        }
-
-        let next_tick = workspace.tick_due(Utc::now()).map(ceil_seconds);
-        let mut tx = self.pool.begin().await?;
-        let updated = sqlx::query(
-            "UPDATE workspaces \
-             SET data = $1, revision = revision + 1, next_tick_at = $2 \
-             WHERE id = $3 AND revision = $4",
-        )
-        .bind(serde_json::to_string(workspace)?)
-        .bind(next_tick)
-        .bind(workspace.id.to_string())
-        .bind(expected_revision)
-        .execute(&mut *tx)
-        .await?;
-        if updated.rows_affected() != 1 {
-            return Err(Error::Conflict(
-                "workspace changed; reload and retry".into(),
-            ));
-        }
-
-        sqlx::query("DELETE FROM workspace_members WHERE workspace_id = $1")
-            .bind(workspace.id.to_string())
-            .execute(&mut *tx)
-            .await?;
-        for member in &workspace.members {
-            sqlx::query("INSERT INTO workspace_members (workspace_id, user_id) VALUES ($1, $2)")
-                .bind(workspace.id.to_string())
-                .bind(member.user_id.to_string())
-                .execute(&mut *tx)
-                .await?;
-        }
-
-        for job in jobs {
-            Outbox::insert(&mut tx, job).await?;
-        }
-
-        if let Some(a) = attachment {
-            sqlx::query(
-                "INSERT INTO attachments (\
-                     id, workspace_id, issue_id, uploader_id, \
-                     filename, content_type, bytes_hex, created_at\
-                 ) \
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
-            )
-            .bind(a.id.to_string())
-            .bind(workspace.id.to_string())
-            .bind(a.issue_id.to_string())
-            .bind(a.uploader_id.to_string())
-            .bind(a.filename)
-            .bind(a.content_type)
-            .bind(hex::encode(a.bytes))
-            .bind(chrono::Utc::now().timestamp())
-            .execute(&mut *tx)
-            .await?;
-        }
-
-        tx.commit().await?;
-
-        if !jobs.is_empty() {
-            self.outbox.ready();
-        }
-        self.tick_scheduled(next_tick);
-
-        Ok(expected_revision + 1)
-    }
-
-    fn tick_scheduled(&self, next_tick: Option<i64>) {
-        if next_tick.is_some() {
-            self.ticks_changed.notify_one();
-        }
-    }
-
-    /// Workspaces whose scheduled tick is due at `now`.
-    pub async fn due_workspaces(&self, now: DateTime<Utc>) -> Result<Vec<Uuid>> {
-        let rows =
-            sqlx::query("SELECT id FROM workspaces WHERE next_tick_at <= $1 ORDER BY next_tick_at")
-                .bind(now.timestamp())
-                .fetch_all(&self.pool)
-                .await?;
-
-        rows.into_iter()
-            .map(|row| {
-                Uuid::parse_str(row.try_get::<&str, _>("id")?)
-                    .map_err(|e| Error::Internal(e.to_string()))
-            })
-            .collect()
-    }
-
-    pub async fn next_workspace_tick(&self) -> Result<Option<i64>> {
-        let row = sqlx::query("SELECT MIN(next_tick_at) AS next FROM workspaces")
-            .fetch_one(&self.pool)
-            .await?;
-
-        Ok(row.try_get("next")?)
-    }
-
-    /// Records the next tick for an unchanged revision. A newer commit already set its own.
-    pub async fn reschedule_tick(
-        &self,
-        id: Uuid,
-        revision: i64,
-        at: Option<DateTime<Utc>>,
-    ) -> Result<()> {
-        sqlx::query("UPDATE workspaces SET next_tick_at = $1 WHERE id = $2 AND revision = $3")
-            .bind(at.map(ceil_seconds))
-            .bind(id.to_string())
-            .bind(revision)
-            .execute(&self.pool)
-            .await?;
-
-        Ok(())
-    }
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
+pub struct OperationResult {
+    pub result: CommandResult,
+    pub versions: BTreeMap<Uuid, i64>,
 }
 
-/// Rounds up so a wakeup never lands just before the event and spins until it arrives.
-fn ceil_seconds(at: DateTime<Utc>) -> i64 {
-    at.timestamp() + i64::from(at.timestamp_subsec_nanos() > 0)
+pub(super) struct Operation<'a> {
+    pub tx: Transaction<'a, Postgres>,
+    pub workspace_id: Uuid,
+    pub actor: Uuid,
+    pub role: Role,
+    pub expected: BTreeMap<Uuid, i64>,
+    pub versions: BTreeMap<Uuid, i64>,
+    pub activity_fields: Vec<String>,
+}
+pub(super) fn enum_text<T: serde::Serialize>(v: &T) -> String {
+    serde_json::to_value(v)
+        .unwrap()
+        .as_str()
+        .unwrap()
+        .to_owned()
+}
+impl Store {
+    pub async fn connect(url: &str) -> Result<Self> {
+        if !url.starts_with("postgres://") && !url.starts_with("postgresql://") {
+            return Err(Error::BadRequest("DATABASE_URL must use PostgreSQL".into()));
+        }
+        let max = database_setting("DATABASE_MAX_CONNECTIONS", 16, 1, 256)?;
+        let acquisition_seconds = database_setting("DATABASE_ACQUIRE_TIMEOUT_SECONDS", 10, 1, 60)?;
+        let pool = PgPoolOptions::new()
+            .max_connections(max)
+            .acquire_timeout(Duration::from_secs(u64::from(acquisition_seconds)))
+            .connect(url)
+            .await?;
+        sqlx::migrate!()
+            .run(&pool)
+            .await
+            .map_err(|e| Error::Internal(e.to_string()))?;
+        Ok(Self {
+            outbox: Outbox::new(pool.clone()),
+            pool,
+        })
+    }
+    pub async fn operation(
+        &self,
+        workspace_id: Uuid,
+        actor: Uuid,
+        command: Command,
+        expected: BTreeMap<Uuid, i64>,
+        key: Option<String>,
+        attachment: Option<NewAttachment>,
+    ) -> Result<OperationResult> {
+        use sha2::{Digest, Sha256};
+        let mut command_fingerprint = serde_json::to_value(&command)?;
+        if attachment.is_some()
+            && let Some(metadata) = command_fingerprint
+                .get_mut("attachment")
+                .and_then(serde_json::Value::as_object_mut)
+        {
+            metadata.remove("id");
+        }
+        let request = serde_json::json!({"command":command_fingerprint,"expected_versions":expected,"attachment":attachment.as_ref().map(|a|serde_json::json!({"filename":a.filename,"content_type":a.content_type,"sha256":hex::encode(Sha256::digest(&a.bytes))}))});
+        let membership_exclusive = matches!(
+            command,
+            Command::SetRole { .. } | Command::RemoveMember { .. }
+        );
+        let mut op = self
+            .begin_operation(workspace_id, actor, expected, membership_exclusive)
+            .await?;
+        if let Some(key) = &key {
+            crate::domain::text(key, 200)?;
+            sqlx::query("INSERT INTO operation_keys(workspace_id,actor,key,request) VALUES($1,$2,$3,$4) ON CONFLICT DO NOTHING").bind(workspace_id).bind(actor).bind(key).bind(&request).execute(&mut *op.tx).await?;
+            let row=sqlx::query("SELECT request,result FROM operation_keys WHERE workspace_id=$1 AND actor=$2 AND key=$3 FOR UPDATE").bind(workspace_id).bind(actor).bind(key).fetch_one(&mut *op.tx).await?;
+            if row.try_get::<serde_json::Value, _>("request")? != request {
+                return Err(Error::Conflict(
+                    "idempotency key reused for a different request".into(),
+                ));
+            }
+            if let Some(value) = row.try_get::<Option<serde_json::Value>, _>("result")? {
+                return Ok(serde_json::from_value(value)?);
+            }
+        }
+        let personal = matches!(
+            &command,
+            Command::MarkNotificationRead { .. }
+                | Command::MarkNotificationUnread { .. }
+                | Command::MarkAllNotificationsRead
+                | Command::ConfigureAlerts { .. }
+                | Command::SaveView { shared: false, .. }
+                | Command::UpdateView { shared: false, .. }
+                | Command::DeleteView { .. }
+                | Command::Follow { .. }
+        );
+        if op.role == Role::Viewer && !personal {
+            return Err(Error::Forbidden);
+        }
+        let action = command.kind();
+        let id = match &command {
+            Command::CreateTeam { .. }
+            | Command::SetTeamMembers { .. }
+            | Command::CreateStage { .. }
+            | Command::UpdateStage { .. }
+            | Command::DeleteStage { .. }
+            | Command::CreateLabel { .. }
+            | Command::UpdateLabel { .. }
+            | Command::CreateProject { .. }
+            | Command::UpdateProject { .. }
+            | Command::CreateMilestone { .. }
+            | Command::UpdateMilestone { .. }
+            | Command::CreateSprint { .. }
+            | Command::UpdateSprint { .. }
+            | Command::CompleteSprint { .. }
+            | Command::ArchiveSprint { .. } => op.planning(command).await?,
+            Command::CreateIssue { .. }
+            | Command::UpdateIssue { .. }
+            | Command::MoveIssue { .. }
+            | Command::BulkIssues { .. }
+            | Command::DeleteIssue { .. }
+            | Command::RestoreIssue { .. }
+            | Command::Follow { .. }
+            | Command::AddSourceLink { .. }
+            | Command::ImportIssues { .. } => op.issues(command).await?,
+            _ => op.discussion(command, attachment).await?,
+        };
+        let fields = std::mem::take(&mut op.activity_fields);
+        op.activity(action, id, fields).await?;
+        let result = OperationResult {
+            result: CommandResult { id },
+            versions: op.versions.clone(),
+        };
+        if let Some(key) = key {
+            sqlx::query(
+                "UPDATE operation_keys SET result=$4 WHERE workspace_id=$1 AND actor=$2 AND key=$3",
+            )
+            .bind(workspace_id)
+            .bind(actor)
+            .bind(key)
+            .bind(serde_json::to_value(&result)?)
+            .execute(&mut *op.tx)
+            .await?;
+        }
+        op.tx.commit().await?;
+        self.outbox.ready();
+        Ok(result)
+    }
+    pub(super) async fn begin_operation(
+        &self,
+        workspace_id: Uuid,
+        actor: Uuid,
+        expected: BTreeMap<Uuid, i64>,
+        exclusive: bool,
+    ) -> Result<Operation<'static>> {
+        let mut tx = self.pool.begin().await?;
+        let auth_lock = if exclusive {
+            "SELECT pg_advisory_xact_lock(hashtextextended($1, 74103))"
+        } else {
+            "SELECT pg_advisory_xact_lock_shared(hashtextextended($1, 74103))"
+        };
+        sqlx::query(auth_lock)
+            .bind(workspace_id.to_string())
+            .execute(&mut *tx)
+            .await?;
+        // Membership changes lock every member in UUID order. Other mutations retain shared locks.
+        let role = if exclusive {
+            let rows=sqlx::query("SELECT user_id,role FROM workspace_members WHERE workspace_id=$1 ORDER BY user_id FOR UPDATE").bind(workspace_id).fetch_all(&mut *tx).await?;
+            rows.into_iter()
+                .find(|r| r.get::<Uuid, _>("user_id") == actor)
+                .map(|r| r.get::<String, _>("role"))
+                .ok_or(Error::Forbidden)?
+        } else {
+            sqlx::query(
+                "SELECT role FROM workspace_members WHERE workspace_id=$1 AND user_id=$2 FOR SHARE",
+            )
+            .bind(workspace_id)
+            .bind(actor)
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or(Error::Forbidden)?
+            .try_get::<String, _>("role")?
+        };
+        Ok(Operation {
+            tx,
+            workspace_id,
+            actor,
+            role: serde_json::from_value(serde_json::Value::String(role))?,
+            expected,
+            versions: BTreeMap::new(),
+            activity_fields: Vec::new(),
+        })
+    }
+}
+fn database_setting(name: &str, default: u32, min: u32, max: u32) -> Result<u32> {
+    let value = match std::env::var(name) {
+        Ok(value) => value
+            .parse::<u32>()
+            .map_err(|_| Error::BadRequest(format!("{name} must be an integer")))?,
+        Err(std::env::VarError::NotPresent) => default,
+        Err(_) => return Err(Error::BadRequest(format!("{name} must be valid text"))),
+    };
+    if !(min..=max).contains(&value) {
+        return Err(Error::BadRequest(format!(
+            "{name} must be between {min} and {max}"
+        )));
+    }
+    Ok(value)
+}
+
+impl Operation<'_> {
+    pub fn admin(&self) -> Result<()> {
+        if matches!(self.role, Role::Owner | Role::Admin) {
+            Ok(())
+        } else {
+            Err(Error::Forbidden)
+        }
+    }
+    pub async fn member(&mut self, user: Uuid) -> Result<()> {
+        sqlx::query(
+            "SELECT user_id FROM workspace_members WHERE workspace_id=$1 AND user_id=$2 FOR SHARE",
+        )
+        .bind(self.workspace_id)
+        .bind(user)
+        .fetch_optional(&mut *self.tx)
+        .await?
+        .ok_or(Error::Forbidden)?;
+        Ok(())
+    }
+    pub async fn touch(&mut self, table: &str, id: Uuid) -> Result<i64> {
+        if let Some(v) = self.versions.get(&id) {
+            return Ok(*v);
+        }
+        let column = if matches!(table, "workspace_members" | "alert_preferences") {
+            "user_id"
+        } else {
+            "id"
+        };
+        assert!(matches!(
+            table,
+            "issues"
+                | "teams"
+                | "stages"
+                | "labels"
+                | "projects"
+                | "milestones"
+                | "sprints"
+                | "comments"
+                | "time_entries"
+                | "invitations"
+                | "saved_views"
+                | "notifications"
+                | "integrations"
+                | "workspace_members"
+                | "alert_preferences"
+        ));
+        let sql =
+            format!("SELECT version FROM {table} WHERE workspace_id=$1 AND {column}=$2 FOR UPDATE");
+        let version: i64 = sqlx::query(&sql)
+            .bind(self.workspace_id)
+            .bind(id)
+            .fetch_optional(&mut *self.tx)
+            .await?
+            .ok_or(Error::NotFound)?
+            .try_get("version")?;
+        let expected = self
+            .expected
+            .get(&id)
+            .ok_or_else(|| Error::BadRequest(format!("expected_versions must include {id}")))?;
+        if *expected != version {
+            return Err(Error::Conflict(format!(
+                "entity {id} changed; current version is {version}"
+            )));
+        }
+        let sql =
+            format!("UPDATE {table} SET version=version+1 WHERE workspace_id=$1 AND {column}=$2");
+        sqlx::query(&sql)
+            .bind(self.workspace_id)
+            .bind(id)
+            .execute(&mut *self.tx)
+            .await?;
+        self.versions.insert(id, version + 1);
+        Ok(version + 1)
+    }
+    pub fn created(&mut self, id: Uuid) {
+        self.versions.insert(id, 1);
+    }
+    pub async fn activity(
+        &mut self,
+        action: &str,
+        id: Option<Uuid>,
+        fields: Vec<String>,
+    ) -> Result<()> {
+        let event = Activity {
+            id: Uuid::new_v4(),
+            actor: self.actor,
+            action: action.into(),
+            entity_id: id,
+            at: Utc::now(),
+            fields,
+        };
+        sqlx::query("INSERT INTO activity(id,workspace_id,actor,action,entity_id,at,fields) VALUES($1,$2,$3,$4,$5,$6,$7)").bind(event.id).bind(self.workspace_id).bind(self.actor).bind(action).bind(id).bind(event.at).bind(serde_json::to_value(&event.fields)?).execute(&mut *self.tx).await?;
+        let rows = sqlx::query(
+            "SELECT id,webhook_url,secret FROM integrations WHERE workspace_id=$1 AND enabled",
+        )
+        .bind(self.workspace_id)
+        .fetch_all(&mut *self.tx)
+        .await?;
+        for row in rows {
+            let iid: Uuid = row.try_get("id")?;
+            Outbox::insert(&mut self.tx,&NewJob::now(format!("{}:{}",event.id,iid),crate::jobs::Job::Webhook(crate::jobs::Webhook{workspace_id:self.workspace_id,integration_id:iid,url:row.try_get("webhook_url")?,secret:row.try_get("secret")?,event:serde_json::json!({"workspace_id":self.workspace_id,"activity":event})}))).await?;
+        }
+        Ok(())
+    }
+    pub async fn notify(
+        &mut self,
+        user: Uuid,
+        issue_id: Option<Uuid>,
+        kind: AlertKind,
+        message: String,
+        key: String,
+    ) -> Result<()> {
+        let column = enum_text(&kind);
+        let global = match kind {
+            AlertKind::Assignment => "assignments",
+            AlertKind::Reply | AlertKind::Mention => "replies",
+            AlertKind::Change => "changes",
+            AlertKind::Deadline => "deadlines",
+        };
+        let sql = format!(
+            "INSERT INTO notifications(id,workspace_id,user_id,issue_id,kind,message,created_at,dedup_key) SELECT $1,$2,$3,$4,$5,$6,now(),$7 WHERE EXISTS(SELECT 1 FROM workspace_members WHERE workspace_id=$2 AND user_id=$3) AND COALESCE((SELECT {column} FROM alert_preferences WHERE workspace_id=$2 AND user_id=$3),true) AND COALESCE((SELECT (profile->'alerts'->>'{global}')::bool FROM users WHERE id=$3),true) ON CONFLICT(workspace_id,dedup_key) DO NOTHING"
+        );
+        sqlx::query(&sql)
+            .bind(Uuid::new_v4())
+            .bind(self.workspace_id)
+            .bind(user)
+            .bind(issue_id)
+            .bind(column)
+            .bind(message)
+            .bind(key)
+            .execute(&mut *self.tx)
+            .await?;
+
+        Ok(())
+    }
+    pub async fn issue(&mut self, id: Uuid) -> Result<Issue> {
+        reads::issue_on(&mut self.tx, self.workspace_id, id, false).await
+    }
 }

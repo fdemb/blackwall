@@ -50,8 +50,12 @@ fn load_shell(dir: &std::path::Path) -> Option<Shell> {
     let html = std::fs::read_to_string(dir.join("index.html")).ok()?;
     let scripts = inline_script_hashes(&html).join(" ");
     let csp = format!(
-        "default-src 'self'; script-src 'self' {scripts}; style-src 'self'; img-src 'self' https:; \
-         font-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
+        // React Aria injects a fixed pressable touch-action stylesheet. Allow its hash,
+        // not arbitrary inline styles. Vite embeds small local font files as data URLs.
+        "default-src 'self'; script-src 'self' {scripts}; \
+         style-src 'self' 'sha256-38RhXrc7EdReTKsOm23ZPOCUgniTUUcjky8QOOrQx6o='; \
+         img-src 'self' https:; font-src 'self' data:; connect-src 'self'; \
+         frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
     );
 
     Some(Shell {
