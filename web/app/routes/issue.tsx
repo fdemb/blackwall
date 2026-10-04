@@ -62,7 +62,13 @@ import { useDocumentTitle } from "~/lib/title";
 import { useI18n, type Key } from "~/lib/i18n";
 import { useMediaQuery } from "~/lib/media";
 import { usePending } from "~/lib/use-pending";
-import { useIssueDetail, useResource, type IssueDetail } from "~/lib/queries";
+import {
+  useActivity,
+  useComments,
+  useIssueDetail,
+  useTimeEntries,
+  type IssueDetail,
+} from "~/lib/queries";
 import { QueryStatus } from "~/components/app/query-status";
 import { useWorkspace } from "~/lib/workspace";
 import { cn } from "~/lib/utils";
@@ -363,9 +369,6 @@ function IssueView({ issue, detail }: { issue: Issue; detail: IssueDetail }) {
               )}
               {issue.attachments.length > 0 && <Attachments issue={issue} uploader={uploader} />}
               <Timeline issue={issue} />
-              <QueryStatus query={detail.comments} />
-              <QueryStatus query={detail.activity} />
-              <QueryStatus query={detail.time} />
             </div>
           </div>
         </div>
@@ -639,8 +642,7 @@ type TimeView = { kind: "closed" } | { kind: "list" } | { kind: "form"; entry: T
 function TimeProp({ issue }: { issue: Issue }) {
   const { t, lang } = useI18n();
   const { me, run, member, canWrite, canAdmin, report } = useWorkspace();
-  const time = useResource("time_entries", { issue_id: issue.id });
-  const entries = [...time.items].sort((a, b) => +new Date(b.logged_at) - +new Date(a.logged_at));
+  const entries = useTimeEntries(issue.id).items;
   const total = report.issues.find((total) => total.id === issue.id)?.minutes ?? 0;
   const [view, setView] = useState<TimeView>({ kind: "closed" });
   const [deleting, setDeleting] = useState<Id | null>(null);
@@ -1355,9 +1357,9 @@ type TimelineItem =
 function Timeline({ issue }: { issue: Issue }) {
   const { t } = useI18n();
   const [limit, setLimit] = useState(PAGE);
-  const comments = useResource("comments", { issue_id: issue.id });
-  const activity = useResource("activity", { entity_id: issue.id });
-  const time = useResource("time_entries", { issue_id: issue.id });
+  const comments = useComments(issue.id);
+  const activity = useActivity(issue.id);
+  const time = useTimeEntries(issue.id);
   const entries = new Map(time.items.map((e) => [e.id, e]));
   const items = [
     ...comments.items.map((c): TimelineItem => ({ kind: "comment", at: c.created_at, comment: c })),
@@ -1402,6 +1404,8 @@ function Timeline({ issue }: { issue: Issue }) {
             )}
         </ol>
       )}
+      <QueryStatus query={comments} />
+      <QueryStatus query={activity} />
       <Composer issue={issue} hasItems={items.length > 0} />
     </Section>
   );

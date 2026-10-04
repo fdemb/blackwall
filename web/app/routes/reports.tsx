@@ -13,7 +13,7 @@ import { ProgressBar } from "~/components/app/progress";
 import { TimeForm } from "~/components/app/time-form";
 import { formatMinutes, fullDate, issueKey } from "~/lib/format";
 import { useI18n } from "~/lib/i18n";
-import { useIssues, useResource } from "~/lib/queries";
+import { useIssues, useTimeEntries } from "~/lib/queries";
 import { reportQuery } from "~/lib/query-client";
 import { QueryStatus } from "~/components/app/query-status";
 import { useWorkspace } from "~/lib/workspace";
@@ -203,11 +203,11 @@ function TimeLog({ lang }: { lang: string }) {
   const { ws, me, member, run, canAdmin } = useWorkspace();
   const [editing, setEditing] = useState<TimeEntry | null>(null);
   const [deleting, setDeleting] = useState<TimeEntry | null>(null);
-  const query = useResource("time_entries");
+  const query = useTimeEntries();
   const ids = [...new Set(query.items.map((entry) => entry.issue_id))];
   const related = useIssues({ ids: ids.join(",") }, ids.length > 0);
   const issues = new Map(related.items.map((issue) => [issue.id, issue]));
-  const entries = [...query.items].sort((a, b) => +new Date(b.logged_at) - +new Date(a.logged_at));
+  const entries = query.items;
   if (!entries.length && (query.loading || query.error)) return <QueryStatus query={query} />;
   if (!entries.length)
     return (

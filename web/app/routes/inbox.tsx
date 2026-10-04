@@ -18,7 +18,7 @@ import { Tab, TabList, Tabs } from "~/components/ui/tabs";
 import { EmptyState, Page, PageHeader, Scroll } from "~/components/app/page";
 import { issueKey, relativeTime } from "~/lib/format";
 import { useI18n } from "~/lib/i18n";
-import { useIssues, useResource } from "~/lib/queries";
+import { useIssues, useNotifications } from "~/lib/queries";
 import { QueryStatus } from "~/components/app/query-status";
 import { useWorkspace } from "~/lib/workspace";
 import { cn } from "~/lib/utils";
@@ -37,14 +37,15 @@ export default function Inbox() {
   const nav = useNavigate();
   const { ws, run, unread } = useWorkspace();
   const [view, setView] = useState<"all" | "unread">("all");
-  const query = useResource("notifications");
-  const ids = query.items.flatMap((notification) =>
+  const query = useNotifications();
+  const unreadOnly = useNotifications(true);
+  const sorted = query.items;
+  const list = view === "unread" ? unreadOnly.items : sorted;
+  const ids = sorted.flatMap((notification) =>
     notification.issue_id ? [notification.issue_id] : [],
   );
   const related = useIssues({ ids: [...new Set(ids)].join(",") }, ids.length > 0);
   const issues = new Map(related.items.map((issue) => [issue.id, issue]));
-  const sorted = [...query.items].sort((a, b) => +new Date(b.created_at) - +new Date(a.created_at));
-  const list = view === "unread" ? sorted.filter((n) => !n.read_at) : sorted;
   return (
     <Page>
       <PageHeader

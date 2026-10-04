@@ -14,31 +14,9 @@ import { useT } from "~/lib/i18n";
 import { useIssues } from "~/lib/queries";
 import { QueryStatus } from "~/components/app/query-status";
 import { useWorkspace } from "~/lib/workspace";
-import type { Id, Issue } from "~/lib/types";
+import type { Id } from "~/lib/types";
 
 type Layout = "list" | "board" | "backlog";
-
-/** Where dropped issues land, as a patch for every cached copy until the server confirms the move. */
-export function moveOptimistic(
-  issues: Issue[],
-  ids: Id[],
-  stageId: Id,
-  beforeId: Id | null,
-): (issue: Issue) => Issue {
-  const before = beforeId ? issues.find((i) => i.id === beforeId) : undefined;
-  const inStage = issues.filter((i) => i.stage_id === stageId && !ids.includes(i.id));
-  const end = Math.max(0, ...inStage.map((i) => i.position)) + 1;
-  return (issue) => {
-    const k = ids.indexOf(issue.id);
-    return k < 0
-      ? issue
-      : {
-          ...issue,
-          stage_id: stageId,
-          position: before ? before.position - 0.5 + k * 0.01 : end + k,
-        };
-  };
-}
 
 /** A sprint id, `"none"` for issues outside every sprint, or `"all"`. */
 type SprintScope = Id;
@@ -174,12 +152,7 @@ function BoardView({
       const before = beforeId;
       for (const id of ids) {
         if (id === before) continue;
-        await run(
-          { type: "move_issue", id, stage_id: stageId, before_id: before },
-          id === ids[0]
-            ? { optimistic: moveOptimistic(issues, ids, stageId, beforeId) }
-            : undefined,
-        ).catch(() => {});
+        await run({ type: "move_issue", id, stage_id: stageId, before_id: before }).catch(() => {});
       }
     })();
   };

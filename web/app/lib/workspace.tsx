@@ -1,29 +1,19 @@
-import {
-  createContext,
-  useCallback,
-  useContext,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  type ReactNode,
-} from "react";
-import { useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
-import { ApiError, collectPages, workspaces } from "./api";
-import { applyChanges, knownVersions, patchIssues } from "./changes";
-import { commandEntityIds, expectedVersions } from "./entity-versions";
-import { collectionQuery, keys, membersQuery, reportQuery, workspaceQuery } from "./query-client";
+import { createContext, useCallback, useContext, useMemo, useState, type ReactNode } from "react";
+import { useIsMutating, useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
+import { lower, useLiveQuery } from "@tanstack/react-db";
+import { ApiError } from "./api";
+import { createCommandRunner } from "./commands";
+import { workspaceDb, type WorkspaceDb } from "./db";
+import { keys, refreshWorkspace, reportQuery, workspaceQuery } from "./query-client";
+import { changeFeedQuery } from "./sync";
 import { useSession } from "./session";
 import { useToast } from "~/components/ui/toast";
 import { useT } from "./i18n";
 import type {
-  ChangeFeed,
   Command,
-  CommandResult,
   EntityVersions,
   Id,
   IssueInput,
-  Issue,
   MemberProfile,
   Report,
   Role,
@@ -32,18 +22,10 @@ import type {
   Workspace,
 } from "./types";
 
-/** How often to ask for other people's changes while the tab is visible. */
-const POLL_MS = 5000;
-
-/** Change-feed cursors by workspace. A cursor is taken before the first load, so nothing slips between. */
-const cursors = new Map<Id, string>();
-
-export async function startChangeFeed(ws: Id) {
-  if (!cursors.has(ws)) cursors.set(ws, (await workspaces.changes(ws)).cursor);
-}
-
 interface Ctx {
   ws: Workspace;
+  /** The workspace's TanStack DB collections. */
+  db: WorkspaceDb;
   members: MemberProfile[];
   report: Report;
   role: Role;
@@ -54,18 +36,14 @@ interface Ctx {
   team: (id: Id) => Team | undefined;
   stage: (id: Id) => Stage | undefined;
   /**
-   * `optimistic` updates every cached copy of the issues it changes until the server answers.
+   * Sends a command. Its local effect shows at once and rolls back if the server refuses.
    * `quiet` skips the error toast, for forms that show the failure beside their own controls.
    */
   run: (
     command: Command,
-    opts?: {
-      optimistic?: (issue: Issue) => Issue;
-      quiet?: boolean;
-      expectedVersions?: EntityVersions;
-    },
+    opts?: { quiet?: boolean; expectedVersions?: EntityVersions },
   ) => Promise<Id | null>;
-  /** Refetches everything on screen, after changes the feed can't describe such as imports. */
+  /** Refetches everything, after changes the feed can't describe such as imports. */
   reload: () => Promise<void>;
   /** Number of writes waiting on the server. */
   pending: number;
@@ -83,53 +61,69 @@ interface Ctx {
 }
 const WorkspaceCtx = createContext<Ctx | null>(null);
 
-type Operation = { key: string; versions?: EntityVersions };
-
-/** Reads the workspace's records from the query cache. The route loader has already fetched them. */
-function useWorkspaceRecords(id: Id) {
-  const workspace = useSuspenseQuery(workspaceQuery(id)).data.workspace;
-  const members = useSuspenseQuery(membersQuery(id)).data;
-  const report = useSuspenseQuery(reportQuery(id)).data;
-  const teams = useSuspenseQuery(collectionQuery(id, "teams")).data;
-  const labels = useSuspenseQuery(collectionQuery(id, "labels")).data;
-  const projects = useSuspenseQuery(collectionQuery(id, "projects")).data;
-  const milestones = useSuspenseQuery(collectionQuery(id, "milestones")).data;
-  const sprints = useSuspenseQuery(collectionQuery(id, "sprints")).data;
-  const views = useSuspenseQuery(collectionQuery(id, "views")).data;
-  const invitations = useSuspenseQuery(collectionQuery(id, "invitations")).data;
-  const alerts = useSuspenseQuery(collectionQuery(id, "alert_preferences")).data;
-  const integrations = useSuspenseQuery(collectionQuery(id, "integrations")).data;
+/** Workspace records from the collections, in the order the API lists them. */
+function useWorkspaceRecords(db: WorkspaceDb) {
+  const name = useSuspenseQuery(workspaceQuery(db.id)).data.workspace.name;
+  const report = useSuspenseQuery(reportQuery(db.id)).data;
+  const teams = useLiveQuery({ query: (q) => q.from({ t: db.teams }).orderBy(({ t }) => t.name) });
+  const labels = useLiveQuery({
+    query: (q) => q.from({ l: db.labels }).orderBy(({ l }) => l.name),
+  });
+  const projects = useLiveQuery({
+    query: (q) => q.from({ p: db.projects }).orderBy(({ p }) => p.name),
+  });
+  const milestones = useLiveQuery({
+    query: (q) => q.from({ m: db.milestones }).orderBy(({ m }) => m.name),
+  });
+  const sprints = useLiveQuery({
+    query: (q) => q.from({ s: db.sprints }).orderBy(({ s }) => s.starts_at),
+  });
+  const views = useLiveQuery({ query: (q) => q.from({ v: db.views }).orderBy(({ v }) => v.name) });
+  const invitations = useLiveQuery({
+    query: (q) => q.from({ i: db.invitations }).orderBy(({ i }) => i.expires_at, "desc"),
+  });
+  const alerts = useLiveQuery({ query: (q) => q.from({ a: db.alert_preferences }) });
+  const integrations = useLiveQuery({
+    query: (q) => q.from({ i: db.integrations }).orderBy(({ i }) => i.name),
+  });
+  const members = useLiveQuery({
+    query: (q) => q.from({ m: db.members }).orderBy(({ m }) => lower(m.display_name)),
+  });
   const ws = useMemo<Workspace>(
     () => ({
-      id,
-      name: workspace.name,
-      members: members.map((m) => ({ user_id: m.id, role: m.role, version: m.version })),
-      teams,
-      labels,
-      projects,
-      milestones,
-      sprints,
-      views,
-      invitations,
-      alert_preferences: alerts,
-      integrations,
+      id: db.id,
+      name,
+      members: (members.data ?? []).map((m) => ({
+        user_id: m.id,
+        role: m.role,
+        version: m.version,
+      })),
+      teams: teams.data ?? [],
+      labels: labels.data ?? [],
+      projects: projects.data ?? [],
+      milestones: milestones.data ?? [],
+      sprints: sprints.data ?? [],
+      views: views.data ?? [],
+      invitations: invitations.data ?? [],
+      alert_preferences: alerts.data ?? [],
+      integrations: integrations.data ?? [],
     }),
     [
-      id,
-      workspace,
-      members,
-      teams,
-      labels,
-      projects,
-      milestones,
-      sprints,
-      views,
-      invitations,
-      alerts,
-      integrations,
+      db.id,
+      name,
+      members.data,
+      teams.data,
+      labels.data,
+      projects.data,
+      milestones.data,
+      sprints.data,
+      views.data,
+      invitations.data,
+      alerts.data,
+      integrations.data,
     ],
   );
-  return { ws, members, report };
+  return { ws, members: members.data ?? [], report };
 }
 
 export function WorkspaceProvider({ id, children }: { id: Id; children: ReactNode }) {
@@ -137,200 +131,59 @@ export function WorkspaceProvider({ id, children }: { id: Id; children: ReactNod
   const toast = useToast();
   const t = useT();
   const client = useQueryClient();
-  const { ws, members, report } = useWorkspaceRecords(id);
+  const db = workspaceDb(id, client);
+  const { ws, members, report } = useWorkspaceRecords(db);
+  const feed = useQuery(changeFeedQuery(client, db));
+  const pending = useIsMutating({ mutationKey: keys.commands(id) });
+  const runner = useMemo(
+    () => createCommandRunner(client, db, profile.id),
+    [client, db, profile.id],
+  );
   const [createState, setCreate] = useState<{ open: boolean; defaults: Partial<IssueInput> }>({
     open: false,
     defaults: {},
   });
-  const commandKeys = useRef(new Map<string, Operation>());
-  const uploadKeys = useRef(new WeakMap<File, Map<string, Operation>>());
-  const queue = useRef<Promise<unknown>>(Promise.resolve());
-  const inFlight = useRef(0);
-  const [pending, setPending] = useState(0);
-  const [offline, setOffline] = useState(false);
   const role = ws.members.find((m) => m.user_id === profile.id)?.role ?? "viewer";
 
-  const reload = useCallback(
-    () => client.invalidateQueries({ queryKey: keys.all(id) }),
-    [client, id],
-  );
+  const reload = useCallback(() => refreshWorkspace(client, id), [client, id]);
 
-  const enqueue = useCallback(<T,>(job: () => Promise<T>) => {
-    inFlight.current += 1;
-    setPending((n) => n + 1);
-    const next = queue.current.then(job, job);
-    queue.current = next
-      .catch(() => undefined)
-      .finally(() => {
-        inFlight.current -= 1;
-        setPending((n) => n - 1);
-      });
-    return next;
-  }, []);
-
-  const describe = useCallback(
-    (e: unknown) => {
-      if (!(e instanceof ApiError)) return new Error(t("error.network"));
-      if (e.status === 409) return new ApiError(t("error.conflict"), 409);
-      return new ApiError(e.message || t("error.generic"), e.status);
-    },
-    [t],
-  );
-
-  /** A failed write leaves guesses in the cache, so everything on screen is fetched again. */
-  const recover = useCallback(
-    async (e: unknown, quiet?: boolean) => {
-      await reload().catch(() => undefined);
-      const err = describe(e);
+  /** The optimistic effect is already rolled back; refetch in case the server moved on. */
+  const fail = useCallback(
+    (e: unknown, quiet?: boolean) => {
+      void reload().catch(() => undefined);
+      const err = !(e instanceof ApiError)
+        ? new Error(t("error.network"))
+        : e.status === 409
+          ? new ApiError(t("error.conflict"), 409)
+          : new ApiError(e.message || t("error.generic"), e.status);
       if (!quiet) toast.error(err.message);
       return err;
     },
-    [reload, describe, toast],
-  );
-
-  const polling = useRef(false);
-  const poll = useCallback(async () => {
-    // A pending write's optimistic state would flicker back to the server's older copy.
-    if (document.visibilityState === "hidden" || inFlight.current > 0 || polling.current) return;
-    polling.current = true;
-    try {
-      const since = cursors.get(id);
-      const feed: ChangeFeed = await workspaces.changes(id, since);
-      cursors.set(id, feed.cursor);
-      if (since === undefined || feed.reset) await reload();
-      else applyChanges(client, id, feed.changes);
-      setOffline(false);
-    } catch {
-      setOffline(true);
-    } finally {
-      polling.current = false;
-    }
-  }, [client, id, reload]);
-
-  useEffect(() => {
-    const timer = setInterval(() => void poll(), POLL_MS);
-    const wake = () => void poll();
-    addEventListener("focus", wake);
-    addEventListener("online", wake);
-    document.addEventListener("visibilitychange", wake);
-    return () => {
-      clearInterval(timer);
-      removeEventListener("focus", wake);
-      removeEventListener("online", wake);
-      document.removeEventListener("visibilitychange", wake);
-    };
-  }, [poll]);
-
-  /** Versions of the records a command touches, including ones only the server can list. */
-  const versionsFor = useCallback(
-    async (command: Command) => {
-      const known = knownVersions(client, id);
-      if (command.type === "set_role" || command.type === "remove_member")
-        return expectedVersions([command.user_id], known.memberships);
-      if (command.type === "configure_alerts")
-        return expectedVersions([profile.id], known.preferences);
-      let ids = commandEntityIds(command, profile.id);
-      const fetched: EntityVersions = {};
-      const remember = (records: { id: Id; version: number }[]) => {
-        for (const record of records) fetched[record.id] = record.version;
-        return records.map((record) => record.id);
-      };
-      if (command.type === "complete_sprint")
-        ids = [
-          ...ids,
-          ...remember(
-            await collectPages((offset) =>
-              workspaces.issues(id, { sprint_id: command.id }, offset),
-            ),
-          ),
-        ];
-      if (command.type === "delete_stage") {
-        const pages = await Promise.all(
-          [false, true].map((trash) =>
-            collectPages((offset) =>
-              workspaces.issues(id, { stage_id: command.id, trash }, offset),
-            ),
-          ),
-        );
-        ids = [...ids, ...remember(pages.flat())];
-      }
-      if (command.type === "mark_all_notifications_read") {
-        const all = await collectPages((offset) =>
-          workspaces.resource(id, "notifications", { offset }),
-        );
-        remember(all);
-        ids = all.filter((n) => !n.read_at).map((n) => n.id);
-      }
-      return expectedVersions(ids, { ...known.records, ...fetched });
-    },
-    [client, id, profile.id],
-  );
-
-  const settle = useCallback(
-    (res: CommandResult) => {
-      applyChanges(client, id, res.changes);
-      return res;
-    },
-    [client, id],
+    [reload, t, toast],
   );
 
   const run = useCallback<Ctx["run"]>(
-    (command, opts) => {
-      if (opts?.optimistic) patchIssues(client, id, opts.optimistic);
-      const identity = JSON.stringify(command);
-      const operation = commandKeys.current.get(identity) ?? { key: crypto.randomUUID() };
-      commandKeys.current.set(identity, operation);
-      return enqueue(async () => {
-        let res;
-        try {
-          operation.versions ??= { ...(await versionsFor(command)), ...opts?.expectedVersions };
-          res = settle(await workspaces.command(id, operation.versions, command, operation.key));
-        } catch (e) {
-          // A rejected request can't succeed with the same key; a lost response can.
-          if (e instanceof ApiError && e.status < 500) commandKeys.current.delete(identity);
-          throw await recover(e, opts?.quiet);
-        }
-        commandKeys.current.delete(identity);
-        return res.result.id;
-      });
-    },
-    [client, id, enqueue, versionsFor, settle, recover],
+    (command, opts) =>
+      runner.command(command, opts?.expectedVersions).then(
+        (res) => res.result.id,
+        (e: unknown) => {
+          throw fail(e, opts?.quiet);
+        },
+      ),
+    [runner, fail],
   );
 
-  const upload = useCallback(
-    (issueId: Id, file: File, commentId?: Id) =>
-      enqueue(async () => {
-        const target = commentId ?? issueId;
-        const keyed = uploadKeys.current.get(file) ?? new Map<string, Operation>();
-        uploadKeys.current.set(file, keyed);
-        const operation = keyed.get(target) ?? { key: crypto.randomUUID() };
-        keyed.set(target, operation);
-        try {
-          if (!operation.versions) {
-            const known = knownVersions(client, id).records;
-            if (known[issueId] === undefined)
-              known[issueId] = (await workspaces.issue(id, issueId)).version;
-            operation.versions = expectedVersions([target], known);
-          }
-          settle(
-            await workspaces.upload(
-              id,
-              issueId,
-              operation.versions,
-              file,
-              commentId,
-              operation.key,
-            ),
-          );
-        } catch (e) {
-          if (e instanceof ApiError && e.status < 500) keyed.delete(target);
-          const err = await recover(e, true);
+  const upload = useCallback<Ctx["upload"]>(
+    (issueId, file, commentId) =>
+      runner.upload(issueId, file, commentId).then(
+        () => undefined,
+        (e: unknown) => {
+          const err = fail(e, true);
           toast.error(`${file.name}: ${err.message}`);
           throw err;
-        }
-        keyed.delete(target);
-      }),
-    [client, id, enqueue, settle, recover, toast],
+        },
+      ),
+    [runner, fail, toast],
   );
 
   const value = useMemo<Ctx>(() => {
@@ -338,6 +191,7 @@ export function WorkspaceProvider({ id, children }: { id: Id; children: ReactNod
     const people = new Map(members.map((m) => [m.id, m]));
     return {
       ws,
+      db,
       members,
       report,
       role,
@@ -350,8 +204,8 @@ export function WorkspaceProvider({ id, children }: { id: Id; children: ReactNod
       run,
       reload,
       pending,
-      offline,
-      retrySync: () => void poll(),
+      offline: feed.isError,
+      retrySync: () => void feed.refetch(),
       upload,
       unread: report.inbox_unread,
       create: {
@@ -362,20 +216,7 @@ export function WorkspaceProvider({ id, children }: { id: Id; children: ReactNod
         hide: () => setCreate({ open: false, defaults: {} }),
       },
     };
-  }, [
-    ws,
-    members,
-    report,
-    role,
-    profile.id,
-    run,
-    reload,
-    upload,
-    createState,
-    pending,
-    offline,
-    poll,
-  ]);
+  }, [ws, db, members, report, role, profile.id, run, reload, pending, feed, upload, createState]);
 
   return <WorkspaceCtx value={value}>{children}</WorkspaceCtx>;
 }
