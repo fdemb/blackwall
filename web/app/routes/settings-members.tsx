@@ -105,7 +105,9 @@ export default function Members() {
       {canAdmin && (
         <SettingsSection title={t("invite.pending")}>
           {invitations.length === 0 ? (
-            <p className="text-[13px] text-muted-foreground">{t("invite.none")}</p>
+            <p className="px-4 py-4 text-[13px] text-muted-foreground sm:px-5">
+              {t("invite.none")}
+            </p>
           ) : (
             <SettingsList>
               {invitations.map((i) => (

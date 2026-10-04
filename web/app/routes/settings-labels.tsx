@@ -68,7 +68,7 @@ export default function Labels() {
       {canWrite && (
         <SettingsSection title={t("labels.add")}>
           <Form
-            className="flex flex-wrap items-end gap-3"
+            className="flex flex-wrap items-end gap-3 px-4 py-4 sm:px-5 sm:py-5"
             onSubmit={(e) => {
               e.preventDefault();
               void guard(async () => {
@@ -97,7 +97,7 @@ export default function Labels() {
       )}
       <SettingsSection title={canWrite ? t("settings.labels") : undefined}>
         {ws.labels.length === 0 ? (
-          <p className="flex items-center gap-2 text-[13px] text-muted-foreground">
+          <p className="flex items-center gap-2 px-4 py-4 text-[13px] text-muted-foreground sm:px-5">
             <Tag className="size-4" />
             {t("labels.empty")}
           </p>

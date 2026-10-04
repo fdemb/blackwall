@@ -16,7 +16,7 @@ export default function Security() {
     <SettingsPage title={t("account.security")} description={t("account.securitySub")}>
       <SettingsSection title={t("account.password")}>
         <Form
-          className="max-w-sm space-y-5"
+          className="max-w-sm space-y-5 px-4 py-4 sm:px-5 sm:py-5"
           onSubmit={async (e) => {
             e.preventDefault();
             const form = e.currentTarget;

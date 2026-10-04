@@ -108,15 +108,17 @@ export default function Integrations() {
         )}
       </SettingsSection>
       <SettingsSection title={t("integrations.setup")}>
-        <div className="max-w-prose space-y-2 text-[13px] text-muted-foreground">
-          <p>{t("integrations.setupOut")}</p>
-          <p>{t("integrations.setupIn")}</p>
-        </div>
-        <p className="mt-4 text-xs font-medium">{t("integrations.example")}</p>
-        <pre className="mt-1.5 overflow-x-auto rounded-lg bg-muted p-3 font-mono text-[11px] leading-5">{`body='{"delivery_id":"<uuid>","issue_id":"<issue uuid>","url":"https://git.example/pr/7","title":"Fix login"}'
+        <div className="px-4 py-4 sm:px-5 sm:py-5">
+          <div className="max-w-prose space-y-2 text-[13px] text-muted-foreground">
+            <p>{t("integrations.setupOut")}</p>
+            <p>{t("integrations.setupIn")}</p>
+          </div>
+          <p className="mt-4 text-xs font-medium">{t("integrations.example")}</p>
+          <pre className="mt-1.5 overflow-x-auto rounded-lg bg-muted p-3 font-mono text-[11px] leading-5">{`body='{"delivery_id":"<uuid>","issue_id":"<issue uuid>","url":"https://git.example/pr/7","title":"Fix login"}'
 sig=$(printf '%s' "$body" | openssl dgst -sha256 -hmac "$SECRET" | sed 's/^.* //')
 curl -X POST "${sample}" \\
   -H "X-Blackwall-Signature: sha256=$sig" -H "Content-Type: application/json" -d "$body"`}</pre>
+        </div>
       </SettingsSection>
       <Dialog title={t("integrations.add")} size="sm" isOpen={open} onOpenChange={setOpen}>
         {(close) => <IntegrationForm close={close} />}
