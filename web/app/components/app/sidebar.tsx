@@ -35,7 +35,7 @@ import type { WorkspaceSummary } from "~/lib/types";
 import { Logo } from "./logo";
 import { ThemeToggle } from "./preferences";
 
-const linkClass = ({ isActive }: { isActive: boolean }) =>
+export const linkClass = ({ isActive }: { isActive: boolean }) =>
   cn(
     "flex h-7 items-center gap-2 rounded-md px-2 text-[13px] font-medium text-muted-foreground outline-none transition-colors hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/60 [&_svg]:size-4 [&_svg]:shrink-0",
     isActive && "bg-accent text-accent-foreground hover:bg-accent",
@@ -82,8 +82,8 @@ export function Sidebar({
                     sessionStorage.clear();
                     location.href = "/login";
                   });
-                else if (k === "account") nav(`${base}/account`);
-                else if (k === "settings") nav(`${base}/settings`);
+                else if (k === "account") nav(`${base}/settings/profile`);
+                else if (k === "settings") nav(`${base}/settings/general`);
                 else if (String(k).startsWith("ws:")) {
                   const id = String(k).slice(3);
                   localStorage.setItem(LAST_WS, id);
@@ -200,7 +200,10 @@ export function Sidebar({
       </div>
 
       <div className="flex items-center gap-0.5 border-t border-border p-2">
-        <NavLink to={`${base}/account`} className={(s) => cn(linkClass(s), "min-w-0 flex-1")}>
+        <NavLink
+          to={`${base}/settings/profile`}
+          className={(s) => cn(linkClass(s), "min-w-0 flex-1")}
+        >
           <Avatar name={profile.display_name} src={profile.avatar_url} size={18} />
           <span className="truncate">{profile.display_name}</span>
         </NavLink>
@@ -212,7 +215,7 @@ export function Sidebar({
           <Trash2 />
         </NavLink>
         <NavLink
-          to={`${base}/settings`}
+          to={`${base}/settings/general`}
           aria-label={t("nav.settings")}
           className={(s) => cn(linkClass(s), "size-7 justify-center px-0")}
         >

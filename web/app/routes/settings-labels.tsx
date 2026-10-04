@@ -4,7 +4,7 @@ import { Pencil, Tag } from "lucide-react";
 import { Button } from "~/components/ui/button";
 import { Dialog, useDialogDirty } from "~/components/ui/dialog";
 import { FormError, TextField } from "~/components/ui/field";
-import { Card } from "~/components/app/page";
+import { SettingsList, SettingsPage, SettingsSection } from "~/components/app/settings";
 import { LabelDot } from "~/components/app/pickers";
 import { useT, type Key } from "~/lib/i18n";
 import { usePending } from "~/lib/use-pending";
@@ -47,7 +47,7 @@ function ColorPicker({ value, onChange }: { value: string; onChange: (c: string)
           className="group grid size-7 cursor-default place-items-center rounded-full outline-none pointer-coarse:size-9"
         >
           <span
-            className="size-5 rounded-full ring-offset-2 ring-offset-card transition group-selected:ring-2 group-selected:ring-foreground group-focus-visible:ring-2 group-focus-visible:ring-ring"
+            className="size-5 rounded-full ring-offset-2 ring-offset-background transition group-selected:ring-2 group-selected:ring-foreground group-focus-visible:ring-2 group-focus-visible:ring-ring"
             style={{ background: c }}
           />
         </Radio>
@@ -64,13 +64,9 @@ export default function Labels() {
   const [editing, setEditing] = useState<Label | null>(null);
   const { pending, error, guard } = usePending();
   return (
-    <>
-      <div>
-        <h2 className="text-[14px] font-semibold">{t("settings.labels")}</h2>
-        <p className="text-xs text-muted-foreground">{t("labels.sub")}</p>
-      </div>
+    <SettingsPage title={t("settings.labels")} description={t("labels.sub")}>
       {canWrite && (
-        <Card className="p-4">
+        <SettingsSection title={t("labels.add")}>
           <Form
             className="flex flex-wrap items-end gap-3"
             onSubmit={(e) => {
@@ -97,18 +93,18 @@ export default function Labels() {
             </Button>
             <FormError>{error}</FormError>
           </Form>
-        </Card>
+        </SettingsSection>
       )}
-      <Card>
+      <SettingsSection title={canWrite ? t("settings.labels") : undefined}>
         {ws.labels.length === 0 ? (
-          <p className="flex items-center justify-center gap-2 px-4 py-8 text-[13px] text-muted-foreground">
+          <p className="flex items-center gap-2 text-[13px] text-muted-foreground">
             <Tag className="size-4" />
             {t("labels.empty")}
           </p>
         ) : (
-          <ul className="divide-y divide-border">
+          <SettingsList>
             {ws.labels.map((l) => (
-              <li key={l.id} className="flex items-center gap-2.5 px-4 py-2 text-[13px]">
+              <li key={l.id} className="flex min-h-11 items-center gap-2.5 py-1.5 text-[13px]">
                 <LabelDot color={l.color} className="size-2.5" />
                 <span className="min-w-0 flex-1 truncate">{l.name}</span>
                 <span className="text-xs tabular-nums text-muted-foreground">
@@ -128,9 +124,9 @@ export default function Labels() {
                 )}
               </li>
             ))}
-          </ul>
+          </SettingsList>
         )}
-      </Card>
+      </SettingsSection>
       <Dialog
         title={t("labels.edit")}
         size="sm"
@@ -139,7 +135,7 @@ export default function Labels() {
       >
         {(close) => editing && <EditLabel label={editing} close={close} />}
       </Dialog>
-    </>
+    </SettingsPage>
   );
 }
 

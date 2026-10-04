@@ -127,13 +127,13 @@ export function CommandPalette({
         id: "a-settings",
         label: t("nav.settings"),
         icon: <Settings className="size-4" />,
-        run: go("settings"),
+        run: go("settings/general"),
       },
       {
         id: "a-account",
         label: t("nav.account"),
         icon: <Bell className="size-4" />,
-        run: go("account"),
+        run: go("settings/profile"),
       },
       {
         id: "a-help",
