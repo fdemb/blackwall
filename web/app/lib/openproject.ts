@@ -1,13 +1,7 @@
 import { queryOptions } from "@tanstack/react-query";
 import { api } from "./api";
 import { keys } from "./query-client";
-import type {
-  Command,
-  Id,
-  Issue,
-  OpenProjectConnection,
-  OpenProjectConnectionInput,
-} from "./types";
+import type { Id, Issue, OpenProjectConnection, OpenProjectConnectionInput } from "./types";
 
 const base = (ws: Id) => `/api/workspaces/${ws}/openproject/connections`;
 
@@ -35,26 +29,6 @@ export const openprojectQuery = (ws: Id) =>
 
 export function isImportedIssue(issue: Pick<Issue, "openproject">) {
   return issue.openproject != null;
-}
-
-/** Local discussions do not change the imported work package. */
-export function importedMutationTargets(command: Command): Id[] {
-  switch (command.type) {
-    case "update_issue":
-    case "move_issue":
-    case "delete_issue":
-    case "restore_issue":
-      return [command.id];
-    case "bulk_issues":
-      return command.ids;
-    case "remove_attachment":
-    case "add_source_link":
-      return [command.issue_id];
-    case "create_issue":
-      return command.input.parent_id ? [command.input.parent_id] : [];
-    default:
-      return [];
-  }
 }
 
 export function openprojectIssueUrl(issue: Pick<Issue, "openproject">) {

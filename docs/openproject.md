@@ -17,7 +17,7 @@ Private-network installations are supported. The Blackwall worker must be able t
 
 ## Imported data and ownership
 
-The first version imports title, raw description, status, recognized priority names, due date, and a link back to OpenProject. It does not synchronize comments, attachments, users, or hierarchy. Imported issues are read-only for issue and planning edits in Blackwall. Local discussion, following, and time tracking remain available.
+The first version imports title, raw description, status, recognized priority names, due date, and a link back to OpenProject. It does not synchronize comments, attachments, users, or hierarchy. Imported issue fields, direct stage moves, deletion, restoration, source-link additions, and issue attachment removal are read-only in Blackwall. Local discussion, following, time tracking, and attachment uploads remain available. Administrators can delete a local stage and migrate its issues, including imported issues, to a replacement stage. A later sync reapplies the remote status mapping.
 
 Each work package has a stable identity consisting of its connection ID and OpenProject work-package ID. Moving a work package between mapped projects changes its destination team without creating another issue. Mapping a project to another team also reconciles existing issues on a later sync. Once a connection has imported issues, its installation URL cannot change. Create a new connection for another installation to avoid mixing work packages with overlapping IDs.
 
@@ -31,7 +31,7 @@ Enabled connections synchronize every five minutes while a Blackwall worker is r
 
 This version performs full, paginated scans of selected projects, including closed work packages. It favors straightforward reconciliation over version-dependent incremental date-filter behavior. Slow or unavailable OpenProject instances leave the last imported data available. Settings shows the last successful sync and errors.
 
-Jobs persist in PostgreSQL. Workers fetch remote data outside database transactions and apply bounded batches. Continuations and checkpoints let later jobs resume a scan. Retries can repeat a page without duplicating its issues. Worker scheduling recovers after restarts.
+Jobs persist in PostgreSQL. Workers fetch and normalize remote data into typed pages outside database transactions, then apply bounded batches through the shared issue persistence implementation. Imports and updates schedule deadline reminders and emit change and completion events. Sync activity uses a workspace owner as its audit actor. Continuations and checkpoints let later jobs resume a scan. Retries can repeat a page without duplicating its issues. Worker scheduling recovers after restarts.
 
 `JOBS_OPENPROJECT_CONCURRENCY` defaults to 2 and accepts 1 through 4. OpenProject jobs have their own concurrency limit so slow requests do not consume email or database job slots. The database pool must have at least `JOBS_DATABASE_CONCURRENCY + JOBS_OPENPROJECT_CONCURRENCY + 3` connections.
 
@@ -76,7 +76,7 @@ PATCH accepts any subset of the create fields. Omit `token` to retain the creden
 
 The list response is `{"connections":[...]}`. Connection responses contain cached projects, mapping configuration, status, last error, and last checked/synced timestamps. They never contain the token.
 
-Issue responses include `openproject` metadata for imported work packages. Clients should use its presence to disable issue editing rather than infer integration ownership from source-link URLs.
+Issue responses include `openproject` metadata for imported work packages. The backend operation ownership policy generates the frontend command rules and capabilities. Clients use those capabilities to disable prohibited actions, rather than infer ownership from source-link URLs or maintain a separate command list.
 
 ## Scope
 

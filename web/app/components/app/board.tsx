@@ -12,7 +12,7 @@ import { Plus } from "lucide-react";
 import { Button } from "~/components/ui/button";
 import { cn } from "~/lib/utils";
 import { IssueKey, issueKeyLength } from "./issue-key";
-import { isImportedIssue } from "~/lib/openproject";
+import { issueCapabilities } from "~/lib/ownership";
 import { useI18n } from "~/lib/i18n";
 import { useWorkspace } from "~/lib/workspace";
 import type { Id, Issue } from "~/lib/types";
@@ -97,7 +97,7 @@ export function DndColumn({
     isDisabled: !canWrite || !canDrop,
     getItems: (keys) =>
       [...keys]
-        .filter((k) => issues.some((issue) => issue.id === k && !isImportedIssue(issue)))
+        .filter((k) => issues.some((issue) => issue.id === k && issueCapabilities(issue).move))
         .map((k) => ({
           [TYPE]: JSON.stringify({ id: k, column: id }),
           "text/plain": String(k),
@@ -111,7 +111,7 @@ export function DndColumn({
     onReorder: (e) =>
       onDrop(
         issues
-          .filter((issue) => e.keys.has(issue.id) && !isImportedIssue(issue))
+          .filter((issue) => e.keys.has(issue.id) && issueCapabilities(issue).move)
           .map((issue) => issue.id),
         beforeFor(e.target),
         id,

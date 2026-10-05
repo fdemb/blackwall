@@ -1,4 +1,8 @@
+#[path = "openproject/persistence.rs"]
+mod persistence;
 mod support;
+#[path = "openproject/upgrade.rs"]
+mod upgrade;
 
 use axum::{
     Json, Router,
@@ -32,6 +36,10 @@ struct Remote {
     same_stage: bool,
     extra: bool,
     requests: usize,
+    deadline: Option<String>,
+    closed_first: bool,
+    malformed_last: bool,
+    page_size: Option<usize>,
 }
 
 #[derive(Clone, Default)]
@@ -86,6 +94,10 @@ async fn remote(
             let stall = data.stall;
             let same_stage = data.same_stage;
             let extra = data.extra;
+            let deadline = data.deadline.clone().unwrap_or_else(|| "2026-05-10".into());
+            let closed_first = data.closed_first;
+            let malformed_last = data.malformed_last;
+            let page_size = data.page_size.unwrap_or(1);
             drop(data);
             if stall {
                 mock.entered.notify_one();
@@ -95,9 +107,9 @@ async fn remote(
             if !missing && project == if moved { 43 } else { 42 } {
                 packages.push(json!({
                     "id":7,"subject":if moved {"Moved package"}else{"First package"},
-                    "description":{"raw":"Imported **description**"},"dueDate":"2026-05-10",
+                    "description":{"raw":"Imported **description**"},"dueDate":deadline,
                     "_links":{"project":{"href":format!("/api/v3/projects/{project}")},
-                        "status":{"href":"/api/v3/statuses/1","title":"In progress"},
+                        "status":{"href":if closed_first {"/api/v3/statuses/2"}else{"/api/v3/statuses/1"},"title":"In progress"},
                         "priority":{"title":"High"}}
                 }));
             }
@@ -112,7 +124,13 @@ async fn remote(
                 packages.push(json!({"id":9,"subject":"Beyond capacity","description":{"raw":""},
                     "_links":{"project":{"href":"/api/v3/projects/42"},"status":{"href":"/api/v3/statuses/1"}}}));
             }
-            return (StatusCode::OK, Json(collection(packages, page)));
+            if malformed_last && let Some(last) = packages.last_mut() {
+                last["dueDate"] = json!("invalid-date");
+            }
+            return (
+                StatusCode::OK,
+                Json(collection_with_size(packages, page, page_size)),
+            );
         }
         _ => panic!("unexpected remote endpoint: {resource}"),
     };
@@ -120,9 +138,17 @@ async fn remote(
 }
 
 fn collection(items: Vec<Value>, page: usize) -> Value {
+    collection_with_size(items, page, 1)
+}
+
+fn collection_with_size(items: Vec<Value>, page: usize, size: usize) -> Value {
     let total = items.len();
-    let selected: Vec<_> = items.into_iter().skip(page - 1).take(1).collect();
-    json!({"total":total,"count":selected.len(),"pageSize":1,"offset":page,"_embedded":{"elements":selected}})
+    let selected: Vec<_> = items
+        .into_iter()
+        .skip((page - 1) * size)
+        .take(size)
+        .collect();
+    json!({"total":total,"count":selected.len(),"pageSize":size,"offset":page,"_embedded":{"elements":selected}})
 }
 
 async fn mock_server(mock: Mock) -> (String, tokio::task::JoinHandle<()>) {

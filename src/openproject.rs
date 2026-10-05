@@ -15,10 +15,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sqlx::{PgConnection, Row};
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    time::Duration,
-};
+use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -58,26 +55,10 @@ pub struct Connection {
     pub last_checked_at: Option<DateTime<Utc>>,
     pub last_synced_at: Option<DateTime<Utc>>,
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
-struct Checkpoint {
-    phase: String,
-    page: i64,
-    project_index: usize,
-    refresh_only: bool,
-    #[serde(default)]
-    page_size: Option<i64>,
-}
-impl Default for Checkpoint {
-    fn default() -> Self {
-        Self {
-            phase: "projects".into(),
-            page: 1,
-            project_index: 0,
-            refresh_only: false,
-            page_size: None,
-        }
-    }
-}
+mod reconciliation;
+mod scan;
+mod transport;
+use scan::{Checkpoint, PageData};
 const PUBLIC: &str = "id,name,base_url,enabled,generation,projects,cached_projects,cached_statuses,status,last_error,last_checked_at,last_synced_at";
 fn connection(row: sqlx::postgres::PgRow) -> Result<Connection> {
     Ok(Connection {
@@ -320,10 +301,7 @@ async fn request(
 ) -> Result<(StatusCode, Json<Value>)> {
     let mut tx = store.pool.begin().await?;
     admin(&mut tx, workspace, actor.profile.id).await?;
-    let checkpoint = Checkpoint {
-        refresh_only,
-        ..Default::default()
-    };
+    let checkpoint = Checkpoint::new(refresh_only);
     if sqlx::query("UPDATE openproject_connections SET generation=generation+1,checkpoint=$3,next_run_at=clock_timestamp(),status='pending',last_error='' WHERE workspace_id=$1 AND id=$2 AND NOT deleted AND enabled")
         .bind(workspace).bind(id).bind(json!(checkpoint)).execute(&mut *tx).await?.rows_affected()==0 { return Err(Error::BadRequest("connection missing or disabled".into())); }
     cancel_pending(&mut tx, id).await?;
@@ -376,110 +354,6 @@ pub async fn schedule(store: &Store) -> Result<()> {
     Ok(())
 }
 
-async fn fetch(
-    base: &str,
-    token: &str,
-    path: &str,
-    page: i64,
-    filters: Option<Value>,
-) -> Result<Value> {
-    let client = reqwest::Client::builder()
-        .no_proxy()
-        .timeout(Duration::from_secs(20))
-        .connect_timeout(Duration::from_secs(5))
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .map_err(|_| Error::Internal("OpenProject client failed".into()))?;
-    let mut req = client
-        .get(format!("{base}/api/v3/{path}"))
-        .basic_auth("apikey", Some(token))
-        .query(&[("pageSize", "50".to_owned()), ("offset", page.to_string())]);
-    if let Some(filters) = filters {
-        req = req.query(&[
-            ("filters", filters.to_string()),
-            ("sortBy", json!([["id", "asc"]]).to_string()),
-        ]);
-    }
-    let mut response = req
-        .send()
-        .await
-        .map_err(|_| Error::Internal("OpenProject request failed".into()))?;
-    if !response.status().is_success() {
-        return Err(Error::Internal(format!(
-            "OpenProject HTTP {}",
-            response.status().as_u16()
-        )));
-    }
-    let mut bytes = Vec::new();
-    while let Some(chunk) = response
-        .chunk()
-        .await
-        .map_err(|_| Error::Internal("OpenProject body failed".into()))?
-    {
-        if bytes.len() + chunk.len() > 2 * 1024 * 1024 {
-            return Err(Error::Internal("OpenProject page exceeds 2 MiB".into()));
-        }
-        bytes.extend_from_slice(&chunk);
-    }
-    serde_json::from_slice(&bytes)
-        .map_err(|_| Error::Internal("OpenProject returned invalid JSON".into()))
-}
-fn elements(value: &Value, page: i64) -> Result<(Vec<Value>, bool)> {
-    let items = value
-        .pointer("/_embedded/elements")
-        .and_then(Value::as_array)
-        .ok_or_else(|| Error::Internal("invalid OpenProject collection".into()))?;
-    let total = value
-        .get("total")
-        .and_then(Value::as_i64)
-        .ok_or_else(|| Error::Internal("missing OpenProject total".into()))?;
-    if total < 0
-        || items.len() > 5000
-        || value
-            .get("count")
-            .and_then(Value::as_u64)
-            .is_some_and(|count| count != items.len() as u64)
-    {
-        return Err(Error::Internal(
-            "invalid OpenProject collection count".into(),
-        ));
-    }
-    let more = match value.get("pageSize").and_then(Value::as_i64) {
-        Some(size) => {
-            if !(1..=50).contains(&size)
-                || items.len() as i64 > size
-                || value.get("offset").and_then(Value::as_i64) != Some(page)
-            {
-                return Err(Error::Internal("invalid OpenProject pagination".into()));
-            }
-            page * size < total
-        }
-        None => {
-            if page != 1 || total != items.len() as i64 {
-                return Err(Error::Internal(
-                    "incomplete unpaginated OpenProject collection".into(),
-                ));
-            }
-            false
-        }
-    };
-    if more && value.get("pageSize").and_then(Value::as_u64) != Some(items.len() as u64) {
-        return Err(Error::Internal(
-            "empty OpenProject page with continuation".into(),
-        ));
-    }
-    Ok((items.clone(), more))
-}
-fn link_id(value: &Value, kind: &str) -> Option<i64> {
-    value
-        .pointer(&format!("/_links/{kind}/href"))?
-        .as_str()?
-        .rsplit('/')
-        .next()?
-        .parse()
-        .ok()
-}
-
 pub async fn execute(store: &Store, claim: &Claim, job: &SyncJob) -> Result<()> {
     let row=sqlx::query("SELECT * FROM openproject_connections WHERE id=$1 AND generation=$2 AND enabled AND NOT deleted").bind(job.connection_id).bind(job.generation).fetch_optional(&store.pool).await?;
     let Some(row) = row else {
@@ -490,46 +364,12 @@ pub async fn execute(store: &Store, claim: &Claim, job: &SyncJob) -> Result<()> 
     let token: String = row.try_get("token")?;
     let workspace: Uuid = row.try_get("workspace_id")?;
     let mappings: Vec<Mapping> = serde_json::from_value(row.try_get("projects")?)?;
-    let mut cp: Checkpoint = serde_json::from_value(row.try_get("checkpoint")?)?;
-    if cp.page < 1 || cp.page > 1000 {
-        return Err(Error::Internal("OpenProject page limit reached".into()));
-    }
-    let (path, filters) = match cp.phase.as_str() {
-        "projects" => ("projects", None),
-        "statuses" => ("statuses", None),
-        "work_packages" => {
-            if let Some(mapping) = mappings.get(cp.project_index) {
-                (
-                    "work_packages",
-                    Some(
-                        json!([{"project":{"operator":"=","values":[mapping.project_id.to_string()]}}]),
-                    ),
-                )
-            } else {
-                ("work_packages", None)
-            }
-        }
-        _ => return Err(Error::Internal("invalid OpenProject checkpoint".into())),
-    };
-    let skip = cp.phase == "work_packages" && cp.project_index >= mappings.len();
-    let (items, more) = if skip {
-        (vec![], false)
-    } else {
-        let response = fetch(&base, &token, path, cp.page, filters).await?;
-        let reported_size = response.get("pageSize").and_then(Value::as_i64);
-        if cp.page > 1 && cp.page_size != reported_size {
-            return Err(Error::Internal(
-                "OpenProject page size changed during scan; run sync now to restart".into(),
-            ));
-        }
-        cp.page_size = reported_size;
-        elements(&response, cp.page)?
-    };
-    if cp.phase == "work_packages" && items.len() > 50 {
-        return Err(Error::Internal(
-            "OpenProject work package page exceeds 50 items".into(),
-        ));
-    }
+    let cp: Checkpoint = serde_json::from_value(row.try_get("checkpoint")?)?;
+    let (path, filters) = cp.request(&mappings)?;
+    let response = transport::fetch(&base, &token, path, cp.cursor().page, filters).await?;
+    let page = cp.normalize(response, &mappings)?;
+    let statuses: Vec<scan::Status> = serde_json::from_value(row.try_get("cached_statuses")?)?;
+    let transition = cp.advance(&page, mappings.len())?;
     let mut tx = store.pool.begin().await?;
     sqlx::query("SET LOCAL lock_timeout='5s'")
         .execute(&mut *tx)
@@ -547,210 +387,43 @@ pub async fn execute(store: &Store, claim: &Claim, job: &SyncJob) -> Result<()> 
     let current = current.unwrap();
     let mut cached_projects: Value = current.try_get("cached_projects")?;
     let mut cached_statuses: Value = current.try_get("cached_statuses")?;
-    if cp.phase == "projects" || cp.phase == "statuses" {
-        let cache = if cp.phase == "projects" {
-            &mut cached_projects
-        } else {
-            &mut cached_statuses
-        };
-        if cp.page == 1 {
-            *cache = json!([]);
+    match &page.data {
+        PageData::Projects(items) => {
+            scan::append_cache(&mut cached_projects, items, cp.cursor().page)?
         }
-        let entries = cache
-            .as_array_mut()
-            .ok_or_else(|| Error::Internal("invalid cache".into()))?;
-        for item in &items {
-            let id = item
-                .get("id")
-                .and_then(Value::as_i64)
-                .ok_or_else(|| Error::Internal("missing OpenProject ID".into()))?;
-            let name = item
-                .get("name")
-                .and_then(Value::as_str)
-                .ok_or_else(|| Error::Internal("missing OpenProject name".into()))?;
-            entries.push(if cp.phase=="statuses" {json!({"id":id,"name":name,"is_closed":item.get("isClosed").and_then(Value::as_bool).unwrap_or(false)})} else {json!({"id":id,"name":name})});
+        PageData::Statuses(items) => {
+            scan::append_cache(&mut cached_statuses, items, cp.cursor().page)?
         }
-        if entries.len() > 5000 {
-            return Err(Error::Internal(
-                "OpenProject discovery limit reached".into(),
-            ));
-        }
-    } else {
-        sqlx::query("SELECT set_config('blackwall.openproject_sync','on',true)")
-            .execute(&mut *tx)
-            .await?;
-        let mut import = PageImport {
-            workspace,
-            connection: job.connection_id,
-            base: &base,
-            mappings: &mappings,
-            statuses: &cached_statuses,
-            issue_count: None,
-        };
-        for item in &items {
-            apply(&mut tx, &mut import, item).await?;
-        }
-    }
-    let mut finished = false;
-    if more {
-        cp.page += 1;
-    } else {
-        cp.page = 1;
-        cp.page_size = None;
-        match cp.phase.as_str() {
-            "projects" => cp.phase = "statuses".into(),
-            "statuses" => {
-                if cp.refresh_only {
-                    finished = true;
-                } else {
-                    cp.phase = "work_packages".into();
-                }
-            }
-            _ => {
-                cp.project_index += 1;
-                finished = cp.project_index >= mappings.len();
+        PageData::WorkPackages { mapping, items } => {
+            sqlx::query("SELECT pg_advisory_xact_lock_shared(hashtextextended($1,74103))")
+                .bind(workspace.to_string())
+                .execute(&mut *tx)
+                .await?;
+            sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,41827))")
+                .bind(workspace.to_string())
+                .execute(&mut *tx)
+                .await?;
+            sqlx::query("SELECT set_config('blackwall.openproject_sync','on',true)")
+                .execute(&mut *tx)
+                .await?;
+            let mut import = reconciliation::PageImport::new(
+                workspace,
+                job.connection_id,
+                &base,
+                mapping,
+                &statuses,
+            );
+            for item in items {
+                reconciliation::apply(&mut tx, &mut import, item).await?;
             }
         }
     }
-    let checked = cp.phase == "work_packages" || cp.refresh_only && finished;
+    let finished = transition.next.is_none();
     sqlx::query("UPDATE openproject_connections SET cached_projects=$3,cached_statuses=$4,checkpoint=$5,next_run_at=clock_timestamp()+CASE WHEN $6 THEN interval '5 minutes' ELSE interval '0 seconds' END,status=$7,last_error='',last_checked_at=CASE WHEN $8 THEN clock_timestamp() ELSE last_checked_at END,last_synced_at=CASE WHEN $6 AND NOT $9 THEN clock_timestamp() ELSE last_synced_at END WHERE id=$1 AND generation=$2")
-        .bind(job.connection_id).bind(job.generation).bind(cached_projects).bind(cached_statuses).bind(if finished {json!(Checkpoint::default())}else{json!(cp)}).bind(finished).bind(if finished {"idle"} else {"syncing"}).bind(checked).bind(cp.refresh_only).execute(&mut *tx).await?;
+        .bind(job.connection_id).bind(job.generation).bind(cached_projects).bind(cached_statuses).bind(json!(transition.next.unwrap_or_default())).bind(finished).bind(if finished {"idle"} else {"syncing"}).bind(transition.checked).bind(transition.refresh_only).execute(&mut *tx).await?;
     if Outbox::complete_in(&mut tx, claim).await? {
         tx.commit().await?;
     }
-    Ok(())
-}
-
-struct PageImport<'a> {
-    workspace: Uuid,
-    connection: Uuid,
-    base: &'a str,
-    mappings: &'a [Mapping],
-    statuses: &'a Value,
-    issue_count: Option<i64>,
-}
-
-async fn apply(conn: &mut PgConnection, import: &mut PageImport<'_>, item: &Value) -> Result<()> {
-    let workspace = import.workspace;
-    let connection = import.connection;
-    let base = import.base;
-    let mappings = import.mappings;
-    let statuses = import.statuses;
-    let issue_count = &mut import.issue_count;
-    let id = item
-        .get("id")
-        .and_then(Value::as_i64)
-        .filter(|id| *id > 0)
-        .ok_or_else(|| Error::Internal("invalid work package ID".into()))?;
-    let project = link_id(item, "project")
-        .ok_or_else(|| Error::Internal("missing work package project".into()))?;
-    let Some(mapping) = mappings
-        .iter()
-        .find(|mapping| mapping.project_id == project)
-    else {
-        return Err(Error::Internal(
-            "work package outside configured projects".into(),
-        ));
-    };
-    let title = item
-        .get("subject")
-        .and_then(Value::as_str)
-        .ok_or_else(|| Error::Internal("missing work package subject".into()))?;
-    crate::domain::text(title, 500)?;
-    let description = item
-        .pointer("/description/raw")
-        .and_then(Value::as_str)
-        .unwrap_or("");
-    if description.len() > 100_000 {
-        return Err(Error::Internal("work package description too large".into()));
-    }
-    let status_id = link_id(item, "status")
-        .ok_or_else(|| Error::Internal("missing work package status".into()))?;
-    let status = statuses.as_array().and_then(|statuses| {
-        statuses
-            .iter()
-            .find(|status| status["id"].as_i64() == Some(status_id))
-    });
-    let status_name = status
-        .and_then(|status| status["name"].as_str())
-        .or_else(|| item.pointer("/_links/status/title").and_then(Value::as_str))
-        .unwrap_or("Unknown");
-    let closed = status
-        .and_then(|status| status["is_closed"].as_bool())
-        .unwrap_or(false);
-    let stage = if let Some(stage) = mapping.stage_mapping.get(&status_id.to_string()) {
-        *stage
-    } else {
-        sqlx::query_scalar("SELECT id FROM stages WHERE workspace_id=$1 AND team_id=$2 ORDER BY (lower(name)=lower($3)) DESC,(kind=$4) DESC,position,id LIMIT 1").bind(workspace).bind(mapping.team_id).bind(status_name).bind(if closed {"done"}else{"backlog"}).fetch_optional(&mut *conn).await?.ok_or_else(||Error::Internal("destination team has no stage".into()))?
-    };
-    let stage_exists: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM stages WHERE workspace_id=$1 AND team_id=$2 AND id=$3)",
-    )
-    .bind(workspace)
-    .bind(mapping.team_id)
-    .bind(stage)
-    .fetch_one(&mut *conn)
-    .await?;
-    if !stage_exists {
-        return Err(Error::BadRequest(
-            "OpenProject mapped stage no longer exists; update project stage mapping".into(),
-        ));
-    }
-    let url = format!("{base}/work_packages/{id}");
-    let metadata = json!({"connection_id":connection,"work_package_id":id,"project_id":project,"status_name":status_name,"url":url,"unavailable":false});
-    let priority = match item
-        .pointer("/_links/priority/title")
-        .and_then(Value::as_str)
-        .unwrap_or("")
-        .to_ascii_lowercase()
-        .as_str()
-    {
-        "low" => "low",
-        "normal" => "normal",
-        "high" => "high",
-        "urgent" | "immediate" => "urgent",
-        _ => "none",
-    };
-    let deadline = item
-        .get("dueDate")
-        .and_then(Value::as_str)
-        .map(|date| {
-            chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d")
-                .map(|date| date.and_hms_opt(0, 0, 0).unwrap().and_utc())
-        })
-        .transpose()
-        .map_err(|_| Error::Internal("invalid work package due date".into()))?;
-    let existing:Option<Uuid>=sqlx::query_scalar("SELECT id FROM issues WHERE openproject->>'connection_id'=$1 AND openproject->>'work_package_id'=$2 FOR UPDATE").bind(connection.to_string()).bind(id.to_string()).fetch_optional(&mut *conn).await?;
-    let issue = if let Some(issue) = existing {
-        sqlx::query("UPDATE issues SET title=$2,description=$3,team_id=$4,stage_id=$5,priority=$6,deadline=$7,openproject=$8,version=version+1,updated_at=clock_timestamp(),project_id=NULL,milestone_id=NULL,sprint_id=NULL WHERE id=$1 AND (title,description,team_id,stage_id,priority,deadline,openproject) IS DISTINCT FROM ($2,$3,$4,$5,$6,$7,$8)")
-            .bind(issue).bind(title).bind(description).bind(mapping.team_id).bind(stage).bind(priority).bind(deadline).bind(&metadata).execute(&mut *conn).await?;
-        issue
-    } else {
-        if issue_count.is_none() {
-            sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,30269))")
-                .bind(format!("{workspace}:issues"))
-                .execute(&mut *conn)
-                .await?;
-            *issue_count = Some(
-                sqlx::query_scalar("SELECT count(*) FROM issues WHERE workspace_id=$1")
-                    .bind(workspace)
-                    .fetch_one(&mut *conn)
-                    .await?,
-            );
-        }
-        if issue_count.is_some_and(|count| count >= 5000) {
-            return Err(Error::BadRequest("OpenProject import stopped: workspace issue capacity reached (5000); reduce project mappings. Existing issues remain unchanged".into()));
-        }
-        let number:i64=sqlx::query_scalar("UPDATE workspaces SET next_issue_number=next_issue_number+1 WHERE id=$1 RETURNING next_issue_number-1").bind(workspace).fetch_one(&mut *conn).await?;
-        let issue = Uuid::new_v4();
-        let position: i64 = sqlx::query_scalar("SELECT COALESCE(max(position),-1024)+1024 FROM issues WHERE workspace_id=$1 AND team_id=$2 AND stage_id=$3 AND deleted_at IS NULL")
-            .bind(workspace).bind(mapping.team_id).bind(stage).fetch_one(&mut *conn).await?;
-        sqlx::query("INSERT INTO issues(id,workspace_id,number,title,description,team_id,stage_id,priority,deadline,position,created_at,updated_at,openproject) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$11,clock_timestamp(),clock_timestamp(),$10)")
-            .bind(issue).bind(workspace).bind(number).bind(title).bind(description).bind(mapping.team_id).bind(stage).bind(priority).bind(deadline).bind(metadata).bind(position).execute(&mut *conn).await?;
-        *issue_count = issue_count.map(|count| count + 1);
-        issue
-    };
-    sqlx::query("INSERT INTO source_links(id,workspace_id,issue_id,url,title) VALUES($1,$2,$3,$4,'OpenProject') ON CONFLICT DO NOTHING").bind(Uuid::new_v4()).bind(workspace).bind(issue).bind(url).execute(conn).await?;
     Ok(())
 }
 
@@ -787,14 +460,14 @@ mod tests {
     #[test]
     fn pagination_respects_reported_size_and_unpaginated_discovery() {
         let page = json!({"total":3,"count":1,"pageSize":1,"offset":1,"_embedded":{"elements":[{"id":1}]}});
-        assert!(elements(&page, 1).unwrap().1);
-        assert!(elements(&page, 2).is_err());
+        assert!(scan::elements(&page, 1).unwrap().1);
+        assert!(scan::elements(&page, 2).is_err());
         let last = json!({"total":3,"count":1,"pageSize":1,"offset":3,"_embedded":{"elements":[{"id":3}]}});
-        assert!(!elements(&last, 3).unwrap().1);
+        assert!(!scan::elements(&last, 3).unwrap().1);
         let statuses =
             json!({"total":70,"count":70,"_embedded":{"elements":vec![json!({"id":1});70]}});
-        assert_eq!(elements(&statuses, 1).unwrap().0.len(), 70);
-        assert!(elements(&statuses, 2).is_err());
+        assert_eq!(scan::elements(&statuses, 1).unwrap().0.len(), 70);
+        assert!(scan::elements(&statuses, 2).is_err());
     }
 
     #[test]
@@ -806,7 +479,7 @@ mod tests {
             json!({"total":1,"count":2,"_embedded":{"elements":[{}]}}),
             json!({"total":100,"pageSize":51,"offset":1,"_embedded":{"elements":[]}}),
         ] {
-            assert!(elements(&page, 1).is_err());
+            assert!(scan::elements(&page, 1).is_err());
         }
     }
 

@@ -20,7 +20,7 @@ import { cn } from "~/lib/utils";
 import { PRIORITIES } from "~/lib/format";
 import { IssueKey, issueKeyLength } from "./issue-key";
 import { stageOf } from "~/lib/filters";
-import { isImportedIssue } from "~/lib/openproject";
+import { issueCapabilities } from "~/lib/ownership";
 import { useI18n } from "~/lib/i18n";
 import { useWorkspace } from "~/lib/workspace";
 import type { Id, Issue, IssueGroup, IssuePatch } from "~/lib/types";
@@ -207,7 +207,7 @@ function useIssueGrid({
       new Set(
         groups
           .filter((g) => !collapsed.has(g.id))
-          .flatMap((g) => g.items.filter((i) => !isImportedIssue(i)).map((i) => i.id)),
+          .flatMap((g) => g.items.filter((i) => issueCapabilities(i).edit).map((i) => i.id)),
       ),
     [groups, collapsed],
   );
@@ -228,7 +228,7 @@ function useIssueGrid({
     <GridList
       aria-label={t("nav.issues")}
       selectionMode={canSelect ? "multiple" : "none"}
-      disabledKeys={issues.filter(isImportedIssue).map((i) => i.id)}
+      disabledKeys={issues.filter((issue) => !issueCapabilities(issue).edit).map((i) => i.id)}
       disabledBehavior="selection"
       selectionBehavior="toggle"
       selectedKeys={visibleSelected}
@@ -326,10 +326,10 @@ export function IssueRow({
       href={`/${ws.id}/issue/${issue.id}`}
       className="group flex h-10 cursor-default items-center gap-2.5 border-b border-border/70 px-4 text-[13px] outline-none hover:bg-muted/60 focus-visible:bg-muted/60 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/60 selected:bg-accent/60"
     >
-      {canSelect && !isImportedIssue(issue) && <RowSelectBox />}
+      {canSelect && issueCapabilities(issue).edit && <RowSelectBox />}
       <PriorityMenu
         issue={issue}
-        disabled={!canWrite || isImportedIssue(issue)}
+        disabled={!canWrite || !issueCapabilities(issue).edit}
         run={(patch) => run({ type: "update_issue", id: issue.id, patch })}
       />
       <IssueKey number={issue.number} length={keyLength} className="text-muted-foreground" />
@@ -434,7 +434,7 @@ function BulkBar({
   const byId = useMemo(() => new Map(issues.map((i) => [i.id, i] as const)), [issues]);
   const ids = [...selected].filter((id) => {
     const issue = byId.get(id);
-    return issue && !isImportedIssue(issue);
+    return issue && issueCapabilities(issue).edit;
   });
   if (ids.length === 0) return null;
   const first = byId.get(ids[0]);

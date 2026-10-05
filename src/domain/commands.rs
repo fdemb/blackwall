@@ -1,67 +1,6 @@
 use super::*;
 
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
-pub struct IssueInput {
-    pub title: String,
-    #[serde(default)]
-    pub description: String,
-    pub team_id: Uuid,
-    pub stage_id: Option<Uuid>,
-    pub assignee: Option<Uuid>,
-    #[serde(default)]
-    pub priority: Priority,
-    #[serde(default)]
-    pub labels: Vec<Uuid>,
-    pub estimate: Option<u32>,
-    pub deadline: Option<DateTime<Utc>>,
-    pub project_id: Option<Uuid>,
-    pub milestone_id: Option<Uuid>,
-    pub sprint_id: Option<Uuid>,
-    pub parent_id: Option<Uuid>,
-    #[serde(default)]
-    pub dependencies: Vec<Uuid>,
-}
-
-#[derive(Clone, Debug, Default, Serialize, Deserialize, ToSchema)]
-pub struct IssuePatch {
-    pub title: Option<String>,
-    pub description: Option<String>,
-    pub stage_id: Option<Uuid>,
-    pub assignee: Option<Uuid>,
-    #[serde(default)]
-    pub clear_assignee: bool,
-    pub priority: Option<Priority>,
-    pub labels: Option<Vec<Uuid>>,
-    pub estimate: Option<u32>,
-    #[serde(default)]
-    pub clear_estimate: bool,
-    pub deadline: Option<DateTime<Utc>>,
-    #[serde(default)]
-    pub clear_deadline: bool,
-    pub project_id: Option<Uuid>,
-    #[serde(default)]
-    pub clear_project: bool,
-    pub milestone_id: Option<Uuid>,
-    #[serde(default)]
-    pub clear_milestone: bool,
-    pub sprint_id: Option<Uuid>,
-    #[serde(default)]
-    pub clear_sprint: bool,
-    pub parent_id: Option<Uuid>,
-    #[serde(default)]
-    pub clear_parent: bool,
-    pub dependencies: Option<Vec<Uuid>>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum BulkAction {
-    Update(Box<IssuePatch>),
-    Delete,
-    Restore,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Command {
     CreateTeam {

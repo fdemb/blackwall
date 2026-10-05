@@ -10,6 +10,8 @@ use uuid::Uuid;
 mod changes;
 mod discussion;
 mod issues;
+pub mod ownership;
+pub(crate) mod persistence;
 mod planning;
 mod queue;
 mod reads;
@@ -181,21 +183,7 @@ impl Store {
             return Err(Error::Forbidden);
         }
 
-        let protected_ids: Vec<Uuid> = match &command {
-            Command::UpdateIssue { id, .. }
-            | Command::MoveIssue { id, .. }
-            | Command::DeleteIssue { id }
-            | Command::RestoreIssue { id } => vec![*id],
-            Command::BulkIssues { ids, .. } => ids.clone(),
-            _ => Vec::new(),
-        };
-        let imported: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM issues WHERE workspace_id=$1 AND id=ANY($2) AND openproject IS NOT NULL)")
-            .bind(workspace_id).bind(&protected_ids).fetch_one(&mut *op.tx).await?;
-        if imported {
-            return Err(Error::Conflict(
-                "OpenProject imported issues are read-only".into(),
-            ));
-        }
+        op.authorize_issue_ownership(&command).await?;
 
         let action = command.kind();
         let id = match &command {
@@ -427,59 +415,15 @@ impl Operation<'_> {
         id: Option<Uuid>,
         fields: Vec<String>,
     ) -> Result<()> {
-        let event = Activity {
-            id: Uuid::new_v4(),
-            actor: self.actor,
-            action: action.into(),
-            entity_id: id,
-            at: Utc::now(),
+        persistence::activity(
+            &mut self.tx,
+            self.workspace_id,
+            self.actor,
+            action,
+            id,
             fields,
-        };
-
-        sqlx::query(
-            "INSERT INTO activity(id,workspace_id,actor,action,entity_id,at,fields) \
-             VALUES($1,$2,$3,$4,$5,$6,$7)",
         )
-        .bind(event.id)
-        .bind(self.workspace_id)
-        .bind(self.actor)
-        .bind(action)
-        .bind(id)
-        .bind(event.at)
-        .bind(serde_json::to_value(&event.fields)?)
-        .execute(&mut *self.tx)
-        .await?;
-
-        let rows = sqlx::query(
-            "SELECT id,webhook_url,secret FROM integrations WHERE workspace_id=$1 AND enabled",
-        )
-        .bind(self.workspace_id)
-        .fetch_all(&mut *self.tx)
-        .await?;
-
-        for row in rows {
-            let iid: Uuid = row.try_get("id")?;
-
-            Outbox::insert(
-                &mut self.tx,
-                &NewJob::now(
-                    format!("{}:{}", event.id, iid),
-                    crate::jobs::Job::Webhook(crate::jobs::Webhook {
-                        workspace_id: self.workspace_id,
-                        integration_id: iid,
-                        url: row.try_get("webhook_url")?,
-                        secret: row.try_get("secret")?,
-                        event: serde_json::json!({
-                            "workspace_id": self.workspace_id,
-                            "activity": event,
-                        }),
-                    }),
-                ),
-            )
-            .await?;
-        }
-
-        Ok(())
+        .await
     }
 
     pub async fn notify(
@@ -490,36 +434,16 @@ impl Operation<'_> {
         message: String,
         key: String,
     ) -> Result<()> {
-        let column = enum_text(&kind);
-
-        let global = match kind {
-            AlertKind::Assignment => "assignments",
-            AlertKind::Reply | AlertKind::Mention => "replies",
-            AlertKind::Change => "changes",
-            AlertKind::Deadline => "deadlines",
-        };
-
-        let sql = format!(
-            "INSERT INTO notifications(id,workspace_id,user_id,issue_id,kind,message,created_at,dedup_key) \
-             SELECT $1,$2,$3,$4,$5,$6,now(),$7 \
-             WHERE EXISTS(SELECT 1 FROM workspace_members WHERE workspace_id=$2 AND user_id=$3) \
-             AND COALESCE((SELECT {column} FROM alert_preferences WHERE workspace_id=$2 AND user_id=$3),true) \
-             AND COALESCE((SELECT (profile->'alerts'->>'{global}')::bool FROM users WHERE id=$3),true) \
-             ON CONFLICT(workspace_id,dedup_key) DO NOTHING"
-        );
-
-        sqlx::query(&sql)
-            .bind(Uuid::new_v4())
-            .bind(self.workspace_id)
-            .bind(user)
-            .bind(issue_id)
-            .bind(column)
-            .bind(message)
-            .bind(key)
-            .execute(&mut *self.tx)
-            .await?;
-
-        Ok(())
+        persistence::notify(
+            &mut self.tx,
+            self.workspace_id,
+            user,
+            issue_id,
+            kind,
+            message,
+            key,
+        )
+        .await
     }
 
     pub async fn issue(&mut self, id: Uuid) -> Result<Issue> {

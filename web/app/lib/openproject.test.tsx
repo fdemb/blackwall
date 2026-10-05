@@ -2,8 +2,8 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vite-plus/test";
 import { OpenProjectNotice } from "../components/app/issue-parts";
 import { I18nProvider } from "./i18n";
-import { importedMutationTargets, isImportedIssue, openprojectIssueUrl } from "./openproject";
-import type { Command, OpenProjectIssue } from "./types";
+import { isImportedIssue, openprojectIssueUrl } from "./openproject";
+import type { OpenProjectIssue } from "./types";
 
 const metadata: OpenProjectIssue = {
   connection_id: "connection-a",
@@ -52,31 +52,6 @@ describe("imported issue policy", () => {
     expect(isImportedIssue({ openproject: null })).toBe(false);
     expect(isImportedIssue({ openproject: metadata })).toBe(true);
     expect(isImportedIssue({ openproject: { ...metadata, unavailable: true } })).toBe(true);
-  });
-
-  it.each<Command>([
-    { type: "update_issue", id: "imported", patch: { title: "Changed" } },
-    { type: "move_issue", id: "imported", stage_id: "stage", before_id: null },
-    { type: "delete_issue", id: "imported" },
-    { type: "restore_issue", id: "imported" },
-    { type: "bulk_issues", ids: ["imported", "local"], action: "delete" },
-    { type: "remove_attachment", issue_id: "imported", attachment_id: "attachment" },
-    { type: "add_source_link", issue_id: "imported", url: "https://example.com", title: "Example" },
-    { type: "create_issue", input: { title: "Child", team_id: "team", parent_id: "imported" } },
-  ])("identifies mutation targets for $type", (command) => {
-    expect(importedMutationTargets(command)).toContain("imported");
-  });
-
-  it.each<Command>([
-    { type: "add_comment", issue_id: "imported", body: "Local", mentions: [], attachments: [] },
-    { type: "edit_comment", id: "comment", body: "Local", mentions: [] },
-    { type: "delete_comment", id: "comment" },
-    { type: "follow", issue_id: "imported", following: true },
-    { type: "log_time", issue_id: "imported", minutes: 30, note: "", logged_at: "2026-05-01" },
-    { type: "update_time", id: "time", minutes: 30, note: "", logged_at: "2026-05-01" },
-    { type: "delete_time", id: "time" },
-  ])("allows local discussion and time action $type", (command) => {
-    expect(importedMutationTargets(command)).toEqual([]);
   });
 
   it.each(["javascript:alert(1)", "data:text/html,hello", "/work_packages/12", "invalid"])(
