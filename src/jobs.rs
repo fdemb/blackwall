@@ -500,9 +500,58 @@ async fn maintenance(store: &Store, retention_days: i32) -> Result<()> {
     .execute(&mut *tx)
     .await?;
 
+    // Backfill the Done-entry clock for rows predating the archive columns,
+    // then auto-archive Done issues past their team's deadline.
+    // Cancelled is excluded; NULL deadline means never.
     tx.commit().await?;
+    store.archive_sweep().await?;
     store.outbox.cleanup(retention_days).await?;
     store.prune_changes(retention_days).await?;
 
     Ok(())
+}
+
+impl Store {
+    /// Backfills the Done-entry clock and archives Done issues past their
+    /// team's deadline. Returns the number of issues archived.
+    /// Cancelled stages are excluded; a NULL team deadline means never.
+    pub async fn archive_sweep(&self) -> Result<u64> {
+        let mut tx = self.pool.begin().await?;
+
+        sqlx::query(
+            "UPDATE issues SET done_at=NULL,updated_at=now() WHERE id IN (\
+             SELECT i.id FROM issues i JOIN stages s ON s.id=i.stage_id \
+             WHERE s.kind<>'done' AND i.done_at IS NOT NULL AND i.archived_at IS NULL \
+             ORDER BY i.done_at LIMIT 1000 FOR UPDATE SKIP LOCKED)",
+        )
+        .execute(&mut *tx)
+        .await?;
+
+        sqlx::query(
+            "UPDATE issues SET done_at=updated_at,updated_at=now() WHERE id IN (\
+             SELECT i.id FROM issues i JOIN stages s ON s.id=i.stage_id \
+             WHERE s.kind='done' AND i.done_at IS NULL AND i.deleted_at IS NULL \
+             ORDER BY i.updated_at LIMIT 1000 FOR UPDATE SKIP LOCKED)",
+        )
+        .execute(&mut *tx)
+        .await?;
+
+        let archived = sqlx::query(
+            "UPDATE issues SET archived_at=now(),updated_at=now(),version=version+1 WHERE id IN (\
+             SELECT i.id FROM issues i \
+             JOIN stages s ON s.id=i.stage_id AND s.kind='done' \
+             JOIN teams t ON t.id=i.team_id \
+             WHERE i.archived_at IS NULL AND i.deleted_at IS NULL \
+             AND t.archive_after_days IS NOT NULL \
+             AND COALESCE(i.done_at,i.updated_at) <= now()-make_interval(days=>t.archive_after_days) \
+             ORDER BY i.done_at NULLS LAST,i.id LIMIT 1000 FOR UPDATE SKIP LOCKED)",
+        )
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+
+        tx.commit().await?;
+
+        Ok(archived)
+    }
 }

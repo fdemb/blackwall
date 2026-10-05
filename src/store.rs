@@ -201,13 +201,16 @@ impl Store {
             | Command::CreateSprint { .. }
             | Command::UpdateSprint { .. }
             | Command::CompleteSprint { .. }
-            | Command::ArchiveSprint { .. } => op.planning(command).await?,
+            | Command::ArchiveSprint { .. }
+            | Command::SetTeamArchive { .. } => op.planning(command).await?,
             Command::CreateIssue { .. }
             | Command::UpdateIssue { .. }
             | Command::MoveIssue { .. }
             | Command::BulkIssues { .. }
             | Command::DeleteIssue { .. }
             | Command::RestoreIssue { .. }
+            | Command::ArchiveIssue { .. }
+            | Command::UnarchiveIssue { .. }
             | Command::Follow { .. }
             | Command::AddSourceLink { .. }
             | Command::ImportIssues { .. } => op.issues(command).await?,

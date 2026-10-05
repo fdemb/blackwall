@@ -717,7 +717,7 @@ async fn search(
         return Err(Error::BadRequest("search query too long".into()));
     }
 
-    let issue_page = store
+    let mut live_page = store
         .list_issues(
             id,
             actor.profile.id,
@@ -729,6 +729,25 @@ async fn search(
             0,
         )
         .await?;
+    // Global search spans the archive; live matches rank first.
+    let archived_page = store
+        .list_issues(
+            id,
+            actor.profile.id,
+            IssueFilter {
+                search: Some(input.q.clone()),
+                archived: true,
+                ..Default::default()
+            },
+            100,
+            0,
+        )
+        .await?;
+    let mut items = live_page["items"].as_array().cloned().unwrap_or_default();
+    items.extend(archived_page["items"].as_array().cloned().unwrap_or_default());
+    items.truncate(100);
+    live_page["items"] = Value::Array(items);
+    let issue_page = live_page;
     let people = store
         .member_profiles(id, actor.profile.id, Some(&input.q))
         .await?;

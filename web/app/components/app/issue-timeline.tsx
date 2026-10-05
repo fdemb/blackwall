@@ -2,6 +2,7 @@ import { useRef, useState } from "react";
 import { FileTrigger } from "react-aria-components";
 import { Link } from "react-router";
 import {
+  Archive,
   ArchiveRestore,
   CalendarDays,
   CalendarRange,
@@ -50,6 +51,8 @@ const EVENTS: Partial<Record<string, { label: Key; icon: LucideIcon }>> = {
   update_issue: { label: "timeline.update_issue", icon: Pencil },
   move_issue: { label: "timeline.move_issue", icon: CircleDot },
   restore_issue: { label: "timeline.restore_issue", icon: ArchiveRestore },
+  archive_issue: { label: "timeline.archive_issue", icon: Archive },
+  unarchive_issue: { label: "timeline.unarchive_issue", icon: ArchiveRestore },
   issue_completed: { label: "timeline.issue_completed", icon: CircleCheck },
   add_attachment: { label: "timeline.add_attachment", icon: Paperclip },
   remove_attachment: { label: "timeline.remove_attachment", icon: Paperclip },

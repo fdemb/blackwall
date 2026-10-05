@@ -12,6 +12,12 @@ pub enum Command {
         id: Uuid,
         members: Vec<Uuid>,
     },
+    SetTeamArchive {
+        id: Uuid,
+        /// Days after Done before auto-archive. Null means never.
+        #[serde(default = "super::default_archive_days")]
+        archive_after_days: Option<u32>,
+    },
     CreateStage {
         team_id: Uuid,
         name: String,
@@ -103,6 +109,12 @@ pub enum Command {
         id: Uuid,
     },
     RestoreIssue {
+        id: Uuid,
+    },
+    ArchiveIssue {
+        id: Uuid,
+    },
+    UnarchiveIssue {
         id: Uuid,
     },
     AddAttachment {
@@ -228,6 +240,7 @@ impl Command {
         match self {
             Self::CreateTeam { .. } => "create_team",
             Self::SetTeamMembers { .. } => "set_team_members",
+            Self::SetTeamArchive { .. } => "set_team_archive",
             Self::CreateStage { .. } => "create_stage",
             Self::UpdateStage { .. } => "update_stage",
             Self::DeleteStage { .. } => "delete_stage",
@@ -247,6 +260,8 @@ impl Command {
             Self::BulkIssues { .. } => "bulk_issues",
             Self::DeleteIssue { .. } => "delete_issue",
             Self::RestoreIssue { .. } => "restore_issue",
+            Self::ArchiveIssue { .. } => "archive_issue",
+            Self::UnarchiveIssue { .. } => "unarchive_issue",
             Self::AddAttachment { .. } => "add_attachment",
             Self::AttachCommentFile { .. } => "attach_comment_file",
             Self::RemoveAttachment { .. } => "remove_attachment",

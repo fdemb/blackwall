@@ -147,6 +147,14 @@ export function FilterBar({
         </span>
       ))}
       <div className="ml-auto flex items-center gap-1.5">
+        {!hide.includes("archived") && (
+          <Switch
+            isSelected={!!filter.archived}
+            onChange={(on) => set({ archived: on || undefined })}
+          >
+            {t("filter.archived")}
+          </Switch>
+        )}
         {onGroupBy && groupBy && (
           <ChoiceMenu
             label={t(`group.${groupBy}`)}

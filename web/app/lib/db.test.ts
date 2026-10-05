@@ -33,6 +33,8 @@ const issue = (id: string, extra: Partial<Issue> = {}): Issue => ({
   attachments: [],
   source_links: [],
   deleted_at: null,
+  archived_at: null,
+  done_at: null,
   created_at: "2026-10-01T00:00:00+00:00",
   updated_at: "2026-10-01T00:00:00+00:00",
   ...extra,
@@ -100,6 +102,15 @@ describe("issueQuery", () => {
     const db = await open();
     expect(await ids(db, {})).toEqual(["i3", "i2", "i1"]);
     expect(await ids(db, { trash: true })).toEqual(["i4"]);
+  });
+
+  it("hides archived issues unless asked", async () => {
+    const db = await open({
+      issues: () =>
+        Promise.resolve([...ISSUES, issue("i5", { archived_at: "2026-10-02T00:00:00+00:00" })]),
+    });
+    expect(await ids(db, {})).toEqual(["i3", "i2", "i1"]);
+    expect(await ids(db, { archived: true })).toEqual(["i5"]);
   });
 
   it("matches the API's filters locally", async () => {

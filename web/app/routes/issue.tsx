@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Disclosure, DisclosurePanel, Heading } from "react-aria-components";
 import { Link, Navigate, useLocation, useNavigate, useParams } from "react-router";
 import {
+  Archive,
   ArchiveRestore,
   Bell,
   BellOff,
@@ -24,6 +25,7 @@ import { AssigneePicker, PriorityPicker, StagePicker } from "~/components/app/pi
 import { EmptyState, Page, TeamCrumb } from "~/components/app/page";
 import { issueKey } from "~/lib/format";
 import { IssueKey } from "~/components/app/issue-key";
+import { isDoneOnly } from "~/lib/filters";
 import { useDocumentTitle } from "~/lib/title";
 import { useI18n } from "~/lib/i18n";
 import { useIssueDetail, type IssueDetail } from "~/lib/queries";
@@ -67,7 +69,45 @@ export default function IssuePage() {
       </Page>
     );
   if (issue.deleted_at) return <DeletedIssue issue={issue} wsId={wsId!} />;
+  if (issue.archived_at) return <ArchivedBanner issue={issue} wsId={wsId!} />;
   return <IssueView key={issue.id} issue={issue} detail={detail} />;
+}
+
+/** A link to an archived issue says which issue it was and offers the way back. */
+function ArchivedBanner({ issue, wsId }: { issue: Issue; wsId: string }) {
+  const { t } = useI18n();
+  const { run, canWrite } = useWorkspace();
+  const toast = useToast();
+  useDocumentTitle(`${issueKey(issue.number)} ${issue.title}`);
+  return (
+    <Page>
+      <EmptyState
+        icon={<Archive />}
+        title={`${issueKey(issue.number)} ${issue.title}`}
+        description={`${t("issue.archived")}. ${canWrite ? t("issue.archivedSub") : ""}`.trim()}
+        action={
+          <div className="flex items-center gap-3">
+            {canWrite && (
+              <Button
+                variant="primary"
+                onPress={() =>
+                  run({ type: "unarchive_issue", id: issue.id })
+                    .then(() => toast.show(t("issue.unarchived")))
+                    .catch(() => {})
+                }
+              >
+                <ArchiveRestore />
+                {t("issue.unarchive")}
+              </Button>
+            )}
+            <Link className="text-primary hover:underline" to={`/${wsId}/archive`}>
+              {t("nav.archive")}
+            </Link>
+          </div>
+        }
+      />
+    </Page>
+  );
 }
 
 /** A link to a trashed issue still says which issue it was and offers the way back. */
@@ -190,12 +230,27 @@ function IssueView({ issue, detail }: { issue: Issue; detail: IssueDetail }) {
                       .writeText(window.location.href)
                       .then(() => toast.show(t("issue.linkCopied")));
                   if (k === "delete") setConfirm(true);
+                  if (k === "archive")
+                    void run({ type: "archive_issue", id: issue.id }, { quiet: true }).then(() => {
+                      toast.show(t("bulk.archived", { n: 1 }), {
+                        label: t("action.undo"),
+                        run: () =>
+                          void run({ type: "unarchive_issue", id: issue.id }).catch(() => {}),
+                      });
+                      void goBack();
+                    });
                 }}
               >
                 <MenuItem id="copy">
                   <Link2 />
                   {t("issue.copyLink")}
                 </MenuItem>
+                {canWrite && isDoneOnly(ws, issue) && (
+                  <MenuItem id="archive">
+                    <Archive />
+                    {t("action.archive")}
+                  </MenuItem>
+                )}
                 {canWrite && (
                   <MenuItem id="delete">
                     <Trash2 />

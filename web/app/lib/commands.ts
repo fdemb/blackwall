@@ -75,6 +75,8 @@ export function optimisticEffect(
       return issues(command.ids, (i) => {
         if (action === "delete") i.deleted_at = now();
         else if (action === "restore") i.deleted_at = null;
+        else if (action === "archive") i.archived_at = now();
+        else if (action === "unarchive") i.archived_at = null;
         else patchIssue(i, action.update);
       });
     }
@@ -92,6 +94,14 @@ export function optimisticEffect(
     case "restore_issue":
       return issues([command.id], (i) => {
         i.deleted_at = null;
+      });
+    case "archive_issue":
+      return issues([command.id], (i) => {
+        i.archived_at = now();
+      });
+    case "unarchive_issue":
+      return issues([command.id], (i) => {
+        i.archived_at = null;
       });
     case "follow":
       return issues([command.issue_id], (i) => {
@@ -141,6 +151,12 @@ export function optimisticEffect(
       return when(db.teams, command.id, () =>
         db.teams.update(command.id, (t) => {
           t.members = command.members;
+        }),
+      );
+    case "set_team_archive":
+      return when(db.teams, command.id, () =>
+        db.teams.update(command.id, (t) => {
+          t.archive_after_days = command.archive_after_days;
         }),
       );
     case "update_stage":

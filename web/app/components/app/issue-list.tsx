@@ -9,7 +9,7 @@ import {
   Virtualizer,
   type Selection,
 } from "react-aria-components";
-import { ChevronDown, Trash2, X } from "lucide-react";
+import { Archive, ChevronDown, Trash2, X } from "lucide-react";
 import { Button } from "~/components/ui/button";
 import { Checkbox } from "~/components/ui/toggles";
 import { Menu, MenuItem, MenuPopover, MenuTrigger, MenuSeparator } from "~/components/ui/menu";
@@ -19,7 +19,7 @@ import { ConfirmDialog } from "./confirm";
 import { cn } from "~/lib/utils";
 import { PRIORITIES } from "~/lib/format";
 import { IssueKey, issueKeyLength } from "./issue-key";
-import { stageOf } from "~/lib/filters";
+import { stageOf, isDoneOnly } from "~/lib/filters";
 import { issueCapabilities } from "~/lib/ownership";
 import { useI18n } from "~/lib/i18n";
 import { useWorkspace } from "~/lib/workspace";
@@ -455,6 +455,22 @@ function BulkBar({
           .catch(() => {}),
     });
   };
+  // Only Done issues can be archived; the server rejects anything else.
+  const archivable = ids.every((id) => {
+    const issue = byId.get(id);
+    return issue && isDoneOnly(ws, issue);
+  });
+  const archive = async () => {
+    await run({ type: "bulk_issues", ids, action: "archive" }, { quiet: true });
+    clear();
+    toast.show(t("bulk.archived", { n: ids.length }), {
+      label: t("action.undo"),
+      run: () =>
+        void run({ type: "bulk_issues", ids, action: "unarchive" })
+          .then(() => toast.show(t("bulk.unarchived", { n: ids.length })))
+          .catch(() => {}),
+    });
+  };
   return (
     <div
       role="toolbar"
@@ -530,6 +546,12 @@ function BulkBar({
         <Trash2 aria-hidden />
         {t("action.delete")}
       </Button>
+      {archivable && (
+        <Button variant="ghost" size="sm" onPress={() => void archive()}>
+          <Archive aria-hidden />
+          {t("action.archive")}
+        </Button>
+      )}
       <Button variant="ghost" size="icon" aria-label={t("action.clear")} onPress={clear}>
         <X aria-hidden />
       </Button>

@@ -72,6 +72,10 @@ pub struct Issue {
     pub attachments: Vec<Attachment>,
     pub source_links: Vec<SourceLink>,
     pub deleted_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub archived_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub done_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -135,6 +139,8 @@ pub enum BulkAction {
     Update(Box<IssuePatch>),
     Delete,
     Restore,
+    Archive,
+    Unarchive,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, ToSchema, utoipa::IntoParams)]
@@ -160,6 +166,8 @@ pub struct IssueFilter {
     pub unassigned: bool,
     #[serde(default)]
     pub trash: bool,
+    #[serde(default)]
+    pub archived: bool,
     #[serde(default)]
     pub sort: IssueSort,
     pub group_by: Option<IssueGroup>,

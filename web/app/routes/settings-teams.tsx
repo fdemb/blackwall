@@ -4,6 +4,7 @@ import { ArrowDown, ArrowUp, Plus, Trash2, Users } from "lucide-react";
 import { Button } from "~/components/ui/button";
 import { Dialog, useDialogDirty } from "~/components/ui/dialog";
 import { FormError, Input, TextField } from "~/components/ui/field";
+import { Checkbox } from "~/components/ui/toggles";
 import { Select } from "~/components/ui/select";
 import { EmptyState } from "~/components/app/page";
 import { SettingsBlock, SettingsPage, SettingsSection } from "~/components/app/settings";
@@ -188,6 +189,7 @@ function TeamSection({ team }: { team: Team }) {
             />
           ))}
         </ul>
+        <TeamArchive team={team} />
       </div>
       <Dialog title={t("stage.add")} size="sm" isOpen={adding} onOpenChange={setAdding}>
         {(close) => <AddStage team={team} close={close} />}
@@ -312,6 +314,84 @@ function StageRow({
               : ""}
       </span>
     </li>
+  );
+}
+
+/** Days after Done before auto-archive, per team. Null means never. Admins only. */
+function TeamArchive({ team }: { team: Team }) {
+  const { t } = useI18n();
+  const { run, canAdmin } = useWorkspace();
+  const [days, setDays] = useState(team.archive_after_days?.toString() ?? "30");
+  const [never, setNever] = useState(team.archive_after_days === null);
+  const [status, setStatus] = useState<"idle" | "saving" | "saved" | "failed">("idle");
+  const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const save = async (value: number | null) => {
+    clearTimeout(timer.current);
+    setStatus("saving");
+    try {
+      await run({ type: "set_team_archive", id: team.id, archive_after_days: value });
+      setStatus("saved");
+      timer.current = setTimeout(() => setStatus("idle"), 2500);
+    } catch {
+      setDays(team.archive_after_days?.toString() ?? "30");
+      setNever(team.archive_after_days === null);
+      setStatus("failed");
+    }
+  };
+  const commitDays = () => {
+    const n = Number(days);
+    if (!Number.isInteger(n) || n < 1 || n > 3650) {
+      setDays(team.archive_after_days?.toString() ?? "30");
+      return;
+    }
+    if (n !== team.archive_after_days) void save(n);
+  };
+  return (
+    <div className="mt-4 border-t border-border pt-3">
+      <h3 className="text-xs font-medium text-muted-foreground">{t("team.archive")}</h3>
+      <p className="mt-0.5 text-xs text-muted-foreground">{t("team.archiveSub")}</p>
+      <div className="mt-2 flex flex-wrap items-center gap-3">
+        <Checkbox
+          isSelected={never}
+          isDisabled={!canAdmin}
+          onChange={(on) => {
+            setNever(on);
+            void save(on ? null : Number(days) || 30);
+          }}
+        >
+          {t("team.archiveNever")}
+        </Checkbox>
+        {!never && (
+          <label className="flex items-center gap-2 text-[13px]">
+            <Input
+              aria-label={t("team.archiveDays")}
+              type="number"
+              min={1}
+              max={3650}
+              disabled={!canAdmin}
+              value={days}
+              onChange={(e) => setDays(e.target.value)}
+              onBlur={commitDays}
+              onKeyDown={(e) => e.key === "Enter" && (e.currentTarget as HTMLInputElement).blur()}
+              className="h-8 w-20"
+            />
+            <span className="text-muted-foreground">{t("team.archiveDays")}</span>
+          </label>
+        )}
+        <span
+          role="status"
+          className={`text-xs ${status === "failed" ? "text-destructive" : "text-muted-foreground"}`}
+        >
+          {status === "saving"
+            ? t("action.saving")
+            : status === "saved"
+              ? t("action.saved")
+              : status === "failed"
+                ? t("action.saveFailed")
+                : ""}
+        </span>
+      </div>
+    </div>
   );
 }
 

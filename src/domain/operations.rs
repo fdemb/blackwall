@@ -74,6 +74,24 @@ impl Workspace {
             .any(|s| s.id == i.stage_id && matches!(s.kind, StageKind::Done | StageKind::Cancelled))
     }
 
+    /// Done-only check for archiving. Cancelled is excluded per product decision.
+    fn archivable_done(&self, i: &Issue) -> bool {
+        self.teams
+            .iter()
+            .flat_map(|t| &t.stages)
+            .any(|s| s.id == i.stage_id && matches!(s.kind, StageKind::Done))
+    }
+
+    fn refresh_done_at(&self, issue: &mut Issue, now: DateTime<Utc>) {
+        if self.archivable_done(issue) {
+            if issue.done_at.is_none() {
+                issue.done_at = Some(now);
+            }
+        } else {
+            issue.done_at = None;
+        }
+    }
+
     fn wants(&self, user: Uuid, kind: &AlertKind) -> bool {
         self.member(user).is_ok()
             && self
@@ -282,7 +300,7 @@ impl Workspace {
             }
         };
 
-        let issue = Issue {
+        let mut issue = Issue {
             openproject: None,
             blocked_count: 0,
             subtask_total: 0,
@@ -313,11 +331,14 @@ impl Workspace {
             attachments: vec![],
             source_links: vec![],
             deleted_at: None,
+            archived_at: None,
+            done_at: None,
             created_at: now,
             updated_at: now,
         };
 
         self.validate_issue(&issue)?;
+        self.refresh_done_at(&mut issue, now);
 
         let id = issue.id;
         if let Some(user) = issue.assignee
@@ -346,6 +367,9 @@ impl Workspace {
         now: DateTime<Utc>,
     ) -> Result<()> {
         let mut i = self.issue(id)?.clone();
+        if i.archived_at.is_some() {
+            return Err(Error::Conflict("issue is archived".into()));
+        }
         let old_assignee = i.assignee;
 
         if let Some(v) = p.title {
@@ -410,6 +434,7 @@ impl Workspace {
 
         i.updated_at = now;
         self.validate_issue(&i)?;
+        self.refresh_done_at(&mut i, now);
 
         if i.assignee != old_assignee
             && let Some(user) = i.assignee
@@ -522,6 +547,7 @@ impl Workspace {
 
         for team in &self.teams {
             text(&team.name, 200)?;
+            super::validate_archive_days(team.archive_after_days)?;
             if team.stages.is_empty() || team.stages.len() > 100 {
                 return Err(Error::BadRequest(
                     "team must contain 1 to 100 stages".into(),
@@ -577,6 +603,11 @@ impl Workspace {
 
         for issue in &self.issues {
             check.validate_issue(issue)?;
+            if issue.archived_at.is_some() && !check.archivable_done(issue) {
+                return Err(Error::BadRequest(
+                    "only issues in a Done stage can be archived".into(),
+                ));
+            }
             for user in &issue.followers {
                 check.member(*user)?;
             }
@@ -687,6 +718,7 @@ impl Workspace {
                     name,
                     members,
                     stages,
+                    archive_after_days: super::default_archive_days(),
                 });
                 result = Some(id)
             }
@@ -702,6 +734,21 @@ impl Workspace {
                     .find(|t| t.id == id)
                     .ok_or(Error::NotFound)?
                     .members = members;
+                result = Some(id)
+            }
+
+            Command::SetTeamArchive {
+                id,
+                archive_after_days,
+            } => {
+                self.admin(actor)?;
+                super::validate_archive_days(archive_after_days)?;
+
+                self.teams
+                    .iter_mut()
+                    .find(|t| t.id == id)
+                    .ok_or(Error::NotFound)?
+                    .archive_after_days = archive_after_days;
                 result = Some(id)
             }
 
@@ -750,8 +797,23 @@ impl Workspace {
                     .find(|s| s.id == id)
                     .ok_or(Error::NotFound)?;
                 s.name = name;
-                s.kind = kind;
+                s.kind = kind.clone();
                 s.position = position;
+                let became_done = matches!(kind, StageKind::Done);
+                for i in self.issues.iter_mut().filter(|i| i.stage_id == id) {
+                    i.updated_at = now;
+                    if i.archived_at.is_some() {
+                        if became_done && i.done_at.is_none() {
+                            i.done_at = Some(now);
+                        }
+                    } else if became_done {
+                        if i.done_at.is_none() {
+                            i.done_at = Some(now);
+                        }
+                    } else {
+                        i.done_at = None;
+                    }
+                }
                 result = Some(id)
             }
 
@@ -775,6 +837,26 @@ impl Workspace {
                 for i in &mut self.issues {
                     if i.stage_id == id {
                         i.stage_id = replacement;
+                        i.updated_at = now;
+                    }
+                }
+
+                let replacement_is_done = self
+                    .team(team_id)?
+                    .stages
+                    .iter()
+                    .any(|s| s.id == replacement && matches!(s.kind, StageKind::Done));
+                for i in self
+                    .issues
+                    .iter_mut()
+                    .filter(|i| i.stage_id == replacement && i.archived_at.is_none())
+                {
+                    if replacement_is_done {
+                        if i.done_at.is_none() {
+                            i.done_at = Some(now);
+                        }
+                    } else {
+                        i.done_at = None;
                     }
                 }
 
@@ -1062,6 +1144,9 @@ impl Workspace {
                 before_id,
             } => {
                 let original = self.issue(id)?.clone();
+                if original.archived_at.is_some() {
+                    return Err(Error::Conflict("issue is archived".into()));
+                }
                 if !self
                     .team(original.team_id)?
                     .stages
@@ -1092,11 +1177,23 @@ impl Workspace {
                 };
                 ids.insert(at, (0, id));
 
+                let target_is_done = self
+                    .team(original.team_id)?
+                    .stages
+                    .iter()
+                    .any(|s| s.id == stage_id && matches!(s.kind, StageKind::Done));
                 for (rank, (_, issue_id)) in ids.into_iter().enumerate() {
                     let i = self.issue_mut(issue_id)?;
                     i.position = rank as i64;
                     i.stage_id = stage_id;
                     i.updated_at = now;
+                    if target_is_done {
+                        if i.done_at.is_none() {
+                            i.done_at = Some(now);
+                        }
+                    } else {
+                        i.done_at = None;
+                    }
                 }
 
                 if original.stage_id != stage_id {
@@ -1119,6 +1216,12 @@ impl Workspace {
                         BulkAction::Restore => {
                             self.restore(id, now)?;
                         }
+                        BulkAction::Archive => {
+                            self.archive(id, now)?;
+                        }
+                        BulkAction::Unarchive => {
+                            self.unarchive(id, now)?;
+                        }
                     }
                 }
             }
@@ -1130,6 +1233,18 @@ impl Workspace {
 
             Command::RestoreIssue { id } => {
                 self.restore(id, now)?;
+                result = Some(id)
+            }
+
+            Command::ArchiveIssue { id } => {
+                self.archive(id, now)?;
+                fields.push("archived".into());
+                result = Some(id)
+            }
+
+            Command::UnarchiveIssue { id } => {
+                self.unarchive(id, now)?;
+                fields.push("archived".into());
                 result = Some(id)
             }
 
@@ -1691,6 +1806,54 @@ impl Workspace {
         Ok(())
     }
 
+    fn archive(&mut self, id: Uuid, now: DateTime<Utc>) -> Result<()> {
+        let mut issue = self
+            .issues
+            .iter()
+            .find(|i| i.id == id && i.deleted_at.is_none())
+            .ok_or(Error::NotFound)?
+            .clone();
+
+        if issue.archived_at.is_some() {
+            return Err(Error::BadRequest("issue is already archived".into()));
+        }
+        if !self.archivable_done(&issue) {
+            return Err(Error::BadRequest(
+                "only issues in a Done stage can be archived".into(),
+            ));
+        }
+
+        issue.archived_at = Some(now);
+        issue.updated_at = now;
+        *self.issues.iter_mut().find(|i| i.id == id).unwrap() = issue;
+
+        Ok(())
+    }
+
+    fn unarchive(&mut self, id: Uuid, now: DateTime<Utc>) -> Result<()> {
+        let mut issue = self
+            .issues
+            .iter()
+            .find(|i| i.id == id && i.deleted_at.is_none())
+            .ok_or(Error::NotFound)?
+            .clone();
+
+        if issue.archived_at.is_none() {
+            return Err(Error::BadRequest("issue is not archived".into()));
+        }
+
+        // Fresh grace period if it is still Done; otherwise the clock clears.
+        issue.archived_at = None;
+        issue.updated_at = now;
+        self.refresh_done_at(&mut issue, now);
+        if self.archivable_done(&issue) {
+            issue.done_at = Some(now);
+        }
+        *self.issues.iter_mut().find(|i| i.id == id).unwrap() = issue;
+
+        Ok(())
+    }
+
     fn validate_attachment(&self, a: &Attachment) -> Result<()> {
         text(&a.name, 500)?;
         if a.size > 25 * 1024 * 1024 || a.content_type.len() > 200 {
@@ -1718,6 +1881,7 @@ impl Workspace {
             .iter()
             .filter(|i| {
                 i.deleted_at.is_some() == f.trash
+                    && (f.trash || i.archived_at.is_some() == f.archived)
                     && f.assignee.is_none_or(|v| i.assignee == Some(v))
                     && (!f.unassigned || i.assignee.is_none())
                     && f.team_id.is_none_or(|v| i.team_id == v)

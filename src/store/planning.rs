@@ -14,7 +14,7 @@ impl Operation<'_> {
                 }
 
                 let id = Uuid::new_v4();
-                sqlx::query("INSERT INTO teams(id,workspace_id,name) VALUES($1,$2,$3)")
+                sqlx::query("INSERT INTO teams(id,workspace_id,name,archive_after_days) VALUES($1,$2,$3,30)")
                     .bind(id)
                     .bind(self.workspace_id)
                     .bind(name)
@@ -82,6 +82,23 @@ impl Operation<'_> {
                     .execute(&mut *self.tx)
                     .await?;
                 }
+
+                id
+            }
+
+            Command::SetTeamArchive {
+                id,
+                archive_after_days,
+            } => {
+                self.admin()?;
+                crate::domain::validate_archive_days(archive_after_days)?;
+                self.touch("teams", id).await?;
+                sqlx::query("UPDATE teams SET archive_after_days=$3 WHERE workspace_id=$1 AND id=$2")
+                    .bind(self.workspace_id)
+                    .bind(id)
+                    .bind(archive_after_days.map(i64::from))
+                    .execute(&mut *self.tx)
+                    .await?;
 
                 id
             }
@@ -163,6 +180,20 @@ impl Operation<'_> {
 
                 if previous != next {
                     self.validate_workflow().await?;
+                    // Maintain the Done-entry clock for auto-archive (Done only, not cancelled).
+                    if next == "done" {
+                        sqlx::query("UPDATE issues SET done_at=COALESCE(done_at,now()),updated_at=now() WHERE workspace_id=$1 AND stage_id=$2 AND archived_at IS NULL AND done_at IS NULL")
+                            .bind(self.workspace_id)
+                            .bind(id)
+                            .execute(&mut *self.tx)
+                            .await?;
+                    } else if previous == "done" {
+                        sqlx::query("UPDATE issues SET done_at=NULL,updated_at=now() WHERE workspace_id=$1 AND stage_id=$2 AND archived_at IS NULL")
+                            .bind(self.workspace_id)
+                            .bind(id)
+                            .execute(&mut *self.tx)
+                            .await?;
+                    }
                     for (issue_id, deleted) in issues {
                         self.schedule_reminder(issue_id).await?;
                         if !deleted && !terminal(&previous) && terminal(&next) {
@@ -243,6 +274,19 @@ impl Operation<'_> {
                     .await?;
 
                 self.validate_workflow().await?;
+                if next == "done" {
+                    sqlx::query("UPDATE issues SET done_at=COALESCE(done_at,now()),updated_at=now() WHERE workspace_id=$1 AND stage_id=$2 AND archived_at IS NULL AND done_at IS NULL")
+                        .bind(self.workspace_id)
+                        .bind(replacement)
+                        .execute(&mut *self.tx)
+                        .await?;
+                } else if previous == "done" {
+                    sqlx::query("UPDATE issues SET done_at=NULL,updated_at=now() WHERE workspace_id=$1 AND stage_id=$2 AND archived_at IS NULL")
+                        .bind(self.workspace_id)
+                        .bind(replacement)
+                        .execute(&mut *self.tx)
+                        .await?;
+                }
                 for (issue_id, deleted) in issues {
                     self.schedule_reminder(issue_id).await?;
                     if !deleted && !terminal(&previous) && terminal(&next) {

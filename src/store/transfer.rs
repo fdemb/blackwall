@@ -217,10 +217,11 @@ impl Store {
 
 async fn insert_import(op: &mut Operation<'_>, w: &Workspace) -> Result<()> {
     for team in &w.teams {
-        sqlx::query("INSERT INTO teams(id,workspace_id,name) VALUES($1,$2,$3)")
+        sqlx::query("INSERT INTO teams(id,workspace_id,name,archive_after_days) VALUES($1,$2,$3,$4)")
             .bind(team.id)
             .bind(w.id)
             .bind(&team.name)
+            .bind(team.archive_after_days.map(i64::from))
             .execute(&mut *op.tx)
             .await?;
         op.created(team.id);
@@ -317,7 +318,7 @@ async fn insert_import(op: &mut Operation<'_>, w: &Workspace) -> Result<()> {
     }
 
     for issue in &w.issues {
-        sqlx::query("INSERT INTO issues(id,workspace_id,number,title,description,team_id,stage_id,assignee,priority,estimate,deadline,project_id,milestone_id,sprint_id,parent_id,position,deleted_at,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)")
+        sqlx::query("INSERT INTO issues(id,workspace_id,number,title,description,team_id,stage_id,assignee,priority,estimate,deadline,project_id,milestone_id,sprint_id,parent_id,position,deleted_at,archived_at,done_at,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)")
             .bind(issue.id)
             .bind(w.id)
             .bind(issue.number as i64)
@@ -335,6 +336,8 @@ async fn insert_import(op: &mut Operation<'_>, w: &Workspace) -> Result<()> {
             .bind(issue.parent_id)
             .bind(issue.position)
             .bind(issue.deleted_at)
+            .bind(issue.archived_at)
+            .bind(issue.done_at)
             .bind(issue.created_at)
             .bind(issue.updated_at)
             .execute(&mut *op.tx)

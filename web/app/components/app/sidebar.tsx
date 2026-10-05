@@ -14,6 +14,7 @@ import {
   Settings,
   SquarePen,
   Trash2,
+  Archive,
   UserRound,
   Users,
   Layers,
@@ -208,6 +209,13 @@ export function Sidebar({
         >
           <Avatar name={profile.display_name} src={profile.avatar_url} size={18} />
           <span className="truncate">{profile.display_name}</span>
+        </NavLink>
+        <NavLink
+          to={`${base}/archive`}
+          aria-label={t("nav.archive")}
+          className={(s) => cn(linkClass(s), "size-7 justify-center px-0")}
+        >
+          <Archive aria-hidden />
         </NavLink>
         <NavLink
           to={`${base}/trash`}

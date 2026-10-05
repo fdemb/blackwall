@@ -23,6 +23,8 @@ export interface Team {
   name: string;
   members: Id[];
   stages: Stage[];
+  /** Days after Done before auto-archive. Null means never. */
+  archive_after_days: number | null;
 }
 export interface Label {
   id: Id;
@@ -139,6 +141,8 @@ export interface Issue {
   attachments: Attachment[];
   source_links: SourceLink[];
   deleted_at: string | null;
+  archived_at: string | null;
+  done_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -181,6 +185,7 @@ export interface IssueFilter {
   due_before?: string;
   search?: string;
   trash?: boolean;
+  archived?: boolean;
   parent_id?: Id;
   dependency_id?: Id;
   ids?: string;
@@ -347,6 +352,7 @@ export interface IssuePatch {
 export type Command =
   | { type: "create_team"; name: string; members: Id[] }
   | { type: "set_team_members"; id: Id; members: Id[] }
+  | { type: "set_team_archive"; id: Id; archive_after_days: number | null }
   | { type: "create_stage"; team_id: Id; name: string; kind: StageKind; position: number }
   | { type: "update_stage"; team_id: Id; id: Id; name: string; kind: StageKind; position: number }
   | { type: "delete_stage"; team_id: Id; id: Id; replacement: Id }
@@ -378,9 +384,15 @@ export type Command =
   | { type: "create_issue"; input: IssueInput }
   | { type: "update_issue"; id: Id; patch: IssuePatch }
   | { type: "move_issue"; id: Id; stage_id: Id; before_id: Id | null }
-  | { type: "bulk_issues"; ids: Id[]; action: { update: IssuePatch } | "delete" | "restore" }
+  | {
+      type: "bulk_issues";
+      ids: Id[];
+      action: { update: IssuePatch } | "delete" | "restore" | "archive" | "unarchive";
+    }
   | { type: "delete_issue"; id: Id }
   | { type: "restore_issue"; id: Id }
+  | { type: "archive_issue"; id: Id }
+  | { type: "unarchive_issue"; id: Id }
   | { type: "remove_attachment"; issue_id: Id; attachment_id: Id }
   | { type: "add_comment"; issue_id: Id; body: string; mentions: Id[]; attachments: Attachment[] }
   | { type: "edit_comment"; id: Id; body: string; mentions: Id[] }

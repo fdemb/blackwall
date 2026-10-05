@@ -56,6 +56,9 @@ pub struct Team {
     pub name: String,
     pub members: Vec<Uuid>,
     pub stages: Vec<Stage>,
+    /// Days after entering Done before auto-archive. Null means never.
+    #[serde(default = "default_archive_days")]
+    pub archive_after_days: Option<u32>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
@@ -309,6 +312,21 @@ pub struct Report {
 
 pub fn initial_version() -> i64 {
     1
+}
+
+pub fn default_archive_days() -> Option<u32> {
+    Some(30)
+}
+
+pub(crate) fn validate_archive_days(value: Option<u32>) -> Result<()> {
+    if let Some(days) = value
+        && !(1..=3650).contains(&days)
+    {
+        return Err(Error::BadRequest(
+            "archive_after_days must be between 1 and 3650 days or null".into(),
+        ));
+    }
+    Ok(())
 }
 
 pub(crate) fn text(value: &str, max: usize) -> Result<()> {

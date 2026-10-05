@@ -65,7 +65,15 @@ export function issueQuery(
 ) {
   let query = q
     .from({ i: issues })
-    .where(({ i }) => (f.trash ? not(isNull(i.deleted_at)) : isNull(i.deleted_at)));
+    .where(({ i }) =>
+      f.trash
+        ? not(isNull(i.deleted_at))
+        : f.archived
+          ? not(isNull(i.archived_at))
+          : isNull(i.deleted_at),
+    );
+  // Archived rows hide by default; trash shows deleted whatever the archive flag says.
+  if (!f.trash && !f.archived) query = query.where(({ i }) => isNull(i.archived_at));
   const equal = {
     assignee: f.assignee,
     team_id: f.team_id,

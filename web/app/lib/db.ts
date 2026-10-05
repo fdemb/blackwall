@@ -54,8 +54,8 @@ export function httpSource(ws: Id): Source {
     kind: K,
     params: Record<string, string> = {},
   ) => collectPages((offset) => workspaces.resource(ws, kind, { ...params, offset }));
-  const issues = (trash: boolean) =>
-    collectPages((offset) => workspaces.issues(ws, { trash }, offset, 200));
+  const issues = (trash: boolean, archived: boolean) =>
+    collectPages((offset) => workspaces.issues(ws, { trash, archived }, offset, 200));
   return {
     teams: () => all("teams"),
     labels: () => all("labels"),
@@ -68,15 +68,23 @@ export function httpSource(ws: Id): Source {
     integrations: () => all("integrations"),
     notifications: () => all("notifications"),
     members: () => workspaces.members(ws),
-    // Trash lives in the same collection, so restoring is just another update.
-    issues: async () => (await Promise.all([issues(false), issues(true)])).flat(),
+    // Trash and archive live in the same collection, so restoring is just another update.
+    issues: async () =>
+      (await Promise.all([issues(false, false), issues(false, true), issues(true, false)])).flat(),
     comments: (id) => all("comments", id ? { issue_id: id } : {}),
     time_entries: (id) => all("time_entries", id ? { issue_id: id } : {}),
     activity: (id) => all("activity", id ? { entity_id: id } : {}),
   };
 }
 
-const ISSUE_DATES = ["deadline", "created_at", "updated_at", "deleted_at"] as const;
+const ISSUE_DATES = [
+  "deadline",
+  "created_at",
+  "updated_at",
+  "deleted_at",
+  "archived_at",
+  "done_at",
+] as const;
 
 /**
  * Postgres formats timestamps with an offset. Live queries compare and sort them as text,

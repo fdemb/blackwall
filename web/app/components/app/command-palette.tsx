@@ -161,8 +161,18 @@ export function CommandPalette({
   );
 
   const query = q.trim().toLowerCase();
-  const issueQuery = useIssues({ search: query, sort: "updated" }, open);
-  const issues = issueQuery.items.slice(0, query ? 8 : 5);
+  const liveQuery = useIssues({ search: query, sort: "updated" }, open);
+  // Archived issues hide from listings but stay findable here, after live matches.
+  const archivedQuery = useIssues(
+    { search: query, sort: "updated", archived: true },
+    open && query !== "",
+  );
+  const issues = useMemo(() => {
+    if (!query) return liveQuery.items.slice(0, 5);
+    const seen = new Set(liveQuery.items.map((i) => i.id));
+    return [...liveQuery.items, ...archivedQuery.items.filter((i) => !seen.has(i.id))].slice(0, 8);
+  }, [query, liveQuery.items, archivedQuery.items]);
+  const issueQuery = liveQuery;
   const keyLength = issueKeyLength(issues);
   const people = query
     ? members
@@ -235,6 +245,11 @@ export function CommandPalette({
                           className="text-muted-foreground"
                         />
                         <span className="flex-1 truncate">{i.title}</span>
+                        {i.archived_at && (
+                          <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground">
+                            {t("filter.archived")}
+                          </span>
+                        )}
                         {s && <StageIcon kind={s.kind} />}
                       </Row>
                     );

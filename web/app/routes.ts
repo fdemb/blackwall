@@ -29,6 +29,7 @@ export default [
         route("people", "routes/people.tsx"),
         route("people/:userId", "routes/person.tsx"),
         route("trash", "routes/trash.tsx"),
+        route("archive", "routes/archive.tsx"),
         route("account", "routes/account.tsx"),
       ]),
       route("settings", "routes/settings.tsx", [

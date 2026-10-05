@@ -150,6 +150,8 @@ const issue: Issue = {
   attachments: [],
   source_links: [],
   deleted_at: null,
+  archived_at: null,
+  done_at: null,
   created_at: "2026-10-04T00:00:00Z",
   updated_at: "2026-10-04T00:00:00Z",
 };
@@ -229,13 +231,19 @@ describe("frontend relational HTTP contract", () => {
     expect(db.members.toArray.map((m) => m.version)).toEqual([3]);
     expect(db.views.toArray.map((view) => view.id).sort()).toEqual(["view-a", "view-b"]);
     expect(client.getQueryData<Report>(keys.report("workspace-a"))?.issue_count).toBe(201);
-    // Issues load whole, trash included; discussion waits for an issue page.
+    // Issues load whole, trash and archive included; discussion waits for an issue page.
     expect(
       requests
         .filter(({ url }) => url.pathname.endsWith("/issues"))
         .map(({ url }) => url.searchParams.get("trash") ?? "")
         .sort((a, b) => a.localeCompare(b)),
-    ).toEqual(["", "true"]);
+    ).toEqual(["", "", "true"]);
+    expect(
+      requests
+        .filter(({ url }) => url.pathname.endsWith("/issues"))
+        .map(({ url }) => url.searchParams.get("archived") ?? "")
+        .sort((a, b) => a.localeCompare(b)),
+    ).toEqual(["", "", "true"]);
     expect(
       requests.some(({ url }) => /\/(comments|activity|time_entries)$/.test(url.pathname)),
     ).toBe(false);
@@ -330,6 +338,7 @@ describe("frontend relational HTTP contract", () => {
         "workspace-a",
         {
           trash: true,
+          archived: true,
           ids: "issue-a,issue-b",
           parent_id: "parent-a",
           dependency_id: "dependency-a",
@@ -343,7 +352,7 @@ describe("frontend relational HTTP contract", () => {
     expect(issues.map((issue) => issue.id)).toEqual(["issue-a", "issue-b"]);
     expect(requests.map(({ url }) => url.searchParams.get("offset"))).toEqual(["0", "100"]);
     expect(requests[0]!.url.searchParams.get("search")).toBe("żółć & planning");
-    for (const field of ["trash", "no_sprint", "open"])
+    for (const field of ["trash", "archived", "no_sprint", "open"])
       expect(requests[0]!.url.searchParams.get(field)).toBe("true");
     expect(requests[0]!.url.searchParams.get("ids")).toBe("issue-a,issue-b");
   });

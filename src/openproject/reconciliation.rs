@@ -122,6 +122,8 @@ pub(super) async fn apply(
                 attachments: vec![],
                 source_links: vec![],
                 deleted_at: None,
+                archived_at: None,
+                done_at: None,
                 created_at: now,
                 updated_at: now,
                 openproject: None,

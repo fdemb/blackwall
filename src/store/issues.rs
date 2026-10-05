@@ -246,11 +246,22 @@ impl Operation<'_> {
             attachments: vec![],
             source_links: vec![],
             deleted_at: None,
+            archived_at: None,
+            done_at: None,
             created_at: now,
             updated_at: now,
         };
 
         self.validate_issue_sql(&i).await?;
+        let kind: String = sqlx::query_scalar(
+            "SELECT kind FROM stages WHERE id=$1",
+        )
+        .bind(stage_id)
+        .fetch_one(&mut *self.tx)
+        .await?;
+        if kind == "done" {
+            i.done_at = Some(now);
+        }
         persistence::create(
             &mut self.tx,
             self.workspace_id,
@@ -294,6 +305,9 @@ impl Operation<'_> {
         self.touch("issues", id).await?;
 
         let old = self.issue(id).await?;
+        if old.archived_at.is_some() {
+            return Err(Error::Conflict("issue is archived".into()));
+        }
         let mut i = old.clone();
 
         if let Some(v) = p.title {
@@ -354,6 +368,20 @@ impl Operation<'_> {
         self.activity_fields
             .extend(persistence::changed_fields(&old, &i));
         self.validate_issue_sql(&i).await?;
+        if i.stage_id != old.stage_id {
+            let kind: String =
+                sqlx::query_scalar("SELECT kind FROM stages WHERE id=$1")
+                    .bind(i.stage_id)
+                    .fetch_one(&mut *self.tx)
+                    .await?;
+            if kind == "done" {
+                if i.done_at.is_none() {
+                    i.done_at = Some(Utc::now());
+                }
+            } else {
+                i.done_at = None;
+            }
+        }
         self.save_issue_fields(&i).await?;
 
         self.issue_effects(Some(&old), &i, persistence::IssueEffects::Update)
@@ -383,6 +411,49 @@ impl Operation<'_> {
         self.save_issue_fields(&i).await?;
         self.issue_effects(Some(&old), &i, persistence::IssueEffects::DeleteRestore)
             .await?;
+
+        Ok(())
+    }
+
+    async fn archive_restore(&mut self, id: Uuid, archive: bool) -> Result<()> {
+        self.touch("issues", id).await?;
+
+        let mut i = reads::issue_on(&mut self.tx, self.workspace_id, id, true).await?;
+        if i.deleted_at.is_some() {
+            return Err(Error::NotFound);
+        }
+        if archive {
+            if i.archived_at.is_some() {
+                return Err(Error::BadRequest("issue is already archived".into()));
+            }
+            let kind: String = sqlx::query_scalar("SELECT kind FROM stages WHERE id=$1")
+                .bind(i.stage_id)
+                .fetch_one(&mut *self.tx)
+                .await?;
+            if kind != "done" {
+                return Err(Error::BadRequest(
+                    "only issues in a Done stage can be archived".into(),
+                ));
+            }
+            i.archived_at = Some(Utc::now());
+        } else {
+            if i.archived_at.is_none() {
+                return Err(Error::BadRequest("issue is not archived".into()));
+            }
+            i.archived_at = None;
+            let kind: String = sqlx::query_scalar("SELECT kind FROM stages WHERE id=$1")
+                .bind(i.stage_id)
+                .fetch_one(&mut *self.tx)
+                .await?;
+            // Fresh grace period if still Done.
+            i.done_at = if kind == "done" {
+                Some(Utc::now())
+            } else {
+                None
+            };
+        }
+
+        self.save_issue_fields(&i).await?;
 
         Ok(())
     }
@@ -422,6 +493,16 @@ impl Operation<'_> {
                 self.delete_restore(id, true).await?;
                 Some(id)
             }
+            Command::ArchiveIssue { id } => {
+                self.archive_restore(id, true).await?;
+                self.activity_fields.push("archived".into());
+                Some(id)
+            }
+            Command::UnarchiveIssue { id } => {
+                self.archive_restore(id, false).await?;
+                self.activity_fields.push("archived".into());
+                Some(id)
+            }
             Command::BulkIssues { ids, action } => {
                 if ids.is_empty() || ids.len() > 500 {
                     return Err(Error::BadRequest("select 1 to 500 issues".into()));
@@ -435,6 +516,8 @@ impl Operation<'_> {
                         BulkAction::Update(p) => self.patch_issue_sql(id, *p.clone()).await?,
                         BulkAction::Delete => self.delete_restore(id, false).await?,
                         BulkAction::Restore => self.delete_restore(id, true).await?,
+                        BulkAction::Archive => self.archive_restore(id, true).await?,
+                        BulkAction::Unarchive => self.archive_restore(id, false).await?,
                     }
                 }
                 None
@@ -446,9 +529,26 @@ impl Operation<'_> {
             } => {
                 self.touch("issues", id).await?;
                 let old = self.issue(id).await?;
+                if old.archived_at.is_some() {
+                    return Err(Error::Conflict("issue is archived".into()));
+                }
                 let mut i = old.clone();
                 i.stage_id = stage_id;
                 self.validate_issue_sql(&i).await?;
+                if old.stage_id != stage_id {
+                    let kind: String =
+                        sqlx::query_scalar("SELECT kind FROM stages WHERE id=$1")
+                            .bind(stage_id)
+                            .fetch_one(&mut *self.tx)
+                            .await?;
+                    if kind == "done" {
+                        if i.done_at.is_none() {
+                            i.done_at = Some(Utc::now());
+                        }
+                    } else {
+                        i.done_at = None;
+                    }
+                }
                 if let Some(before) = before_id {
                     let neighbor = self.issue(before).await?;
                     if before == id
@@ -549,6 +649,16 @@ impl Operation<'_> {
                 }
                 self.touch("issues", issue_id).await?;
                 self.issue(issue_id).await?;
+                let link_archived: bool = sqlx::query_scalar(
+                    "SELECT archived_at IS NOT NULL FROM issues WHERE workspace_id=$1 AND id=$2",
+                )
+                .bind(self.workspace_id)
+                .bind(issue_id)
+                .fetch_one(&mut *self.tx)
+                .await?;
+                if link_archived {
+                    return Err(Error::Conflict("issue is archived".into()));
+                }
                 sqlx::query("INSERT INTO source_links(id,workspace_id,issue_id,url,title) VALUES($1,$2,$3,$4,$5) ON CONFLICT(issue_id,url,title) DO NOTHING")
                     .bind(Uuid::new_v4())
                     .bind(self.workspace_id)

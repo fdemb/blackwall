@@ -15,6 +15,7 @@ impl Operation<'_> {
                 attachment,
             } => {
                 self.touch("issues", issue_id).await?;
+                self.reject_archived_issue(issue_id).await?;
                 self.discussion_issue(issue_id).await?;
                 self.insert_attachment(issue_id, None, attachment, upload)
                     .await?;
@@ -42,6 +43,7 @@ impl Operation<'_> {
                 attachment_id,
             } => {
                 self.touch("issues", issue_id).await?;
+                self.reject_archived_issue(issue_id).await?;
                 self.discussion_issue(issue_id).await?;
 
                 let deleted = sqlx::query(
@@ -810,6 +812,21 @@ impl Operation<'_> {
         .fetch_optional(&mut *self.tx)
         .await?
         .ok_or(Error::NotFound)?;
+        Ok(())
+    }
+
+    async fn reject_archived_issue(&mut self, id: Uuid) -> Result<()> {
+        let archived: bool = sqlx::query_scalar(
+            "SELECT archived_at IS NOT NULL FROM issues WHERE workspace_id=$1 AND id=$2",
+        )
+        .bind(self.workspace_id)
+        .bind(id)
+        .fetch_optional(&mut *self.tx)
+        .await?
+        .ok_or(Error::NotFound)?;
+        if archived {
+            return Err(Error::Conflict("issue is archived".into()));
+        }
         Ok(())
     }
 

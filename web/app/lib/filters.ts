@@ -17,6 +17,11 @@ export function isDone(ws: Workspace, issue: Issue) {
   return s ? s.kind === "done" || s.kind === "cancelled" : false;
 }
 
+/** Done exactly: the only stage whose issues auto-archive. Cancelled is excluded. */
+export function isDoneOnly(ws: Workspace, issue: Issue) {
+  return stageIndexOf(ws).get(issue.stage_id)?.kind === "done";
+}
+
 export function stageOf(ws: Workspace, issue: Issue) {
   return stageIndexOf(ws).get(issue.stage_id);
 }

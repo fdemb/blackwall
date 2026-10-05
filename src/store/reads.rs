@@ -317,8 +317,10 @@ impl Store {
 
         q.push(if filter.trash {
             " AND i.deleted_at IS NOT NULL"
+        } else if filter.archived {
+            " AND i.deleted_at IS NULL AND i.archived_at IS NOT NULL"
         } else {
-            " AND i.deleted_at IS NULL"
+            " AND i.deleted_at IS NULL AND i.archived_at IS NULL"
         });
         for (column, value) in [
             ("assignee", filter.assignee),
@@ -503,10 +505,10 @@ WITH work AS (
  UNION ALL SELECT 'people',user_id,sum(minutes)::bigint,0,0 FROM minutes GROUP BY user_id
  UNION ALL SELECT 'teams',team_id,sum(minutes)::bigint,0,0 FROM minutes GROUP BY team_id
  UNION ALL SELECT 'projects',project_id,sum(minutes)::bigint,0,0 FROM minutes WHERE project_id IS NOT NULL GROUP BY project_id
- UNION ALL SELECT 'issues',id,0,1,COALESCE(estimate,0) FROM work WHERE deleted_at IS NULL AND NOT done
- UNION ALL SELECT 'people',assignee,0,1,COALESCE(estimate,0) FROM work WHERE deleted_at IS NULL AND NOT done AND assignee IS NOT NULL
- UNION ALL SELECT 'teams',team_id,0,1,COALESCE(estimate,0) FROM work WHERE deleted_at IS NULL AND NOT done
- UNION ALL SELECT 'projects',project_id,0,1,COALESCE(estimate,0) FROM work WHERE deleted_at IS NULL AND NOT done AND project_id IS NOT NULL
+ UNION ALL SELECT 'issues',id,0,1,COALESCE(estimate,0) FROM work WHERE deleted_at IS NULL AND archived_at IS NULL AND NOT done
+ UNION ALL SELECT 'people',assignee,0,1,COALESCE(estimate,0) FROM work WHERE deleted_at IS NULL AND archived_at IS NULL AND NOT done AND assignee IS NOT NULL
+ UNION ALL SELECT 'teams',team_id,0,1,COALESCE(estimate,0) FROM work WHERE deleted_at IS NULL AND archived_at IS NULL AND NOT done
+ UNION ALL SELECT 'projects',project_id,0,1,COALESCE(estimate,0) FROM work WHERE deleted_at IS NULL AND archived_at IS NULL AND NOT done AND project_id IS NOT NULL
 ), grouped AS (
  SELECT category,id,sum(minutes)::bigint AS minutes,sum(open_issues)::bigint AS open_issues,sum(effort)::bigint AS effort FROM totals GROUP BY category,id
 ), category_rows AS (
@@ -516,12 +518,12 @@ WITH work AS (
 ), delivery_rows AS (
  SELECT (at AT TIME ZONE 'UTC')::date::text AS date,count(*) AS completed FROM activity WHERE workspace_id=$1 AND action='issue_completed' GROUP BY (at AT TIME ZONE 'UTC')::date
 ), label_rows AS (
- SELECT l.id,count(i.id) AS count FROM labels l LEFT JOIN issue_labels il ON il.label_id=l.id LEFT JOIN work i ON i.id=il.issue_id AND i.deleted_at IS NULL WHERE l.workspace_id=$1 GROUP BY l.id
+ SELECT l.id,count(i.id) AS count FROM labels l LEFT JOIN issue_labels il ON il.label_id=l.id LEFT JOIN work i ON i.id=il.issue_id AND i.deleted_at IS NULL AND i.archived_at IS NULL WHERE l.workspace_id=$1 GROUP BY l.id
 ), project_rows AS (
  SELECT p.id,count(i.id) AS total,count(i.id) FILTER(WHERE i.done) AS completed,max(i.updated_at) AS updated_at,
- COALESCE((SELECT jsonb_agg(to_jsonb(t) ORDER BY t.id) FROM (SELECT i2.team_id AS id,count(*) AS total,count(*) FILTER(WHERE i2.done) AS completed FROM work i2 WHERE i2.project_id=p.id AND i2.deleted_at IS NULL GROUP BY i2.team_id) t),'[]'::jsonb) AS teams,
- COALESCE((SELECT jsonb_agg(to_jsonb(m) ORDER BY m.id) FROM (SELECT i2.milestone_id AS id,count(*) AS total,count(*) FILTER(WHERE i2.done) AS completed FROM work i2 WHERE i2.project_id=p.id AND i2.deleted_at IS NULL AND i2.milestone_id IS NOT NULL GROUP BY i2.milestone_id) m),'[]'::jsonb) AS milestones
- FROM projects p LEFT JOIN work i ON i.project_id=p.id AND i.deleted_at IS NULL WHERE p.workspace_id=$1 GROUP BY p.id
+ COALESCE((SELECT jsonb_agg(to_jsonb(t) ORDER BY t.id) FROM (SELECT i2.team_id AS id,count(*) AS total,count(*) FILTER(WHERE i2.done) AS completed FROM work i2 WHERE i2.project_id=p.id AND i2.deleted_at IS NULL AND i2.archived_at IS NULL GROUP BY i2.team_id) t),'[]'::jsonb) AS teams,
+ COALESCE((SELECT jsonb_agg(to_jsonb(m) ORDER BY m.id) FROM (SELECT i2.milestone_id AS id,count(*) AS total,count(*) FILTER(WHERE i2.done) AS completed FROM work i2 WHERE i2.project_id=p.id AND i2.deleted_at IS NULL AND i2.archived_at IS NULL AND i2.milestone_id IS NOT NULL GROUP BY i2.milestone_id) m),'[]'::jsonb) AS milestones
+ FROM projects p LEFT JOIN work i ON i.project_id=p.id AND i.deleted_at IS NULL AND i.archived_at IS NULL WHERE p.workspace_id=$1 GROUP BY p.id
 )
 SELECT jsonb_build_object(
  'total_minutes',(SELECT COALESCE(sum(minutes),0)::bigint FROM time_entries WHERE workspace_id=$1),
@@ -531,7 +533,7 @@ SELECT jsonb_build_object(
  'projects',COALESCE((SELECT rows FROM category_rows WHERE category='projects'),'[]'::jsonb),
  'sprints',COALESCE((SELECT jsonb_agg(to_jsonb(s) ORDER BY s.id) FROM sprint_rows s),'[]'::jsonb),
  'delivery',COALESCE((SELECT jsonb_agg(to_jsonb(d) ORDER BY d.date) FROM delivery_rows d),'[]'::jsonb),
- 'issue_count',(SELECT count(*) FROM work WHERE deleted_at IS NULL),
+ 'issue_count',(SELECT count(*) FROM work WHERE deleted_at IS NULL AND archived_at IS NULL),
  'inbox_unread',(SELECT count(*) FROM notifications WHERE workspace_id=$1 AND user_id=$2 AND read_at IS NULL),
  'label_counts',COALESCE((SELECT jsonb_object_agg(id::text,count) FROM label_rows),'{}'::jsonb),
  'project_stats',COALESCE((SELECT jsonb_agg(to_jsonb(p) ORDER BY p.id) FROM project_rows p),'[]'::jsonb))
