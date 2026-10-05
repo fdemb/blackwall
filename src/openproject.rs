@@ -15,7 +15,7 @@ use axum::{
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use sqlx::{PgConnection, Row};
+use sqlx::{Acquire, PgConnection, Row};
 use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
 
@@ -445,46 +445,81 @@ async fn cancel_pending(conn: &mut PgConnection, id: Uuid) -> Result<()> {
 pub async fn schedule(store: &Store) -> Result<()> {
     let mut tx = store.pool.begin().await?;
     let rows=sqlx::query("SELECT id,generation,status,checkpoint,poll_watermark,incremental_supported,jsonb_array_length(projects)>0 AS mapped,last_discovered_at IS NULL OR last_discovered_at<=clock_timestamp()-interval '30 minutes' AS discover,EXISTS(SELECT 1 FROM changes WHERE workspace_id=c.workspace_id AND entity IN ('members','teams') AND created_at>=c.poll_watermark) AS local_mapping_changed FROM openproject_connections c WHERE enabled AND NOT deleted AND next_run_at<=clock_timestamp() AND NOT EXISTS(SELECT 1 FROM jobs WHERE queue='openproject' AND payload->>'connection_id'=c.id::text AND state IN ('pending','running')) ORDER BY next_run_at,id FOR UPDATE OF c SKIP LOCKED LIMIT 100").fetch_all(&mut *tx).await?;
-    let scheduled_count = rows.len();
+    let mut scheduled_count = 0;
     for row in rows {
-        let id: Uuid = row.try_get("id")?;
-        let mut checkpoint: Checkpoint = serde_json::from_value(row.try_get("checkpoint")?)?;
-        if row.try_get::<String, _>("status")? == "idle"
-            && matches!(&checkpoint, Checkpoint::Projects { cursor, refresh_only: false }
-                if cursor.page == 1 && cursor.page_size.is_none() && cursor.started_at.is_none())
-        {
-            let now = Utc::now();
-            let watermark: Option<DateTime<Utc>> = row.try_get("poll_watermark")?;
-            if row.try_get::<bool, _>("mapped")? && !row.try_get::<bool, _>("discover")? {
-                // Round the lower bound back two days to cover timestamp precision
-                // and timezone differences. The checkpoint freezes the entire window.
-                let cutoff = if row.try_get::<bool, _>("incremental_supported")?
-                    && !row.try_get::<bool, _>("local_mapping_changed")?
-                {
-                    watermark
-                        .and_then(|date| date.date_naive().checked_sub_days(chrono::Days::new(2)))
-                } else {
-                    None
-                };
-                checkpoint = Checkpoint::packages(now, cutoff);
-            } else {
-                checkpoint = Checkpoint::default();
-                checkpoint.cursor_mut().started_at = Some(now);
+        let id: Uuid = match row.try_get("id") {
+            Ok(id) => id,
+            // Defensive: id is the primary key and is needed to mark the row.
+            Err(error) => {
+                tracing::warn!(error = %error, "OpenProject scheduling skipped a connection");
+                continue;
             }
+        };
+        let scheduled: Result<()> = async {
+            let mut savepoint = tx.begin().await?;
+            let mut checkpoint: Checkpoint = serde_json::from_value(row.try_get("checkpoint")?)?;
+            if row.try_get::<String, _>("status")? == "idle"
+                && matches!(&checkpoint, Checkpoint::Projects { cursor, refresh_only: false }
+                    if cursor.page == 1 && cursor.page_size.is_none() && cursor.started_at.is_none())
+            {
+                let now = Utc::now();
+                let watermark: Option<DateTime<Utc>> = row.try_get("poll_watermark")?;
+                if row.try_get::<bool, _>("mapped")? && !row.try_get::<bool, _>("discover")? {
+                    // Round the lower bound back two days to cover timestamp precision
+                    // and timezone differences. The checkpoint freezes the entire window.
+                    let cutoff = if row.try_get::<bool, _>("incremental_supported")?
+                        && !row.try_get::<bool, _>("local_mapping_changed")?
+                    {
+                        watermark
+                            .and_then(|date| date.date_naive().checked_sub_days(chrono::Days::new(2)))
+                    } else {
+                        None
+                    };
+                    checkpoint = Checkpoint::packages(now, cutoff);
+                } else {
+                    checkpoint = Checkpoint::default();
+                    checkpoint.cursor_mut().started_at = Some(now);
+                }
+            }
+            Outbox::insert(
+                &mut savepoint,
+                &NewJob::now(
+                    format!("openproject:{}", Uuid::new_v4()),
+                    Job::OpenProject(SyncJob {
+                        connection_id: id,
+                        generation: row.try_get("generation")?,
+                    }),
+                ),
+            )
+            .await?;
+            sqlx::query("UPDATE jobs SET max_attempts=3 WHERE queue='openproject' AND payload->>'connection_id'=$1 AND state='pending'").bind(id.to_string()).execute(&mut *savepoint).await?;
+            sqlx::query("UPDATE openproject_connections SET checkpoint=$2,next_run_at=clock_timestamp()+interval '5 minutes' WHERE id=$1").bind(id).bind(json!(checkpoint)).execute(&mut *savepoint).await?;
+            savepoint.commit().await?;
+            Ok(())
         }
-        Outbox::insert(
-            &mut tx,
-            &NewJob::now(
-                format!("openproject:{}", Uuid::new_v4()),
-                Job::OpenProject(SyncJob {
-                    connection_id: id,
-                    generation: row.try_get("generation")?,
-                }),
-            ),
-        )
-        .await?;
-        sqlx::query("UPDATE jobs SET max_attempts=3 WHERE queue='openproject' AND payload->>'connection_id'=$1 AND state='pending'").bind(id.to_string()).execute(&mut *tx).await?;
-        sqlx::query("UPDATE openproject_connections SET checkpoint=$2,next_run_at=clock_timestamp()+interval '5 minutes' WHERE id=$1").bind(id).bind(json!(checkpoint)).execute(&mut *tx).await?;
+        .await;
+        if let Err(error) = scheduled {
+            match &error {
+                Error::Json(_) => {
+                    tracing::warn!(connection_id = %id, "OpenProject scheduling failed for connection: invalid checkpoint")
+                }
+                _ => {
+                    tracing::warn!(connection_id = %id, error = %error, "OpenProject scheduling failed for connection")
+                }
+            }
+            let marked: Result<()> = async {
+                let mut savepoint = tx.begin().await?;
+                sqlx::query("UPDATE openproject_connections SET status='error',last_error=$2,next_run_at=clock_timestamp()+interval '5 minutes' WHERE id=$1").bind(id).bind("OpenProject sync state is invalid; use Sync now to restart").execute(&mut *savepoint).await?;
+                savepoint.commit().await?;
+                Ok(())
+            }
+            .await;
+            if let Err(error) = marked {
+                tracing::warn!(connection_id = %id, error = %error, "OpenProject scheduling failed to mark connection error");
+            }
+        } else {
+            scheduled_count += 1;
+        }
     }
     tx.commit().await?;
     if scheduled_count > 0 {

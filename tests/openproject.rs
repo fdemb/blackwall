@@ -1121,3 +1121,55 @@ async fn mirrored_done_issues_archive_and_reopening_unarchives() {
     store.pool.close().await;
     db.cleanup().await;
 }
+
+#[tokio::test]
+async fn corrupt_checkpoint_does_not_block_other_connections() {
+    let db = support::TestDatabase::new().await;
+    let store = Store::connect(&db.url).await.unwrap();
+    let owner = account(&store).await;
+    let (workspace, team, other_team) = setup(&store, &owner).await;
+    let app = http::router(store.clone());
+    let base = format!("/api/workspaces/{workspace}/openproject/connections");
+    let url = "http://127.0.0.1:9";
+    let (status, healthy) = call(&app, &owner, "POST", &base, Some(json!({"name":"Healthy","base_url":url,"token":TOKEN,"projects":[{"project_id":42,"team_id":team}]}))).await;
+    assert_eq!(status, StatusCode::CREATED, "{healthy}");
+    let (status, broken) = call(&app, &owner, "POST", &base, Some(json!({"name":"Broken","base_url":url,"token":TOKEN,"projects":[{"project_id":43,"team_id":other_team}]}))).await;
+    assert_eq!(status, StatusCode::CREATED, "{broken}");
+    let healthy_id = Uuid::parse_str(healthy["id"].as_str().unwrap()).unwrap();
+    let broken_id = Uuid::parse_str(broken["id"].as_str().unwrap()).unwrap();
+    // The corrupt row goes first on purpose so a whole-transaction abort would block the healthy one.
+    sqlx::query("UPDATE openproject_connections SET checkpoint='{\"phase\":\"nonsense\"}'::jsonb,next_run_at=clock_timestamp()-interval '2 minutes' WHERE id=$1").bind(broken_id).execute(&store.pool).await.unwrap();
+    sqlx::query("UPDATE openproject_connections SET next_run_at=clock_timestamp()-interval '1 minute' WHERE id=$1").bind(healthy_id).execute(&store.pool).await.unwrap();
+    openproject::schedule(&store).await.unwrap();
+    let healthy_jobs: i64 = sqlx::query_scalar("SELECT count(*) FROM jobs WHERE queue='openproject' AND state='pending' AND payload->>'connection_id'=$1").bind(healthy_id.to_string()).fetch_one(&store.pool).await.unwrap();
+    assert_eq!(healthy_jobs, 1);
+    let broken_jobs: i64 = sqlx::query_scalar("SELECT count(*) FROM jobs WHERE queue='openproject' AND state='pending' AND payload->>'connection_id'=$1").bind(broken_id.to_string()).fetch_one(&store.pool).await.unwrap();
+    assert_eq!(broken_jobs, 0);
+    let row = sqlx::query("SELECT status,last_error,next_run_at>clock_timestamp() AS future FROM openproject_connections WHERE id=$1").bind(broken_id).fetch_one(&store.pool).await.unwrap();
+    use sqlx::Row;
+    assert_eq!(row.try_get::<String, _>("status").unwrap(), "error");
+    assert_eq!(
+        row.try_get::<String, _>("last_error").unwrap(),
+        "OpenProject sync state is invalid; use Sync now to restart"
+    );
+    assert!(row.try_get::<bool, _>("future").unwrap());
+    openproject::schedule(&store).await.unwrap();
+    let healthy_jobs: i64 = sqlx::query_scalar("SELECT count(*) FROM jobs WHERE queue='openproject' AND state='pending' AND payload->>'connection_id'=$1").bind(healthy_id.to_string()).fetch_one(&store.pool).await.unwrap();
+    assert_eq!(healthy_jobs, 1);
+    let broken_jobs: i64 = sqlx::query_scalar("SELECT count(*) FROM jobs WHERE queue='openproject' AND state='pending' AND payload->>'connection_id'=$1").bind(broken_id.to_string()).fetch_one(&store.pool).await.unwrap();
+    assert_eq!(broken_jobs, 0);
+    let (status, _) = call(
+        &app,
+        &owner,
+        "POST",
+        &format!("{base}/{broken_id}/sync"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    openproject::schedule(&store).await.unwrap();
+    let broken_jobs: i64 = sqlx::query_scalar("SELECT count(*) FROM jobs WHERE queue='openproject' AND state='pending' AND payload->>'connection_id'=$1").bind(broken_id.to_string()).fetch_one(&store.pool).await.unwrap();
+    assert_eq!(broken_jobs, 1);
+    store.pool.close().await;
+    db.cleanup().await;
+}
