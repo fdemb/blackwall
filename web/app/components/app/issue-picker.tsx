@@ -12,6 +12,7 @@ import { Search } from "lucide-react";
 import { Popover } from "~/components/ui/popover";
 import { stageOf } from "~/lib/filters";
 import { issueKey } from "~/lib/format";
+import { IssueKey, issueKeyLength } from "./issue-key";
 import { useI18n } from "~/lib/i18n";
 import { useIssues } from "~/lib/queries";
 import { QueryStatus } from "./query-status";
@@ -35,6 +36,7 @@ export function IssuePicker({
   const query = useIssues({ search: q, sort: "updated" }, open);
   const excluded = new Set(exclude);
   const results = query.items.filter((i) => !excluded.has(i.id)).slice(0, 30);
+  const keyLength = issueKeyLength(results);
   return (
     <DialogTrigger
       onOpenChange={(o) => {
@@ -61,6 +63,7 @@ export function IssuePicker({
               <Menu
                 aria-label={t("issue.find")}
                 items={results}
+                dependencies={[keyLength]}
                 onAction={(k) => {
                   onPick(String(k));
                   close();
@@ -81,9 +84,11 @@ export function IssuePicker({
                       className="flex cursor-default items-center gap-2 rounded-md px-2 py-1.5 text-[13px] outline-none focus:bg-accent"
                     >
                       {s && <StageIcon kind={s.kind} />}
-                      <span className="w-12 shrink-0 tabular-nums text-muted-foreground">
-                        {issueKey(i.number)}
-                      </span>
+                      <IssueKey
+                        number={i.number}
+                        length={keyLength}
+                        className="text-muted-foreground"
+                      />
                       <span className="truncate">{i.title}</span>
                     </MenuItem>
                   );

@@ -58,6 +58,7 @@ import {
 import { EmptyState, Page, TeamCrumb } from "~/components/app/page";
 import { isDone, stageOf } from "~/lib/filters";
 import { bytes, formatMinutes, fullDate, issueKey, MAX_UPLOAD, relativeTime } from "~/lib/format";
+import { IssueKey, issueKeyLength } from "~/components/app/issue-key";
 import { useDocumentTitle } from "~/lib/title";
 import { useI18n, isTranslationKey, type Key } from "~/lib/i18n";
 import { usePending } from "~/lib/use-pending";
@@ -202,7 +203,7 @@ function IssueView({ issue, detail }: { issue: Issue; detail: IssueDetail }) {
             </span>
           </>
         )}
-        <span className="text-[13px] font-medium tabular-nums">{issueKey(issue.number)}</span>
+        <IssueKey number={issue.number} className="text-[13px] font-medium" />
         <div className="ml-auto flex items-center gap-1">
           <SaveStatus />
           <Button
@@ -259,7 +260,7 @@ function IssueView({ issue, detail }: { issue: Issue; detail: IssueDetail }) {
                     to={`/${ws.id}/issue/${parent.id}`}
                     className="inline-flex min-w-0 items-center gap-1.5 hover:text-foreground"
                   >
-                    <span className="tabular-nums">{issueKey(parent.number)}</span>
+                    <IssueKey number={parent.number} />
                     <span className="truncate">{parent.title}</span>
                   </Link>
                   {canWrite && (
@@ -1034,7 +1035,15 @@ function Description({
   );
 }
 
-function IssueRow({ issue, trailing }: { issue: Issue; trailing?: React.ReactNode }) {
+function IssueRow({
+  issue,
+  trailing,
+  keyLength,
+}: {
+  issue: Issue;
+  trailing?: React.ReactNode;
+  keyLength: number;
+}) {
   const { ws, member } = useWorkspace();
   const st = stageOf(ws, issue);
   const assignee = member(issue.assignee);
@@ -1045,9 +1054,7 @@ function IssueRow({ issue, trailing }: { issue: Issue; trailing?: React.ReactNod
         className="flex min-w-0 flex-1 items-center gap-2.5 self-stretch"
       >
         {st && <StageIcon kind={st.kind} />}
-        <span className="w-14 shrink-0 tabular-nums text-muted-foreground">
-          {issueKey(issue.number)}
-        </span>
+        <IssueKey number={issue.number} length={keyLength} className="text-muted-foreground" />
         <span className={cn("truncate", isDone(ws, issue) && "text-muted-foreground line-through")}>
           {issue.title}
         </span>
@@ -1077,6 +1084,7 @@ function Subtasks({
   const [title, setTitle] = useState("");
   const { pending, guard } = usePending();
   const done = subs.filter((s) => isDone(ws, s)).length;
+  const keyLength = issueKeyLength(subs);
   // The title is cleared only after the issue exists. If the request fails it stays for another try.
   const submit = () =>
     guard(async () => {
@@ -1118,7 +1126,7 @@ function Subtasks({
       )}
       <ul className="divide-y divide-border/70 rounded-lg border border-border">
         {subs.map((s) => (
-          <IssueRow key={s.id} issue={s} />
+          <IssueRow key={s.id} issue={s} keyLength={keyLength} />
         ))}
         {canWrite && (
           <li>
@@ -1175,6 +1183,7 @@ function Dependencies({
   const { t } = useI18n();
   const { run, canWrite: workspaceCanWrite } = useWorkspace();
   const canWrite = workspaceCanWrite && !isImportedIssue(issue);
+  const keyLength = issueKeyLength([...blockers, ...blocking]);
   const remove = (id: Id) =>
     run({
       type: "update_issue",
@@ -1190,6 +1199,7 @@ function Dependencies({
             <IssueRow
               key={b.id}
               issue={b}
+              keyLength={keyLength}
               trailing={
                 removable &&
                 canWrite && (

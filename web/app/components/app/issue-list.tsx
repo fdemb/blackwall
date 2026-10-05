@@ -17,7 +17,8 @@ import { Avatar } from "~/components/ui/avatar";
 import { useToast } from "~/components/ui/toast";
 import { ConfirmDialog } from "./confirm";
 import { cn } from "~/lib/utils";
-import { issueKey, PRIORITIES } from "~/lib/format";
+import { PRIORITIES } from "~/lib/format";
+import { IssueKey, issueKeyLength } from "./issue-key";
 import { stageOf } from "~/lib/filters";
 import { isImportedIssue } from "~/lib/openproject";
 import { useI18n } from "~/lib/i18n";
@@ -193,6 +194,7 @@ function useIssueGrid({
   Pick<IssueListProps, "showTeam"> & { fill: boolean }) {
   const { t } = useI18n();
   const groups = useGroups(issues, groupBy);
+  const keyLength = issueKeyLength(issues);
   const [selected, setSelected] = useState<Set<Id>>(() => new Set());
   const { canWrite } = useWorkspace();
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
@@ -236,7 +238,7 @@ function useIssueGrid({
       className={cn("outline-none", fill ? "min-h-0 flex-1 overflow-y-auto" : "pb-24")}
     >
       {groupBy === "none" ? (
-        <IssueRows items={issues} showTeam={showTeam} canSelect={canSelect} />
+        <IssueRows items={issues} showTeam={showTeam} canSelect={canSelect} keyLength={keyLength} />
       ) : (
         groups.map((g) => {
           const isCollapsed = collapsed.has(g.id);
@@ -265,6 +267,7 @@ function useIssueGrid({
               </GridListHeader>
               <IssueRows
                 items={isCollapsed ? [] : g.items}
+                keyLength={keyLength}
                 showTeam={showTeam}
                 canSelect={canSelect}
               />
@@ -286,14 +289,18 @@ function IssueRows({
   items,
   showTeam,
   canSelect,
+  keyLength,
 }: {
   items: Issue[];
   showTeam?: boolean;
   canSelect?: boolean;
+  keyLength: number;
 }) {
   return (
-    <Collection items={items}>
-      {(issue) => <IssueRow issue={issue} showTeam={showTeam} canSelect={canSelect} />}
+    <Collection items={items} dependencies={[keyLength, showTeam, canSelect]}>
+      {(issue) => (
+        <IssueRow issue={issue} showTeam={showTeam} canSelect={canSelect} keyLength={keyLength} />
+      )}
     </Collection>
   );
 }
@@ -302,10 +309,12 @@ export function IssueRow({
   issue,
   showTeam,
   canSelect,
+  keyLength,
 }: {
   issue: Issue;
   showTeam?: boolean;
   canSelect?: boolean;
+  keyLength?: number;
 }) {
   const { ws, run, canWrite } = useWorkspace();
   const stage = stageOf(ws, issue);
@@ -323,9 +332,7 @@ export function IssueRow({
         disabled={!canWrite || isImportedIssue(issue)}
         run={(patch) => run({ type: "update_issue", id: issue.id, patch })}
       />
-      <span className="w-14 shrink-0 tabular-nums text-muted-foreground">
-        {issueKey(issue.number)}
-      </span>
+      <IssueKey number={issue.number} length={keyLength} className="text-muted-foreground" />
       {stage && (
         <span title={stage.name}>
           <StageIcon kind={stage.kind} />

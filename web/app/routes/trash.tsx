@@ -8,7 +8,8 @@ import { collectPages, workspaces } from "~/lib/api";
 import { useIssues } from "~/lib/queries";
 import { isImportedIssue } from "~/lib/openproject";
 import { QueryStatus } from "~/components/app/query-status";
-import { issueKey, relativeTime } from "~/lib/format";
+import { relativeTime } from "~/lib/format";
+import { IssueKey, issueKeyLength } from "~/components/app/issue-key";
 import { useI18n } from "~/lib/i18n";
 import { useWorkspace } from "~/lib/workspace";
 import { useToast } from "~/components/ui/toast";
@@ -19,6 +20,7 @@ export default function Trash() {
   const toast = useToast();
   const query = useIssues({ trash: true, sort: "updated" });
   const issues = query.items;
+  const keyLength = issueKeyLength(issues);
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
   // The server accepts at most 500 issues per bulk command, so a large Trash is restored in batches.
   const restoreAll = async () => {
@@ -80,9 +82,7 @@ export default function Trash() {
                 key={i.id}
                 className="flex min-h-11 items-center gap-3 border-b border-border/70 px-4 py-1 text-[13px]"
               >
-                <span className="w-14 tabular-nums text-muted-foreground">
-                  {issueKey(i.number)}
-                </span>
+                <IssueKey number={i.number} length={keyLength} className="text-muted-foreground" />
                 <Link
                   to={`/${ws.id}/issue/${i.id}`}
                   className="min-w-0 flex-1 truncate text-muted-foreground line-through hover:text-foreground"

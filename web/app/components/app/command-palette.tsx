@@ -29,6 +29,7 @@ import {
 import { Avatar } from "~/components/ui/avatar";
 import { Kbd } from "~/components/ui/tooltip";
 import { issueKey } from "~/lib/format";
+import { IssueKey, issueKeyLength } from "./issue-key";
 import { useI18n } from "~/lib/i18n";
 import { useShortcutsEnabled } from "~/lib/shortcuts";
 import { useIssues } from "~/lib/queries";
@@ -162,6 +163,7 @@ export function CommandPalette({
   const query = q.trim().toLowerCase();
   const issueQuery = useIssues({ search: query, sort: "updated" }, open);
   const issues = issueQuery.items.slice(0, query ? 8 : 5);
+  const keyLength = issueKeyLength(issues);
   const people = query
     ? members
         .filter(
@@ -227,9 +229,11 @@ export function CommandPalette({
                         }}
                       >
                         <PriorityIcon priority={i.priority} />
-                        <span className="w-14 shrink-0 tabular-nums text-muted-foreground">
-                          {issueKey(i.number)}
-                        </span>
+                        <IssueKey
+                          number={i.number}
+                          length={keyLength}
+                          className="text-muted-foreground"
+                        />
                         <span className="flex-1 truncate">{i.title}</span>
                         {s && <StageIcon kind={s.kind} />}
                       </Row>
