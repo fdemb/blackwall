@@ -71,6 +71,7 @@ export interface OpenProjectIssue {
   connection_id: Id;
   work_package_id: number;
   project_id: number;
+  parent_work_package_id?: number | null;
   status_name: string;
   url: string;
   unavailable: boolean;

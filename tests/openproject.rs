@@ -52,6 +52,7 @@ struct Remote {
     reject_date_filter: bool,
     incremental_items: Option<Vec<Value>>,
     bulk_count: usize,
+    parents: BTreeMap<i64, i64>,
 }
 
 #[derive(Clone, Default)]
@@ -110,14 +111,21 @@ async fn remote(
                         Json(json!({"error":"date filter unsupported"})),
                     );
                 }
-                if let Some(items) = &data.incremental_items {
+                if let Some(items) = data.incremental_items.clone() {
+                    let parents = data.parents.clone();
+                    let page_size = data.page_size.unwrap_or(1);
+                    let mut items = items;
+                    for package in &mut items {
+                        if let Some(id) = package.get("id").and_then(Value::as_i64)
+                            && let Some(parent) = parents.get(&id)
+                        {
+                            package["_links"]["parent"] =
+                                json!({"href": format!("/api/v3/work_packages/{parent}")});
+                        }
+                    }
                     return (
                         StatusCode::OK,
-                        Json(collection_with_size(
-                            items.clone(),
-                            page,
-                            data.page_size.unwrap_or(1),
-                        )),
+                        Json(collection_with_size(items, page, page_size)),
                     );
                 }
             }
@@ -137,6 +145,7 @@ async fn remote(
             let malformed_last = data.malformed_last;
             let page_size = data.page_size.unwrap_or(1);
             let bulk_count = data.bulk_count;
+            let parents = data.parents.clone();
             drop(data);
             if stall {
                 mock.entered.notify_one();
@@ -172,6 +181,14 @@ async fn remote(
             }
             if malformed_last && let Some(last) = packages.last_mut() {
                 last["dueDate"] = json!("invalid-date");
+            }
+            for package in &mut packages {
+                if let Some(id) = package.get("id").and_then(Value::as_i64)
+                    && let Some(parent) = parents.get(&id)
+                {
+                    package["_links"]["parent"] =
+                        json!({"href": format!("/api/v3/work_packages/{parent}")});
+                }
             }
             return (
                 StatusCode::OK,
