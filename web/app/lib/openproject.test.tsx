@@ -2,8 +2,13 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vite-plus/test";
 import { OpenProjectNotice } from "../components/app/issue-parts";
 import { I18nProvider } from "./i18n";
-import { isImportedIssue, openprojectIssueUrl } from "./openproject";
-import type { OpenProjectIssue } from "./types";
+import {
+  automaticOpenProjectStage,
+  migratedOpenProjectStageKind,
+  isImportedIssue,
+  openprojectIssueUrl,
+} from "./openproject";
+import type { OpenProjectIssue, Stage } from "./types";
 
 const metadata: OpenProjectIssue = {
   connection_id: "connection-a",
@@ -66,5 +71,42 @@ describe("imported issue policy", () => {
         openproject: { ...metadata, url: "http://10.0.0.2/work_packages/12" },
       }),
     ).toBe("http://10.0.0.2/work_packages/12");
+  });
+});
+
+describe("OpenProject status mapping defaults", () => {
+  const stages: Stage[] = [
+    { id: "done", name: "Done", kind: "done", position: 3, version: 1 },
+    { id: "backlog", name: "Backlog", kind: "backlog", position: 1, version: 1 },
+    { id: "active", name: "In progress", kind: "active", position: 2, version: 1 },
+  ];
+  it("matches names before the open or closed fallback and leaves input order intact", () => {
+    expect(
+      automaticOpenProjectStage({ id: 1, name: "IN PROGRESS", is_closed: false }, stages)?.id,
+    ).toBe("active");
+    expect(automaticOpenProjectStage({ id: 2, name: "Other", is_closed: false }, stages)?.id).toBe(
+      "backlog",
+    );
+    expect(automaticOpenProjectStage({ id: 3, name: "Closed", is_closed: true }, stages)?.id).toBe(
+      "done",
+    );
+    expect(stages[0]?.id).toBe("done");
+    expect(
+      automaticOpenProjectStage({ id: 4, name: "Other", is_closed: false }, [
+        { id: "done", name: "Done", kind: "done", position: 3, version: 1 },
+      ])?.id,
+    ).toBe("done");
+    expect(
+      automaticOpenProjectStage({ id: 4, name: "Other", is_closed: false }, []),
+    ).toBeUndefined();
+  });
+  it("creates closed statuses as done and new statuses as backlog", () => {
+    expect(migratedOpenProjectStageKind({ id: 1, name: "Closed", is_closed: true })).toBe("done");
+    expect(migratedOpenProjectStageKind({ id: 2, name: " New ", is_closed: false })).toBe(
+      "backlog",
+    );
+    expect(migratedOpenProjectStageKind({ id: 3, name: "In review", is_closed: false })).toBe(
+      "active",
+    );
   });
 });

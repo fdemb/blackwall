@@ -1,3 +1,5 @@
+#[path = "openproject/logging.rs"]
+mod logging;
 #[path = "openproject/persistence.rs"]
 mod persistence;
 mod support;
@@ -36,6 +38,8 @@ struct Remote {
     same_stage: bool,
     extra: bool,
     requests: usize,
+    assignee_email: Option<String>,
+    assignee_id: Option<i64>,
     deadline: Option<String>,
     closed_first: bool,
     malformed_last: bool,
@@ -67,6 +71,7 @@ async fn remote(
             json!({"id":42,"name":"Alpha"}),
             json!({"id":43,"name":"Beta"}),
         ],
+        "users" => vec![json!({"id":10,"name":"Remote person","email":data.assignee_email})],
         "statuses" => {
             // This OP endpoint returns the complete collection without pagination metadata.
             return (
@@ -89,6 +94,7 @@ async fn remote(
                 .unwrap()
                 .parse()
                 .unwrap();
+            let assignee_id = data.assignee_id;
             let moved = data.moved;
             let missing = data.missing;
             let stall = data.stall;
@@ -110,6 +116,7 @@ async fn remote(
                     "description":{"raw":"Imported **description**"},"dueDate":deadline,
                     "_links":{"project":{"href":format!("/api/v3/projects/{project}")},
                         "status":{"href":if closed_first {"/api/v3/statuses/2"}else{"/api/v3/statuses/1"},"title":"In progress"},
+                        "assignee":{"href":assignee_id.map(|id| format!("/api/v3/users/{id}"))},
                         "priority":{"title":"High"}}
                 }));
             }
@@ -452,7 +459,7 @@ async fn cached_settings_stay_responsive_and_config_changes_fence_slow_remote_pa
     assert_eq!(status, StatusCode::CREATED, "{config}");
     let action = format!("{base}/{}", config["id"].as_str().unwrap());
     // Complete project discovery and statuses before stalling the first WP page.
-    for _ in 0..3 {
+    for _ in 0..4 {
         openproject::schedule(&store).await.unwrap();
         let claim = store
             .outbox
@@ -747,6 +754,182 @@ async fn local_cards_can_rebalance_between_read_only_imported_cards() {
             .count()
             == 2
     );
+    server.abort();
+    store.pool.close().await;
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn people_match_by_email_and_overrides_and_migrated_statuses_reconcile() {
+    let db = support::TestDatabase::new().await;
+    let store = Store::connect(&db.url).await.unwrap();
+    let owner = account(&store).await;
+    let member = account(&store).await;
+    let outsider = account(&store).await;
+    let (workspace, team, other_team) = setup(&store, &owner).await;
+    sqlx::query("INSERT INTO workspace_members(workspace_id,user_id,role) VALUES($1,$2,'member')")
+        .bind(workspace)
+        .bind(member.profile.id)
+        .execute(&store.pool)
+        .await
+        .unwrap();
+    let app = http::router(store.clone());
+    let mock = Mock::default();
+    {
+        let mut data = mock.data.lock().await;
+        data.assignee_email = Some(format!(" {} ", owner.profile.email.to_uppercase()));
+        data.assignee_id = Some(10);
+    }
+    let (url, server) = mock_server(mock.clone()).await;
+    let base = format!("/api/workspaces/{workspace}/openproject/connections");
+    let (status, config) = call(
+        &app,
+        &owner,
+        "POST",
+        &base,
+        Some(json!({
+            "name":"People and statuses","base_url":url,"token":TOKEN,
+            "projects":[{"project_id":42,"team_id":team},{"project_id":43,"team_id":other_team}]
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{config}");
+    let action = format!("{base}/{}", config["id"].as_str().unwrap());
+    drain(&store).await;
+    let imported = issues(&app, &owner, workspace).await;
+    let first = imported
+        .iter()
+        .find(|issue| issue["openproject"]["work_package_id"] == 7)
+        .unwrap();
+    assert_eq!(first["assignee"], json!(owner.profile.id));
+    let issue_id = first["id"].clone();
+    let (_, cached) = call(&app, &owner, "GET", &base, None).await;
+    assert_eq!(
+        cached["connections"][0]["cached_people"][0]["email"],
+        owner.profile.email
+    );
+    assert_eq!(
+        cached["connections"][0]["cached_statuses"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+
+    // The settings migration uses the existing stage command, then saves its ID in the mapping.
+    let migrated = store
+        .operation(
+            workspace,
+            owner.profile.id,
+            Command::CreateStage {
+                team_id: team,
+                name: "Closed".into(),
+                kind: blackwall::domain::StageKind::Done,
+                position: 5,
+            },
+            BTreeMap::new(),
+            None,
+            None,
+        )
+        .await
+        .unwrap()
+        .result
+        .id
+        .unwrap();
+    let (status, configured) = call(&app, &owner, "PATCH", &action, Some(json!({
+        "people_mapping":{format!(" {} ", owner.profile.email.to_uppercase()): member.profile.id},
+        "projects":[{"project_id":42,"team_id":team,"stage_mapping":{"1":migrated,"2":migrated}},
+                    {"project_id":43,"team_id":other_team}]
+    }))).await;
+    assert_eq!(status, StatusCode::OK, "{configured}");
+    assert_eq!(
+        configured["people_mapping"][&owner.profile.email],
+        json!(member.profile.id)
+    );
+    drain(&store).await;
+    let imported = issues(&app, &owner, workspace).await;
+    let first = imported
+        .iter()
+        .find(|issue| issue["id"] == issue_id)
+        .unwrap();
+    assert_eq!(first["assignee"], json!(member.profile.id));
+    assert_eq!(first["stage_id"], json!(migrated));
+    assert!(
+        imported
+            .iter()
+            .all(|issue| issue["stage_id"] == json!(migrated))
+    );
+
+    for mapping in [
+        json!({"remote@example.com": outsider.profile.id}),
+        json!({"duplicate@example.com": owner.profile.id," DUPLICATE@example.com ":member.profile.id}),
+        json!({"invalid":owner.profile.id}),
+    ] {
+        let (status, _) = call(
+            &app,
+            &owner,
+            "PATCH",
+            &action,
+            Some(json!({"people_mapping":mapping})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+    let (status, preserved) = call(
+        &app,
+        &owner,
+        "PATCH",
+        &action,
+        Some(json!({"name":"Renamed"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(preserved["people_mapping"], configured["people_mapping"]);
+
+    // An unknown, hidden or removed assignee clears the old local assignment.
+    for (email, assignee) in [
+        (Some(outsider.profile.email.clone()), Some(10)),
+        (None, Some(10)),
+        (Some(owner.profile.email.clone()), None),
+    ] {
+        {
+            let mut data = mock.data.lock().await;
+            data.assignee_email = email;
+            data.assignee_id = assignee;
+        }
+        call(&app, &owner, "POST", &format!("{action}/sync"), None).await;
+        drain(&store).await;
+        let imported = issues(&app, &owner, workspace).await;
+        assert!(
+            imported
+                .iter()
+                .find(|issue| issue["id"] == issue_id)
+                .unwrap()["assignee"]
+                .is_null()
+        );
+    }
+    {
+        let mut data = mock.data.lock().await;
+        data.moved = true;
+        data.closed_first = true;
+        data.assignee_id = Some(10);
+    }
+    call(&app, &owner, "POST", &format!("{action}/sync"), None).await;
+    drain(&store).await;
+    let imported = issues(&app, &owner, workspace).await;
+    let moved = imported
+        .iter()
+        .find(|issue| issue["id"] == issue_id)
+        .unwrap();
+    assert_eq!(moved["team_id"], json!(other_team));
+    assert_ne!(moved["stage_id"], json!(migrated));
+    assert_eq!(moved["assignee"], json!(member.profile.id));
+    let kind: String = sqlx::query_scalar("SELECT kind FROM stages WHERE id=$1")
+        .bind(Uuid::parse_str(moved["stage_id"].as_str().unwrap()).unwrap())
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+    assert_eq!(kind, "done");
     server.abort();
     store.pool.close().await;
     db.cleanup().await;

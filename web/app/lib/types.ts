@@ -78,6 +78,16 @@ export interface OpenProjectMapping {
   team_id: Id;
   stage_mapping?: Record<string, Id>;
 }
+export interface OpenProjectStatus {
+  id: number;
+  name: string;
+  is_closed: boolean;
+}
+export interface OpenProjectPerson {
+  id: number;
+  name: string;
+  email: string | null;
+}
 export interface OpenProjectConnection {
   id: Id;
   name: string;
@@ -86,6 +96,9 @@ export interface OpenProjectConnection {
   generation: number;
   projects: OpenProjectMapping[];
   cached_projects: { id: number; name: string }[];
+  cached_statuses: OpenProjectStatus[];
+  cached_people: OpenProjectPerson[];
+  people_mapping: Record<string, Id>;
   status: "pending" | "syncing" | "idle" | "error";
   last_error: string;
   last_checked_at: string | null;
@@ -97,6 +110,7 @@ export interface OpenProjectConnectionInput {
   token: string;
   enabled?: boolean;
   projects?: OpenProjectMapping[];
+  people_mapping?: Record<string, Id>;
 }
 export interface Issue {
   openproject?: OpenProjectIssue | null;

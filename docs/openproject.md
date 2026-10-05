@@ -9,7 +9,9 @@ An owner or administrator can add a connection in **Settings â†’ Integrations â†
 1. Enter the OpenProject installation URL and an API token. Use a dedicated OpenProject account with access only to the projects you intend to import.
 2. Wait for background project discovery, or request a refresh.
 3. Map each selected OpenProject project to a Blackwall team. Several projects can feed the same team.
-4. Save the mappings. Use **Sync now** to request an immediate import.
+4. Expand **Status mappings** for a project to override the default stages. Select **Create stage on save** to migrate an OpenProject status into the destination team.
+5. Check **People mappings**. Matching email addresses use the corresponding workspace member automatically. Select another member to override a match.
+6. Save the mappings. Use **Sync now** to request an immediate import.
 
 Blackwall requests only projects and work packages visible to the integration account. Authentication uses HTTP Basic with username `apikey` and the API token as password. Tokens are write-only in the settings API and never appear in job payloads or frontend responses. Treat the database and its backups as credential-bearing storage.
 
@@ -17,11 +19,17 @@ Private-network installations are supported. The Blackwall worker must be able t
 
 ## Imported data and ownership
 
-The first version imports title, raw description, status, recognized priority names, due date, and a link back to OpenProject. It does not synchronize comments, attachments, users, or hierarchy. Imported issue fields, direct stage moves, deletion, restoration, source-link additions, and issue attachment removal are read-only in Blackwall. Local discussion, following, time tracking, and attachment uploads remain available. Administrators can delete a local stage and migrate its issues, including imported issues, to a replacement stage. A later sync reapplies the remote status mapping.
+The integration imports title, raw description, status, assignee, recognized priority names, due date, and a link back to OpenProject. It does not synchronize comments, attachments, user accounts, or hierarchy. Imported issue fields, direct stage moves, deletion, restoration, source-link additions, and issue attachment removal are read-only in Blackwall. Local discussion, following, time tracking, and attachment uploads remain available. Administrators can delete a local stage and migrate its issues, including imported issues, to a replacement stage. A later sync reapplies the remote status mapping.
 
 Each work package has a stable identity consisting of its connection ID and OpenProject work-package ID. Moving a work package between mapped projects changes its destination team without creating another issue. Mapping a project to another team also reconciles existing issues on a later sync. Once a connection has imported issues, its installation URL cannot change. Create a new connection for another installation to avoid mixing work packages with overlapping IDs.
 
-By default, a work-package status maps to a team stage with a matching name. Otherwise, closed statuses use a done stage, and open statuses use a backlog stage. The first stage is the final fallback. The configuration API also accepts explicit OpenProject status ID to Blackwall stage ID mappings. Priority names map to Blackwall's low, normal, high, or urgent values; unknown priority names map to none.
+By default, a work-package status maps to a team stage with a matching name. Otherwise, closed statuses use a done stage, and open statuses use a backlog stage. The first stage is the final fallback. Each project can override these defaults with explicit OpenProject status ID to Blackwall stage ID mappings in settings or the configuration API. Changing the destination team clears that project's stage overrides in the settings form. Mapping changes reconcile existing imported issues on the next sync.
+
+To migrate a status, select **Create stage on save** for that status. Saving creates a stage with the remote status name through Blackwall's stage command, then saves its ID in the project mapping. An existing stage with the same name is reused. Closed statuses create done stages. New, open, and backlog statuses create backlog stages; other open statuses create active stages. If saving the connection fails after stage creation, the stage remains and the form retains its ID for retry.
+
+Assignees match workspace members by email, ignoring case and surrounding whitespace. Connection-wide `people_mapping` overrides map remote email addresses to workspace member IDs. These overrides do not create or invite users. Hidden emails, people outside the workspace, and unmatched people leave the issue unassigned. Removing an assignee in OpenProject clears the local assignment. The integration account needs permission to see remote email addresses for matching to work.
+
+Priority names map to Blackwall's low, normal, high, or urgent values; unknown priority names map to none.
 
 Removing a mapping or losing access to a work package does not delete the imported issue. Missing remote data is not proof of deletion. Disconnecting preserves imported issues and their read-only source metadata. JSON exports omit connection-bound sync identities. Transferred copies become ordinary local issues with their OpenProject source link, rather than reconnecting to the original integration.
 
@@ -38,6 +46,17 @@ Jobs persist in PostgreSQL. Workers fetch and normalize remote data into typed p
 For process isolation, run `blackwall serve` with `EMBEDDED_WORKERS=false` and run `blackwall worker` separately. Each process then owns its own runtime and database pool. They still share the database, so background writes can contend with interactive writes; batches and lock timeouts limit that contention.
 
 Polling is eventually consistent, not a snapshot of OpenProject. Work packages can move or change while a scan is in progress; a later scan repairs missed changes. There are no webhooks in this version.
+
+## Debug logging
+
+The existing `tracing` subscriber reads `RUST_LOG`. Enable OpenProject debug logs with
+`RUST_LOG=blackwall=info,blackwall::openproject=debug` on the server or worker process running the sync.
+
+Logs include connection and job IDs, scan resources and page numbers, response status and size,
+request timings, selected stage and assignee IDs, changed fields, and discarded pages.
+Work-package reconciliation logs describe writes inside the page transaction. The page committed
+message confirms that those writes persisted. Tokens, URLs, email addresses, titles, descriptions,
+and remote response bodies are omitted.
 
 ## API
 
@@ -60,6 +79,9 @@ Create a connection:
   "base_url": "https://openproject.example.com",
   "token": "your-api-token",
   "enabled": true,
+  "people_mapping": {
+    "remote.person@example.com": "a-blackwall-member-uuid"
+  },
   "projects": [
     {
       "project_id": 42,
@@ -72,9 +94,9 @@ Create a connection:
 }
 ```
 
-PATCH accepts any subset of the create fields. Omit `token` to retain the credential. Sending `projects` replaces all project mappings. Discovery and sync return HTTP 202 with `{"queued":true}`; this acknowledges queued work, not a completed remote request.
+PATCH accepts any subset of the create fields. Omit `token` to retain the credential. Sending `projects` replaces all project mappings. Sending `people_mapping` replaces all people overrides; send `{}` to restore automatic email matching. Omit either field to retain its current configuration. Discovery and sync return HTTP 202 with `{"queued":true}`; this acknowledges queued work, not a completed remote request.
 
-The list response is `{"connections":[...]}`. Connection responses contain cached projects, mapping configuration, status, last error, and last checked/synced timestamps. They never contain the token.
+The list response is `{"connections":[...]}`. Connection responses contain cached projects, statuses, people, mapping configuration, status, last error, and last checked/synced timestamps. They never contain the token.
 
 Issue responses include `openproject` metadata for imported work packages. The backend operation ownership policy generates the frontend command rules and capabilities. Clients use those capabilities to disable prohibited actions, rather than infer ownership from source-link URLs or maintain a separate command list.
 
@@ -82,10 +104,10 @@ Issue responses include `openproject` metadata for imported work packages. The b
 
 Imports respect Blackwall's 5,000-issue workspace capacity, including trashed issues. At capacity, existing work packages can still update, but a page that needs to create another issue fails without partial writes. Local board rebalancing may adjust imported card positions; imported fields and direct card moves remain read-only.
 
-Each connection supports up to 100 project mappings. Discovery caches at most 5,000 projects and 5,000 statuses. Work-package pages contain at most 50 items and responses are limited to 2 MiB. A scan stops after 1,000 pages per project. If OpenProject changes its effective page size during a scan, request **Sync now** to restart the scan rather than resume with unsafe offsets.
+Each connection supports up to 100 project mappings. Discovery caches at most 5,000 projects, 5,000 statuses, and 5,000 people. Work-package pages contain at most 50 items and responses are limited to 2 MiB. A scan stops after 1,000 pages per project. If OpenProject changes its effective page size during a scan, request **Sync now** to restart the scan rather than resume with unsafe offsets.
 
 Local issues cannot use imported issues as parents or dependencies in this version. OpenProject status changes must not invalidate Blackwall's local dependency workflow. Missing work packages remain unchanged; this version does not infer or display remote unavailability.
 
-Two-way editing, webhook acceleration, comments, attachments, user matching, and hierarchy import are separate future tasks. Do not use this integration as a backup of OpenProject.
+Two-way editing, webhook acceleration, comments, attachments, user account creation, and hierarchy import are separate future tasks. Do not use this integration as a backup of OpenProject.
 
-OpenProject references: [API introduction](https://www.openproject.org/docs/api/introduction/), [work packages](https://www.openproject.org/docs/api/endpoints/work-packages/), and [collections](https://www.openproject.org/docs/api/collections/).
+OpenProject references: [API introduction](https://www.openproject.org/docs/api/introduction/), [work packages](https://www.openproject.org/docs/api/endpoints/work-packages/), and [collections](https://www.openproject.org/docs/api/collections/), and [users](https://www.openproject.org/docs/api/endpoints/users/).

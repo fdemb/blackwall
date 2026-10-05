@@ -15,8 +15,19 @@ import { fullDate } from "~/lib/format";
 import { useWorkspace } from "~/lib/workspace";
 import { usePending } from "~/lib/use-pending";
 import { useToast } from "~/components/ui/toast";
-import { openproject, openprojectKey, openprojectQuery } from "~/lib/openproject";
-import type { OpenProjectConnection, OpenProjectMapping } from "~/lib/types";
+import {
+  automaticOpenProjectStage,
+  migratedOpenProjectStageKind,
+  openproject,
+  openprojectKey,
+  openprojectQuery,
+} from "~/lib/openproject";
+import type {
+  OpenProjectConnection,
+  OpenProjectMapping,
+  OpenProjectStatus,
+  Team,
+} from "~/lib/types";
 
 type Editor = { kind: "create" } | { kind: "edit"; connection: OpenProjectConnection };
 
@@ -72,6 +83,7 @@ export function OpenProjectSettings() {
         ))}
       </SettingsList>
       <Dialog
+        size="lg"
         title={t(editor?.kind === "edit" ? "openproject.edit" : "openproject.add")}
         isOpen={editor !== null}
         onOpenChange={(open) => !open && setEditor(null)}
@@ -205,19 +217,21 @@ function ConnectionForm({
   close: () => void;
   refresh: () => Promise<void>;
 }) {
-  const { ws } = useWorkspace();
+  const { ws, members, run } = useWorkspace();
   const { t } = useI18n();
   const connection = editor.kind === "edit" ? editor.connection : null;
   const [name, setName] = useState(connection?.name ?? "");
   const [url, setUrl] = useState(connection?.base_url ?? "");
   const [token, setToken] = useState("");
   const [projects, setProjects] = useState<OpenProjectMapping[]>(connection?.projects ?? []);
+  const [people, setPeople] = useState(connection?.people_mapping ?? {});
   const { pending, error, guard } = usePending();
   useDialogDirty(
     name !== (connection?.name ?? "") ||
       url !== (connection?.base_url ?? "") ||
       token !== "" ||
-      JSON.stringify(projects) !== JSON.stringify(connection?.projects ?? []),
+      JSON.stringify(projects) !== JSON.stringify(connection?.projects ?? []) ||
+      JSON.stringify(people) !== JSON.stringify(connection?.people_mapping ?? {}),
   );
   // Retain mapped projects even if discovery no longer returns them.
   const available = new Map(connection?.cached_projects.map((p) => [p.id, p.name]));
@@ -246,11 +260,54 @@ function ConnectionForm({
       onSubmit={(event) => {
         event.preventDefault();
         void guard(async () => {
+          const resolvedProjects: OpenProjectMapping[] = [];
+          const created = new Map<string, string>();
+          for (const project of projects) {
+            const mapping = { ...project, stage_mapping: { ...project.stage_mapping } };
+            const team = ws.teams.find((team) => team.id === project.team_id);
+            for (const [statusId, stageId] of Object.entries(mapping.stage_mapping)) {
+              if (stageId !== MIGRATE) continue;
+              const status = connection?.cached_statuses.find(
+                (status) => String(status.id) === statusId,
+              );
+              if (!status || !team) throw new Error(t("openproject.migrationMissing"));
+              const key = `${team.id}:${status.name.toLowerCase()}`;
+              const existing = team.stages.find(
+                (stage) => stage.name.toLowerCase() === status.name.toLowerCase(),
+              );
+              const id =
+                existing?.id ??
+                created.get(key) ??
+                (await run(
+                  {
+                    type: "create_stage",
+                    team_id: team.id,
+                    name: status.name,
+                    kind: migratedOpenProjectStageKind(status),
+                    position:
+                      Math.max(0, ...team.stages.map((stage) => stage.position)) + created.size + 1,
+                  },
+                  { quiet: true },
+                ));
+              if (!id) throw new Error(t("openproject.migrationMissing"));
+              created.set(key, id);
+              mapping.stage_mapping[statusId] = id;
+              setProjects((old) =>
+                old.map((project) =>
+                  project.project_id === mapping.project_id
+                    ? { ...project, stage_mapping: { ...project.stage_mapping, [statusId]: id } }
+                    : project,
+                ),
+              );
+            }
+            resolvedProjects.push(mapping);
+          }
           if (connection) {
             const body = {
               name: name.trim(),
               base_url: url.trim(),
-              projects,
+              projects: resolvedProjects,
+              people_mapping: people,
               ...(token ? { token } : {}),
             };
             await openproject.update(ws.id, connection.id, body);
@@ -259,7 +316,8 @@ function ConnectionForm({
               name: name.trim(),
               base_url: url.trim(),
               token,
-              projects,
+              projects: resolvedProjects,
+              people_mapping: people,
             });
           }
           setToken("");
@@ -305,21 +363,99 @@ function ConnectionForm({
           <legend className="text-[13px] font-medium">{t("openproject.projects")}</legend>
           <p className="text-xs text-muted-foreground">{t("openproject.projectsHint")}</p>
           {available.size ? (
-            [...available].map(([id, label]) => (
-              <NullableSelect
-                key={id}
-                label={label}
-                value={projects.find((p) => p.project_id === id)?.team_id}
-                noneLabel={t("openproject.noTeam")}
-                isDisabled={pending}
-                options={ws.teams.map((team) => ({ id: team.id, label: team.name }))}
-                onChange={(team) => setTeam(id, team)}
-              />
-            ))
+            [...available].map(([id, label]) => {
+              const mapping = projects.find((project) => project.project_id === id);
+              const team = ws.teams.find((team) => team.id === mapping?.team_id);
+              return (
+                <div key={id} className="space-y-3 border-t border-border pt-3">
+                  <NullableSelect
+                    label={label}
+                    value={mapping?.team_id}
+                    noneLabel={t("openproject.noTeam")}
+                    isDisabled={pending}
+                    options={ws.teams.map((team) => ({ id: team.id, label: team.name }))}
+                    onChange={(team) => setTeam(id, team)}
+                  />
+                  {mapping && team ? (
+                    <ProjectStatuses
+                      mapping={mapping}
+                      team={team}
+                      statuses={connection.cached_statuses}
+                      pending={pending}
+                      onChange={(statusId, stageId) =>
+                        setProjects((old) =>
+                          old.map((project) => {
+                            if (project.project_id !== id) return project;
+                            const stage_mapping = { ...project.stage_mapping };
+                            if (stageId) stage_mapping[statusId] = stageId;
+                            else delete stage_mapping[statusId];
+                            return { ...project, stage_mapping };
+                          }),
+                        )
+                      }
+                    />
+                  ) : null}
+                </div>
+              );
+            })
           ) : (
             <p className="text-xs text-muted-foreground">{t("openproject.noProjects")}</p>
           )}
           <p className="text-xs text-muted-foreground">{t("openproject.automaticStages")}</p>
+        </fieldset>
+      ) : null}
+      {connection ? (
+        <fieldset className="space-y-3" disabled={pending}>
+          <legend className="text-[13px] font-medium">{t("openproject.people")}</legend>
+          <p className="text-xs text-muted-foreground">{t("openproject.peopleHint")}</p>
+          {connection.cached_people
+            .filter((person) => !person.email)
+            .map((person) => (
+              <p key={person.id} className="text-xs text-muted-foreground">
+                {t("openproject.hiddenEmail", { name: person.name })}
+              </p>
+            ))}
+          {[
+            ...new Set([
+              ...connection.cached_people.flatMap((person) => (person.email ? [person.email] : [])),
+              ...Object.keys(people),
+            ]),
+          ].map((email) => {
+            const match = members.find((member) => member.email.toLowerCase() === email);
+            const options = members.map((member) => ({
+              id: member.id,
+              label: `${member.display_name} (${member.email})`,
+            }));
+            const mapped = people[email];
+            if (mapped && !members.some((member) => member.id === mapped)) {
+              options.push({ id: mapped, label: t("openproject.missingPerson") });
+            }
+            return (
+              <NullableSelect
+                key={email}
+                label={email}
+                value={people[email]}
+                noneLabel={
+                  match
+                    ? t("openproject.automaticPerson", { name: match.display_name })
+                    : t("openproject.unassigned")
+                }
+                options={options}
+                isDisabled={pending}
+                onChange={(id) =>
+                  setPeople((old) => {
+                    const next = { ...old };
+                    if (id) next[email] = id;
+                    else delete next[email];
+                    return next;
+                  })
+                }
+              />
+            );
+          })}
+          {connection.cached_people.length === 0 ? (
+            <p className="text-xs text-muted-foreground">{t("openproject.noPeople")}</p>
+          ) : null}
         </fieldset>
       ) : null}
       <FormError>{error}</FormError>
@@ -337,5 +473,65 @@ function ConnectionForm({
         </Button>
       </div>
     </Form>
+  );
+}
+
+const MIGRATE = "__migrate__";
+
+function ProjectStatuses({
+  mapping,
+  team,
+  statuses,
+  pending,
+  onChange,
+}: {
+  mapping: OpenProjectMapping;
+  team: Team;
+  statuses: OpenProjectStatus[];
+  pending: boolean;
+  onChange: (statusId: string, stageId: string | null) => void;
+}) {
+  const { t } = useI18n();
+  const available = new Map(statuses.map((status) => [String(status.id), status]));
+  for (const id of Object.keys(mapping.stage_mapping ?? {})) {
+    if (!available.has(id)) available.set(id, { id: Number(id), name: id, is_closed: false });
+  }
+  return (
+    <details className="text-[13px]">
+      <summary className="cursor-pointer font-medium">{t("openproject.statusMappings")}</summary>
+      <div className="space-y-3 pt-3">
+        <p className="text-xs text-muted-foreground">{t("openproject.migrationHint")}</p>
+        {[...available].map(([id, status]) => {
+          const automatic = automaticOpenProjectStage(status, team.stages);
+          const value = mapping.stage_mapping?.[id];
+          const options = team.stages.map((stage) => ({ id: stage.id, label: stage.name }));
+          if (value && value !== MIGRATE && !team.stages.some((stage) => stage.id === value)) {
+            options.push({ id: value, label: t("openproject.missingStage") });
+          }
+          if (statuses.some((status) => String(status.id) === id)) {
+            options.push({
+              id: MIGRATE,
+              label: t("openproject.migrateStatus", { name: status.name }),
+            });
+          }
+          return (
+            <NullableSelect
+              key={id}
+              label={status.name}
+              value={value}
+              noneLabel={t("openproject.automaticStage", {
+                name: automatic?.name ?? t("openproject.missingStage"),
+              })}
+              options={options}
+              isDisabled={pending}
+              onChange={(stage) => onChange(id, stage)}
+            />
+          );
+        })}
+        {available.size === 0 ? (
+          <p className="text-xs text-muted-foreground">{t("openproject.noStatuses")}</p>
+        ) : null}
+      </div>
+    </details>
   );
 }

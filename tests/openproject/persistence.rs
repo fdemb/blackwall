@@ -262,7 +262,7 @@ async fn empty_mapping_scan_finishes_and_invalid_checkpoint_never_fetches_unfilt
     assert_eq!(status, StatusCode::CREATED);
     let connection = Uuid::parse_str(config["id"].as_str().unwrap()).unwrap();
     drain(&store).await;
-    assert_eq!(mock.data.lock().await.requests, 3);
+    assert_eq!(mock.data.lock().await.requests, 4);
     assert!(issues(&app, &owner, workspace).await.is_empty());
     let synced: Option<chrono::DateTime<chrono::Utc>> = sqlx::query_scalar(
         "SELECT last_synced_at FROM openproject_connections WHERE id=$1 AND status='idle'",
@@ -281,7 +281,7 @@ async fn empty_mapping_scan_finishes_and_invalid_checkpoint_never_fetches_unfilt
     )
     .await;
     drain(&store).await;
-    assert_eq!(mock.data.lock().await.requests, 6);
+    assert_eq!(mock.data.lock().await.requests, 8);
     assert_eq!(
         sqlx::query_scalar::<_, Option<chrono::DateTime<chrono::Utc>>>(
             "SELECT last_synced_at FROM openproject_connections WHERE id=$1 AND status='idle'"
@@ -303,7 +303,7 @@ async fn empty_mapping_scan_finishes_and_invalid_checkpoint_never_fetches_unfilt
     };
     let error = openproject::execute(&store, claim, &job).await.unwrap_err();
     assert!(openproject::failure_message(&error).contains("checkpoint"));
-    assert_eq!(mock.data.lock().await.requests, 6);
+    assert_eq!(mock.data.lock().await.requests, 8);
     server.abort();
     store.pool.close().await;
     db.cleanup().await;

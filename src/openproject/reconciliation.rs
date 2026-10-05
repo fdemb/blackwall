@@ -3,7 +3,7 @@ use crate::{
     domain::{Issue, OpenProjectSource},
     store::persistence,
 };
-use scan::{Status, WorkPackage};
+use scan::{Person, Status, WorkPackage};
 
 pub(super) struct PageImport<'a> {
     workspace: Uuid,
@@ -11,6 +11,8 @@ pub(super) struct PageImport<'a> {
     base: &'a str,
     mapping: &'a Mapping,
     statuses: &'a [Status],
+    people: &'a [Person],
+    people_mapping: &'a BTreeMap<String, Uuid>,
     issue_count: Option<i64>,
 }
 impl<'a> PageImport<'a> {
@@ -20,6 +22,8 @@ impl<'a> PageImport<'a> {
         base: &'a str,
         mapping: &'a Mapping,
         statuses: &'a [Status],
+        people: &'a [Person],
+        people_mapping: &'a BTreeMap<String, Uuid>,
     ) -> Self {
         Self {
             workspace,
@@ -27,11 +31,16 @@ impl<'a> PageImport<'a> {
             base,
             mapping,
             statuses,
+            people,
+            people_mapping,
             issue_count: None,
         }
     }
 }
 
+#[tracing::instrument(name = "openproject_work_package", level = "debug", skip_all,
+    fields(connection_id = %import.connection, work_package_id = item.id,
+        project_id = item.project_id, team_id = %import.mapping.team_id))]
 pub(super) async fn apply(
     conn: &mut PgConnection,
     import: &mut PageImport<'_>,
@@ -67,6 +76,9 @@ pub(super) async fn apply(
             "OpenProject mapped stage no longer exists; update project stage mapping".into(),
         ));
     }
+    tracing::debug!(status_id = item.status_id, stage_id = %stage,
+        explicit_mapping = mapping.stage_mapping.contains_key(&item.status_id.to_string()),
+        closed, "OpenProject status mapped");
     let source = OpenProjectSource {
         connection_id: import.connection,
         work_package_id: item.id,
@@ -124,6 +136,21 @@ pub(super) async fn apply(
     after.description = item.description.clone();
     after.team_id = mapping.team_id;
     after.stage_id = stage;
+    let email = item
+        .assignee_id
+        .and_then(|id| import.people.iter().find(|person| person.id == id))
+        .and_then(|person| person.email.as_deref());
+    after.assignee = match email {
+        Some(email) => {
+            let mapped = import.people_mapping.get(email).copied();
+            sqlx::query_scalar("SELECT u.id FROM users u JOIN workspace_members m ON m.user_id=u.id WHERE m.workspace_id=$1 AND CASE WHEN $2::uuid IS NOT NULL THEN u.id=$2 ELSE lower(u.email)=$3 END")
+                .bind(workspace).bind(mapped).bind(email).fetch_optional(&mut *conn).await?
+        }
+        None => None,
+    };
+    tracing::debug!(remote_assignee_id = ?item.assignee_id, email_available = email.is_some(),
+        explicit_mapping = email.is_some_and(|email| import.people_mapping.contains_key(email)),
+        assignee_id = ?after.assignee, "OpenProject assignee mapped");
     after.priority = item.priority.clone();
     after.deadline = item.deadline;
     after.project_id = None;
@@ -143,6 +170,8 @@ pub(super) async fn apply(
         }
     }
     let changed = before.is_none() || !fields.is_empty();
+    tracing::debug!(issue_id = %after.id, creating = before.is_none(), changed, fields = ?fields,
+        "OpenProject work package reconciled in page transaction");
     if changed {
         let ownership = persistence::Ownership::Remote(&source);
         if before.is_some() {
