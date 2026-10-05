@@ -242,7 +242,7 @@ async fn sync_persists_reminders_changes_and_completion_atomically() {
 }
 
 #[tokio::test]
-async fn remote_parent_id_is_recorded_without_linking_local_hierarchy() {
+async fn remote_parent_id_is_recorded_and_linked_locally() {
     let db = support::TestDatabase::new().await;
     let store = Store::connect(&db.url).await.unwrap();
     let owner = account(&store).await;
@@ -274,14 +274,11 @@ async fn remote_parent_id_is_recorded_without_linking_local_hierarchy() {
         .find(|i| i["openproject"]["work_package_id"] == 8)
         .unwrap();
     assert_eq!(child["openproject"]["parent_work_package_id"], 7);
-    assert!(
-        child["parent_id"].is_null(),
-        "remote hierarchy must not set local parents yet"
-    );
     let parent = imported
         .iter()
         .find(|i| i["openproject"]["work_package_id"] == 7)
         .unwrap();
+    assert_eq!(child["parent_id"], parent["id"]);
     assert!(
         parent["openproject"]
             .get("parent_work_package_id")
@@ -370,6 +367,15 @@ async fn remote_parent_id_changes_and_removals_rewrite_once() {
     };
     let mut list = issues(&app, &owner, workspace).await;
     assert_eq!(list.len(), 2);
+    let child = list
+        .iter()
+        .find(|i| i["openproject"]["work_package_id"] == 8)
+        .unwrap();
+    let parent = list
+        .iter()
+        .find(|i| i["openproject"]["work_package_id"] == 7)
+        .unwrap();
+    assert_eq!(child["parent_id"], parent["id"]);
     let mut version = child_version(&list);
 
     mock.data.lock().await.parents.insert(8, 6);

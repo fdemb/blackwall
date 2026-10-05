@@ -1,5 +1,7 @@
 #[path = "openproject/logging.rs"]
 mod logging;
+#[path = "openproject/parents.rs"]
+mod parents;
 #[path = "openproject/performance.rs"]
 mod performance;
 #[path = "openproject/persistence.rs"]
