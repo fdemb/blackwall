@@ -217,13 +217,15 @@ impl Store {
 
 async fn insert_import(op: &mut Operation<'_>, w: &Workspace) -> Result<()> {
     for team in &w.teams {
-        sqlx::query("INSERT INTO teams(id,workspace_id,name,archive_after_days) VALUES($1,$2,$3,$4)")
-            .bind(team.id)
-            .bind(w.id)
-            .bind(&team.name)
-            .bind(team.archive_after_days.map(i64::from))
-            .execute(&mut *op.tx)
-            .await?;
+        sqlx::query(
+            "INSERT INTO teams(id,workspace_id,name,archive_after_days) VALUES($1,$2,$3,$4)",
+        )
+        .bind(team.id)
+        .bind(w.id)
+        .bind(&team.name)
+        .bind(team.archive_after_days.map(i64::from))
+        .execute(&mut *op.tx)
+        .await?;
         op.created(team.id);
         for user in &team.members {
             sqlx::query("INSERT INTO team_members(workspace_id,team_id,user_id) VALUES($1,$2,$3)")

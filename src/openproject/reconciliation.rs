@@ -5,100 +5,202 @@ use crate::{
 };
 use scan::{Person, Status, WorkPackage};
 
-pub(super) struct PageImport<'a> {
-    workspace: Uuid,
-    connection: Uuid,
-    base: &'a str,
-    mapping: &'a Mapping,
-    statuses: &'a [Status],
-    people: &'a [Person],
-    people_mapping: &'a BTreeMap<String, Uuid>,
-    issue_count: Option<i64>,
-}
-impl<'a> PageImport<'a> {
-    pub fn new(
-        workspace: Uuid,
-        connection: Uuid,
-        base: &'a str,
-        mapping: &'a Mapping,
-        statuses: &'a [Status],
-        people: &'a [Person],
-        people_mapping: &'a BTreeMap<String, Uuid>,
-    ) -> Self {
-        Self {
-            workspace,
-            connection,
-            base,
-            mapping,
-            statuses,
-            people,
-            people_mapping,
-            issue_count: None,
-        }
-    }
+struct Stage {
+    id: Uuid,
+    team: Uuid,
+    name: String,
+    kind: String,
+    position: i64,
 }
 
-#[tracing::instrument(name = "openproject_work_package", level = "debug", skip_all,
-    fields(connection_id = %import.connection, work_package_id = item.id,
-        project_id = item.project_id, team_id = %import.mapping.team_id))]
-pub(super) async fn apply(
+pub(super) struct PageImport<'a> {
+    pub workspace: Uuid,
+    pub connection: Uuid,
+    pub base: &'a str,
+    pub mapping: &'a Mapping,
+    pub statuses: &'a [Status],
+    pub people: &'a [Person],
+    pub people_mapping: &'a BTreeMap<String, Uuid>,
+}
+
+/// Reconciles one fetched page inside the caller's transaction and workspace graph locks.
+#[tracing::instrument(name = "openproject_page", level = "debug", skip_all,
+    fields(connection_id = %import.connection, team_id = %import.mapping.team_id, item_count = items.len()))]
+pub(super) async fn apply_page(
     conn: &mut PgConnection,
-    import: &mut PageImport<'_>,
-    item: &WorkPackage,
+    import: PageImport<'_>,
+    items: &[WorkPackage],
 ) -> Result<()> {
-    let workspace = import.workspace;
-    let mapping = import.mapping;
-    let status = import
-        .statuses
-        .iter()
-        .find(|status| status.id == item.status_id);
-    let status_name = status
-        .map(|status| status.name.as_str())
-        .or(item.status_name.as_deref())
-        .unwrap_or("Unknown");
-    let closed = status.is_some_and(|status| status.is_closed);
-    let stage = if let Some(stage) = mapping.stage_mapping.get(&item.status_id.to_string()) {
-        *stage
-    } else {
-        sqlx::query_scalar("SELECT id FROM stages WHERE workspace_id=$1 AND team_id=$2 ORDER BY (lower(name)=lower($3)) DESC,(kind=$4) DESC,position,id LIMIT 1")
-            .bind(workspace).bind(mapping.team_id).bind(status_name).bind(if closed {"done"}else{"backlog"}).fetch_optional(&mut *conn).await?.ok_or_else(||Error::Internal("destination team has no stage".into()))?
-    };
-    let stage_exists: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM stages WHERE workspace_id=$1 AND team_id=$2 AND id=$3)",
+    let PageImport {
+        workspace,
+        connection,
+        base,
+        mapping,
+        statuses,
+        people,
+        people_mapping,
+    } = import;
+    if items.is_empty() {
+        return Ok(());
+    }
+    let rows = sqlx::query(
+        "SELECT id,team_id,lower(name) AS name,kind,position FROM stages WHERE workspace_id=$1",
     )
     .bind(workspace)
-    .bind(mapping.team_id)
-    .bind(stage)
-    .fetch_one(&mut *conn)
+    .fetch_all(&mut *conn)
     .await?;
-    if !stage_exists {
-        return Err(Error::BadRequest(
-            "OpenProject mapped stage no longer exists; update project stage mapping".into(),
-        ));
+    let mut stages = Vec::with_capacity(rows.len());
+    for row in rows {
+        stages.push(Stage {
+            id: row.try_get("id")?,
+            team: row.try_get("team_id")?,
+            name: row.try_get("name")?,
+            kind: row.try_get("kind")?,
+            position: row.try_get("position")?,
+        });
     }
-    tracing::debug!(status_id = item.status_id, stage_id = %stage,
-        explicit_mapping = mapping.stage_mapping.contains_key(&item.status_id.to_string()),
-        closed, "OpenProject status mapped");
-    let source = OpenProjectSource {
-        connection_id: import.connection,
-        work_package_id: item.id,
-        project_id: item.project_id,
-        status_name: status_name.to_owned(),
-        url: format!("{}/work_packages/{}", import.base, item.id),
-        unavailable: false,
-    };
-    let existing: Option<Uuid> = sqlx::query_scalar("SELECT id FROM issues WHERE workspace_id=$1 AND openproject->>'connection_id'=$2 AND openproject->>'work_package_id'=$3 FOR UPDATE")
-        .bind(workspace).bind(import.connection.to_string()).bind(item.id.to_string()).fetch_optional(&mut *conn).await?;
-    let before = if let Some(id) = existing {
-        Some(crate::store::persistence::read(conn, workspace, id).await?)
+    let statuses: BTreeMap<_, _> = statuses.iter().map(|status| (status.id, status)).collect();
+    let status_names: Vec<String> = items
+        .iter()
+        .map(|item| {
+            statuses
+                .get(&item.status_id)
+                .map(|status| status.name.as_str())
+                .or(item.status_name.as_deref())
+                .unwrap_or("Unknown")
+                .to_owned()
+        })
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    // Match PostgreSQL's case folding on both sides, including non-ASCII names.
+    let normalized_names: BTreeMap<String, String> = sqlx::query_as::<_, (String, String)>(
+        "SELECT name,lower(name) FROM unnest($1::text[]) AS names(name)",
+    )
+    .bind(status_names)
+    .fetch_all(&mut *conn)
+    .await?
+    .into_iter()
+    .collect();
+    let people: BTreeMap<_, _> = people.iter().map(|person| (person.id, person)).collect();
+    let emails: BTreeSet<String> = items
+        .iter()
+        .filter_map(|item| {
+            item.assignee_id
+                .and_then(|id| people.get(&id))
+                .and_then(|person| person.email.as_ref())
+                .map(|email| email.trim().to_lowercase())
+        })
+        .collect();
+    let mapped: Vec<Uuid> = emails
+        .iter()
+        .filter_map(|email| people_mapping.get(email).copied())
+        .collect();
+    let mut members_by_id = BTreeSet::new();
+    let mut members_by_email = BTreeMap::new();
+    if !emails.is_empty() {
+        let rows = sqlx::query("SELECT u.id,lower(u.email) AS email FROM users u JOIN workspace_members m ON m.user_id=u.id WHERE m.workspace_id=$1 AND (u.id=ANY($2) OR lower(u.email)=ANY($3))")
+            .bind(workspace).bind(&mapped).bind(emails.iter().cloned().collect::<Vec<_>>())
+            .fetch_all(&mut *conn).await?;
+        for row in rows {
+            let id: Uuid = row.try_get("id")?;
+            members_by_id.insert(id);
+            members_by_email.insert(row.try_get::<String, _>("email")?, id);
+        }
+    }
+    let assignees: BTreeMap<_, _> = emails
+        .into_iter()
+        .map(|email| {
+            let assignee = match people_mapping.get(&email) {
+                Some(id) => members_by_id.contains(id).then_some(*id),
+                None => members_by_email.get(&email).copied(),
+            };
+            (email, assignee)
+        })
+        .collect();
+    let remote_ids: Vec<String> = items.iter().map(|item| item.id.to_string()).collect();
+    // Related collections are not remote-owned. Empty placeholders avoid their aggregates;
+    // remote persistence only updates the scalar columns carried by this projection.
+    let rows: Vec<Value> = sqlx::query_scalar("SELECT (to_jsonb(i)-'workspace_id'-'reminder_generation') || jsonb_build_object('labels','[]'::jsonb,'dependencies','[]'::jsonb,'followers','[]'::jsonb,'attachments','[]'::jsonb,'source_links','[]'::jsonb) FROM issues i WHERE workspace_id=$1 AND openproject->>'connection_id'=$2 AND openproject->>'work_package_id'=ANY($3) ORDER BY id FOR UPDATE")
+        .bind(workspace).bind(connection.to_string()).bind(&remote_ids)
+        .fetch_all(&mut *conn).await?;
+    let mut existing = BTreeMap::new();
+    for row in rows {
+        let issue: Issue = serde_json::from_value(row)?;
+        let id = issue
+            .openproject
+            .as_ref()
+            .ok_or_else(|| Error::Internal("imported issue has no source".into()))?
+            .work_package_id;
+        existing.insert(id, issue);
+    }
+    let new_count = items
+        .iter()
+        .map(|item| item.id)
+        .filter(|id| !existing.contains_key(id))
+        .collect::<BTreeSet<_>>()
+        .len() as i64;
+    let mut allocation = if new_count > 0 {
+        let mut count = None;
+        persistence::capacity(conn, workspace, "issues", 5000, &mut count,
+            "OpenProject import stopped: workspace issue capacity reached (5000); reduce project mappings. Existing issues remain unchanged").await?;
+        if count.unwrap_or_default() + new_count > 5000 {
+            return Err(Error::BadRequest("OpenProject import stopped: workspace issue capacity reached (5000); reduce project mappings. Existing issues remain unchanged".into()));
+        }
+        Some(persistence::allocate_creations(conn, workspace, mapping.team_id, new_count).await?)
     } else {
         None
     };
-    let mut after = match &before {
-        Some(issue) => issue.clone(),
-        None => {
-            persistence::capacity(conn, workspace, "issues", 5000, &mut import.issue_count,
-                "OpenProject import stopped: workspace issue capacity reached (5000); reduce project mappings. Existing issues remain unchanged").await?;
+    let mut changes = Vec::new();
+    let mut links = BTreeMap::new();
+    for item in items {
+        let status = statuses.get(&item.status_id);
+        let status_name = status
+            .map(|status| status.name.as_str())
+            .or(item.status_name.as_deref())
+            .unwrap_or("Unknown");
+        let closed = status.is_some_and(|status| status.is_closed);
+        let destination = if let Some(id) = mapping.stage_mapping.get(&item.status_id.to_string()) {
+            stages
+                .iter()
+                .find(|stage| stage.id == *id && stage.team == mapping.team_id)
+                .ok_or_else(|| {
+                    Error::BadRequest(
+                        "OpenProject mapped stage no longer exists; update project stage mapping"
+                            .into(),
+                    )
+                })?
+        } else {
+            let name = normalized_names
+                .get(status_name)
+                .ok_or_else(|| Error::Internal("missing OpenProject status name".into()))?;
+            let kind = if closed { "done" } else { "backlog" };
+            stages
+                .iter()
+                .filter(|stage| stage.team == mapping.team_id)
+                .min_by_key(|stage| {
+                    (
+                        stage.name != *name,
+                        stage.kind != kind,
+                        stage.position,
+                        stage.id,
+                    )
+                })
+                .ok_or_else(|| Error::Internal("destination team has no stage".into()))?
+        };
+        tracing::debug!(work_package_id = item.id, status_id = item.status_id, stage_id = %destination.id,
+            explicit_mapping = mapping.stage_mapping.contains_key(&item.status_id.to_string()),
+            closed, "OpenProject status mapped");
+        let source = OpenProjectSource {
+            connection_id: connection,
+            work_package_id: item.id,
+            project_id: item.project_id,
+            status_name: status_name.to_owned(),
+            url: format!("{base}/work_packages/{}", item.id),
+            unavailable: false,
+        };
+        let before = existing.get(&item.id).cloned();
+        let mut after = before.clone().unwrap_or_else(|| {
             let now = Utc::now();
             Issue {
                 id: Uuid::new_v4(),
@@ -106,7 +208,7 @@ pub(super) async fn apply(
                 title: String::new(),
                 description: String::new(),
                 team_id: mapping.team_id,
-                stage_id: stage,
+                stage_id: destination.id,
                 assignee: None,
                 priority: Default::default(),
                 labels: vec![],
@@ -132,59 +234,122 @@ pub(super) async fn apply(
                 subtask_completed: 0,
                 version: 1,
             }
-        }
-    };
-    after.title = item.title.clone();
-    after.description = item.description.clone();
-    after.team_id = mapping.team_id;
-    after.stage_id = stage;
-    let email = item
-        .assignee_id
-        .and_then(|id| import.people.iter().find(|person| person.id == id))
-        .and_then(|person| person.email.as_deref());
-    after.assignee = match email {
-        Some(email) => {
-            let mapped = import.people_mapping.get(email).copied();
-            sqlx::query_scalar("SELECT u.id FROM users u JOIN workspace_members m ON m.user_id=u.id WHERE m.workspace_id=$1 AND CASE WHEN $2::uuid IS NOT NULL THEN u.id=$2 ELSE lower(u.email)=$3 END")
-                .bind(workspace).bind(mapped).bind(email).fetch_optional(&mut *conn).await?
-        }
-        None => None,
-    };
-    tracing::debug!(remote_assignee_id = ?item.assignee_id, email_available = email.is_some(),
-        explicit_mapping = email.is_some_and(|email| import.people_mapping.contains_key(email)),
-        assignee_id = ?after.assignee, "OpenProject assignee mapped");
-    after.priority = item.priority.clone();
-    after.deadline = item.deadline;
-    after.project_id = None;
-    after.milestone_id = None;
-    after.sprint_id = None;
-    after.openproject = Some(source.clone());
-    let mut fields = before
-        .as_ref()
-        .map(|old| persistence::changed_fields(old, &after))
-        .unwrap_or_default();
-    if let Some(old) = &before {
-        if old.team_id != after.team_id {
-            fields.push("team".into());
-        }
-        if serde_json::to_value(&old.openproject)? != serde_json::to_value(&after.openproject)? {
-            fields.push("openproject".into());
-        }
-    }
-    let changed = before.is_none() || !fields.is_empty();
-    tracing::debug!(issue_id = %after.id, creating = before.is_none(), changed, fields = ?fields,
-        "OpenProject work package reconciled in page transaction");
-    if changed {
-        let ownership = persistence::Ownership::Remote(&source);
-        if before.is_some() {
-            persistence::save(conn, workspace, &after, ownership).await?;
+        });
+        after.title = item.title.clone();
+        after.description = item.description.clone();
+        after.team_id = mapping.team_id;
+        after.stage_id = destination.id;
+        let email = item
+            .assignee_id
+            .and_then(|id| people.get(&id))
+            .and_then(|person| person.email.as_ref())
+            .map(|email| email.trim().to_lowercase());
+        after.assignee = email
+            .as_ref()
+            .and_then(|email| assignees.get(email).copied().flatten());
+        tracing::debug!(work_package_id = item.id, remote_assignee_id = ?item.assignee_id,
+            email_available = email.is_some(), assignee_id = ?after.assignee,
+            explicit_mapping = email.as_ref().is_some_and(|email| people_mapping.contains_key(email)),
+            "OpenProject assignee mapped");
+        after.priority = item.priority.clone();
+        after.deadline = item.deadline;
+        after.project_id = None;
+        after.milestone_id = None;
+        after.sprint_id = None;
+        if destination.kind == "done" {
+            if after.done_at.is_none() {
+                after.done_at = Some(Utc::now());
+            }
         } else {
-            persistence::create(conn, workspace, &mut after, ownership).await?;
-            import.issue_count = import.issue_count.map(|count| count + 1);
+            after.done_at = None;
+            after.archived_at = None;
         }
-        persistence::remote_effects(conn, workspace, before.as_ref(), &after, fields).await?;
+        after.openproject = Some(source.clone());
+        let mut fields = before
+            .as_ref()
+            .map(|old| persistence::changed_fields(old, &after))
+            .unwrap_or_default();
+        if let Some(old) = &before {
+            if old.team_id != after.team_id {
+                fields.push("team".into());
+            }
+            if old.openproject != after.openproject {
+                fields.push("openproject".into());
+            }
+        }
+        // Archive bookkeeping can change even when all visible remote fields match.
+        let bookkeeping_changed = before.as_ref().is_some_and(|old| {
+            old.done_at != after.done_at || old.archived_at != after.archived_at
+        });
+        let changed = before.is_none() || !fields.is_empty() || bookkeeping_changed;
+        tracing::debug!(work_package_id = item.id, issue_id = %after.id, creating = before.is_none(), changed, fields = ?fields,
+            "OpenProject work package reconciled in page transaction");
+        if changed {
+            if before.is_some() {
+                persistence::save(
+                    conn,
+                    workspace,
+                    &after,
+                    persistence::Ownership::Remote(&source),
+                )
+                .await?;
+                if let Some(allocation) = &mut allocation {
+                    allocation.include(&after, mapping.team_id);
+                }
+            } else {
+                persistence::create_allocated(
+                    conn,
+                    workspace,
+                    &mut after,
+                    &source,
+                    allocation
+                        .as_mut()
+                        .ok_or_else(|| Error::Internal("missing import allocation".into()))?,
+                )
+                .await?;
+            }
+            changes.push((before, after.clone(), fields));
+        }
+        links.insert(after.id, source.url);
+        existing.insert(item.id, after);
     }
-    sqlx::query("INSERT INTO source_links(id,workspace_id,issue_id,url,title) VALUES($1,$2,$3,$4,'OpenProject') ON CONFLICT DO NOTHING")
-        .bind(Uuid::new_v4()).bind(workspace).bind(after.id).bind(source.url).execute(conn).await?;
+    if !changes.is_empty() {
+        let changed_ids: Vec<Uuid> = changes
+            .iter()
+            .filter(|(before, _, _)| before.is_some())
+            .map(|(_, after, _)| after.id)
+            .collect();
+        let mut followers: BTreeMap<Uuid, Vec<Uuid>> = BTreeMap::new();
+        if !changed_ids.is_empty() {
+            let rows = sqlx::query("SELECT issue_id,user_id FROM issue_followers WHERE workspace_id=$1 AND issue_id=ANY($2) ORDER BY issue_id,user_id")
+                .bind(workspace).bind(&changed_ids).fetch_all(&mut *conn).await?;
+            for row in rows {
+                followers
+                    .entry(row.try_get("issue_id")?)
+                    .or_default()
+                    .push(row.try_get("user_id")?);
+            }
+        }
+        let effects = persistence::PageEffects::load(
+            conn,
+            workspace,
+            stages
+                .into_iter()
+                .map(|stage| (stage.id, stage.kind))
+                .collect(),
+        )
+        .await?;
+        for (before, mut after, fields) in changes {
+            after.followers = followers.get(&after.id).cloned().unwrap_or_default();
+            effects
+                .apply(conn, workspace, before.as_ref(), &after, fields)
+                .await?;
+        }
+    }
+    let ids: Vec<Uuid> = links.keys().copied().collect();
+    let urls: Vec<String> = links.into_values().collect();
+    let link_ids: Vec<Uuid> = ids.iter().map(|_| Uuid::new_v4()).collect();
+    sqlx::query("INSERT INTO source_links(id,workspace_id,issue_id,url,title) SELECT input.id,$1,input.issue_id,input.url,'OpenProject' FROM unnest($2::uuid[],$3::uuid[],$4::text[]) AS input(id,issue_id,url) WHERE NOT EXISTS(SELECT 1 FROM source_links s WHERE s.workspace_id=$1 AND s.issue_id=input.issue_id AND s.url=input.url AND s.title='OpenProject') ON CONFLICT DO NOTHING")
+        .bind(workspace).bind(link_ids).bind(ids).bind(urls).execute(conn).await?;
     Ok(())
 }

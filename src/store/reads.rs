@@ -1,5 +1,7 @@
 use super::*;
+use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use sqlx::QueryBuilder;
 
 #[derive(Clone, Copy, Debug)]
@@ -19,6 +21,195 @@ pub(super) const ISSUE_JSON: &str = r#"(to_jsonb(i)-'workspace_id'-'reminder_gen
  'followers',COALESCE((SELECT jsonb_agg(f.user_id ORDER BY f.user_id) FROM issue_followers f WHERE f.workspace_id=i.workspace_id AND f.issue_id=i.id),'[]'::jsonb),
  'attachments',COALESCE((SELECT jsonb_agg(jsonb_build_object('id',a.id,'name',a.filename,'content_type',a.content_type,'size',octet_length(a.bytes)) ORDER BY a.id) FROM attachments a WHERE a.workspace_id=i.workspace_id AND a.issue_id=i.id AND a.comment_id IS NULL),'[]'::jsonb),
  'source_links',COALESCE((SELECT jsonb_agg(jsonb_build_object('url',s.url,'title',s.title) ORDER BY s.id) FROM source_links s WHERE s.workspace_id=i.workspace_id AND s.issue_id=i.id),'[]'::jsonb))"#;
+
+const ISSUE_SUMMARY_JSON: &str = r#"jsonb_build_object(
+ 'id',i.id,'number',i.number,'title',i.title,'team_id',i.team_id,'stage_id',i.stage_id,
+ 'assignee',i.assignee,'priority',i.priority,'estimate',i.estimate,'deadline',i.deadline,
+ 'project_id',i.project_id,'milestone_id',i.milestone_id,'sprint_id',i.sprint_id,
+ 'parent_id',i.parent_id,'position',i.position,'version',i.version,
+ 'created_at',i.created_at,'updated_at',i.updated_at,'deleted_at',i.deleted_at,
+ 'archived_at',i.archived_at,'done_at',i.done_at,'openproject',i.openproject,
+ 'blocked_count',(SELECT count(*) FROM issue_dependencies d JOIN issues dependency ON dependency.id=d.dependency_id JOIN stages stage ON stage.id=dependency.stage_id WHERE d.issue_id=i.id AND dependency.deleted_at IS NULL AND stage.kind NOT IN ('done','cancelled')),
+ 'subtask_total',(SELECT count(*) FROM issues child WHERE child.workspace_id=i.workspace_id AND child.parent_id=i.id AND child.deleted_at IS NULL),
+ 'subtask_completed',(SELECT count(*) FROM issues child JOIN stages stage ON stage.id=child.stage_id WHERE child.workspace_id=i.workspace_id AND child.parent_id=i.id AND child.deleted_at IS NULL AND stage.kind IN ('done','cancelled')),
+ 'labels',COALESCE((SELECT jsonb_agg(l.label_id ORDER BY l.label_id) FROM issue_labels l WHERE l.workspace_id=i.workspace_id AND l.issue_id=i.id),'[]'::jsonb))"#;
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct IssueCursor {
+    version: u8,
+    workspace: Uuid,
+    scope: String,
+    updated_at: DateTime<Utc>,
+    id: Uuid,
+}
+
+fn cursor_scope(filter: &IssueFilter) -> Result<String> {
+    let mut filter = filter.clone();
+    filter.after = None;
+    filter.projection = IssueProjection::Full;
+    Ok(hex::encode(Sha256::digest(serde_json::to_vec(&filter)?)))
+}
+
+fn updated_cursor_sort(filter: &IssueFilter) -> bool {
+    matches!(filter.sort, IssueSort::Updated)
+        && matches!(filter.group_by, None | Some(IssueGroup::None))
+}
+
+fn decode_issue_cursor(
+    filter: &IssueFilter,
+    workspace: Uuid,
+    offset: i64,
+) -> Result<Option<IssueCursor>> {
+    let Some(encoded) = &filter.after else {
+        return Ok(None);
+    };
+    if !updated_cursor_sort(filter) || offset != 0 {
+        return Err(Error::BadRequest(
+            "after requires sort=updated, no grouping, and offset=0".into(),
+        ));
+    }
+    let invalid = || Error::BadRequest("invalid issue cursor for this workspace or filter".into());
+    if encoded.len() > 2048 {
+        return Err(invalid());
+    }
+    let bytes = URL_SAFE_NO_PAD.decode(encoded).map_err(|_| invalid())?;
+    let cursor: IssueCursor = serde_json::from_slice(&bytes).map_err(|_| invalid())?;
+    if cursor.version != 1 || cursor.workspace != workspace || cursor.scope != cursor_scope(filter)?
+    {
+        return Err(invalid());
+    }
+    Ok(Some(cursor))
+}
+
+fn push_issue_filters(
+    q: &mut QueryBuilder<'_, Postgres>,
+    workspace: Uuid,
+    filter: &IssueFilter,
+) -> Result<()> {
+    q.push("i.workspace_id=").push_bind(workspace);
+    q.push(if filter.trash {
+        " AND i.deleted_at IS NOT NULL"
+    } else if filter.archived {
+        " AND i.deleted_at IS NULL AND i.archived_at IS NOT NULL"
+    } else {
+        " AND i.deleted_at IS NULL AND i.archived_at IS NULL"
+    });
+    for (column, value) in [
+        ("assignee", filter.assignee),
+        ("team_id", filter.team_id),
+        ("stage_id", filter.stage_id),
+        ("sprint_id", filter.sprint_id),
+        ("project_id", filter.project_id),
+        ("parent_id", filter.parent_id),
+    ] {
+        if let Some(value) = value {
+            q.push(format!(" AND i.{column}=")).push_bind(value);
+        }
+    }
+    if let Some(id) = filter.label_id {
+        q.push(" AND EXISTS(SELECT 1 FROM issue_labels l WHERE l.issue_id=i.id AND l.label_id=")
+            .push_bind(id)
+            .push(")");
+    }
+    if let Some(id) = filter.dependency_id {
+        q.push(" AND EXISTS(SELECT 1 FROM issue_dependencies d WHERE d.issue_id=i.id AND d.dependency_id=")
+            .push_bind(id)
+            .push(")");
+    }
+    if let Some(priority) = &filter.priority {
+        q.push(" AND i.priority=").push_bind(enum_text(priority));
+    }
+    if let Some(due) = filter.due_before {
+        q.push(" AND i.deadline<=").push_bind(due);
+    }
+    if filter.unassigned {
+        q.push(" AND i.assignee IS NULL");
+    }
+    if filter.no_sprint {
+        q.push(" AND i.sprint_id IS NULL");
+    }
+    if filter.open {
+        q.push(" AND EXISTS(SELECT 1 FROM stages s WHERE s.id=i.stage_id AND s.kind NOT IN ('done','cancelled'))");
+    }
+    if let Some(ids) = &filter.ids {
+        let values: Vec<Uuid> = ids
+            .split(',')
+            .map(|s| {
+                s.parse()
+                    .map_err(|_| Error::BadRequest("ids must be comma-separated UUIDs".into()))
+            })
+            .collect::<Result<_>>()?;
+        if values.len() > 200 {
+            return Err(Error::BadRequest(
+                "ids may contain at most 200 UUIDs".into(),
+            ));
+        }
+        q.push(" AND i.id=ANY(").push_bind(values).push(")");
+    }
+    Ok(())
+}
+
+fn push_issue_order(q: &mut QueryBuilder<'_, Postgres>, filter: &IssueFilter) {
+    q.push(" ORDER BY ");
+    match filter.group_by {
+        Some(IssueGroup::Stage) => {
+            q.push("i.stage_id,");
+        }
+        Some(IssueGroup::Priority) => {
+            q.push("CASE i.priority WHEN 'urgent' THEN 4 WHEN 'high' THEN 3 WHEN 'normal' THEN 2 WHEN 'low' THEN 1 ELSE 0 END DESC,");
+        }
+        Some(IssueGroup::Assignee) => {
+            q.push("i.assignee NULLS LAST,");
+        }
+        _ => {}
+    }
+    q.push(match filter.sort {
+        IssueSort::Position => "i.position,i.number,i.id",
+        IssueSort::Deadline => "i.deadline ASC NULLS LAST,i.position,i.id",
+        IssueSort::Updated => "i.updated_at DESC,i.id",
+        IssueSort::Priority => "CASE i.priority WHEN 'urgent' THEN 4 WHEN 'high' THEN 3 WHEN 'normal' THEN 2 WHEN 'low' THEN 1 ELSE 0 END DESC,i.position,i.id",
+    });
+}
+
+fn issue_number_search(search: &str) -> Option<i64> {
+    let raw = search.trim_start_matches('#');
+    let number = raw.parse::<i64>().ok()?;
+    (number > 0 && number.to_string() == raw).then_some(number)
+}
+
+fn push_issue_search(
+    q: &mut QueryBuilder<'_, Postgres>,
+    workspace: Uuid,
+    filter: &IssueFilter,
+    search: &str,
+) -> Result<()> {
+    q.push("search_matches AS (SELECT i.id FROM issues i WHERE ");
+    push_issue_filters(q, workspace, filter)?;
+    q.push(
+        " AND to_tsvector('simple',i.title || ' ' || i.description) @@ plainto_tsquery('simple',",
+    )
+    .push_bind(search.to_owned())
+    .push(") UNION SELECT i.id FROM issues i WHERE ");
+    push_issue_filters(q, workspace, filter)?;
+    let pattern = format!(
+        "%{}%",
+        search
+            .replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_")
+    );
+    q.push(" AND (i.title || ' ' || i.description) ILIKE ")
+        .push_bind(pattern)
+        .push(" ESCAPE E'\\\\'");
+    if let Some(number) = issue_number_search(search) {
+        q.push(" UNION SELECT i.id FROM issues i WHERE ");
+        push_issue_filters(q, workspace, filter)?;
+        q.push(" AND i.number=").push_bind(number);
+    }
+    q.push("), ");
+    Ok(())
+}
 
 pub(super) const MEMBER_JSON: &str = r#"jsonb_build_object('id',u.id,'email',u.email,'display_name',u.profile->>'display_name','avatar_url',u.profile->'avatar_url','contact',u.profile->>'contact','role',m.role,'version',m.version,'team_ids',COALESCE((SELECT jsonb_agg(tm.team_id ORDER BY tm.team_id) FROM team_members tm WHERE tm.workspace_id=m.workspace_id AND tm.user_id=u.id),'[]'::jsonb))"#;
 
@@ -306,130 +497,80 @@ impl Store {
         offset: i64,
     ) -> Result<Value> {
         bounds(limit, offset)?;
+        let cursor = decode_issue_cursor(&filter, workspace, offset)?;
+        let search = filter.search.as_deref().filter(|s| !s.trim().is_empty());
+        if filter.search.as_ref().is_some_and(|s| s.len() > 200) {
+            return Err(Error::BadRequest("search query too long".into()));
+        }
 
         let mut conn = self.pool.acquire().await?;
         authorize(&mut conn, workspace, actor).await?;
 
-        let mut q = QueryBuilder::<Postgres>::new(format!(
-            "SELECT {ISSUE_JSON} FROM issues i WHERE i.workspace_id="
-        ));
-        q.push_bind(workspace);
-
-        q.push(if filter.trash {
-            " AND i.deleted_at IS NOT NULL"
-        } else if filter.archived {
-            " AND i.deleted_at IS NULL AND i.archived_at IS NOT NULL"
-        } else {
-            " AND i.deleted_at IS NULL AND i.archived_at IS NULL"
-        });
-        for (column, value) in [
-            ("assignee", filter.assignee),
-            ("team_id", filter.team_id),
-            ("stage_id", filter.stage_id),
-            ("sprint_id", filter.sprint_id),
-            ("project_id", filter.project_id),
-            ("parent_id", filter.parent_id),
-        ] {
-            if let Some(value) = value {
-                q.push(format!(" AND i.{column}=")).push_bind(value);
-            }
+        let mut q = QueryBuilder::<Postgres>::new("WITH ");
+        if let Some(search) = search {
+            push_issue_search(&mut q, workspace, &filter, search)?;
         }
-        if let Some(id) = filter.label_id {
-            q.push(
-                " AND EXISTS(SELECT 1 FROM issue_labels l WHERE l.issue_id=i.id AND l.label_id=",
-            )
-            .push_bind(id)
-            .push(")");
+        q.push("issue_page AS MATERIALIZED (SELECT i.id,i.updated_at,i.position,i.number,i.deadline,i.priority,i.stage_id,i.assignee FROM issues i WHERE ");
+        push_issue_filters(&mut q, workspace, &filter)?;
+        if search.is_some() {
+            q.push(" AND i.id IN (SELECT id FROM search_matches)");
         }
-        if let Some(id) = filter.dependency_id {
-            q.push(" AND EXISTS(SELECT 1 FROM issue_dependencies d WHERE d.issue_id=i.id AND d.dependency_id=")
-                .push_bind(id)
-                .push(")");
+        if let Some(cursor) = cursor {
+            // Updated uses descending timestamps and ascending UUIDs, including at ties.
+            // The explicit upper bound lets the index start at the cursor timestamp
+            // instead of scanning all newer rows before applying the tie predicate.
+            q.push(" AND i.updated_at<=")
+                .push_bind(cursor.updated_at)
+                .push(" AND (i.updated_at<")
+                .push_bind(cursor.updated_at)
+                .push(" OR (i.updated_at=")
+                .push_bind(cursor.updated_at)
+                .push(" AND i.id>")
+                .push_bind(cursor.id)
+                .push("))");
         }
-        if let Some(priority) = filter.priority {
-            q.push(" AND i.priority=").push_bind(enum_text(&priority));
-        }
-        if let Some(due) = filter.due_before {
-            q.push(" AND i.deadline<=").push_bind(due);
-        }
-        if filter.unassigned {
-            q.push(" AND i.assignee IS NULL");
-        }
-        if filter.no_sprint {
-            q.push(" AND i.sprint_id IS NULL");
-        }
-        if filter.open {
-            q.push(" AND EXISTS(SELECT 1 FROM stages s WHERE s.id=i.stage_id AND s.kind NOT IN ('done','cancelled'))");
-        }
-        if let Some(ids) = filter.ids {
-            let values: Vec<Uuid> = ids
-                .split(',')
-                .map(|s| {
-                    s.parse()
-                        .map_err(|_| Error::BadRequest("ids must be comma-separated UUIDs".into()))
-                })
-                .collect::<Result<_>>()?;
-            if values.len() > 200 {
-                return Err(Error::BadRequest(
-                    "ids may contain at most 200 UUIDs".into(),
-                ));
-            }
-            q.push(" AND i.id=ANY(").push_bind(values).push(")");
-        }
-        if let Some(search) = filter.search {
-            if search.len() > 200 {
-                return Err(Error::BadRequest("search query too long".into()));
-            }
-            if !search.trim().is_empty() {
-                let pattern = format!(
-                    "%{}%",
-                    search
-                        .replace('\\', "\\\\")
-                        .replace('%', "\\%")
-                        .replace('_', "\\_")
-                );
-                q.push(" AND (to_tsvector('simple',i.title || ' ' || i.description) @@ plainto_tsquery('simple',")
-                    .push_bind(search.clone())
-                    .push(") OR i.title || ' ' || i.description ILIKE ")
-                    .push_bind(pattern)
-                    .push(" OR i.number::text=")
-                    .push_bind(search.trim_start_matches('#').to_owned())
-                    .push(")");
-            }
-        }
-
-        q.push(" ORDER BY ");
-        match filter.group_by {
-            Some(IssueGroup::Stage) => {
-                q.push("i.stage_id,");
-            }
-            Some(IssueGroup::Priority) => {
-                q.push("CASE i.priority WHEN 'urgent' THEN 4 WHEN 'high' THEN 3 WHEN 'normal' THEN 2 WHEN 'low' THEN 1 ELSE 0 END DESC,");
-            }
-            Some(IssueGroup::Assignee) => {
-                q.push("i.assignee NULLS LAST,");
-            }
-            _ => {}
-        }
-
-        q.push(match filter.sort {
-            IssueSort::Position => "i.position,i.number,i.id",
-            IssueSort::Deadline => "i.deadline ASC NULLS LAST,i.position,i.id",
-            IssueSort::Updated => "i.updated_at DESC,i.id",
-            IssueSort::Priority => "CASE i.priority WHEN 'urgent' THEN 4 WHEN 'high' THEN 3 WHEN 'normal' THEN 2 WHEN 'low' THEN 1 ELSE 0 END DESC,i.position,i.id",
-        });
+        push_issue_order(&mut q, &filter);
         q.push(" LIMIT ")
             .push_bind(limit + 1)
             .push(" OFFSET ")
             .push_bind(offset);
-
-        Ok(page(
-            q.build_query_scalar::<Value>()
-                .fetch_all(&mut *conn)
-                .await?,
-            limit,
-            offset,
-        ))
+        let expression = match filter.projection {
+            IssueProjection::Full => ISSUE_JSON,
+            IssueProjection::Summary => ISSUE_SUMMARY_JSON,
+        };
+        q.push(format!(
+            ") SELECT {expression} FROM issue_page p JOIN issues i ON i.id=p.id"
+        ));
+        push_issue_order(&mut q, &filter);
+        let mut items = q
+            .build_query_scalar::<Value>()
+            .fetch_all(&mut *conn)
+            .await?;
+        let has_more = items.len() > limit as usize;
+        items.truncate(limit as usize);
+        let next_cursor = if has_more && updated_cursor_sort(&filter) {
+            let last = items
+                .last()
+                .ok_or_else(|| Error::Internal("missing last issue".into()))?;
+            Some(URL_SAFE_NO_PAD.encode(serde_json::to_vec(&IssueCursor {
+                version: 1,
+                workspace,
+                scope: cursor_scope(&filter)?,
+                updated_at: serde_json::from_value(last["updated_at"].clone())?,
+                id: serde_json::from_value(last["id"].clone())?,
+            })?))
+        } else {
+            None
+        };
+        let mut result = page(items, limit, offset);
+        result["has_more"] = json!(has_more);
+        result["next_offset"] = json!(if has_more && filter.after.is_none() {
+            Some(offset + limit)
+        } else {
+            None
+        });
+        result["next_cursor"] = json!(next_cursor);
+        Ok(result)
     }
 
     pub async fn collection(

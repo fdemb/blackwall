@@ -6,12 +6,27 @@ pub(super) struct Cursor {
     pub page: i64,
     #[serde(default)]
     pub page_size: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_since: Option<chrono::NaiveDate>,
 }
 impl Default for Cursor {
     fn default() -> Self {
         Self {
             page: 1,
             page_size: None,
+            started_at: None,
+            updated_since: None,
+        }
+    }
+}
+impl Cursor {
+    fn first_page(&self) -> Self {
+        Self {
+            page: 1,
+            page_size: None,
+            ..self.clone()
         }
     }
 }
@@ -110,6 +125,32 @@ impl Checkpoint {
             | Self::WorkPackages { cursor, .. } => cursor,
         }
     }
+    pub fn cursor_mut(&mut self) -> &mut Cursor {
+        match self {
+            Self::Projects { cursor, .. }
+            | Self::Statuses { cursor, .. }
+            | Self::People { cursor, .. }
+            | Self::WorkPackages { cursor, .. } => cursor,
+        }
+    }
+    pub fn packages(started_at: DateTime<Utc>, updated_since: Option<chrono::NaiveDate>) -> Self {
+        Self::WorkPackages {
+            cursor: Cursor {
+                started_at: Some(started_at),
+                updated_since,
+                ..Cursor::default()
+            },
+            project_index: 0,
+        }
+    }
+    pub fn full_scan(&self) -> Self {
+        let mut cursor = self.cursor().first_page();
+        cursor.updated_since = None;
+        Self::WorkPackages {
+            cursor,
+            project_index: 0,
+        }
+    }
     fn mapping<'a>(&self, mappings: &'a [Mapping]) -> Result<&'a Mapping> {
         let Self::WorkPackages { project_index, .. } = self else {
             return Err(Error::Internal("invalid OpenProject scan phase".into()));
@@ -128,12 +169,26 @@ impl Checkpoint {
             Self::Projects { .. } => ("projects", None),
             Self::Statuses { .. } => ("statuses", None),
             Self::People { .. } => ("users", None),
-            Self::WorkPackages { .. } => (
-                "work_packages",
-                Some(
-                    json!([{"project":{"operator":"=","values":[self.mapping(mappings)?.project_id.to_string()]}}]),
-                ),
-            ),
+            Self::WorkPackages { .. } => {
+                let mut filters = vec![
+                    json!({"project":{"operator":"=","values":[self.mapping(mappings)?.project_id.to_string()]}}),
+                ];
+                if let Some(date) = self.cursor().updated_since {
+                    let lower = date
+                        .and_hms_opt(0, 0, 0)
+                        .ok_or_else(|| Error::Internal("invalid OpenProject scan window".into()))?
+                        .and_utc();
+                    let upper = self
+                        .cursor()
+                        .started_at
+                        .and_then(|start| start.checked_add_signed(chrono::Duration::days(2)))
+                        .ok_or_else(|| Error::Internal("invalid OpenProject scan window".into()))?;
+                    // updatedAt uses OpenProject's datetime range operator, not the
+                    // numeric >= operator. Freeze both bounds across continuations.
+                    filters.push(json!({"updatedAt":{"operator":"<>d","values":[lower.to_rfc3339(),upper.to_rfc3339()]}}));
+                }
+                ("work_packages", Some(Value::Array(filters)))
+            }
         })
     }
     pub fn normalize(&self, response: Value, mappings: &[Mapping]) -> Result<Page> {
@@ -194,10 +249,21 @@ impl Checkpoint {
                     ));
                 }
                 let mapping = self.mapping(mappings)?.clone();
-                let items = items
+                let items: Vec<WorkPackage> = items
                     .iter()
                     .map(|item| work_package(item, mapping.project_id))
                     .collect::<Result<_>>()?;
+                if items
+                    .iter()
+                    .map(|item| item.id)
+                    .collect::<BTreeSet<_>>()
+                    .len()
+                    != items.len()
+                {
+                    return Err(Error::Internal(
+                        "duplicate OpenProject work package in page".into(),
+                    ));
+                }
                 PageData::WorkPackages { mapping, items }
             }
         };
@@ -231,21 +297,21 @@ impl Checkpoint {
         } else {
             match self {
                 Self::Projects { .. } => Some(Self::Statuses {
-                    cursor: Cursor::default(),
+                    cursor: self.cursor().first_page(),
                     refresh_only,
                 }),
                 Self::Statuses { .. } => Some(Self::People {
-                    cursor: Cursor::default(),
+                    cursor: self.cursor().first_page(),
                     refresh_only,
                 }),
                 Self::People { .. } if refresh_only || mapping_count == 0 => None,
                 Self::People { .. } => Some(Self::WorkPackages {
-                    cursor: Cursor::default(),
+                    cursor: self.cursor().first_page(),
                     project_index: 0,
                 }),
                 Self::WorkPackages { project_index, .. } if project_index + 1 < mapping_count => {
                     Some(Self::WorkPackages {
-                        cursor: Cursor::default(),
+                        cursor: self.cursor().first_page(),
                         project_index: project_index + 1,
                     })
                 }
@@ -262,26 +328,6 @@ impl Checkpoint {
     }
 }
 
-pub(super) fn append_cache<T: Serialize>(cache: &mut Value, items: &[T], page: i64) -> Result<()> {
-    if page == 1 {
-        *cache = json!([]);
-    }
-    let entries = cache
-        .as_array_mut()
-        .ok_or_else(|| Error::Internal("invalid OpenProject cache".into()))?;
-    entries.extend(
-        items
-            .iter()
-            .map(serde_json::to_value)
-            .collect::<std::result::Result<Vec<_>, _>>()?,
-    );
-    if entries.len() > 5000 {
-        return Err(Error::Internal(
-            "OpenProject discovery limit reached".into(),
-        ));
-    }
-    Ok(())
-}
 fn positive_id(item: &Value) -> Result<i64> {
     item.get("id")
         .and_then(Value::as_i64)
@@ -370,7 +416,7 @@ fn work_package(item: &Value, expected_project: i64) -> Result<WorkPackage> {
     })
 }
 
-pub(super) fn elements(value: &Value, page: i64) -> Result<(Vec<Value>, bool)> {
+pub(super) fn elements(value: &Value, page: i64) -> Result<(&[Value], bool)> {
     let items = value
         .pointer("/_embedded/elements")
         .and_then(Value::as_array)
@@ -414,7 +460,7 @@ pub(super) fn elements(value: &Value, page: i64) -> Result<(Vec<Value>, bool)> {
             "empty OpenProject page with continuation".into(),
         ));
     }
-    Ok((items.clone(), more))
+    Ok((items.as_slice(), more))
 }
 
 #[cfg(test)]
@@ -500,6 +546,80 @@ mod tests {
             let response = json!({"total":2,"count":2,"pageSize":50,"offset":1,"_embedded":{"elements":[valid,invalid]}});
             assert!(cp.normalize(response, &mappings).is_err());
         }
+    }
+
+    #[test]
+    fn incremental_windows_are_fixed_across_pages_projects_and_restarts() {
+        let mappings = [42, 43].map(|project_id| Mapping {
+            project_id,
+            team_id: Uuid::nil(),
+            stage_mapping: BTreeMap::new(),
+        });
+        let start = DateTime::parse_from_rfc3339("2026-10-05T12:34:56Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let cp = Checkpoint::packages(start, Some("2026-10-03".parse().unwrap()));
+        let request = cp.request(&mappings).unwrap().1.unwrap();
+        assert_eq!(
+            request[1],
+            json!({"updatedAt":{"operator":"<>d","values":["2026-10-03T00:00:00+00:00","2026-10-07T12:34:56+00:00"]}})
+        );
+        let response = Page {
+            data: PageData::WorkPackages {
+                mapping: mappings[0].clone(),
+                items: vec![],
+            },
+            more: true,
+            page_size: Some(50),
+        };
+        let next = cp.advance(&response, 2).unwrap().next.unwrap();
+        assert_eq!(next.request(&mappings).unwrap().1.unwrap(), request);
+        let next_project = next
+            .advance(
+                &Page {
+                    more: false,
+                    ..response
+                },
+                2,
+            )
+            .unwrap()
+            .next
+            .unwrap();
+        assert_eq!(
+            next_project.request(&mappings).unwrap().1.unwrap()[1],
+            request[1]
+        );
+        let decoded: Checkpoint = serde_json::from_value(json!(next_project)).unwrap();
+        assert_eq!(decoded.cursor().started_at, Some(start));
+        let fallback = decoded.full_scan();
+        assert_eq!(fallback.cursor().started_at, Some(start));
+        assert_eq!(fallback.cursor().page, 1);
+        assert_eq!(
+            fallback
+                .request(&mappings)
+                .unwrap()
+                .1
+                .unwrap()
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn duplicate_work_packages_reject_the_whole_page() {
+        let mappings = [Mapping {
+            project_id: 42,
+            team_id: Uuid::nil(),
+            stage_mapping: BTreeMap::new(),
+        }];
+        let cp = Checkpoint::WorkPackages {
+            cursor: Cursor::default(),
+            project_index: 0,
+        };
+        let item = json!({"id":7,"subject":"Valid","_links":{"project":{"href":"/api/v3/projects/42"},"status":{"href":"/api/v3/statuses/1"}}});
+        assert!(cp.normalize(json!({"total":2,"count":2,"pageSize":50,"offset":1,"_embedded":{"elements":[item.clone(),item]}}),&mappings).is_err());
     }
 
     #[test]

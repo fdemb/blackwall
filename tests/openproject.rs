@@ -1,5 +1,7 @@
 #[path = "openproject/logging.rs"]
 mod logging;
+#[path = "openproject/performance.rs"]
+mod performance;
 #[path = "openproject/persistence.rs"]
 mod persistence;
 mod support;
@@ -9,7 +11,7 @@ mod upgrade;
 use axum::{
     Json, Router,
     body::Body,
-    extract::{Path, Query, State},
+    extract::{ConnectInfo, Path, Query, State},
     http::{HeaderMap, Request, StatusCode},
     routing::get,
 };
@@ -44,6 +46,12 @@ struct Remote {
     closed_first: bool,
     malformed_last: bool,
     page_size: Option<usize>,
+    resource_requests: BTreeMap<String, usize>,
+    connections: std::collections::BTreeSet<std::net::SocketAddr>,
+    incremental_requests: usize,
+    reject_date_filter: bool,
+    incremental_items: Option<Vec<Value>>,
+    bulk_count: usize,
 }
 
 #[derive(Clone, Default)]
@@ -58,6 +66,7 @@ async fn remote(
     Path(resource): Path<String>,
     Query(query): Query<BTreeMap<String, String>>,
     headers: HeaderMap,
+    ConnectInfo(peer): ConnectInfo<std::net::SocketAddr>,
 ) -> (StatusCode, Json<Value>) {
     assert_eq!(
         headers["authorization"],
@@ -65,6 +74,8 @@ async fn remote(
     );
     let mut data = mock.data.lock().await;
     data.requests += 1;
+    *data.resource_requests.entry(resource.clone()).or_default() += 1;
+    data.connections.insert(peer);
     let page: usize = query["offset"].parse().unwrap();
     let items = match resource.as_str() {
         "projects" => vec![
@@ -84,11 +95,32 @@ async fn remote(
         }
         "work_packages" => {
             let filters: Value = serde_json::from_str(&query["filters"]).unwrap();
-            assert_eq!(
-                filters.as_array().unwrap().len(),
-                1,
-                "must not default to open-only filtering"
-            );
+            let filters_array = filters.as_array().unwrap();
+            assert!(filters_array.len() == 1 || filters_array.len() == 2);
+            let incremental = filters_array.len() == 2;
+            if incremental {
+                assert_eq!(filters[1]["updatedAt"]["operator"], "<>d");
+                for value in filters[1]["updatedAt"]["values"].as_array().unwrap() {
+                    chrono::DateTime::parse_from_rfc3339(value.as_str().unwrap()).unwrap();
+                }
+                data.incremental_requests += 1;
+                if data.reject_date_filter {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(json!({"error":"date filter unsupported"})),
+                    );
+                }
+                if let Some(items) = &data.incremental_items {
+                    return (
+                        StatusCode::OK,
+                        Json(collection_with_size(
+                            items.clone(),
+                            page,
+                            data.page_size.unwrap_or(1),
+                        )),
+                    );
+                }
+            }
             let project: i64 = filters[0]["project"]["values"][0]
                 .as_str()
                 .unwrap()
@@ -104,6 +136,7 @@ async fn remote(
             let closed_first = data.closed_first;
             let malformed_last = data.malformed_last;
             let page_size = data.page_size.unwrap_or(1);
+            let bulk_count = data.bulk_count;
             drop(data);
             if stall {
                 mock.entered.notify_one();
@@ -130,6 +163,12 @@ async fn remote(
             if extra && project == 42 {
                 packages.push(json!({"id":9,"subject":"Beyond capacity","description":{"raw":""},
                     "_links":{"project":{"href":"/api/v3/projects/42"},"status":{"href":"/api/v3/statuses/1"}}}));
+            }
+            for index in 0..bulk_count {
+                packages.push(json!({"id":100+index,"subject":format!("Bulk package {index}"),
+                    "description":{"raw":"A repeated description for the performance test.".repeat(20)},
+                    "_links":{"project":{"href":format!("/api/v3/projects/{project}")},
+                    "status":{"href":"/api/v3/statuses/1"}}}));
             }
             if malformed_last && let Some(last) = packages.last_mut() {
                 last["dueDate"] = json!("invalid-date");
@@ -165,7 +204,12 @@ async fn mock_server(mock: Mock) -> (String, tokio::task::JoinHandle<()>) {
         .route("/api/v3/{resource}", get(remote))
         .with_state(mock);
     let task = tokio::spawn(async move {
-        axum::serve(listener, app).await.unwrap();
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .await
+        .unwrap();
     });
     (url, task)
 }
@@ -930,6 +974,120 @@ async fn people_match_by_email_and_overrides_and_migrated_statuses_reconcile() {
         .await
         .unwrap();
     assert_eq!(kind, "done");
+    server.abort();
+    store.pool.close().await;
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn mirrored_done_issues_archive_and_reopening_unarchives() {
+    let db = support::TestDatabase::new().await;
+    let store = Store::connect(&db.url).await.unwrap();
+    let owner = account(&store).await;
+    let (workspace, a, _) = setup(&store, &owner).await;
+    let app = http::router(store.clone());
+    let mock = Mock::default();
+    let (url, server) = mock_server(mock.clone()).await;
+    let base = format!("/api/workspaces/{workspace}/openproject/connections");
+    let (status, config) = call(
+        &app,
+        &owner,
+        "POST",
+        &base,
+        Some(json!({
+            "name":"Archive OP","base_url":url,"token":TOKEN,
+            "projects":[{"project_id":42,"team_id":a}]
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{config}");
+    let connection = config["id"].as_str().unwrap();
+    let action = format!("{base}/{connection}");
+    drain(&store).await;
+
+    // A day-long deadline keeps the test fast without touching other teams.
+    let team_version: i64 = sqlx::query_scalar("SELECT version FROM teams WHERE id=$1")
+        .bind(a)
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+    store
+        .operation(
+            workspace,
+            owner.profile.id,
+            Command::SetTeamArchive {
+                id: a,
+                archive_after_days: Some(1),
+            },
+            BTreeMap::from([(a, team_version)]),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    // The closed package mirrors into Done with the archive clock started.
+    let closed = issues(&app, &owner, workspace)
+        .await
+        .into_iter()
+        .find(|i| i["openproject"]["work_package_id"] == 8)
+        .unwrap();
+    let closed_id = Uuid::parse_str(closed["id"].as_str().unwrap()).unwrap();
+    let done_at: Option<chrono::DateTime<chrono::Utc>> =
+        sqlx::query_scalar("SELECT done_at FROM issues WHERE id=$1")
+            .bind(closed_id)
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+    assert!(
+        done_at.is_some(),
+        "mirrored Done issues must start the archive clock on import"
+    );
+
+    // Ageing past the deadline archives mirrored issues like local ones.
+    sqlx::query("UPDATE issues SET done_at=now()-interval '2 days' WHERE id=$1")
+        .bind(closed_id)
+        .execute(&store.pool)
+        .await
+        .unwrap();
+    assert_eq!(store.archive_sweep().await.unwrap(), 1);
+    let visible = issues(&app, &owner, workspace).await;
+    assert!(
+        visible.iter().all(|i| i["id"] != closed["id"]),
+        "archived mirrors must leave default listings"
+    );
+    let (status, archived) = call(
+        &app,
+        &owner,
+        "GET",
+        &format!("/api/workspaces/{workspace}/issues?archived=true"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{archived}");
+    assert!(
+        archived["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|i| i["id"] == closed["id"]),
+        "archived mirrors must stay reachable through the archive filter"
+    );
+
+    // Reopening upstream unarchives on the next sync.
+    mock.data.lock().await.same_stage = true;
+    call(&app, &owner, "POST", &format!("{action}/sync"), None).await;
+    drain(&store).await;
+    let reopened = issues(&app, &owner, workspace)
+        .await
+        .into_iter()
+        .find(|i| i["id"] == closed["id"])
+        .unwrap();
+    assert!(
+        reopened["archived_at"].is_null() && reopened["done_at"].is_null(),
+        "reopened mirrors must leave the archive with a cleared clock: {reopened}"
+    );
+
     server.abort();
     store.pool.close().await;
     db.cleanup().await;

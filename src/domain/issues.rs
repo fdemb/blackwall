@@ -29,7 +29,7 @@ pub struct SourceLink {
     pub title: String,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct OpenProjectSource {
     pub connection_id: Uuid,
     pub work_package_id: i64,
@@ -171,6 +171,19 @@ pub struct IssueFilter {
     #[serde(default)]
     pub sort: IssueSort,
     pub group_by: Option<IssueGroup>,
+    /// Continue an ungrouped Updated page using its next_cursor. Requires offset=0.
+    pub after: Option<String>,
+    /// Summary omits description and detail-only relations. Full is the offline sync shape.
+    #[serde(default)]
+    pub projection: IssueProjection,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum IssueProjection {
+    #[default]
+    Full,
+    Summary,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema, PartialEq, Eq)]

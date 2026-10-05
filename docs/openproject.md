@@ -35,11 +35,17 @@ Removing a mapping or losing access to a work package does not delete the import
 
 ## Background execution
 
-Enabled connections synchronize every five minutes while a Blackwall worker is running. Connection checks, project discovery, initial imports, and manual sync requests all run in the background. Settings reads cached metadata, and ordinary issue reads use the local database only.
+Mapped connections normally start a scan every five minutes while a Blackwall worker is running. The interval is measured from the previous scan's start. If a scan takes longer than five minutes, the worker waits at least 30 seconds after completion before starting another one. Connection checks, discovery, imports, and manual requests run in the background. Settings reads cached metadata, and ordinary issue reads use the local database only.
 
-This version performs full, paginated scans of selected projects, including closed work packages. It favors straightforward reconciliation over version-dependent incremental date-filter behavior. Slow or unavailable OpenProject instances leave the last imported data available. Settings shows the last successful sync and errors.
+Initial imports, configuration changes, and **Sync now** perform full, paginated discovery and work-package scans, including closed packages. Automatic scans between discovery refreshes request packages modified within an overlapping timestamp window. The lower bound is midnight UTC two days before the last successful scan's start; the upper bound is two days after the current scan's start. Both bounds remain fixed across all pages and projects. The worker advances the watermark only when the entire scan commits successfully.
 
-Jobs persist in PostgreSQL. Workers fetch and normalize remote data into typed pages outside database transactions, then apply bounded batches through the shared issue persistence implementation. Imports and updates schedule deadline reminders and emit change and completion events. Sync activity uses a workspace owner as its audit actor. Continuations and checkpoints let later jobs resume a scan. Retries can repeat a page without duplicating its issues. Worker scheduling recovers after restarts.
+Once discovery metadata is 30 minutes old, the next automatic scan refreshes projects, statuses, and people and reconciles all mapped packages without a date filter. Local membership or stage changes also force an unfiltered reconciliation. Periodic full scans repair missed packages, newly visible packages, remote metadata changes, and remote timestamps outside the overlap window. They do not infer deletion. A discovery-only refresh clears the polling watermark so the next automatic scan reapplies the refreshed mappings to every package. Connections without mappings only refresh discovery every 30 minutes.
+
+The incremental request uses OpenProject's `updatedAt` datetime range operator `<>d`. If an installation rejects a filtered request with HTTP 400 or 422, the worker restarts the scan without the date filter and keeps using unfiltered polling. **Sync now** or a sync-affecting configuration change permits another compatibility attempt. Other HTTP errors retain normal retry behavior. Slow or unavailable installations leave the last imported data available.
+
+Jobs persist in PostgreSQL. Workers reuse a pooled HTTP client and fetch and normalize remote pages outside database transactions. Discovery pages occupy a separate bounded table until the complete resource replaces its public cache, so settings never sees a partially refreshed resource. Checkpoint updates do not rewrite discovery caches.
+
+Work-package reconciliation loads stages, matching members, and existing issues once per page. Unchanged issues do not hydrate detail relations or issue individual writes. Changed issues use shared issue persistence, reminders, activity, completion events, and follower alerts. New issues allocate numbers and stage positions in batches. Sync activity uses a workspace owner as its audit actor. Imported issues, cache publication, checkpoints, and job completion remain protected by claim and configuration-generation fencing. Retries can repeat a page without duplicating its issues. Worker scheduling recovers after restarts.
 
 `JOBS_OPENPROJECT_CONCURRENCY` defaults to 2 and accepts 1 through 4. OpenProject jobs have their own concurrency limit so slow requests do not consume email or database job slots. The database pool must have at least `JOBS_DATABASE_CONCURRENCY + JOBS_OPENPROJECT_CONCURRENCY + 3` connections.
 
@@ -53,7 +59,8 @@ The existing `tracing` subscriber reads `RUST_LOG`. Enable OpenProject debug log
 `RUST_LOG=blackwall=info,blackwall::openproject=debug` on the server or worker process running the sync.
 
 Logs include connection and job IDs, scan resources and page numbers, response status and size,
-request timings, selected stage and assignee IDs, changed fields, and discarded pages.
+request timings, normalization, pool acquisition, workspace lock wait, reconciliation timings,
+selected stage and assignee IDs, changed fields, and discarded pages.
 Work-package reconciliation logs describe writes inside the page transaction. The page committed
 message confirms that those writes persisted. Tokens, URLs, email addresses, titles, descriptions,
 and remote response bodies are omitted.
@@ -94,7 +101,7 @@ Create a connection:
 }
 ```
 
-PATCH accepts any subset of the create fields. Omit `token` to retain the credential. Sending `projects` replaces all project mappings. Sending `people_mapping` replaces all people overrides; send `{}` to restore automatic email matching. Omit either field to retain its current configuration. Discovery and sync return HTTP 202 with `{"queued":true}`; this acknowledges queued work, not a completed remote request.
+PATCH accepts any subset of the create fields. Name-only changes and saves with no effective changes preserve running jobs and their checkpoints. Changes to credentials, URL, enabled state, or mappings request a new full scan. Reference validation uses batched lookups. Omit `token` to retain the credential. Sending `projects` replaces all project mappings. Sending `people_mapping` replaces all people overrides; send `{}` to restore automatic email matching. Omit either field to retain its current configuration. Discovery and sync return HTTP 202 with `{"queued":true}`; this acknowledges queued work, not a completed remote request.
 
 The list response is `{"connections":[...]}`. Connection responses contain cached projects, statuses, people, mapping configuration, status, last error, and last checked/synced timestamps. They never contain the token.
 

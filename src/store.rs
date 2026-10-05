@@ -25,6 +25,7 @@ pub use reads::CollectionQuery;
 pub struct Store {
     pub pool: PgPool,
     pub outbox: Outbox,
+    pub(crate) openproject_client: reqwest::Client,
 }
 
 pub struct NewAttachment {
@@ -86,6 +87,7 @@ impl Store {
 
         Ok(Self {
             outbox: Outbox::new(pool.clone()),
+            openproject_client: crate::openproject::http_client()?,
             pool,
         })
     }

@@ -1,9 +1,20 @@
 use super::*;
 use std::time::Duration;
 
+pub(crate) fn client() -> Result<reqwest::Client> {
+    reqwest::Client::builder()
+        .no_proxy()
+        .timeout(Duration::from_secs(20))
+        .connect_timeout(Duration::from_secs(5))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|_| Error::Internal("OpenProject client failed".into()))
+}
+
 #[tracing::instrument(name = "openproject_request", level = "debug", skip_all,
     fields(resource = path, page))]
 pub(super) async fn fetch(
+    client: &reqwest::Client,
     base: &str,
     token: &str,
     path: &str,
@@ -15,13 +26,6 @@ pub(super) async fn fetch(
         filtered = filters.is_some(),
         "OpenProject HTTP request started"
     );
-    let client = reqwest::Client::builder()
-        .no_proxy()
-        .timeout(Duration::from_secs(20))
-        .connect_timeout(Duration::from_secs(5))
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .map_err(|_| Error::Internal("OpenProject client failed".into()))?;
     let mut req = client
         .get(format!("{base}/api/v3/{path}"))
         .basic_auth("apikey", Some(token))

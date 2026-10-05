@@ -1,4 +1,5 @@
-//! One-way, full paginated polling. Each queue lease fetches at most one page.
+//! One-way polling with overlapping incremental scans and periodic full discovery.
+//! Each queue lease fetches at most one page.
 use crate::{
     error::{Error, Result},
     http::Actor,
@@ -23,7 +24,7 @@ pub struct SyncJob {
     pub connection_id: Uuid,
     pub generation: i64,
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Mapping {
     pub project_id: i64,
@@ -58,10 +59,12 @@ pub struct Connection {
     pub last_checked_at: Option<DateTime<Utc>>,
     pub last_synced_at: Option<DateTime<Utc>>,
 }
+mod discovery;
 mod reconciliation;
 mod scan;
 mod transport;
 use scan::{Checkpoint, PageData};
+pub(crate) use transport::client as http_client;
 const PUBLIC: &str = "id,name,base_url,enabled,generation,projects,cached_projects,cached_statuses,cached_people,people_mapping,status,last_error,last_checked_at,last_synced_at";
 fn connection(row: sqlx::postgres::PgRow) -> Result<Connection> {
     Ok(Connection {
@@ -154,6 +157,7 @@ async fn configure(
 ) -> Result<Connection> {
     let mut tx = store.pool.begin().await?;
     admin(&mut tx, workspace, actor.profile.id).await?;
+    let created = id.is_none();
     let id = match id {
         Some(id) => id,
         None => {
@@ -185,9 +189,10 @@ async fn configure(
             id
         }
     };
-    let row = sqlx::query("SELECT * FROM openproject_connections WHERE workspace_id=$1 AND id=$2 AND NOT deleted FOR UPDATE")
+    let row = sqlx::query("SELECT name,base_url,token,enabled,projects,people_mapping,generation FROM openproject_connections WHERE workspace_id=$1 AND id=$2 AND NOT deleted FOR UPDATE")
         .bind(workspace).bind(id).fetch_optional(&mut *tx).await?.ok_or(Error::NotFound)?;
-    let name = config.name.unwrap_or(row.try_get("name")?);
+    let previous_name: String = row.try_get("name")?;
+    let name = config.name.unwrap_or(previous_name.clone());
     crate::domain::text(&name, 200)?;
     let previous_url: String = row.try_get("base_url")?;
     let url = validate_url(&config.base_url.unwrap_or(previous_url.clone()))?;
@@ -202,91 +207,154 @@ async fn configure(
             return Err(Error::Conflict("OpenProject URL cannot change after import; create a new connection for another instance".into()));
         }
     }
-    let token = config.token.unwrap_or(row.try_get("token")?);
+    let previous_token: String = row.try_get("token")?;
+    let token = config.token.unwrap_or(previous_token.clone());
     if token.is_empty() || token.len() > 4096 || token.chars().any(char::is_control) {
         return Err(Error::BadRequest("invalid token".into()));
     }
-    let projects: Vec<Mapping> = config
-        .projects
-        .unwrap_or(serde_json::from_value(row.try_get("projects")?)?);
-    if projects.len() > 100 {
-        return Err(Error::BadRequest("at most 100 project mappings".into()));
-    }
-    let mut seen = BTreeSet::new();
-    for mapping in &projects {
-        if mapping.project_id <= 0
-            || !seen.insert(mapping.project_id)
-            || mapping.stage_mapping.len() > 100
-        {
-            return Err(Error::BadRequest(
-                "invalid or duplicate project mapping".into(),
-            ));
+    let previous_projects: Vec<Mapping> = serde_json::from_value(row.try_get("projects")?)?;
+    let projects = config.projects.unwrap_or_else(|| previous_projects.clone());
+    let projects_changed = projects != previous_projects;
+    if projects_changed {
+        if projects.len() > 100 {
+            return Err(Error::BadRequest("at most 100 project mappings".into()));
         }
-        let exists: bool = sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM stages WHERE workspace_id=$1 AND team_id=$2)",
-        )
-        .bind(workspace)
-        .bind(mapping.team_id)
-        .fetch_one(&mut *tx)
-        .await?;
-        if !exists {
-            return Err(Error::BadRequest(
-                "team must belong to workspace and have stages".into(),
-            ));
-        }
-        for (status, stage) in &mapping.stage_mapping {
-            if status.parse::<i64>().ok().is_none_or(|id| id <= 0) {
+        let mut seen = BTreeSet::new();
+        for mapping in &projects {
+            if mapping.project_id <= 0
+                || !seen.insert(mapping.project_id)
+                || mapping.stage_mapping.len() > 100
+            {
                 return Err(Error::BadRequest(
-                    "status mapping keys must be positive IDs".into(),
-                ));
-            }
-            let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM stages WHERE workspace_id=$1 AND team_id=$2 AND id=$3)").bind(workspace).bind(mapping.team_id).bind(stage).fetch_one(&mut *tx).await?;
-            if !exists {
-                return Err(Error::BadRequest(
-                    "mapped stage must belong to destination team".into(),
+                    "invalid or duplicate project mapping".into(),
                 ));
             }
         }
-    }
-    let people_mapping = config
-        .people_mapping
-        .unwrap_or(serde_json::from_value(row.try_get("people_mapping")?)?);
-    if people_mapping.len() > 5000 {
-        return Err(Error::BadRequest("at most 5000 people mappings".into()));
-    }
-    let mut normalized_people = BTreeMap::new();
-    for (email, user) in people_mapping {
-        let email = email.trim().to_lowercase();
-        if email.len() > 254
-            || !email.split_once('@').is_some_and(|(local, host)| {
-                !local.is_empty() && host.contains('.') && !host.starts_with('.')
-            })
-            || email
-                .chars()
-                .any(|character| character.is_whitespace() || character.is_control())
-            || normalized_people.insert(email, user).is_some()
-        {
-            return Err(Error::BadRequest(
-                "invalid or duplicate people mapping email".into(),
-            ));
-        }
-        let exists: bool = sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM workspace_members WHERE workspace_id=$1 AND user_id=$2)",
+        let teams: Vec<Uuid> = projects
+            .iter()
+            .map(|mapping| mapping.team_id)
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        let stages: Vec<Uuid> = projects
+            .iter()
+            .flat_map(|mapping| mapping.stage_mapping.values().copied())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        let existing_teams: BTreeSet<Uuid> = sqlx::query_scalar(
+            "SELECT DISTINCT team_id FROM stages WHERE workspace_id=$1 AND team_id=ANY($2)",
         )
         .bind(workspace)
-        .bind(user)
-        .fetch_one(&mut *tx)
-        .await?;
-        if !exists {
+        .bind(&teams)
+        .fetch_all(&mut *tx)
+        .await?
+        .into_iter()
+        .collect();
+        let existing_stages: BTreeSet<(Uuid, Uuid)> =
+            sqlx::query_as("SELECT team_id,id FROM stages WHERE workspace_id=$1 AND id=ANY($2)")
+                .bind(workspace)
+                .bind(&stages)
+                .fetch_all(&mut *tx)
+                .await?
+                .into_iter()
+                .collect();
+        for mapping in &projects {
+            if !existing_teams.contains(&mapping.team_id) {
+                return Err(Error::BadRequest(
+                    "team must belong to workspace and have stages".into(),
+                ));
+            }
+            for (status, stage) in &mapping.stage_mapping {
+                if status.parse::<i64>().ok().is_none_or(|id| id <= 0) {
+                    return Err(Error::BadRequest(
+                        "status mapping keys must be positive IDs".into(),
+                    ));
+                }
+                if !existing_stages.contains(&(mapping.team_id, *stage)) {
+                    return Err(Error::BadRequest(
+                        "mapped stage must belong to destination team".into(),
+                    ));
+                }
+            }
+        }
+    }
+    let previous_people: BTreeMap<String, Uuid> =
+        serde_json::from_value(row.try_get("people_mapping")?)?;
+    let normalized_people = if let Some(people_mapping) = config.people_mapping {
+        if people_mapping.len() > 5000 {
+            return Err(Error::BadRequest("at most 5000 people mappings".into()));
+        }
+        let mut normalized_people = BTreeMap::new();
+        for (email, user) in people_mapping {
+            let email = email.trim().to_lowercase();
+            if email.len() > 254
+                || !email.split_once('@').is_some_and(|(local, host)| {
+                    !local.is_empty() && host.contains('.') && !host.starts_with('.')
+                })
+                || email
+                    .chars()
+                    .any(|character| character.is_whitespace() || character.is_control())
+                || normalized_people.insert(email, user).is_some()
+            {
+                return Err(Error::BadRequest(
+                    "invalid or duplicate people mapping email".into(),
+                ));
+            }
+        }
+        normalized_people
+    } else {
+        previous_people.clone()
+    };
+    let people_changed = normalized_people != previous_people;
+    if people_changed {
+        let users: Vec<Uuid> = normalized_people
+            .values()
+            .copied()
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        let members: BTreeSet<Uuid> = sqlx::query_scalar(
+            "SELECT user_id FROM workspace_members WHERE workspace_id=$1 AND user_id=ANY($2)",
+        )
+        .bind(workspace)
+        .bind(&users)
+        .fetch_all(&mut *tx)
+        .await?
+        .into_iter()
+        .collect();
+        if users.iter().any(|user| !members.contains(user)) {
             return Err(Error::BadRequest(
                 "mapped person must belong to workspace".into(),
             ));
         }
     }
-    let enabled = config.enabled.unwrap_or(row.try_get("enabled")?);
-    sqlx::query("UPDATE openproject_connections SET name=$3,base_url=$4,token=$5,enabled=$6,projects=$7,people_mapping=$9,generation=generation+1,checkpoint=$8,next_run_at=clock_timestamp(),status='pending',last_error='' WHERE workspace_id=$1 AND id=$2")
-        .bind(workspace).bind(id).bind(name).bind(url).bind(token).bind(enabled).bind(json!(projects)).bind(json!(Checkpoint::default())).bind(json!(normalized_people)).execute(&mut *tx).await?;
-    cancel_pending(&mut tx, id).await?;
+    let previous_enabled: bool = row.try_get("enabled")?;
+    let enabled = config.enabled.unwrap_or(previous_enabled);
+    let scan_changed = created
+        || url != previous_url
+        || token != previous_token
+        || enabled != previous_enabled
+        || projects_changed
+        || people_changed;
+    if scan_changed {
+        let generation = row
+            .try_get::<i64, _>("generation")?
+            .checked_add(1)
+            .ok_or_else(|| {
+                Error::Conflict("OpenProject generation exhausted; create a new connection".into())
+            })?;
+        sqlx::query("UPDATE openproject_connections SET name=$3,base_url=$4,token=$5,enabled=$6,projects=$7,people_mapping=$9,generation=$10,checkpoint=$8,next_run_at=clock_timestamp(),status='pending',last_error='',incremental_supported=true WHERE workspace_id=$1 AND id=$2")
+            .bind(workspace).bind(id).bind(name).bind(url).bind(token).bind(enabled).bind(json!(projects)).bind(json!(Checkpoint::default())).bind(json!(normalized_people)).bind(generation).execute(&mut *tx).await?;
+        cancel_pending(&mut tx, id).await?;
+    } else if name != previous_name {
+        sqlx::query("UPDATE openproject_connections SET name=$3 WHERE workspace_id=$1 AND id=$2")
+            .bind(workspace)
+            .bind(id)
+            .bind(name)
+            .execute(&mut *tx)
+            .await?;
+    }
     let result = connection(
         sqlx::query(&format!(
             "SELECT {PUBLIC} FROM openproject_connections WHERE id=$1"
@@ -296,7 +364,9 @@ async fn configure(
         .await?,
     )?;
     tx.commit().await?;
-    store.outbox.ready();
+    if scan_changed {
+        store.outbox.ready();
+    }
     tracing::debug!(connection_id = %id, workspace_id = %workspace, generation = result.generation,
         enabled, project_count = result.projects.len(), people_override_count = result.people_mapping.len(),
         "OpenProject configuration saved");
@@ -346,8 +416,8 @@ async fn request(
     let mut tx = store.pool.begin().await?;
     admin(&mut tx, workspace, actor.profile.id).await?;
     let checkpoint = Checkpoint::new(refresh_only);
-    if sqlx::query("UPDATE openproject_connections SET generation=generation+1,checkpoint=$3,next_run_at=clock_timestamp(),status='pending',last_error='' WHERE workspace_id=$1 AND id=$2 AND NOT deleted AND enabled")
-        .bind(workspace).bind(id).bind(json!(checkpoint)).execute(&mut *tx).await?.rows_affected()==0 { return Err(Error::BadRequest("connection missing or disabled".into())); }
+    if sqlx::query("UPDATE openproject_connections SET generation=generation+1,checkpoint=$3,next_run_at=clock_timestamp(),status='pending',last_error='',incremental_supported=CASE WHEN $4 THEN incremental_supported ELSE true END WHERE workspace_id=$1 AND id=$2 AND NOT deleted AND enabled")
+        .bind(workspace).bind(id).bind(json!(checkpoint)).bind(refresh_only).execute(&mut *tx).await?.rows_affected()==0 { return Err(Error::BadRequest("connection missing or disabled".into())); }
     cancel_pending(&mut tx, id).await?;
     tx.commit().await?;
     store.outbox.ready();
@@ -378,10 +448,34 @@ async fn cancel_pending(conn: &mut PgConnection, id: Uuid) -> Result<()> {
 /// Recreates scheduled work independently of terminal queue jobs and retry exhaustion.
 pub async fn schedule(store: &Store) -> Result<()> {
     let mut tx = store.pool.begin().await?;
-    let rows=sqlx::query("SELECT id,generation FROM openproject_connections c WHERE enabled AND NOT deleted AND next_run_at<=clock_timestamp() AND NOT EXISTS(SELECT 1 FROM jobs WHERE queue='openproject' AND payload->>'connection_id'=c.id::text AND state IN ('pending','running')) ORDER BY next_run_at,id FOR UPDATE SKIP LOCKED LIMIT 100").fetch_all(&mut *tx).await?;
+    let rows=sqlx::query("SELECT id,generation,status,checkpoint,poll_watermark,incremental_supported,jsonb_array_length(projects)>0 AS mapped,last_discovered_at IS NULL OR last_discovered_at<=clock_timestamp()-interval '30 minutes' AS discover,EXISTS(SELECT 1 FROM changes WHERE workspace_id=c.workspace_id AND entity IN ('members','teams') AND created_at>=c.poll_watermark) AS local_mapping_changed FROM openproject_connections c WHERE enabled AND NOT deleted AND next_run_at<=clock_timestamp() AND NOT EXISTS(SELECT 1 FROM jobs WHERE queue='openproject' AND payload->>'connection_id'=c.id::text AND state IN ('pending','running')) ORDER BY next_run_at,id FOR UPDATE OF c SKIP LOCKED LIMIT 100").fetch_all(&mut *tx).await?;
     let scheduled_count = rows.len();
     for row in rows {
         let id: Uuid = row.try_get("id")?;
+        let mut checkpoint: Checkpoint = serde_json::from_value(row.try_get("checkpoint")?)?;
+        if row.try_get::<String, _>("status")? == "idle"
+            && matches!(&checkpoint, Checkpoint::Projects { cursor, refresh_only: false }
+                if cursor.page == 1 && cursor.page_size.is_none() && cursor.started_at.is_none())
+        {
+            let now = Utc::now();
+            let watermark: Option<DateTime<Utc>> = row.try_get("poll_watermark")?;
+            if row.try_get::<bool, _>("mapped")? && !row.try_get::<bool, _>("discover")? {
+                // Round the lower bound back two days to cover timestamp precision
+                // and timezone differences. The checkpoint freezes the entire window.
+                let cutoff = if row.try_get::<bool, _>("incremental_supported")?
+                    && !row.try_get::<bool, _>("local_mapping_changed")?
+                {
+                    watermark
+                        .and_then(|date| date.date_naive().checked_sub_days(chrono::Days::new(2)))
+                } else {
+                    None
+                };
+                checkpoint = Checkpoint::packages(now, cutoff);
+            } else {
+                checkpoint = Checkpoint::default();
+                checkpoint.cursor_mut().started_at = Some(now);
+            }
+        }
         Outbox::insert(
             &mut tx,
             &NewJob::now(
@@ -394,7 +488,7 @@ pub async fn schedule(store: &Store) -> Result<()> {
         )
         .await?;
         sqlx::query("UPDATE jobs SET max_attempts=3 WHERE queue='openproject' AND payload->>'connection_id'=$1 AND state='pending'").bind(id.to_string()).execute(&mut *tx).await?;
-        sqlx::query("UPDATE openproject_connections SET next_run_at=clock_timestamp()+interval '5 minutes' WHERE id=$1").bind(id).execute(&mut *tx).await?;
+        sqlx::query("UPDATE openproject_connections SET checkpoint=$2,next_run_at=clock_timestamp()+interval '5 minutes' WHERE id=$1").bind(id).bind(json!(checkpoint)).execute(&mut *tx).await?;
     }
     tx.commit().await?;
     if scheduled_count > 0 {
@@ -406,7 +500,9 @@ pub async fn schedule(store: &Store) -> Result<()> {
 #[tracing::instrument(name = "openproject_sync", level = "debug", skip_all,
     fields(connection_id = %job.connection_id, generation = job.generation, job_id = %claim.id))]
 pub async fn execute(store: &Store, claim: &Claim, job: &SyncJob) -> Result<()> {
-    let row=sqlx::query("SELECT * FROM openproject_connections WHERE id=$1 AND generation=$2 AND enabled AND NOT deleted").bind(job.connection_id).bind(job.generation).fetch_optional(&store.pool).await?;
+    let started = std::time::Instant::now();
+    let row=sqlx::query("SELECT base_url,token,workspace_id,projects,checkpoint,CASE WHEN checkpoint->>'phase'='work_packages' THEN cached_people END AS people,CASE WHEN checkpoint->>'phase'='work_packages' THEN cached_statuses END AS statuses,CASE WHEN checkpoint->>'phase'='work_packages' THEN people_mapping END AS people_mapping FROM openproject_connections WHERE id=$1 AND generation=$2 AND enabled AND NOT deleted")
+        .bind(job.connection_id).bind(job.generation).fetch_optional(&store.pool).await?;
     let Some(row) = row else {
         tracing::debug!("OpenProject job skipped: connection disabled, deleted or superseded");
         store.outbox.complete(claim).await?;
@@ -416,12 +512,37 @@ pub async fn execute(store: &Store, claim: &Claim, job: &SyncJob) -> Result<()> 
     let token: String = row.try_get("token")?;
     let workspace: Uuid = row.try_get("workspace_id")?;
     let mappings: Vec<Mapping> = serde_json::from_value(row.try_get("projects")?)?;
-    let cp: Checkpoint = serde_json::from_value(row.try_get("checkpoint")?)?;
+    let mut cp: Checkpoint = serde_json::from_value(row.try_get("checkpoint")?)?;
+    cp.cursor_mut().started_at.get_or_insert_with(Utc::now);
     let (path, filters) = cp.request(&mappings)?;
-    let started = std::time::Instant::now();
     tracing::debug!(workspace_id = %workspace, resource = path, page = cp.cursor().page,
-        project_count = mappings.len(), "OpenProject page started");
-    let response = transport::fetch(&base, &token, path, cp.cursor().page, filters).await?;
+        project_count = mappings.len(), incremental = cp.cursor().updated_since.is_some(),
+        "OpenProject page started");
+    let http_started = std::time::Instant::now();
+    let response = match transport::fetch(
+        &store.openproject_client,
+        &base,
+        &token,
+        path,
+        cp.cursor().page,
+        filters,
+    )
+    .await
+    {
+        Err(Error::Internal(message))
+            if cp.cursor().updated_since.is_some()
+                && matches!(
+                    message.as_str(),
+                    "OpenProject HTTP 400" | "OpenProject HTTP 422"
+                ) =>
+        {
+            restart_unfiltered(store, claim, job, &cp).await?;
+            return Ok(());
+        }
+        result => result?,
+    };
+    let http_ms = http_started.elapsed().as_millis();
+    let normalize_started = std::time::Instant::now();
     let page = cp.normalize(response, &mappings).inspect_err(|_| {
         tracing::debug!(
             resource = path,
@@ -429,6 +550,16 @@ pub async fn execute(store: &Store, claim: &Claim, job: &SyncJob) -> Result<()> 
             "OpenProject page normalization failed"
         );
     })?;
+    let import_metadata = if matches!(&page.data, PageData::WorkPackages { .. }) {
+        Some((
+            serde_json::from_value::<Vec<scan::Person>>(row.try_get("people")?)?,
+            serde_json::from_value::<BTreeMap<String, Uuid>>(row.try_get("people_mapping")?)?,
+            serde_json::from_value::<Vec<scan::Status>>(row.try_get("statuses")?)?,
+        ))
+    } else {
+        None
+    };
+    let normalize_ms = normalize_started.elapsed().as_millis();
     let item_count = match &page.data {
         PageData::Projects(items) => items.len(),
         PageData::Statuses(items) => items.len(),
@@ -437,43 +568,44 @@ pub async fn execute(store: &Store, claim: &Claim, job: &SyncJob) -> Result<()> 
     };
     tracing::debug!(resource = path, page = cp.cursor().page, item_count, more = page.more,
         page_size = ?page.page_size, "OpenProject page normalized");
-    let people: Vec<scan::Person> = serde_json::from_value(row.try_get("cached_people")?)?;
-    let people_mapping: BTreeMap<String, Uuid> =
-        serde_json::from_value(row.try_get("people_mapping")?)?;
-    let statuses: Vec<scan::Status> = serde_json::from_value(row.try_get("cached_statuses")?)?;
     let transition = cp.advance(&page, mappings.len())?;
+    let pool_started = std::time::Instant::now();
     let mut tx = store.pool.begin().await?;
-    sqlx::query("SET LOCAL lock_timeout='5s'")
-        .execute(&mut *tx)
-        .await?;
-    sqlx::query("SET LOCAL statement_timeout='10s'")
-        .execute(&mut *tx)
-        .await?;
-    let owned:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM jobs WHERE id=$1 AND claim_token=$2 AND state='running' AND lease_expires_at>clock_timestamp())").bind(claim.id).bind(claim.token).fetch_one(&mut *tx).await?;
-    let current=sqlx::query("SELECT cached_projects,cached_statuses,cached_people FROM openproject_connections WHERE id=$1 AND generation=$2 AND enabled AND NOT deleted FOR UPDATE").bind(job.connection_id).bind(job.generation).fetch_optional(&mut *tx).await?;
-    if !owned || current.is_none() {
-        tracing::debug!(
-            lease_owned = owned,
-            connection_current = current.is_some(),
-            "OpenProject page discarded: lease lost or configuration superseded"
-        );
+    let pool_ms = pool_started.elapsed().as_millis();
+    sqlx::query(
+        "SELECT set_config('lock_timeout','5s',true),set_config('statement_timeout','10s',true)",
+    )
+    .execute(&mut *tx)
+    .await?;
+    let connection_lock_started = std::time::Instant::now();
+    let current: Option<Uuid> = sqlx::query_scalar("SELECT id FROM openproject_connections WHERE id=$1 AND generation=$2 AND enabled AND NOT deleted AND EXISTS(SELECT 1 FROM jobs WHERE id=$3 AND claim_token=$4 AND state='running' AND lease_expires_at>clock_timestamp()) FOR UPDATE")
+        .bind(job.connection_id).bind(job.generation).bind(claim.id).bind(claim.token)
+        .fetch_optional(&mut *tx).await?;
+    let connection_lock_ms = connection_lock_started.elapsed().as_millis();
+    if current.is_none() {
+        tracing::debug!("OpenProject page discarded: lease lost or configuration superseded");
         Outbox::complete_in(&mut tx, claim).await?;
         tx.commit().await?;
         return Ok(());
     }
-    let current = current.unwrap();
-    let mut cached_projects: Value = current.try_get("cached_projects")?;
-    let mut cached_statuses: Value = current.try_get("cached_statuses")?;
-    let mut cached_people: Value = current.try_get("cached_people")?;
+    let mut lock_ms = 0;
+    let reconcile_started = std::time::Instant::now();
     match &page.data {
         PageData::Projects(items) => {
-            scan::append_cache(&mut cached_projects, items, cp.cursor().page)?
+            discovery::save(&mut tx, job, path, cp.cursor().page, page.more, items).await?
         }
         PageData::Statuses(items) => {
-            scan::append_cache(&mut cached_statuses, items, cp.cursor().page)?
+            discovery::save(&mut tx, job, path, cp.cursor().page, page.more, items).await?
         }
-        PageData::People(items) => scan::append_cache(&mut cached_people, items, cp.cursor().page)?,
+        PageData::People(items) => {
+            discovery::save(&mut tx, job, path, cp.cursor().page, page.more, items).await?
+        }
         PageData::WorkPackages { mapping, items } => {
+            let (people, people_mapping, statuses) = import_metadata
+                .as_ref()
+                .ok_or_else(|| Error::Internal("missing OpenProject import metadata".into()))?;
+            let lock_started = std::time::Instant::now();
+            // Keep authorization-before-graph lock ordering identical to interactive writes.
             sqlx::query("SELECT pg_advisory_xact_lock_shared(hashtextextended($1,74103))")
                 .bind(workspace.to_string())
                 .execute(&mut *tx)
@@ -482,34 +614,42 @@ pub async fn execute(store: &Store, claim: &Claim, job: &SyncJob) -> Result<()> 
                 .bind(workspace.to_string())
                 .execute(&mut *tx)
                 .await?;
+            lock_ms = lock_started.elapsed().as_millis();
             sqlx::query("SELECT set_config('blackwall.openproject_sync','on',true)")
                 .execute(&mut *tx)
                 .await?;
-            let mut import = reconciliation::PageImport::new(
-                workspace,
-                job.connection_id,
-                &base,
-                mapping,
-                &statuses,
-                &people,
-                &people_mapping,
-            );
-            for item in items {
-                reconciliation::apply(&mut tx, &mut import, item)
-                    .await
-                    .inspect_err(|_| {
-                        tracing::debug!(
-                            work_package_id = item.id,
-                            project_id = item.project_id,
-                            "OpenProject work package reconciliation failed; page will roll back"
-                        );
-                    })?;
-            }
+            reconciliation::apply_page(
+                &mut tx,
+                reconciliation::PageImport {
+                    workspace,
+                    connection: job.connection_id,
+                    base: &base,
+                    mapping,
+                    statuses,
+                    people,
+                    people_mapping,
+                },
+                items,
+            )
+            .await
+            .inspect_err(|_| {
+                tracing::debug!(
+                    "OpenProject work package reconciliation failed; page will roll back"
+                );
+            })?;
         }
     }
+    let reconcile_ms = reconcile_started
+        .elapsed()
+        .as_millis()
+        .saturating_sub(lock_ms);
     let finished = transition.next.is_none();
-    sqlx::query("UPDATE openproject_connections SET cached_projects=$3,cached_statuses=$4,cached_people=$10,checkpoint=$5,next_run_at=clock_timestamp()+CASE WHEN $6 THEN interval '5 minutes' ELSE interval '0 seconds' END,status=$7,last_error='',last_checked_at=CASE WHEN $8 THEN clock_timestamp() ELSE last_checked_at END,last_synced_at=CASE WHEN $6 AND NOT $9 THEN clock_timestamp() ELSE last_synced_at END WHERE id=$1 AND generation=$2")
-        .bind(job.connection_id).bind(job.generation).bind(cached_projects).bind(cached_statuses).bind(json!(transition.next.unwrap_or_default())).bind(finished).bind(if finished {"idle"} else {"syncing"}).bind(transition.checked).bind(transition.refresh_only).bind(cached_people).execute(&mut *tx).await?;
+    let discovered = matches!(&page.data, PageData::People(_)) && !page.more;
+    sqlx::query("UPDATE openproject_connections SET checkpoint=$3,next_run_at=CASE WHEN NOT $4 THEN clock_timestamp() WHEN $5 THEN clock_timestamp()+interval '30 minutes' ELSE GREATEST(clock_timestamp()+interval '30 seconds',$6::timestamptz+interval '5 minutes') END,status=$7,last_error='',last_checked_at=CASE WHEN $8 THEN clock_timestamp() ELSE last_checked_at END,last_synced_at=CASE WHEN $4 AND NOT $9 THEN clock_timestamp() ELSE last_synced_at END,poll_watermark=CASE WHEN $4 AND NOT $9 THEN $6 WHEN $4 AND $9 THEN NULL ELSE poll_watermark END,last_discovered_at=CASE WHEN $10 THEN clock_timestamp() ELSE last_discovered_at END WHERE id=$1 AND generation=$2")
+        .bind(job.connection_id).bind(job.generation).bind(json!(transition.next.unwrap_or_default()))
+        .bind(finished).bind(mappings.is_empty()).bind(cp.cursor().started_at)
+        .bind(if finished {"idle"} else {"syncing"}).bind(transition.checked).bind(transition.refresh_only)
+        .bind(discovered).execute(&mut *tx).await?;
     if Outbox::complete_in(&mut tx, claim).await? {
         tx.commit().await?;
         tracing::debug!(
@@ -518,11 +658,37 @@ pub async fn execute(store: &Store, claim: &Claim, job: &SyncJob) -> Result<()> 
             item_count,
             finished,
             refresh_only = transition.refresh_only,
+            http_ms,
+            normalize_ms,
+            pool_ms,
+            connection_lock_ms,
+            lock_ms,
+            reconcile_ms,
             elapsed_ms = started.elapsed().as_millis(),
             "OpenProject page committed"
         );
     } else {
         tracing::debug!("OpenProject page rolled back: job completion lost ownership");
+    }
+    Ok(())
+}
+
+async fn restart_unfiltered(
+    store: &Store,
+    claim: &Claim,
+    job: &SyncJob,
+    cp: &Checkpoint,
+) -> Result<()> {
+    let mut tx = store.pool.begin().await?;
+    let changed = sqlx::query("UPDATE openproject_connections SET incremental_supported=false,checkpoint=$3,status='syncing',next_run_at=clock_timestamp() WHERE id=$1 AND generation=$2 AND enabled AND NOT deleted AND EXISTS(SELECT 1 FROM jobs WHERE id=$4 AND claim_token=$5 AND state='running' AND lease_expires_at>clock_timestamp())")
+        .bind(job.connection_id).bind(job.generation).bind(json!(cp.full_scan())).bind(claim.id).bind(claim.token)
+        .execute(&mut *tx).await?.rows_affected() == 1;
+    if Outbox::complete_in(&mut tx, claim).await? {
+        tx.commit().await?;
+        tracing::debug!(
+            changed,
+            "OpenProject date filter rejected; restarting an unfiltered scan"
+        );
     }
     Ok(())
 }

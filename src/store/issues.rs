@@ -253,12 +253,10 @@ impl Operation<'_> {
         };
 
         self.validate_issue_sql(&i).await?;
-        let kind: String = sqlx::query_scalar(
-            "SELECT kind FROM stages WHERE id=$1",
-        )
-        .bind(stage_id)
-        .fetch_one(&mut *self.tx)
-        .await?;
+        let kind: String = sqlx::query_scalar("SELECT kind FROM stages WHERE id=$1")
+            .bind(stage_id)
+            .fetch_one(&mut *self.tx)
+            .await?;
         if kind == "done" {
             i.done_at = Some(now);
         }
@@ -369,11 +367,10 @@ impl Operation<'_> {
             .extend(persistence::changed_fields(&old, &i));
         self.validate_issue_sql(&i).await?;
         if i.stage_id != old.stage_id {
-            let kind: String =
-                sqlx::query_scalar("SELECT kind FROM stages WHERE id=$1")
-                    .bind(i.stage_id)
-                    .fetch_one(&mut *self.tx)
-                    .await?;
+            let kind: String = sqlx::query_scalar("SELECT kind FROM stages WHERE id=$1")
+                .bind(i.stage_id)
+                .fetch_one(&mut *self.tx)
+                .await?;
             if kind == "done" {
                 if i.done_at.is_none() {
                     i.done_at = Some(Utc::now());
@@ -536,11 +533,10 @@ impl Operation<'_> {
                 i.stage_id = stage_id;
                 self.validate_issue_sql(&i).await?;
                 if old.stage_id != stage_id {
-                    let kind: String =
-                        sqlx::query_scalar("SELECT kind FROM stages WHERE id=$1")
-                            .bind(stage_id)
-                            .fetch_one(&mut *self.tx)
-                            .await?;
+                    let kind: String = sqlx::query_scalar("SELECT kind FROM stages WHERE id=$1")
+                        .bind(stage_id)
+                        .fetch_one(&mut *self.tx)
+                        .await?;
                     if kind == "done" {
                         if i.done_at.is_none() {
                             i.done_at = Some(Utc::now());

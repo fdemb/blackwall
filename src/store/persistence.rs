@@ -25,7 +25,79 @@ pub(crate) async fn create(
             .bind(i.stage_id)
             .fetch_one(&mut *conn)
             .await?;
-    sqlx::query("INSERT INTO issues(id,workspace_id,number,title,description,team_id,stage_id,assignee,priority,estimate,deadline,project_id,milestone_id,sprint_id,parent_id,position,archived_at,done_at,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$19)")
+    insert(conn, workspace, i, ownership).await
+}
+
+pub(crate) struct CreationBatch {
+    next_number: u64,
+    positions: BTreeMap<Uuid, i64>,
+}
+
+impl CreationBatch {
+    pub(crate) fn include(&mut self, issue: &Issue, team: Uuid) {
+        if issue.team_id == team && issue.deleted_at.is_none() {
+            let position = self.positions.entry(issue.stage_id).or_insert(-1024);
+            *position = (*position).max(issue.position);
+        }
+    }
+}
+
+/// The caller holds the workspace graph lock for the entire allocation and writes.
+pub(crate) async fn allocate_creations(
+    conn: &mut PgConnection,
+    workspace: Uuid,
+    team: Uuid,
+    count: i64,
+) -> Result<CreationBatch> {
+    let next_number: i64 = sqlx::query_scalar("UPDATE workspaces SET next_issue_number=next_issue_number+$2 WHERE id=$1 RETURNING next_issue_number-$2")
+        .bind(workspace).bind(count).fetch_one(&mut *conn).await?;
+    let rows = sqlx::query("SELECT stage_id,max(position) AS position FROM issues WHERE workspace_id=$1 AND team_id=$2 AND deleted_at IS NULL GROUP BY stage_id")
+        .bind(workspace).bind(team).fetch_all(&mut *conn).await?;
+    let mut positions = BTreeMap::new();
+    for row in rows {
+        positions.insert(row.try_get("stage_id")?, row.try_get("position")?);
+    }
+    Ok(CreationBatch {
+        next_number: next_number as u64,
+        positions,
+    })
+}
+
+pub(crate) async fn create_allocated(
+    conn: &mut PgConnection,
+    workspace: Uuid,
+    issue: &mut Issue,
+    source: &OpenProjectSource,
+    allocation: &mut CreationBatch,
+) -> Result<()> {
+    issue.number = allocation.next_number;
+    allocation.next_number += 1;
+    let position = allocation.positions.entry(issue.stage_id).or_insert(-1024);
+    *position = position
+        .checked_add(1024)
+        .ok_or_else(|| Error::Conflict("issue position exhausted".into()))?;
+    issue.position = *position;
+    insert(conn, workspace, issue, Ownership::Remote(source)).await
+}
+
+fn source_value(i: &Issue, ownership: Ownership<'_>) -> Result<Option<serde_json::Value>> {
+    match ownership {
+        Ownership::Local if i.openproject.is_some() => Err(Error::Conflict(
+            "OpenProject imported issues are read-only".into(),
+        )),
+        Ownership::Local => Ok(None),
+        Ownership::Remote(source) => Ok(Some(serde_json::to_value(source)?)),
+    }
+}
+
+async fn insert(
+    conn: &mut PgConnection,
+    workspace: Uuid,
+    i: &Issue,
+    ownership: Ownership<'_>,
+) -> Result<()> {
+    let source = source_value(i, ownership)?;
+    sqlx::query("INSERT INTO issues(id,workspace_id,number,title,description,team_id,stage_id,assignee,priority,estimate,deadline,project_id,milestone_id,sprint_id,parent_id,position,archived_at,done_at,created_at,updated_at,openproject) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$19,$20)")
             .bind(i.id)
             .bind(workspace)
             .bind(i.number as i64)
@@ -45,9 +117,12 @@ pub(crate) async fn create(
             .bind(i.archived_at)
             .bind(i.done_at)
             .bind(i.created_at)
+            .bind(source)
             .execute(&mut *conn)
             .await?;
-    save_fields(conn, workspace, i, ownership, false).await?;
+    if matches!(ownership, Ownership::Local) {
+        save_relations(conn, workspace, i).await?;
+    }
 
     Ok(())
 }
@@ -75,17 +150,7 @@ async fn save_fields(
     ownership: Ownership<'_>,
     increment_version: bool,
 ) -> Result<()> {
-    let source = match ownership {
-        Ownership::Local => {
-            if i.openproject.is_some() {
-                return Err(Error::Conflict(
-                    "OpenProject imported issues are read-only".into(),
-                ));
-            }
-            None
-        }
-        Ownership::Remote(source) => Some(serde_json::to_value(source)?),
-    };
+    let source = source_value(i, ownership)?;
     sqlx::query("UPDATE issues SET title=$3,description=$4,team_id=$16,stage_id=$5,assignee=$6,priority=$7,estimate=$8,deadline=$9,project_id=$10,milestone_id=$11,sprint_id=$12,parent_id=$13,position=$14,deleted_at=$15,updated_at=now(),openproject=$17,archived_at=$18,done_at=$19,version=version+CASE WHEN $20 THEN 1 ELSE 0 END WHERE workspace_id=$1 AND id=$2")
             .bind(workspace)
             .bind(i.id)
@@ -114,6 +179,10 @@ async fn save_fields(
         return Ok(());
     }
 
+    save_relations(conn, workspace, i).await
+}
+
+async fn save_relations(conn: &mut PgConnection, workspace: Uuid, i: &Issue) -> Result<()> {
     sqlx::query("DELETE FROM issue_labels WHERE issue_id=$1")
         .bind(i.id)
         .execute(&mut *conn)
@@ -151,6 +220,15 @@ pub(crate) async fn schedule_reminder(
     workspace: Uuid,
     id: Uuid,
 ) -> Result<()> {
+    schedule_reminder_with_stage(conn, workspace, id, None).await
+}
+
+async fn schedule_reminder_with_stage(
+    conn: &mut PgConnection,
+    workspace: Uuid,
+    id: Uuid,
+    completed: Option<bool>,
+) -> Result<()> {
     let row = sqlx::query("UPDATE issues SET reminder_generation=reminder_generation+1 WHERE workspace_id=$1 AND id=$2 RETURNING deadline,reminder_generation,stage_id,deleted_at")
             .bind(workspace)
             .bind(id)
@@ -160,11 +238,10 @@ pub(crate) async fn schedule_reminder(
     let deadline: Option<DateTime<Utc>> = row.try_get("deadline")?;
     let generation: i64 = row.try_get("reminder_generation")?;
     let stage: Uuid = row.try_get("stage_id")?;
-    let done: bool =
-        sqlx::query_scalar("SELECT kind IN ('done','cancelled') FROM stages WHERE id=$1")
-            .bind(stage)
-            .fetch_one(&mut *conn)
-            .await?;
+    let done = match completed {
+        Some(done) => done,
+        None => stage_completed(conn, stage, None).await?,
+    };
 
     if let Some(deadline) = deadline
         && !done
@@ -190,27 +267,35 @@ pub(crate) async fn schedule_reminder(
     Ok(())
 }
 
-pub(crate) async fn became_completed(
+async fn stage_completed(
+    conn: &mut PgConnection,
+    stage: Uuid,
+    stages: Option<&BTreeMap<Uuid, String>>,
+) -> Result<bool> {
+    if let Some(stages) = stages {
+        let kind = stages.get(&stage).ok_or(Error::NotFound)?;
+        return Ok(matches!(kind.as_str(), "done" | "cancelled"));
+    }
+    Ok(
+        sqlx::query_scalar("SELECT kind IN ('done','cancelled') FROM stages WHERE id=$1")
+            .bind(stage)
+            .fetch_one(conn)
+            .await?,
+    )
+}
+
+async fn became_completed_with_stages(
     conn: &mut PgConnection,
     before: Option<&Issue>,
     after: &Issue,
+    stages: Option<&BTreeMap<Uuid, String>>,
 ) -> Result<bool> {
     if after.deleted_at.is_some() {
         return Ok(false);
     }
-    let done: bool =
-        sqlx::query_scalar("SELECT kind IN ('done','cancelled') FROM stages WHERE id=$1")
-            .bind(after.stage_id)
-            .fetch_one(&mut *conn)
-            .await?;
+    let done = stage_completed(conn, after.stage_id, stages).await?;
     let was_done = if let Some(i) = before {
-        i.deleted_at.is_none()
-            && sqlx::query_scalar::<_, bool>(
-                "SELECT kind IN ('done','cancelled') FROM stages WHERE id=$1",
-            )
-            .bind(i.stage_id)
-            .fetch_one(&mut *conn)
-            .await?
+        i.deleted_at.is_none() && stage_completed(conn, i.stage_id, stages).await?
     } else {
         false
     };
@@ -239,10 +324,6 @@ pub(crate) fn changed_fields(before: &Issue, after: &Issue) -> Vec<String> {
     .collect()
 }
 
-pub(crate) async fn read(conn: &mut PgConnection, workspace: Uuid, id: Uuid) -> Result<Issue> {
-    super::reads::issue_on(conn, workspace, id, true).await
-}
-
 /// The action determines which effects a caller explicitly requests.
 pub(crate) enum IssueEffects {
     Create,
@@ -260,18 +341,84 @@ pub(crate) async fn issue_effects(
     after: &Issue,
     effects: IssueEffects,
 ) -> Result<()> {
+    issue_effects_with_context(conn, workspace, actor, before, after, effects, None).await
+}
+
+struct Integration {
+    id: Uuid,
+    url: String,
+    secret: String,
+}
+
+pub(crate) struct PageEffects {
+    actor: Uuid,
+    integrations: Vec<Integration>,
+    stages: BTreeMap<Uuid, String>,
+}
+
+impl PageEffects {
+    pub(crate) async fn load(
+        conn: &mut PgConnection,
+        workspace: Uuid,
+        stages: BTreeMap<Uuid, String>,
+    ) -> Result<Self> {
+        let actor = sqlx::query_scalar("SELECT user_id FROM workspace_members WHERE workspace_id=$1 AND role='owner' ORDER BY user_id LIMIT 1")
+            .bind(workspace).fetch_one(&mut *conn).await?;
+        Ok(Self {
+            actor,
+            integrations: integrations(conn, workspace).await?,
+            stages,
+        })
+    }
+
+    pub(crate) async fn apply(
+        &self,
+        conn: &mut PgConnection,
+        workspace: Uuid,
+        before: Option<&Issue>,
+        after: &Issue,
+        fields: Vec<String>,
+    ) -> Result<()> {
+        issue_effects_with_context(
+            conn,
+            workspace,
+            self.actor,
+            before,
+            after,
+            IssueEffects::Remote(fields),
+            Some(self),
+        )
+        .await
+    }
+}
+
+async fn issue_effects_with_context(
+    conn: &mut PgConnection,
+    workspace: Uuid,
+    actor: Uuid,
+    before: Option<&Issue>,
+    after: &Issue,
+    effects: IssueEffects,
+    context: Option<&PageEffects>,
+) -> Result<()> {
     if before.is_none_or(|old| {
         old.deadline != after.deadline
             || old.stage_id != after.stage_id
             || old.assignee != after.assignee
             || old.deleted_at != after.deleted_at
     }) {
-        schedule_reminder(conn, workspace, after.id).await?;
+        let completed = match context {
+            Some(context) => {
+                Some(stage_completed(conn, after.stage_id, Some(&context.stages)).await?)
+            }
+            None => None,
+        };
+        schedule_reminder_with_stage(conn, workspace, after.id, completed).await?;
     }
 
     let remote = matches!(effects, IssueEffects::Remote(_));
     if let IssueEffects::Remote(fields) = &effects {
-        activity(
+        activity_with_integrations(
             conn,
             workspace,
             actor,
@@ -282,6 +429,7 @@ pub(crate) async fn issue_effects(
             },
             Some(after.id),
             fields.clone(),
+            context.map(|context| context.integrations.as_slice()),
         )
         .await?;
     }
@@ -304,57 +452,25 @@ pub(crate) async fn issue_effects(
     }
 
     if matches!(effects, IssueEffects::Update) || (remote && before.is_some()) {
-        for &user in &after.followers {
-            if remote || user != actor {
-                notify(
-                    conn,
-                    workspace,
-                    user,
-                    Some(after.id),
-                    AlertKind::Change,
-                    after.title.clone(),
-                    format!("change:{}:{user}:{}", after.id, Uuid::new_v4()),
-                )
-                .await?;
-            }
-        }
+        notify_changes(conn, workspace, actor, after, remote).await?;
     }
 
     if !matches!(effects, IssueEffects::DeleteRestore)
-        && became_completed(conn, before, after).await?
+        && became_completed_with_stages(conn, before, after, context.map(|context| &context.stages))
+            .await?
     {
-        activity(
+        activity_with_integrations(
             conn,
             workspace,
             actor,
             "issue_completed",
             Some(after.id),
             vec![],
+            context.map(|context| context.integrations.as_slice()),
         )
         .await?;
     }
     Ok(())
-}
-
-/// Background sync uses the workspace owner for audit, without excluding them from alerts.
-pub(crate) async fn remote_effects(
-    conn: &mut PgConnection,
-    workspace: Uuid,
-    before: Option<&Issue>,
-    after: &Issue,
-    fields: Vec<String>,
-) -> Result<()> {
-    let actor: Uuid = sqlx::query_scalar("SELECT user_id FROM workspace_members WHERE workspace_id=$1 AND role='owner' ORDER BY user_id LIMIT 1")
-        .bind(workspace).fetch_one(&mut *conn).await?;
-    issue_effects(
-        conn,
-        workspace,
-        actor,
-        before,
-        after,
-        IssueEffects::Remote(fields),
-    )
-    .await
 }
 
 pub(crate) async fn activity(
@@ -364,6 +480,36 @@ pub(crate) async fn activity(
     action: &str,
     issue: Option<Uuid>,
     fields: Vec<String>,
+) -> Result<()> {
+    activity_with_integrations(conn, workspace, actor, action, issue, fields, None).await
+}
+
+async fn integrations(conn: &mut PgConnection, workspace: Uuid) -> Result<Vec<Integration>> {
+    let rows = sqlx::query(
+        "SELECT id,webhook_url,secret FROM integrations WHERE workspace_id=$1 AND enabled",
+    )
+    .bind(workspace)
+    .fetch_all(conn)
+    .await?;
+    rows.into_iter()
+        .map(|row| {
+            Ok(Integration {
+                id: row.try_get("id")?,
+                url: row.try_get("webhook_url")?,
+                secret: row.try_get("secret")?,
+            })
+        })
+        .collect()
+}
+
+async fn activity_with_integrations(
+    conn: &mut PgConnection,
+    workspace: Uuid,
+    actor: Uuid,
+    action: &str,
+    issue: Option<Uuid>,
+    fields: Vec<String>,
+    cached: Option<&[Integration]>,
 ) -> Result<()> {
     let event = Activity {
         id: Uuid::new_v4(),
@@ -375,14 +521,15 @@ pub(crate) async fn activity(
     };
     sqlx::query("INSERT INTO activity(id,workspace_id,actor,action,entity_id,at,fields) VALUES($1,$2,$3,$4,$5,$6,$7)")
         .bind(event.id).bind(workspace).bind(actor).bind(action).bind(issue).bind(event.at).bind(serde_json::to_value(&event.fields)?).execute(&mut *conn).await?;
-    let rows = sqlx::query(
-        "SELECT id,webhook_url,secret FROM integrations WHERE workspace_id=$1 AND enabled",
-    )
-    .bind(workspace)
-    .fetch_all(&mut *conn)
-    .await?;
-    for row in rows {
-        let id: Uuid = row.try_get("id")?;
+    let loaded;
+    let integrations = if let Some(cached) = cached {
+        cached
+    } else {
+        loaded = integrations(conn, workspace).await?;
+        &loaded
+    };
+    for integration in integrations {
+        let id = integration.id;
         Outbox::insert(
             conn,
             &NewJob::now(
@@ -390,14 +537,41 @@ pub(crate) async fn activity(
                 Job::Webhook(crate::jobs::Webhook {
                     workspace_id: workspace,
                     integration_id: id,
-                    url: row.try_get("webhook_url")?,
-                    secret: row.try_get("secret")?,
+                    url: integration.url.clone(),
+                    secret: integration.secret.clone(),
                     event: serde_json::json!({"workspace_id":workspace,"activity":event}),
                 }),
             ),
         )
         .await?;
     }
+    Ok(())
+}
+
+async fn notify_changes(
+    conn: &mut PgConnection,
+    workspace: Uuid,
+    actor: Uuid,
+    issue: &Issue,
+    remote: bool,
+) -> Result<()> {
+    let users: Vec<Uuid> = issue
+        .followers
+        .iter()
+        .copied()
+        .filter(|user| remote || *user != actor)
+        .collect();
+    if users.is_empty() {
+        return Ok(());
+    }
+    let ids: Vec<Uuid> = users.iter().map(|_| Uuid::new_v4()).collect();
+    let keys: Vec<String> = users
+        .iter()
+        .map(|user| format!("change:{}:{user}:{}", issue.id, Uuid::new_v4()))
+        .collect();
+    sqlx::query("INSERT INTO notifications(id,workspace_id,user_id,issue_id,kind,message,created_at,dedup_key) SELECT input.id,$1,input.user_id,$2,'change',$3,now(),input.key FROM unnest($4::uuid[],$5::uuid[],$6::text[]) AS input(id,user_id,key) JOIN workspace_members m ON m.workspace_id=$1 AND m.user_id=input.user_id JOIN users u ON u.id=input.user_id LEFT JOIN alert_preferences p ON p.workspace_id=$1 AND p.user_id=input.user_id WHERE COALESCE(p.change,true) AND COALESCE((u.profile->'alerts'->>'changes')::bool,true) ON CONFLICT(workspace_id,dedup_key) DO NOTHING")
+        .bind(workspace).bind(issue.id).bind(&issue.title).bind(ids).bind(users).bind(keys)
+        .execute(conn).await?;
     Ok(())
 }
 

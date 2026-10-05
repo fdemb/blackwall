@@ -744,7 +744,12 @@ async fn search(
         )
         .await?;
     let mut items = live_page["items"].as_array().cloned().unwrap_or_default();
-    items.extend(archived_page["items"].as_array().cloned().unwrap_or_default());
+    items.extend(
+        archived_page["items"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default(),
+    );
     items.truncate(100);
     live_page["items"] = Value::Array(items);
     let issue_page = live_page;

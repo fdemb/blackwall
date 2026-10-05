@@ -93,12 +93,14 @@ impl Operation<'_> {
                 self.admin()?;
                 crate::domain::validate_archive_days(archive_after_days)?;
                 self.touch("teams", id).await?;
-                sqlx::query("UPDATE teams SET archive_after_days=$3 WHERE workspace_id=$1 AND id=$2")
-                    .bind(self.workspace_id)
-                    .bind(id)
-                    .bind(archive_after_days.map(i64::from))
-                    .execute(&mut *self.tx)
-                    .await?;
+                sqlx::query(
+                    "UPDATE teams SET archive_after_days=$3 WHERE workspace_id=$1 AND id=$2",
+                )
+                .bind(self.workspace_id)
+                .bind(id)
+                .bind(archive_after_days.map(i64::from))
+                .execute(&mut *self.tx)
+                .await?;
 
                 id
             }

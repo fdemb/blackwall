@@ -65,7 +65,10 @@ async fn done_issues_archive_on_team_deadline_and_stay_out_of_lists() {
     let store = Store::connect(&database.url).await.unwrap();
     let owner = account(&store, "owner").await;
     let ws = Uuid::parse_str(
-        store.create_workspace("Archive".into(), owner).await.unwrap()["id"]
+        store
+            .create_workspace("Archive".into(), owner)
+            .await
+            .unwrap()["id"]
             .as_str()
             .unwrap(),
     )
@@ -202,7 +205,14 @@ async fn done_issues_archive_on_team_deadline_and_stay_out_of_lists() {
         .await
         .unwrap();
     assert_eq!(items(&archived_page).len(), 1);
-    assert!(store.get_issue(ws, owner, issue).await.unwrap().archived_at.is_some());
+    assert!(
+        store
+            .get_issue(ws, owner, issue)
+            .await
+            .unwrap()
+            .archived_at
+            .is_some()
+    );
 
     // Archived issues are read-only until unarchived.
     assert!(
@@ -399,7 +409,10 @@ async fn global_search_spans_live_and_archived_issues() {
         .await
         .unwrap();
     let ws = Uuid::parse_str(
-        store.create_workspace("Search".into(), owner).await.unwrap()["id"]
+        store
+            .create_workspace("Search".into(), owner)
+            .await
+            .unwrap()["id"]
             .as_str()
             .unwrap(),
     )
