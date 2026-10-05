@@ -1592,6 +1592,221 @@ async fn migration_scrubs_stored_secrets() {
             assert_eq!(payload["to"], "a@example.com");
         }
     }
+
+    store.pool.close().await;
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn lease_renewal_keeps_long_delivery() {
+    use lettre::{AsyncSmtpTransport, Tokio1Executor};
+
+    let db = support::TestDatabase::new().await;
+    let store = Store::connect(&db.url).await.unwrap();
+
+    let user = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO users(id,email,password_hash,profile) \
+         VALUES($1,'queue@example.com','hash','{}')",
+    )
+    .bind(user)
+    .execute(&store.pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO password_resets(token_hash,user_id,expires_at) \
+         VALUES('hash',$1,clock_timestamp()+interval '1 hour')",
+    )
+    .bind(user)
+    .execute(&store.pool)
+    .await
+    .unwrap();
+
+    let mut job = email("renew-long");
+    if let Job::Email(email) = &mut job.job {
+        email.grant = Grant::Reset {
+            user_id: user,
+            token_hash: "hash".into(),
+        };
+    }
+    let mut tx = store.pool.begin().await.unwrap();
+    Outbox::insert(&mut tx, &job).await.unwrap();
+    tx.commit().await.unwrap();
+
+    let claim = store.outbox.claim("email", 1).await.unwrap().pop().unwrap();
+    let id = claim.id;
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (started_tx, mut started_rx) = mpsc::channel(1);
+    let (release_tx, release_rx) = watch::channel(false);
+    let sink = tokio::spawn(smtp_hold(listener, started_tx, release_rx));
+
+    let mailer = Mailer::Smtp {
+        transport: AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous("127.0.0.1")
+            .port(port)
+            .build(),
+        from: "Blackwall <noreply@example.com>".parse().unwrap(),
+    };
+
+    let store_task = store.clone();
+    let mailer_task = mailer.clone();
+    let work = tokio::spawn(async move {
+        jobs::execute_with_renew_interval(
+            &store_task,
+            &mailer_task,
+            &claim,
+            Duration::from_millis(100),
+        )
+        .await
+    });
+    tokio::time::timeout(Duration::from_secs(5), started_rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+
+    sqlx::query(
+        "UPDATE jobs SET lease_expires_at=clock_timestamp()+interval '1 second' WHERE id=$1",
+    )
+    .bind(id)
+    .execute(&store.pool)
+    .await
+    .unwrap();
+    let shortened: chrono::DateTime<chrono::Utc> =
+        sqlx::query_scalar("SELECT lease_expires_at FROM jobs WHERE id=$1")
+            .bind(id)
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+    let renewed: chrono::DateTime<chrono::Utc> =
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let current: chrono::DateTime<chrono::Utc> =
+                    sqlx::query_scalar("SELECT lease_expires_at FROM jobs WHERE id=$1")
+                        .bind(id)
+                        .fetch_one(&store.pool)
+                        .await
+                        .unwrap();
+                if current > shortened {
+                    return current;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .unwrap();
+    assert!(renewed > chrono::Utc::now() + chrono::Duration::seconds(60));
+    assert!(store.outbox.claim("email", 1).await.unwrap().is_empty());
+
+    release_tx.send(true).unwrap();
+    tokio::time::timeout(Duration::from_secs(5), work)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    let data = tokio::time::timeout(Duration::from_secs(2), sink)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(data.contains("queue@example.com"));
+
+    assert_eq!(state(&store, id).await, "succeeded");
+    assert_eq!(
+        sqlx::query_scalar::<_, i32>("SELECT attempts FROM jobs WHERE id=$1")
+            .bind(id)
+            .fetch_one(&store.pool)
+            .await
+            .unwrap(),
+        1
+    );
+
+    store.pool.close().await;
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn cancelled_lease_abandons_delivery() {
+    use lettre::{AsyncSmtpTransport, Tokio1Executor};
+
+    let db = support::TestDatabase::new().await;
+    let store = Store::connect(&db.url).await.unwrap();
+
+    let user = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO users(id,email,password_hash,profile) \
+         VALUES($1,'queue@example.com','hash','{}')",
+    )
+    .bind(user)
+    .execute(&store.pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO password_resets(token_hash,user_id,expires_at) \
+         VALUES('hash',$1,clock_timestamp()+interval '1 hour')",
+    )
+    .bind(user)
+    .execute(&store.pool)
+    .await
+    .unwrap();
+
+    let mut job = email("cancel-mid-run");
+    if let Job::Email(email) = &mut job.job {
+        email.grant = Grant::Reset {
+            user_id: user,
+            token_hash: "hash".into(),
+        };
+    }
+    let mut tx = store.pool.begin().await.unwrap();
+    Outbox::insert(&mut tx, &job).await.unwrap();
+    tx.commit().await.unwrap();
+
+    let claim = store.outbox.claim("email", 1).await.unwrap().pop().unwrap();
+    let id = claim.id;
+    let token = claim.token;
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (started_tx, mut started_rx) = mpsc::channel(1);
+    let (_release_tx, release_rx) = watch::channel(false);
+    let sink = tokio::spawn(smtp_hold(listener, started_tx, release_rx));
+
+    let mailer = Mailer::Smtp {
+        transport: AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous("127.0.0.1")
+            .port(port)
+            .build(),
+        from: "Blackwall <noreply@example.com>".parse().unwrap(),
+    };
+
+    let store_task = store.clone();
+    let mailer_task = mailer.clone();
+    let work = tokio::spawn(async move {
+        jobs::execute_with_renew_interval(
+            &store_task,
+            &mailer_task,
+            &claim,
+            Duration::from_millis(100),
+        )
+        .await
+    });
+    tokio::time::timeout(Duration::from_secs(5), started_rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+
+    assert!(store.outbox.cancel(id, Some(token)).await.unwrap());
+    assert_eq!(state(&store, id).await, "cancelled");
+
+    tokio::time::timeout(Duration::from_secs(5), work)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    sink.abort();
+    let _ = sink.await;
+
+    assert_eq!(state(&store, id).await, "cancelled");
+    assert!(store.outbox.claim("email", 1).await.unwrap().is_empty());
+
     store.pool.close().await;
     db.cleanup().await;
 }

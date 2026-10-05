@@ -1,6 +1,6 @@
 use crate::{
     error::{Error, Result},
-    store::{Claim, Outbox, Store},
+    store::{Claim, LEASE_SECONDS, Outbox, Store},
 };
 use sqlx::{Postgres, Transaction};
 use std::{collections::HashMap, time::Duration};
@@ -382,6 +382,23 @@ pub async fn tick(store: &Store, mailer: &Mailer) -> Result<()> {
 }
 
 async fn execute(store: &Store, mailer: &Mailer, claim: &Claim) -> Result<()> {
+    execute_with_renew_interval(
+        store,
+        mailer,
+        claim,
+        Duration::from_secs(LEASE_SECONDS as u64 / 3),
+    )
+    .await
+}
+
+// For tests: production uses a third of the lease.
+#[doc(hidden)]
+pub async fn execute_with_renew_interval(
+    store: &Store,
+    mailer: &Mailer,
+    claim: &Claim,
+    renew_interval: Duration,
+) -> Result<()> {
     let started = tokio::time::Instant::now();
     let result = if claim.payload_version != PAYLOAD_VERSION {
         Err(DeliveryError::Permanent("unsupported job payload version"))
@@ -395,11 +412,15 @@ async fn execute(store: &Store, mailer: &Mailer, claim: &Claim) -> Result<()> {
                 Err(DeliveryError::Permanent("job kind does not match queue"))
             }
             Ok(Job::OpenProject(job)) => {
-                let result = tokio::time::timeout(
+                let work = tokio::time::timeout(
                     Duration::from_secs(75),
                     crate::openproject::execute(store, claim, &job),
-                )
-                .await;
+                );
+                let Some(result) =
+                    run_with_renewal(&store.outbox, claim, work, renew_interval).await
+                else {
+                    return Ok(());
+                };
                 match result {
                     Ok(Ok(())) => return Ok(()),
                     failed => {
@@ -409,7 +430,7 @@ async fn execute(store: &Store, mailer: &Mailer, claim: &Claim) -> Result<()> {
                         };
                         tracing::warn!(job = %claim.id, error = %message, "OpenProject sync failed");
                         if let Err(error) =
-                            crate::openproject::record_failure(store, &job, &message).await
+                            crate::openproject::record_failure(store, claim, &job, &message).await
                         {
                             tracing::warn!(
                                 job = %claim.id,
@@ -422,11 +443,15 @@ async fn execute(store: &Store, mailer: &Mailer, claim: &Claim) -> Result<()> {
                 }
             }
             Ok(Job::Reminder(reminder)) => {
-                let result = tokio::time::timeout(
+                let work = tokio::time::timeout(
                     DATABASE_TIMEOUT,
                     execute_reminder(store, claim, &reminder),
-                )
-                .await;
+                );
+                let Some(result) =
+                    run_with_renewal(&store.outbox, claim, work, renew_interval).await
+                else {
+                    return Ok(());
+                };
 
                 match result {
                     Ok(Ok(())) => {
@@ -455,13 +480,14 @@ async fn execute(store: &Store, mailer: &Mailer, claim: &Claim) -> Result<()> {
                     Job::Email(_) => EMAIL_TIMEOUT,
                     _ => WEBHOOK_TIMEOUT,
                 };
-
-                match tokio::time::timeout(
-                    timeout,
-                    job.deliver(store, mailer, &claim.id.to_string()),
-                )
-                .await
-                {
+                let id = claim.id.to_string();
+                let work = tokio::time::timeout(timeout, job.deliver(store, mailer, &id));
+                let Some(result) =
+                    run_with_renewal(&store.outbox, claim, work, renew_interval).await
+                else {
+                    return Ok(());
+                };
+                match result {
                     Ok(result) => result,
                     Err(error) => {
                         tracing::warn!(job = %claim.id, error = %error, "delivery timed out");
@@ -488,6 +514,50 @@ async fn execute(store: &Store, mailer: &Mailer, claim: &Claim) -> Result<()> {
     );
 
     Ok(())
+}
+
+async fn run_with_renewal<'a, T>(
+    outbox: &'a Outbox,
+    claim: &'a Claim,
+    work: impl std::future::Future<Output = T>,
+    interval: Duration,
+) -> Option<T> {
+    tokio::pin!(work);
+    let mut ticker = tokio::time::interval_at(tokio::time::Instant::now() + interval, interval);
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut pending: Option<
+        std::pin::Pin<Box<dyn std::future::Future<Output = Result<bool>> + Send + 'a>>,
+    > = None;
+    loop {
+        if pending.is_none() {
+            tokio::select! {
+                biased;
+                output = &mut work => return Some(output),
+                _ = ticker.tick() => {
+                    pending = Some(Box::pin(outbox.renew(claim)));
+                }
+            }
+        } else {
+            tokio::select! {
+                biased;
+                output = &mut work => return Some(output),
+                result = pending.as_mut().expect("renew in flight") => {
+                    pending = None;
+                    match result {
+                        Ok(true) => {}
+                        Ok(false) => {
+                            tracing::warn!(job = %claim.id, "job lease lost; abandoning work");
+                            return None;
+                        }
+                        Err(error) => {
+                            tracing::warn!(job = %claim.id, error = %error, "job lease renewal failed");
+                        }
+                    }
+                },
+                _ = ticker.tick() => {}
+            }
+        }
+    }
 }
 
 async fn execute_reminder(store: &Store, claim: &Claim, reminder: &Reminder) -> Result<()> {
@@ -685,5 +755,54 @@ impl Store {
         .rows_affected();
 
         Ok((archived, cleared.max(backfilled).max(archived)))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::TestDatabase;
+    use uuid::Uuid;
+
+    #[tokio::test]
+    async fn renewal_does_not_block_work_on_row_lock() {
+        let db = TestDatabase::new().await;
+        let store = Store::connect(&db.url).await.unwrap();
+        let id = Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO jobs(id,kind,queue,payload_version,payload) VALUES($1,'email','email',1,'{}')",
+        )
+        .bind(id)
+        .execute(&store.pool)
+        .await
+        .unwrap();
+        let claim = store.outbox.claim("email", 1).await.unwrap().pop().unwrap();
+
+        let mut lock = store.pool.begin().await.unwrap();
+        sqlx::query("SELECT id FROM jobs WHERE id=$1 FOR UPDATE")
+            .bind(id)
+            .fetch_one(&mut *lock)
+            .await
+            .unwrap();
+
+        let output = tokio::time::timeout(
+            Duration::from_secs(5),
+            run_with_renewal(
+                &store.outbox,
+                &claim,
+                async {
+                    tokio::time::sleep(Duration::from_millis(300)).await;
+                    42
+                },
+                Duration::from_millis(50),
+            ),
+        )
+        .await
+        .unwrap();
+        assert_eq!(output, Some(42));
+
+        lock.rollback().await.unwrap();
+        store.pool.close().await;
+        db.cleanup().await;
     }
 }
