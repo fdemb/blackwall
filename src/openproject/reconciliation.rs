@@ -195,6 +195,7 @@ pub(super) async fn apply_page(
             connection_id: connection,
             work_package_id: item.id,
             project_id: item.project_id,
+            parent_work_package_id: item.parent_id,
             status_name: status_name.to_owned(),
             url: format!("{base}/work_packages/{}", item.id),
             unavailable: false,
