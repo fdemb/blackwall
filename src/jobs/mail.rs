@@ -62,8 +62,22 @@ impl Mailer {
                 let message = message(id, from, email).map_err(DeliveryError::Permanent)?;
                 transport.send(message).await.map_err(|error| {
                     if error.is_permanent() {
+                        tracing::warn!(
+                            job = %id,
+                            status = ?error.status(),
+                            timeout = error.is_timeout(),
+                            tls = error.is_tls(),
+                            "smtp server rejected the message"
+                        );
                         DeliveryError::Permanent("smtp server rejected the message")
                     } else {
+                        tracing::warn!(
+                            job = %id,
+                            status = ?error.status(),
+                            timeout = error.is_timeout(),
+                            tls = error.is_tls(),
+                            "smtp delivery failed"
+                        );
                         DeliveryError::Transient("smtp delivery failed")
                     }
                 })?;

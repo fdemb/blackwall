@@ -179,8 +179,11 @@ pub async fn run_with_config(
             break;
         }
 
-        if crate::openproject::schedule(&store).await.is_err() {
-            tracing::warn!("OpenProject scheduling failed");
+        if let Err(error) = crate::openproject::schedule(&store).await {
+            tracing::warn!(
+                error = %crate::openproject::failure_message(&error),
+                "OpenProject scheduling failed"
+            );
         }
         for index in 0..queues.len() {
             if *shutdown.borrow() {
@@ -204,7 +207,9 @@ pub async fn run_with_config(
                         task_queues.insert(handle.id(), index);
                     }
                 }
-                Err(_) => tracing::error!(queue = queues[index], "queue claim failed"),
+                Err(error) => {
+                    tracing::error!(queue = queues[index], error = %error, "queue claim failed")
+                }
             }
         }
 
@@ -213,8 +218,8 @@ pub async fn run_with_config(
         }
 
         if maintenance_at <= tokio::time::Instant::now() {
-            if maintenance(&store, config.retention_days).await.is_err() {
-                tracing::warn!("queue maintenance failed");
+            if let Err(error) = maintenance(&store, config.retention_days).await {
+                tracing::warn!(error = %error, "queue maintenance failed");
             }
 
             maintenance_at = tokio::time::Instant::now() + Duration::from_secs(300);
@@ -229,9 +234,10 @@ pub async fn run_with_config(
                         let index = task_queues.remove(&id).expect("tracked worker task");
                         active[index] -= 1;
 
-                        if result.is_err() {
+                        if let Err(error) = result {
                             tracing::warn!(
                                 queue = queues[index],
+                                error = %error,
                                 "queue result could not be recorded; lease will expire"
                             );
                         }
@@ -241,7 +247,7 @@ pub async fn run_with_config(
                             active[index] -= 1;
                         }
 
-                        tracing::error!("job task panicked; claim will expire");
+                        tracing::error!(error = %error, "job task panicked; claim will expire");
                     }
                     None => {}
                 }
@@ -252,21 +258,33 @@ pub async fn run_with_config(
     }
 
     listener.abort();
-    let _ = listener.await;
+    if let Err(error) = listener.await
+        && !error.is_cancelled()
+    {
+        tracing::warn!(error = %error, "queue listener stopped");
+    }
 
-    if tokio::time::timeout(config.drain_timeout, async {
+    if let Err(error) = tokio::time::timeout(config.drain_timeout, async {
         while let Some(result) = tasks.join_next().await {
-            if !matches!(result, Ok(Ok(()))) {
-                tracing::warn!("draining job left a recoverable lease");
+            match result {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => {
+                    tracing::warn!(error = %error, "draining job left a recoverable lease");
+                }
+                Err(error) => {
+                    tracing::warn!(error = %error, "draining job left a recoverable lease");
+                }
             }
         }
     })
     .await
-    .is_err()
     {
         tasks.abort_all();
         while tasks.join_next().await.is_some() {}
-        tracing::warn!("worker drain deadline reached; unfinished leases will expire");
+        tracing::warn!(
+            error = %error,
+            "worker drain deadline reached; unfinished leases will expire"
+        );
     }
 
     Ok(())
@@ -282,7 +300,8 @@ async fn listen(outbox: Outbox, mut shutdown: watch::Receiver<bool>, poll: Durat
             _ = stopped(&mut shutdown) => return,
             result = outbox.listen() => match result {
                 Ok(listener) => listener,
-                Err(_) => {
+                Err(error) => {
+                    tracing::warn!(error = %error, "queue listen failed; retrying");
                     outbox.ready();
 
                     tokio::select! {
@@ -303,13 +322,25 @@ async fn listen(outbox: Outbox, mut shutdown: watch::Receiver<bool>, poll: Durat
                 notification = listener.try_recv() => {
                     outbox.ready();
 
-                    if !matches!(notification, Ok(Some(_))) {
-                        tokio::select! {
-                            _ = stopped(&mut shutdown) => return,
-                            _ = tokio::time::sleep(poll) => {}
-                        }
+                    match notification {
+                        Ok(Some(_)) => {}
+                        Ok(None) => {
+                            tokio::select! {
+                                _ = stopped(&mut shutdown) => return,
+                                _ = tokio::time::sleep(poll) => {}
+                            }
 
-                        break;
+                            break;
+                        }
+                        Err(error) => {
+                            tracing::warn!(error = %error, "queue notification failed; reconnecting");
+                            tokio::select! {
+                                _ = stopped(&mut shutdown) => return,
+                                _ = tokio::time::sleep(poll) => {}
+                            }
+
+                            break;
+                        }
                     }
                 }
             }
@@ -343,7 +374,10 @@ async fn execute(store: &Store, mailer: &Mailer, claim: &Claim) -> Result<()> {
         Err(DeliveryError::Permanent("unsupported job payload version"))
     } else {
         match Job::decode(&claim.kind, &claim.payload) {
-            Err(_) => Err(DeliveryError::Permanent("invalid job kind or payload")),
+            Err(error) => {
+                tracing::warn!(job = %claim.id, error = %error, "invalid job kind or payload");
+                Err(DeliveryError::Permanent("invalid job kind or payload"))
+            }
             Ok(job) if job.queue() != claim.queue => {
                 Err(DeliveryError::Permanent("job kind does not match queue"))
             }
@@ -356,11 +390,20 @@ async fn execute(store: &Store, mailer: &Mailer, claim: &Claim) -> Result<()> {
                 match result {
                     Ok(Ok(())) => return Ok(()),
                     failed => {
-                        let message = match failed {
-                            Ok(Err(error)) => crate::openproject::failure_message(&error),
+                        let message = match &failed {
+                            Ok(Err(error)) => crate::openproject::failure_message(error),
                             _ => "OpenProject sync timed out; retry scheduled".into(),
                         };
-                        let _ = crate::openproject::record_failure(store, &job, &message).await;
+                        tracing::warn!(job = %claim.id, error = %message, "OpenProject sync failed");
+                        if let Err(error) =
+                            crate::openproject::record_failure(store, &job, &message).await
+                        {
+                            tracing::warn!(
+                                job = %claim.id,
+                                error = %error,
+                                "OpenProject failure could not be recorded"
+                            );
+                        }
                         Err(DeliveryError::Transient("OpenProject sync failed"))
                     }
                 }
@@ -384,8 +427,14 @@ async fn execute(store: &Store, mailer: &Mailer, claim: &Claim) -> Result<()> {
 
                         return Ok(());
                     }
-                    Ok(Err(_)) => Err(DeliveryError::Transient("reminder transaction failed")),
-                    Err(_) => Err(DeliveryError::Transient("reminder transaction timed out")),
+                    Ok(Err(error)) => {
+                        tracing::warn!(job = %claim.id, error = %error, "reminder transaction failed");
+                        Err(DeliveryError::Transient("reminder transaction failed"))
+                    }
+                    Err(error) => {
+                        tracing::warn!(job = %claim.id, error = %error, "reminder transaction timed out");
+                        Err(DeliveryError::Transient("reminder transaction timed out"))
+                    }
                 }
             }
             Ok(job) => {
@@ -394,9 +443,18 @@ async fn execute(store: &Store, mailer: &Mailer, claim: &Claim) -> Result<()> {
                     _ => WEBHOOK_TIMEOUT,
                 };
 
-                tokio::time::timeout(timeout, job.deliver(store, mailer, &claim.id.to_string()))
-                    .await
-                    .unwrap_or(Err(DeliveryError::Transient("delivery timed out")))
+                match tokio::time::timeout(
+                    timeout,
+                    job.deliver(store, mailer, &claim.id.to_string()),
+                )
+                .await
+                {
+                    Ok(result) => result,
+                    Err(error) => {
+                        tracing::warn!(job = %claim.id, error = %error, "delivery timed out");
+                        Err(DeliveryError::Transient("delivery timed out"))
+                    }
+                }
             }
         }
     };
