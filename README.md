@@ -103,7 +103,7 @@ Outgoing integration requests use `Idempotency-Key` and `X-Blackwall-Signature: 
 }
 ```
 
-Generic signed webhooks and source links are included. Provider-specific OAuth and automatic repository synchronization are not included.
+Generic signed webhooks and source links are included. OpenProject connections import basic work-package fields into selected teams through five-minute background polling. Imported issues are read-only, and settings uses asynchronously discovered project choices. See [OpenProject sync](docs/openproject.md) for setup, field ownership, and operational limits. Provider-specific OAuth and automatic repository synchronization are not included.
 
 ## Verify
 

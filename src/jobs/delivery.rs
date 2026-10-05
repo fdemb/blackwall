@@ -14,6 +14,7 @@ pub enum Job {
     Email(Email),
     Webhook(Webhook),
     Reminder(Reminder),
+    OpenProject(crate::openproject::SyncJob),
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -62,6 +63,7 @@ impl Job {
             Job::Email(_) => "email",
             Job::Webhook(_) => "webhook",
             Job::Reminder(_) => "reminder",
+            Job::OpenProject(_) => "openproject",
         }
     }
 
@@ -70,6 +72,7 @@ impl Job {
             Job::Email(_) => "email",
             Job::Webhook(_) => "webhook",
             Job::Reminder(_) => "database",
+            Job::OpenProject(_) => "openproject",
         }
     }
 
@@ -78,6 +81,7 @@ impl Job {
             Job::Email(email) => serde_json::to_string(email),
             Job::Webhook(webhook) => serde_json::to_string(webhook),
             Job::Reminder(reminder) => serde_json::to_string(reminder),
+            Job::OpenProject(job) => serde_json::to_string(job),
         }
     }
 
@@ -86,6 +90,7 @@ impl Job {
             "email" => serde_json::from_str(payload).map(Job::Email),
             "webhook" => serde_json::from_str(payload).map(Job::Webhook),
             "reminder" => serde_json::from_str(payload).map(Job::Reminder),
+            "openproject" => serde_json::from_str(payload).map(Job::OpenProject),
             _ => return Err("unknown job kind".into()),
         }
         .map_err(|_| "invalid job payload".into())
@@ -105,6 +110,9 @@ impl Job {
         match self {
             Job::Email(email) => mailer.send(id, email).await,
             Job::Webhook(webhook) => send_webhook(id, webhook).await,
+            Job::OpenProject(_) => Err(DeliveryError::Permanent(
+                "sync requires a fenced transaction",
+            )),
             Job::Reminder(_) => Err(DeliveryError::Permanent(
                 "reminders require a queue transaction",
             )),
@@ -162,7 +170,7 @@ impl Job {
                 .fetch_one(&store.pool)
                 .await
             }
-            Job::Reminder(_) => return Ok(true),
+            Job::Reminder(_) | Job::OpenProject(_) => return Ok(true),
         };
 
         result.map_err(|_| DeliveryError::Transient("delivery grant lookup failed"))

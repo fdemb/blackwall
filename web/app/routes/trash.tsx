@@ -6,6 +6,7 @@ import { EmptyState, Page, PageHeader, Scroll } from "~/components/app/page";
 import { expectedVersions } from "~/lib/entity-versions";
 import { collectPages, workspaces } from "~/lib/api";
 import { useIssues } from "~/lib/queries";
+import { isImportedIssue } from "~/lib/openproject";
 import { QueryStatus } from "~/components/app/query-status";
 import { issueKey, relativeTime } from "~/lib/format";
 import { useI18n } from "~/lib/i18n";
@@ -24,7 +25,7 @@ export default function Trash() {
     setProgress({ done: 0, total: issues.length });
     try {
       const all = await collectPages((offset) => workspaces.issues(ws.id, { trash: true }, offset));
-      const ids = all.map((issue) => issue.id);
+      const ids = all.filter((issue) => !isImportedIssue(issue)).map((issue) => issue.id);
       for (let at = 0; at < ids.length; at += 500) {
         await run(
           { type: "bulk_issues", ids: ids.slice(at, at + 500), action: "restore" },
@@ -51,7 +52,7 @@ export default function Trash() {
         subtitle={t("trash.sub")}
         actions={
           canWrite &&
-          issues.length > 0 && (
+          issues.some((issue) => !isImportedIssue(issue)) && (
             <Button
               variant="ghost"
               size="sm"
@@ -91,7 +92,7 @@ export default function Trash() {
                 <span className="hidden text-xs text-muted-foreground sm:inline">
                   {i.deleted_at && t("trash.deleted", { when: relativeTime(i.deleted_at, lang) })}
                 </span>
-                {canWrite && (
+                {canWrite && !isImportedIssue(i) && (
                   <Button
                     variant="secondary"
                     size="sm"

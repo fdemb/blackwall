@@ -73,12 +73,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let listener = tokio::net::TcpListener::bind(&bind).await?;
 
     tracing::info!(address = %listener.local_addr()?, "Blackwall listening");
-    let worker = tokio::spawn(jobs::run_with_config(
-        store.clone(),
-        mailer,
-        shutdown_rx,
-        config,
-    ));
+    let worker = if std::env::var("EMBEDDED_WORKERS").as_deref() == Ok("false") {
+        None
+    } else {
+        Some(tokio::spawn(jobs::run_with_config(
+            store.clone(),
+            mailer,
+            shutdown_rx,
+            config,
+        )))
+    };
 
     let signal_tx = shutdown_tx.clone();
     let served = axum::serve(
@@ -92,7 +96,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     .await;
 
     let _ = shutdown_tx.send(true);
-    worker.await??;
+    if let Some(worker) = worker {
+        worker.await??;
+    }
     store.pool.close().await;
     served?;
 

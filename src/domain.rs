@@ -141,7 +141,19 @@ pub struct SourceLink {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
+pub struct OpenProjectSource {
+    pub connection_id: Uuid,
+    pub work_package_id: i64,
+    pub project_id: i64,
+    pub status_name: String,
+    pub url: String,
+    pub unavailable: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct Issue {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub openproject: Option<OpenProjectSource>,
     #[serde(default)]
     pub blocked_count: u64,
     #[serde(default)]

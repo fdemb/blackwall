@@ -8,6 +8,42 @@ import { useI18n } from "~/lib/i18n";
 import { useWorkspace } from "~/lib/workspace";
 import type { Issue } from "~/lib/types";
 import { LabelDot } from "./pickers";
+import { isImportedIssue, openprojectIssueUrl } from "~/lib/openproject";
+
+export function OpenProjectBadge({ issue }: { issue: Issue }) {
+  const { t } = useI18n();
+  if (!isImportedIssue(issue)) return null;
+  return (
+    <span title={t("openproject.readonly")} className="shrink-0 text-[11px] text-muted-foreground">
+      <Lock aria-hidden className="inline size-3" />{" "}
+      <span className="hidden sm:inline">{t("openproject.badge")}</span>
+    </span>
+  );
+}
+
+export function OpenProjectNotice({ issue }: { issue: Pick<Issue, "openproject"> }) {
+  const { t } = useI18n();
+  if (!isImportedIssue(issue)) return null;
+  const url = openprojectIssueUrl(issue);
+  return (
+    <div className="mb-5 space-y-2 rounded-lg border border-border bg-muted/40 p-3 text-[13px]">
+      <p>{t("openproject.readonly")}</p>
+      {issue.openproject?.unavailable ? (
+        <p className="text-muted-foreground">{t("openproject.unavailable")}</p>
+      ) : null}
+      {url ? (
+        <a
+          href={url}
+          target="_blank"
+          rel="noreferrer noopener"
+          className="text-primary underline underline-offset-2"
+        >
+          {t("openproject.open")}
+        </a>
+      ) : null}
+    </div>
+  );
+}
 
 export function DeadlineChip({ issue, className }: { issue: Issue; className?: string }) {
   const { lang, t } = useI18n();

@@ -191,12 +191,20 @@ impl Operation<'_> {
         }
 
         for dep in i.dependencies.iter().copied().collect::<BTreeSet<_>>() {
-            let row = sqlx::query("SELECT i.deleted_at,s.kind FROM issues i JOIN stages s ON s.id=i.stage_id WHERE i.workspace_id=$1 AND i.id=$2")
+            let row = sqlx::query("SELECT i.deleted_at,i.openproject,s.kind FROM issues i JOIN stages s ON s.id=i.stage_id WHERE i.workspace_id=$1 AND i.id=$2")
                 .bind(self.workspace_id)
                 .bind(dep)
                 .fetch_optional(&mut *self.tx)
                 .await?
                 .ok_or(Error::NotFound)?;
+            if row
+                .try_get::<Option<serde_json::Value>, _>("openproject")?
+                .is_some()
+            {
+                return Err(Error::Conflict(
+                    "OpenProject issues cannot be dependencies".into(),
+                ));
+            }
             if dep == i.id
                 || row
                     .try_get::<Option<DateTime<Utc>>, _>("deleted_at")?
@@ -226,7 +234,7 @@ impl Operation<'_> {
 
         if let Some(parent) = i.parent_id {
             sqlx::query(
-                "SELECT id FROM issues WHERE workspace_id=$1 AND id=$2 AND deleted_at IS NULL",
+                "SELECT id FROM issues WHERE workspace_id=$1 AND id=$2 AND deleted_at IS NULL AND openproject IS NULL",
             )
             .bind(self.workspace_id)
             .bind(parent)
@@ -315,6 +323,7 @@ impl Operation<'_> {
         let now = Utc::now();
         let id = Uuid::new_v4();
         let mut i = Issue {
+            openproject: None,
             blocked_count: 0,
             subtask_total: 0,
             subtask_completed: 0,

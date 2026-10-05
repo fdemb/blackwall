@@ -19,6 +19,7 @@ import { ConfirmDialog } from "./confirm";
 import { cn } from "~/lib/utils";
 import { issueKey, PRIORITIES } from "~/lib/format";
 import { stageOf } from "~/lib/filters";
+import { isImportedIssue } from "~/lib/openproject";
 import { useI18n } from "~/lib/i18n";
 import { useWorkspace } from "~/lib/workspace";
 import type { Id, Issue, IssueGroup, IssuePatch } from "~/lib/types";
@@ -29,6 +30,7 @@ import {
   DeadlineChip,
   LabelChips,
   SubtaskProgress,
+  OpenProjectBadge,
 } from "./issue-parts";
 
 export type GroupBy = IssueGroup;
@@ -200,7 +202,11 @@ function useIssueGrid({
   // from the selection, so a bulk action never touches issues the person can't see.
   const visible = useMemo(
     () =>
-      new Set(groups.filter((g) => !collapsed.has(g.id)).flatMap((g) => g.items.map((i) => i.id))),
+      new Set(
+        groups
+          .filter((g) => !collapsed.has(g.id))
+          .flatMap((g) => g.items.filter((i) => !isImportedIssue(i)).map((i) => i.id)),
+      ),
     [groups, collapsed],
   );
   const visibleSelected = useMemo(
@@ -220,6 +226,8 @@ function useIssueGrid({
     <GridList
       aria-label={t("nav.issues")}
       selectionMode={canSelect ? "multiple" : "none"}
+      disabledKeys={issues.filter(isImportedIssue).map((i) => i.id)}
+      disabledBehavior="selection"
       selectionBehavior="toggle"
       selectedKeys={visibleSelected}
       onSelectionChange={(s: Selection) =>
@@ -309,10 +317,10 @@ export function IssueRow({
       href={`/${ws.id}/issue/${issue.id}`}
       className="group flex h-10 cursor-default items-center gap-2.5 border-b border-border/70 px-4 text-[13px] outline-none hover:bg-muted/60 focus-visible:bg-muted/60 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/60 selected:bg-accent/60"
     >
-      {canSelect && <RowSelectBox />}
+      {canSelect && !isImportedIssue(issue) && <RowSelectBox />}
       <PriorityMenu
         issue={issue}
-        disabled={!canWrite}
+        disabled={!canWrite || isImportedIssue(issue)}
         run={(patch) => run({ type: "update_issue", id: issue.id, patch })}
       />
       <span className="w-14 shrink-0 tabular-nums text-muted-foreground">
@@ -324,6 +332,7 @@ export function IssueRow({
         </span>
       )}
       <span className="min-w-0 flex-1 truncate font-medium">{issue.title}</span>
+      <OpenProjectBadge issue={issue} />
       <BlockedBadge issue={issue} />
       <SubtaskProgress issue={issue} />
       <span className="hidden md:block">
@@ -416,8 +425,11 @@ function BulkBar({
   const { ws, members, run } = useWorkspace();
   const [confirm, setConfirm] = useState(false);
   const byId = useMemo(() => new Map(issues.map((i) => [i.id, i] as const)), [issues]);
-  if (selected.size === 0) return null;
-  const ids = [...selected];
+  const ids = [...selected].filter((id) => {
+    const issue = byId.get(id);
+    return issue && !isImportedIssue(issue);
+  });
+  if (ids.length === 0) return null;
   const first = byId.get(ids[0]);
   const team = ws.teams.find((tm) => tm.id === first?.team_id);
   const same = ids.every((id) => byId.get(id)?.team_id === first?.team_id);

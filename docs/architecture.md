@@ -21,6 +21,7 @@ The frontend keeps workspace data in TanStack DB collections backed by TanStack 
 - `store` owns PostgreSQL feature transactions, queries, version checks, and migrations.
 - `http` authenticates requests and exposes JSON contracts and OpenAPI.
 - `jobs` claims persisted work, handles delivery and maintenance, and coordinates shutdown.
+- `openproject` owns connection settings, cached discovery, project-to-team mappings, and one-way background imports. Its queue jobs fetch one bounded page without holding a database connection, then commit imported issues and their checkpoint with claim and configuration-generation fencing.
 - `web` serves the frontend build with CSP hashes for inline bootstrap scripts.
 
 ## Recovery and delivery

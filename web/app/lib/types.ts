@@ -65,7 +65,41 @@ export interface SourceLink {
   url: string;
   title: string;
 }
+export interface OpenProjectIssue {
+  connection_id: Id;
+  work_package_id: number;
+  project_id: number;
+  status_name: string;
+  url: string;
+  unavailable: boolean;
+}
+export interface OpenProjectMapping {
+  project_id: number;
+  team_id: Id;
+  stage_mapping?: Record<string, Id>;
+}
+export interface OpenProjectConnection {
+  id: Id;
+  name: string;
+  base_url: string;
+  enabled: boolean;
+  generation: number;
+  projects: OpenProjectMapping[];
+  cached_projects: { id: number; name: string }[];
+  status: "pending" | "syncing" | "idle" | "error";
+  last_error: string;
+  last_checked_at: string | null;
+  last_synced_at: string | null;
+}
+export interface OpenProjectConnectionInput {
+  name: string;
+  base_url: string;
+  token: string;
+  enabled?: boolean;
+  projects?: OpenProjectMapping[];
+}
 export interface Issue {
+  openproject?: OpenProjectIssue | null;
   id: Id;
   version: number;
   blocked_count: number;

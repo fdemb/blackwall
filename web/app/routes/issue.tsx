@@ -71,6 +71,8 @@ import {
 import { QueryStatus } from "~/components/app/query-status";
 import { useWorkspace } from "~/lib/workspace";
 import { cn } from "~/lib/utils";
+import { isImportedIssue } from "~/lib/openproject";
+import { OpenProjectNotice } from "~/components/app/issue-parts";
 import type { Activity, Comment, Id, Issue, IssuePatch, TimeEntry } from "~/lib/types";
 
 /** Row actions hide until hover on devices that can hover, and stay visible on touch. */
@@ -108,7 +110,8 @@ export default function IssuePage() {
 /** A link to a trashed issue still says which issue it was and offers the way back. */
 function DeletedIssue({ issue, wsId }: { issue: Issue; wsId: string }) {
   const { t } = useI18n();
-  const { run, canWrite } = useWorkspace();
+  const { run, canWrite: workspaceCanWrite } = useWorkspace();
+  const canWrite = workspaceCanWrite && !isImportedIssue(issue);
   const toast = useToast();
   useDocumentTitle(`${issueKey(issue.number)} ${issue.title}`);
   return (
@@ -147,7 +150,8 @@ function IssueView({ issue, detail }: { issue: Issue; detail: IssueDetail }) {
   const nav = useNavigate();
   const location = useLocation();
   const toast = useToast();
-  const { ws, me, run, team, canWrite } = useWorkspace();
+  const { ws, me, run, team, canWrite: workspaceCanWrite } = useWorkspace();
+  const canWrite = workspaceCanWrite && !isImportedIssue(issue);
   const inInbox = location.pathname.startsWith(`/${ws.id}/inbox/`);
   const tm = team(issue.team_id);
   useDocumentTitle(`${issueKey(issue.number)} ${issue.title}`);
@@ -247,6 +251,7 @@ function IssueView({ issue, detail }: { issue: Issue; detail: IssueDetail }) {
             <h1 className="sr-only">
               {t("issue.titleHeading", { key: issueKey(issue.number), title: issue.title })}
             </h1>
+            <OpenProjectNotice issue={issue} />
             <div className="space-y-3">
               {parent && (
                 <div className="group flex items-center gap-1 text-xs text-muted-foreground">
@@ -423,7 +428,8 @@ function Properties({
   excludeIds: Id[];
 }) {
   const { t, lang } = useI18n();
-  const { ws, run, canWrite, member } = useWorkspace();
+  const { ws, run, canWrite: workspaceCanWrite, member } = useWorkspace();
+  const canWrite = workspaceCanWrite && !isImportedIssue(issue);
   const patch = (p: IssuePatch, version = issue.version) =>
     run(
       { type: "update_issue", id: issue.id, patch: p },
@@ -805,7 +811,8 @@ function TitleField({
   onSave: (title: string, version: number) => void;
 }) {
   const { t } = useI18n();
-  const { canWrite } = useWorkspace();
+  const { canWrite: workspaceCanWrite } = useWorkspace();
+  const canWrite = workspaceCanWrite && !isImportedIssue(issue);
   const [title, setTitle] = useState(issue.title);
   const baseVersion = useRef(issue.version);
   const ref = useRef<HTMLTextAreaElement>(null);
@@ -874,7 +881,8 @@ function Description({
   onSave: (d: string, version: number) => Promise<boolean>;
 }) {
   const { t } = useI18n();
-  const { canWrite } = useWorkspace();
+  const { canWrite: workspaceCanWrite } = useWorkspace();
+  const canWrite = workspaceCanWrite && !isImportedIssue(issue);
   // null while not editing.
   const [draft, setDraft] = useState<string | null>(failedDrafts.get(issue.id) ?? null);
   const [saving, setSaving] = useState(false);
@@ -1064,7 +1072,8 @@ function Subtasks({
   setAdding: (v: boolean) => void;
 }) {
   const { t } = useI18n();
-  const { ws, run, canWrite } = useWorkspace();
+  const { ws, run, canWrite: workspaceCanWrite } = useWorkspace();
+  const canWrite = workspaceCanWrite && !isImportedIssue(issue);
   const [title, setTitle] = useState("");
   const { pending, guard } = usePending();
   const done = subs.filter((s) => isDone(ws, s)).length;
@@ -1164,7 +1173,8 @@ function Dependencies({
   onAdd: (id: Id) => void;
 }) {
   const { t } = useI18n();
-  const { run, canWrite } = useWorkspace();
+  const { run, canWrite: workspaceCanWrite } = useWorkspace();
+  const canWrite = workspaceCanWrite && !isImportedIssue(issue);
   const remove = (id: Id) =>
     run({
       type: "update_issue",
@@ -1310,7 +1320,8 @@ function AttachmentChip({
 
 function Attachments({ issue, uploader }: { issue: Issue; uploader: Uploader }) {
   const { t } = useI18n();
-  const { ws, run, canWrite } = useWorkspace();
+  const { ws, run, canWrite: workspaceCanWrite } = useWorkspace();
+  const canWrite = workspaceCanWrite && !isImportedIssue(issue);
   return (
     <Section
       title={t("issue.attachments")}

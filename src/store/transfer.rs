@@ -51,6 +51,8 @@ impl Store {
 
         for issue in &mut issues {
             issue.attachments.clear();
+            // Transfers copy issues, not server-owned connection identity or credentials.
+            issue.openproject = None;
         }
 
         let mut comments: Vec<Comment> = records(&mut tx, workspace, actor, "comments").await?;
@@ -86,6 +88,15 @@ impl Store {
         expected: BTreeMap<Uuid, i64>,
         key: Option<String>,
     ) -> Result<(ImportSummary, BTreeMap<Uuid, i64>)> {
+        if transfer
+            .issues
+            .iter()
+            .any(|issue| issue.openproject.is_some())
+        {
+            return Err(Error::BadRequest(
+                "OpenProject source metadata cannot be imported through transfers".into(),
+            ));
+        }
         let request = serde_json::json!({
             "transfer": transfer,
             "expected_versions": expected,

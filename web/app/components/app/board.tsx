@@ -12,6 +12,7 @@ import { Plus } from "lucide-react";
 import { Button } from "~/components/ui/button";
 import { cn } from "~/lib/utils";
 import { issueKey } from "~/lib/format";
+import { isImportedIssue } from "~/lib/openproject";
 import { useI18n } from "~/lib/i18n";
 import { useWorkspace } from "~/lib/workspace";
 import type { Id, Issue } from "~/lib/types";
@@ -22,6 +23,7 @@ import {
   DeadlineChip,
   LabelChips,
   SubtaskProgress,
+  OpenProjectBadge,
 } from "./issue-parts";
 
 const TYPE = "application/x-blackwall-issue";
@@ -93,17 +95,26 @@ export function DndColumn({
   const { dragAndDropHooks } = useDragAndDrop({
     isDisabled: !canWrite || !canDrop,
     getItems: (keys) =>
-      [...keys].map((k) => ({
-        [TYPE]: JSON.stringify({ id: k, column: id }),
-        "text/plain": String(k),
-      })),
+      [...keys]
+        .filter((k) => issues.some((issue) => issue.id === k && !isImportedIssue(issue)))
+        .map((k) => ({
+          [TYPE]: JSON.stringify({ id: k, column: id }),
+          "text/plain": String(k),
+        })),
     acceptedDragTypes: [TYPE],
     getDropOperation: () => "move",
     onInsert: async (e) => {
       const { ids, source } = await read(e.items as never);
       onDrop(ids, beforeFor(e.target), source);
     },
-    onReorder: (e) => onDrop([...e.keys] as Id[], beforeFor(e.target), id),
+    onReorder: (e) =>
+      onDrop(
+        issues
+          .filter((issue) => e.keys.has(issue.id) && !isImportedIssue(issue))
+          .map((issue) => issue.id),
+        beforeFor(e.target),
+        id,
+      ),
     onRootDrop: async (e) => {
       const { ids, source } = await read(e.items as never);
       onDrop(ids, null, source);
@@ -177,6 +188,7 @@ export function BoardCard({ issue }: { issue: Issue }) {
     >
       <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
         <span className="tabular-nums">{issueKey(issue.number)}</span>
+        <OpenProjectBadge issue={issue} />
         <BlockedBadge issue={issue} />
         <span className="ml-auto">
           <AssigneeAvatar issue={issue} size={18} />

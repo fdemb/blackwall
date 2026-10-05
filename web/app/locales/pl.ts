@@ -1,6 +1,53 @@
 import type { Catalog } from "./types";
 
 export const pl = {
+  "openproject.title": "OpenProject",
+  "openproject.description":
+    "Importuj pakiety robocze do zespołów Blackwall. Synchronizacja tylko do odczytu działa na serwerze co pięć minut.",
+  "openproject.webhooks": "Webhooki",
+  "openproject.add": "Połącz OpenProject",
+  "openproject.edit": "Edytuj połączenie",
+  "openproject.empty": "Brak połączeń z OpenProject",
+  "openproject.emptySub": "Połącz swoją instancję, odśwież projekty i wybierz zespoły docelowe.",
+  "openproject.url": "Adres instancji",
+  "openproject.urlHint":
+    "Adres instancji OpenProject, także w sieci prywatnej. Blackwall łączy się z serwera.",
+  "openproject.token": "Token API",
+  "openproject.tokenHint": "Przechowywany na serwerze. Nie będzie ponownie wyświetlany.",
+  "openproject.tokenKeep": "Pozostaw puste, aby zachować obecny token.",
+  "openproject.refresh": "Odśwież projekty",
+  "openproject.sync": "Synchronizuj teraz",
+  "openproject.queued": "Dodano do kolejki na serwerze",
+  "openproject.checked": "Sprawdzono projekty",
+  "openproject.synced": "Ostatnia udana synchronizacja",
+  "openproject.never": "Jeszcze nie",
+  "openproject.enabled": "Włącz synchronizację",
+  "openproject.status": "Stan",
+  "openproject.status.pending": "W kolejce",
+  "openproject.status.syncing": "Synchronizacja",
+  "openproject.status.idle": "Gotowe",
+  "openproject.status.error": "Błąd synchronizacji",
+  "openproject.error": "Ostatni błąd",
+  "openproject.remove": "Odłącz OpenProject",
+  "openproject.removeSub":
+    "Synchronizacja zostanie zatrzymana. Zaimportowane zadania pozostaną w Blackwall tylko do odczytu.",
+  "openproject.projects": "Przypisania projektów",
+  "openproject.projectsHint":
+    "Wybierz zespół Blackwall dla każdego importowanego projektu. Projekty bez przypisania nie są importowane.",
+  "openproject.noProjects":
+    "Brak zapisanych projektów. Zapisz połączenie, a następnie odśwież projekty.",
+  "openproject.noTeam": "Nie importuj",
+  "openproject.project": "Projekt OpenProject",
+  "openproject.automaticStages":
+    "Etapy odpowiadają nazwie statusu OpenProject. W innym przypadku zamknięte pakiety trafiają do etapu ukończonych, a pozostałe do zaległych lub pierwszego etapu.",
+  "openproject.readonly":
+    "Zaimportowano z OpenProject. Pola i planowanie edytuj w OpenProject. Komentarze, obserwowanie i rejestrowanie czasu pozostają lokalne.",
+  "openproject.open": "Otwórz w OpenProject",
+  "openproject.unavailable":
+    "Ten pakiet roboczy nie jest już dostępny w OpenProject. Zachowano ostatnie zsynchronizowane dane.",
+  "openproject.badge": "OpenProject · tylko do odczytu",
+  "openproject.loadError": "Nie udało się wczytać połączeń z OpenProject.",
+  "openproject.retry": "Spróbuj ponownie",
   "nav.main": "Nawigacja główna",
   "nav.skip": "Przejdź do treści",
   "nav.inbox": "Skrzynka",

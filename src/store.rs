@@ -181,6 +181,22 @@ impl Store {
             return Err(Error::Forbidden);
         }
 
+        let protected_ids: Vec<Uuid> = match &command {
+            Command::UpdateIssue { id, .. }
+            | Command::MoveIssue { id, .. }
+            | Command::DeleteIssue { id }
+            | Command::RestoreIssue { id } => vec![*id],
+            Command::BulkIssues { ids, .. } => ids.clone(),
+            _ => Vec::new(),
+        };
+        let imported: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM issues WHERE workspace_id=$1 AND id=ANY($2) AND openproject IS NOT NULL)")
+            .bind(workspace_id).bind(&protected_ids).fetch_one(&mut *op.tx).await?;
+        if imported {
+            return Err(Error::Conflict(
+                "OpenProject imported issues are read-only".into(),
+            ));
+        }
+
         let action = command.kind();
         let id = match &command {
             Command::CreateTeam { .. }
