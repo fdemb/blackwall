@@ -2,6 +2,7 @@ use crate::{
     error::{Error, Result},
     store::{Claim, Outbox, Store},
 };
+use sqlx::{Postgres, Transaction};
 use std::{collections::HashMap, time::Duration};
 use tokio::{sync::watch, task::JoinSet};
 
@@ -42,6 +43,7 @@ pub struct WorkerConfig {
     pub poll_interval: Duration,
     pub drain_timeout: Duration,
     pub retention_days: i32,
+    pub failed_retention_days: i32,
 }
 
 impl Default for WorkerConfig {
@@ -54,6 +56,7 @@ impl Default for WorkerConfig {
             poll_interval: Duration::from_secs(5),
             drain_timeout: Duration::from_secs(50),
             retention_days: 30,
+            failed_retention_days: 90,
         }
     }
 }
@@ -85,6 +88,7 @@ impl WorkerConfig {
             poll_interval: Duration::from_millis(setting("JOBS_POLL_MS", 5000, 50, 5000)?),
             drain_timeout: Duration::from_secs(setting("JOBS_DRAIN_SECONDS", 50, 1, 120)?),
             retention_days: setting("JOBS_RETENTION_DAYS", 30, 1, 3650)? as i32,
+            failed_retention_days: setting("JOBS_FAILED_RETENTION_DAYS", 90, 1, 3650)? as i32,
         })
     }
 
@@ -105,6 +109,7 @@ impl WorkerConfig {
             || self.drain_timeout.is_zero()
             || self.drain_timeout > Duration::from_secs(120)
             || self.retention_days < 1
+            || self.failed_retention_days < 1
         {
             return Err(Error::BadRequest(
                 "invalid worker limits; reserve at least three pool connections beyond database concurrency".into(),
@@ -218,7 +223,9 @@ pub async fn run_with_config(
         }
 
         if maintenance_at <= tokio::time::Instant::now() {
-            if let Err(error) = maintenance(&store, config.retention_days).await {
+            if let Err(error) =
+                maintenance(&store, config.retention_days, config.failed_retention_days).await
+            {
                 tracing::warn!(error = %error, "queue maintenance failed");
             }
 
@@ -365,7 +372,13 @@ pub async fn tick(store: &Store, mailer: &Mailer) -> Result<()> {
         }
     }
 
-    maintenance(store, 30).await
+    let defaults = WorkerConfig::default();
+    maintenance(
+        store,
+        defaults.retention_days,
+        defaults.failed_retention_days,
+    )
+    .await
 }
 
 async fn execute(store: &Store, mailer: &Mailer, claim: &Claim) -> Result<()> {
@@ -504,7 +517,7 @@ async fn execute_reminder(store: &Store, claim: &Claim, reminder: &Reminder) -> 
     Ok(())
 }
 
-async fn maintenance(store: &Store, retention_days: i32) -> Result<()> {
+async fn maintenance(store: &Store, retention_days: i32, failed_retention_days: i32) -> Result<()> {
     use sqlx::Row;
 
     let metrics = sqlx::query(
@@ -528,43 +541,97 @@ async fn maintenance(store: &Store, retention_days: i32) -> Result<()> {
         "database and queue pressure"
     );
 
-    let mut tx = store.pool.begin().await?;
+    let mut lock = store.pool.acquire().await?;
+    lock.close_on_drop();
 
-    let locked: bool = sqlx::query_scalar("SELECT pg_try_advisory_xact_lock(728192404)")
-        .fetch_one(&mut *tx)
+    let locked: bool = sqlx::query_scalar("SELECT pg_try_advisory_lock(728192404)")
+        .fetch_one(&mut *lock)
         .await?;
 
     if !locked {
         return Ok(());
     }
 
+    let outcome = sweep(store, retention_days, failed_retention_days).await;
+    let _ = sqlx::query("SELECT pg_advisory_unlock(728192404)")
+        .execute(&mut *lock)
+        .await;
+
+    outcome
+}
+
+const MAINTENANCE_BUDGET: Duration = Duration::from_secs(20);
+
+async fn sweep(store: &Store, retention_days: i32, failed_retention_days: i32) -> Result<()> {
+    let deadline = tokio::time::Instant::now() + MAINTENANCE_BUDGET;
+
     for table in ["sessions", "password_resets"] {
-        sqlx::query(&format!(
-            "DELETE FROM {table} WHERE token_hash IN (\
-             SELECT token_hash FROM {table} WHERE expires_at<=clock_timestamp() \
-             ORDER BY expires_at LIMIT 1000 FOR UPDATE SKIP LOCKED)"
-        ))
-        .execute(&mut *tx)
+        drain(deadline, 1000, store.clone(), |s| async move {
+            Ok(sqlx::query(&format!(
+                "DELETE FROM {table} WHERE token_hash IN (\
+                 SELECT token_hash FROM {table} WHERE expires_at<=clock_timestamp() \
+                 ORDER BY expires_at LIMIT 1000 FOR UPDATE SKIP LOCKED)"
+            ))
+            .execute(&s.pool)
+            .await?
+            .rows_affected())
+        })
         .await?;
     }
 
-    sqlx::query(
-        "WITH expired AS (\
-         SELECT id FROM invitations WHERE state='pending' AND expires_at<=clock_timestamp() \
-         ORDER BY expires_at,id FOR UPDATE SKIP LOCKED LIMIT 1000) \
-         UPDATE invitations SET state='expired',version=version+1 \
-         FROM expired WHERE invitations.id=expired.id",
-    )
-    .execute(&mut *tx)
+    drain(deadline, 1000, store.clone(), |s| async move {
+        Ok(sqlx::query(
+            "WITH expired AS (\
+             SELECT id FROM invitations WHERE state='pending' AND expires_at<=clock_timestamp() \
+             ORDER BY expires_at,id FOR UPDATE SKIP LOCKED LIMIT 1000) \
+             UPDATE invitations SET state='expired',version=version+1 \
+             FROM expired WHERE invitations.id=expired.id",
+        )
+        .execute(&s.pool)
+        .await?
+        .rows_affected())
+    })
     .await?;
 
     // Backfill the Done-entry clock for rows predating the archive columns,
     // then auto-archive Done issues past their team's deadline.
     // Cancelled is excluded; NULL deadline means never.
-    tx.commit().await?;
-    store.archive_sweep().await?;
-    store.outbox.cleanup(retention_days).await?;
-    store.prune_changes(retention_days).await?;
+    drain(deadline, 1000, store.clone(), |s| async move {
+        let mut tx = s.pool.begin().await?;
+        let (_, progress) = Store::archive_batch(&mut tx).await?;
+        tx.commit().await?;
+        Ok(progress)
+    })
+    .await?;
+    drain(deadline, 1000, store.clone(), |s| async move {
+        s.outbox
+            .cleanup(retention_days, failed_retention_days)
+            .await
+    })
+    .await?;
+    drain(deadline, 10000, store.clone(), |s| async move {
+        s.prune_changes(retention_days).await
+    })
+    .await?;
+
+    Ok(())
+}
+
+async fn drain<F, Fut>(
+    deadline: tokio::time::Instant,
+    batch: u64,
+    store: Store,
+    step: F,
+) -> Result<()>
+where
+    F: Fn(Store) -> Fut,
+    Fut: std::future::Future<Output = Result<u64>>,
+{
+    while tokio::time::Instant::now() < deadline {
+        if step(store.clone()).await? < batch {
+            return Ok(());
+        }
+    }
 
     Ok(())
 }
@@ -576,23 +643,32 @@ impl Store {
     pub async fn archive_sweep(&self) -> Result<u64> {
         let mut tx = self.pool.begin().await?;
 
-        sqlx::query(
+        let (archived, _) = Self::archive_batch(&mut tx).await?;
+        tx.commit().await?;
+
+        Ok(archived)
+    }
+
+    async fn archive_batch(tx: &mut Transaction<'_, Postgres>) -> Result<(u64, u64)> {
+        let cleared = sqlx::query(
             "UPDATE issues SET done_at=NULL,updated_at=now() WHERE id IN (\
              SELECT i.id FROM issues i JOIN stages s ON s.id=i.stage_id \
              WHERE s.kind<>'done' AND i.done_at IS NOT NULL AND i.archived_at IS NULL \
              ORDER BY i.done_at LIMIT 1000 FOR UPDATE SKIP LOCKED)",
         )
-        .execute(&mut *tx)
-        .await?;
+        .execute(&mut **tx)
+        .await?
+        .rows_affected();
 
-        sqlx::query(
+        let backfilled = sqlx::query(
             "UPDATE issues SET done_at=updated_at,updated_at=now() WHERE id IN (\
              SELECT i.id FROM issues i JOIN stages s ON s.id=i.stage_id \
              WHERE s.kind='done' AND i.done_at IS NULL AND i.deleted_at IS NULL \
              ORDER BY i.updated_at LIMIT 1000 FOR UPDATE SKIP LOCKED)",
         )
-        .execute(&mut *tx)
-        .await?;
+        .execute(&mut **tx)
+        .await?
+        .rows_affected();
 
         let archived = sqlx::query(
             "UPDATE issues SET archived_at=now(),updated_at=now(),version=version+1 WHERE id IN (\
@@ -604,12 +680,10 @@ impl Store {
              AND COALESCE(i.done_at,i.updated_at) <= now()-make_interval(days=>t.archive_after_days) \
              ORDER BY i.done_at NULLS LAST,i.id LIMIT 1000 FOR UPDATE SKIP LOCKED)",
         )
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await?
         .rows_affected();
 
-        tx.commit().await?;
-
-        Ok(archived)
+        Ok((archived, cleared.max(backfilled).max(archived)))
     }
 }

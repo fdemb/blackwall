@@ -297,21 +297,24 @@ impl Outbox {
         .await?)
     }
 
-    pub async fn cleanup(&self, retention_days: i32) -> Result<u64> {
-        if retention_days < 1 {
+    pub async fn cleanup(&self, retention_days: i32, failed_retention_days: i32) -> Result<u64> {
+        if retention_days < 1 || failed_retention_days < 1 {
             return Err(Error::BadRequest(
                 "queue retention must be at least one day".into(),
             ));
         }
 
         Ok(sqlx::query(
-            "WITH old AS (SELECT id FROM jobs WHERE state IN ('succeeded',\
-            'cancelled') AND \
-            finished_at<clock_timestamp()-make_interval(days=>$1) ORDER BY \
+            "WITH old AS (SELECT id FROM jobs WHERE \
+            ((state IN ('succeeded','cancelled') AND \
+            finished_at<clock_timestamp()-make_interval(days=>$1)) OR \
+            (state='failed' AND \
+            finished_at<clock_timestamp()-make_interval(days=>$2))) ORDER BY \
             finished_at,id FOR UPDATE SKIP LOCKED LIMIT 1000) DELETE FROM jobs \
             USING old WHERE jobs.id=old.id",
         )
         .bind(retention_days)
+        .bind(failed_retention_days)
         .execute(&self.pool)
         .await?
         .rows_affected())
