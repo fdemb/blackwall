@@ -34,6 +34,8 @@ pub struct OpenProjectSource {
     pub connection_id: Uuid,
     pub work_package_id: i64,
     pub project_id: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_work_package_id: Option<i64>,
     pub status_name: String,
     pub url: String,
     pub unavailable: bool,

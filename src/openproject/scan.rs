@@ -82,6 +82,7 @@ pub(super) struct Person {
 pub(super) struct WorkPackage {
     pub id: i64,
     pub project_id: i64,
+    pub parent_id: Option<i64>,
     pub title: String,
     pub description: String,
     pub assignee_id: Option<i64>,
@@ -406,9 +407,15 @@ fn work_package(item: &Value, expected_project: i64) -> Result<WorkPackage> {
     };
     // Only the creator column depends on it, so an odd author link must not fail the page.
     let author_id = link_id(item, "author").ok();
+    let parent_id = match item.pointer("/_links/parent/href") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(href)) if href == "urn:openproject-org:api:v3:undisclosed" => None,
+        Some(_) => Some(link_id(item, "parent")?),
+    };
     Ok(WorkPackage {
         id,
         project_id,
+        parent_id,
         title,
         description,
         assignee_id,
@@ -549,6 +556,61 @@ mod tests {
         ] {
             let response = json!({"total":2,"count":2,"pageSize":50,"offset":1,"_embedded":{"elements":[valid,invalid]}});
             assert!(cp.normalize(response, &mappings).is_err());
+        }
+    }
+
+    #[test]
+    fn work_package_parent_link_covers_present_null_absent_and_malformed() {
+        let item = |parent: Option<Value>| {
+            let mut links = json!({"project":{"href":"/api/v3/projects/42"},"status":{"href":"/api/v3/statuses/1"}});
+            if let Some(parent) = parent {
+                links["parent"] = parent;
+            }
+            json!({"id":7,"subject":"Child","_links":links})
+        };
+        assert_eq!(
+            work_package(&item(Some(json!({"href":"/api/v3/work_packages/3"}))), 42)
+                .unwrap()
+                .parent_id,
+            Some(3)
+        );
+        assert_eq!(
+            work_package(&item(Some(json!({"href": null}))), 42)
+                .unwrap()
+                .parent_id,
+            None
+        );
+        assert_eq!(work_package(&item(None), 42).unwrap().parent_id, None);
+        assert_eq!(
+            work_package(
+                &item(Some(
+                    json!({"href": "urn:openproject-org:api:v3:undisclosed"})
+                )),
+                42
+            )
+            .unwrap()
+            .parent_id,
+            None
+        );
+        assert_eq!(
+            work_package(&item(Some(Value::Null)), 42)
+                .unwrap()
+                .parent_id,
+            None
+        );
+        assert_eq!(
+            work_package(&item(Some(json!({}))), 42).unwrap().parent_id,
+            None
+        );
+        for malformed in [
+            json!({"href":"/api/v3/work_packages/nan"}),
+            json!({"href":"/api/v3/work_packages/0"}),
+            json!({"href":42}),
+        ] {
+            assert!(
+                work_package(&item(Some(malformed)), 42).is_err(),
+                "malformed parent link must fail normalization"
+            );
         }
     }
 
