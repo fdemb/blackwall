@@ -28,6 +28,7 @@ pub struct Reminder {
 pub struct Email {
     pub to: String,
     pub subject: String,
+    #[serde(default)]
     pub token: String,
     #[serde(flatten)]
     pub grant: Grant,
@@ -53,7 +54,6 @@ pub struct Webhook {
     pub workspace_id: Uuid,
     pub integration_id: Uuid,
     pub url: String,
-    pub secret: String,
     pub event: serde_json::Value,
 }
 
@@ -103,13 +103,24 @@ impl Job {
         mailer: &Mailer,
         id: &str,
     ) -> Result<(), DeliveryError> {
-        if !self.is_current(store, id).await? {
-            return Ok(());
-        }
-
         match self {
-            Job::Email(email) => mailer.send(id, email).await,
-            Job::Webhook(webhook) => send_webhook(id, webhook).await,
+            Job::Email(email) => {
+                if email.token.is_empty() {
+                    return Err(DeliveryError::Permanent(
+                        "email token is missing; ask the user to request a new link",
+                    ));
+                }
+                if !self.is_current(store, id).await? {
+                    return Ok(());
+                }
+                mailer.send(id, email).await
+            }
+            Job::Webhook(webhook) => {
+                let Some(secret) = webhook.current_secret(store).await? else {
+                    return Ok(());
+                };
+                send_webhook(id, webhook, &secret).await
+            }
             Job::OpenProject(_) => Err(DeliveryError::Permanent(
                 "sync requires a fenced transaction",
             )),
@@ -158,19 +169,7 @@ impl Job {
                 .fetch_one(&store.pool)
                 .await
             }
-            Job::Webhook(webhook) => {
-                sqlx::query_scalar::<_, bool>(
-                    "SELECT EXISTS(SELECT 1 FROM integrations \
-                     WHERE workspace_id=$1 AND id=$2 AND enabled AND webhook_url=$3 AND secret=$4)",
-                )
-                .bind(webhook.workspace_id)
-                .bind(webhook.integration_id)
-                .bind(&webhook.url)
-                .bind(&webhook.secret)
-                .fetch_one(&store.pool)
-                .await
-            }
-            Job::Reminder(_) | Job::OpenProject(_) => return Ok(true),
+            _ => return Ok(true),
         };
 
         result.map_err(|error| {
@@ -180,10 +179,34 @@ impl Job {
     }
 }
 
-async fn send_webhook(id: &str, webhook: &Webhook) -> Result<(), DeliveryError> {
+impl Webhook {
+    pub async fn current_secret(&self, store: &Store) -> Result<Option<String>, DeliveryError> {
+        sqlx::query_scalar::<_, String>(
+            "SELECT secret FROM integrations \
+             WHERE workspace_id=$1 AND id=$2 AND enabled AND webhook_url=$3",
+        )
+        .bind(self.workspace_id)
+        .bind(self.integration_id)
+        .bind(&self.url)
+        .fetch_optional(&store.pool)
+        .await
+        .map_err(|error| {
+            tracing::warn!(integration = %self.integration_id, error = %error, "webhook secret lookup failed");
+            DeliveryError::Transient("delivery grant lookup failed")
+        })
+    }
+}
+
+fn signature(secret: &[u8], body: &[u8]) -> String {
     use hmac::{Hmac, Mac};
     use sha2::Sha256;
 
+    let mut mac = Hmac::<Sha256>::new_from_slice(secret).expect("HMAC accepts any key length");
+    mac.update(body);
+    format!("sha256={}", hex::encode(mac.finalize().into_bytes()))
+}
+
+async fn send_webhook(id: &str, webhook: &Webhook, secret: &str) -> Result<(), DeliveryError> {
     let url = reqwest::Url::parse(&webhook.url)
         .map_err(|_| DeliveryError::Permanent("invalid webhook URL"))?;
     if url.scheme() != "https" || !url.username().is_empty() || url.password().is_some() {
@@ -195,19 +218,14 @@ async fn send_webhook(id: &str, webhook: &Webhook) -> Result<(), DeliveryError> 
     let body = serde_json::to_vec(&webhook.event)
         .map_err(|_| DeliveryError::Permanent("invalid webhook event"))?;
 
-    let mut mac = Hmac::<Sha256>::new_from_slice(webhook.secret.as_bytes())
-        .map_err(|_| DeliveryError::Permanent("invalid webhook secret"))?;
-    mac.update(&body);
+    let signature = signature(secret.as_bytes(), &body);
 
     let client = webhook_client(id, &url).await?;
     let response = client
         .post(url)
         .header("Content-Type", "application/json")
         .header("Idempotency-Key", id)
-        .header(
-            "X-Blackwall-Signature",
-            format!("sha256={}", hex::encode(mac.finalize().into_bytes())),
-        )
+        .header("X-Blackwall-Signature", signature)
         .body(body)
         .send()
         .await
@@ -327,6 +345,14 @@ async fn webhook_client(id: &str, url: &reqwest::Url) -> Result<reqwest::Client,
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn webhook_signature_matches_rfc4231_case2() {
+        assert_eq!(
+            super::signature(b"Jefe", b"what do ya want for nothing?"),
+            "sha256=5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843"
+        );
+    }
 
     #[test]
     fn webhook_blocks_private_targets() {

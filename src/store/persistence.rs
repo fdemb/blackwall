@@ -352,7 +352,6 @@ pub(crate) async fn issue_effects(
 struct Integration {
     id: Uuid,
     url: String,
-    secret: String,
 }
 
 pub(crate) struct PageEffects {
@@ -490,18 +489,16 @@ pub(crate) async fn activity(
 }
 
 async fn integrations(conn: &mut PgConnection, workspace: Uuid) -> Result<Vec<Integration>> {
-    let rows = sqlx::query(
-        "SELECT id,webhook_url,secret FROM integrations WHERE workspace_id=$1 AND enabled",
-    )
-    .bind(workspace)
-    .fetch_all(conn)
-    .await?;
+    let rows =
+        sqlx::query("SELECT id,webhook_url FROM integrations WHERE workspace_id=$1 AND enabled")
+            .bind(workspace)
+            .fetch_all(conn)
+            .await?;
     rows.into_iter()
         .map(|row| {
             Ok(Integration {
                 id: row.try_get("id")?,
                 url: row.try_get("webhook_url")?,
-                secret: row.try_get("secret")?,
             })
         })
         .collect()
@@ -543,7 +540,6 @@ async fn activity_with_integrations(
                     workspace_id: workspace,
                     integration_id: id,
                     url: integration.url.clone(),
-                    secret: integration.secret.clone(),
                     event: serde_json::json!({"workspace_id":workspace,"activity":event}),
                 }),
             ),

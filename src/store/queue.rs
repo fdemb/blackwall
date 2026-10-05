@@ -112,7 +112,7 @@ impl Outbox {
             ORDER BY lease_expires_at,id FOR UPDATE SKIP LOCKED LIMIT 100) \
             UPDATE jobs SET state='failed',claim_token=NULL,\
             lease_expires_at=NULL,finished_at=clock_timestamp(),\
-            updated_at=clock_timestamp(),last_error='lease expired at maximum \
+            updated_at=clock_timestamp(),payload=payload-'token',last_error='lease expired at maximum \
             attempts' FROM exhausted WHERE jobs.id=exhausted.id",
         )
         .execute(&mut *tx)
@@ -191,7 +191,7 @@ impl Outbox {
 
     pub async fn complete_in(conn: &mut PgConnection, claim: &Claim) -> Result<bool> {
         Ok(sqlx::query(
-            "UPDATE jobs SET state='succeeded',claim_token=NULL,\
+            "UPDATE jobs SET state='succeeded',payload=payload-'token',claim_token=NULL,\
             lease_expires_at=NULL,last_error='',finished_at=clock_timestamp(),\
             updated_at=clock_timestamp() WHERE id=$1 AND state='running' AND \
             claim_token=$2 AND lease_expires_at>clock_timestamp()",
@@ -244,6 +244,7 @@ impl Outbox {
             "UPDATE jobs SET state=CASE WHEN $3 THEN 'failed' ELSE 'pending' END,\
             run_at=clock_timestamp()+make_interval(secs=>$4::double precision),\
             claim_token=NULL,lease_expires_at=NULL,last_error=$5,\
+            payload=CASE WHEN $3 THEN payload-'token' ELSE payload END,\
             finished_at=CASE WHEN $3 THEN clock_timestamp() ELSE NULL END,\
             updated_at=clock_timestamp() WHERE id=$1 AND state='running' AND \
             claim_token=$2 AND lease_expires_at>clock_timestamp()",
@@ -261,7 +262,7 @@ impl Outbox {
 
     pub async fn cancel(&self, id: Uuid, token: Option<Uuid>) -> Result<bool> {
         Ok(sqlx::query(
-            "UPDATE jobs SET state='cancelled',claim_token=NULL,\
+            "UPDATE jobs SET state='cancelled',payload=payload-'token',claim_token=NULL,\
             lease_expires_at=NULL,finished_at=clock_timestamp(),\
             updated_at=clock_timestamp() WHERE id=$1 AND ((state='pending' AND \
             $2::uuid IS NULL) OR (state='running' AND claim_token=$2))",
@@ -275,16 +276,31 @@ impl Outbox {
     }
 
     pub async fn retry_failed(&self, id: Uuid) -> Result<bool> {
-        Ok(sqlx::query(
+        let updated = sqlx::query(
             "UPDATE jobs SET state='pending',attempts=0,finished_at=NULL,\
             run_at=clock_timestamp(),updated_at=clock_timestamp() WHERE id=$1 \
-            AND state='failed'",
+            AND state='failed' AND (kind<>'email' OR COALESCE(payload->>'token','')<>'')",
         )
         .bind(id)
         .execute(&self.pool)
         .await?
-        .rows_affected()
-            == 1)
+        .rows_affected();
+        if updated == 1 {
+            return Ok(true);
+        }
+        let scrubbed: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM jobs WHERE id=$1 AND state='failed' \
+            AND kind='email' AND COALESCE(payload->>'token','')='')",
+        )
+        .bind(id)
+        .fetch_one(&self.pool)
+        .await?;
+        if scrubbed {
+            return Err(Error::BadRequest(
+                "email token was removed after the job finished; ask the user to request a new link".into(),
+            ));
+        }
+        Ok(false)
     }
 
     pub async fn next_due(&self) -> Result<Option<i64>> {
