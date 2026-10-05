@@ -44,6 +44,7 @@ pub async fn load(store: &Store, name: &str) -> Result<()> {
                     generation: 1,
                 }),
                 due_at,
+                max_attempts: None,
             },
         )
         .await?;

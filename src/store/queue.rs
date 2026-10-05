@@ -16,6 +16,7 @@ pub struct NewJob {
     pub id: String,
     pub job: Job,
     pub due_at: i64,
+    pub max_attempts: Option<i32>,
 }
 
 impl NewJob {
@@ -24,7 +25,13 @@ impl NewJob {
             id: id.into(),
             job,
             due_at: Utc::now().timestamp(),
+            max_attempts: None,
         }
+    }
+
+    pub fn max_attempts(mut self, max_attempts: i32) -> Self {
+        self.max_attempts = Some(max_attempts);
+        self
     }
 }
 
@@ -56,6 +63,12 @@ impl Outbox {
 
     /// Call on the same connection as the business writes. NOTIFY becomes visible at commit.
     pub async fn insert(conn: &mut PgConnection, job: &NewJob) -> Result<()> {
+        if job.max_attempts.is_some_and(|n| !(1..=100).contains(&n)) {
+            return Err(Error::BadRequest(
+                "job max_attempts must be between 1 and 100".into(),
+            ));
+        }
+
         let payload = job.job.payload()?;
 
         if payload.len() > 240 * 1024 || job.id.len() > 512 {
@@ -64,20 +77,30 @@ impl Outbox {
             ));
         }
 
-        sqlx::query(
-            "INSERT INTO jobs(id,kind,payload_version,payload,queue,run_at,\
-            dedup_key) VALUES($1,$2,$3,$4,$5,to_timestamp($6),$7) ON \
-            CONFLICT(dedup_key) DO NOTHING",
-        )
-        .bind(Uuid::new_v4())
-        .bind(job.job.kind())
-        .bind(PAYLOAD_VERSION)
-        .bind(serde_json::from_str::<serde_json::Value>(&payload)?)
-        .bind(job.job.queue())
-        .bind(job.due_at as f64)
-        .bind(&job.id)
-        .execute(conn)
-        .await?;
+        let sql = match job.max_attempts {
+            Some(_) => {
+                "INSERT INTO jobs(id,kind,payload_version,payload,queue,run_at,\
+                dedup_key,max_attempts) VALUES($1,$2,$3,$4,$5,to_timestamp($6),$7,$8) ON \
+                CONFLICT(dedup_key) DO NOTHING"
+            }
+            None => {
+                "INSERT INTO jobs(id,kind,payload_version,payload,queue,run_at,\
+                dedup_key) VALUES($1,$2,$3,$4,$5,to_timestamp($6),$7) ON \
+                CONFLICT(dedup_key) DO NOTHING"
+            }
+        };
+        let mut query = sqlx::query(sql)
+            .bind(Uuid::new_v4())
+            .bind(job.job.kind())
+            .bind(PAYLOAD_VERSION)
+            .bind(serde_json::from_str::<serde_json::Value>(&payload)?)
+            .bind(job.job.queue())
+            .bind(job.due_at as f64)
+            .bind(&job.id);
+        if let Some(max_attempts) = job.max_attempts {
+            query = query.bind(max_attempts);
+        }
+        query.execute(conn).await?;
         Ok(())
     }
 
