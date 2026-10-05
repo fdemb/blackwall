@@ -86,6 +86,7 @@ pub(super) struct WorkPackage {
     pub title: String,
     pub description: String,
     pub assignee_id: Option<i64>,
+    pub author_id: Option<i64>,
     pub status_id: i64,
     pub status_name: Option<String>,
     pub priority: Priority,
@@ -404,6 +405,8 @@ fn work_package(item: &Value, expected_project: i64) -> Result<WorkPackage> {
         None | Some(Value::Null) => None,
         Some(_) => Some(link_id(item, "assignee")?),
     };
+    // Only the creator column depends on it, so an odd author link must not fail the page.
+    let author_id = link_id(item, "author").ok();
     let parent_id = match item.pointer("/_links/parent/href") {
         None | Some(Value::Null) => None,
         Some(Value::String(href)) if href == "urn:openproject-org:api:v3:undisclosed" => None,
@@ -416,6 +419,7 @@ fn work_package(item: &Value, expected_project: i64) -> Result<WorkPackage> {
         title,
         description,
         assignee_id,
+        author_id,
         status_id,
         status_name,
         priority,

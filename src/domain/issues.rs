@@ -60,6 +60,9 @@ pub struct Issue {
     pub team_id: Uuid,
     pub stage_id: Uuid,
     pub assignee: Option<Uuid>,
+    /// None for OpenProject issues and for issues logged before creators were stored.
+    #[serde(default)]
+    pub created_by: Option<Uuid>,
     pub priority: Priority,
     pub labels: Vec<Uuid>,
     pub estimate: Option<u32>,
@@ -156,6 +159,7 @@ pub struct IssueFilter {
     #[serde(default)]
     pub open: bool,
     pub assignee: Option<Uuid>,
+    pub created_by: Option<Uuid>,
     pub team_id: Option<Uuid>,
     pub stage_id: Option<Uuid>,
     pub priority: Option<Priority>,

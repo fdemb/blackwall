@@ -1,107 +1,79 @@
-import { Link, Navigate, useParams } from "react-router";
-import { Mail, Phone } from "lucide-react";
+import { Navigate, useParams, useSearchParams } from "react-router";
+import { CircleUser, PenLine } from "lucide-react";
 import { Avatar } from "~/components/ui/avatar";
 import { Badge } from "~/components/ui/badge";
-import { IssueList } from "~/components/app/issue-list";
-import { EmptyState, Page, PageHeader, PageHeading, Scroll } from "~/components/app/page";
+import { Tab, TabList, Tabs } from "~/components/ui/tabs";
+import { EmptyState, PageCrumb } from "~/components/app/page";
+import { useQueueState, Workbench } from "~/components/app/workbench";
 import { useI18n } from "~/lib/i18n";
-import { useIssues } from "~/lib/queries";
-import { QueryStatus } from "~/components/app/query-status";
 import { useWorkspace } from "~/lib/workspace";
+import type { IssueFilter } from "~/lib/types";
 
-const PHONE_LIKE = /^[+\d][\d\s()-]{5,}$/;
-const WHITESPACE = /\s/g;
+type PersonTab = "assigned" | "created";
 
 export default function Person() {
   const { t } = useI18n();
   const { userId, ws: wsId } = useParams();
   const { ws, member } = useWorkspace();
-  const query = useIssues({ assignee: userId, open: true });
+  // The tab lives in the URL so a link can open either list. Filters carry across tabs.
+  const [params, setParams] = useSearchParams();
+  const state = useQueueState();
   const m = member(userId);
   if (!m) return <Navigate to={`/${wsId}/people`} replace />;
+  const tab: PersonTab = params.get("tab") === "created" ? "created" : "assigned";
   const role = ws.members.find((x) => x.user_id === m.id)?.role;
-  const issues = query.items;
-  const teams = ws.teams.filter((x) => x.members.includes(m.id));
-  const looksLikePhone = PHONE_LIKE.test(m.contact);
+  const base: IssueFilter =
+    tab === "created"
+      ? { created_by: m.id }
+      : // "Unassigned" from the other tab would otherwise empty this one.
+        { assignee: m.id, unassigned: undefined };
+  const heading = (
+    <div className="mr-2 flex min-w-0 items-center gap-2 text-[13px]">
+      <PageCrumb to={`/${ws.id}/people`}>{t("nav.people")}</PageCrumb>
+      <span aria-hidden="true" className="text-muted-foreground/50">
+        /
+      </span>
+      <Avatar name={m.display_name} src={m.avatar_url} size={20} />
+      <h1 className="truncate font-medium">{m.display_name}</h1>
+      <a
+        href={`mailto:${m.email}`}
+        className="hidden truncate text-muted-foreground hover:text-foreground hover:underline sm:block"
+      >
+        {m.email}
+      </a>
+      {role && <Badge tone={role === "owner" ? "primary" : "neutral"}>{t(`role.${role}`)}</Badge>}
+    </div>
+  );
+  const tabs = (
+    <Tabs
+      selectedKey={tab}
+      onSelectionChange={(k) =>
+        setParams(k === "created" ? { tab: "created" } : {}, { preventScrollReset: true })
+      }
+    >
+      <TabList aria-label={m.display_name}>
+        <Tab id="assigned" size="compact">
+          <CircleUser />
+          {t("person.assigned")}
+        </Tab>
+        <Tab id="created" size="compact">
+          <PenLine />
+          {t("person.created")}
+        </Tab>
+      </TabList>
+    </Tabs>
+  );
   return (
-    <Page>
-      <PageHeader
-        title={m.display_name}
-        heading={
-          <PageHeading parent={{ to: `/${ws.id}/people`, label: t("nav.people") }}>
-            {m.display_name}
-          </PageHeading>
-        }
-      />
-      <Scroll>
-        <div className="mx-auto max-w-3xl space-y-8 p-6">
-          <div className="flex flex-wrap items-center gap-x-5 gap-y-3">
-            <Avatar name={m.display_name} src={m.avatar_url} size={72} />
-            <div className="min-w-0 flex-1 basis-60 space-y-1.5">
-              <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-                <h2 className="min-w-0 break-words text-xl font-semibold tracking-tight">
-                  {m.display_name}
-                </h2>
-                {role && (
-                  <Badge tone={role === "owner" ? "primary" : "neutral"}>{t(`role.${role}`)}</Badge>
-                )}
-              </div>
-              <a
-                href={`mailto:${m.email}`}
-                className="flex items-start gap-2 break-all text-[13px] text-muted-foreground hover:text-foreground"
-              >
-                <Mail className="mt-0.5 size-3.5 shrink-0" />
-                {m.email}
-              </a>
-              {m.contact &&
-                (looksLikePhone ? (
-                  <a
-                    href={`tel:${m.contact.replace(WHITESPACE, "")}`}
-                    className="flex items-start gap-2 break-words text-[13px] text-muted-foreground hover:text-foreground"
-                  >
-                    <Phone className="mt-0.5 size-3.5 shrink-0" />
-                    {m.contact}
-                  </a>
-                ) : (
-                  <p className="flex items-start gap-2 whitespace-pre-line break-words text-[13px] text-muted-foreground">
-                    <Phone className="mt-0.5 size-3.5 shrink-0" />
-                    {m.contact}
-                  </p>
-                ))}
-            </div>
-          </div>
-          <section>
-            <h3 className="mb-2 text-[13px] font-semibold">{t("nav.teams")}</h3>
-            {teams.length === 0 ? (
-              <p className="text-[13px] text-muted-foreground">{t("person.noTeams")}</p>
-            ) : (
-              <div className="flex flex-wrap gap-2">
-                {teams.map((x) => (
-                  <Link
-                    key={x.id}
-                    to={`/${ws.id}/team/${x.id}`}
-                    className="rounded-full border border-border px-3 py-1 text-[13px] hover:border-primary/50 hover:text-primary"
-                  >
-                    {x.name}
-                  </Link>
-                ))}
-              </div>
-            )}
-          </section>
-          <section>
-            <h3 className="mb-2 text-[13px] font-semibold">{t("person.assigned")}</h3>
-            <div className="overflow-hidden rounded-xl border border-border">
-              <IssueList
-                issues={issues}
-                groupBy="none"
-                selectable={false}
-                emptyState={<EmptyState title={t("person.noIssues")} />}
-              />
-            </div>
-            <QueryStatus query={query} />
-          </section>
-        </div>
-      </Scroll>
-    </Page>
+    <Workbench
+      state={state}
+      title={m.display_name}
+      heading={heading}
+      nav={tabs}
+      base={base}
+      hide={tab === "assigned" ? ["assignee"] : []}
+      empty={
+        <EmptyState title={tab === "created" ? t("person.noCreated") : t("person.noAssigned")} />
+      }
+    />
   );
 }

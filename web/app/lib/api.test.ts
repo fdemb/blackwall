@@ -136,6 +136,7 @@ const issue: Issue = {
   team_id: "team-a",
   stage_id: "stage-a",
   assignee: null,
+  created_by: null,
   priority: "normal",
   labels: [],
   estimate: null,

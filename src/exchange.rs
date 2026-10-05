@@ -181,6 +181,7 @@ impl Transfer {
             issue.team_id = entity(&ids, issue.team_id)?;
             issue.stage_id = entity(&ids, issue.stage_id)?;
             issue.assignee = issue.assignee.and_then(|u| mapping.get(&u).copied());
+            issue.created_by = issue.created_by.and_then(|u| mapping.get(&u).copied());
 
             for id in &mut issue.labels {
                 *id = entity(&ids, *id)?;
@@ -230,6 +231,10 @@ impl Transfer {
             view.id = entity(&ids, view.id)?;
             view.owner = identity(view.owner, actor, mapping, &mut identities);
             view.filter.assignee = view.filter.assignee.and_then(|u| mapping.get(&u).copied());
+            view.filter.created_by = view
+                .filter
+                .created_by
+                .and_then(|u| mapping.get(&u).copied());
 
             view.filter.team_id = optional(&ids, view.filter.team_id)?;
             view.filter.stage_id = optional(&ids, view.filter.stage_id)?;

@@ -24,7 +24,7 @@ pub(super) const ISSUE_JSON: &str = r#"(to_jsonb(i)-'workspace_id'-'reminder_gen
 
 const ISSUE_SUMMARY_JSON: &str = r#"jsonb_build_object(
  'id',i.id,'number',i.number,'title',i.title,'team_id',i.team_id,'stage_id',i.stage_id,
- 'assignee',i.assignee,'priority',i.priority,'estimate',i.estimate,'deadline',i.deadline,
+ 'assignee',i.assignee,'created_by',i.created_by,'priority',i.priority,'estimate',i.estimate,'deadline',i.deadline,
  'project_id',i.project_id,'milestone_id',i.milestone_id,'sprint_id',i.sprint_id,
  'parent_id',i.parent_id,'position',i.position,'version',i.version,
  'created_at',i.created_at,'updated_at',i.updated_at,'deleted_at',i.deleted_at,
@@ -97,6 +97,7 @@ fn push_issue_filters(
     });
     for (column, value) in [
         ("assignee", filter.assignee),
+        ("created_by", filter.created_by),
         ("team_id", filter.team_id),
         ("stage_id", filter.stage_id),
         ("sprint_id", filter.sprint_id),

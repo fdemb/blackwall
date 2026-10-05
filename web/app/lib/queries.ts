@@ -76,6 +76,7 @@ export function issueQuery(
   if (!f.trash && !f.archived) query = query.where(({ i }) => isNull(i.archived_at));
   const equal = {
     assignee: f.assignee,
+    created_by: f.created_by,
     team_id: f.team_id,
     stage_id: f.stage_id,
     priority: f.priority,

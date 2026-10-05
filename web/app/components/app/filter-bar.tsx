@@ -9,6 +9,7 @@ import {
   useFilter,
 } from "react-aria-components";
 import {
+  Archive,
   Bookmark,
   ChevronLeft,
   ChevronRight,
@@ -22,7 +23,7 @@ import { Button } from "~/components/ui/button";
 import { Dialog, useDialogDirty } from "~/components/ui/dialog";
 import { SearchField, TextField } from "~/components/ui/field";
 import { Switch } from "~/components/ui/toggles";
-import { Menu, MenuItem, MenuPopover, MenuTrigger } from "~/components/ui/menu";
+import { Menu, MenuItem, MenuPopover, MenuSeparator, MenuTrigger } from "~/components/ui/menu";
 import { Popover } from "~/components/ui/popover";
 import { Avatar } from "~/components/ui/avatar";
 import { useToast } from "~/components/ui/toast";
@@ -45,7 +46,8 @@ type Chip =
   | "project_id"
   | "sprint_id"
   | "due_before"
-  | "team_id";
+  | "team_id"
+  | "archived";
 type Category =
   | "assignee"
   | "stage_id"
@@ -69,6 +71,7 @@ export function FilterBar({
   groupBy,
   onGroupBy,
   saveable = true,
+  sortable = true,
   scope,
 }: {
   filter: IssueFilter;
@@ -77,6 +80,8 @@ export function FilterBar({
   groupBy?: GroupBy;
   onGroupBy?: (g: GroupBy) => void;
   saveable?: boolean;
+  /** Off where the order is fixed, like board columns ordered by hand. */
+  sortable?: boolean;
   /** Filters the page adds on top of the person's own (the team on a team list). They are saved with the view. */
   scope?: IssueFilter;
 }) {
@@ -100,6 +105,7 @@ export function FilterBar({
       "sprint_id",
       "due_before",
       "team_id",
+      "archived",
     ] as const
   ).filter((k) => filter[k] && shown(k));
 
@@ -123,6 +129,8 @@ export function FilterBar({
         return ws.teams.find((x) => x.id === filter.team_id)?.name ?? "?";
       case "due_before":
         return t("filter.dueTo", { date: fullDate(filter.due_before!, lang) });
+      case "archived":
+        return t("filter.archived");
     }
   };
 
@@ -147,14 +155,6 @@ export function FilterBar({
         </span>
       ))}
       <div className="ml-auto flex items-center gap-1.5">
-        {!hide.includes("archived") && (
-          <Switch
-            isSelected={!!filter.archived}
-            onChange={(on) => set({ archived: on || undefined })}
-          >
-            {t("filter.archived")}
-          </Switch>
-        )}
         {onGroupBy && groupBy && (
           <ChoiceMenu
             label={t(`group.${groupBy}`)}
@@ -167,15 +167,17 @@ export function FilterBar({
             onPick={(k) => onGroupBy(k as GroupBy)}
           />
         )}
-        <ChoiceMenu
-          label={`${t("sort.label")}: ${t(`sort.${filter.sort ?? "position"}`)}`}
-          selected={filter.sort ?? "position"}
-          options={(["position", "priority", "deadline", "updated"] as const).map((s) => ({
-            id: s,
-            label: t(`sort.${s}`),
-          }))}
-          onPick={(k) => set({ sort: k as IssueSort })}
-        />
+        {sortable && (
+          <ChoiceMenu
+            label={`${t("sort.label")}: ${t(`sort.${filter.sort ?? "position"}`)}`}
+            selected={filter.sort ?? "position"}
+            options={(["position", "priority", "deadline", "updated"] as const).map((s) => ({
+              id: s,
+              label: t(`sort.${s}`),
+            }))}
+            onPick={(k) => set({ sort: k as IssueSort })}
+          />
+        )}
         {saveable && <SaveViewAction filter={filter} scope={scope} groupBy={groupBy} />}
       </div>
     </div>
@@ -318,6 +320,8 @@ const CATEGORY_LABEL: Record<Category, Key> = {
   due_before: "field.deadline",
 };
 
+const ARCHIVED = "__archived";
+
 /** Two steps: pick what to filter by, then search its values. Keeps long people and project lists out of one menu. */
 function AddFilter({
   filter,
@@ -379,6 +383,8 @@ function AddFilter({
   const categories = (Object.keys(choices) as Category[]).filter(
     (c) => !hide.includes(c) && choices[c].length > 0,
   );
+  // A yes/no filter, so it applies at once instead of opening a second step.
+  const offerArchived = !hide.includes("archived") && !filter.archived;
 
   const pick = (c: Category, id: string) => {
     if (c === "assignee")
@@ -412,7 +418,12 @@ function AddFilter({
             <Menu
               aria-label={t("filter.add")}
               shouldCloseOnSelect={false}
-              onAction={(k) => setCategory(k as Category)}
+              onAction={(k) => {
+                if (k === ARCHIVED) {
+                  set({ archived: true });
+                  setOpen(false);
+                } else setCategory(k as Category);
+              }}
             >
               {categories.map((c) => (
                 <MenuItem key={c} id={c}>
@@ -420,6 +431,13 @@ function AddFilter({
                   <ChevronRight aria-hidden className="size-3.5" />
                 </MenuItem>
               ))}
+              {offerArchived && <MenuSeparator />}
+              {offerArchived && (
+                <MenuItem id={ARCHIVED}>
+                  <Archive aria-hidden />
+                  {t("filter.archivedOnly")}
+                </MenuItem>
+              )}
             </Menu>
           ) : (
             <Autocomplete filter={contains}>

@@ -97,7 +97,7 @@ async fn insert(
     ownership: Ownership<'_>,
 ) -> Result<()> {
     let source = source_value(i, ownership)?;
-    sqlx::query("INSERT INTO issues(id,workspace_id,number,title,description,team_id,stage_id,assignee,priority,estimate,deadline,project_id,milestone_id,sprint_id,parent_id,position,archived_at,done_at,created_at,updated_at,openproject) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$19,$20)")
+    sqlx::query("INSERT INTO issues(id,workspace_id,number,title,description,team_id,stage_id,assignee,priority,estimate,deadline,project_id,milestone_id,sprint_id,parent_id,position,archived_at,done_at,created_at,updated_at,openproject,created_by) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$19,$20,$21)")
             .bind(i.id)
             .bind(workspace)
             .bind(i.number as i64)
@@ -118,6 +118,7 @@ async fn insert(
             .bind(i.done_at)
             .bind(i.created_at)
             .bind(source)
+            .bind(i.created_by)
             .execute(&mut *conn)
             .await?;
     if matches!(ownership, Ownership::Local) {
@@ -151,7 +152,9 @@ async fn save_fields(
     increment_version: bool,
 ) -> Result<()> {
     let source = source_value(i, ownership)?;
-    sqlx::query("UPDATE issues SET title=$3,description=$4,team_id=$16,stage_id=$5,assignee=$6,priority=$7,estimate=$8,deadline=$9,project_id=$10,milestone_id=$11,sprint_id=$12,parent_id=$13,position=$14,deleted_at=$15,updated_at=now(),openproject=$17,archived_at=$18,done_at=$19,version=version+CASE WHEN $20 THEN 1 ELSE 0 END WHERE workspace_id=$1 AND id=$2")
+    // Only OpenProject reassigns the creator, when its author or the people mapping changes.
+    let remote = matches!(ownership, Ownership::Remote(_));
+    sqlx::query("UPDATE issues SET title=$3,description=$4,team_id=$16,stage_id=$5,assignee=$6,priority=$7,estimate=$8,deadline=$9,project_id=$10,milestone_id=$11,sprint_id=$12,parent_id=$13,position=$14,deleted_at=$15,updated_at=now(),openproject=$17,archived_at=$18,done_at=$19,version=version+CASE WHEN $20 THEN 1 ELSE 0 END,created_by=CASE WHEN $21 THEN $22 ELSE created_by END WHERE workspace_id=$1 AND id=$2")
             .bind(workspace)
             .bind(i.id)
             .bind(&i.title)
@@ -172,10 +175,12 @@ async fn save_fields(
             .bind(i.archived_at)
             .bind(i.done_at)
             .bind(increment_version)
+            .bind(remote)
+            .bind(i.created_by)
             .execute(&mut *conn)
             .await?;
 
-    if matches!(ownership, Ownership::Remote(_)) {
+    if remote {
         return Ok(());
     }
 

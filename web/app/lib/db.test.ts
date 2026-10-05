@@ -19,6 +19,7 @@ const issue = (id: string, extra: Partial<Issue> = {}): Issue => ({
   team_id: "team-a",
   stage_id: "todo",
   assignee: null,
+  created_by: null,
   priority: "normal",
   labels: [],
   estimate: null,
@@ -47,6 +48,7 @@ const ISSUES = [
     priority: "high",
     position: 1,
     assignee: "u1",
+    created_by: "u2",
     deadline: "2026-10-03T12:00:00+02:00",
   }),
   issue("i4", { deleted_at: "2026-10-02T00:00:00+00:00" }),
@@ -117,6 +119,7 @@ describe("issueQuery", () => {
     const db = await open();
     expect(await ids(db, { label_id: "bug" })).toEqual(["i1"]);
     expect(await ids(db, { assignee: "u1" })).toEqual(["i3"]);
+    expect(await ids(db, { created_by: "u2" })).toEqual(["i3"]);
     expect(await ids(db, { unassigned: true })).toEqual(["i2", "i1"]);
     expect(await ids(db, { open: true }, ["todo"])).toEqual(["i3", "i1"]);
     expect(await ids(db, { search: "rotate" })).toEqual(["i1"]);

@@ -313,6 +313,7 @@ impl Workspace {
             team_id: input.team_id,
             stage_id,
             assignee: input.assignee,
+            created_by: Some(actor),
             priority: input.priority,
             labels: input.labels,
             estimate: input.estimate,
@@ -1884,6 +1885,7 @@ impl Workspace {
                     && (f.trash || i.archived_at.is_some() == f.archived)
                     && f.assignee.is_none_or(|v| i.assignee == Some(v))
                     && (!f.unassigned || i.assignee.is_none())
+                    && f.created_by.is_none_or(|v| i.created_by == Some(v))
                     && f.team_id.is_none_or(|v| i.team_id == v)
                     && f.stage_id.is_none_or(|v| i.stage_id == v)
                     && f.priority.as_ref().is_none_or(|v| i.priority == *v)

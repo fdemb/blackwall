@@ -1,10 +1,10 @@
 import { useState } from "react";
 import { Form } from "react-aria-components";
-import { Navigate, useParams } from "react-router";
+import { Link } from "react-router";
 import {
   Archive,
   CheckCheck,
-  List,
+  KanbanSquare,
   MoreHorizontal,
   Pencil,
   Play,
@@ -12,15 +12,14 @@ import {
   Target,
 } from "lucide-react";
 import { Badge } from "~/components/ui/badge";
-import { Button } from "~/components/ui/button";
+import { Button, buttonVariants } from "~/components/ui/button";
 import { DatePicker } from "~/components/ui/date-picker";
 import { Dialog, useDialogDirty } from "~/components/ui/dialog";
 import { TextField } from "~/components/ui/field";
 import { Menu, MenuItem, MenuPopover, MenuTrigger } from "~/components/ui/menu";
 import { DndColumn } from "~/components/app/board";
-import { IssueList } from "~/components/app/issue-list";
 import { NullableSelect } from "~/components/app/pickers";
-import { Page, PageHeader, PageHeading, Card } from "~/components/app/page";
+import { Page, PageHeader, Card } from "~/components/app/page";
 import { isDone } from "~/lib/filters";
 import { fullDate, shortDate } from "~/lib/format";
 import { useI18n } from "~/lib/i18n";
@@ -29,18 +28,17 @@ import { useIssues } from "~/lib/queries";
 import { QueryStatus } from "~/components/app/query-status";
 import { useWorkspace } from "~/lib/workspace";
 import type { Id, Sprint } from "~/lib/types";
+import { useTeamContext } from "./team";
 
 export default function Sprints() {
   const { t, lang } = useI18n();
-  const { teamId, ws: wsId } = useParams();
-  const { ws, team, run, canWrite, create, report } = useWorkspace();
-  const query = useIssues({ team_id: teamId });
-  const tm = team(teamId!);
+  const { team: tm, heading, tabs } = useTeamContext();
+  const { ws, run, canWrite, create, report } = useWorkspace();
+  const query = useIssues({ team_id: tm.id });
   const [editing, setEditing] = useState<Sprint | "new" | null>(null);
   const [completing, setCompleting] = useState<Sprint | null>(null);
-  const [viewing, setViewing] = useState<Sprint | null>(null);
   const { pending: changing, guard } = usePending();
-  if (!tm) return <Navigate to={`/${wsId}/my-issues`} replace />;
+  const boardOf = (s: Sprint) => `/${ws.id}/team/${tm.id}/sprints/${s.id}`;
   const sprints = ws.sprints.filter((s) => s.team_id === tm.id);
   const open = sprints
     .filter((s) => s.state === "active" || s.state === "planned")
@@ -73,12 +71,9 @@ export default function Sprints() {
   return (
     <Page>
       <PageHeader
-        title={t("team.sprints")}
-        heading={
-          <PageHeading parent={{ to: `/${ws.id}/team/${tm.id}`, label: tm.name }}>
-            {t("team.sprints")}
-          </PageHeading>
-        }
+        title={`${tm.name}: ${t("team.sprints")}`}
+        heading={heading}
+        nav={tabs}
         actions={
           canWrite && (
             <Button variant="primary" size="sm" onPress={() => setEditing("new")}>
@@ -122,6 +117,14 @@ export default function Sprints() {
                     <Badge tone={s.state === "active" ? "primary" : "neutral"}>
                       {t(`sprint.state.${s.state}`)}
                     </Badge>
+                    <Link
+                      to={boardOf(s)}
+                      aria-label={t("sprint.openBoard")}
+                      title={t("sprint.openBoard")}
+                      className={buttonVariants({ variant: "ghost", size: "icon" })}
+                    >
+                      <KanbanSquare />
+                    </Link>
                     {canWrite && (
                       <MenuTrigger>
                         <Button variant="ghost" size="icon" aria-label={t("action.more")}>
@@ -216,15 +219,17 @@ export default function Sprints() {
                       })}
                     </span>
                   )}
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className={s.outcome ? "" : "ml-auto"}
-                    onPress={() => setViewing(s)}
+                  <Link
+                    to={boardOf(s)}
+                    className={buttonVariants({
+                      variant: "ghost",
+                      size: "sm",
+                      className: s.outcome ? "" : "ml-auto",
+                    })}
                   >
-                    <List />
-                    {t("sprint.viewIssues")}
-                  </Button>
+                    <KanbanSquare />
+                    {t("sprint.openBoard")}
+                  </Link>
                   {canWrite && s.state === "completed" && (
                     <Button
                       variant="ghost"
@@ -252,20 +257,6 @@ export default function Sprints() {
         {(close) => (
           <SprintForm teamId={tm.id} sprint={editing === "new" ? null : editing} close={close} />
         )}
-      </Dialog>
-      <Dialog
-        title={t("sprint.issuesTitle", { name: viewing?.name ?? "" })}
-        size="lg"
-        isOpen={viewing !== null}
-        onOpenChange={(o) => !o && setViewing(null)}
-      >
-        {() =>
-          viewing && (
-            <div className="-mx-5 -mb-5 max-h-[60vh] overflow-y-auto border-t border-border">
-              <SprintIssues sprintId={viewing.id} />
-            </div>
-          )
-        }
       </Dialog>
       <Dialog
         title={t("sprint.complete")}
@@ -432,15 +423,5 @@ function CompleteForm({ sprint, close }: { sprint: Sprint; close: () => void }) 
         </Button>
       </div>
     </Form>
-  );
-}
-
-function SprintIssues({ sprintId }: { sprintId: Id }) {
-  const query = useIssues({ sprint_id: sprintId });
-  return (
-    <>
-      <IssueList issues={query.items} groupBy="none" selectable={false} />
-      <QueryStatus query={query} />
-    </>
   );
 }
