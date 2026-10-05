@@ -118,23 +118,46 @@ impl Outbox {
         .execute(&mut *tx)
         .await?;
 
-        let rows = sqlx::query(
-            "WITH due AS (SELECT id FROM jobs WHERE queue=$1 AND \
-            attempts<max_attempts AND ((state='pending' AND \
-            run_at<=clock_timestamp()) OR (state='running' AND \
-            lease_expires_at<=clock_timestamp())) ORDER BY run_at,id FOR UPDATE \
+        let limit = slots.min(256) as i64;
+
+        let mut rows = sqlx::query(
+            "WITH expired AS (SELECT id FROM jobs WHERE queue=$1 AND \
+            state='running' AND lease_expires_at<=clock_timestamp() AND \
+            attempts<max_attempts ORDER BY lease_expires_at,id FOR UPDATE \
             SKIP LOCKED LIMIT $2) UPDATE jobs SET state='running',\
             claim_token=gen_random_uuid(),\
             lease_expires_at=clock_timestamp()+make_interval(secs=>$3::double \
             precision),attempts=attempts+1,updated_at=clock_timestamp() FROM \
-            due WHERE jobs.id=due.id RETURNING jobs.id,kind,queue,payload,\
-            payload_version,attempts,max_attempts,claim_token",
+            expired WHERE jobs.id=expired.id RETURNING jobs.id,kind,queue,\
+            payload,payload_version,attempts,max_attempts,claim_token",
         )
         .bind(queue)
-        .bind(slots.min(256) as i64)
+        .bind(limit)
         .bind(LEASE_SECONDS as f64)
         .fetch_all(&mut *tx)
         .await?;
+
+        let remaining = limit - rows.len() as i64;
+        if remaining > 0 {
+            let pending = sqlx::query(
+                "WITH due AS (SELECT id FROM jobs WHERE queue=$1 AND \
+                state='pending' AND run_at<=clock_timestamp() AND \
+                attempts<max_attempts ORDER BY run_at,id FOR UPDATE SKIP \
+                LOCKED LIMIT $2) UPDATE jobs SET state='running',\
+                claim_token=gen_random_uuid(),\
+                lease_expires_at=clock_timestamp()+make_interval(secs=>$3::\
+                double precision),attempts=attempts+1,\
+                updated_at=clock_timestamp() FROM due WHERE jobs.id=due.id \
+                RETURNING jobs.id,kind,queue,payload,payload_version,\
+                attempts,max_attempts,claim_token",
+            )
+            .bind(queue)
+            .bind(remaining)
+            .bind(LEASE_SECONDS as f64)
+            .fetch_all(&mut *tx)
+            .await?;
+            rows.extend(pending);
+        }
 
         let claims = rows
             .into_iter()

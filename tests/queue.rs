@@ -214,6 +214,39 @@ async fn expired_leases_reclaim_with_new_tokens_and_fence_stale_workers() {
 }
 
 #[tokio::test]
+async fn expired_leases_claim_first_and_share_slot_budget() {
+    let db = support::TestDatabase::new().await;
+    let store = Store::connect(&db.url).await.unwrap();
+    enqueue(&store, 5).await;
+
+    let leased = store.outbox.claim("email", 2).await.unwrap();
+    assert_eq!(leased.len(), 2);
+    let expired: HashSet<Uuid> = leased.iter().map(|claim| claim.id).collect();
+    sqlx::query(
+        "UPDATE jobs SET lease_expires_at=clock_timestamp()-interval '1 second' \
+         WHERE id=ANY($1)",
+    )
+    .bind(leased.iter().map(|claim| claim.id).collect::<Vec<_>>())
+    .execute(&store.pool)
+    .await
+    .unwrap();
+
+    let first = store.outbox.claim("email", 1).await.unwrap();
+    assert_eq!(first.len(), 1);
+    assert!(expired.contains(&first[0].id));
+
+    let rest = store.outbox.claim("email", 10).await.unwrap();
+    assert_eq!(rest.len(), 4);
+    assert!(expired.contains(&rest[0].id));
+    assert!(!rest.iter().any(|claim| claim.id == first[0].id));
+    let ids: HashSet<Uuid> = rest.iter().map(|claim| claim.id).collect();
+    assert_eq!(ids.len(), 4);
+
+    store.pool.close().await;
+    db.cleanup().await;
+}
+
+#[tokio::test]
 async fn retries_and_crashes_stop_at_max_attempts_and_admin_retry_resets_budget() {
     let db = support::TestDatabase::new().await;
     let store = Store::connect(&db.url).await.unwrap();
