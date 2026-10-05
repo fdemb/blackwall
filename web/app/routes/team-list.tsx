@@ -2,7 +2,7 @@ import { Workbench } from "~/components/app/workbench";
 import { useTeamContext } from "./team";
 
 export default function TeamList() {
-  const { team, state, heading, tabs, sprintLink } = useTeamContext();
+  const { team, state, heading, tabs } = useTeamContext();
   return (
     <Workbench
       state={state}
@@ -11,7 +11,6 @@ export default function TeamList() {
       nav={tabs}
       base={{ team_id: team.id }}
       hide={["team_id"]}
-      actions={sprintLink}
     />
   );
 }

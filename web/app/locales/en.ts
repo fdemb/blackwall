@@ -33,7 +33,7 @@ export const en = {
   "openproject.missingPerson": "Member unavailable, choose a replacement",
   "openproject.people": "People mappings",
   "openproject.peopleHint":
-    "Assignees match workspace members by email. Choose a member to override a match. Hidden or unmatched emails remain unassigned.",
+    "Assignees and authors match workspace members by email. Choose a member to override a match. Hidden or unmatched emails leave the issue unassigned and without a creator.",
   "openproject.hiddenEmail": "{{name}}: email hidden by OpenProject",
   "openproject.automaticPerson": "Automatic · {{name}}",
   "openproject.unassigned": "Automatic · unassigned",
@@ -290,6 +290,7 @@ export const en = {
   "filter.clear": "Clear filters",
   "filter.search": "Filter by title…",
   "filter.archived": "Archived",
+  "filter.archivedOnly": "Archived issues",
   "filter.dueBefore": "Due by",
   "filter.today": "Due today",
   "filter.week": "Due in 7 days",
@@ -332,8 +333,6 @@ export const en = {
   "team.namePlaceholder": "Platform…",
   "team.pickMembers": "Choose people",
   "board.empty": "No issues",
-  "board.allSprints": "All issues",
-  "board.noSprint": "Outside sprints",
   "backlog.emptyTitle": "Backlog is clear",
   "backlog.emptySub": "Everything is planned into a sprint or done.",
 
@@ -348,6 +347,7 @@ export const en = {
   "sprint.archive": "Archive",
   "sprint.past": "Past sprints",
   "sprint.progress": "{{done}} of {{total}} done",
+  "sprint.openBoard": "Open board",
   "sprint.outcome": "{{done}}/{{total}} done · {{effort}} pt",
   "sprint.moveTo": "Move unfinished work to",
   "sprint.unfinished": "{{n}} issues are unfinished. Choose where they go.",
@@ -408,9 +408,11 @@ export const en = {
 
   "people.search": "Find people…",
   "person.unknown": "Former member",
-  "person.noTeams": "Not in any team yet.",
-  "person.assigned": "Open issues",
-  "person.noIssues": "Nothing open.",
+  "person.assigned": "Assigned",
+  "person.created": "Created",
+  "person.noAssigned": "Nothing assigned.",
+  "person.noCreated": "No issues created yet.",
+  "people.openIssues": "Open issues",
   "search.title": "Search",
   "search.placeholder": "Search issues, people, or jump to…",
   "search.empty": "No results",
@@ -616,8 +618,6 @@ export const en = {
   "action.clearSearch": "Clear search",
 
   "sprint.endBeforeStart": "The end date can't be before the start date.",
-  "sprint.viewIssues": "View issues",
-  "sprint.issuesTitle": "{{name}}: issues",
   "sprint.noIssues": "No issues were in this sprint.",
   "sprint.starting": "Starting…",
 

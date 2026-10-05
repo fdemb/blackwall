@@ -264,11 +264,15 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 function TeamLinks({ id, name, base }: { id: string; name: string; base: string }) {
   const { t } = useI18n();
   const { pathname } = useLocation();
+  const { ws } = useWorkspace();
   // null follows the route (open while you're inside the team). Once clicked, the choice sticks.
   const [open, setOpen] = useState<boolean | null>(null);
   const inTeam = pathname.startsWith(`${base}/team/${id}`);
   const isOpen = open ?? inTeam;
-  const onSprints = pathname.startsWith(`${base}/team/${id}/sprints`);
+  const sprints = `${base}/team/${id}/sprints`;
+  const onSprints = pathname.startsWith(sprints);
+  const active = ws.sprints.find((s) => s.team_id === id && s.state === "active");
+  const onActive = !!active && pathname === `${sprints}/${active.id}`;
   return (
     <div>
       <button
@@ -291,9 +295,19 @@ function TeamLinks({ id, name, base }: { id: string; name: string; base: string 
           <Link to={`${base}/team/${id}`} className={linkClass({ isActive: inTeam && !onSprints })}>
             {t("team.issues")}
           </Link>
-          <NavLink to={`${base}/team/${id}/sprints`} className={linkClass}>
+          <Link to={sprints} className={linkClass({ isActive: onSprints && !onActive })}>
             {t("team.sprints")}
-          </NavLink>
+          </Link>
+          {active && (
+            <Link
+              to={`${sprints}/${active.id}`}
+              aria-current={onActive ? "page" : undefined}
+              className={linkClass({ isActive: onActive })}
+            >
+              <span aria-hidden className="size-1.5 shrink-0 rounded-full bg-primary" />
+              <span className="truncate">{active.name}</span>
+            </Link>
+          )}
         </div>
       )}
     </div>

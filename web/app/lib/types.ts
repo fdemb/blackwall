@@ -127,6 +127,8 @@ export interface Issue {
   team_id: Id;
   stage_id: Id;
   assignee: Id | null;
+  /** Null for OpenProject issues and issues created before creators were stored. */
+  created_by: Id | null;
   priority: Priority;
   labels: Id[];
   estimate: number | null;
@@ -176,6 +178,7 @@ export interface Invitation {
 }
 export interface IssueFilter {
   assignee?: Id;
+  created_by?: Id;
   team_id?: Id;
   stage_id?: Id;
   priority?: Priority;

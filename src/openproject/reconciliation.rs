@@ -83,14 +83,16 @@ pub(super) async fn apply_page(
     .into_iter()
     .collect();
     let people: BTreeMap<_, _> = people.iter().map(|person| (person.id, person)).collect();
+    let email_of = |id: Option<i64>| {
+        id.and_then(|id| people.get(&id))
+            .and_then(|person| person.email.as_ref())
+            .map(|email| email.trim().to_lowercase())
+    };
+    // Assignees and authors map to members by the same rules.
     let emails: BTreeSet<String> = items
         .iter()
-        .filter_map(|item| {
-            item.assignee_id
-                .and_then(|id| people.get(&id))
-                .and_then(|person| person.email.as_ref())
-                .map(|email| email.trim().to_lowercase())
-        })
+        .flat_map(|item| [email_of(item.assignee_id), email_of(item.author_id)])
+        .flatten()
         .collect();
     let mapped: Vec<Uuid> = emails
         .iter()
@@ -108,16 +110,21 @@ pub(super) async fn apply_page(
             members_by_email.insert(row.try_get::<String, _>("email")?, id);
         }
     }
-    let assignees: BTreeMap<_, _> = emails
+    let users: BTreeMap<_, _> = emails
         .into_iter()
         .map(|email| {
-            let assignee = match people_mapping.get(&email) {
+            let user = match people_mapping.get(&email) {
                 Some(id) => members_by_id.contains(id).then_some(*id),
                 None => members_by_email.get(&email).copied(),
             };
-            (email, assignee)
+            (email, user)
         })
         .collect();
+    let user_of = |email: &Option<String>| {
+        email
+            .as_ref()
+            .and_then(|email| users.get(email).copied().flatten())
+    };
     let remote_ids: Vec<String> = items.iter().map(|item| item.id.to_string()).collect();
     // Related collections are not remote-owned. Empty placeholders avoid their aggregates;
     // remote persistence only updates the scalar columns carried by this projection.
@@ -210,6 +217,7 @@ pub(super) async fn apply_page(
                 team_id: mapping.team_id,
                 stage_id: destination.id,
                 assignee: None,
+                created_by: None,
                 priority: Default::default(),
                 labels: vec![],
                 estimate: None,
@@ -239,18 +247,18 @@ pub(super) async fn apply_page(
         after.description = item.description.clone();
         after.team_id = mapping.team_id;
         after.stage_id = destination.id;
-        let email = item
-            .assignee_id
-            .and_then(|id| people.get(&id))
-            .and_then(|person| person.email.as_ref())
-            .map(|email| email.trim().to_lowercase());
-        after.assignee = email
-            .as_ref()
-            .and_then(|email| assignees.get(email).copied().flatten());
+        let email = email_of(item.assignee_id);
+        after.assignee = user_of(&email);
         tracing::debug!(work_package_id = item.id, remote_assignee_id = ?item.assignee_id,
             email_available = email.is_some(), assignee_id = ?after.assignee,
             explicit_mapping = email.as_ref().is_some_and(|email| people_mapping.contains_key(email)),
             "OpenProject assignee mapped");
+        let author_email = email_of(item.author_id);
+        after.created_by = user_of(&author_email);
+        tracing::debug!(work_package_id = item.id, remote_author_id = ?item.author_id,
+            email_available = author_email.is_some(), created_by = ?after.created_by,
+            explicit_mapping = author_email.as_ref().is_some_and(|email| people_mapping.contains_key(email)),
+            "OpenProject author mapped");
         after.priority = item.priority.clone();
         after.deadline = item.deadline;
         after.project_id = None;
@@ -277,9 +285,11 @@ pub(super) async fn apply_page(
                 fields.push("openproject".into());
             }
         }
-        // Archive bookkeeping can change even when all visible remote fields match.
+        // Archive bookkeeping and the creator can change even when all visible remote fields match.
         let bookkeeping_changed = before.as_ref().is_some_and(|old| {
-            old.done_at != after.done_at || old.archived_at != after.archived_at
+            old.done_at != after.done_at
+                || old.archived_at != after.archived_at
+                || old.created_by != after.created_by
         });
         let changed = before.is_none() || !fields.is_empty() || bookkeeping_changed;
         tracing::debug!(work_package_id = item.id, issue_id = %after.id, creating = before.is_none(), changed, fields = ?fields,

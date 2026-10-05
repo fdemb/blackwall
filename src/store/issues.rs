@@ -232,6 +232,7 @@ impl Operation<'_> {
             team_id: input.team_id,
             stage_id,
             assignee: input.assignee,
+            created_by: Some(self.actor),
             priority: input.priority,
             labels: input.labels,
             estimate: input.estimate,

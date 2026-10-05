@@ -34,7 +34,7 @@ export const pl = {
   "openproject.missingPerson": "Członek niedostępny, wybierz zamiennik",
   "openproject.people": "Mapowanie osób",
   "openproject.peopleHint":
-    "Przypisane osoby są dopasowywane do członków obszaru roboczego po adresie email. Wybierz członka, aby zmienić dopasowanie. Ukryte lub niedopasowane adresy pozostają bez przypisania.",
+    "Przypisane osoby i autorzy są dopasowywani do członków obszaru roboczego po adresie email. Wybierz członka, aby zmienić dopasowanie. Ukryte lub niedopasowane adresy zostawiają zadanie bez przypisania i bez autora.",
   "openproject.hiddenEmail": "{{name}}: email ukryty w OpenProject",
   "openproject.automaticPerson": "Automatycznie · {{name}}",
   "openproject.unassigned": "Automatycznie · bez przypisania",
@@ -295,6 +295,7 @@ export const pl = {
   "filter.clear": "Wyczyść filtry",
   "filter.search": "Filtruj po tytule…",
   "filter.archived": "Zarchiwizowane",
+  "filter.archivedOnly": "Zarchiwizowane zadania",
   "filter.dueBefore": "Termin do",
   "filter.today": "Termin dziś",
   "filter.week": "Termin w 7 dni",
@@ -337,8 +338,6 @@ export const pl = {
   "team.namePlaceholder": "Platforma…",
   "team.pickMembers": "Wybierz osoby",
   "board.empty": "Brak zadań",
-  "board.allSprints": "Wszystkie zadania",
-  "board.noSprint": "Poza sprintami",
   "backlog.emptyTitle": "Backlog jest pusty",
   "backlog.emptySub": "Wszystko jest w sprincie albo zakończone.",
 
@@ -353,6 +352,7 @@ export const pl = {
   "sprint.archive": "Archiwizuj",
   "sprint.past": "Poprzednie sprinty",
   "sprint.progress": "Zrobione {{done}} z {{total}}",
+  "sprint.openBoard": "Otwórz tablicę",
   "sprint.outcome": "Zrobione {{done}}/{{total}} · {{effort}} pkt",
   "sprint.moveTo": "Przenieś niezakończone zadania do",
   "sprint.unfinished": "Niezakończone zadania: {{n}}. Wybierz, dokąd trafią.",
@@ -413,9 +413,11 @@ export const pl = {
 
   "people.search": "Szukaj osób…",
   "person.unknown": "Były członek",
-  "person.noTeams": "Nie należy jeszcze do żadnego zespołu.",
-  "person.assigned": "Otwarte zadania",
-  "person.noIssues": "Nic otwartego.",
+  "person.assigned": "Przypisane",
+  "person.created": "Utworzone",
+  "person.noAssigned": "Nic nie jest przypisane.",
+  "person.noCreated": "Nie utworzono jeszcze żadnych zadań.",
+  "people.openIssues": "Otwarte zadania",
   "search.title": "Szukaj",
   "search.placeholder": "Szukaj zadań, osób lub przejdź do…",
   "search.empty": "Brak wyników",
@@ -622,8 +624,6 @@ export const pl = {
   "action.clearSearch": "Wyczyść wyszukiwanie",
 
   "sprint.endBeforeStart": "Data końca nie może być przed początkiem.",
-  "sprint.viewIssues": "Pokaż zadania",
-  "sprint.issuesTitle": "{{name}}: zadania",
   "sprint.noIssues": "W tym sprincie nie było zadań.",
   "sprint.starting": "Rozpoczynanie…",
 

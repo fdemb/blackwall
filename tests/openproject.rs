@@ -42,6 +42,7 @@ struct Remote {
     requests: usize,
     assignee_email: Option<String>,
     assignee_id: Option<i64>,
+    author_id: Option<i64>,
     deadline: Option<String>,
     closed_first: bool,
     malformed_last: bool,
@@ -127,6 +128,7 @@ async fn remote(
                 .parse()
                 .unwrap();
             let assignee_id = data.assignee_id;
+            let author_id = data.author_id;
             let moved = data.moved;
             let missing = data.missing;
             let stall = data.stall;
@@ -150,6 +152,7 @@ async fn remote(
                     "_links":{"project":{"href":format!("/api/v3/projects/{project}")},
                         "status":{"href":if closed_first {"/api/v3/statuses/2"}else{"/api/v3/statuses/1"},"title":"In progress"},
                         "assignee":{"href":assignee_id.map(|id| format!("/api/v3/users/{id}"))},
+                        "author":{"href":author_id.map(|id| format!("/api/v3/users/{id}"))},
                         "priority":{"title":"High"}}
                 }));
             }
@@ -823,6 +826,7 @@ async fn people_match_by_email_and_overrides_and_migrated_statuses_reconcile() {
         let mut data = mock.data.lock().await;
         data.assignee_email = Some(format!(" {} ", owner.profile.email.to_uppercase()));
         data.assignee_id = Some(10);
+        data.author_id = Some(10);
     }
     let (url, server) = mock_server(mock.clone()).await;
     let base = format!("/api/workspaces/{workspace}/openproject/connections");
@@ -846,6 +850,7 @@ async fn people_match_by_email_and_overrides_and_migrated_statuses_reconcile() {
         .find(|issue| issue["openproject"]["work_package_id"] == 7)
         .unwrap();
     assert_eq!(first["assignee"], json!(owner.profile.id));
+    assert_eq!(first["created_by"], json!(owner.profile.id));
     let issue_id = first["id"].clone();
     let (_, cached) = call(&app, &owner, "GET", &base, None).await;
     assert_eq!(
@@ -897,6 +902,7 @@ async fn people_match_by_email_and_overrides_and_migrated_statuses_reconcile() {
         .find(|issue| issue["id"] == issue_id)
         .unwrap();
     assert_eq!(first["assignee"], json!(member.profile.id));
+    assert_eq!(first["created_by"], json!(member.profile.id));
     assert_eq!(first["stage_id"], json!(migrated));
     assert!(
         imported
@@ -931,10 +937,15 @@ async fn people_match_by_email_and_overrides_and_migrated_statuses_reconcile() {
     assert_eq!(preserved["people_mapping"], configured["people_mapping"]);
 
     // An unknown, hidden or removed assignee clears the old local assignment.
-    for (email, assignee) in [
-        (Some(outsider.profile.email.clone()), Some(10)),
-        (None, Some(10)),
-        (Some(owner.profile.email.clone()), None),
+    // The author maps by the same rules, so it clears alongside unless only the assignee went away.
+    for (email, assignee, creator) in [
+        (Some(outsider.profile.email.clone()), Some(10), None),
+        (None, Some(10), None),
+        (
+            Some(owner.profile.email.clone()),
+            None,
+            Some(member.profile.id),
+        ),
     ] {
         {
             let mut data = mock.data.lock().await;
@@ -944,13 +955,12 @@ async fn people_match_by_email_and_overrides_and_migrated_statuses_reconcile() {
         call(&app, &owner, "POST", &format!("{action}/sync"), None).await;
         drain(&store).await;
         let imported = issues(&app, &owner, workspace).await;
-        assert!(
-            imported
-                .iter()
-                .find(|issue| issue["id"] == issue_id)
-                .unwrap()["assignee"]
-                .is_null()
-        );
+        let issue = imported
+            .iter()
+            .find(|issue| issue["id"] == issue_id)
+            .unwrap();
+        assert!(issue["assignee"].is_null());
+        assert_eq!(issue["created_by"], json!(creator));
     }
     {
         let mut data = mock.data.lock().await;

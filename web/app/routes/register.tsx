@@ -10,7 +10,7 @@ import { useDocumentTitle } from "~/lib/title";
 import { formText } from "~/lib/utils";
 
 export default function Register() {
-  const { t } = useI18n();
+  const { t, lang } = useI18n();
   const nav = useNavigate();
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -34,6 +34,11 @@ export default function Register() {
               formText(f, "name"),
             );
             setCsrf(s.csrf_token);
+            // New accounts start in English. Keep the language the form was shown in.
+            if (s.profile.language !== lang) {
+              const { id: _id, email: _email, ...profile } = s.profile;
+              await auth.editProfile({ ...profile, language: lang }).catch(() => undefined);
+            }
             await nav("/", { replace: true });
           } catch (err) {
             setError((err as Error).message);

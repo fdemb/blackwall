@@ -11,7 +11,7 @@ import { useTeamContext } from "./team";
 
 export default function TeamBacklog() {
   const { t } = useI18n();
-  const { team, state, heading, tabs, sprintLink } = useTeamContext();
+  const { team, state, heading, tabs } = useTeamContext();
   const teamId = team.id;
   const { create, canWrite } = useWorkspace();
   const { filter, setFilter } = state;
@@ -35,15 +35,12 @@ export default function TeamBacklog() {
         heading={heading}
         nav={tabs}
         actions={
-          <>
-            {sprintLink}
-            {canWrite && (
-              <Button variant="primary" size="sm" onPress={() => create.show({ team_id: teamId })}>
-                <Plus />
-                {t("issue.new")}
-              </Button>
-            )}
-          </>
+          canWrite && (
+            <Button variant="primary" size="sm" onPress={() => create.show({ team_id: teamId })}>
+              <Plus aria-hidden />
+              {t("issue.new")}
+            </Button>
+          )
         }
       >
         <FilterBar
