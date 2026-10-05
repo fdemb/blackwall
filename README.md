@@ -13,6 +13,8 @@ cp .env.example .env
 cargo run
 ```
 
+`cargo run` starts HTTP only. Run `cargo run -- worker` in a second terminal for email, webhooks, reminders and OpenProject sync.
+
 The server requires a PostgreSQL `DATABASE_URL` and applies SQLx migrations at startup. `DATABASE_MAX_CONNECTIONS` defaults to 16 and `DATABASE_ACQUIRE_TIMEOUT_SECONDS` to 10. `.env.example` uses `postgres://blackwall:blackwall@127.0.0.1:5432/blackwall`. The Compose services bind to loopback, and PostgreSQL keeps local data in the `postgres-data` volume. Set `POSTGRES_PORT` to change the host port and update your database URLs to match.
 
 Open `http://127.0.0.1:3000`, register an account, and create a workspace. Create a team before adding issues.
@@ -75,9 +77,13 @@ The API includes membership and invitations, workflows, labels, issue relations,
 
 ## Background delivery
 
-Workers claim PostgreSQL jobs with leases and bounded attempts. Database changes and their jobs commit together. Workers use separate limits for email, webhook, and database jobs. `.env.example` documents concurrency, idle polling, shutdown drain time, and history retention. The idle poll interval is at most five seconds. Failed jobs remain available for inspection.
+`blackwall serve` runs HTTP only. `blackwall worker` runs jobs only. Run both processes in production. Workers claim PostgreSQL jobs with leases and bounded attempts. Database changes and their jobs commit together. Workers use separate limits for email, webhook, and database jobs. `.env.example` documents concurrency, idle polling, shutdown drain time, and history retention. The idle poll interval is at most five seconds. Failed jobs remain available for inspection.
 
-Run `cargo run -- worker` for workers without HTTP. Queue administration requires shell and database access:
+A missing or stuck worker shows up as a growing `oldest_overdue_seconds`. It is reported by `blackwall queue status` and by the worker periodic "database and queue pressure" log line. Alert on it.
+
+The worker drains in-flight jobs for up to `JOBS_DRAIN_SECONDS` (default 50s, max 120s). Set the process manager stop timeout above that. For example, set Kubernetes `terminationGracePeriodSeconds` above the drain timeout. Its default is 30s. Otherwise the process is killed mid-drain and its leases expire after 120s before another worker retries them.
+
+Queue administration requires shell and database access:
 
 ```sh
 cargo run -- queue status

@@ -364,9 +364,6 @@ async fn configure(
         .await?,
     )?;
     tx.commit().await?;
-    if scan_changed {
-        store.outbox.ready();
-    }
     tracing::debug!(connection_id = %id, workspace_id = %workspace, generation = result.generation,
         enabled, project_count = result.projects.len(), people_override_count = result.people_mapping.len(),
         "OpenProject configuration saved");
@@ -420,7 +417,6 @@ async fn request(
         .bind(workspace).bind(id).bind(json!(checkpoint)).bind(refresh_only).execute(&mut *tx).await?.rows_affected()==0 { return Err(Error::BadRequest("connection missing or disabled".into())); }
     cancel_pending(&mut tx, id).await?;
     tx.commit().await?;
-    store.outbox.ready();
     tracing::debug!(connection_id = %id, workspace_id = %workspace, refresh_only, "OpenProject scan requested");
     Ok((StatusCode::ACCEPTED, Json(json!({"queued":true}))))
 }

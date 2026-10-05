@@ -209,7 +209,6 @@ impl Store {
         }
 
         op.tx.commit().await?;
-        self.outbox.ready();
 
         Ok(result)
     }

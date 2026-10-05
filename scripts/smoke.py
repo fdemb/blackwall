@@ -51,6 +51,7 @@ try:
         environment.update(DATABASE_URL=urllib.parse.urlunsplit(parsed._replace(path=f"/{database}")), BIND_ADDR=f"127.0.0.1:{port}", WEB_DIR=str(root / "web/build/client"))
         binary = str(root / "target/debug/blackwall")
         process = None
+        worker = None
         token = None
         with open(f"{temporary}/server.log", "w+") as log:
             def request(method, path, data=None):
@@ -65,10 +66,11 @@ try:
                     return json.loads(body) if body and response.headers.get_content_type() == "application/json" else body
 
             def start():
-                global process
+                global process, worker
                 process = subprocess.Popen([binary], cwd=temporary, env=environment, stdout=log, stderr=log)
+                worker = subprocess.Popen([binary, "worker"], cwd=temporary, env=environment, stdout=log, stderr=log)
                 for _ in range(100):
-                    if process.poll() is not None:
+                    if process.poll() is not None or worker.poll() is not None:
                         log.seek(0)
                         raise RuntimeError(log.read())
                     try:
@@ -79,17 +81,30 @@ try:
                 raise RuntimeError("server did not start")
 
             def stop():
-                global process
-                if process is not None:
-                    process.send_signal(signal.SIGINT)
+                global process, worker
+                procs = [proc for proc in (process, worker) if proc is not None]
+                for proc in procs:
                     try:
-                        process.wait(timeout=40)
-                    except subprocess.TimeoutExpired:
-                        process.kill()
-                        process.wait()
-                        raise
-                    assert process.returncode == 0
-                    process = None
+                        proc.send_signal(signal.SIGINT)
+                    except Exception:
+                        pass
+                first = None
+                for proc in procs:
+                    try:
+                        try:
+                            proc.wait(timeout=40)
+                        except subprocess.TimeoutExpired:
+                            proc.kill()
+                            proc.wait()
+                            raise
+                        assert proc.returncode == 0
+                    except Exception as error:
+                        if first is None:
+                            first = error
+                process = None
+                worker = None
+                if first is not None:
+                    raise first
 
             try:
                 for _ in range(2):

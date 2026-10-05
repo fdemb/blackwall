@@ -390,7 +390,6 @@ impl Store {
             Outbox::insert(&mut tx, &NewJob::now(Uuid::new_v4().to_string(), job)).await?;
 
             tx.commit().await?;
-            self.outbox.ready();
         }
 
         Ok(())

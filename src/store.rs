@@ -243,7 +243,6 @@ impl Store {
 
         changes::render(&mut op.tx, workspace_id, actor, &mut result.changes).await?;
         op.tx.commit().await?;
-        self.outbox.ready();
 
         Ok(result)
     }
