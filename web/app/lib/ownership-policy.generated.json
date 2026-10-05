@@ -1,0 +1,77 @@
+{
+  "capabilities": {
+    "local": {
+      "add_attachment": true,
+      "delete": true,
+      "discussion": true,
+      "edit": true,
+      "follow": true,
+      "move": true,
+      "relation": true,
+      "remove_attachment": true,
+      "restore": true,
+      "source_links": true,
+      "time_tracking": true
+    },
+    "openproject": {
+      "add_attachment": true,
+      "delete": false,
+      "discussion": true,
+      "edit": false,
+      "follow": true,
+      "move": false,
+      "relation": false,
+      "remove_attachment": false,
+      "restore": false,
+      "source_links": false,
+      "time_tracking": true
+    }
+  },
+  "rules": [
+    {
+      "capability": "edit",
+      "command": "update_issue",
+      "targets": ["id", "patch/parent_id", "patch/dependencies/*"]
+    },
+    {
+      "capability": "move",
+      "command": "move_issue",
+      "targets": ["id"]
+    },
+    {
+      "capability": "delete",
+      "command": "delete_issue",
+      "targets": ["id"]
+    },
+    {
+      "capability": "restore",
+      "command": "restore_issue",
+      "targets": ["id"]
+    },
+    {
+      "capability": "edit",
+      "command": "bulk_issues",
+      "targets": ["ids/*", "action/update/parent_id", "action/update/dependencies/*"]
+    },
+    {
+      "capability": "source_links",
+      "command": "add_source_link",
+      "targets": ["issue_id"]
+    },
+    {
+      "capability": "remove_attachment",
+      "command": "remove_attachment",
+      "targets": ["issue_id"]
+    },
+    {
+      "capability": "relation",
+      "command": "create_issue",
+      "targets": ["input/parent_id", "input/dependencies/*"]
+    },
+    {
+      "capability": "relation",
+      "command": "import_issues",
+      "targets": ["issues/*/parent_id", "issues/*/dependencies/*"]
+    }
+  ]
+}

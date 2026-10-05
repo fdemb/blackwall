@@ -13,6 +13,7 @@ import { usePending } from "~/lib/use-pending";
 import { useWorkspace } from "~/lib/workspace";
 import { useToast } from "~/components/ui/toast";
 import type { Integration } from "~/lib/types";
+import { OpenProjectSettings } from "~/components/app/openproject-settings";
 
 export default function Integrations() {
   const { t } = useI18n();
@@ -50,7 +51,8 @@ export default function Integrations() {
         </Button>
       }
     >
-      <SettingsSection>
+      <OpenProjectSettings />
+      <SettingsSection title={t("openproject.webhooks")}>
         {ws.integrations.length === 0 ? (
           <EmptyState
             icon={<Plug />}

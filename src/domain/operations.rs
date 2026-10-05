@@ -283,6 +283,7 @@ impl Workspace {
         };
 
         let issue = Issue {
+            openproject: None,
             blocked_count: 0,
             subtask_total: 0,
             subtask_completed: 0,

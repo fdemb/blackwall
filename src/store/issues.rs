@@ -1,5 +1,5 @@
 use super::*;
-use crate::jobs::{Job, Reminder};
+use crate::jobs::Reminder;
 use std::collections::BTreeSet;
 
 impl Operation<'_> {
@@ -13,40 +13,15 @@ impl Operation<'_> {
     }
 
     pub(super) async fn capacity(&mut self, table: &str, max: i64) -> Result<()> {
-        assert!(matches!(
+        persistence::capacity(
+            &mut self.tx,
+            self.workspace_id,
             table,
-            "issues"
-                | "teams"
-                | "projects"
-                | "sprints"
-                | "comments"
-                | "time_entries"
-                | "notifications"
-                | "activity"
-                | "workspace_members"
-                | "invitations"
-                | "saved_views"
-                | "integrations"
-                | "labels"
-                | "milestones"
-        ));
-        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,30269))")
-            .bind(format!("{}:{table}", self.workspace_id))
-            .execute(&mut *self.tx)
-            .await?;
-
-        let count: i64 = sqlx::query_scalar(&format!(
-            "SELECT count(*) FROM {table} WHERE workspace_id=$1"
-        ))
-        .bind(self.workspace_id)
-        .fetch_one(&mut *self.tx)
-        .await?;
-
-        if count >= max {
-            return Err(Error::BadRequest("workspace capacity reached".into()));
-        }
-
-        Ok(())
+            max,
+            &mut None,
+            "workspace capacity reached",
+        )
+        .await
     }
 
     pub(super) async fn validate_workflow(&mut self) -> Result<()> {
@@ -68,43 +43,7 @@ impl Operation<'_> {
     }
 
     pub(super) async fn schedule_reminder(&mut self, id: Uuid) -> Result<()> {
-        let row = sqlx::query("UPDATE issues SET reminder_generation=reminder_generation+1 WHERE workspace_id=$1 AND id=$2 RETURNING deadline,reminder_generation,stage_id,deleted_at")
-            .bind(self.workspace_id)
-            .bind(id)
-            .fetch_one(&mut *self.tx)
-            .await?;
-
-        let deadline: Option<DateTime<Utc>> = row.try_get("deadline")?;
-        let generation: i64 = row.try_get("reminder_generation")?;
-        let stage: Uuid = row.try_get("stage_id")?;
-        let done: bool =
-            sqlx::query_scalar("SELECT kind IN ('done','cancelled') FROM stages WHERE id=$1")
-                .bind(stage)
-                .fetch_one(&mut *self.tx)
-                .await?;
-
-        if let Some(deadline) = deadline
-            && !done
-            && row
-                .try_get::<Option<DateTime<Utc>>, _>("deleted_at")?
-                .is_none()
-        {
-            Outbox::insert(
-                &mut self.tx,
-                &NewJob {
-                    id: format!("reminder:{id}:{generation}"),
-                    job: Job::Reminder(Reminder {
-                        workspace_id: self.workspace_id,
-                        issue_id: id,
-                        generation,
-                    }),
-                    due_at: (deadline - chrono::Duration::hours(24)).timestamp(),
-                },
-            )
-            .await?;
-        }
-
-        Ok(())
+        persistence::schedule_reminder(&mut self.tx, self.workspace_id, id).await
     }
 
     async fn validate_issue_sql(&mut self, i: &Issue) -> Result<()> {
@@ -191,12 +130,20 @@ impl Operation<'_> {
         }
 
         for dep in i.dependencies.iter().copied().collect::<BTreeSet<_>>() {
-            let row = sqlx::query("SELECT i.deleted_at,s.kind FROM issues i JOIN stages s ON s.id=i.stage_id WHERE i.workspace_id=$1 AND i.id=$2")
+            let row = sqlx::query("SELECT i.deleted_at,i.openproject,s.kind FROM issues i JOIN stages s ON s.id=i.stage_id WHERE i.workspace_id=$1 AND i.id=$2")
                 .bind(self.workspace_id)
                 .bind(dep)
                 .fetch_optional(&mut *self.tx)
                 .await?
                 .ok_or(Error::NotFound)?;
+            if row
+                .try_get::<Option<serde_json::Value>, _>("openproject")?
+                .is_some()
+            {
+                return Err(Error::Conflict(
+                    "OpenProject issues cannot be dependencies".into(),
+                ));
+            }
             if dep == i.id
                 || row
                     .try_get::<Option<DateTime<Utc>>, _>("deleted_at")?
@@ -226,7 +173,7 @@ impl Operation<'_> {
 
         if let Some(parent) = i.parent_id {
             sqlx::query(
-                "SELECT id FROM issues WHERE workspace_id=$1 AND id=$2 AND deleted_at IS NULL",
+                "SELECT id FROM issues WHERE workspace_id=$1 AND id=$2 AND deleted_at IS NULL AND openproject IS NULL",
             )
             .bind(self.workspace_id)
             .bind(parent)
@@ -248,55 +195,13 @@ impl Operation<'_> {
     }
 
     async fn save_issue_fields(&mut self, i: &Issue) -> Result<()> {
-        sqlx::query("UPDATE issues SET title=$3,description=$4,stage_id=$5,assignee=$6,priority=$7,estimate=$8,deadline=$9,project_id=$10,milestone_id=$11,sprint_id=$12,parent_id=$13,position=$14,deleted_at=$15,updated_at=now() WHERE workspace_id=$1 AND id=$2")
-            .bind(self.workspace_id)
-            .bind(i.id)
-            .bind(&i.title)
-            .bind(&i.description)
-            .bind(i.stage_id)
-            .bind(i.assignee)
-            .bind(enum_text(&i.priority))
-            .bind(i.estimate.map(i64::from))
-            .bind(i.deadline)
-            .bind(i.project_id)
-            .bind(i.milestone_id)
-            .bind(i.sprint_id)
-            .bind(i.parent_id)
-            .bind(i.position)
-            .bind(i.deleted_at)
-            .execute(&mut *self.tx)
-            .await?;
-
-        sqlx::query("DELETE FROM issue_labels WHERE issue_id=$1")
-            .bind(i.id)
-            .execute(&mut *self.tx)
-            .await?;
-
-        for label in i.labels.iter().copied().collect::<BTreeSet<_>>() {
-            sqlx::query(
-                "INSERT INTO issue_labels(workspace_id,issue_id,label_id) VALUES($1,$2,$3)",
-            )
-            .bind(self.workspace_id)
-            .bind(i.id)
-            .bind(label)
-            .execute(&mut *self.tx)
-            .await?;
-        }
-
-        sqlx::query("DELETE FROM issue_dependencies WHERE issue_id=$1")
-            .bind(i.id)
-            .execute(&mut *self.tx)
-            .await?;
-        for dep in i.dependencies.iter().copied().collect::<BTreeSet<_>>() {
-            sqlx::query("INSERT INTO issue_dependencies(workspace_id,issue_id,dependency_id) VALUES($1,$2,$3)")
-                .bind(self.workspace_id)
-                .bind(i.id)
-                .bind(dep)
-                .execute(&mut *self.tx)
-                .await?;
-        }
-
-        Ok(())
+        persistence::save(
+            &mut self.tx,
+            self.workspace_id,
+            i,
+            persistence::Ownership::Local,
+        )
+        .await
     }
 
     async fn create_issue_sql(&mut self, input: IssueInput) -> Result<Uuid> {
@@ -315,6 +220,7 @@ impl Operation<'_> {
         let now = Utc::now();
         let id = Uuid::new_v4();
         let mut i = Issue {
+            openproject: None,
             blocked_count: 0,
             subtask_total: 0,
             subtask_completed: 0,
@@ -345,37 +251,13 @@ impl Operation<'_> {
         };
 
         self.validate_issue_sql(&i).await?;
-        i.number = sqlx::query_scalar::<_,i64>("UPDATE workspaces SET next_issue_number=next_issue_number+1 WHERE id=$1 RETURNING next_issue_number-1")
-            .bind(self.workspace_id)
-            .fetch_one(&mut *self.tx)
-            .await? as u64;
-        i.position = sqlx::query_scalar("SELECT COALESCE(max(position),-1024)+1024 FROM issues WHERE workspace_id=$1 AND team_id=$2 AND stage_id=$3 AND deleted_at IS NULL")
-            .bind(self.workspace_id)
-            .bind(i.team_id)
-            .bind(stage_id)
-            .fetch_one(&mut *self.tx)
-            .await?;
-        sqlx::query("INSERT INTO issues(id,workspace_id,number,title,description,team_id,stage_id,assignee,priority,estimate,deadline,project_id,milestone_id,sprint_id,parent_id,position,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$17)")
-            .bind(id)
-            .bind(self.workspace_id)
-            .bind(i.number as i64)
-            .bind(&i.title)
-            .bind(&i.description)
-            .bind(i.team_id)
-            .bind(i.stage_id)
-            .bind(i.assignee)
-            .bind(enum_text(&i.priority))
-            .bind(i.estimate.map(i64::from))
-            .bind(i.deadline)
-            .bind(i.project_id)
-            .bind(i.milestone_id)
-            .bind(i.sprint_id)
-            .bind(i.parent_id)
-            .bind(i.position)
-            .bind(now)
-            .execute(&mut *self.tx)
-            .await?;
-        self.save_issue_fields(&i).await?;
+        persistence::create(
+            &mut self.tx,
+            self.workspace_id,
+            &mut i,
+            persistence::Ownership::Local,
+        )
+        .await?;
 
         sqlx::query("INSERT INTO issue_followers(workspace_id,issue_id,user_id) VALUES($1,$2,$3)")
             .bind(self.workspace_id)
@@ -385,51 +267,27 @@ impl Operation<'_> {
             .await?;
 
         self.created(id);
-        self.schedule_reminder(id).await?;
-
-        if let Some(user) = i.assignee
-            && user != self.actor
-        {
-            self.notify(
-                user,
-                Some(id),
-                AlertKind::Assignment,
-                i.title.clone(),
-                format!("assignment:{id}:{}", Uuid::new_v4()),
-            )
+        self.issue_effects(None, &i, persistence::IssueEffects::Create)
             .await?;
-        }
-
-        self.completion_event(None, &i).await?;
 
         Ok(id)
     }
 
-    async fn completion_event(&mut self, before: Option<&Issue>, after: &Issue) -> Result<()> {
-        let done: bool =
-            sqlx::query_scalar("SELECT kind IN ('done','cancelled') FROM stages WHERE id=$1")
-                .bind(after.stage_id)
-                .fetch_one(&mut *self.tx)
-                .await?;
-
-        let was_done = if let Some(i) = before {
-            sqlx::query_scalar::<_, bool>(
-                "SELECT kind IN ('done','cancelled') FROM stages WHERE id=$1",
-            )
-            .bind(i.stage_id)
-            .fetch_one(&mut *self.tx)
-            .await?
-                && i.deleted_at.is_none()
-        } else {
-            false
-        };
-
-        if done && !was_done && after.deleted_at.is_none() {
-            self.activity("issue_completed", Some(after.id), vec![])
-                .await?;
-        }
-
-        Ok(())
+    async fn issue_effects(
+        &mut self,
+        before: Option<&Issue>,
+        after: &Issue,
+        effects: persistence::IssueEffects,
+    ) -> Result<()> {
+        persistence::issue_effects(
+            &mut self.tx,
+            self.workspace_id,
+            self.actor,
+            before,
+            after,
+            effects,
+        )
+        .await
     }
 
     async fn patch_issue_sql(&mut self, id: Uuid, p: IssuePatch) -> Result<()> {
@@ -493,42 +351,13 @@ impl Operation<'_> {
             i.dependencies = v
         }
 
-        self.activity_fields.extend(changed_fields(&old, &i));
+        self.activity_fields
+            .extend(persistence::changed_fields(&old, &i));
         self.validate_issue_sql(&i).await?;
         self.save_issue_fields(&i).await?;
 
-        if i.deadline != old.deadline || i.stage_id != old.stage_id || i.assignee != old.assignee {
-            self.schedule_reminder(id).await?;
-        }
-
-        if i.assignee != old.assignee
-            && let Some(user) = i.assignee
-            && user != self.actor
-        {
-            self.notify(
-                user,
-                Some(id),
-                AlertKind::Assignment,
-                i.title.clone(),
-                format!("assignment:{id}:{}", Uuid::new_v4()),
-            )
+        self.issue_effects(Some(&old), &i, persistence::IssueEffects::Update)
             .await?;
-        }
-
-        for user in &i.followers {
-            if *user != self.actor {
-                self.notify(
-                    *user,
-                    Some(id),
-                    AlertKind::Change,
-                    i.title.clone(),
-                    format!("change:{id}:{user}:{}", Uuid::new_v4()),
-                )
-                .await?;
-            }
-        }
-
-        self.completion_event(Some(&old), &i).await?;
 
         Ok(())
     }
@@ -537,6 +366,7 @@ impl Operation<'_> {
         self.touch("issues", id).await?;
 
         let mut i = reads::issue_on(&mut self.tx, self.workspace_id, id, true).await?;
+        let old = i.clone();
         if restore {
             if i.deleted_at.is_none() {
                 return Err(Error::BadRequest("issue is not deleted".into()));
@@ -551,7 +381,8 @@ impl Operation<'_> {
         }
 
         self.save_issue_fields(&i).await?;
-        self.schedule_reminder(id).await?;
+        self.issue_effects(Some(&old), &i, persistence::IssueEffects::DeleteRestore)
+            .await?;
 
         Ok(())
     }
@@ -679,10 +510,8 @@ impl Operation<'_> {
                     self.activity_fields.push("stage".into());
                 }
                 self.save_issue_fields(&i).await?;
-                if old.stage_id != stage_id {
-                    self.schedule_reminder(id).await?;
-                }
-                self.completion_event(Some(&old), &i).await?;
+                self.issue_effects(Some(&old), &i, persistence::IssueEffects::Move)
+                    .await?;
                 Some(id)
             }
             Command::Follow {
@@ -814,26 +643,4 @@ impl Store {
 
         Ok(())
     }
-}
-
-fn changed_fields(before: &Issue, after: &Issue) -> Vec<String> {
-    [
-        ("title", before.title != after.title),
-        ("description", before.description != after.description),
-        ("stage", before.stage_id != after.stage_id),
-        ("assignee", before.assignee != after.assignee),
-        ("priority", before.priority != after.priority),
-        ("labels", before.labels != after.labels),
-        ("estimate", before.estimate != after.estimate),
-        ("deadline", before.deadline != after.deadline),
-        ("project", before.project_id != after.project_id),
-        ("milestone", before.milestone_id != after.milestone_id),
-        ("sprint", before.sprint_id != after.sprint_id),
-        ("parent", before.parent_id != after.parent_id),
-        ("dependencies", before.dependencies != after.dependencies),
-    ]
-    .into_iter()
-    .filter(|(_, changed)| *changed)
-    .map(|(name, _)| name.to_owned())
-    .collect()
 }

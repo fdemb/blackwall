@@ -38,6 +38,7 @@ pub struct WorkerConfig {
     pub email_concurrency: usize,
     pub webhook_concurrency: usize,
     pub database_concurrency: usize,
+    pub openproject_concurrency: usize,
     pub poll_interval: Duration,
     pub drain_timeout: Duration,
     pub retention_days: i32,
@@ -49,6 +50,7 @@ impl Default for WorkerConfig {
             email_concurrency: 4,
             webhook_concurrency: 4,
             database_concurrency: 2,
+            openproject_concurrency: 2,
             poll_interval: Duration::from_secs(5),
             drain_timeout: Duration::from_secs(50),
             retention_days: 30,
@@ -79,6 +81,7 @@ impl WorkerConfig {
                 1,
                 16,
             )? as usize,
+            openproject_concurrency: setting("JOBS_OPENPROJECT_CONCURRENCY", 2, 1, 4)? as usize,
             poll_interval: Duration::from_millis(setting("JOBS_POLL_MS", 5000, 50, 5000)?),
             drain_timeout: Duration::from_secs(setting("JOBS_DRAIN_SECONDS", 50, 1, 120)?),
             retention_days: setting("JOBS_RETENTION_DAYS", 30, 1, 3650)? as i32,
@@ -94,7 +97,9 @@ impl WorkerConfig {
             || self.email_concurrency > 32
             || self.webhook_concurrency > 32
             || self.database_concurrency > 16
-            || pool_size < self.database_concurrency + 3
+            || self.openproject_concurrency == 0
+            || self.openproject_concurrency > 4
+            || pool_size < self.database_concurrency + self.openproject_concurrency + 3
             || self.poll_interval.is_zero()
             || self.poll_interval > Duration::from_secs(5)
             || self.drain_timeout.is_zero()
@@ -148,9 +153,9 @@ pub async fn run_with_config(
     ));
 
     let mut tasks = JoinSet::new();
-    let mut active = [0_usize; 3];
+    let mut active = [0_usize; 4];
     let mut task_queues = HashMap::new();
-    let queues = ["email", "webhook", "database"];
+    let queues = ["email", "webhook", "database", "openproject"];
 
     let limits = [
         if mailer.enabled() {
@@ -160,6 +165,7 @@ pub async fn run_with_config(
         },
         config.webhook_concurrency,
         config.database_concurrency,
+        config.openproject_concurrency,
     ];
 
     if !mailer.enabled() {
@@ -173,6 +179,9 @@ pub async fn run_with_config(
             break;
         }
 
+        if crate::openproject::schedule(&store).await.is_err() {
+            tracing::warn!("OpenProject scheduling failed");
+        }
         for index in 0..queues.len() {
             if *shutdown.borrow() {
                 break;
@@ -314,7 +323,8 @@ async fn stopped(shutdown: &mut watch::Receiver<bool>) {
 
 /// Executes currently due work once, preserving missing-SMTP pause behavior.
 pub async fn tick(store: &Store, mailer: &Mailer) -> Result<()> {
-    for queue in ["database", "webhook", "email"] {
+    crate::openproject::schedule(store).await?;
+    for queue in ["database", "webhook", "email", "openproject"] {
         if queue == "email" && !mailer.enabled() {
             continue;
         }
@@ -336,6 +346,24 @@ async fn execute(store: &Store, mailer: &Mailer, claim: &Claim) -> Result<()> {
             Err(_) => Err(DeliveryError::Permanent("invalid job kind or payload")),
             Ok(job) if job.queue() != claim.queue => {
                 Err(DeliveryError::Permanent("job kind does not match queue"))
+            }
+            Ok(Job::OpenProject(job)) => {
+                let result = tokio::time::timeout(
+                    Duration::from_secs(75),
+                    crate::openproject::execute(store, claim, &job),
+                )
+                .await;
+                match result {
+                    Ok(Ok(())) => return Ok(()),
+                    failed => {
+                        let message = match failed {
+                            Ok(Err(error)) => crate::openproject::failure_message(&error),
+                            _ => "OpenProject sync timed out; retry scheduled".into(),
+                        };
+                        let _ = crate::openproject::record_failure(store, &job, &message).await;
+                        Err(DeliveryError::Transient("OpenProject sync failed"))
+                    }
+                }
             }
             Ok(Job::Reminder(reminder)) => {
                 let result = tokio::time::timeout(

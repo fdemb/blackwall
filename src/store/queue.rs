@@ -157,7 +157,7 @@ impl Outbox {
     }
 
     pub async fn claim_next(&self) -> Result<Option<Claim>> {
-        for queue in ["database", "email", "webhook"] {
+        for queue in ["database", "email", "webhook", "openproject"] {
             if let Some(claim) = self.claim(queue, 1).await?.pop() {
                 return Ok(Some(claim));
             }

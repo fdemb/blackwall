@@ -185,6 +185,8 @@ impl Operation<'_> {
                     return Err(Error::BadRequest("invalid replacement stage".into()));
                 }
 
+                // Sync locks its connection before the issue graph.
+                let mappings = self.lock_stage_mappings(id).await?;
                 self.lock_graph().await?;
                 self.lock_team(team_id, true).await?;
                 let stages = sqlx::query("SELECT id,kind FROM stages WHERE workspace_id=$1 AND team_id=$2 AND id=ANY($3) ORDER BY id FOR UPDATE")
@@ -216,11 +218,22 @@ impl Operation<'_> {
                     self.touch("issues", *issue_id).await?;
                 }
 
+                sqlx::query("SELECT set_config('blackwall.stage_migration', $1, true)")
+                    .bind(serde_json::json!({"workspace_id": self.workspace_id, "from": id, "to": replacement}).to_string())
+                    .execute(&mut *self.tx)
+                    .await?;
                 sqlx::query("UPDATE issues SET stage_id=$3,updated_at=now() WHERE workspace_id=$1 AND stage_id=$2")
                     .bind(self.workspace_id)
                     .bind(id)
                     .bind(replacement)
                     .execute(&mut *self.tx)
+                    .await?;
+
+                sqlx::query("SELECT set_config('blackwall.stage_migration', '', true)")
+                    .execute(&mut *self.tx)
+                    .await?;
+
+                self.replace_stage_mappings(mappings, id, replacement)
                     .await?;
 
                 sqlx::query("DELETE FROM stages WHERE workspace_id=$1 AND id=$2")
@@ -503,6 +516,46 @@ impl Operation<'_> {
             .await?
             .ok_or(Error::NotFound)?;
 
+        Ok(())
+    }
+
+    async fn lock_stage_mappings(
+        &mut self,
+        stage: Uuid,
+    ) -> Result<Vec<(Uuid, Vec<crate::openproject::Mapping>)>> {
+        let rows = sqlx::query("SELECT id,projects FROM openproject_connections WHERE workspace_id=$1 AND EXISTS(SELECT 1 FROM jsonb_array_elements(projects) mapping, jsonb_each_text(COALESCE(mapping->'stage_mapping','{}'::jsonb)) entry WHERE entry.value=$2) ORDER BY id FOR UPDATE")
+            .bind(self.workspace_id).bind(stage.to_string()).fetch_all(&mut *self.tx).await?;
+        rows.into_iter()
+            .map(|row| {
+                Ok((
+                    row.try_get("id")?,
+                    serde_json::from_value(row.try_get("projects")?)?,
+                ))
+            })
+            .collect()
+    }
+
+    async fn replace_stage_mappings(
+        &mut self,
+        mappings: Vec<(Uuid, Vec<crate::openproject::Mapping>)>,
+        previous: Uuid,
+        replacement: Uuid,
+    ) -> Result<()> {
+        for (connection, mut projects) in mappings {
+            for project in &mut projects {
+                for stage in project.stage_mapping.values_mut() {
+                    if *stage == previous {
+                        *stage = replacement;
+                    }
+                }
+            }
+            // Fence pages fetched with the previous mapping; the pagination cursor remains valid.
+            sqlx::query("UPDATE openproject_connections SET projects=$3,generation=generation+1,next_run_at=clock_timestamp(),status='pending',last_error='' WHERE workspace_id=$1 AND id=$2")
+                .bind(self.workspace_id).bind(connection).bind(serde_json::to_value(projects)?)
+                .execute(&mut *self.tx).await?;
+            sqlx::query("UPDATE jobs SET state='cancelled',finished_at=clock_timestamp(),updated_at=clock_timestamp() WHERE queue='openproject' AND state='pending' AND payload->>'connection_id'=$1")
+                .bind(connection.to_string()).execute(&mut *self.tx).await?;
+        }
         Ok(())
     }
 

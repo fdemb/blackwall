@@ -2,6 +2,7 @@ import { createContext, useCallback, useContext, useMemo, useState, type ReactNo
 import { useIsMutating, useQuery, useQueryClient, useSuspenseQueries } from "@tanstack/react-query";
 import { lower, useLiveQuery } from "@tanstack/react-db";
 import { ApiError } from "./api";
+import { commandOwnershipTargets, issueCapabilities } from "./ownership";
 import { createCommandRunner } from "./commands";
 import { workspaceDb, type WorkspaceDb } from "./db";
 import { keys, refreshWorkspace, reportQuery, workspaceQuery } from "./query-client";
@@ -168,14 +169,25 @@ export function WorkspaceProvider({ id, children }: { id: Id; children: ReactNod
   );
 
   const run = useCallback<Ctx["run"]>(
-    (command, opts) =>
-      runner.command(command, opts?.expectedVersions).then(
+    (command, opts) => {
+      if (
+        commandOwnershipTargets(command).some((id) => {
+          const issue = db.issues.get(id);
+          return issue && !issueCapabilities(issue).edit;
+        })
+      ) {
+        const error = new ApiError(t("openproject.readonly"), 409);
+        if (!opts?.quiet) toast.error(error.message);
+        return Promise.reject(error);
+      }
+      return runner.command(command, opts?.expectedVersions).then(
         (res) => res.result.id,
         (e: unknown) => {
           throw fail(e, opts?.quiet);
         },
-      ),
-    [runner, fail],
+      );
+    },
+    [runner, fail, db, t, toast],
   );
 
   const upload = useCallback<Ctx["upload"]>(

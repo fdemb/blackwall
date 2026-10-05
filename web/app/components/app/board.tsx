@@ -11,7 +11,8 @@ import {
 import { Plus } from "lucide-react";
 import { Button } from "~/components/ui/button";
 import { cn } from "~/lib/utils";
-import { issueKey } from "~/lib/format";
+import { IssueKey, issueKeyLength } from "./issue-key";
+import { issueCapabilities } from "~/lib/ownership";
 import { useI18n } from "~/lib/i18n";
 import { useWorkspace } from "~/lib/workspace";
 import type { Id, Issue } from "~/lib/types";
@@ -22,6 +23,7 @@ import {
   DeadlineChip,
   LabelChips,
   SubtaskProgress,
+  OpenProjectBadge,
 } from "./issue-parts";
 
 const TYPE = "application/x-blackwall-issue";
@@ -63,6 +65,7 @@ export function DndColumn({
 }: DndColumnProps) {
   const { t } = useI18n();
   const { canWrite } = useWorkspace();
+  const keyLength = issueKeyLength(issues);
   const beforeFor = useCallback(
     (target: DropTarget): Id | null => {
       if (target.type !== "item") return null;
@@ -93,17 +96,26 @@ export function DndColumn({
   const { dragAndDropHooks } = useDragAndDrop({
     isDisabled: !canWrite || !canDrop,
     getItems: (keys) =>
-      [...keys].map((k) => ({
-        [TYPE]: JSON.stringify({ id: k, column: id }),
-        "text/plain": String(k),
-      })),
+      [...keys]
+        .filter((k) => issues.some((issue) => issue.id === k && issueCapabilities(issue).move))
+        .map((k) => ({
+          [TYPE]: JSON.stringify({ id: k, column: id }),
+          "text/plain": String(k),
+        })),
     acceptedDragTypes: [TYPE],
     getDropOperation: () => "move",
     onInsert: async (e) => {
       const { ids, source } = await read(e.items as never);
       onDrop(ids, beforeFor(e.target), source);
     },
-    onReorder: (e) => onDrop([...e.keys] as Id[], beforeFor(e.target), id),
+    onReorder: (e) =>
+      onDrop(
+        issues
+          .filter((issue) => e.keys.has(issue.id) && issueCapabilities(issue).move)
+          .map((issue) => issue.id),
+        beforeFor(e.target),
+        id,
+      ),
     onRootDrop: async (e) => {
       const { ids, source } = await read(e.items as never);
       onDrop(ids, null, source);
@@ -131,6 +143,7 @@ export function DndColumn({
         <ListBox
           aria-label={title}
           items={issues}
+          dependencies={[keyLength]}
           selectionMode="none"
           dragAndDropHooks={dragAndDropHooks}
           className="min-h-16 flex-1 overflow-y-auto overscroll-contain rounded-b-xl outline-none transition-colors drop-target:bg-accent/60 drop-target:ring-2 drop-target:ring-primary/40"
@@ -140,7 +153,7 @@ export function DndColumn({
             </p>
           )}
         >
-          {(issue) => <BoardCard issue={issue} />}
+          {(issue) => <BoardCard issue={issue} keyLength={keyLength} />}
         </ListBox>
       </Virtualizer>
       {footer}
@@ -165,7 +178,7 @@ export function ReadOnlyColumn(props: Omit<DndColumnProps, "canDrop">) {
   return <DndColumn {...props} canDrop={false} />;
 }
 
-export function BoardCard({ issue }: { issue: Issue }) {
+export function BoardCard({ issue, keyLength }: { issue: Issue; keyLength?: number }) {
   const { ws } = useWorkspace();
   const { t } = useI18n();
   return (
@@ -176,7 +189,8 @@ export function BoardCard({ issue }: { issue: Issue }) {
       className="group block cursor-default rounded-lg border border-border bg-card p-2.5 text-[13px] shadow-xs outline-none transition-[transform,opacity] hover:border-primary/40 hover:shadow-sm focus-visible:ring-2 focus-visible:ring-ring/60 dragging:opacity-40"
     >
       <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-        <span className="tabular-nums">{issueKey(issue.number)}</span>
+        <IssueKey number={issue.number} length={keyLength} />
+        <OpenProjectBadge issue={issue} />
         <BlockedBadge issue={issue} />
         <span className="ml-auto">
           <AssigneeAvatar issue={issue} size={18} />

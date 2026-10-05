@@ -6,8 +6,10 @@ import { EmptyState, Page, PageHeader, Scroll } from "~/components/app/page";
 import { expectedVersions } from "~/lib/entity-versions";
 import { collectPages, workspaces } from "~/lib/api";
 import { useIssues } from "~/lib/queries";
+import { issueCapabilities } from "~/lib/ownership";
 import { QueryStatus } from "~/components/app/query-status";
-import { issueKey, relativeTime } from "~/lib/format";
+import { relativeTime } from "~/lib/format";
+import { IssueKey, issueKeyLength } from "~/components/app/issue-key";
 import { useI18n } from "~/lib/i18n";
 import { useWorkspace } from "~/lib/workspace";
 import { useToast } from "~/components/ui/toast";
@@ -18,13 +20,14 @@ export default function Trash() {
   const toast = useToast();
   const query = useIssues({ trash: true, sort: "updated" });
   const issues = query.items;
+  const keyLength = issueKeyLength(issues);
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
   // The server accepts at most 500 issues per bulk command, so a large Trash is restored in batches.
   const restoreAll = async () => {
     setProgress({ done: 0, total: issues.length });
     try {
       const all = await collectPages((offset) => workspaces.issues(ws.id, { trash: true }, offset));
-      const ids = all.map((issue) => issue.id);
+      const ids = all.filter((issue) => issueCapabilities(issue).restore).map((issue) => issue.id);
       for (let at = 0; at < ids.length; at += 500) {
         await run(
           { type: "bulk_issues", ids: ids.slice(at, at + 500), action: "restore" },
@@ -51,7 +54,7 @@ export default function Trash() {
         subtitle={t("trash.sub")}
         actions={
           canWrite &&
-          issues.length > 0 && (
+          issues.some((issue) => issueCapabilities(issue).restore) && (
             <Button
               variant="ghost"
               size="sm"
@@ -79,9 +82,7 @@ export default function Trash() {
                 key={i.id}
                 className="flex min-h-11 items-center gap-3 border-b border-border/70 px-4 py-1 text-[13px]"
               >
-                <span className="w-14 tabular-nums text-muted-foreground">
-                  {issueKey(i.number)}
-                </span>
+                <IssueKey number={i.number} length={keyLength} className="text-muted-foreground" />
                 <Link
                   to={`/${ws.id}/issue/${i.id}`}
                   className="min-w-0 flex-1 truncate text-muted-foreground line-through hover:text-foreground"
@@ -91,7 +92,7 @@ export default function Trash() {
                 <span className="hidden text-xs text-muted-foreground sm:inline">
                   {i.deleted_at && t("trash.deleted", { when: relativeTime(i.deleted_at, lang) })}
                 </span>
-                {canWrite && (
+                {canWrite && issueCapabilities(i).restore && (
                   <Button
                     variant="secondary"
                     size="sm"

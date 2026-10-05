@@ -17,10 +17,11 @@ The frontend keeps workspace data in TanStack DB collections backed by TanStack 
 ## Modules
 
 - `auth` owns credentials, hashed sessions, recovery tokens, profiles, and account preferences.
-- `domain` defines commands, DTOs, permissions, and pure business rules.
-- `store` owns PostgreSQL feature transactions, queries, version checks, and migrations.
+- `domain` defines commands, DTOs, permissions, and pure business rules. Its `issues` module groups issue records, source identities, inputs, patches, and filters.
+- `store` owns PostgreSQL feature transactions, queries, version checks, and migrations. Its ownership policy authorizes commands before dispatch and generates frontend capabilities. Imported-field guards report the `blackwall_issue_ownership` constraint identifier; administrative stage migration grants only a specific workspace and stage replacement.
 - `http` authenticates requests and exposes JSON contracts and OpenAPI.
 - `jobs` claims persisted work, handles delivery and maintenance, and coordinates shutdown.
+- `openproject` owns connection settings, cached discovery, project-to-team mappings, and one-way background imports. Transport fetches one bounded page without holding a database connection. The scan module normalizes the response and advances a tagged checkpoint; reconciliation maps remote fields and calls shared store persistence. Imported issues and their checkpoint commit together with claim and configuration-generation fencing.
 - `web` serves the frontend build with CSP hashes for inline bootstrap scripts.
 
 ## Recovery and delivery

@@ -1,4 +1,51 @@
 export const en = {
+  "openproject.title": "OpenProject",
+  "openproject.description":
+    "Import work packages into Blackwall teams. Read-only sync runs on the server every five minutes.",
+  "openproject.webhooks": "Webhooks",
+  "openproject.add": "Connect OpenProject",
+  "openproject.edit": "Edit connection",
+  "openproject.empty": "No OpenProject connections",
+  "openproject.emptySub":
+    "Connect your instance, refresh its projects, then choose the teams to import into.",
+  "openproject.url": "Instance URL",
+  "openproject.urlHint":
+    "Your OpenProject instance, including private network addresses. Blackwall connects from the server.",
+  "openproject.token": "API token",
+  "openproject.tokenHint": "Stored on the server and never shown again.",
+  "openproject.tokenKeep": "Leave blank to keep the current token.",
+  "openproject.refresh": "Refresh projects",
+  "openproject.sync": "Sync now",
+  "openproject.queued": "Queued on the server",
+  "openproject.checked": "Projects checked",
+  "openproject.synced": "Last successful sync",
+  "openproject.never": "Not yet",
+  "openproject.enabled": "Enable sync",
+  "openproject.status": "Status",
+  "openproject.status.pending": "Queued",
+  "openproject.status.syncing": "Syncing",
+  "openproject.status.idle": "Ready",
+  "openproject.status.error": "Sync failed",
+  "openproject.error": "Last error",
+  "openproject.remove": "Disconnect OpenProject",
+  "openproject.removeSub":
+    "Sync will stop. Imported issues remain in Blackwall and stay read-only.",
+  "openproject.projects": "Project mappings",
+  "openproject.projectsHint":
+    "Select a Blackwall team for each project to import. Unmapped projects are not imported.",
+  "openproject.noProjects": "No cached projects yet. Save the connection, then refresh projects.",
+  "openproject.noTeam": "Do not import",
+  "openproject.project": "OpenProject project",
+  "openproject.automaticStages":
+    "Stages match the OpenProject status name. Otherwise closed work packages use a done stage, and other work packages use backlog or the first stage.",
+  "openproject.readonly":
+    "Imported from OpenProject. Edit fields and planning in OpenProject. Comments, following, and time tracking stay local.",
+  "openproject.open": "Open in OpenProject",
+  "openproject.unavailable":
+    "This work package is no longer available in OpenProject. Its last synced data is retained.",
+  "openproject.badge": "OpenProject · read-only",
+  "openproject.loadError": "Could not load OpenProject connections.",
+  "openproject.retry": "Retry",
   "nav.main": "Main navigation",
   "nav.skip": "Skip to content",
   "nav.inbox": "Inbox",
