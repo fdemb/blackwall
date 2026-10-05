@@ -31,6 +31,23 @@ export const pl = {
   "openproject.remove": "Odłącz OpenProject",
   "openproject.removeSub":
     "Synchronizacja zostanie zatrzymana. Zaimportowane zadania pozostaną w Blackwall tylko do odczytu.",
+  "openproject.missingPerson": "Członek niedostępny, wybierz zamiennik",
+  "openproject.people": "Mapowanie osób",
+  "openproject.peopleHint":
+    "Przypisane osoby są dopasowywane do członków obszaru roboczego po adresie email. Wybierz członka, aby zmienić dopasowanie. Ukryte lub niedopasowane adresy pozostają bez przypisania.",
+  "openproject.hiddenEmail": "{{name}}: email ukryty w OpenProject",
+  "openproject.automaticPerson": "Automatycznie · {{name}}",
+  "openproject.unassigned": "Automatycznie · bez przypisania",
+  "openproject.noPeople": "Brak zapisanych osób. Odśwież połączenie, aby pobrać osoby.",
+  "openproject.statusMappings": "Mapowanie statusów",
+  "openproject.migrationHint":
+    "Wybierz etap lub utwórz go ze statusu OpenProject przy zapisie. Zmiany mapowania zostaną zastosowane przy następnej synchronizacji.",
+  "openproject.migrateStatus": "Utwórz etap przy zapisie · {{name}}",
+  "openproject.automaticStage": "Automatycznie · {{name}}",
+  "openproject.missingStage": "Etap niedostępny, wybierz zamiennik",
+  "openproject.migrationMissing":
+    "Projekt lub status jest niedostępny. Odśwież połączenie i spróbuj ponownie.",
+  "openproject.noStatuses": "Brak zapisanych statusów. Odśwież połączenie.",
   "openproject.projects": "Przypisania projektów",
   "openproject.projectsHint":
     "Wybierz zespół Blackwall dla każdego importowanego projektu. Projekty bez przypisania nie są importowane.",

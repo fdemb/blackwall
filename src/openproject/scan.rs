@@ -29,6 +29,11 @@ pub(super) enum Checkpoint {
         cursor: Cursor,
         refresh_only: bool,
     },
+    People {
+        #[serde(flatten)]
+        cursor: Cursor,
+        refresh_only: bool,
+    },
     WorkPackages {
         #[serde(flatten)]
         cursor: Cursor,
@@ -52,12 +57,19 @@ pub(super) struct Status {
     pub name: String,
     pub is_closed: bool,
 }
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(super) struct Person {
+    pub id: i64,
+    pub name: String,
+    pub email: Option<String>,
+}
 #[derive(Debug)]
 pub(super) struct WorkPackage {
     pub id: i64,
     pub project_id: i64,
     pub title: String,
     pub description: String,
+    pub assignee_id: Option<i64>,
     pub status_id: i64,
     pub status_name: Option<String>,
     pub priority: Priority,
@@ -66,6 +78,7 @@ pub(super) struct WorkPackage {
 pub(super) enum PageData {
     Projects(Vec<Project>),
     Statuses(Vec<Status>),
+    People(Vec<Person>),
     WorkPackages {
         mapping: Mapping,
         items: Vec<WorkPackage>,
@@ -93,6 +106,7 @@ impl Checkpoint {
         match self {
             Self::Projects { cursor, .. }
             | Self::Statuses { cursor, .. }
+            | Self::People { cursor, .. }
             | Self::WorkPackages { cursor, .. } => cursor,
         }
     }
@@ -113,6 +127,7 @@ impl Checkpoint {
         Ok(match self {
             Self::Projects { .. } => ("projects", None),
             Self::Statuses { .. } => ("statuses", None),
+            Self::People { .. } => ("users", None),
             Self::WorkPackages { .. } => (
                 "work_packages",
                 Some(
@@ -156,6 +171,22 @@ impl Checkpoint {
                     })
                     .collect::<Result<_>>()?,
             ),
+            Self::People { .. } => PageData::People(
+                items
+                    .iter()
+                    .map(|item| {
+                        Ok(Person {
+                            id: positive_id(item)?,
+                            name: name(item)?,
+                            email: item
+                                .get("email")
+                                .and_then(Value::as_str)
+                                .filter(|email| !email.trim().is_empty())
+                                .map(|email| email.trim().to_lowercase()),
+                        })
+                    })
+                    .collect::<Result<_>>()?,
+            ),
             Self::WorkPackages { .. } => {
                 if items.len() > 50 {
                     return Err(Error::Internal(
@@ -178,9 +209,9 @@ impl Checkpoint {
     }
     pub fn advance(&self, page: &Page, mapping_count: usize) -> Result<Transition> {
         let refresh_only = match self {
-            Self::Projects { refresh_only, .. } | Self::Statuses { refresh_only, .. } => {
-                *refresh_only
-            }
+            Self::Projects { refresh_only, .. }
+            | Self::Statuses { refresh_only, .. }
+            | Self::People { refresh_only, .. } => *refresh_only,
             Self::WorkPackages { .. } => false,
         };
         let next = if page.more {
@@ -188,6 +219,7 @@ impl Checkpoint {
             let cursor = match &mut next {
                 Self::Projects { cursor, .. }
                 | Self::Statuses { cursor, .. }
+                | Self::People { cursor, .. }
                 | Self::WorkPackages { cursor, .. } => cursor,
             };
             cursor.page += 1;
@@ -202,8 +234,12 @@ impl Checkpoint {
                     cursor: Cursor::default(),
                     refresh_only,
                 }),
-                Self::Statuses { .. } if refresh_only || mapping_count == 0 => None,
-                Self::Statuses { .. } => Some(Self::WorkPackages {
+                Self::Statuses { .. } => Some(Self::People {
+                    cursor: Cursor::default(),
+                    refresh_only,
+                }),
+                Self::People { .. } if refresh_only || mapping_count == 0 => None,
+                Self::People { .. } => Some(Self::WorkPackages {
                     cursor: Cursor::default(),
                     project_index: 0,
                 }),
@@ -217,7 +253,7 @@ impl Checkpoint {
             }
         };
         let checked = matches!(self, Self::WorkPackages { .. })
-            || matches!(self, Self::Statuses { .. }) && !page.more;
+            || matches!(self, Self::People { .. }) && !page.more;
         Ok(Transition {
             next,
             checked,
@@ -317,11 +353,16 @@ fn work_package(item: &Value, expected_project: i64) -> Result<WorkPackage> {
         ),
         Some(_) => return Err(Error::Internal("invalid work package due date".into())),
     };
+    let assignee_id = match item.pointer("/_links/assignee/href") {
+        None | Some(Value::Null) => None,
+        Some(_) => Some(link_id(item, "assignee")?),
+    };
     Ok(WorkPackage {
         id,
         project_id,
         title,
         description,
+        assignee_id,
         status_id,
         status_name,
         priority,
@@ -398,9 +439,13 @@ mod tests {
                 .next
                 .unwrap();
             assert_eq!(statuses.request(&[]).unwrap().0, "statuses");
-            let finished = statuses
+            let people = statuses
                 .advance(&page(PageData::Statuses(vec![])), 0)
+                .unwrap()
+                .next
                 .unwrap();
+            assert_eq!(people.request(&[]).unwrap().0, "users");
+            let finished = people.advance(&page(PageData::People(vec![])), 0).unwrap();
             assert!(finished.next.is_none());
             assert!(finished.checked);
             assert_eq!(finished.refresh_only, refresh_only);

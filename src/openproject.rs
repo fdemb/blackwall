@@ -39,6 +39,7 @@ pub struct Config {
     pub token: Option<String>,
     pub enabled: Option<bool>,
     pub projects: Option<Vec<Mapping>>,
+    pub people_mapping: Option<BTreeMap<String, Uuid>>,
 }
 #[derive(Serialize)]
 pub struct Connection {
@@ -50,6 +51,8 @@ pub struct Connection {
     pub projects: Vec<Mapping>,
     pub cached_projects: Value,
     pub cached_statuses: Value,
+    pub cached_people: Value,
+    pub people_mapping: BTreeMap<String, Uuid>,
     pub status: String,
     pub last_error: String,
     pub last_checked_at: Option<DateTime<Utc>>,
@@ -59,7 +62,7 @@ mod reconciliation;
 mod scan;
 mod transport;
 use scan::{Checkpoint, PageData};
-const PUBLIC: &str = "id,name,base_url,enabled,generation,projects,cached_projects,cached_statuses,status,last_error,last_checked_at,last_synced_at";
+const PUBLIC: &str = "id,name,base_url,enabled,generation,projects,cached_projects,cached_statuses,cached_people,people_mapping,status,last_error,last_checked_at,last_synced_at";
 fn connection(row: sqlx::postgres::PgRow) -> Result<Connection> {
     Ok(Connection {
         id: row.try_get("id")?,
@@ -70,6 +73,8 @@ fn connection(row: sqlx::postgres::PgRow) -> Result<Connection> {
         projects: serde_json::from_value(row.try_get("projects")?)?,
         cached_projects: row.try_get("cached_projects")?,
         cached_statuses: row.try_get("cached_statuses")?,
+        cached_people: row.try_get("cached_people")?,
+        people_mapping: serde_json::from_value(row.try_get("people_mapping")?)?,
         status: row.try_get("status")?,
         last_error: row.try_get("last_error")?,
         last_checked_at: row.try_get("last_checked_at")?,
@@ -243,9 +248,44 @@ async fn configure(
             }
         }
     }
+    let people_mapping = config
+        .people_mapping
+        .unwrap_or(serde_json::from_value(row.try_get("people_mapping")?)?);
+    if people_mapping.len() > 5000 {
+        return Err(Error::BadRequest("at most 5000 people mappings".into()));
+    }
+    let mut normalized_people = BTreeMap::new();
+    for (email, user) in people_mapping {
+        let email = email.trim().to_lowercase();
+        if email.len() > 254
+            || !email.split_once('@').is_some_and(|(local, host)| {
+                !local.is_empty() && host.contains('.') && !host.starts_with('.')
+            })
+            || email
+                .chars()
+                .any(|character| character.is_whitespace() || character.is_control())
+            || normalized_people.insert(email, user).is_some()
+        {
+            return Err(Error::BadRequest(
+                "invalid or duplicate people mapping email".into(),
+            ));
+        }
+        let exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM workspace_members WHERE workspace_id=$1 AND user_id=$2)",
+        )
+        .bind(workspace)
+        .bind(user)
+        .fetch_one(&mut *tx)
+        .await?;
+        if !exists {
+            return Err(Error::BadRequest(
+                "mapped person must belong to workspace".into(),
+            ));
+        }
+    }
     let enabled = config.enabled.unwrap_or(row.try_get("enabled")?);
-    sqlx::query("UPDATE openproject_connections SET name=$3,base_url=$4,token=$5,enabled=$6,projects=$7,generation=generation+1,checkpoint=$8,next_run_at=clock_timestamp(),status='pending',last_error='' WHERE workspace_id=$1 AND id=$2")
-        .bind(workspace).bind(id).bind(name).bind(url).bind(token).bind(enabled).bind(json!(projects)).bind(json!(Checkpoint::default())).execute(&mut *tx).await?;
+    sqlx::query("UPDATE openproject_connections SET name=$3,base_url=$4,token=$5,enabled=$6,projects=$7,people_mapping=$9,generation=generation+1,checkpoint=$8,next_run_at=clock_timestamp(),status='pending',last_error='' WHERE workspace_id=$1 AND id=$2")
+        .bind(workspace).bind(id).bind(name).bind(url).bind(token).bind(enabled).bind(json!(projects)).bind(json!(Checkpoint::default())).bind(json!(normalized_people)).execute(&mut *tx).await?;
     cancel_pending(&mut tx, id).await?;
     let result = connection(
         sqlx::query(&format!(
@@ -257,6 +297,9 @@ async fn configure(
     )?;
     tx.commit().await?;
     store.outbox.ready();
+    tracing::debug!(connection_id = %id, workspace_id = %workspace, generation = result.generation,
+        enabled, project_count = result.projects.len(), people_override_count = result.people_mapping.len(),
+        "OpenProject configuration saved");
     Ok(result)
 }
 async fn create(
@@ -290,6 +333,7 @@ async fn delete(
     if sqlx::query("UPDATE openproject_connections SET deleted=true,enabled=false,token='',generation=generation+1 WHERE workspace_id=$1 AND id=$2 AND NOT deleted").bind(workspace).bind(id).execute(&mut *tx).await?.rows_affected() == 0 { return Err(Error::NotFound); }
     cancel_pending(&mut tx, id).await?;
     tx.commit().await?;
+    tracing::debug!(connection_id = %id, workspace_id = %workspace, "OpenProject connection disconnected");
     Ok(StatusCode::NO_CONTENT)
 }
 async fn request(
@@ -307,6 +351,7 @@ async fn request(
     cancel_pending(&mut tx, id).await?;
     tx.commit().await?;
     store.outbox.ready();
+    tracing::debug!(connection_id = %id, workspace_id = %workspace, refresh_only, "OpenProject scan requested");
     Ok((StatusCode::ACCEPTED, Json(json!({"queued":true}))))
 }
 async fn refresh(
@@ -334,6 +379,7 @@ async fn cancel_pending(conn: &mut PgConnection, id: Uuid) -> Result<()> {
 pub async fn schedule(store: &Store) -> Result<()> {
     let mut tx = store.pool.begin().await?;
     let rows=sqlx::query("SELECT id,generation FROM openproject_connections c WHERE enabled AND NOT deleted AND next_run_at<=clock_timestamp() AND NOT EXISTS(SELECT 1 FROM jobs WHERE queue='openproject' AND payload->>'connection_id'=c.id::text AND state IN ('pending','running')) ORDER BY next_run_at,id FOR UPDATE SKIP LOCKED LIMIT 100").fetch_all(&mut *tx).await?;
+    let scheduled_count = rows.len();
     for row in rows {
         let id: Uuid = row.try_get("id")?;
         Outbox::insert(
@@ -351,12 +397,18 @@ pub async fn schedule(store: &Store) -> Result<()> {
         sqlx::query("UPDATE openproject_connections SET next_run_at=clock_timestamp()+interval '5 minutes' WHERE id=$1").bind(id).execute(&mut *tx).await?;
     }
     tx.commit().await?;
+    if scheduled_count > 0 {
+        tracing::debug!(scheduled_count, "OpenProject jobs scheduled");
+    }
     Ok(())
 }
 
+#[tracing::instrument(name = "openproject_sync", level = "debug", skip_all,
+    fields(connection_id = %job.connection_id, generation = job.generation, job_id = %claim.id))]
 pub async fn execute(store: &Store, claim: &Claim, job: &SyncJob) -> Result<()> {
     let row=sqlx::query("SELECT * FROM openproject_connections WHERE id=$1 AND generation=$2 AND enabled AND NOT deleted").bind(job.connection_id).bind(job.generation).fetch_optional(&store.pool).await?;
     let Some(row) = row else {
+        tracing::debug!("OpenProject job skipped: connection disabled, deleted or superseded");
         store.outbox.complete(claim).await?;
         return Ok(());
     };
@@ -366,8 +418,28 @@ pub async fn execute(store: &Store, claim: &Claim, job: &SyncJob) -> Result<()> 
     let mappings: Vec<Mapping> = serde_json::from_value(row.try_get("projects")?)?;
     let cp: Checkpoint = serde_json::from_value(row.try_get("checkpoint")?)?;
     let (path, filters) = cp.request(&mappings)?;
+    let started = std::time::Instant::now();
+    tracing::debug!(workspace_id = %workspace, resource = path, page = cp.cursor().page,
+        project_count = mappings.len(), "OpenProject page started");
     let response = transport::fetch(&base, &token, path, cp.cursor().page, filters).await?;
-    let page = cp.normalize(response, &mappings)?;
+    let page = cp.normalize(response, &mappings).inspect_err(|_| {
+        tracing::debug!(
+            resource = path,
+            page = cp.cursor().page,
+            "OpenProject page normalization failed"
+        );
+    })?;
+    let item_count = match &page.data {
+        PageData::Projects(items) => items.len(),
+        PageData::Statuses(items) => items.len(),
+        PageData::People(items) => items.len(),
+        PageData::WorkPackages { items, .. } => items.len(),
+    };
+    tracing::debug!(resource = path, page = cp.cursor().page, item_count, more = page.more,
+        page_size = ?page.page_size, "OpenProject page normalized");
+    let people: Vec<scan::Person> = serde_json::from_value(row.try_get("cached_people")?)?;
+    let people_mapping: BTreeMap<String, Uuid> =
+        serde_json::from_value(row.try_get("people_mapping")?)?;
     let statuses: Vec<scan::Status> = serde_json::from_value(row.try_get("cached_statuses")?)?;
     let transition = cp.advance(&page, mappings.len())?;
     let mut tx = store.pool.begin().await?;
@@ -378,8 +450,13 @@ pub async fn execute(store: &Store, claim: &Claim, job: &SyncJob) -> Result<()> 
         .execute(&mut *tx)
         .await?;
     let owned:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM jobs WHERE id=$1 AND claim_token=$2 AND state='running' AND lease_expires_at>clock_timestamp())").bind(claim.id).bind(claim.token).fetch_one(&mut *tx).await?;
-    let current=sqlx::query("SELECT cached_projects,cached_statuses FROM openproject_connections WHERE id=$1 AND generation=$2 AND enabled AND NOT deleted FOR UPDATE").bind(job.connection_id).bind(job.generation).fetch_optional(&mut *tx).await?;
+    let current=sqlx::query("SELECT cached_projects,cached_statuses,cached_people FROM openproject_connections WHERE id=$1 AND generation=$2 AND enabled AND NOT deleted FOR UPDATE").bind(job.connection_id).bind(job.generation).fetch_optional(&mut *tx).await?;
     if !owned || current.is_none() {
+        tracing::debug!(
+            lease_owned = owned,
+            connection_current = current.is_some(),
+            "OpenProject page discarded: lease lost or configuration superseded"
+        );
         Outbox::complete_in(&mut tx, claim).await?;
         tx.commit().await?;
         return Ok(());
@@ -387,6 +464,7 @@ pub async fn execute(store: &Store, claim: &Claim, job: &SyncJob) -> Result<()> 
     let current = current.unwrap();
     let mut cached_projects: Value = current.try_get("cached_projects")?;
     let mut cached_statuses: Value = current.try_get("cached_statuses")?;
+    let mut cached_people: Value = current.try_get("cached_people")?;
     match &page.data {
         PageData::Projects(items) => {
             scan::append_cache(&mut cached_projects, items, cp.cursor().page)?
@@ -394,6 +472,7 @@ pub async fn execute(store: &Store, claim: &Claim, job: &SyncJob) -> Result<()> 
         PageData::Statuses(items) => {
             scan::append_cache(&mut cached_statuses, items, cp.cursor().page)?
         }
+        PageData::People(items) => scan::append_cache(&mut cached_people, items, cp.cursor().page)?,
         PageData::WorkPackages { mapping, items } => {
             sqlx::query("SELECT pg_advisory_xact_lock_shared(hashtextextended($1,74103))")
                 .bind(workspace.to_string())
@@ -412,17 +491,38 @@ pub async fn execute(store: &Store, claim: &Claim, job: &SyncJob) -> Result<()> 
                 &base,
                 mapping,
                 &statuses,
+                &people,
+                &people_mapping,
             );
             for item in items {
-                reconciliation::apply(&mut tx, &mut import, item).await?;
+                reconciliation::apply(&mut tx, &mut import, item)
+                    .await
+                    .inspect_err(|_| {
+                        tracing::debug!(
+                            work_package_id = item.id,
+                            project_id = item.project_id,
+                            "OpenProject work package reconciliation failed; page will roll back"
+                        );
+                    })?;
             }
         }
     }
     let finished = transition.next.is_none();
-    sqlx::query("UPDATE openproject_connections SET cached_projects=$3,cached_statuses=$4,checkpoint=$5,next_run_at=clock_timestamp()+CASE WHEN $6 THEN interval '5 minutes' ELSE interval '0 seconds' END,status=$7,last_error='',last_checked_at=CASE WHEN $8 THEN clock_timestamp() ELSE last_checked_at END,last_synced_at=CASE WHEN $6 AND NOT $9 THEN clock_timestamp() ELSE last_synced_at END WHERE id=$1 AND generation=$2")
-        .bind(job.connection_id).bind(job.generation).bind(cached_projects).bind(cached_statuses).bind(json!(transition.next.unwrap_or_default())).bind(finished).bind(if finished {"idle"} else {"syncing"}).bind(transition.checked).bind(transition.refresh_only).execute(&mut *tx).await?;
+    sqlx::query("UPDATE openproject_connections SET cached_projects=$3,cached_statuses=$4,cached_people=$10,checkpoint=$5,next_run_at=clock_timestamp()+CASE WHEN $6 THEN interval '5 minutes' ELSE interval '0 seconds' END,status=$7,last_error='',last_checked_at=CASE WHEN $8 THEN clock_timestamp() ELSE last_checked_at END,last_synced_at=CASE WHEN $6 AND NOT $9 THEN clock_timestamp() ELSE last_synced_at END WHERE id=$1 AND generation=$2")
+        .bind(job.connection_id).bind(job.generation).bind(cached_projects).bind(cached_statuses).bind(json!(transition.next.unwrap_or_default())).bind(finished).bind(if finished {"idle"} else {"syncing"}).bind(transition.checked).bind(transition.refresh_only).bind(cached_people).execute(&mut *tx).await?;
     if Outbox::complete_in(&mut tx, claim).await? {
         tx.commit().await?;
+        tracing::debug!(
+            resource = path,
+            page = cp.cursor().page,
+            item_count,
+            finished,
+            refresh_only = transition.refresh_only,
+            elapsed_ms = started.elapsed().as_millis(),
+            "OpenProject page committed"
+        );
+    } else {
+        tracing::debug!("OpenProject page rolled back: job completion lost ownership");
     }
     Ok(())
 }
@@ -448,8 +548,10 @@ pub fn failure_message(error: &Error) -> String {
     }
 }
 pub async fn record_failure(store: &Store, job: &SyncJob, message: &str) -> Result<()> {
-    sqlx::query("UPDATE openproject_connections SET status='error',last_error=$3,next_run_at=LEAST(next_run_at,clock_timestamp()+interval '5 minutes') WHERE id=$1 AND generation=$2 AND NOT deleted")
+    let result = sqlx::query("UPDATE openproject_connections SET status='error',last_error=$3,next_run_at=LEAST(next_run_at,clock_timestamp()+interval '5 minutes') WHERE id=$1 AND generation=$2 AND NOT deleted")
         .bind(job.connection_id).bind(job.generation).bind(message).execute(&store.pool).await?;
+    tracing::debug!(connection_id = %job.connection_id, generation = job.generation,
+        recorded = result.rows_affected() > 0, "OpenProject scan failure recorded");
     Ok(())
 }
 

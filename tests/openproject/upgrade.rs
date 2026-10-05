@@ -49,7 +49,7 @@ async fn legacy_unmapped_checkpoint_restarts_discovery_on_upgrade() {
         0
     );
     drain(&store).await;
-    assert_eq!(mock.data.lock().await.requests, 3);
+    assert_eq!(mock.data.lock().await.requests, 4);
     assert!(issues(&app, &owner, workspace).await.is_empty());
     assert_eq!(
         sqlx::query_scalar::<_, String>("SELECT status FROM openproject_connections WHERE id=$1")

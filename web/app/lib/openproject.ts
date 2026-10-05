@@ -1,7 +1,15 @@
 import { queryOptions } from "@tanstack/react-query";
 import { api } from "./api";
 import { keys } from "./query-client";
-import type { Id, Issue, OpenProjectConnection, OpenProjectConnectionInput } from "./types";
+import type {
+  Id,
+  Issue,
+  OpenProjectConnection,
+  OpenProjectConnectionInput,
+  OpenProjectStatus,
+  Stage,
+  StageKind,
+} from "./types";
 
 const base = (ws: Id) => `/api/workspaces/${ws}/openproject/connections`;
 
@@ -40,4 +48,20 @@ export function openprojectIssueUrl(issue: Pick<Issue, "openproject">) {
   } catch {
     return null;
   }
+}
+
+export function automaticOpenProjectStage(status: OpenProjectStatus, stages: Stage[]) {
+  const ordered = [...stages].sort((a, b) => a.position - b.position || a.id.localeCompare(b.id));
+  return (
+    ordered.find((stage) => stage.name.toLowerCase() === status.name.toLowerCase()) ??
+    ordered.find((stage) => stage.kind === (status.is_closed ? "done" : "backlog")) ??
+    ordered[0]
+  );
+}
+
+export function migratedOpenProjectStageKind(status: OpenProjectStatus): StageKind {
+  if (status.is_closed) return "done";
+  return ["new", "open", "backlog"].includes(status.name.trim().toLowerCase())
+    ? "backlog"
+    : "active";
 }

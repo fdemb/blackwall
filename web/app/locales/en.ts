@@ -30,6 +30,23 @@ export const en = {
   "openproject.remove": "Disconnect OpenProject",
   "openproject.removeSub":
     "Sync will stop. Imported issues remain in Blackwall and stay read-only.",
+  "openproject.missingPerson": "Member unavailable, choose a replacement",
+  "openproject.people": "People mappings",
+  "openproject.peopleHint":
+    "Assignees match workspace members by email. Choose a member to override a match. Hidden or unmatched emails remain unassigned.",
+  "openproject.hiddenEmail": "{{name}}: email hidden by OpenProject",
+  "openproject.automaticPerson": "Automatic · {{name}}",
+  "openproject.unassigned": "Automatic · unassigned",
+  "openproject.noPeople": "No cached people yet. Refresh the connection to discover people.",
+  "openproject.statusMappings": "Status mappings",
+  "openproject.migrationHint":
+    "Choose a stage or create one from the OpenProject status when you save. Mapping changes apply on the next sync.",
+  "openproject.migrateStatus": "Create stage on save · {{name}}",
+  "openproject.automaticStage": "Automatic · {{name}}",
+  "openproject.missingStage": "Stage unavailable, choose a replacement",
+  "openproject.migrationMissing":
+    "Project or status unavailable. Refresh the connection and try again.",
+  "openproject.noStatuses": "No cached statuses yet. Refresh the connection.",
   "openproject.projects": "Project mappings",
   "openproject.projectsHint":
     "Select a Blackwall team for each project to import. Unmapped projects are not imported.",
