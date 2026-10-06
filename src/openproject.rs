@@ -744,11 +744,27 @@ pub fn failure_message(error: &Error) -> String {
         _ => "OpenProject database write failed; check destination team/stage configuration".into(),
     }
 }
-pub async fn record_failure(store: &Store, job: &SyncJob, message: &str) -> Result<()> {
-    let result = sqlx::query("UPDATE openproject_connections SET status='error',last_error=$3,next_run_at=LEAST(next_run_at,clock_timestamp()+interval '5 minutes') WHERE id=$1 AND generation=$2 AND NOT deleted")
-        .bind(job.connection_id).bind(job.generation).bind(message).execute(&store.pool).await?;
+pub async fn record_failure(
+    store: &Store,
+    claim: &Claim,
+    job: &SyncJob,
+    message: &str,
+) -> Result<()> {
+    let mut tx = store.pool.begin().await?;
+    let current: Option<Uuid> = sqlx::query_scalar("SELECT id FROM openproject_connections WHERE id=$1 AND generation=$2 AND NOT deleted FOR UPDATE")
+        .bind(job.connection_id).bind(job.generation).fetch_optional(&mut *tx).await?;
+    let mut recorded = false;
+    if current.is_some() {
+        let owned: Option<i32> = sqlx::query_scalar("SELECT 1 FROM jobs WHERE id=$1 AND claim_token=$2 AND state='running' AND lease_expires_at>clock_timestamp() FOR SHARE")
+            .bind(claim.id).bind(claim.token).fetch_optional(&mut *tx).await?;
+        if owned.is_some() {
+            recorded = sqlx::query("UPDATE openproject_connections SET status='error',last_error=$3,next_run_at=LEAST(next_run_at,clock_timestamp()+interval '5 minutes') WHERE id=$1 AND generation=$2 AND NOT deleted")
+                .bind(job.connection_id).bind(job.generation).bind(message).execute(&mut *tx).await?.rows_affected() > 0;
+        }
+    }
+    tx.commit().await?;
     tracing::debug!(connection_id = %job.connection_id, generation = job.generation,
-        recorded = result.rows_affected() > 0, "OpenProject scan failure recorded");
+        recorded, "OpenProject scan failure recorded");
     Ok(())
 }
 

@@ -18,6 +18,7 @@ mod reads;
 mod transfer;
 
 pub use changes::{Change, ChangeFeed};
+pub(crate) use queue::LEASE_SECONDS;
 pub use queue::{Claim, NewJob, Outbox};
 pub use reads::CollectionQuery;
 

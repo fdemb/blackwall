@@ -651,6 +651,83 @@ async fn scheduler_recovers_exhausted_jobs_without_duplicate_active_connection_w
 }
 
 #[tokio::test]
+async fn record_failure_rechecks_ownership_after_waiting_for_connection_lock() {
+    let db = support::TestDatabase::new().await;
+    let store = Store::connect(&db.url).await.unwrap();
+    let owner = account(&store).await;
+    let (workspace, team, _) = setup(&store, &owner).await;
+    let app = http::router(store.clone());
+    let base = format!("/api/workspaces/{workspace}/openproject/connections");
+    let (status, config) = call(&app, &owner, "POST", &base, Some(json!({"name":"Failure race","base_url":"http://127.0.0.1:3000","token":TOKEN,"projects":[{"project_id":42,"team_id":team}]}))).await;
+    assert_eq!(status, StatusCode::CREATED, "{config}");
+    openproject::schedule(&store).await.unwrap();
+    let claim = store
+        .outbox
+        .claim("openproject", 1)
+        .await
+        .unwrap()
+        .remove(0);
+    let Job::OpenProject(job) = Job::decode(&claim.kind, &claim.payload).unwrap() else {
+        panic!("wrong queue kind");
+    };
+    let connection_id = job.connection_id;
+    let job_id = claim.id;
+    let mut holding = store.pool.begin().await.unwrap();
+    let holding_pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(&mut *holding)
+        .await
+        .unwrap();
+    sqlx::query("SELECT id FROM openproject_connections WHERE id=$1 FOR UPDATE")
+        .bind(connection_id)
+        .fetch_one(&mut *holding)
+        .await
+        .unwrap();
+    let failing_store = store.clone();
+    let failure = tokio::spawn(async move {
+        openproject::record_failure(&failing_store, &claim, &job, "stale worker failure").await
+    });
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let blocked: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND $1=ANY(pg_blocking_pids(pid)))")
+                .bind(holding_pid).fetch_one(&store.pool).await.unwrap();
+            if blocked {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("record_failure did not block on the connection lock");
+    sqlx::query("UPDATE jobs SET claim_token=$2 WHERE id=$1")
+        .bind(job_id)
+        .bind(Uuid::new_v4())
+        .execute(&mut *holding)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE openproject_connections SET status='idle',last_error='' WHERE id=$1")
+        .bind(connection_id)
+        .execute(&mut *holding)
+        .await
+        .unwrap();
+    holding.commit().await.unwrap();
+    tokio::time::timeout(Duration::from_secs(5), failure)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    let (status, last_error): (String, String) =
+        sqlx::query_as("SELECT status,last_error FROM openproject_connections WHERE id=$1")
+            .bind(connection_id)
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+    store.pool.close().await;
+    db.cleanup().await;
+    assert_eq!(status, "idle");
+    assert_eq!(last_error, "");
+}
+
+#[tokio::test]
 async fn capacity_stops_new_imports_but_existing_work_packages_still_update() {
     let db = support::TestDatabase::new().await;
     let store = Store::connect(&db.url).await.unwrap();
@@ -704,7 +781,7 @@ async fn capacity_stops_new_imports_but_existing_work_packages_still_update() {
         if let Err(error) = openproject::execute(&store, &claim, &job).await {
             let message = openproject::failure_message(&error);
             assert!(message.contains("capacity"), "{message}");
-            openproject::record_failure(&store, &job, &message)
+            openproject::record_failure(&store, &claim, &job, &message)
                 .await
                 .unwrap();
             store
