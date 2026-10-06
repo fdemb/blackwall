@@ -404,6 +404,7 @@ async fn insert_import(op: &mut Operation<'_>, w: &Workspace) -> Result<()> {
                 id: format!("reminder:{}:{}:1", w.id, issue.id),
                 job: crate::jobs::Job::Reminder(reminder),
                 due_at: (deadline - chrono::Duration::hours(24)).timestamp(),
+                max_attempts: None,
             };
 
             Outbox::insert(&mut op.tx, &job).await?;

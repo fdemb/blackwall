@@ -264,6 +264,7 @@ async fn schedule_reminder_with_stage(
                     generation,
                 }),
                 due_at: (deadline - chrono::Duration::hours(24)).timestamp(),
+                max_attempts: None,
             },
         )
         .await?;

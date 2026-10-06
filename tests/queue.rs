@@ -1,6 +1,7 @@
 mod support;
 
 use blackwall::{
+    error::Error,
     jobs::{self, Email, Grant, Job, Mailer, WorkerConfig},
     store::{NewJob, Outbox, Store},
 };
@@ -66,6 +67,67 @@ async fn malformed(store: &Store, kind: &str, queue: &str, version: i32) -> Uuid
         .await
         .unwrap();
     id
+}
+
+#[tokio::test]
+async fn inserts_store_custom_attempt_budgets_or_the_column_default() {
+    let db = support::TestDatabase::new().await;
+    let store = Store::connect(&db.url).await.unwrap();
+
+    for (key, budget, expected) in [
+        ("default", None, 8),
+        ("custom", Some(3), 3),
+        ("minimum", Some(1), 1),
+        ("maximum", Some(100), 100),
+    ] {
+        let mut job = email(key);
+        if let Some(budget) = budget {
+            job = job.max_attempts(budget);
+        }
+        let mut tx = store.pool.begin().await.unwrap();
+        Outbox::insert(&mut tx, &job).await.unwrap();
+        Outbox::insert(&mut tx, &email(key).max_attempts(2))
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        assert_eq!(
+            sqlx::query_scalar::<_, i32>("SELECT max_attempts FROM jobs WHERE dedup_key=$1")
+                .bind(key)
+                .fetch_one(&store.pool)
+                .await
+                .unwrap(),
+            expected
+        );
+    }
+
+    store.pool.close().await;
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn inserts_reject_out_of_range_attempt_budgets_without_aborting_the_transaction() {
+    let db = support::TestDatabase::new().await;
+    let store = Store::connect(&db.url).await.unwrap();
+    let mut tx = store.pool.begin().await.unwrap();
+
+    for budget in [i32::MIN, -1, 0, 101, i32::MAX] {
+        let error = Outbox::insert(&mut tx, &email("invalid").max_attempts(budget))
+            .await
+            .unwrap_err();
+        assert!(matches!(error, Error::BadRequest(ref message)
+            if message == "job max_attempts must be between 1 and 100"));
+    }
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM jobs")
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap(),
+        0
+    );
+    tx.commit().await.unwrap();
+
+    store.pool.close().await;
+    db.cleanup().await;
 }
 
 #[tokio::test]

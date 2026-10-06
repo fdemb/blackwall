@@ -489,10 +489,10 @@ pub async fn schedule(store: &Store) -> Result<()> {
                         connection_id: id,
                         generation: row.try_get("generation")?,
                     }),
-                ),
+                )
+                .max_attempts(3),
             )
             .await?;
-            sqlx::query("UPDATE jobs SET max_attempts=3 WHERE queue='openproject' AND payload->>'connection_id'=$1 AND state='pending'").bind(id.to_string()).execute(&mut *savepoint).await?;
             sqlx::query("UPDATE openproject_connections SET checkpoint=$2,next_run_at=clock_timestamp()+interval '5 minutes' WHERE id=$1").bind(id).bind(json!(checkpoint)).execute(&mut *savepoint).await?;
             savepoint.commit().await?;
             Ok(())
