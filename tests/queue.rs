@@ -250,7 +250,21 @@ async fn expired_leases_claim_first_and_share_slot_budget() {
 async fn retries_and_crashes_stop_at_max_attempts_and_admin_retry_resets_budget() {
     let db = support::TestDatabase::new().await;
     let store = Store::connect(&db.url).await.unwrap();
-    enqueue(&store, 1).await;
+    let mut tx = store.pool.begin().await.unwrap();
+    Outbox::insert(
+        &mut tx,
+        &NewJob::now(
+            "retry-budget",
+            Job::Reminder(blackwall::jobs::Reminder {
+                workspace_id: Uuid::new_v4(),
+                issue_id: Uuid::new_v4(),
+                generation: 1,
+            }),
+        ),
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
     sqlx::query("UPDATE jobs SET max_attempts=2")
         .execute(&store.pool)
         .await
@@ -972,7 +986,6 @@ async fn permanent_webhook_errors_fail_once_and_disabled_grants_skip_delivery() 
         workspace_id: workspace,
         integration_id: integration,
         url: "http://example.com".into(),
-        secret: "secret".into(),
         event: serde_json::json!({"change":true}),
     });
 
@@ -1145,6 +1158,378 @@ async fn drain_deadline_abandons_lease_for_restart_recovery() {
     );
     tokio::fs::remove_dir_all(spool).await.unwrap();
 
+    store.pool.close().await;
+    db.cleanup().await;
+}
+
+async fn job_payload(store: &Store, id: Uuid) -> serde_json::Value {
+    sqlx::query_scalar("SELECT payload FROM jobs WHERE id=$1")
+        .bind(id)
+        .fetch_one(&store.pool)
+        .await
+        .unwrap()
+}
+
+async fn insert_email(store: &Store, key: &str) -> Uuid {
+    let mut tx = store.pool.begin().await.unwrap();
+    Outbox::insert(&mut tx, &email(key)).await.unwrap();
+    tx.commit().await.unwrap();
+    sqlx::query_scalar("SELECT id FROM jobs WHERE dedup_key=$1")
+        .bind(key)
+        .fetch_one(&store.pool)
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn email_terminal_transitions_scrub_token() {
+    let db = support::TestDatabase::new().await;
+    let store = Store::connect(&db.url).await.unwrap();
+
+    let succeeded = insert_email(&store, "scrub-succeeded").await;
+    let claim = store.outbox.claim("email", 1).await.unwrap().pop().unwrap();
+    assert_eq!(claim.id, succeeded);
+    assert!(store.outbox.complete(&claim).await.unwrap());
+    let payload = job_payload(&store, succeeded).await;
+    assert!(payload.get("token").is_none(), "{payload}");
+    assert_eq!(payload["to"], "queue@example.com");
+    assert_eq!(payload["subject"], "reset");
+    assert_eq!(payload["token_hash"], "hash");
+
+    let failed = insert_email(&store, "scrub-failed").await;
+    let claim = store.outbox.claim("email", 1).await.unwrap().pop().unwrap();
+    assert!(store.outbox.fail(&claim, "permanent").await.unwrap());
+    let payload = job_payload(&store, failed).await;
+    assert!(payload.get("token").is_none(), "{payload}");
+    assert_eq!(payload["to"], "queue@example.com");
+
+    let exhausted = insert_email(&store, "scrub-exhausted").await;
+    sqlx::query("UPDATE jobs SET max_attempts=1 WHERE id=$1")
+        .bind(exhausted)
+        .execute(&store.pool)
+        .await
+        .unwrap();
+    let claim = store.outbox.claim("email", 1).await.unwrap().pop().unwrap();
+    assert_eq!(claim.attempts, 1);
+    sqlx::query(
+        "UPDATE jobs SET lease_expires_at=clock_timestamp()-interval '1 second' WHERE id=$1",
+    )
+    .bind(exhausted)
+    .execute(&store.pool)
+    .await
+    .unwrap();
+    assert!(store.outbox.claim("email", 1).await.unwrap().is_empty());
+    assert_eq!(state(&store, exhausted).await, "failed");
+    let payload = job_payload(&store, exhausted).await;
+    assert!(payload.get("token").is_none(), "{payload}");
+    assert_eq!(payload["to"], "queue@example.com");
+
+    let budget = insert_email(&store, "scrub-budget").await;
+    sqlx::query("UPDATE jobs SET max_attempts=1 WHERE id=$1")
+        .bind(budget)
+        .execute(&store.pool)
+        .await
+        .unwrap();
+    let claim = store.outbox.claim("email", 1).await.unwrap().pop().unwrap();
+    assert!(store.outbox.retry(&claim, "transient").await.unwrap());
+    assert_eq!(state(&store, budget).await, "failed");
+    let payload = job_payload(&store, budget).await;
+    assert!(payload.get("token").is_none(), "{payload}");
+
+    let transient = insert_email(&store, "scrub-transient").await;
+    let claim = store.outbox.claim("email", 1).await.unwrap().pop().unwrap();
+    assert!(store.outbox.retry(&claim, "transient").await.unwrap());
+    assert_eq!(state(&store, transient).await, "pending");
+    let payload = job_payload(&store, transient).await;
+    assert_eq!(payload["token"], "secret", "{payload}");
+
+    let cancelled_pending = insert_email(&store, "scrub-cancel-pending").await;
+    assert!(store.outbox.cancel(cancelled_pending, None).await.unwrap());
+    let payload = job_payload(&store, cancelled_pending).await;
+    assert!(payload.get("token").is_none(), "{payload}");
+    assert_eq!(payload["to"], "queue@example.com");
+
+    let cancelled_running = insert_email(&store, "scrub-cancel-running").await;
+    let claim = store.outbox.claim("email", 1).await.unwrap().pop().unwrap();
+    assert!(
+        store
+            .outbox
+            .cancel(claim.id, Some(claim.token))
+            .await
+            .unwrap()
+    );
+    let payload = job_payload(&store, cancelled_running).await;
+    assert!(payload.get("token").is_none(), "{payload}");
+
+    store.pool.close().await;
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn retry_failed_refuses_scrubbed_email() {
+    let db = support::TestDatabase::new().await;
+    let store = Store::connect(&db.url).await.unwrap();
+    let id = insert_email(&store, "scrub-retry").await;
+    let claim = store.outbox.claim("email", 1).await.unwrap().pop().unwrap();
+    assert!(store.outbox.fail(&claim, "permanent").await.unwrap());
+    let error = store.outbox.retry_failed(id).await.unwrap_err();
+    assert!(
+        error.to_string().contains("email token was removed"),
+        "{error}"
+    );
+    assert_eq!(state(&store, id).await, "failed");
+    store.pool.close().await;
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn worker_fails_tokenless_email_permanently() {
+    let db = support::TestDatabase::new().await;
+    let store = Store::connect(&db.url).await.unwrap();
+    let id = insert_email(&store, "tokenless").await;
+    sqlx::query("UPDATE jobs SET payload=payload-'token' WHERE id=$1")
+        .bind(id)
+        .execute(&store.pool)
+        .await
+        .unwrap();
+    let spool = std::env::temp_dir().join(format!("blackwall-tokenless-{}", Uuid::new_v4()));
+    jobs::tick(&store, &Mailer::Spool(spool.clone()))
+        .await
+        .unwrap();
+    assert_eq!(state(&store, id).await, "failed");
+    let last_error: String = sqlx::query_scalar("SELECT last_error FROM jobs WHERE id=$1")
+        .bind(id)
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+    assert!(
+        last_error.contains("email token is missing"),
+        "{last_error}"
+    );
+    let _ = tokio::fs::remove_dir_all(spool).await;
+    store.pool.close().await;
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn webhook_payload_omits_secret_and_follows_rotation() {
+    use blackwall::jobs::Webhook;
+
+    let db = support::TestDatabase::new().await;
+    let store = Store::connect(&db.url).await.unwrap();
+    let workspace = Uuid::new_v4();
+    let integration = Uuid::new_v4();
+    sqlx::query("INSERT INTO workspaces(id,name) VALUES($1,'webhook-secrets')")
+        .bind(workspace)
+        .execute(&store.pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO integrations(id,workspace_id,name,webhook_url,secret,enabled) \
+         VALUES($1,$2,'test','http://example.com','secret-one',true)",
+    )
+    .bind(integration)
+    .bind(workspace)
+    .execute(&store.pool)
+    .await
+    .unwrap();
+
+    let mut tx = store.pool.begin().await.unwrap();
+    Outbox::insert(
+        &mut tx,
+        &NewJob::now(
+            "webhook-no-secret",
+            Job::Webhook(Webhook {
+                workspace_id: workspace,
+                integration_id: integration,
+                url: "http://example.com".into(),
+                event: serde_json::json!({"change":true}),
+            }),
+        ),
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    let payload: serde_json::Value =
+        sqlx::query_scalar("SELECT payload FROM jobs WHERE dedup_key='webhook-no-secret'")
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+    assert!(payload.get("secret").is_none(), "{payload}");
+    assert_eq!(payload["url"], "http://example.com");
+    assert_eq!(payload["event"], serde_json::json!({"change":true}));
+    assert!(matches!(
+        Job::decode("webhook", &payload.to_string()).unwrap(),
+        Job::Webhook(_)
+    ));
+
+    let probe = Webhook {
+        workspace_id: workspace,
+        integration_id: integration,
+        url: "http://example.com".into(),
+        event: serde_json::json!({}),
+    };
+    assert_eq!(
+        probe.current_secret(&store).await.unwrap().as_deref(),
+        Some("secret-one")
+    );
+
+    sqlx::query("UPDATE integrations SET secret='secret-two' WHERE id=$1")
+        .bind(integration)
+        .execute(&store.pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        probe.current_secret(&store).await.unwrap().as_deref(),
+        Some("secret-two")
+    );
+
+    sqlx::query("UPDATE integrations SET enabled=false WHERE id=$1")
+        .bind(integration)
+        .execute(&store.pool)
+        .await
+        .unwrap();
+    assert_eq!(probe.current_secret(&store).await.unwrap(), None);
+    sqlx::query("UPDATE integrations SET enabled=true WHERE id=$1")
+        .bind(integration)
+        .execute(&store.pool)
+        .await
+        .unwrap();
+
+    let repointed = Webhook {
+        workspace_id: workspace,
+        integration_id: integration,
+        url: "http://example.com/other".into(),
+        event: serde_json::json!({}),
+    };
+    assert_eq!(repointed.current_secret(&store).await.unwrap(), None);
+
+    jobs::tick(&store, &Mailer::Disabled).await.unwrap();
+    let rotated: Uuid =
+        sqlx::query_scalar("SELECT id FROM jobs WHERE dedup_key='webhook-no-secret'")
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+    assert_eq!(state(&store, rotated).await, "failed");
+
+    let legacy = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO jobs(id,kind,queue,payload_version,payload,dedup_key) \
+         VALUES($1,'webhook','webhook',1,$2,'webhook-legacy-secret')",
+    )
+    .bind(legacy)
+    .bind(serde_json::json!({
+        "workspace_id": workspace,
+        "integration_id": integration,
+        "url": "http://example.com",
+        "secret": "stale-secret",
+        "event": {"change": true},
+    }))
+    .execute(&store.pool)
+    .await
+    .unwrap();
+    assert!(matches!(
+        Job::decode("webhook", &job_payload(&store, legacy).await.to_string()).unwrap(),
+        Job::Webhook(_)
+    ));
+    jobs::tick(&store, &Mailer::Disabled).await.unwrap();
+    assert_eq!(state(&store, legacy).await, "failed");
+
+    store.pool.close().await;
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn migration_scrubs_stored_secrets() {
+    let db = support::TestDatabase::new().await;
+    let store = Store::connect(&db.url).await.unwrap();
+    let workspace = Uuid::new_v4();
+    let integration = Uuid::new_v4();
+    let user = Uuid::new_v4();
+    for (id, kind, queue, payload, state) in [
+        (
+            Uuid::new_v4(),
+            "webhook",
+            "webhook",
+            serde_json::json!({
+                "workspace_id": workspace,
+                "integration_id": integration,
+                "url": "https://example.com/hook",
+                "secret": "webhook-secret",
+                "event": {},
+            }),
+            "pending",
+        ),
+        (
+            Uuid::new_v4(),
+            "email",
+            "email",
+            serde_json::json!({"to":"a@example.com","subject":"s","token":"t","user_id":user,"token_hash":"h"}),
+            "succeeded",
+        ),
+        (
+            Uuid::new_v4(),
+            "email",
+            "email",
+            serde_json::json!({"to":"a@example.com","subject":"s","token":"t","user_id":user,"token_hash":"h"}),
+            "failed",
+        ),
+        (
+            Uuid::new_v4(),
+            "email",
+            "email",
+            serde_json::json!({"to":"a@example.com","subject":"s","token":"t","user_id":user,"token_hash":"h"}),
+            "cancelled",
+        ),
+        (
+            Uuid::new_v4(),
+            "email",
+            "email",
+            serde_json::json!({"to":"a@example.com","subject":"s","token":"t","user_id":user,"token_hash":"h"}),
+            "pending",
+        ),
+    ] {
+        sqlx::query(
+            "INSERT INTO jobs(id,kind,queue,payload_version,payload,state,finished_at) \
+             VALUES($1,$2,$3,1,$4,$5,CASE WHEN $5 IN ('succeeded','failed','cancelled') THEN clock_timestamp() ELSE NULL END)",
+        )
+        .bind(id)
+        .bind(kind)
+        .bind(queue)
+        .bind(payload)
+        .bind(state)
+        .execute(&store.pool)
+        .await
+        .unwrap();
+    }
+    sqlx::raw_sql(include_str!("../migrations/0015_scrub_job_secrets.sql"))
+        .execute(&store.pool)
+        .await
+        .unwrap();
+    let payloads: Vec<(String, String, serde_json::Value)> =
+        sqlx::query("SELECT kind,state,payload FROM jobs ORDER BY state")
+            .fetch_all(&store.pool)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|row| {
+                (
+                    row.get::<String, _>("kind"),
+                    row.get::<String, _>("state"),
+                    row.get::<serde_json::Value, _>("payload"),
+                )
+            })
+            .collect();
+    for (kind, state, payload) in payloads {
+        if kind == "webhook" {
+            assert!(payload.get("secret").is_none(), "{payload}");
+        } else if state == "pending" {
+            assert_eq!(payload["token"], "t", "{payload}");
+        } else {
+            assert!(payload.get("token").is_none(), "{payload}");
+            assert_eq!(payload["to"], "a@example.com");
+        }
+    }
     store.pool.close().await;
     db.cleanup().await;
 }
