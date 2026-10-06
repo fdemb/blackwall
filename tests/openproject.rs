@@ -21,14 +21,14 @@ use blackwall::{
     auth::{Register, Session},
     domain::Command,
     http,
-    jobs::Job,
+    jobs::{self, Job, Mailer, WorkerConfig},
     openproject,
     store::Store,
 };
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
-use tokio::sync::{Mutex, Notify};
+use tokio::sync::{Mutex, Notify, watch};
 use tower::ServiceExt;
 use uuid::Uuid;
 
@@ -593,6 +593,121 @@ async fn cached_settings_stay_responsive_and_config_changes_fence_slow_remote_pa
     server.abort();
     store.pool.close().await;
     db.cleanup().await;
+}
+
+#[tokio::test]
+async fn worker_schedules_due_connections_despite_frequent_wakeups() {
+    async fn wake_and_wait(store: &Store) {
+        let marker = Uuid::new_v4();
+        sqlx::query("INSERT INTO jobs(id,kind,queue,payload_version,payload) VALUES($1,'webhook','webhook',1,'{}')")
+            .bind(marker).execute(&store.pool).await.unwrap();
+        store.outbox.ready();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let state: String = sqlx::query_scalar("SELECT state FROM jobs WHERE id=$1")
+                    .bind(marker)
+                    .fetch_one(&store.pool)
+                    .await
+                    .unwrap();
+                if state == "failed" {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+    }
+
+    let db = support::TestDatabase::new().await;
+    let store = Store::connect(&db.url).await.unwrap();
+    let owner = account(&store).await;
+    let (workspace, team, _) = setup(&store, &owner).await;
+    let app = http::router(store.clone());
+    let (url, server) = mock_server(Mock::default()).await;
+    let base = format!("/api/workspaces/{workspace}/openproject/connections");
+    let (status, connection) = call(
+        &app,
+        &owner,
+        "POST",
+        &base,
+        Some(json!({"name":"Polling OP","base_url":url,"token":TOKEN,
+            "projects":[{"project_id":42,"team_id":team}]})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{connection}");
+    let id = Uuid::parse_str(connection["id"].as_str().unwrap()).unwrap();
+    sqlx::query("UPDATE openproject_connections SET next_run_at=clock_timestamp()+interval '1 hour' WHERE id=$1")
+        .bind(id).execute(&store.pool).await.unwrap();
+
+    // A blocking task prevents paused time from advancing during PostgreSQL I/O.
+    let (release_clock, hold_clock) = std::sync::mpsc::channel::<()>();
+    let clock_guard = tokio::task::spawn_blocking(move || {
+        let _ = hold_clock.recv_timeout(Duration::from_secs(30));
+    });
+    tokio::time::pause();
+    let poll_interval = Duration::from_secs(3);
+    let (stop, shutdown) = watch::channel(false);
+    let worker = tokio::spawn(jobs::run_with_config(
+        store.clone(),
+        Mailer::Disabled,
+        shutdown,
+        WorkerConfig {
+            poll_interval,
+            ..WorkerConfig::default()
+        },
+    ));
+    // Marker completion confirms the first scheduler pass and each subsequent wake-up.
+    wake_and_wait(&store).await;
+
+    sqlx::query("UPDATE openproject_connections SET next_run_at=clock_timestamp()-interval '1 second' WHERE id=$1")
+        .bind(id).execute(&store.pool).await.unwrap();
+    let mut scheduled_early = false;
+    for _ in 0..10 {
+        tokio::time::advance(Duration::from_millis(100)).await;
+        wake_and_wait(&store).await;
+        scheduled_early |= sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS(SELECT 1 FROM jobs WHERE queue='openproject' AND payload->>'connection_id'=$1)",
+        )
+        .bind(id.to_string())
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+    }
+    tokio::time::advance(Duration::from_secs(2)).await;
+    tokio::time::resume();
+    drop(release_clock);
+    clock_guard.await.unwrap();
+
+    let scheduled = tokio::time::timeout(poll_interval * 2, async {
+        loop {
+            store.outbox.ready();
+            let scheduled: bool = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM jobs WHERE queue='openproject' AND payload->>'connection_id'=$1)",
+            )
+            .bind(id.to_string()).fetch_one(&store.pool).await.unwrap();
+            if scheduled {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+
+    stop.send(true).unwrap();
+    tokio::time::timeout(Duration::from_secs(2), worker)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    server.abort();
+    store.pool.close().await;
+    db.cleanup().await;
+    assert!(
+        !scheduled_early,
+        "wake-ups scheduled a connection before the poll deadline"
+    );
+    scheduled.expect("due connection was not scheduled within two poll intervals");
 }
 
 #[tokio::test]

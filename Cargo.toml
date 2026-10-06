@@ -28,6 +28,7 @@ dotenvy = "0.15.7"
 lettre = { version = "0.11", default-features = false, features = ["builder", "smtp-transport", "pool", "hostname", "tokio1", "tokio1-rustls-tls"] }
 
 [dev-dependencies]
+tokio = { version = "1", features = ["test-util"] }
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
 

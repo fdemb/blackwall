@@ -178,17 +178,22 @@ pub async fn run_with_config(
     }
 
     let mut maintenance_at = tokio::time::Instant::now();
+    let mut schedule_at = tokio::time::Instant::now();
 
     loop {
         if *shutdown.borrow() {
             break;
         }
 
-        if let Err(error) = crate::openproject::schedule(&store).await {
-            tracing::warn!(
-                error = %crate::openproject::failure_message(&error),
-                "OpenProject scheduling failed"
-            );
+        if schedule_at <= tokio::time::Instant::now() {
+            schedule_at = tokio::time::Instant::now() + config.poll_interval;
+
+            if let Err(error) = crate::openproject::schedule(&store).await {
+                tracing::warn!(
+                    error = %crate::openproject::failure_message(&error),
+                    "OpenProject scheduling failed"
+                );
+            }
         }
         for index in 0..queues.len() {
             if *shutdown.borrow() {
@@ -232,6 +237,10 @@ pub async fn run_with_config(
             maintenance_at = tokio::time::Instant::now() + Duration::from_secs(300);
         }
 
+        let deadline = schedule_at
+            .min(maintenance_at)
+            .min(tokio::time::Instant::now() + config.poll_interval);
+
         tokio::select! {
             biased;
             _ = stopped(&mut shutdown) => break,
@@ -260,7 +269,7 @@ pub async fn run_with_config(
                 }
             },
             _ = store.outbox.wait() => {},
-            _ = tokio::time::sleep(config.poll_interval) => {},
+            _ = tokio::time::sleep_until(deadline) => {},
         }
     }
 
