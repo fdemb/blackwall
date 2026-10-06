@@ -19,24 +19,40 @@ pub enum Mailer {
 }
 
 impl Mailer {
-    /// `DEV_MAIL_DIR` selects the spool. Otherwise `SMTP_URL` and `SMTP_FROM` configure SMTP,
+    /// `DEV_MAIL_DIR` selects the spool. `SMTP_URL` and `SMTP_FROM` configure SMTP,
     /// for example `smtps://user:password@smtp.example.com` or
     /// `smtp://smtp.example.com:587?tls=required`.
+    /// `DEV_MAIL_DIR` and `SMTP_URL` are mutually exclusive.
     pub fn from_env() -> Result<Self, String> {
-        if let Ok(directory) = std::env::var("DEV_MAIL_DIR") {
+        let directory = std::env::var("DEV_MAIL_DIR").ok();
+        let url = std::env::var("SMTP_URL").ok();
+        let from = std::env::var("SMTP_FROM").ok();
+        Self::from_config(directory.as_deref(), url.as_deref(), from.as_deref())
+    }
+
+    fn from_config(
+        directory: Option<&str>,
+        url: Option<&str>,
+        from: Option<&str>,
+    ) -> Result<Self, String> {
+        if directory.is_some() && url.is_some() {
+            return Err("set either DEV_MAIL_DIR or SMTP_URL, not both".into());
+        }
+
+        if let Some(directory) = directory {
             return Ok(Self::Spool(directory.into()));
         }
 
-        let Ok(url) = std::env::var("SMTP_URL") else {
+        let Some(url) = url else {
             return Ok(Self::Disabled);
         };
-        let from = std::env::var("SMTP_FROM")
-            .map_err(|_| "SMTP_FROM is required with SMTP_URL")?
+        let from = from
+            .ok_or("SMTP_FROM is required with SMTP_URL")?
             .parse()
             .map_err(|_| "SMTP_FROM must be an address like Blackwall <noreply@example.com>")?;
 
         // The URL can hold credentials, so errors leave it out.
-        let transport = AsyncSmtpTransport::<Tokio1Executor>::from_url(&url)
+        let transport = AsyncSmtpTransport::<Tokio1Executor>::from_url(url)
             .map_err(|_| "SMTP_URL is not a valid smtp:// or smtps:// URL")?
             .timeout(Some(Duration::from_secs(15)))
             .build();
@@ -161,6 +177,58 @@ mod tests {
         net::TcpListener,
     };
     use uuid::Uuid;
+
+    #[test]
+    fn rejects_spool_with_smtp() {
+        let result = Mailer::from_config(Some("dev-mail"), Some("smtp://localhost:1025"), None);
+        assert_eq!(
+            result.err().as_deref(),
+            Some("set either DEV_MAIL_DIR or SMTP_URL, not both")
+        );
+    }
+
+    #[test]
+    fn selects_spool() {
+        let mailer = Mailer::from_config(Some("dev-mail"), None, None).unwrap();
+        assert!(matches!(mailer, Mailer::Spool(path) if path == std::path::Path::new("dev-mail")));
+    }
+
+    #[tokio::test]
+    async fn selects_smtp() {
+        let mailer = Mailer::from_config(
+            None,
+            Some("smtp://localhost:1025"),
+            Some("Blackwall <noreply@example.com>"),
+        )
+        .unwrap();
+        assert!(
+            matches!(mailer, Mailer::Smtp { from, .. } if from.to_string() == "Blackwall <noreply@example.com>")
+        );
+    }
+
+    #[test]
+    fn disables_unconfigured_mail() {
+        let mailer = Mailer::from_config(None, None, None).unwrap();
+        assert!(matches!(mailer, Mailer::Disabled));
+    }
+
+    #[test]
+    fn requires_smtp_from() {
+        let result = Mailer::from_config(None, Some("smtp://localhost:1025"), None);
+        assert_eq!(
+            result.err().as_deref(),
+            Some("SMTP_FROM is required with SMTP_URL")
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_smtp_from() {
+        let result = Mailer::from_config(None, Some("smtp://localhost:1025"), Some("invalid"));
+        assert_eq!(
+            result.err().as_deref(),
+            Some("SMTP_FROM must be an address like Blackwall <noreply@example.com>")
+        );
+    }
 
     /// Accepts one SMTP session and returns the message data.
     async fn smtp_sink(listener: TcpListener) -> String {
