@@ -4,7 +4,7 @@ use blackwall::{
     jobs::{self, Email, Grant, Job, Mailer, WorkerConfig},
     store::{NewJob, Outbox, Store},
 };
-use sqlx::Row;
+use sqlx::{Connection, Row};
 use std::{collections::HashSet, time::Duration};
 use tokio::{
     sync::{mpsc, watch},
@@ -670,12 +670,236 @@ async fn retention_keeps_failed_jobs_and_unfinished_claims() {
     .execute(&store.pool)
     .await
     .unwrap();
-    assert_eq!(store.outbox.cleanup(30).await.unwrap(), 1);
+    assert_eq!(store.outbox.cleanup(30, 90).await.unwrap(), 1);
 
     assert_eq!(state(&store, failed.id).await, "failed");
 
+    sqlx::query(
+        "UPDATE jobs SET finished_at=clock_timestamp()-interval '91 days' \
+         WHERE id=$1",
+    )
+    .bind(failed.id)
+    .execute(&store.pool)
+    .await
+    .unwrap();
+    assert_eq!(store.outbox.cleanup(30, 90).await.unwrap(), 1);
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM jobs WHERE id=$1")
+            .bind(failed.id)
+            .fetch_one(&store.pool)
+            .await
+            .unwrap(),
+        0
+    );
+
     assert_eq!(state(&store, running.id).await, "running");
-    assert!(store.outbox.cleanup(0).await.is_err());
+    assert!(store.outbox.cleanup(0, 90).await.is_err());
+    assert!(store.outbox.cleanup(30, 0).await.is_err());
+
+    store.pool.close().await;
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn maintenance_drains_more_than_one_cleanup_batch() {
+    let db = support::TestDatabase::new().await;
+    let store = Store::connect(&db.url).await.unwrap();
+    sqlx::query(
+        "INSERT INTO jobs(id,kind,queue,payload,state,finished_at) \
+         SELECT gen_random_uuid(),'email','email','{}','succeeded',\
+         clock_timestamp()-interval '31 days' FROM generate_series(1,2500)",
+    )
+    .execute(&store.pool)
+    .await
+    .unwrap();
+
+    jobs::tick(&store, &Mailer::Disabled).await.unwrap();
+
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM jobs")
+            .fetch_one(&store.pool)
+            .await
+            .unwrap(),
+        0
+    );
+
+    store.pool.close().await;
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn concurrent_maintenance_skips_while_lock_is_held() {
+    let db = support::TestDatabase::new().await;
+    let store = Store::connect(&db.url).await.unwrap();
+    sqlx::query(
+        "INSERT INTO jobs(id,kind,queue,payload,state,finished_at) \
+         SELECT gen_random_uuid(),'email','email','{}','succeeded',\
+         clock_timestamp()-interval '31 days' FROM generate_series(1,5)",
+    )
+    .execute(&store.pool)
+    .await
+    .unwrap();
+
+    let mut held = store.pool.acquire().await.unwrap();
+    sqlx::query("SELECT pg_advisory_lock(728192404)")
+        .execute(&mut *held)
+        .await
+        .unwrap();
+
+    jobs::tick(&store, &Mailer::Disabled).await.unwrap();
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM jobs")
+            .fetch_one(&store.pool)
+            .await
+            .unwrap(),
+        5
+    );
+
+    sqlx::query("SELECT pg_advisory_unlock(728192404)")
+        .execute(&mut *held)
+        .await
+        .unwrap();
+    drop(held);
+
+    jobs::tick(&store, &Mailer::Disabled).await.unwrap();
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM jobs")
+            .fetch_one(&store.pool)
+            .await
+            .unwrap(),
+        0
+    );
+
+    store.pool.close().await;
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn aborted_maintenance_releases_the_lock() {
+    // A dedicated session: pooled probes could reuse the leaked session
+    // itself, where try_lock reentrantly succeeds and hides the leak.
+    async fn lock_free(probe: &mut sqlx::postgres::PgConnection) -> bool {
+        if sqlx::query_scalar::<_, bool>("SELECT pg_try_advisory_lock(728192404)")
+            .fetch_one(&mut *probe)
+            .await
+            .unwrap()
+        {
+            sqlx::query("SELECT pg_advisory_unlock(728192404)")
+                .execute(&mut *probe)
+                .await
+                .unwrap();
+            true
+        } else {
+            false
+        }
+    }
+
+    let db = support::TestDatabase::new().await;
+    let store = Store::connect(&db.url).await.unwrap();
+    let mut probe = sqlx::postgres::PgConnection::connect(&db.url)
+        .await
+        .unwrap();
+
+    let mut blocker = store.pool.acquire().await.unwrap();
+    sqlx::query("BEGIN").execute(&mut *blocker).await.unwrap();
+    sqlx::query("LOCK TABLE sessions IN ACCESS EXCLUSIVE MODE")
+        .execute(&mut *blocker)
+        .await
+        .unwrap();
+
+    let worker = tokio::spawn({
+        let store = store.clone();
+        async move { jobs::tick(&store, &Mailer::Disabled).await }
+    });
+
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while lock_free(&mut probe).await {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+
+    worker.abort();
+    let _ = worker.await;
+    sqlx::query("ROLLBACK")
+        .execute(&mut *blocker)
+        .await
+        .unwrap();
+    drop(blocker);
+
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !lock_free(&mut probe).await {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+
+    store.pool.close().await;
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn maintenance_backfills_more_than_one_archive_batch() {
+    let db = support::TestDatabase::new().await;
+    let store = Store::connect(&db.url).await.unwrap();
+
+    let workspace = Uuid::new_v4();
+    let team = Uuid::new_v4();
+    let stage = Uuid::new_v4();
+    sqlx::query("INSERT INTO workspaces(id,name) VALUES($1,'backfill')")
+        .bind(workspace)
+        .execute(&store.pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO teams(id,workspace_id,name,archive_after_days) VALUES($1,$2,'t',NULL)",
+    )
+    .bind(team)
+    .bind(workspace)
+    .execute(&store.pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO stages(id,workspace_id,team_id,name,kind,position) \
+         VALUES($1,$2,$3,'Done','done',1)",
+    )
+    .bind(stage)
+    .bind(workspace)
+    .bind(team)
+    .execute(&store.pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO issues(id,workspace_id,number,title,description,team_id,stage_id,\
+         priority,position,created_at,updated_at) SELECT gen_random_uuid(),$1,g,'issue',\
+         'desc',$2,$3,'normal',g,clock_timestamp(),clock_timestamp() \
+         FROM generate_series(1,2500) g",
+    )
+    .bind(workspace)
+    .bind(team)
+    .bind(stage)
+    .execute(&store.pool)
+    .await
+    .unwrap();
+
+    jobs::tick(&store, &Mailer::Disabled).await.unwrap();
+
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM issues WHERE done_at IS NULL")
+            .fetch_one(&store.pool)
+            .await
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM issues WHERE archived_at IS NOT NULL")
+            .fetch_one(&store.pool)
+            .await
+            .unwrap(),
+        0
+    );
 
     store.pool.close().await;
     db.cleanup().await;
