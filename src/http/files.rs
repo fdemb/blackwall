@@ -353,7 +353,6 @@ pub(super) async fn incoming(
     .await?;
 
     op.tx.commit().await?;
-    store.outbox.ready();
 
     Ok(Json(result))
 }

@@ -49,13 +49,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         _ => return Err("unknown arguments; use --help".into()),
     }
 
-    let mailer = jobs::Mailer::from_env()?;
-    let config = jobs::WorkerConfig::from_env()?;
-    config.validate(&store)?;
-    tracing::info!(mail = mailer.describe(), "email delivery configured");
-
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
     if args.first().is_some_and(|arg| arg == "worker") {
+        let mailer = jobs::Mailer::from_env()?;
+        let config = jobs::WorkerConfig::from_env()?;
+        config.validate(&store)?;
+        tracing::info!(mail = mailer.describe(), "email delivery configured");
         let worker = jobs::run_with_config(store.clone(), mailer, shutdown_rx, config);
         tokio::pin!(worker);
         tokio::select! {
@@ -73,34 +72,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let listener = tokio::net::TcpListener::bind(&bind).await?;
 
     tracing::info!(address = %listener.local_addr()?, "Blackwall listening");
-    let worker = if std::env::var("EMBEDDED_WORKERS").as_deref() == Ok("false") {
-        None
-    } else {
-        Some(tokio::spawn(jobs::run_with_config(
-            store.clone(),
-            mailer,
-            shutdown_rx,
-            config,
-        )))
-    };
-
-    let signal_tx = shutdown_tx.clone();
-    let served = axum::serve(
+    axum::serve(
         listener,
         http::router(store.clone()).into_make_service_with_connect_info::<std::net::SocketAddr>(),
     )
-    .with_graceful_shutdown(async move {
-        shutdown_signal().await;
-        let _ = signal_tx.send(true);
-    })
-    .await;
-
-    let _ = shutdown_tx.send(true);
-    if let Some(worker) = worker {
-        worker.await??;
-    }
+    .with_graceful_shutdown(shutdown_signal())
+    .await?;
     store.pool.close().await;
-    served?;
 
     Ok(())
 }

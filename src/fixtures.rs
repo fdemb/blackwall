@@ -49,6 +49,5 @@ pub async fn load(store: &Store, name: &str) -> Result<()> {
         .await?;
     }
     tx.commit().await?;
-    store.outbox.ready();
     Ok(())
 }

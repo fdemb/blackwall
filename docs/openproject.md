@@ -49,7 +49,7 @@ Work-package reconciliation loads stages, matching members, and existing issues 
 
 `JOBS_OPENPROJECT_CONCURRENCY` defaults to 2 and accepts 1 through 4. OpenProject jobs have their own concurrency limit so slow requests do not consume email or database job slots. The database pool must have at least `JOBS_DATABASE_CONCURRENCY + JOBS_OPENPROJECT_CONCURRENCY + 3` connections.
 
-For process isolation, run `blackwall serve` with `EMBEDDED_WORKERS=false` and run `blackwall worker` separately. Each process then owns its own runtime and database pool. They still share the database, so background writes can contend with interactive writes; batches and lock timeouts limit that contention.
+Run `blackwall serve` and `blackwall worker` as separate processes. Each process then owns its own runtime and database pool. They still share the database, so background writes can contend with interactive writes; batches and lock timeouts limit that contention.
 
 Polling is eventually consistent, not a snapshot of OpenProject. Work packages can move or change while a scan is in progress; a later scan repairs missed changes. There are no webhooks in this version.
 
