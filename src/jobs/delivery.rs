@@ -103,7 +103,7 @@ impl Job {
         mailer: &Mailer,
         id: &str,
     ) -> Result<(), DeliveryError> {
-        if !self.is_current(store).await? {
+        if !self.is_current(store, id).await? {
             return Ok(());
         }
 
@@ -119,7 +119,7 @@ impl Job {
         }
     }
 
-    async fn is_current(&self, store: &Store) -> Result<bool, DeliveryError> {
+    async fn is_current(&self, store: &Store, id: &str) -> Result<bool, DeliveryError> {
         let result = match self {
             Job::Email(Email {
                 grant:
@@ -173,7 +173,10 @@ impl Job {
             Job::Reminder(_) | Job::OpenProject(_) => return Ok(true),
         };
 
-        result.map_err(|_| DeliveryError::Transient("delivery grant lookup failed"))
+        result.map_err(|error| {
+            tracing::warn!(job = %id, error = %error, "delivery grant lookup failed");
+            DeliveryError::Transient("delivery grant lookup failed")
+        })
     }
 }
 
@@ -196,7 +199,7 @@ async fn send_webhook(id: &str, webhook: &Webhook) -> Result<(), DeliveryError> 
         .map_err(|_| DeliveryError::Permanent("invalid webhook secret"))?;
     mac.update(&body);
 
-    let client = webhook_client(&url).await?;
+    let client = webhook_client(id, &url).await?;
     let response = client
         .post(url)
         .header("Content-Type", "application/json")
@@ -208,17 +211,36 @@ async fn send_webhook(id: &str, webhook: &Webhook) -> Result<(), DeliveryError> 
         .body(body)
         .send()
         .await
-        .map_err(|_| DeliveryError::Transient("webhook request failed"))?;
+        .map_err(|error| {
+            let timeout = error.is_timeout();
+            let connect = error.is_connect();
+            let status = error.status();
+            tracing::warn!(
+                job = %id,
+                error = %error.without_url(),
+                timeout,
+                connect,
+                status = ?status,
+                "webhook request failed"
+            );
+            DeliveryError::Transient("webhook request failed")
+        })?;
 
     let status = response.status();
 
     if status.is_success() {
         Ok(())
     } else if status.is_server_error() || matches!(status.as_u16(), 408 | 425 | 429) {
+        tracing::warn!(
+            job = %id,
+            status = status.as_u16(),
+            "webhook temporarily rejected delivery"
+        );
         Err(DeliveryError::Transient(
             "webhook temporarily rejected delivery",
         ))
     } else {
+        tracing::warn!(job = %id, status = status.as_u16(), "webhook rejected delivery");
         Err(DeliveryError::Permanent("webhook rejected delivery"))
     }
 }
@@ -260,7 +282,7 @@ fn public_address(ip: IpAddr) -> bool {
     }
 }
 
-async fn webhook_client(url: &reqwest::Url) -> Result<reqwest::Client, DeliveryError> {
+async fn webhook_client(id: &str, url: &reqwest::Url) -> Result<reqwest::Client, DeliveryError> {
     let host = url
         .host_str()
         .ok_or(DeliveryError::Permanent("webhook host missing"))?;
@@ -268,7 +290,10 @@ async fn webhook_client(url: &reqwest::Url) -> Result<reqwest::Client, DeliveryE
     let addresses: Vec<SocketAddr> =
         tokio::net::lookup_host((host, url.port_or_known_default().unwrap_or(443)))
             .await
-            .map_err(|_| DeliveryError::Transient("webhook DNS failed"))?
+            .map_err(|error| {
+                tracing::warn!(job = %id, error = %error, "webhook DNS failed");
+                DeliveryError::Transient("webhook DNS failed")
+            })?
             .collect();
 
     if addresses.is_empty() || addresses.iter().any(|a| !public_address(a.ip())) {
@@ -283,7 +308,20 @@ async fn webhook_client(url: &reqwest::Url) -> Result<reqwest::Client, DeliveryE
         .no_proxy()
         .resolve_to_addrs(host, &addresses)
         .build()
-        .map_err(|_| DeliveryError::Transient("webhook client failed"))
+        .map_err(|error| {
+            let timeout = error.is_timeout();
+            let connect = error.is_connect();
+            let status = error.status();
+            tracing::warn!(
+                job = %id,
+                error = %error.without_url(),
+                timeout,
+                connect,
+                status = ?status,
+                "webhook client failed"
+            );
+            DeliveryError::Transient("webhook client failed")
+        })
 }
 
 #[cfg(test)]
