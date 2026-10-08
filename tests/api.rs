@@ -1096,6 +1096,7 @@ async fn native_identity_and_atomic_password_recovery() {
             .authenticate(&session.token)
             .await
             .unwrap()
+            .0
             .display_name,
         updated.display_name
     );

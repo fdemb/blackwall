@@ -267,10 +267,12 @@ async fn parallel_number_allocation_and_database_tenant_constraints() {
         let app = app.clone();
         let token = owner.token.clone();
         let profile = owner.profile.clone();
+        let session_id = owner.session_id;
         tasks.spawn(async move {
             let owner = Session {
                 token,
                 profile,
+                session_id,
                 csrf_token: String::new(),
             };
 

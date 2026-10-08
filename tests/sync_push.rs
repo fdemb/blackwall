@@ -1,0 +1,818 @@
+mod support;
+
+use axum::{
+    body::Body,
+    http::{Request, StatusCode},
+};
+use blackwall::{
+    auth::{Register, Session},
+    http::router,
+    store::Store,
+};
+use http_body_util::BodyExt;
+use serde_json::{Value, json};
+use sqlx::Row;
+use tower::ServiceExt;
+use uuid::Uuid;
+
+async fn call(
+    app: &axum::Router,
+    method: &str,
+    path: &str,
+    token: Option<&str>,
+    input: Option<Value>,
+) -> (StatusCode, Value) {
+    let mut request = Request::builder().method(method).uri(path);
+    if let Some(token) = token {
+        request = request.header("Authorization", format!("Bearer {token}"));
+    }
+    let body = match input {
+        Some(input) => {
+            request = request.header("Content-Type", "application/json");
+            Body::from(input.to_string())
+        }
+        None => Body::empty(),
+    };
+    let response = app
+        .clone()
+        .oneshot(request.body(body).unwrap())
+        .await
+        .unwrap();
+    let status = response.status();
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    (status, serde_json::from_slice(&bytes).unwrap())
+}
+
+async fn account(store: &Store, name: &str) -> Session {
+    store
+        .register(Register {
+            email: format!("{name}-{}@example.com", Uuid::new_v4()),
+            password: "test-password-123".into(),
+            display_name: name.into(),
+        })
+        .await
+        .unwrap()
+}
+
+fn id(value: &Value) -> Uuid {
+    Uuid::parse_str(value.as_str().unwrap()).unwrap()
+}
+
+fn mutation(id: i64, name: &str, args: Value) -> Value {
+    json!({"id": id, "name": name, "args": args, "at": "2026-10-08T12:00:00Z"})
+}
+
+async fn command(
+    app: &axum::Router,
+    owner: &Session,
+    workspace: Uuid,
+    cmd: Value,
+) -> (StatusCode, Value) {
+    call(
+        app,
+        "POST",
+        &format!("/api/workspaces/{workspace}/commands"),
+        Some(&owner.token),
+        Some(json!({"command": cmd})),
+    )
+    .await
+}
+
+async fn created(app: &axum::Router, owner: &Session, workspace: Uuid, cmd: Value) -> Uuid {
+    let (status, result) = command(app, owner, workspace, cmd).await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+    id(&result["result"]["id"])
+}
+
+async fn workspace(app: &axum::Router, owner: &Session, name: &str) -> Uuid {
+    let (status, result) = call(
+        app,
+        "POST",
+        "/api/workspaces",
+        Some(&owner.token),
+        Some(json!({"name": name})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+    id(&result["workspace"]["id"])
+}
+
+async fn setup(app: &axum::Router, owner: &Session) -> (Uuid, Uuid) {
+    let ws = workspace(app, owner, "Sync push").await;
+    let team = created(
+        app,
+        owner,
+        ws,
+        json!({"type": "create_team", "name": "Team", "members": [owner.profile.id]}),
+    )
+    .await;
+    (ws, team)
+}
+
+async fn push(
+    app: &axum::Router,
+    token: &str,
+    workspace: Uuid,
+    client: Uuid,
+    mutations: Vec<Value>,
+) -> (StatusCode, Value) {
+    call(
+        app,
+        "POST",
+        &format!("/api/workspaces/{workspace}/sync/push"),
+        Some(token),
+        Some(json!({"client_id": client, "mutations": mutations})),
+    )
+    .await
+}
+
+async fn invite_member(
+    app: &axum::Router,
+    store: &Store,
+    owner: &Session,
+    workspace: Uuid,
+    user: &Session,
+) {
+    let (status, result) = command(
+        app,
+        owner,
+        workspace,
+        json!({"type": "invite", "email": user.profile.email, "role": "member", "token_hash": "ignored"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+
+    let row = sqlx::query(
+        "SELECT payload FROM jobs WHERE kind = 'email' AND payload->>'to' = $1 \
+         ORDER BY created_at DESC LIMIT 1",
+    )
+    .bind(&user.profile.email)
+    .fetch_one(&store.pool)
+    .await
+    .unwrap();
+    let mail: Value = row.try_get("payload").unwrap();
+
+    let (status, result) = call(
+        app,
+        "POST",
+        &format!("/api/workspaces/{workspace}/invitations/accept"),
+        Some(&user.token),
+        Some(json!({"token": mail["token"]})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+}
+
+async fn last_mutation_id(store: &Store, client: Uuid) -> Option<i64> {
+    sqlx::query_scalar("SELECT last_mutation_id FROM sync_clients WHERE client_id = $1")
+        .bind(client)
+        .fetch_optional(&store.pool)
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn push_applies_batch_in_order() {
+    let database = support::TestDatabase::new().await;
+    let store = Store::connect(&database.url).await.unwrap();
+    let app = router(store.clone());
+    let owner = account(&store, "owner").await;
+    let (ws, team) = setup(&app, &owner).await;
+    let client = Uuid::new_v4();
+    let issue = Uuid::new_v4();
+
+    let (status, result) = push(
+        &app,
+        &owner.token,
+        ws,
+        client,
+        vec![
+            mutation(
+                1,
+                "create_label",
+                json!({"name": "bug", "color": "#ef4444"}),
+            ),
+            mutation(
+                2,
+                "create_issue",
+                json!({"input": {"id": issue, "team_id": team, "title": "Original"}}),
+            ),
+            mutation(
+                3,
+                "update_issue",
+                json!({"id": issue, "patch": {"title": "Renamed"}}),
+            ),
+        ],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+    assert_eq!(result["last_mutation_id"], 3);
+    assert_eq!(
+        result["results"],
+        json!([
+            {"id": 1, "status": "applied"},
+            {"id": 2, "status": "applied"},
+            {"id": 3, "status": "applied"},
+        ])
+    );
+
+    assert_eq!(last_mutation_id(&store, client).await, Some(3));
+
+    let (status, labels) = call(
+        &app,
+        "GET",
+        &format!("/api/workspaces/{ws}/labels"),
+        Some(&owner.token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{labels}");
+    assert!(
+        labels["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|l| l["name"] == "bug")
+    );
+
+    let (status, row) = call(
+        &app,
+        "GET",
+        &format!("/api/workspaces/{ws}/issues/{issue}"),
+        Some(&owner.token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{row}");
+    assert_eq!(row["title"], "Renamed");
+
+    drop(app);
+    store.pool.close().await;
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn push_resend_dedupes() {
+    let database = support::TestDatabase::new().await;
+    let store = Store::connect(&database.url).await.unwrap();
+    let app = router(store.clone());
+    let owner = account(&store, "owner").await;
+    let (ws, team) = setup(&app, &owner).await;
+    let client = Uuid::new_v4();
+    let issue = created(
+        &app,
+        &owner,
+        ws,
+        json!({"type": "create_issue", "input": {"team_id": team, "title": "Target"}}),
+    )
+    .await;
+    let comment = Uuid::new_v4();
+    let batch = vec![
+        mutation(
+            1,
+            "add_comment",
+            json!({"id": comment, "issue_id": issue, "body": "Note"}),
+        ),
+        mutation(2, "follow", json!({"issue_id": issue, "following": true})),
+        mutation(
+            3,
+            "update_issue",
+            json!({"id": issue, "patch": {"title": "Kept"}}),
+        ),
+    ];
+
+    let (status, first) = push(&app, &owner.token, ws, client, batch.clone()).await;
+    assert_eq!(status, StatusCode::OK, "{first}");
+    assert!(
+        first["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|r| r["status"] == "applied")
+    );
+
+    let (status, second) = push(&app, &owner.token, ws, client, batch).await;
+    assert_eq!(status, StatusCode::OK, "{second}");
+    assert_eq!(
+        second["results"],
+        json!([
+            {"id": 1, "status": "duplicate"},
+            {"id": 2, "status": "duplicate"},
+            {"id": 3, "status": "duplicate"},
+        ])
+    );
+    assert_eq!(second["last_mutation_id"], 3);
+
+    let (status, comments) = call(
+        &app,
+        "GET",
+        &format!("/api/workspaces/{ws}/comments?issue_id={issue}"),
+        Some(&owner.token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{comments}");
+    let items = comments["items"].as_array().unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["id"], comment.to_string());
+
+    drop(app);
+    store.pool.close().await;
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn push_gaps_accepted_and_bad_batches_rejected() {
+    let database = support::TestDatabase::new().await;
+    let store = Store::connect(&database.url).await.unwrap();
+    let app = router(store.clone());
+    let owner = account(&store, "owner").await;
+    let (ws, _) = setup(&app, &owner).await;
+    let client = Uuid::new_v4();
+
+    let (status, result) = push(
+        &app,
+        &owner.token,
+        ws,
+        client,
+        vec![
+            mutation(
+                1,
+                "create_label",
+                json!({"name": "one", "color": "#000000"}),
+            ),
+            mutation(
+                3,
+                "create_label",
+                json!({"name": "three", "color": "#000000"}),
+            ),
+            mutation(
+                7,
+                "create_label",
+                json!({"name": "seven", "color": "#000000"}),
+            ),
+        ],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+    assert_eq!(result["last_mutation_id"], 7);
+
+    // Non-increasing ids fail the whole request with nothing processed.
+    let (status, result) = push(
+        &app,
+        &owner.token,
+        ws,
+        client,
+        vec![
+            mutation(
+                8,
+                "create_label",
+                json!({"name": "eight", "color": "#000000"}),
+            ),
+            mutation(
+                8,
+                "create_label",
+                json!({"name": "eight-again", "color": "#000000"}),
+            ),
+        ],
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{result}");
+    assert_eq!(last_mutation_id(&store, client).await, Some(7));
+
+    let (status, labels) = call(
+        &app,
+        "GET",
+        &format!("/api/workspaces/{ws}/labels"),
+        Some(&owner.token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{labels}");
+    let names: Vec<&str> = labels["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|l| l["name"].as_str().unwrap())
+        .collect();
+    assert!(!names.contains(&"eight"));
+
+    // Ids below one, empty batches and oversized batches are request errors too.
+    let (status, _) = push(
+        &app,
+        &owner.token,
+        ws,
+        client,
+        vec![mutation(
+            0,
+            "create_label",
+            json!({"name": "zero", "color": "#000000"}),
+        )],
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(last_mutation_id(&store, client).await, Some(7));
+
+    let (status, _) = push(&app, &owner.token, ws, client, vec![]).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    let oversized: Vec<Value> = (1..=101)
+        .map(|n| {
+            mutation(
+                n,
+                "create_label",
+                json!({"name": format!("bulk-{n}"), "color": "#000000"}),
+            )
+        })
+        .collect();
+    let (status, _) = push(&app, &owner.token, ws, Uuid::new_v4(), oversized).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    drop(app);
+    store.pool.close().await;
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn push_rejected_mutation_advances_id_and_rolls_back() {
+    let database = support::TestDatabase::new().await;
+    let store = Store::connect(&database.url).await.unwrap();
+    let app = router(store.clone());
+    let owner = account(&store, "owner").await;
+    let (ws, team) = setup(&app, &owner).await;
+    let client = Uuid::new_v4();
+    let kept = created(
+        &app,
+        &owner,
+        ws,
+        json!({"type": "create_issue", "input": {"team_id": team, "title": "Kept"}}),
+    )
+    .await;
+    let missing = Uuid::new_v4();
+
+    let (status, row) = call(
+        &app,
+        "GET",
+        &format!("/api/workspaces/{ws}/issues/{kept}"),
+        Some(&owner.token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{row}");
+    assert_eq!(row["version"], 1);
+
+    let (status, result) = push(
+        &app,
+        &owner.token,
+        ws,
+        client,
+        vec![mutation(
+            4,
+            "bulk_issues",
+            json!({"ids": [kept, missing], "action": {"update": {"priority": "high"}}}),
+        )],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+    assert_eq!(result["last_mutation_id"], 4);
+    assert_eq!(result["results"][0]["id"], 4);
+    assert_eq!(result["results"][0]["status"], "rejected");
+    assert_eq!(result["results"][0]["error"]["status"], 404);
+    assert_eq!(last_mutation_id(&store, client).await, Some(4));
+
+    // The partial write to the existing issue rolled back with the rejection.
+    let (status, row) = call(
+        &app,
+        "GET",
+        &format!("/api/workspaces/{ws}/issues/{kept}"),
+        Some(&owner.token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{row}");
+    assert_eq!(row["version"], 1);
+    assert_eq!(row["title"], "Kept");
+    assert_eq!(row["priority"], "none");
+
+    drop(app);
+    store.pool.close().await;
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn push_viewer_personal_rules() {
+    let database = support::TestDatabase::new().await;
+    let store = Store::connect(&database.url).await.unwrap();
+    let app = router(store.clone());
+    let owner = account(&store, "owner").await;
+    let viewer = account(&store, "watcher").await;
+    let (ws, team) = setup(&app, &owner).await;
+    invite_member(&app, &store, &owner, ws, &viewer).await;
+
+    let (status, result) = command(
+        &app,
+        &owner,
+        ws,
+        json!({"type": "set_role", "user_id": viewer.profile.id, "role": "viewer"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+
+    let issue = created(
+        &app,
+        &owner,
+        ws,
+        json!({"type": "create_issue", "input": {"team_id": team, "title": "Target"}}),
+    )
+    .await;
+    let (status, result) = command(
+        &app,
+        &owner,
+        ws,
+        json!({"type": "add_comment", "issue_id": issue, "body": "ping", "mentions": [viewer.profile.id]}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+
+    let (status, inbox) = call(
+        &app,
+        "GET",
+        &format!("/api/workspaces/{ws}/notifications"),
+        Some(&viewer.token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{inbox}");
+    let notification = inbox["items"].as_array().unwrap().first().cloned().unwrap();
+    assert!(notification["read_at"].is_null());
+
+    let (status, result) = push(
+        &app,
+        &viewer.token,
+        ws,
+        Uuid::new_v4(),
+        vec![
+            mutation(
+                1,
+                "update_issue",
+                json!({"id": issue, "patch": {"title": "Hijack"}}),
+            ),
+            mutation(
+                2,
+                "mark_notification_read",
+                json!({"id": notification["id"]}),
+            ),
+        ],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+    assert_eq!(result["last_mutation_id"], 2);
+    assert_eq!(result["results"][0]["status"], "rejected");
+    assert_eq!(result["results"][0]["error"]["status"], 403);
+    assert_eq!(result["results"][1]["status"], "applied");
+
+    let (status, row) = call(
+        &app,
+        "GET",
+        &format!("/api/workspaces/{ws}/issues/{issue}"),
+        Some(&owner.token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{row}");
+    assert_eq!(row["title"], "Target");
+
+    let (status, inbox) = call(
+        &app,
+        "GET",
+        &format!("/api/workspaces/{ws}/notifications"),
+        Some(&viewer.token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{inbox}");
+    assert!(
+        inbox["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|n| !n["read_at"].is_null())
+    );
+
+    drop(app);
+    store.pool.close().await;
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn push_malformed_commands_rejected_per_mutation() {
+    let database = support::TestDatabase::new().await;
+    let store = Store::connect(&database.url).await.unwrap();
+    let app = router(store.clone());
+    let owner = account(&store, "owner").await;
+    let (ws, team) = setup(&app, &owner).await;
+    let client = Uuid::new_v4();
+    let issue = created(
+        &app,
+        &owner,
+        ws,
+        json!({"type": "create_issue", "input": {"team_id": team, "title": "Target"}}),
+    )
+    .await;
+
+    let (status, result) = push(
+        &app,
+        &owner.token,
+        ws,
+        client,
+        vec![
+            mutation(1, "frobnicator", json!({})),
+            mutation(2, "update_issue", json!({"id": issue, "patch": {"priority": "bogus"}})),
+            mutation(
+                3,
+                "add_attachment",
+                json!({"issue_id": issue, "attachment": {"id": Uuid::new_v4(), "name": "f.txt", "content_type": "text/plain", "size": 1}}),
+            ),
+        ],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+    assert_eq!(result["last_mutation_id"], 3);
+    for entry in result["results"].as_array().unwrap() {
+        assert_eq!(entry["status"], "rejected", "{entry}");
+        assert_eq!(entry["error"]["status"], 400, "{entry}");
+    }
+    assert_eq!(
+        result["results"][2]["error"]["message"],
+        "use the attachment upload endpoint"
+    );
+
+    drop(app);
+    store.pool.close().await;
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn push_membership_and_client_ownership() {
+    let database = support::TestDatabase::new().await;
+    let store = Store::connect(&database.url).await.unwrap();
+    let app = router(store.clone());
+    let owner = account(&store, "owner").await;
+    let member = account(&store, "member").await;
+    let outsider = account(&store, "outsider").await;
+    let (ws, _) = setup(&app, &owner).await;
+    invite_member(&app, &store, &owner, ws, &member).await;
+    let client = Uuid::new_v4();
+
+    let (status, _) = push(
+        &app,
+        &outsider.token,
+        ws,
+        Uuid::new_v4(),
+        vec![mutation(
+            1,
+            "create_label",
+            json!({"name": "x", "color": "#000000"}),
+        )],
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    let (status, result) = push(
+        &app,
+        &owner.token,
+        ws,
+        client,
+        vec![mutation(
+            1,
+            "create_label",
+            json!({"name": "mine", "color": "#000000"}),
+        )],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+
+    // The same client id from another user or workspace is a request error.
+    let (status, result) = push(
+        &app,
+        &member.token,
+        ws,
+        client,
+        vec![mutation(
+            1,
+            "create_label",
+            json!({"name": "taken", "color": "#000000"}),
+        )],
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{result}");
+
+    let other = workspace(&app, &owner, "Other").await;
+    let (status, result) = push(
+        &app,
+        &owner.token,
+        other,
+        client,
+        vec![mutation(
+            2,
+            "create_label",
+            json!({"name": "taken", "color": "#000000"}),
+        )],
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{result}");
+
+    drop(app);
+    store.pool.close().await;
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn push_session_id_from_me_and_login() {
+    let database = support::TestDatabase::new().await;
+    let store = Store::connect(&database.url).await.unwrap();
+    let app = router(store.clone());
+    let session = account(&store, "owner").await;
+    assert!(!session.session_id.is_nil());
+
+    let (status, me) = call(&app, "GET", "/api/me", Some(&session.token), None).await;
+    assert_eq!(status, StatusCode::OK, "{me}");
+    assert_eq!(me["session_id"], session.session_id.to_string());
+    assert_eq!(me["email"], session.profile.email);
+
+    let (status, again) = call(&app, "GET", "/api/me", Some(&session.token), None).await;
+    assert_eq!(status, StatusCode::OK, "{again}");
+    assert_eq!(again["session_id"], session.session_id.to_string());
+
+    let (status, login) = call(
+        &app,
+        "POST",
+        "/api/auth/login",
+        None,
+        Some(json!({"email": session.profile.email, "password": "test-password-123"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{login}");
+    assert!(!login["session_id"].is_null());
+    assert_ne!(login["session_id"], session.session_id.to_string());
+
+    // A session id is not a credential.
+    let (status, _) = call(
+        &app,
+        "GET",
+        "/api/me",
+        Some(&session.session_id.to_string()),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    drop(app);
+    store.pool.close().await;
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn push_pruning_removes_idle_clients() {
+    let database = support::TestDatabase::new().await;
+    let store = Store::connect(&database.url).await.unwrap();
+    let app = router(store.clone());
+    let owner = account(&store, "owner").await;
+    let (ws, _) = setup(&app, &owner).await;
+    let fresh = Uuid::new_v4();
+
+    let (status, result) = push(
+        &app,
+        &owner.token,
+        ws,
+        fresh,
+        vec![mutation(
+            1,
+            "create_label",
+            json!({"name": "fresh", "color": "#000000"}),
+        )],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+
+    let idle = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO sync_clients (client_id, workspace_id, user_id, last_mutation_id, updated_at) \
+         VALUES ($1, $2, $3, 9, now() - make_interval(days => 31))",
+    )
+    .bind(idle)
+    .bind(ws)
+    .bind(owner.profile.id)
+    .execute(&store.pool)
+    .await
+    .unwrap();
+
+    assert_eq!(store.prune_sync_clients().await.unwrap(), 1);
+    assert_eq!(last_mutation_id(&store, idle).await, None);
+    assert_eq!(last_mutation_id(&store, fresh).await, Some(1));
+    assert_eq!(store.prune_sync_clients().await.unwrap(), 0);
+
+    drop(app);
+    store.pool.close().await;
+    database.cleanup().await;
+}

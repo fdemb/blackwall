@@ -23,9 +23,13 @@ use uuid::Uuid;
 
 mod files;
 use files::{download, export, import, incoming, upload};
+mod sync;
+use sync::push;
 
 pub struct Actor {
     pub profile: Profile,
+    /// Non-secret replica name from the session row. Never a credential.
+    pub session_id: Uuid,
     pub token: String,
 }
 
@@ -64,8 +68,10 @@ impl FromRequestParts<Store> for Actor {
             }
         }
 
+        let (profile, session_id) = store.authenticate(token).await?;
         Ok(Self {
-            profile: store.authenticate(token).await?,
+            profile,
+            session_id,
             token: token.into(),
         })
     }
@@ -210,6 +216,7 @@ pub fn router_with_web(store: Store, web_dir: std::path::PathBuf) -> Router {
         .route("/api/workspaces", get(workspaces).post(create_workspace))
         .route("/api/workspaces/{id}", get(workspace))
         .route("/api/workspaces/{id}/commands", post(command))
+        .route("/api/workspaces/{id}/sync/push", post(push))
         .route("/api/workspaces/{id}/issues", get(issues))
         .route("/api/workspaces/{id}/issues/{issue}", get(issue_detail))
         .route("/api/workspaces/{id}/members", get(members))
@@ -421,15 +428,26 @@ async fn logout(State(store): State<Store>, actor: Actor) -> Result<Response> {
     Ok(response)
 }
 
+#[derive(Serialize, utoipa::ToSchema)]
+pub struct MeResponse {
+    #[serde(flatten)]
+    pub profile: Profile,
+    pub session_id: Uuid,
+}
+
 #[utoipa::path(
     get,
     path = "/api/me",
-    responses((status = 200, body = Profile))
+    responses((status = 200, body = MeResponse))
 )]
 async fn me(actor: Actor) -> Result<Response> {
     let csrf = HeaderValue::from_str(&auth::csrf(&actor.token))
         .map_err(|e| Error::Internal(e.to_string()))?;
-    let mut response = Json(actor.profile).into_response();
+    let mut response = Json(MeResponse {
+        profile: actor.profile,
+        session_id: actor.session_id,
+    })
+    .into_response();
     response.headers_mut().insert("x-csrf-token", csrf);
 
     Ok(response)
@@ -840,6 +858,7 @@ async fn markdown(
         create_workspace,
         workspace,
         command,
+        sync::push,
         issues,
         issue_detail,
         members,
@@ -863,6 +882,13 @@ async fn markdown(
         WorkspaceResponse,
         Workspace,
         IssueFilter,
+        MeResponse,
+        crate::store::PushRequest,
+        crate::store::PushResponse,
+        crate::store::SyncMutation,
+        crate::store::MutationResult,
+        crate::store::MutationError,
+        crate::store::MutationStatus,
         crate::error::ErrorBody
     )),
     info(

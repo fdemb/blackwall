@@ -93,7 +93,7 @@ All endpoints live under `/api/workspaces/{id}/sync/` and use the existing authe
 
 ### Clients
 
-New table `sync_clients(client_id uuid primary key, workspace_id, user_id, last_mutation_id bigint, updated_at)`. The client creates its `client_id` when it creates a replica. The server inserts the row on first use.
+New table `sync_clients(client_id uuid primary key, workspace_id, user_id, last_mutation_id bigint, updated_at)`. The client creates its `client_id` when it creates a replica. The server inserts the row on first use. A `client_id` registered to another user or workspace is rejected with 400.
 
 Prune rows untouched for longer than the session lifetime, currently 30 days. A pruned client can't still have a live replica, because its session expired first.
 
@@ -149,21 +149,32 @@ The first line comes from the same snapshot as every record. The client writes e
 }
 ```
 
+- `name` plus `args` form a `Command` as `{"type": name, ...args}`. `at` must parse as RFC 3339; the server doesn't otherwise use it.
+- A request holds 1 to 100 mutations. Ids are positive and strictly increasing within the batch; gaps are fine.
+- The whole request fails with nothing processed when the actor isn't a member (403), the `client_id` belongs to another user or workspace (400), or the batch shape is wrong (400).
+
 The server handles the mutations in order. For each one, it runs one transaction that:
 
-1. Locks the `sync_clients` row.
-2. Skips the mutation if `id <= last_mutation_id`, because it was already processed. Ids must increase but may have gaps.
-3. Runs the command through the same store code the REST command endpoint uses, without version preconditions.
-4. On a business error, rolls back the command's writes to a savepoint and records the error.
-5. Sets `last_mutation_id = id` and commits.
+1. Opens the operation the same way the REST command path does, and locks the `sync_clients` row (inserting it on first use).
+2. Skips the mutation as `duplicate` when `id <= last_mutation_id`, because it was already processed. Ids must increase but may have gaps.
+3. Runs the command through the same store code the REST command endpoint uses, without version preconditions and without an idempotency key, inside a savepoint. `add_attachment` and `attach_comment_file` are rejected; uploads go through the REST upload endpoint.
+4. On a business error, rolls back the command's writes to a savepoint and records `rejected` with the `{status, message}` the REST endpoint returns for that error.
+5. Sets `last_mutation_id = id` and commits, so rejected mutations still advance the id.
 
-A transient failure, such as a lost database connection, stops the batch and returns 503. The client retries the same batch with backoff. Because the server dedupes by id, retries are safe.
-
-The response returns per-mutation outcomes for error messages only:
+- Business errors are `BadRequest`, `NotFound`, `Conflict` and `Forbidden` from the command, malformed `name`/`args`, and database errors with SQLSTATE class `22` (data exception) or `23` (integrity constraint, including the ownership conflict the REST mapper turns into 409).
+- A transient failure, such as a lost database connection, stops the batch and returns 503 with the results committed so far. Losing membership mid-batch stops it with 403 instead. The client retries the same batch with backoff. Because the server dedupes by id, retries are safe.
 
 ```json
-{ "last_mutation_id": 18, "results": [{ "id": 18, "error": null }] }
+{
+  "last_mutation_id": 18,
+  "results": [
+    { "id": 18, "status": "applied" },
+    { "id": 19, "status": "rejected", "error": { "status": 404, "message": "not found" } }
+  ]
+}
 ```
+
+Per-mutation `status` is `applied`, `duplicate` or `rejected`. The 503 response uses the same shape for the mutations handled before the failure.
 
 The client never writes push results into base. It pulls after every push.
 

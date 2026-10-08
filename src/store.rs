@@ -15,12 +15,17 @@ pub(crate) mod persistence;
 mod planning;
 mod queue;
 mod reads;
+mod sync;
 mod transfer;
 
 pub use changes::{Change, ChangeFeed};
 pub(crate) use queue::LEASE_SECONDS;
 pub use queue::{Claim, NewJob, Outbox};
 pub use reads::CollectionQuery;
+pub use sync::{
+    MutationError, MutationResult, MutationStatus, PushOutcome, PushRequest, PushResponse,
+    SyncMutation,
+};
 
 #[derive(Clone)]
 pub struct Store {
@@ -176,6 +181,15 @@ impl Operation<'_> {
     }
 }
 
+/// Membership edits lock the whole roster; every other command shares the lock.
+/// REST and sync push open their operations with the same rule.
+pub(crate) fn membership_exclusive(command: &Command) -> bool {
+    matches!(
+        command,
+        Command::SetRole { .. } | Command::RemoveMember { .. }
+    )
+}
+
 impl Store {
     pub async fn connect(url: &str) -> Result<Self> {
         if !url.starts_with("postgres://") && !url.starts_with("postgresql://") {
@@ -233,13 +247,10 @@ impl Store {
             })),
         });
 
-        let membership_exclusive = matches!(
-            command,
-            Command::SetRole { .. } | Command::RemoveMember { .. }
-        );
+        let membership = membership_exclusive(&command);
 
         let mut op = self
-            .begin_operation(workspace_id, actor, expected, membership_exclusive)
+            .begin_operation(workspace_id, actor, expected, membership)
             .await?;
 
         if let Some(key) = &key {
@@ -280,58 +291,7 @@ impl Store {
             }
         }
 
-        let personal = matches!(
-            &command,
-            Command::MarkNotificationRead { .. }
-                | Command::MarkNotificationUnread { .. }
-                | Command::MarkAllNotificationsRead
-                | Command::ConfigureAlerts { .. }
-                | Command::SaveView { shared: false, .. }
-                | Command::UpdateView { shared: false, .. }
-                | Command::DeleteView { .. }
-                | Command::Follow { .. }
-        );
-
-        if op.role == Role::Viewer && !personal {
-            return Err(Error::Forbidden);
-        }
-
-        op.authorize_issue_ownership(&command).await?;
-
-        let action = command.kind();
-        let id = match &command {
-            Command::CreateTeam { .. }
-            | Command::SetTeamMembers { .. }
-            | Command::CreateStage { .. }
-            | Command::UpdateStage { .. }
-            | Command::DeleteStage { .. }
-            | Command::CreateLabel { .. }
-            | Command::UpdateLabel { .. }
-            | Command::CreateProject { .. }
-            | Command::UpdateProject { .. }
-            | Command::CreateMilestone { .. }
-            | Command::UpdateMilestone { .. }
-            | Command::CreateSprint { .. }
-            | Command::UpdateSprint { .. }
-            | Command::CompleteSprint { .. }
-            | Command::ArchiveSprint { .. }
-            | Command::SetTeamArchive { .. } => op.planning(command).await?,
-            Command::CreateIssue { .. }
-            | Command::UpdateIssue { .. }
-            | Command::MoveIssue { .. }
-            | Command::BulkIssues { .. }
-            | Command::DeleteIssue { .. }
-            | Command::RestoreIssue { .. }
-            | Command::ArchiveIssue { .. }
-            | Command::UnarchiveIssue { .. }
-            | Command::Follow { .. }
-            | Command::AddSourceLink { .. }
-            | Command::ImportIssues { .. } => op.issues(command).await?,
-            _ => op.discussion(command, attachment).await?,
-        };
-
-        let fields = std::mem::take(&mut op.activity_fields);
-        op.activity(action, id, fields).await?;
+        let id = op.run_command(command, attachment).await?;
 
         let mut result = OperationResult {
             result: CommandResult { id },
@@ -435,6 +395,70 @@ fn database_setting(name: &str, default: u32, min: u32, max: u32) -> Result<u32>
 }
 
 impl Operation<'_> {
+    /// Runs one command inside this already-open operation: the viewer rule,
+    /// ownership check, dispatch and activity row. Shared by the REST command
+    /// endpoint and sync push, so both enforce identical semantics.
+    pub(crate) async fn run_command(
+        &mut self,
+        command: Command,
+        attachment: Option<NewAttachment>,
+    ) -> Result<Option<Uuid>> {
+        let personal = matches!(
+            &command,
+            Command::MarkNotificationRead { .. }
+                | Command::MarkNotificationUnread { .. }
+                | Command::MarkAllNotificationsRead
+                | Command::ConfigureAlerts { .. }
+                | Command::SaveView { shared: false, .. }
+                | Command::UpdateView { shared: false, .. }
+                | Command::DeleteView { .. }
+                | Command::Follow { .. }
+        );
+
+        if self.role == Role::Viewer && !personal {
+            return Err(Error::Forbidden);
+        }
+
+        self.authorize_issue_ownership(&command).await?;
+
+        let action = command.kind();
+        let id = match &command {
+            Command::CreateTeam { .. }
+            | Command::SetTeamMembers { .. }
+            | Command::CreateStage { .. }
+            | Command::UpdateStage { .. }
+            | Command::DeleteStage { .. }
+            | Command::CreateLabel { .. }
+            | Command::UpdateLabel { .. }
+            | Command::CreateProject { .. }
+            | Command::UpdateProject { .. }
+            | Command::CreateMilestone { .. }
+            | Command::UpdateMilestone { .. }
+            | Command::CreateSprint { .. }
+            | Command::UpdateSprint { .. }
+            | Command::CompleteSprint { .. }
+            | Command::ArchiveSprint { .. }
+            | Command::SetTeamArchive { .. } => self.planning(command).await?,
+            Command::CreateIssue { .. }
+            | Command::UpdateIssue { .. }
+            | Command::MoveIssue { .. }
+            | Command::BulkIssues { .. }
+            | Command::DeleteIssue { .. }
+            | Command::RestoreIssue { .. }
+            | Command::ArchiveIssue { .. }
+            | Command::UnarchiveIssue { .. }
+            | Command::Follow { .. }
+            | Command::AddSourceLink { .. }
+            | Command::ImportIssues { .. } => self.issues(command).await?,
+            _ => self.discussion(command, attachment).await?,
+        };
+
+        let fields = std::mem::take(&mut self.activity_fields);
+        self.activity(action, id, fields).await?;
+
+        Ok(id)
+    }
+
     pub fn admin(&self) -> Result<()> {
         if matches!(self.role, Role::Owner | Role::Admin) {
             Ok(())

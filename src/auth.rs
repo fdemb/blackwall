@@ -77,6 +77,7 @@ pub struct Login {
 pub struct Session {
     pub token: String,
     pub csrf_token: String,
+    pub session_id: Uuid,
     pub profile: Profile,
 }
 
@@ -118,6 +119,10 @@ pub fn hash(value: &str) -> String {
 pub fn csrf(value: &str) -> String {
     hash(&format!("blackwall-csrf:{value}"))
 }
+
+/// How long a login session lives. Sync clients idle longer than this are
+/// pruned, since their replica's session expired first.
+pub const SESSION_LIFETIME_DAYS: i64 = 30;
 
 fn email(value: &str) -> Result<String> {
     let value = value.trim().to_lowercase();
@@ -212,16 +217,21 @@ impl Store {
 
     async fn create_session(&self, profile: Profile) -> Result<Session> {
         let token = token();
-        sqlx::query("INSERT INTO sessions (token_hash, user_id, expires_at) VALUES ($1, $2, $3)")
-            .bind(hash(&token))
-            .bind(profile.id)
-            .bind(Utc::now() + Duration::days(30))
-            .execute(&self.pool)
-            .await?;
+        let session_id = Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO sessions (token_hash, user_id, public_id, expires_at) VALUES ($1, $2, $3, $4)",
+        )
+        .bind(hash(&token))
+        .bind(profile.id)
+        .bind(session_id)
+        .bind(Utc::now() + Duration::days(SESSION_LIFETIME_DAYS))
+        .execute(&self.pool)
+        .await?;
 
         Ok(Session {
             csrf_token: csrf(&token),
             token,
+            session_id,
             profile,
         })
     }
@@ -250,10 +260,11 @@ impl Store {
             .await
     }
 
-    pub async fn authenticate(&self, token: &str) -> Result<Profile> {
+    pub async fn authenticate(&self, token: &str) -> Result<(Profile, Uuid)> {
         let row = sqlx::query(
-            "SELECT users.profile FROM sessions JOIN users ON users.id = sessions.user_id \
-             WHERE token_hash = $1 AND expires_at > $2",
+            "SELECT users.profile, sessions.public_id FROM sessions \
+              JOIN users ON users.id = sessions.user_id \
+              WHERE token_hash = $1 AND expires_at > $2",
         )
         .bind(hash(token))
         .bind(Utc::now())
@@ -261,7 +272,10 @@ impl Store {
         .await?
         .ok_or(Error::Unauthorized)?;
 
-        Ok(row.try_get::<Json<Profile>, _>("profile")?.0)
+        Ok((
+            row.try_get::<Json<Profile>, _>("profile")?.0,
+            row.try_get("public_id")?,
+        ))
     }
 
     pub async fn profile(&self, id: Uuid) -> Result<Profile> {
