@@ -609,4 +609,150 @@ mod tests {
         store.pool.close().await;
         database.cleanup().await;
     }
+
+    fn import_input(team: Uuid, id: Option<Uuid>, title: &str) -> IssueInput {
+        IssueInput {
+            id,
+            title: title.into(),
+            description: String::new(),
+            team_id: team,
+            stage_id: None,
+            assignee: None,
+            priority: Priority::Normal,
+            labels: Vec::new(),
+            estimate: None,
+            deadline: None,
+            project_id: None,
+            milestone_id: None,
+            sprint_id: None,
+            parent_id: None,
+            dependencies: Vec::new(),
+        }
+    }
+
+    async fn import_workspace(store: &Store, name: &str) -> (Uuid, Uuid, Uuid) {
+        let actor = store
+            .register(crate::auth::Register {
+                email: format!("{name}-{}@example.com", Uuid::new_v4()),
+                password: "import-lock-password".into(),
+                display_name: name.into(),
+            })
+            .await
+            .unwrap()
+            .profile
+            .id;
+        let workspace: Uuid = serde_json::from_value(
+            store
+                .create_workspace("Import locks".into(), actor)
+                .await
+                .unwrap()["id"]
+                .clone(),
+        )
+        .unwrap();
+        let team = store
+            .operation(
+                workspace,
+                actor,
+                Command::CreateTeam {
+                    id: None,
+                    name: "Team".into(),
+                    members: vec![actor],
+                },
+                BTreeMap::new(),
+                None,
+                None,
+            )
+            .await
+            .unwrap()
+            .result
+            .id
+            .unwrap();
+        (workspace, actor, team)
+    }
+
+    #[tokio::test]
+    async fn import_without_supplied_ids_holds_no_reservation_locks() {
+        let database = TestDatabase::new().await;
+        let store = Store::connect(&database.url).await.unwrap();
+        let (workspace, actor, team) = import_workspace(&store, "generated").await;
+
+        let tx = store.pool.begin().await.unwrap();
+        let mut op = Operation {
+            tx,
+            workspace_id: workspace,
+            actor,
+            role: Role::Owner,
+            expected: BTreeMap::new(),
+            versions: BTreeMap::new(),
+            activity_fields: Vec::new(),
+        };
+
+        let issues: Vec<IssueInput> = (0..20)
+            .map(|n| import_input(team, None, &format!("Generated {n}")))
+            .collect();
+        op.issues(Command::ImportIssues { issues }).await.unwrap();
+
+        // The transaction's only advisory locks are the issue-graph lock and
+        // the issues capacity lock; the reservation namespace holds zero.
+        let held: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND pid = pg_backend_pid()",
+        )
+        .fetch_one(&mut *op.tx)
+        .await
+        .unwrap();
+        assert_eq!(held, 2, "held {held} advisory locks");
+
+        op.tx.rollback().await.unwrap();
+        store.pool.close().await;
+        database.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn import_with_mixed_ids_holds_only_supplied_bucket_locks() {
+        let database = TestDatabase::new().await;
+        let store = Store::connect(&database.url).await.unwrap();
+        let (workspace, actor, team) = import_workspace(&store, "mixed").await;
+
+        let tx = store.pool.begin().await.unwrap();
+        let mut op = Operation {
+            tx,
+            workspace_id: workspace,
+            actor,
+            role: Role::Owner,
+            expected: BTreeMap::new(),
+            versions: BTreeMap::new(),
+            activity_fields: Vec::new(),
+        };
+
+        let supplied: Vec<Uuid> = (0..5).map(|_| Uuid::new_v4()).collect();
+        let mut issues: Vec<IssueInput> = supplied
+            .iter()
+            .enumerate()
+            .map(|(n, id)| import_input(team, Some(*id), &format!("Supplied {n}")))
+            .collect();
+        issues.extend((0..5).map(|n| import_input(team, None, &format!("Generated {n}"))));
+        op.issues(Command::ImportIssues { issues }).await.unwrap();
+
+        let distinct: std::collections::BTreeSet<i64> = supplied
+            .iter()
+            .map(|id| (id.as_u128() & 63) as i64)
+            .collect();
+        // One issue-graph lock and one issues capacity lock, plus exactly
+        // the buckets of the supplied ids.
+        let held: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND pid = pg_backend_pid()",
+        )
+        .fetch_one(&mut *op.tx)
+        .await
+        .unwrap();
+        assert_eq!(
+            held,
+            2 + distinct.len() as i64,
+            "held {held} advisory locks"
+        );
+
+        op.tx.rollback().await.unwrap();
+        store.pool.close().await;
+        database.cleanup().await;
+    }
 }
