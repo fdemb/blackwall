@@ -2,7 +2,7 @@ use crate::{
     auth::{self, *},
     domain::*,
     error::{Error, Result},
-    store::{ChangeFeed, CollectionQuery, OperationResult, Store},
+    store::{CollectionQuery, OperationResult, Store},
 };
 use axum::{
     Json, Router,
@@ -24,7 +24,7 @@ use uuid::Uuid;
 mod files;
 use files::{download, export, import, incoming, upload};
 mod sync;
-use sync::push;
+use sync::{pull, push};
 
 pub struct Actor {
     pub profile: Profile,
@@ -217,12 +217,12 @@ pub fn router_with_web(store: Store, web_dir: std::path::PathBuf) -> Router {
         .route("/api/workspaces/{id}", get(workspace))
         .route("/api/workspaces/{id}/commands", post(command))
         .route("/api/workspaces/{id}/sync/push", post(push))
+        .route("/api/workspaces/{id}/sync/pull", get(pull))
         .route("/api/workspaces/{id}/issues", get(issues))
         .route("/api/workspaces/{id}/issues/{issue}", get(issue_detail))
         .route("/api/workspaces/{id}/members", get(members))
         .route("/api/workspaces/{id}/search", get(search))
         .route("/api/workspaces/{id}/report", get(report))
-        .route("/api/workspaces/{id}/changes", get(changes))
         .route("/api/workspaces/{id}/{collection}", get(collection))
         .route(
             "/api/workspaces/{id}/invitations/accept",
@@ -643,33 +643,6 @@ async fn issue_detail(
     Ok(Json(store.get_issue(id, actor.profile.id, issue).await?))
 }
 
-#[derive(Deserialize, utoipa::IntoParams)]
-#[into_params(parameter_in = Query)]
-pub struct ChangesQuery {
-    /// Cursor from the previous response. Omit to get a starting cursor.
-    pub since: Option<String>,
-}
-
-#[utoipa::path(
-    get,
-    path = "/api/workspaces/{id}/changes",
-    params(("id" = Uuid, Path), ChangesQuery),
-    responses((status = 200, body = ChangeFeed)),
-    description = "Records changed since a cursor, in the same shape as the list endpoints. Request a cursor before loading records, then poll with it. Changes may repeat. A null record was deleted or is no longer visible. When `reset` is true, reload everything and continue from the returned cursor."
-)]
-async fn changes(
-    State(store): State<Store>,
-    actor: Actor,
-    Path(id): Path<Uuid>,
-    Query(input): Query<ChangesQuery>,
-) -> Result<Json<ChangeFeed>> {
-    Ok(Json(
-        store
-            .changes(id, actor.profile.id, input.since.as_deref())
-            .await?,
-    ))
-}
-
 #[utoipa::path(
     get,
     path = "/api/workspaces/{id}/{collection}",
@@ -859,12 +832,12 @@ async fn markdown(
         workspace,
         command,
         sync::push,
+        sync::pull,
         issues,
         issue_detail,
         members,
         search,
         report,
-        changes,
         collection,
         accept_invitation,
         markdown,
@@ -877,7 +850,7 @@ async fn markdown(
     components(schemas(
         CommandRequest,
         CommandResponse,
-        ChangeFeed,
+        crate::store::Change,
         Command,
         WorkspaceResponse,
         Workspace,
@@ -889,6 +862,7 @@ async fn markdown(
         crate::store::MutationResult,
         crate::store::MutationError,
         crate::store::MutationStatus,
+        crate::store::PullResponse,
         crate::error::ErrorBody
     )),
     info(

@@ -5,9 +5,6 @@ use super::{
 use serde_json::Value;
 use sqlx::QueryBuilder;
 
-/// Most changes one feed response may carry. Past this, the client reloads instead.
-const FEED_LIMIT: i64 = 1000;
-
 /// One changed record. `record` holds its current state in the shape the list endpoints return,
 /// or null when it was deleted or the caller can no longer see it.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
@@ -17,16 +14,6 @@ pub struct Change {
     pub id: Uuid,
     #[serde(default)]
     pub record: Option<Value>,
-}
-
-#[derive(Debug, serde::Serialize, utoipa::ToSchema)]
-pub struct ChangeFeed {
-    /// Pass back as `since` on the next request.
-    pub cursor: String,
-    /// True when the changes since the cursor are unavailable. Reload everything, then continue
-    /// from the returned cursor.
-    pub reset: bool,
-    pub changes: Vec<Change>,
 }
 
 /// Records written by the current transaction that the actor may see, without their contents.
@@ -143,66 +130,6 @@ fn key_column(kind: &str) -> &'static str {
 }
 
 impl Store {
-    /// Records changed since `since`. Without `since`, returns only a starting cursor: take it
-    /// before loading anything, so changes made during the load are not missed.
-    pub async fn changes(
-        &self,
-        workspace: Uuid,
-        actor: Uuid,
-        since: Option<&str>,
-    ) -> Result<ChangeFeed> {
-        let mut conn = self.pool.acquire().await?;
-        reads::authorize(&mut conn, workspace, actor).await?;
-
-        // Every transaction that has not committed yet has a txid at or above xmin.
-        let (cursor, xmax, horizon): (i64, i64, i64) = sqlx::query_as(
-            "SELECT pg_snapshot_xmin(pg_current_snapshot())::text::bigint,\
-             pg_snapshot_xmax(pg_current_snapshot())::text::bigint,\
-             (SELECT txid FROM change_horizon)",
-        )
-        .fetch_one(&mut *conn)
-        .await?;
-
-        let feed = |reset, changes| ChangeFeed {
-            cursor: cursor.to_string(),
-            reset,
-            changes,
-        };
-
-        let Some(since) = since else {
-            return Ok(feed(false, Vec::new()));
-        };
-        let since: i64 = since
-            .parse()
-            .ok()
-            .filter(|since| (0..=xmax).contains(since))
-            .ok_or_else(|| Error::BadRequest("since must be a cursor from this server".into()))?;
-        if since < horizon {
-            return Ok(feed(true, Vec::new()));
-        }
-
-        let rows: Vec<(String, Uuid)> = sqlx::query_as(
-            "SELECT DISTINCT entity,entity_id FROM changes \
-             WHERE workspace_id=$1 AND txid>=$2 AND (user_id IS NULL OR user_id=$3) \
-             ORDER BY entity,entity_id LIMIT $4",
-        )
-        .bind(workspace)
-        .bind(since)
-        .bind(actor)
-        .bind(FEED_LIMIT + 1)
-        .fetch_all(&mut *conn)
-        .await?;
-
-        if rows.len() as i64 > FEED_LIMIT {
-            return Ok(feed(true, Vec::new()));
-        }
-
-        let mut changes = refs(rows);
-        render(&mut conn, workspace, actor, &mut changes).await?;
-
-        Ok(feed(false, changes))
-    }
-
     /// Deletes change rows older than the retention period. Clients whose cursor predates them
     /// get `reset` and reload.
     pub async fn prune_changes(&self, retention_days: i32) -> Result<u64> {

@@ -132,7 +132,9 @@ The first line comes from the same snapshot as every record. The client writes e
 
 - `reset` is true when the cursor predates `change_horizon`, when the actor's own membership changed in the window, or when the page can't advance the cursor. A single transaction with more changed records than the page limit is the usual cause of the last case. The client bootstraps again.
 - Pages hold up to 1,000 distinct `(entity, id)` pairs. Cut pages only at txid boundaries, and never return a cursor above the snapshot's `xmin`.
-- `last_mutation_id` is set only when `more` is false. Intermediate pages leave the outbox alone, so the client doesn't drop a mutation before all of its effects have arrived.
+- `last_mutation_id` is the client's `sync_clients.last_mutation_id`, or 0 when the client has no row yet. It is `null` whenever `more` is true and set only on the final page. Intermediate pages leave the outbox alone, so the client doesn't drop a mutation before all of its effects have arrived.
+- Omit `cursor` for a starting cursor. The server returns `{cursor: xmin, more: false, reset: false, last_mutation_id, changes: []}`; bootstrap is the normal source of a first cursor.
+- Request errors: the actor not being a member is 403. A `client_id` registered to another user or workspace is 400, as is a missing or unparsable `client_id`. A `cursor` that is not an integer in `[0, snapshot xmax]` is 400.
 - The client applies each page and its cursor in one IndexedDB transaction, then rebases.
 - Comment and activity changes for scopes the client hasn't loaded are dropped.
 

@@ -1,5 +1,41 @@
 use super::*;
-use crate::store::{PushRequest, PushResponse};
+use crate::store::{PullResponse, PushRequest, PushResponse};
+
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct PullQuery {
+    /// Client replica id. A client_id owned by another user or workspace is 400.
+    pub client_id: Option<String>,
+    /// Cursor from a previous pull. Omit for a starting cursor. Must be an
+    /// integer in `[0, snapshot xmax]`; anything else is 400.
+    pub cursor: Option<String>,
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/workspaces/{id}/sync/pull",
+    params(("id" = Uuid, Path), PullQuery),
+    responses((status = 200, body = PullResponse)),
+    description = "Changed records since a cursor, rendered as the list endpoints render them. Omit cursor for a starting cursor. Intermediate pages set last_mutation_id null; only the final page reports it. When reset is true, bootstrap again and continue from the returned cursor."
+)]
+pub(super) async fn pull(
+    State(store): State<Store>,
+    actor: Actor,
+    Path(id): Path<Uuid>,
+    Query(query): Query<PullQuery>,
+) -> Result<Json<PullResponse>> {
+    let client_id = query
+        .client_id
+        .as_deref()
+        .ok_or_else(|| Error::BadRequest("client_id is required".into()))?;
+    let client_id = Uuid::parse_str(client_id)
+        .map_err(|_| Error::BadRequest("client_id must be a UUID".into()))?;
+    Ok(Json(
+        store
+            .sync_pull(id, actor.profile.id, client_id, query.cursor.as_deref())
+            .await?,
+    ))
+}
 
 #[utoipa::path(
     post,

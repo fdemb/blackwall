@@ -149,10 +149,11 @@ async fn search_union_preserves_fulltext_substring_numbers_and_literal_character
 }
 
 #[tokio::test]
-async fn summary_is_opt_in_and_full_detail_and_changefeed_keep_complete_records() {
+async fn summary_is_opt_in_and_full_detail_and_pull_keeps_complete_records() {
     let (db, store, owner, workspace, team) = setup().await;
+    let client = Uuid::new_v4();
     let cursor = store
-        .changes(workspace, owner.profile.id, None)
+        .sync_pull(workspace, owner.profile.id, client, None)
         .await
         .unwrap()
         .cursor;
@@ -206,7 +207,7 @@ async fn summary_is_opt_in_and_full_detail_and_changefeed_keep_complete_records(
             .is_empty()
     );
     let feed = store
-        .changes(workspace, owner.profile.id, Some(&cursor))
+        .sync_pull(workspace, owner.profile.id, client, Some(&cursor))
         .await
         .unwrap();
     let changed = feed

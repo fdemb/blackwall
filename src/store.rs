@@ -18,13 +18,13 @@ mod reads;
 mod sync;
 mod transfer;
 
-pub use changes::{Change, ChangeFeed};
+pub use changes::Change;
 pub(crate) use queue::LEASE_SECONDS;
 pub use queue::{Claim, NewJob, Outbox};
 pub use reads::CollectionQuery;
 pub use sync::{
-    MutationError, MutationResult, MutationStatus, PushOutcome, PushRequest, PushResponse,
-    SyncMutation,
+    MutationError, MutationResult, MutationStatus, PullResponse, PushOutcome, PushRequest,
+    PushResponse, SyncMutation,
 };
 
 #[derive(Clone)]

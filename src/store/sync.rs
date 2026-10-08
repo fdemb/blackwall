@@ -459,3 +459,203 @@ impl Store {
         .rows_affected())
     }
 }
+
+/// Most distinct `(entity, id)` pairs one pull page may carry.
+const PULL_LIMIT: usize = 1000;
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct PullResponse {
+    /// Snapshot xmin. Every transaction below it is reflected.
+    pub cursor: String,
+    /// True when more pages remain. `last_mutation_id` is null then.
+    pub more: bool,
+    /// True when the client must bootstrap again.
+    pub reset: bool,
+    /// The client's high-water mark, or 0 for a new client. Null on
+    /// intermediate pages so the outbox is dropped only once all effects
+    /// have arrived.
+    pub last_mutation_id: Option<i64>,
+    pub changes: Vec<super::changes::Change>,
+}
+
+impl Store {
+    /// Changed records since `cursor` from one `REPEATABLE READ READ ONLY`
+    /// snapshot, so the cursor, the changed rows, the rendered records and
+    /// `last_mutation_id` are mutually consistent. A mutation committed
+    /// during the pull is either fully reflected with its id reported, or
+    /// entirely absent from both.
+    pub async fn sync_pull(
+        &self,
+        workspace_id: Uuid,
+        actor: Uuid,
+        client_id: Uuid,
+        cursor: Option<&str>,
+    ) -> Result<PullResponse> {
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
+            .execute(&mut *tx)
+            .await?;
+
+        super::reads::authorize(&mut tx, workspace_id, actor).await?;
+
+        let row = sqlx::query(
+            "SELECT workspace_id, user_id, last_mutation_id FROM sync_clients \
+             WHERE client_id = $1",
+        )
+        .bind(client_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let last_mutation_id = if let Some(row) = row {
+            let owner_ws: Uuid = row.try_get("workspace_id")?;
+            let owner: Uuid = row.try_get("user_id")?;
+            if owner_ws != workspace_id || owner != actor {
+                return Err(Error::BadRequest(
+                    "client_id belongs to another user or workspace".into(),
+                ));
+            }
+            row.try_get::<i64, _>("last_mutation_id")?
+        } else {
+            0
+        };
+
+        // Every transaction still in flight has a txid at or above xmin.
+        let (xmin, xmax, horizon): (i64, i64, i64) = sqlx::query_as(
+            "SELECT pg_snapshot_xmin(pg_current_snapshot())::text::bigint, \
+             pg_snapshot_xmax(pg_current_snapshot())::text::bigint, \
+             (SELECT txid FROM change_horizon)",
+        )
+        .fetch_one(&mut *tx)
+        .await?;
+
+        let Some(cursor) = cursor else {
+            let response = PullResponse {
+                cursor: xmin.to_string(),
+                more: false,
+                reset: false,
+                last_mutation_id: Some(last_mutation_id),
+                changes: Vec::new(),
+            };
+            tx.commit().await?;
+            return Ok(response);
+        };
+        let requested: i64 = cursor
+            .parse()
+            .ok()
+            .filter(|cursor| (0..=xmax).contains(cursor))
+            .ok_or_else(|| Error::BadRequest("cursor must be a cursor from this server".into()))?;
+        if requested < horizon {
+            let response = PullResponse {
+                cursor: xmin.to_string(),
+                more: false,
+                reset: true,
+                last_mutation_id: Some(last_mutation_id),
+                changes: Vec::new(),
+            };
+            tx.commit().await?;
+            return Ok(response);
+        }
+
+        let own_change: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM changes WHERE workspace_id = $1 AND txid >= $2 \
+             AND entity = 'members' AND entity_id = $3 \
+             AND (user_id IS NULL OR user_id = $3))",
+        )
+        .bind(workspace_id)
+        .bind(requested)
+        .bind(actor)
+        .fetch_one(&mut *tx)
+        .await?;
+        if own_change {
+            let response = PullResponse {
+                cursor: xmin.to_string(),
+                more: false,
+                reset: true,
+                last_mutation_id: Some(last_mutation_id),
+                changes: Vec::new(),
+            };
+            tx.commit().await?;
+            return Ok(response);
+        }
+
+        // One row per distinct pair at its earliest txid in the window,
+        // ordered by that txid. LIMIT 1001 bounds Rust memory: when more
+        // than PULL_LIMIT pairs changed, the 1001st row's txid is the first
+        // txid T whose cumulative count exceeds the limit.
+        //
+        // Pages cut only at txid boundaries, so every transaction below the
+        // next cursor is fully included. The next cursor is capped at the
+        // snapshot xmin, because transactions at or above xmin may still be
+        // in flight and invisible; promising them would break the cursor
+        // guarantee that every txid below the cursor is reflected. Repeats
+        // across pages are harmless: records apply as current state.
+        let rows: Vec<(String, Uuid, i64)> = sqlx::query_as(
+            "SELECT entity, entity_id, MIN(txid) FROM changes \
+             WHERE workspace_id = $1 AND txid >= $2 AND (user_id IS NULL OR user_id = $3) \
+             GROUP BY entity, entity_id ORDER BY MIN(txid), entity, entity_id LIMIT 1001",
+        )
+        .bind(workspace_id)
+        .bind(requested)
+        .bind(actor)
+        .fetch_all(&mut *tx)
+        .await?;
+
+        if rows.len() <= PULL_LIMIT {
+            let mut changes: Vec<super::changes::Change> = rows
+                .into_iter()
+                .map(|(entity, id, _)| super::changes::Change {
+                    entity,
+                    id,
+                    record: None,
+                })
+                .collect();
+            super::changes::render(&mut tx, workspace_id, actor, &mut changes).await?;
+            let response = PullResponse {
+                cursor: xmin.to_string(),
+                more: false,
+                reset: false,
+                last_mutation_id: Some(last_mutation_id),
+                changes,
+            };
+            tx.commit().await?;
+            return Ok(response);
+        }
+
+        let first_overflow = rows.last().map(|row| row.2).unwrap_or(requested);
+        let page: Vec<(String, Uuid)> = rows
+            .into_iter()
+            .filter(|row| row.2 < first_overflow)
+            .map(|row| (row.0, row.1))
+            .collect();
+        let next = first_overflow.min(xmin);
+        if page.is_empty() || next == requested {
+            let response = PullResponse {
+                cursor: xmin.to_string(),
+                more: false,
+                reset: true,
+                last_mutation_id: Some(last_mutation_id),
+                changes: Vec::new(),
+            };
+            tx.commit().await?;
+            return Ok(response);
+        }
+
+        let mut changes: Vec<super::changes::Change> = page
+            .into_iter()
+            .map(|(entity, id)| super::changes::Change {
+                entity,
+                id,
+                record: None,
+            })
+            .collect();
+        super::changes::render(&mut tx, workspace_id, actor, &mut changes).await?;
+        let response = PullResponse {
+            cursor: next.to_string(),
+            more: true,
+            reset: false,
+            last_mutation_id: None,
+            changes,
+        };
+        tx.commit().await?;
+        Ok(response)
+    }
+}
