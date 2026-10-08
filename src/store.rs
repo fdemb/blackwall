@@ -82,8 +82,11 @@ pub(super) fn id_conflict(error: sqlx::Error) -> Error {
 
 impl Operation<'_> {
     /// Reserve client-chosen ids across every entity table. Server-generated
-    /// ids skip the check. Locks are taken in UUID order so concurrent
-    /// multi-id operations cannot deadlock acquiring the same locks; callers
+    /// ids skip the check. Each id maps to one of 64 buckets by its low bits;
+    /// bucket locks are taken in ascending order so concurrent multi-id
+    /// operations cannot deadlock, and one transaction holds at most 64 locks
+    /// however many ids it reserves. Bucket labels never parse as UUID text,
+    /// so they cannot collide with other locks in this namespace. Callers
     /// that use more than one id must pass them all in one call before
     /// inserting anything.
     pub(super) async fn reserve_client_ids(
@@ -104,9 +107,16 @@ impl Operation<'_> {
         ordered.sort_unstable();
         ordered.dedup();
 
-        for id in &ordered {
+        let mut buckets: Vec<i64> = ordered
+            .iter()
+            .map(|id| (id.as_u128() & 63) as i64)
+            .collect();
+        buckets.sort_unstable();
+        buckets.dedup();
+
+        for bucket in buckets {
             sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 53177))")
-                .bind(id.to_string())
+                .bind(format!("client-id-bucket:{bucket}"))
                 .execute(&mut *self.tx)
                 .await?;
         }
@@ -552,5 +562,51 @@ impl Operation<'_> {
 
     pub async fn issue(&mut self, id: Uuid) -> Result<Issue> {
         reads::issue_on(&mut self.tx, self.workspace_id, id, false).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::TestDatabase;
+
+    #[tokio::test]
+    async fn reserve_client_ids_holds_at_most_64_locks() {
+        let database = TestDatabase::new().await;
+        let store = Store::connect(&database.url).await.unwrap();
+
+        let tx = store.pool.begin().await.unwrap();
+        let mut op = Operation {
+            tx,
+            workspace_id: Uuid::new_v4(),
+            actor: Uuid::new_v4(),
+            role: Role::Owner,
+            expected: BTreeMap::new(),
+            versions: BTreeMap::new(),
+            activity_fields: Vec::new(),
+        };
+
+        // 5000 supplied ids, as in one maximal ImportIssues command.
+        let ids: Vec<Uuid> = (0..5000).map(|_| Uuid::new_v4()).collect();
+        let provided: Vec<Option<Uuid>> = ids.iter().map(|id| Some(*id)).collect();
+        op.reserve_client_ids(&provided).await.unwrap();
+
+        let distinct: std::collections::BTreeSet<i64> =
+            ids.iter().map(|id| (id.as_u128() & 63) as i64).collect();
+        assert!(distinct.len() <= 64);
+
+        // The transaction's only advisory locks are the reservation buckets.
+        let held: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND pid = pg_backend_pid()",
+        )
+        .fetch_one(&mut *op.tx)
+        .await
+        .unwrap();
+        assert_eq!(held, distinct.len() as i64);
+        assert!(held <= 64, "held {held} advisory locks");
+
+        op.tx.rollback().await.unwrap();
+        store.pool.close().await;
+        database.cleanup().await;
     }
 }

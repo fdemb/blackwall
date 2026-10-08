@@ -1052,14 +1052,20 @@ async fn concurrent_imports_in_opposite_order_never_deadlock() {
     let first = Uuid::new_v4();
     let second = Uuid::new_v4();
 
-    // Hold both id locks open so both imports queue behind this transaction.
+    // Hold both id buckets open so both imports queue behind this transaction.
     // Releasing it lets the imports overlap while each waits for the other's
     // first lock; sorted reservation still lets one finish with 409 for the
     // loser instead of deadlocking into a 500.
     let mut holder = store.pool.begin().await.unwrap();
-    for id in [first, second] {
+    let mut buckets: Vec<i64> = [first, second]
+        .iter()
+        .map(|id| (id.as_u128() & 63) as i64)
+        .collect();
+    buckets.sort_unstable();
+    buckets.dedup();
+    for bucket in buckets {
         sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 53177))")
-            .bind(id.to_string())
+            .bind(format!("client-id-bucket:{bucket}"))
             .execute(&mut *holder)
             .await
             .unwrap();
@@ -1308,6 +1314,42 @@ async fn colliding_stage_and_issue_omit_ambiguous_version() {
         .await
         .unwrap();
     assert_eq!(moved, replacement);
+
+    drop(app);
+    store.pool.close().await;
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn large_import_with_client_ids_succeeds() {
+    let database = support::TestDatabase::new().await;
+    let store = Store::connect(&database.url).await.unwrap();
+    let app = router(store.clone());
+    let owner = account(&store, "owner").await;
+    let (ws, team) = setup(&app, &owner).await;
+
+    // 5000 supplied ids map to at most 64 buckets, so one import can no
+    // longer exhaust the shared lock table no matter how many ids it
+    // reserves. The import itself must still succeed end to end.
+    let issues: Vec<Value> = (0..5000)
+        .map(|n| json!({"id": Uuid::new_v4(), "team_id": team, "title": format!("Bulk {n}")}))
+        .collect();
+    let (status, result) = call(
+        &app,
+        &owner,
+        "POST",
+        &format!("/api/workspaces/{ws}/import"),
+        Some(json!({"issues": issues})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+
+    let stored: i64 = sqlx::query_scalar("SELECT count(*) FROM issues WHERE workspace_id = $1")
+        .bind(ws)
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+    assert_eq!(stored, 5000);
 
     drop(app);
     store.pool.close().await;
