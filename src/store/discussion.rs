@@ -63,6 +63,7 @@ impl Operation<'_> {
             }
 
             Command::AddComment {
+                id,
                 issue_id,
                 body,
                 mentions,
@@ -77,7 +78,7 @@ impl Operation<'_> {
                 }
 
                 self.capacity("comments", 20_000).await?;
-                let id = Uuid::new_v4();
+                let id = client_id(id)?;
 
                 sqlx::query(
                     "INSERT INTO comments(id,workspace_id,issue_id,author,body,\
@@ -90,7 +91,8 @@ impl Operation<'_> {
                 .bind(&body)
                 .bind(now)
                 .execute(&mut *self.tx)
-                .await?;
+                .await
+                .map_err(id_conflict)?;
                 for user in &mentions {
                     sqlx::query(
                         "INSERT INTO comment_mentions(workspace_id,comment_id,user_id) \
@@ -218,6 +220,7 @@ impl Operation<'_> {
             }
 
             Command::LogTime {
+                id,
                 issue_id,
                 minutes,
                 note,
@@ -226,7 +229,7 @@ impl Operation<'_> {
                 self.discussion_issue(issue_id).await?;
                 validate_time(minutes, &note)?;
                 self.capacity("time_entries", 20_000).await?;
-                let id = Uuid::new_v4();
+                let id = client_id(id)?;
 
                 sqlx::query(
                     "INSERT INTO time_entries(id,workspace_id,issue_id,user_id,minutes,\
@@ -240,7 +243,8 @@ impl Operation<'_> {
                 .bind(note)
                 .bind(logged_at)
                 .execute(&mut *self.tx)
-                .await?;
+                .await
+                .map_err(id_conflict)?;
                 self.created(id);
 
                 Some(id)
@@ -290,13 +294,14 @@ impl Operation<'_> {
             }
 
             Command::SaveView {
+                id,
                 name,
                 shared,
                 filter,
             } => {
                 crate::domain::text(&name, 200)?;
                 self.capacity("saved_views", 5_000).await?;
-                let id = Uuid::new_v4();
+                let id = client_id(id)?;
 
                 sqlx::query(
                     "INSERT INTO saved_views(id,workspace_id,owner,name,shared,filter) \
@@ -309,7 +314,8 @@ impl Operation<'_> {
                 .bind(shared)
                 .bind(serde_json::to_value(filter)?)
                 .execute(&mut *self.tx)
-                .await?;
+                .await
+                .map_err(id_conflict)?;
                 self.created(id);
 
                 Some(id)
@@ -733,6 +739,7 @@ impl Operation<'_> {
             }
 
             Command::CreateIntegration {
+                id,
                 name,
                 webhook_url,
                 secret,
@@ -742,7 +749,7 @@ impl Operation<'_> {
                 validate_url(&webhook_url)?;
                 crate::domain::text(&secret, 4096)?;
                 self.capacity("integrations", 100).await?;
-                let id = Uuid::new_v4();
+                let id = client_id(id)?;
 
                 sqlx::query(
                     "INSERT INTO integrations(id,workspace_id,name,webhook_url,secret) \
@@ -754,7 +761,8 @@ impl Operation<'_> {
                 .bind(webhook_url)
                 .bind(secret)
                 .execute(&mut *self.tx)
-                .await?;
+                .await
+                .map_err(id_conflict)?;
                 self.created(id);
 
                 Some(id)

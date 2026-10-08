@@ -224,6 +224,7 @@ async fn complete_contract_on_postgres() {
         &owner,
         &id,
         Command::CreateTeam {
+            id: None,
             name: "Operations".into(),
             members: vec![owner.profile.id],
         },
@@ -237,6 +238,7 @@ async fn complete_contract_on_postgres() {
         &owner,
         &id,
         Command::CreateProject {
+            id: None,
             name: "Certificate rotation".into(),
             description: "Renew edge certificates".into(),
             team_ids: vec![team],
@@ -251,6 +253,7 @@ async fn complete_contract_on_postgres() {
         &owner,
         &id,
         Command::CreateMilestone {
+            id: None,
             project_id: project,
             name: "Renewed".into(),
             deadline: Some(Utc::now() + Duration::days(7)),
@@ -265,6 +268,7 @@ async fn complete_contract_on_postgres() {
         &owner,
         &id,
         Command::CreateLabel {
+            id: None,
             name: "security".into(),
             color: "#ff0000".into(),
         },
@@ -278,6 +282,7 @@ async fn complete_contract_on_postgres() {
         &owner,
         &id,
         Command::CreateSprint {
+            id: None,
             team_id: team,
             name: "Week one".into(),
             goal: "Renew certificates".into(),
@@ -329,6 +334,7 @@ async fn complete_contract_on_postgres() {
         &owner,
         &id,
         Command::AddComment {
+            id: None,
             issue_id: first,
             body: "**Ready** for review".into(),
             mentions: vec![owner.profile.id],
@@ -356,6 +362,7 @@ async fn complete_contract_on_postgres() {
         &owner,
         &id,
         Command::LogTime {
+            id: None,
             issue_id: first,
             minutes: 45,
             note: "Rotation".into(),
@@ -553,6 +560,7 @@ async fn complete_contract_on_postgres() {
         &owner,
         &id,
         Command::AddComment {
+            id: None,
             issue_id: first,
             body: format!("Review @{}", colleague.profile.id),
             mentions: vec![colleague.profile.id],
@@ -746,6 +754,7 @@ async fn complete_contract_on_postgres() {
         &owner,
         &id,
         Command::CreateIntegration {
+            id: None,
             name: "Source control".into(),
             webhook_url: "https://blackwall-test.invalid/hook".into(),
             secret: "integration-test-secret".into(),

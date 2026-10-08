@@ -283,6 +283,7 @@ async fn setup(store: &Store, owner: &Session) -> (Uuid, Uuid, Uuid) {
                 workspace,
                 owner.profile.id,
                 Command::CreateTeam {
+                    id: None,
                     name: name.into(),
                     members: vec![],
                 },
@@ -1082,6 +1083,7 @@ async fn people_match_by_email_and_overrides_and_migrated_statuses_reconcile() {
             workspace,
             owner.profile.id,
             Command::CreateStage {
+                id: None,
                 team_id: team,
                 name: "Closed".into(),
                 kind: blackwall::domain::StageKind::Done,

@@ -42,6 +42,7 @@ async fn setup() -> (
             workspace,
             owner.profile.id,
             Command::CreateTeam {
+                id: None,
                 name: "Team".into(),
                 members: vec![],
             },

@@ -4,6 +4,7 @@ use super::*;
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Command {
     CreateTeam {
+        id: Option<Uuid>,
         name: String,
         #[serde(default)]
         members: Vec<Uuid>,
@@ -19,6 +20,7 @@ pub enum Command {
         archive_after_days: Option<u32>,
     },
     CreateStage {
+        id: Option<Uuid>,
         team_id: Uuid,
         name: String,
         kind: StageKind,
@@ -37,6 +39,7 @@ pub enum Command {
         replacement: Uuid,
     },
     CreateLabel {
+        id: Option<Uuid>,
         name: String,
         color: String,
     },
@@ -46,6 +49,7 @@ pub enum Command {
         color: String,
     },
     CreateProject {
+        id: Option<Uuid>,
         name: String,
         #[serde(default)]
         description: String,
@@ -58,6 +62,7 @@ pub enum Command {
         team_ids: Vec<Uuid>,
     },
     CreateMilestone {
+        id: Option<Uuid>,
         project_id: Uuid,
         name: String,
         deadline: Option<DateTime<Utc>>,
@@ -68,6 +73,7 @@ pub enum Command {
         deadline: Option<DateTime<Utc>>,
     },
     CreateSprint {
+        id: Option<Uuid>,
         team_id: Uuid,
         name: String,
         goal: String,
@@ -130,6 +136,7 @@ pub enum Command {
         attachment_id: Uuid,
     },
     AddComment {
+        id: Option<Uuid>,
         issue_id: Uuid,
         body: String,
         #[serde(default)]
@@ -151,6 +158,7 @@ pub enum Command {
         following: bool,
     },
     LogTime {
+        id: Option<Uuid>,
         issue_id: Uuid,
         minutes: u32,
         #[serde(default)]
@@ -167,6 +175,7 @@ pub enum Command {
         id: Uuid,
     },
     SaveView {
+        id: Option<Uuid>,
         name: String,
         shared: bool,
         filter: IssueFilter,
@@ -214,6 +223,7 @@ pub enum Command {
         deadline: bool,
     },
     CreateIntegration {
+        id: Option<Uuid>,
         name: String,
         webhook_url: String,
         secret: String,

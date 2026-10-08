@@ -316,6 +316,7 @@ export interface Report {
   delivery: { date: string; completed: number }[];
 }
 export interface IssueInput {
+  id?: Id;
   title: string;
   description?: string;
   team_id: Id;
@@ -354,20 +355,21 @@ export interface IssuePatch {
   dependencies?: Id[];
 }
 export type Command =
-  | { type: "create_team"; name: string; members: Id[] }
+  | { type: "create_team"; id?: Id; name: string; members: Id[] }
   | { type: "set_team_members"; id: Id; members: Id[] }
   | { type: "set_team_archive"; id: Id; archive_after_days: number | null }
-  | { type: "create_stage"; team_id: Id; name: string; kind: StageKind; position: number }
+  | { type: "create_stage"; id?: Id; team_id: Id; name: string; kind: StageKind; position: number }
   | { type: "update_stage"; team_id: Id; id: Id; name: string; kind: StageKind; position: number }
   | { type: "delete_stage"; team_id: Id; id: Id; replacement: Id }
-  | { type: "create_label"; name: string; color: string }
+  | { type: "create_label"; id?: Id; name: string; color: string }
   | { type: "update_label"; id: Id; name: string; color: string }
-  | { type: "create_project"; name: string; description: string; team_ids: Id[] }
+  | { type: "create_project"; id?: Id; name: string; description: string; team_ids: Id[] }
   | { type: "update_project"; id: Id; name: string; description: string; team_ids: Id[] }
-  | { type: "create_milestone"; project_id: Id; name: string; deadline: string | null }
+  | { type: "create_milestone"; id?: Id; project_id: Id; name: string; deadline: string | null }
   | { type: "update_milestone"; id: Id; name: string; deadline: string | null }
   | {
       type: "create_sprint";
+      id?: Id;
       team_id: Id;
       name: string;
       goal: string;
@@ -398,14 +400,14 @@ export type Command =
   | { type: "archive_issue"; id: Id }
   | { type: "unarchive_issue"; id: Id }
   | { type: "remove_attachment"; issue_id: Id; attachment_id: Id }
-  | { type: "add_comment"; issue_id: Id; body: string; mentions: Id[]; attachments: Attachment[] }
+  | { type: "add_comment"; id?: Id; issue_id: Id; body: string; mentions: Id[]; attachments: Attachment[] }
   | { type: "edit_comment"; id: Id; body: string; mentions: Id[] }
   | { type: "delete_comment"; id: Id }
   | { type: "follow"; issue_id: Id; following: boolean }
-  | { type: "log_time"; issue_id: Id; minutes: number; note: string; logged_at: string }
+  | { type: "log_time"; id?: Id; issue_id: Id; minutes: number; note: string; logged_at: string }
   | { type: "update_time"; id: Id; minutes: number; note: string; logged_at: string }
   | { type: "delete_time"; id: Id }
-  | { type: "save_view"; name: string; shared: boolean; filter: IssueFilter }
+  | { type: "save_view"; id?: Id; name: string; shared: boolean; filter: IssueFilter }
   | { type: "update_view"; id: Id; name: string; shared: boolean; filter: IssueFilter }
   | { type: "delete_view"; id: Id }
   | { type: "invite"; email: string; role: Role; token_hash: string }
@@ -424,7 +426,7 @@ export type Command =
       mention: boolean;
       deadline: boolean;
     }
-  | { type: "create_integration"; name: string; webhook_url: string; secret: string }
+  | { type: "create_integration"; id?: Id; name: string; webhook_url: string; secret: string }
   | { type: "update_integration"; id: Id; enabled: boolean }
   | { type: "delete_integration"; id: Id }
   | { type: "add_source_link"; issue_id: Id; url: string; title: string }

@@ -46,6 +46,7 @@ impl Fixture {
                 workspace,
                 owner.profile.id,
                 Command::CreateTeam {
+                    id: None,
                     name: "Team".into(),
                     members: vec![],
                 },
@@ -197,6 +198,7 @@ async fn direct_edits_links_attachment_removal_and_relations_reject_imports() {
         assert_eq!(f.versions().await, before);
     }
     f.run(Command::AddComment {
+        id: None,
         issue_id: f.imported,
         body: "Local discussion".into(),
         mentions: vec![],
@@ -211,6 +213,7 @@ async fn direct_edits_links_attachment_removal_and_relations_reject_imports() {
     .await
     .unwrap();
     f.run(Command::LogTime {
+        id: None,
         issue_id: f.imported,
         minutes: 30,
         note: "Local work".into(),

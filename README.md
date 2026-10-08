@@ -51,7 +51,7 @@ SQLX_OFFLINE=false SQLX_OFFLINE_DIR=.sqlx DATABASE_URL=postgres://blackwall:blac
 
 Workspace creation accepts an optional `idempotency_key`, scoped to the authenticated user. The frontend keeps this key across an ambiguous creation failure.
 
-Commands carry versions for the entities they edit. Creates usually use an empty map. For example:
+Commands optionally carry versions for the entities they edit. Omit `expected_versions` for last-writer-wins. For example:
 
 ```json
 {
@@ -65,13 +65,13 @@ Commands carry versions for the entities they edit. Creates usually use an empty
 }
 ```
 
-Send commands to `POST /api/workspaces/{id}/commands`. Responses contain `result`, a UUID-to-version `versions` map, and `changes`: every record the command changed that the caller can see, including side effects such as a parent's subtask counts, a dependent's blocker count, or a member's team list. Each change is `{entity,id,record}`, where `record` has the shape its list endpoint returns and `null` means deleted or no longer visible. A replayed idempotent command reports those records as they are now. Issue edits require the issue's current version. Bulk edits require every affected issue's version. HTTP 409 means a stale version or conflicting idempotency key; fetch the affected entities before retrying. Idempotency keys are optional strings scoped to the workspace and actor. Reusing a key with the same request returns the recorded result.
+Send commands to `POST /api/workspaces/{id}/commands`. Responses contain `result`, a UUID-to-version `versions` map, and `changes`: every record the command changed that the caller can see, including side effects such as a parent's subtask counts, a dependent's blocker count, or a member's team list. Each change is `{entity,id,record}`, where `record` has the shape its list endpoint returns and `null` means deleted or no longer visible. A replayed idempotent command reports those records as they are now. Issue edits may include the issue's current version; bulk edits may include every affected issue's version. A sent version that is stale returns HTTP 409; fetch the affected entities before retrying. Idempotency keys are optional strings scoped to the workspace and actor. Reusing a key with the same request returns the recorded result.
 
 `GET /api/workspaces/{id}` returns workspace metadata. Read work through `/issues`, `/issues/{issue}`, `/teams`, `/projects`, and the other feature collections. Collections return `{items,has_more,next_offset}` with `limit` and `offset`. The default limit is 100 and the maximum is 200. `/members` returns an array. Comments and time entries accept `issue_id`; activity accepts `entity_id`.
 
 `GET /api/workspaces/{id}/changes?since=<cursor>` returns `{cursor,reset,changes}` for records changed by anyone since the cursor, in the same format. Request it without `since` before loading records, then poll with the returned cursor. Changes can repeat, so apply them by version. When `reset` is true, either the cursor predates the retained history (`JOBS_RETENTION_DAYS`) or more than 1,000 records changed. Reload everything and continue from the returned cursor. Database triggers record changes from every write path, including imports, jobs, and invitation acceptance.
 
-Uploads send `expected_versions` as multipart JSON alongside the file. Imports send `expected_versions` and `issues` or `transfer`. A create-only import accepts `{}`.
+Uploads may send `expected_versions` as multipart JSON alongside the file. Imports may send `expected_versions` with `issues` or `transfer`. Creates (`create_team`, `create_stage`, `create_label`, `create_project`, `create_milestone`, `create_sprint`, `create_issue` through `IssueInput`, `add_comment`, `log_time`, `save_view`, `create_integration`) accept an optional client-chosen `id`, so offline clients can reference records before the server confirms them. Reusing an existing id returns 409; the nil UUID returns 400.
 
 The API includes membership and invitations, workflows, labels, issue relations, projects, milestones, sprint carryover, saved views, comments, uploads, inbox preferences, time corrections, reports, search, bulk actions, trash, activity, JSON transfer, signed webhooks, and account recovery.
 

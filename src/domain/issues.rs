@@ -87,6 +87,7 @@ pub struct Issue {
 
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct IssueInput {
+    pub id: Option<Uuid>,
     pub title: String,
     #[serde(default)]
     pub description: String,

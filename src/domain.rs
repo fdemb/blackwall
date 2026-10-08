@@ -339,6 +339,15 @@ pub(crate) fn text(value: &str, max: usize) -> Result<()> {
     }
 }
 
+/// Client-chosen id for a create command. Absent means the server generates one.
+pub(crate) fn client_id(provided: Option<Uuid>) -> Result<Uuid> {
+    match provided {
+        Some(id) if id.is_nil() => Err(Error::BadRequest("id must not be nil".into())),
+        Some(id) => Ok(id),
+        None => Ok(Uuid::new_v4()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -351,6 +360,7 @@ mod tests {
             .apply(
                 owner,
                 Command::CreateTeam {
+                    id: None,
                     name: "Infra".into(),
                     members: vec![owner],
                 },
@@ -365,6 +375,7 @@ mod tests {
 
     fn input(team_id: Uuid) -> IssueInput {
         IssueInput {
+            id: None,
             title: "Rotate keys".into(),
             description: String::new(),
             team_id,
@@ -380,6 +391,64 @@ mod tests {
             parent_id: None,
             dependencies: vec![],
         }
+    }
+
+    #[test]
+    fn client_ids_are_honored_and_collisions_rejected() {
+        let (mut w, owner, team) = setup();
+        let now = Utc::now();
+
+        let chosen = Uuid::new_v4();
+        let mut named = input(team);
+        named.id = Some(chosen);
+        let created = w
+            .apply(owner, Command::CreateIssue { input: named }, now)
+            .unwrap()
+            .id
+            .unwrap();
+        assert_eq!(created, chosen);
+
+        let mut again = input(team);
+        again.id = Some(chosen);
+        assert!(matches!(
+            w.apply(owner, Command::CreateIssue { input: again }, now),
+            Err(Error::Conflict(_))
+        ));
+
+        let mut nil = input(team);
+        nil.id = Some(Uuid::nil());
+        assert!(matches!(
+            w.apply(owner, Command::CreateIssue { input: nil }, now),
+            Err(Error::BadRequest(_))
+        ));
+
+        let label = w
+            .apply(
+                owner,
+                Command::CreateLabel {
+                    id: Some(chosen),
+                    name: "bug".into(),
+                    color: "#ef4444".into(),
+                },
+                now,
+            )
+            .unwrap()
+            .id
+            .unwrap();
+        assert_eq!(label, chosen);
+        assert!(
+            w.apply(
+                owner,
+                Command::CreateTeam {
+                    id: Some(chosen),
+                    name: "Taken".into(),
+                    members: vec![],
+                },
+                now
+            )
+            .is_ok(),
+            "ids are per-entity in the domain model, as in SQL"
+        );
     }
 
     #[test]
@@ -530,6 +599,7 @@ mod tests {
             .apply(
                 owner,
                 Command::SaveView {
+                    id: None,
                     name: "Mine".into(),
                     shared: false,
                     filter: IssueFilter {
@@ -573,6 +643,7 @@ mod tests {
             .apply(
                 viewer,
                 Command::SaveView {
+                    id: None,
                     name: "Mine".into(),
                     shared: false,
                     filter: IssueFilter::default(),
@@ -619,6 +690,7 @@ mod tests {
             .apply(
                 owner,
                 Command::CreateLabel {
+                    id: None,
                     name: "bug".into(),
                     color: "#ef4444".into(),
                 },
@@ -645,6 +717,7 @@ mod tests {
             .apply(
                 owner,
                 Command::CreateProject {
+                    id: None,
                     name: "Launch".into(),
                     description: String::new(),
                     team_ids: vec![],
@@ -658,6 +731,7 @@ mod tests {
             .apply(
                 owner,
                 Command::CreateMilestone {
+                    id: None,
                     project_id: project,
                     name: "Beta".into(),
                     deadline: None,
@@ -754,6 +828,7 @@ mod tests {
             .apply(
                 owner,
                 Command::CreateSprint {
+                    id: None,
                     team_id: team,
                     name: "Sprint".into(),
                     goal: "Ship".into(),

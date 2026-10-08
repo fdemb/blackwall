@@ -289,6 +289,10 @@ impl Workspace {
     }
 
     fn create_issue(&mut self, input: IssueInput, actor: Uuid, now: DateTime<Utc>) -> Result<Uuid> {
+        let id = client_id(input.id)?;
+        if self.issues.iter().any(|i| i.id == id) {
+            return Err(Error::Conflict("id already exists".into()));
+        }
         let stage_id = match input.stage_id {
             Some(id) => id,
             None => {
@@ -306,7 +310,7 @@ impl Workspace {
             subtask_total: 0,
             subtask_completed: 0,
             version: 1,
-            id: Uuid::new_v4(),
+            id,
             number: self.issues.iter().map(|i| i.number).max().unwrap_or(0) + 1,
             title: input.title,
             description: input.description,
@@ -689,14 +693,17 @@ impl Workspace {
         let mut fields = vec![];
 
         match command {
-            Command::CreateTeam { name, members } => {
+            Command::CreateTeam { id, name, members } => {
                 self.admin(actor)?;
                 text(&name, 200)?;
                 for user in &members {
                     self.member(*user)?;
                 }
 
-                let id = Uuid::new_v4();
+                let id = client_id(id)?;
+                if self.teams.iter().any(|t| t.id == id) {
+                    return Err(Error::Conflict("id already exists".into()));
+                }
                 let stages = [
                     ("Backlog", StageKind::Backlog),
                     ("Todo", StageKind::Planned),
@@ -754,6 +761,7 @@ impl Workspace {
             }
 
             Command::CreateStage {
+                id,
                 team_id,
                 name,
                 kind,
@@ -762,7 +770,15 @@ impl Workspace {
                 self.admin(actor)?;
                 text(&name, 200)?;
 
-                let id = Uuid::new_v4();
+                let id = client_id(id)?;
+                if self
+                    .teams
+                    .iter()
+                    .flat_map(|t| &t.stages)
+                    .any(|s| s.id == id)
+                {
+                    return Err(Error::Conflict("id already exists".into()));
+                }
                 self.teams
                     .iter_mut()
                     .find(|t| t.id == team_id)
@@ -870,13 +886,16 @@ impl Workspace {
                 result = Some(id)
             }
 
-            Command::CreateLabel { name, color } => {
+            Command::CreateLabel { id, name, color } => {
                 text(&name, 100)?;
                 if color.len() > 40 {
                     return Err(Error::BadRequest("invalid color".into()));
                 }
 
-                let id = Uuid::new_v4();
+                let id = client_id(id)?;
+                if self.labels.iter().any(|l| l.id == id) {
+                    return Err(Error::Conflict("id already exists".into()));
+                }
                 self.labels.push(Label {
                     version: 1,
                     id,
@@ -903,6 +922,7 @@ impl Workspace {
             }
 
             Command::CreateProject {
+                id,
                 name,
                 description,
                 team_ids,
@@ -912,7 +932,10 @@ impl Workspace {
                     self.team(*id)?;
                 }
 
-                let id = Uuid::new_v4();
+                let id = client_id(id)?;
+                if self.projects.iter().any(|p| p.id == id) {
+                    return Err(Error::Conflict("id already exists".into()));
+                }
                 self.projects.push(Project {
                     version: 1,
                     id,
@@ -953,6 +976,7 @@ impl Workspace {
             }
 
             Command::CreateMilestone {
+                id,
                 project_id,
                 name,
                 deadline,
@@ -962,7 +986,10 @@ impl Workspace {
                     return Err(Error::NotFound);
                 }
 
-                let id = Uuid::new_v4();
+                let id = client_id(id)?;
+                if self.milestones.iter().any(|m| m.id == id) {
+                    return Err(Error::Conflict("id already exists".into()));
+                }
                 self.milestones.push(Milestone {
                     version: 1,
                     id,
@@ -987,6 +1014,7 @@ impl Workspace {
             }
 
             Command::CreateSprint {
+                id,
                 team_id,
                 name,
                 goal,
@@ -999,7 +1027,10 @@ impl Workspace {
                     return Err(Error::BadRequest("sprint end must follow start".into()));
                 }
 
-                let id = Uuid::new_v4();
+                let id = client_id(id)?;
+                if self.sprints.iter().any(|s| s.id == id) {
+                    return Err(Error::Conflict("id already exists".into()));
+                }
                 self.sprints.push(Sprint {
                     version: 1,
                     id,
@@ -1297,6 +1328,7 @@ impl Workspace {
             }
 
             Command::AddComment {
+                id,
                 issue_id,
                 body,
                 mentions,
@@ -1311,7 +1343,10 @@ impl Workspace {
                     self.validate_attachment(attachment)?;
                 }
 
-                let id = Uuid::new_v4();
+                let id = client_id(id)?;
+                if self.comments.iter().any(|c| c.id == id) {
+                    return Err(Error::Conflict("id already exists".into()));
+                }
                 let followers = self.issue(issue_id)?.followers.clone();
                 for user in followers {
                     if user != actor {
@@ -1401,6 +1436,7 @@ impl Workspace {
             }
 
             Command::LogTime {
+                id,
                 issue_id,
                 minutes,
                 note,
@@ -1409,7 +1445,10 @@ impl Workspace {
                 self.issue(issue_id)?;
                 Self::validate_time(minutes, &note)?;
 
-                let id = Uuid::new_v4();
+                let id = client_id(id)?;
+                if self.time_entries.iter().any(|e| e.id == id) {
+                    return Err(Error::Conflict("id already exists".into()));
+                }
                 self.time_entries.push(TimeEntry {
                     version: 1,
                     id,
@@ -1461,13 +1500,17 @@ impl Workspace {
             }
 
             Command::SaveView {
+                id,
                 name,
                 shared,
                 filter,
             } => {
                 text(&name, 200)?;
 
-                let id = Uuid::new_v4();
+                let id = client_id(id)?;
+                if self.views.iter().any(|v| v.id == id) {
+                    return Err(Error::Conflict("id already exists".into()));
+                }
                 self.views.push(SavedView {
                     version: 1,
                     id,
@@ -1704,6 +1747,7 @@ impl Workspace {
             }
 
             Command::CreateIntegration {
+                id,
                 name,
                 webhook_url,
                 secret,
@@ -1713,7 +1757,10 @@ impl Workspace {
                 validate_url(&webhook_url)?;
                 text(&secret, 4096)?;
 
-                let id = Uuid::new_v4();
+                let id = client_id(id)?;
+                if self.integrations.iter().any(|i| i.id == id) {
+                    return Err(Error::Conflict("id already exists".into()));
+                }
                 self.integrations.push(Integration {
                     version: 1,
                     id,

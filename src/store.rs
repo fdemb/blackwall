@@ -66,6 +66,18 @@ pub(super) fn enum_text<T: serde::Serialize>(v: &T) -> String {
         .to_owned()
 }
 
+/// A client-chosen id that collides with any workspace's row is a business
+/// error, not an internal one. Ids are globally unique primary keys, so the
+/// message reveals nothing about where the row lives.
+pub(super) fn id_conflict(error: sqlx::Error) -> Error {
+    if let sqlx::Error::Database(db) = &error
+        && db.is_unique_violation()
+    {
+        return Error::Conflict("id already exists".into());
+    }
+    Error::Database(error)
+}
+
 impl Store {
     pub async fn connect(url: &str) -> Result<Self> {
         if !url.starts_with("postgres://") && !url.starts_with("postgresql://") {
@@ -386,12 +398,10 @@ impl Operation<'_> {
             .ok_or(Error::NotFound)?
             .try_get("version")?;
 
-        let expected = self
-            .expected
-            .get(&id)
-            .ok_or_else(|| Error::BadRequest(format!("expected_versions must include {id}")))?;
-
-        if *expected != version {
+        // Absent preconditions mean last-writer-wins. A present one still conflicts on mismatch.
+        if let Some(expected) = self.expected.get(&id)
+            && *expected != version
+        {
             return Err(Error::Conflict(format!(
                 "entity {id} changed; current version is {version}"
             )));

@@ -103,7 +103,7 @@ pub struct CreateWorkspace {
 #[derive(Deserialize, utoipa::ToSchema)]
 pub struct CommandRequest {
     #[serde(default)]
-    pub expected_versions: BTreeMap<Uuid, i64>,
+    pub expected_versions: Option<BTreeMap<Uuid, i64>>,
     pub idempotency_key: Option<String>,
     pub command: Command,
 }
@@ -118,7 +118,7 @@ pub struct AcceptInvitation {
 #[derive(Deserialize, utoipa::ToSchema)]
 pub struct ImportRequest {
     #[serde(default)]
-    pub expected_versions: BTreeMap<Uuid, i64>,
+    pub expected_versions: Option<BTreeMap<Uuid, i64>>,
     pub idempotency_key: Option<String>,
     pub issues: Option<Vec<IssueInput>>,
     pub transfer: Option<crate::exchange::Transfer>,
@@ -580,7 +580,7 @@ async fn command(
                 id,
                 actor.profile.id,
                 input.command,
-                input.expected_versions,
+                input.expected_versions.unwrap_or_default(),
                 input.idempotency_key,
                 None,
             )

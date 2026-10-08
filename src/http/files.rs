@@ -202,7 +202,7 @@ pub(super) async fn import(
                     id,
                     actor.profile.id,
                     Command::ImportIssues { issues },
-                    input.expected_versions,
+                    input.expected_versions.unwrap_or_default(),
                     input.idempotency_key,
                     None,
                 )
@@ -218,7 +218,7 @@ pub(super) async fn import(
                     id,
                     actor.profile.id,
                     transfer,
-                    input.expected_versions,
+                    input.expected_versions.unwrap_or_default(),
                     input.idempotency_key,
                 )
                 .await?;

@@ -218,7 +218,7 @@ impl Operation<'_> {
         };
 
         let now = Utc::now();
-        let id = Uuid::new_v4();
+        let id = client_id(input.id)?;
         let mut i = Issue {
             openproject: None,
             blocked_count: 0,
@@ -267,7 +267,13 @@ impl Operation<'_> {
             &mut i,
             persistence::Ownership::Local,
         )
-        .await?;
+        .await
+        .map_err(|error| match error {
+            Error::Database(sqlx::Error::Database(db)) if db.is_unique_violation() => {
+                id_conflict(sqlx::Error::Database(db))
+            }
+            error => error,
+        })?;
 
         sqlx::query("INSERT INTO issue_followers(workspace_id,issue_id,user_id) VALUES($1,$2,$3)")
             .bind(self.workspace_id)

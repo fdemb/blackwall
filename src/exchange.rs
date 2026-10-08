@@ -343,6 +343,7 @@ mod tests {
             .apply(
                 source_user,
                 Command::CreateTeam {
+                    id: None,
                     name: "Infra".into(),
                     members: vec![source_user],
                 },
@@ -356,6 +357,7 @@ mod tests {
             .apply(
                 source_user,
                 Command::CreateSprint {
+                    id: None,
                     team_id: team,
                     name: "September".into(),
                     goal: "Deliver".into(),
@@ -369,6 +371,7 @@ mod tests {
             .unwrap();
 
         let input = |title: &str| IssueInput {
+            id: None,
             title: title.into(),
             description: "Description".into(),
             team_id: team,
@@ -415,6 +418,7 @@ mod tests {
             .apply(
                 source_user,
                 Command::AddComment {
+                    id: None,
                     issue_id: second,
                     body: "Done".into(),
                     mentions: vec![source_user],
@@ -428,6 +432,7 @@ mod tests {
             .apply(
                 source_user,
                 Command::LogTime {
+                    id: None,
                     issue_id: second,
                     minutes: 45,
                     note: "Review".into(),
@@ -491,6 +496,7 @@ mod tests {
             .apply(
                 actor,
                 Command::CreateTeam {
+                    id: None,
                     name: "Team".into(),
                     members: vec![],
                 },

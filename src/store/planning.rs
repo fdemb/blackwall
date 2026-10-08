@@ -3,7 +3,11 @@ use super::*;
 impl Operation<'_> {
     pub(super) async fn planning(&mut self, command: Command) -> Result<Option<Uuid>> {
         let id = match command {
-            Command::CreateTeam { name, mut members } => {
+            Command::CreateTeam {
+                id,
+                name,
+                mut members,
+            } => {
                 self.admin()?;
                 text(&name, 200)?;
                 self.capacity("teams", 200).await?;
@@ -13,13 +17,14 @@ impl Operation<'_> {
                     self.member(*user).await?;
                 }
 
-                let id = Uuid::new_v4();
+                let id = client_id(id)?;
                 sqlx::query("INSERT INTO teams(id,workspace_id,name,archive_after_days) VALUES($1,$2,$3,30)")
                     .bind(id)
                     .bind(self.workspace_id)
                     .bind(name)
                     .execute(&mut *self.tx)
-                    .await?;
+                    .await
+                    .map_err(id_conflict)?;
                 self.created(id);
                 for user in members {
                     sqlx::query(
@@ -106,6 +111,7 @@ impl Operation<'_> {
             }
 
             Command::CreateStage {
+                id,
                 team_id,
                 name,
                 kind,
@@ -128,7 +134,7 @@ impl Operation<'_> {
                     ));
                 }
 
-                let id = Uuid::new_v4();
+                let id = client_id(id)?;
                 sqlx::query("INSERT INTO stages(id,workspace_id,team_id,name,kind,position) VALUES($1,$2,$3,$4,$5,$6)")
                     .bind(id)
                     .bind(self.workspace_id)
@@ -137,7 +143,8 @@ impl Operation<'_> {
                     .bind(enum_text(&kind))
                     .bind(position)
                     .execute(&mut *self.tx)
-                    .await?;
+                    .await
+                    .map_err(id_conflict)?;
                 self.created(id);
                 id
             }
@@ -300,17 +307,18 @@ impl Operation<'_> {
                 id
             }
 
-            Command::CreateLabel { name, color } => {
+            Command::CreateLabel { id, name, color } => {
                 validate_label(&name, &color)?;
                 self.capacity("labels", 1000).await?;
-                let id = Uuid::new_v4();
+                let id = client_id(id)?;
                 sqlx::query("INSERT INTO labels(id,workspace_id,name,color) VALUES($1,$2,$3,$4)")
                     .bind(id)
                     .bind(self.workspace_id)
                     .bind(name)
                     .bind(color)
                     .execute(&mut *self.tx)
-                    .await?;
+                    .await
+                    .map_err(id_conflict)?;
                 self.created(id);
                 id
             }
@@ -330,6 +338,7 @@ impl Operation<'_> {
             }
 
             Command::CreateProject {
+                id,
                 name,
                 description,
                 mut team_ids,
@@ -342,7 +351,7 @@ impl Operation<'_> {
                     self.lock_team(*team, false).await?;
                 }
 
-                let id = Uuid::new_v4();
+                let id = client_id(id)?;
                 sqlx::query(
                     "INSERT INTO projects(id,workspace_id,name,description) VALUES($1,$2,$3,$4)",
                 )
@@ -351,7 +360,8 @@ impl Operation<'_> {
                 .bind(name)
                 .bind(description)
                 .execute(&mut *self.tx)
-                .await?;
+                .await
+                .map_err(id_conflict)?;
 
                 self.replace_project_teams(id, team_ids).await?;
                 self.created(id);
@@ -399,6 +409,7 @@ impl Operation<'_> {
             }
 
             Command::CreateMilestone {
+                id,
                 project_id,
                 name,
                 deadline,
@@ -412,7 +423,7 @@ impl Operation<'_> {
                     .await?
                     .ok_or(Error::NotFound)?;
 
-                let id = Uuid::new_v4();
+                let id = client_id(id)?;
                 sqlx::query("INSERT INTO milestones(id,workspace_id,project_id,name,deadline) VALUES($1,$2,$3,$4,$5)")
                     .bind(id)
                     .bind(self.workspace_id)
@@ -420,7 +431,8 @@ impl Operation<'_> {
                     .bind(name)
                     .bind(deadline)
                     .execute(&mut *self.tx)
-                    .await?;
+                    .await
+                    .map_err(id_conflict)?;
                 self.created(id);
                 id
             }
@@ -442,6 +454,7 @@ impl Operation<'_> {
             }
 
             Command::CreateSprint {
+                id,
                 team_id,
                 name,
                 goal,
@@ -451,7 +464,7 @@ impl Operation<'_> {
                 validate_sprint(&name, &goal, starts_at, ends_at)?;
                 self.capacity("sprints", 2000).await?;
                 self.lock_team(team_id, false).await?;
-                let id = Uuid::new_v4();
+                let id = client_id(id)?;
                 sqlx::query("INSERT INTO sprints(id,workspace_id,team_id,name,goal,starts_at,ends_at,state) VALUES($1,$2,$3,$4,$5,$6,$7,'planned')")
                     .bind(id)
                     .bind(self.workspace_id)
@@ -461,7 +474,8 @@ impl Operation<'_> {
                     .bind(starts_at)
                     .bind(ends_at)
                     .execute(&mut *self.tx)
-                    .await?;
+                    .await
+                    .map_err(id_conflict)?;
                 self.created(id);
                 id
             }
