@@ -2,6 +2,42 @@ use super::*;
 use std::collections::{BTreeMap, BTreeSet};
 
 impl Workspace {
+    /// A client-chosen id is taken when any collection already uses it.
+    fn id_taken(&self, id: Uuid) -> bool {
+        self.members.iter().any(|m| m.user_id == id)
+            || self.teams.iter().any(|t| t.id == id)
+            || self
+                .teams
+                .iter()
+                .flat_map(|t| &t.stages)
+                .any(|s| s.id == id)
+            || self.labels.iter().any(|l| l.id == id)
+            || self.projects.iter().any(|p| p.id == id)
+            || self.milestones.iter().any(|m| m.id == id)
+            || self.sprints.iter().any(|s| s.id == id)
+            || self
+                .issues
+                .iter()
+                .any(|i| i.id == id || i.attachments.iter().any(|a| a.id == id))
+            || self
+                .comments
+                .iter()
+                .any(|c| c.id == id || c.attachments.iter().any(|a| a.id == id))
+            || self.time_entries.iter().any(|e| e.id == id)
+            || self.views.iter().any(|v| v.id == id)
+            || self.invitations.iter().any(|i| i.id == id)
+            || self.integrations.iter().any(|i| i.id == id)
+            || self.notifications.iter().any(|n| n.id == id)
+    }
+
+    /// Resolve a client-chosen id, rejecting one used by any collection.
+    fn take_client_id(&self, provided: Option<Uuid>) -> Result<Uuid> {
+        let id = client_id(provided)?;
+        if self.id_taken(id) {
+            return Err(Error::Conflict("id already exists".into()));
+        }
+        Ok(id)
+    }
     pub fn new(name: String, owner: Uuid) -> Result<Self> {
         text(&name, 200)?;
 
@@ -289,10 +325,7 @@ impl Workspace {
     }
 
     fn create_issue(&mut self, input: IssueInput, actor: Uuid, now: DateTime<Utc>) -> Result<Uuid> {
-        let id = client_id(input.id)?;
-        if self.issues.iter().any(|i| i.id == id) {
-            return Err(Error::Conflict("id already exists".into()));
-        }
+        let id = self.take_client_id(input.id)?;
         let stage_id = match input.stage_id {
             Some(id) => id,
             None => {
@@ -700,10 +733,7 @@ impl Workspace {
                     self.member(*user)?;
                 }
 
-                let id = client_id(id)?;
-                if self.teams.iter().any(|t| t.id == id) {
-                    return Err(Error::Conflict("id already exists".into()));
-                }
+                let id = self.take_client_id(id)?;
                 let stages = [
                     ("Backlog", StageKind::Backlog),
                     ("Todo", StageKind::Planned),
@@ -770,15 +800,7 @@ impl Workspace {
                 self.admin(actor)?;
                 text(&name, 200)?;
 
-                let id = client_id(id)?;
-                if self
-                    .teams
-                    .iter()
-                    .flat_map(|t| &t.stages)
-                    .any(|s| s.id == id)
-                {
-                    return Err(Error::Conflict("id already exists".into()));
-                }
+                let id = self.take_client_id(id)?;
                 self.teams
                     .iter_mut()
                     .find(|t| t.id == team_id)
@@ -892,10 +914,7 @@ impl Workspace {
                     return Err(Error::BadRequest("invalid color".into()));
                 }
 
-                let id = client_id(id)?;
-                if self.labels.iter().any(|l| l.id == id) {
-                    return Err(Error::Conflict("id already exists".into()));
-                }
+                let id = self.take_client_id(id)?;
                 self.labels.push(Label {
                     version: 1,
                     id,
@@ -932,10 +951,7 @@ impl Workspace {
                     self.team(*id)?;
                 }
 
-                let id = client_id(id)?;
-                if self.projects.iter().any(|p| p.id == id) {
-                    return Err(Error::Conflict("id already exists".into()));
-                }
+                let id = self.take_client_id(id)?;
                 self.projects.push(Project {
                     version: 1,
                     id,
@@ -986,10 +1002,7 @@ impl Workspace {
                     return Err(Error::NotFound);
                 }
 
-                let id = client_id(id)?;
-                if self.milestones.iter().any(|m| m.id == id) {
-                    return Err(Error::Conflict("id already exists".into()));
-                }
+                let id = self.take_client_id(id)?;
                 self.milestones.push(Milestone {
                     version: 1,
                     id,
@@ -1027,10 +1040,7 @@ impl Workspace {
                     return Err(Error::BadRequest("sprint end must follow start".into()));
                 }
 
-                let id = client_id(id)?;
-                if self.sprints.iter().any(|s| s.id == id) {
-                    return Err(Error::Conflict("id already exists".into()));
-                }
+                let id = self.take_client_id(id)?;
                 self.sprints.push(Sprint {
                     version: 1,
                     id,
@@ -1343,10 +1353,7 @@ impl Workspace {
                     self.validate_attachment(attachment)?;
                 }
 
-                let id = client_id(id)?;
-                if self.comments.iter().any(|c| c.id == id) {
-                    return Err(Error::Conflict("id already exists".into()));
-                }
+                let id = self.take_client_id(id)?;
                 let followers = self.issue(issue_id)?.followers.clone();
                 for user in followers {
                     if user != actor {
@@ -1445,10 +1452,7 @@ impl Workspace {
                 self.issue(issue_id)?;
                 Self::validate_time(minutes, &note)?;
 
-                let id = client_id(id)?;
-                if self.time_entries.iter().any(|e| e.id == id) {
-                    return Err(Error::Conflict("id already exists".into()));
-                }
+                let id = self.take_client_id(id)?;
                 self.time_entries.push(TimeEntry {
                     version: 1,
                     id,
@@ -1507,10 +1511,7 @@ impl Workspace {
             } => {
                 text(&name, 200)?;
 
-                let id = client_id(id)?;
-                if self.views.iter().any(|v| v.id == id) {
-                    return Err(Error::Conflict("id already exists".into()));
-                }
+                let id = self.take_client_id(id)?;
                 self.views.push(SavedView {
                     version: 1,
                     id,
@@ -1757,10 +1758,7 @@ impl Workspace {
                 validate_url(&webhook_url)?;
                 text(&secret, 4096)?;
 
-                let id = client_id(id)?;
-                if self.integrations.iter().any(|i| i.id == id) {
-                    return Err(Error::Conflict("id already exists".into()));
-                }
+                let id = self.take_client_id(id)?;
                 self.integrations.push(Integration {
                     version: 1,
                     id,

@@ -195,7 +195,7 @@ impl Store {
         }
 
         insert_import(&mut op, &candidate).await?;
-        let result = (summary, op.versions.clone());
+        let result = (summary, op.response_versions());
         if let Some(key) = key {
             sqlx::query(
                 "UPDATE operation_keys SET result=$4 WHERE workspace_id=$1 AND actor=$2 AND key=$3",
@@ -225,7 +225,7 @@ async fn insert_import(op: &mut Operation<'_>, w: &Workspace) -> Result<()> {
         .bind(team.archive_after_days.map(i64::from))
         .execute(&mut *op.tx)
         .await?;
-        op.created(team.id);
+        op.created("teams", team.id);
         for user in &team.members {
             sqlx::query("INSERT INTO team_members(workspace_id,team_id,user_id) VALUES($1,$2,$3)")
                 .bind(w.id)
@@ -245,7 +245,7 @@ async fn insert_import(op: &mut Operation<'_>, w: &Workspace) -> Result<()> {
                 .bind(stage.position)
                 .execute(&mut *op.tx)
                 .await?;
-            op.created(stage.id);
+            op.created("stages", stage.id);
         }
     }
 
@@ -257,7 +257,7 @@ async fn insert_import(op: &mut Operation<'_>, w: &Workspace) -> Result<()> {
             .bind(&label.color)
             .execute(&mut *op.tx)
             .await?;
-        op.created(label.id);
+        op.created("labels", label.id);
     }
 
     for project in &w.projects {
@@ -268,7 +268,7 @@ async fn insert_import(op: &mut Operation<'_>, w: &Workspace) -> Result<()> {
             .bind(&project.description)
             .execute(&mut *op.tx)
             .await?;
-        op.created(project.id);
+        op.created("projects", project.id);
         for team in &project.team_ids {
             sqlx::query(
                 "INSERT INTO project_teams(workspace_id,project_id,team_id) VALUES($1,$2,$3)",
@@ -290,7 +290,7 @@ async fn insert_import(op: &mut Operation<'_>, w: &Workspace) -> Result<()> {
             .bind(milestone.deadline)
             .execute(&mut *op.tx)
             .await?;
-        op.created(milestone.id);
+        op.created("milestones", milestone.id);
     }
 
     for sprint in &w.sprints {
@@ -305,7 +305,7 @@ async fn insert_import(op: &mut Operation<'_>, w: &Workspace) -> Result<()> {
             .bind(enum_text(&sprint.state))
             .execute(&mut *op.tx)
             .await?;
-        op.created(sprint.id);
+        op.created("sprints", sprint.id);
         if let Some(outcome) = &sprint.outcome {
             sqlx::query("INSERT INTO sprint_outcomes(workspace_id,sprint_id,total,completed,effort) VALUES($1,$2,$3,$4,$5)")
                 .bind(w.id)
@@ -345,7 +345,7 @@ async fn insert_import(op: &mut Operation<'_>, w: &Workspace) -> Result<()> {
             .bind(issue.created_by)
             .execute(&mut *op.tx)
             .await?;
-        op.created(issue.id);
+        op.created("issues", issue.id);
     }
 
     for issue in &w.issues {
@@ -422,7 +422,7 @@ async fn insert_import(op: &mut Operation<'_>, w: &Workspace) -> Result<()> {
             .bind(comment.edited_at)
             .execute(&mut *op.tx)
             .await?;
-        op.created(comment.id);
+        op.created("comments", comment.id);
         for user in &comment.mentions {
             sqlx::query(
                 "INSERT INTO comment_mentions(workspace_id,comment_id,user_id) VALUES($1,$2,$3)",
@@ -446,7 +446,7 @@ async fn insert_import(op: &mut Operation<'_>, w: &Workspace) -> Result<()> {
             .bind(entry.logged_at)
             .execute(&mut *op.tx)
             .await?;
-        op.created(entry.id);
+        op.created("time_entries", entry.id);
     }
 
     for view in &w.views {
@@ -459,7 +459,7 @@ async fn insert_import(op: &mut Operation<'_>, w: &Workspace) -> Result<()> {
             .bind(serde_json::to_value(&view.filter)?)
             .execute(&mut *op.tx)
             .await?;
-        op.created(view.id);
+        op.created("saved_views", view.id);
     }
 
     for event in w.activity.iter().take(w.activity.len().saturating_sub(1)) {

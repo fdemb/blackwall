@@ -422,32 +422,35 @@ mod tests {
             Err(Error::BadRequest(_))
         ));
 
-        let label = w
-            .apply(
-                owner,
-                Command::CreateLabel {
-                    id: Some(chosen),
-                    name: "bug".into(),
-                    color: "#ef4444".into(),
-                },
-                now,
-            )
-            .unwrap()
-            .id
-            .unwrap();
-        assert_eq!(label, chosen);
         assert!(
-            w.apply(
-                owner,
-                Command::CreateTeam {
-                    id: Some(chosen),
-                    name: "Taken".into(),
-                    members: vec![],
-                },
-                now
-            )
-            .is_ok(),
-            "ids are per-entity in the domain model, as in SQL"
+            matches!(
+                w.apply(
+                    owner,
+                    Command::CreateLabel {
+                        id: Some(chosen),
+                        name: "bug".into(),
+                        color: "#ef4444".into(),
+                    },
+                    now,
+                ),
+                Err(Error::Conflict(_))
+            ),
+            "ids are unique across entities in the domain model, as in SQL"
+        );
+        assert!(
+            matches!(
+                w.apply(
+                    owner,
+                    Command::CreateTeam {
+                        id: Some(chosen),
+                        name: "Taken".into(),
+                        members: vec![],
+                    },
+                    now
+                ),
+                Err(Error::Conflict(_))
+            ),
+            "ids are unique across entities in the domain model, as in SQL"
         );
     }
 

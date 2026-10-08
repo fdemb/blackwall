@@ -54,7 +54,9 @@ pub(super) struct Operation<'a> {
     pub actor: Uuid,
     pub role: Role,
     pub expected: BTreeMap<Uuid, i64>,
-    pub versions: BTreeMap<Uuid, i64>,
+    /// Keyed by (table, id) so touching one table's row never short-circuits
+    /// another table's row with the same id. Collapsed to Uuid keys for responses.
+    pub versions: BTreeMap<(String, Uuid), i64>,
     pub activity_fields: Vec<String>,
 }
 
@@ -76,6 +78,58 @@ pub(super) fn id_conflict(error: sqlx::Error) -> Error {
         return Error::Conflict("id already exists".into());
     }
     Error::Database(error)
+}
+
+impl Operation<'_> {
+    /// Reserve a client-chosen id across every entity table. Server-generated
+    /// ids skip the check. The advisory lock serializes concurrent creates
+    /// using the same id so only one wins.
+    pub(super) async fn reserve_client_id(&mut self, provided: Option<Uuid>) -> Result<Uuid> {
+        let id = client_id(provided)?;
+        if provided.is_none() {
+            return Ok(id);
+        }
+
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 53177))")
+            .bind(id.to_string())
+            .execute(&mut *self.tx)
+            .await?;
+
+        let taken: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM issues WHERE id=$1) \
+             OR EXISTS(SELECT 1 FROM teams WHERE id=$1) \
+             OR EXISTS(SELECT 1 FROM stages WHERE id=$1) \
+             OR EXISTS(SELECT 1 FROM labels WHERE id=$1) \
+             OR EXISTS(SELECT 1 FROM projects WHERE id=$1) \
+             OR EXISTS(SELECT 1 FROM milestones WHERE id=$1) \
+             OR EXISTS(SELECT 1 FROM sprints WHERE id=$1) \
+             OR EXISTS(SELECT 1 FROM comments WHERE id=$1) \
+             OR EXISTS(SELECT 1 FROM time_entries WHERE id=$1) \
+             OR EXISTS(SELECT 1 FROM saved_views WHERE id=$1) \
+             OR EXISTS(SELECT 1 FROM invitations WHERE id=$1) \
+             OR EXISTS(SELECT 1 FROM integrations WHERE id=$1) \
+             OR EXISTS(SELECT 1 FROM notifications WHERE id=$1) \
+             OR EXISTS(SELECT 1 FROM attachments WHERE id=$1) \
+             OR EXISTS(SELECT 1 FROM users WHERE id=$1)",
+        )
+        .bind(id)
+        .fetch_one(&mut *self.tx)
+        .await?;
+
+        if taken {
+            return Err(Error::Conflict("id already exists".into()));
+        }
+
+        Ok(id)
+    }
+
+    pub(super) fn response_versions(&self) -> BTreeMap<Uuid, i64> {
+        // Ids are unique across entities, so collapsing loses nothing.
+        self.versions
+            .iter()
+            .map(|((_, id), version)| (*id, *version))
+            .collect()
+    }
 }
 
 impl Store {
@@ -237,7 +291,7 @@ impl Store {
 
         let mut result = OperationResult {
             result: CommandResult { id },
-            versions: op.versions.clone(),
+            versions: op.response_versions(),
             changes: changes::pending(&mut op.tx, workspace_id, actor).await?,
         };
 
@@ -359,7 +413,8 @@ impl Operation<'_> {
     }
 
     pub async fn touch(&mut self, table: &str, id: Uuid) -> Result<i64> {
-        if let Some(v) = self.versions.get(&id) {
+        let key = (table.to_owned(), id);
+        if let Some(v) = self.versions.get(&key) {
             return Ok(*v);
         }
 
@@ -415,13 +470,13 @@ impl Operation<'_> {
             .execute(&mut *self.tx)
             .await?;
 
-        self.versions.insert(id, version + 1);
+        self.versions.insert(key, version + 1);
 
         Ok(version + 1)
     }
 
-    pub fn created(&mut self, id: Uuid) {
-        self.versions.insert(id, 1);
+    pub fn created(&mut self, table: &str, id: Uuid) {
+        self.versions.insert((table.to_owned(), id), 1);
     }
 
     pub async fn activity(

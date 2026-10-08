@@ -340,7 +340,7 @@ pub(super) async fn incoming(
 
     let result = OperationResult {
         result: CommandResult { id: entity },
-        versions: op.versions,
+        versions: op.response_versions(),
         changes: Vec::new(),
     };
     sqlx::query(

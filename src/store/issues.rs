@@ -25,7 +25,7 @@ impl Operation<'_> {
     }
 
     pub(super) async fn validate_workflow(&mut self) -> Result<()> {
-        let affected: Vec<Uuid> = self.versions.keys().copied().collect();
+        let affected: Vec<Uuid> = self.versions.keys().map(|(_, id)| *id).collect();
 
         let bad: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM issues i JOIN stages s ON s.id=i.stage_id WHERE i.workspace_id=$1 AND i.deleted_at IS NULL AND s.kind IN ('active','done') AND (i.id=ANY($2) OR i.stage_id=ANY($2) OR EXISTS(SELECT 1 FROM issue_dependencies d WHERE d.issue_id=i.id AND d.dependency_id=ANY($2))) AND EXISTS(SELECT 1 FROM issue_dependencies d JOIN issues other ON other.id=d.dependency_id JOIN stages os ON os.id=other.stage_id WHERE d.issue_id=i.id AND (other.deleted_at IS NOT NULL OR os.kind NOT IN ('done','cancelled'))))")
             .bind(self.workspace_id)
@@ -218,7 +218,7 @@ impl Operation<'_> {
         };
 
         let now = Utc::now();
-        let id = client_id(input.id)?;
+        let id = self.reserve_client_id(input.id).await?;
         let mut i = Issue {
             openproject: None,
             blocked_count: 0,
@@ -282,7 +282,7 @@ impl Operation<'_> {
             .execute(&mut *self.tx)
             .await?;
 
-        self.created(id);
+        self.created("issues", id);
         self.issue_effects(None, &i, persistence::IssueEffects::Create)
             .await?;
 
@@ -592,7 +592,7 @@ impl Operation<'_> {
                                 .fetch_one(&mut *self.tx)
                                 .await?
                                 .try_get::<i64,_>("version")
-                                .map(|v|{self.versions.insert(nid,v);})?;
+                                .map(|v|{self.versions.insert(("issues".to_owned(),nid),v);})?;
                             if nid == before {
                                 i.position = rank - 512;
                             }

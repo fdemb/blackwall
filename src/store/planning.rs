@@ -17,7 +17,7 @@ impl Operation<'_> {
                     self.member(*user).await?;
                 }
 
-                let id = client_id(id)?;
+                let id = self.reserve_client_id(id).await?;
                 sqlx::query("INSERT INTO teams(id,workspace_id,name,archive_after_days) VALUES($1,$2,$3,30)")
                     .bind(id)
                     .bind(self.workspace_id)
@@ -25,7 +25,7 @@ impl Operation<'_> {
                     .execute(&mut *self.tx)
                     .await
                     .map_err(id_conflict)?;
-                self.created(id);
+                self.created("teams", id);
                 for user in members {
                     sqlx::query(
                         "INSERT INTO team_members(workspace_id,team_id,user_id) VALUES($1,$2,$3)",
@@ -56,7 +56,7 @@ impl Operation<'_> {
                         .bind(position as i64)
                         .execute(&mut *self.tx)
                         .await?;
-                    self.created(stage_id);
+                    self.created("stages", stage_id);
                 }
 
                 id
@@ -134,7 +134,7 @@ impl Operation<'_> {
                     ));
                 }
 
-                let id = client_id(id)?;
+                let id = self.reserve_client_id(id).await?;
                 sqlx::query("INSERT INTO stages(id,workspace_id,team_id,name,kind,position) VALUES($1,$2,$3,$4,$5,$6)")
                     .bind(id)
                     .bind(self.workspace_id)
@@ -145,7 +145,7 @@ impl Operation<'_> {
                     .execute(&mut *self.tx)
                     .await
                     .map_err(id_conflict)?;
-                self.created(id);
+                self.created("stages", id);
                 id
             }
 
@@ -310,7 +310,7 @@ impl Operation<'_> {
             Command::CreateLabel { id, name, color } => {
                 validate_label(&name, &color)?;
                 self.capacity("labels", 1000).await?;
-                let id = client_id(id)?;
+                let id = self.reserve_client_id(id).await?;
                 sqlx::query("INSERT INTO labels(id,workspace_id,name,color) VALUES($1,$2,$3,$4)")
                     .bind(id)
                     .bind(self.workspace_id)
@@ -319,7 +319,7 @@ impl Operation<'_> {
                     .execute(&mut *self.tx)
                     .await
                     .map_err(id_conflict)?;
-                self.created(id);
+                self.created("labels", id);
                 id
             }
 
@@ -351,7 +351,7 @@ impl Operation<'_> {
                     self.lock_team(*team, false).await?;
                 }
 
-                let id = client_id(id)?;
+                let id = self.reserve_client_id(id).await?;
                 sqlx::query(
                     "INSERT INTO projects(id,workspace_id,name,description) VALUES($1,$2,$3,$4)",
                 )
@@ -364,7 +364,7 @@ impl Operation<'_> {
                 .map_err(id_conflict)?;
 
                 self.replace_project_teams(id, team_ids).await?;
-                self.created(id);
+                self.created("projects", id);
                 id
             }
 
@@ -423,7 +423,7 @@ impl Operation<'_> {
                     .await?
                     .ok_or(Error::NotFound)?;
 
-                let id = client_id(id)?;
+                let id = self.reserve_client_id(id).await?;
                 sqlx::query("INSERT INTO milestones(id,workspace_id,project_id,name,deadline) VALUES($1,$2,$3,$4,$5)")
                     .bind(id)
                     .bind(self.workspace_id)
@@ -433,7 +433,7 @@ impl Operation<'_> {
                     .execute(&mut *self.tx)
                     .await
                     .map_err(id_conflict)?;
-                self.created(id);
+                self.created("milestones", id);
                 id
             }
 
@@ -464,7 +464,7 @@ impl Operation<'_> {
                 validate_sprint(&name, &goal, starts_at, ends_at)?;
                 self.capacity("sprints", 2000).await?;
                 self.lock_team(team_id, false).await?;
-                let id = client_id(id)?;
+                let id = self.reserve_client_id(id).await?;
                 sqlx::query("INSERT INTO sprints(id,workspace_id,team_id,name,goal,starts_at,ends_at,state) VALUES($1,$2,$3,$4,$5,$6,$7,'planned')")
                     .bind(id)
                     .bind(self.workspace_id)
@@ -476,7 +476,7 @@ impl Operation<'_> {
                     .execute(&mut *self.tx)
                     .await
                     .map_err(id_conflict)?;
-                self.created(id);
+                self.created("sprints", id);
                 id
             }
 

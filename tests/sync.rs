@@ -662,3 +662,337 @@ async fn reused_ids_conflict_and_nil_ids_rejected() {
     store.pool.close().await;
     database.cleanup().await;
 }
+
+#[tokio::test]
+async fn cross_type_ids_conflict() {
+    let database = support::TestDatabase::new().await;
+    let store = Store::connect(&database.url).await.unwrap();
+    let app = router(store.clone());
+    let owner = account(&store, "owner").await;
+    let (ws, team) = setup(&app, &owner).await;
+
+    let now = chrono::Utc::now().to_rfc3339();
+    let later = (chrono::Utc::now() + chrono::Duration::days(7)).to_rfc3339();
+
+    // Sprint id cannot be reused by an issue (the reviewer's setup).
+    let sprint = created(
+        &app,
+        &owner,
+        ws,
+        json!({"type": "create_sprint", "team_id": team, "name": "One", "goal": "Ship", "starts_at": now, "ends_at": later}),
+    )
+    .await;
+    let (status, result) = command(
+        &app,
+        &owner,
+        ws,
+        json!({"type": "create_issue", "input": {"id": sprint, "team_id": team, "title": "Collision"}}),
+        Some(json!({})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{result}");
+    assert_eq!(result["error"], "id already exists");
+
+    // Stage id cannot be reused by another entity.
+    let stage_id = Uuid::new_v4();
+    let (status, result) = command(
+        &app,
+        &owner,
+        ws,
+        json!({"type": "create_stage", "id": stage_id, "team_id": team, "name": "Review", "kind": "active", "position": 99}),
+        Some(json!({})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+    let (status, result) = command(
+        &app,
+        &owner,
+        ws,
+        json!({"type": "create_label", "id": stage_id, "name": "collision", "color": "#000000"}),
+        Some(json!({})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{result}");
+    assert_eq!(result["error"], "id already exists");
+
+    // Comment id cannot be reused by another entity.
+    let issue = created(
+        &app,
+        &owner,
+        ws,
+        json!({"type": "create_issue", "input": {"team_id": team, "title": "Target"}}),
+    )
+    .await;
+    let comment = created(
+        &app,
+        &owner,
+        ws,
+        json!({"type": "add_comment", "issue_id": issue, "body": "Note", "mentions": [], "attachments": []}),
+    )
+    .await;
+    for (kind, cmd) in [
+        (
+            "issue",
+            json!({"type": "create_issue", "input": {"id": comment, "team_id": team, "title": "Collision"}}),
+        ),
+        (
+            "label",
+            json!({"type": "create_label", "id": comment, "name": "collision", "color": "#000000"}),
+        ),
+    ] {
+        let (status, result) = command(&app, &owner, ws, cmd, Some(json!({}))).await;
+        assert_eq!(status, StatusCode::CONFLICT, "{kind}: {result}");
+        assert_eq!(result["error"], "id already exists");
+    }
+
+    // A few more cross-type pairs.
+    let label_id = Uuid::new_v4();
+    let (status, result) = command(
+        &app,
+        &owner,
+        ws,
+        json!({"type": "create_label", "id": label_id, "name": "bug", "color": "#ef4444"}),
+        Some(json!({})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+    let (status, result) = command(
+        &app,
+        &owner,
+        ws,
+        json!({"type": "create_project", "id": label_id, "name": "Collision", "description": "", "team_ids": []}),
+        Some(json!({})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{result}");
+    assert_eq!(result["error"], "id already exists");
+
+    let teams = items(&app, &owner, ws, "teams").await;
+    let team_id = id(&teams[0]["id"]);
+    let (status, result) = command(
+        &app,
+        &owner,
+        ws,
+        json!({"type": "create_label", "id": team_id, "name": "collision", "color": "#000000"}),
+        Some(json!({})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{result}");
+    assert_eq!(result["error"], "id already exists");
+
+    drop(app);
+    store.pool.close().await;
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn concurrent_cross_type_creates_only_one_wins() {
+    let database = support::TestDatabase::new().await;
+    let store = Store::connect(&database.url).await.unwrap();
+    let app = router(store.clone());
+    let owner = account(&store, "owner").await;
+    let ws = workspace(&app, &owner, "Concurrent").await;
+
+    // Separate tasks on separate pool connections race on the same id.
+    let shared = Uuid::new_v4();
+    let label = command(
+        &app,
+        &owner,
+        ws,
+        json!({"type": "create_label", "id": shared, "name": "race", "color": "#ef4444"}),
+        Some(json!({})),
+    );
+    let project = command(
+        &app,
+        &owner,
+        ws,
+        json!({"type": "create_project", "id": shared, "name": "Race", "description": "", "team_ids": []}),
+        Some(json!({})),
+    );
+    let (a, b) = tokio::join!(label, project);
+
+    let ok = [a.0, b.0].iter().filter(|s| **s == StatusCode::OK).count();
+    let conflicts = [&a.1, &b.1]
+        .iter()
+        .filter(|r| r["error"] == "id already exists")
+        .count();
+    assert_eq!(ok, 1, "label={} project={}", a.1, b.1);
+    assert_eq!(conflicts, 1, "label={} project={}", a.1, b.1);
+
+    drop(app);
+    store.pool.close().await;
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn sprint_completion_bumps_colliding_issue_version() {
+    use sqlx::Row;
+
+    let database = support::TestDatabase::new().await;
+    let store = Store::connect(&database.url).await.unwrap();
+    let app = router(store.clone());
+    let owner = account(&store, "owner").await;
+    let (ws, team) = setup(&app, &owner).await;
+
+    let now = chrono::Utc::now().to_rfc3339();
+    let later = (chrono::Utc::now() + chrono::Duration::days(7)).to_rfc3339();
+    let sprint = created(
+        &app,
+        &owner,
+        ws,
+        json!({"type": "create_sprint", "team_id": team, "name": "One", "goal": "Ship", "starts_at": now, "ends_at": later}),
+    )
+    .await;
+    let issue = created(
+        &app,
+        &owner,
+        ws,
+        json!({"type": "create_issue", "input": {"team_id": team, "title": "Work", "sprint_id": sprint}}),
+    )
+    .await;
+
+    // The API now refuses cross-type reuse, so collide the rows with SQL.
+    sqlx::query("DELETE FROM issue_followers WHERE workspace_id=$1 AND issue_id=$2")
+        .bind(ws)
+        .bind(issue)
+        .execute(&store.pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE issues SET id=$1 WHERE workspace_id=$2 AND id=$3")
+        .bind(sprint)
+        .bind(ws)
+        .bind(issue)
+        .execute(&store.pool)
+        .await
+        .unwrap();
+
+    // Complete without preconditions, as in the reviewer's scenario.
+    let (status, result) = command(
+        &app,
+        &owner,
+        ws,
+        json!({"type": "complete_sprint", "id": sprint}),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+    assert_eq!(result["versions"][sprint.to_string()], 2);
+
+    let sprint_version: i64 = sqlx::query_scalar("SELECT version FROM sprints WHERE id=$1")
+        .bind(sprint)
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+    let issue_version: i64 = sqlx::query_scalar("SELECT version FROM issues WHERE id=$1")
+        .bind(sprint)
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+    assert_eq!(sprint_version, 2);
+    assert_eq!(issue_version, 2);
+
+    let sprint_cleared: Option<Uuid> = sqlx::query("SELECT sprint_id FROM issues WHERE id=$1")
+        .bind(sprint)
+        .fetch_one(&store.pool)
+        .await
+        .unwrap()
+        .try_get("sprint_id")
+        .unwrap();
+    assert_eq!(sprint_cleared, None);
+
+    // The obsolete version 1 must no longer succeed.
+    let (status, result) = command(
+        &app,
+        &owner,
+        ws,
+        json!({"type": "update_issue", "id": sprint, "patch": {"title": "Stale"}}),
+        Some(json!({sprint.to_string(): 1})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{result}");
+
+    drop(app);
+    store.pool.close().await;
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn in_memory_model_rejects_cross_collection_ids() {
+    use blackwall::domain::{Command, IssueInput, Priority, Workspace};
+    use blackwall::error::Error;
+
+    let owner = Uuid::new_v4();
+    let mut w = Workspace::new("Memory".into(), owner).unwrap();
+    let now = chrono::Utc::now();
+    let team = w
+        .apply(
+            owner,
+            Command::CreateTeam {
+                id: None,
+                name: "Team".into(),
+                members: vec![owner],
+            },
+            now,
+        )
+        .unwrap()
+        .id
+        .unwrap();
+
+    let sprint = w
+        .apply(
+            owner,
+            Command::CreateSprint {
+                id: None,
+                team_id: team,
+                name: "One".into(),
+                goal: "Ship".into(),
+                starts_at: now,
+                ends_at: now + chrono::Duration::days(7),
+            },
+            now,
+        )
+        .unwrap()
+        .id
+        .unwrap();
+
+    let input = |id: Uuid| IssueInput {
+        id: Some(id),
+        title: "Collision".into(),
+        description: String::new(),
+        team_id: team,
+        stage_id: None,
+        assignee: None,
+        priority: Priority::Normal,
+        labels: vec![],
+        estimate: None,
+        deadline: None,
+        project_id: None,
+        milestone_id: None,
+        sprint_id: None,
+        parent_id: None,
+        dependencies: vec![],
+    };
+
+    assert!(matches!(
+        w.apply(
+            owner,
+            Command::CreateIssue {
+                input: input(sprint)
+            },
+            now
+        ),
+        Err(Error::Conflict(_))
+    ));
+    assert!(matches!(
+        w.apply(
+            owner,
+            Command::CreateLabel {
+                id: Some(sprint),
+                name: "bug".into(),
+                color: "#ef4444".into(),
+            },
+            now,
+        ),
+        Err(Error::Conflict(_))
+    ));
+}

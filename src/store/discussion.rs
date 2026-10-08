@@ -78,7 +78,7 @@ impl Operation<'_> {
                 }
 
                 self.capacity("comments", 20_000).await?;
-                let id = client_id(id)?;
+                let id = self.reserve_client_id(id).await?;
 
                 sqlx::query(
                     "INSERT INTO comments(id,workspace_id,issue_id,author,body,\
@@ -157,7 +157,7 @@ impl Operation<'_> {
                     }
                 }
 
-                self.created(id);
+                self.created("comments", id);
 
                 Some(id)
             }
@@ -229,7 +229,7 @@ impl Operation<'_> {
                 self.discussion_issue(issue_id).await?;
                 validate_time(minutes, &note)?;
                 self.capacity("time_entries", 20_000).await?;
-                let id = client_id(id)?;
+                let id = self.reserve_client_id(id).await?;
 
                 sqlx::query(
                     "INSERT INTO time_entries(id,workspace_id,issue_id,user_id,minutes,\
@@ -245,7 +245,7 @@ impl Operation<'_> {
                 .execute(&mut *self.tx)
                 .await
                 .map_err(id_conflict)?;
-                self.created(id);
+                self.created("time_entries", id);
 
                 Some(id)
             }
@@ -301,7 +301,7 @@ impl Operation<'_> {
             } => {
                 crate::domain::text(&name, 200)?;
                 self.capacity("saved_views", 5_000).await?;
-                let id = client_id(id)?;
+                let id = self.reserve_client_id(id).await?;
 
                 sqlx::query(
                     "INSERT INTO saved_views(id,workspace_id,owner,name,shared,filter) \
@@ -316,7 +316,7 @@ impl Operation<'_> {
                 .execute(&mut *self.tx)
                 .await
                 .map_err(id_conflict)?;
-                self.created(id);
+                self.created("saved_views", id);
 
                 Some(id)
             }
@@ -433,7 +433,7 @@ impl Operation<'_> {
                 .await?;
                 self.invitation_email(id, email, token, hash).await?;
 
-                self.created(id);
+                self.created("invitations", id);
 
                 Some(id)
             }
@@ -605,8 +605,9 @@ impl Operation<'_> {
                 .fetch_all(&mut *self.tx)
                 .await?;
                 for row in changed {
-                    self.versions
-                        .insert(row.try_get("id")?, row.try_get("version")?);
+                    let id: Uuid = row.try_get("id")?;
+                    let version: i64 = row.try_get("version")?;
+                    self.versions.insert(("issues".to_owned(), id), version);
                 }
 
                 sqlx::query(
@@ -629,8 +630,9 @@ impl Operation<'_> {
                 .fetch_all(&mut *self.tx)
                 .await?;
                 for row in changed {
-                    self.versions
-                        .insert(row.try_get("id")?, row.try_get("version")?);
+                    let id: Uuid = row.try_get("id")?;
+                    let version: i64 = row.try_get("version")?;
+                    self.versions.insert(("teams".to_owned(), id), version);
                 }
 
                 sqlx::query("DELETE FROM workspace_members WHERE workspace_id=$1 AND user_id=$2")
@@ -715,7 +717,7 @@ impl Operation<'_> {
                 if exists {
                     self.touch("alert_preferences", self.actor).await?;
                 } else {
-                    self.created(self.actor);
+                    self.created("alert_preferences", self.actor);
                 }
 
                 sqlx::query(
@@ -749,7 +751,7 @@ impl Operation<'_> {
                 validate_url(&webhook_url)?;
                 crate::domain::text(&secret, 4096)?;
                 self.capacity("integrations", 100).await?;
-                let id = client_id(id)?;
+                let id = self.reserve_client_id(id).await?;
 
                 sqlx::query(
                     "INSERT INTO integrations(id,workspace_id,name,webhook_url,secret) \
@@ -763,7 +765,7 @@ impl Operation<'_> {
                 .execute(&mut *self.tx)
                 .await
                 .map_err(id_conflict)?;
-                self.created(id);
+                self.created("integrations", id);
 
                 Some(id)
             }
