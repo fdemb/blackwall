@@ -439,27 +439,45 @@ async fn push_rejected_mutation_advances_id_and_rolls_back() {
     let store = Store::connect(&database.url).await.unwrap();
     let app = router(store.clone());
     let owner = account(&store, "owner").await;
+    let member = account(&store, "member").await;
     let (ws, team) = setup(&app, &owner).await;
+    invite_member(&app, &store, &owner, ws, &member).await;
     let client = Uuid::new_v4();
-    let kept = created(
-        &app,
-        &owner,
-        ws,
-        json!({"type": "create_issue", "input": {"team_id": team, "title": "Kept"}}),
-    )
-    .await;
-    let missing = Uuid::new_v4();
+    // The valid issue sorts first in request order, so its writes must roll
+    // back when the second issue fails validation. Assignee and deadline
+    // force notification and reminder-job writes, proving side effects roll
+    // back too.
+    let kept = Uuid::new_v4();
+    let missing_team = Uuid::new_v4();
 
-    let (status, row) = call(
-        &app,
-        "GET",
-        &format!("/api/workspaces/{ws}/issues/{kept}"),
-        Some(&owner.token),
-        None,
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "{row}");
-    assert_eq!(row["version"], 1);
+    let issues_before: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM issues WHERE workspace_id = $1")
+            .bind(ws)
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+    let activity_before: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM activity WHERE workspace_id = $1")
+            .bind(ws)
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+    let notifications_before: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM notifications WHERE workspace_id = $1")
+            .bind(ws)
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+    let jobs_before: i64 = sqlx::query_scalar("SELECT count(*) FROM jobs")
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+    let changes_before: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM changes WHERE workspace_id = $1")
+            .bind(ws)
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
 
     let (status, result) = push(
         &app,
@@ -467,21 +485,34 @@ async fn push_rejected_mutation_advances_id_and_rolls_back() {
         ws,
         client,
         vec![mutation(
-            4,
-            "bulk_issues",
-            json!({"ids": [kept, missing], "action": {"update": {"priority": "high"}}}),
+            1,
+            "import_issues",
+            json!({"issues": [
+                {"id": kept, "team_id": team, "title": "Kept",
+                 "assignee": member.profile.id, "deadline": "2026-11-08T12:00:00Z"},
+                {"id": Uuid::new_v4(), "team_id": missing_team, "title": "Missing team"},
+            ]}),
         )],
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{result}");
-    assert_eq!(result["last_mutation_id"], 4);
-    assert_eq!(result["results"][0]["id"], 4);
+    assert_eq!(result["last_mutation_id"], 1);
+    assert_eq!(result["results"][0]["id"], 1);
     assert_eq!(result["results"][0]["status"], "rejected");
     assert_eq!(result["results"][0]["error"]["status"], 404);
-    assert_eq!(last_mutation_id(&store, client).await, Some(4));
+    assert_eq!(last_mutation_id(&store, client).await, Some(1));
 
-    // The partial write to the existing issue rolled back with the rejection.
-    let (status, row) = call(
+    // Nothing from the first issue survived the rejection.
+    let issue_left: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM issues WHERE workspace_id = $1 AND id = $2)",
+    )
+    .bind(ws)
+    .bind(kept)
+    .fetch_one(&store.pool)
+    .await
+    .unwrap();
+    assert!(!issue_left);
+    let (status, _) = call(
         &app,
         "GET",
         &format!("/api/workspaces/{ws}/issues/{kept}"),
@@ -489,10 +520,43 @@ async fn push_rejected_mutation_advances_id_and_rolls_back() {
         None,
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "{row}");
-    assert_eq!(row["version"], 1);
-    assert_eq!(row["title"], "Kept");
-    assert_eq!(row["priority"], "none");
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    let activity_after: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM activity WHERE workspace_id = $1")
+            .bind(ws)
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+    assert_eq!(activity_after, activity_before);
+    let notifications_after: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM notifications WHERE workspace_id = $1")
+            .bind(ws)
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+    assert_eq!(notifications_after, notifications_before);
+    let jobs_after: i64 = sqlx::query_scalar("SELECT count(*) FROM jobs")
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+    assert_eq!(jobs_after, jobs_before);
+    let issues_after: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM issues WHERE workspace_id = $1")
+            .bind(ws)
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+    assert_eq!(issues_after, issues_before);
+    // The rejected mutation's transaction committed only the high-water
+    // mark; sync_clients has no change trigger, so no change row remains.
+    let changes_after: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM changes WHERE workspace_id = $1")
+            .bind(ws)
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+    assert_eq!(changes_after, changes_before);
 
     drop(app);
     store.pool.close().await;
@@ -721,6 +785,62 @@ async fn push_membership_and_client_ownership() {
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{result}");
+
+    drop(app);
+    store.pool.close().await;
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn push_preflight_failure_returns_503_with_push_shape() {
+    let database = support::TestDatabase::new().await;
+    let store = Store::connect(&database.url).await.unwrap();
+    let app = router(store.clone());
+    let owner = account(&store, "owner").await;
+    let (ws, _) = setup(&app, &owner).await;
+    let client = Uuid::new_v4();
+
+    // Break every sync_clients read without touching production code: the
+    // preflight ownership check fails before the first mutation runs.
+    sqlx::query("ALTER TABLE sync_clients RENAME TO sync_clients_down")
+        .execute(&store.pool)
+        .await
+        .unwrap();
+
+    let (status, result) = push(
+        &app,
+        &owner.token,
+        ws,
+        client,
+        vec![mutation(
+            1,
+            "create_label",
+            json!({"name": "x", "color": "#000000"}),
+        )],
+    )
+    .await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{result}");
+    assert_eq!(result, json!({"last_mutation_id": 0, "results": []}));
+
+    sqlx::query("ALTER TABLE sync_clients_down RENAME TO sync_clients")
+        .execute(&store.pool)
+        .await
+        .unwrap();
+
+    let (status, result) = push(
+        &app,
+        &owner.token,
+        ws,
+        client,
+        vec![mutation(
+            1,
+            "create_label",
+            json!({"name": "x", "color": "#000000"}),
+        )],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+    assert_eq!(result["last_mutation_id"], 1);
 
     drop(app);
     store.pool.close().await;

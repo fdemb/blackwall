@@ -12,7 +12,7 @@ A separate graph advisory lock is shared for ordinary issue writes and exclusive
 
 The API returns workspace summaries and paginated feature collections. Issue lists retain the full record shape by default for offline synchronization. An opt-in `projection=summary` omits descriptions and detail-only relations. Ungrouped `sort=updated` lists support filter-scoped `after` cursors alongside existing offset pagination. Lists select page IDs before rendering related data. Full-text, substring, and issue-number search use separate indexable branches; short substring queries retain their full search reach. It does not return or persist whole-workspace snapshots. Issues, planning, discussion, memberships, and personal state occupy relational tables. Composite foreign keys reject references across workspaces. Attachment bytes use `bytea`. JSONB holds flexible filters, profiles, job payloads, and historical fields.
 
-The frontend keeps a local replica of each open workspace and syncs it with the server. [Sync engine](sync.md) specifies the engine and its protocol. The engine is being reimplemented from scratch.
+The frontend keeps a local replica of each open workspace and syncs it with the server. [Sync engine](sync.md) specifies the engine and its protocol. The engine is being reimplemented from scratch. Push applies one client's mutations in order, each in its own transaction through the same store code as the command endpoint; the `sync_clients` row tracks the `last_mutation_id` high-water mark so retries dedupe and rejections still advance. The replica is named by the session's non-secret `session_id`, which never authenticates.
 
 ## Modules
 

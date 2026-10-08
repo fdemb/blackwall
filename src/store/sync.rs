@@ -62,16 +62,49 @@ pub struct PushOutcome {
 enum PushFailure {
     /// Membership lost mid-batch; stop and answer 403.
     Forbidden,
-    /// Database or internal failure; stop and answer 503.
-    Transient,
+    /// Database or internal failure; stop and answer 503. Carries the
+    /// original error for the one log line the batch emits.
+    Transient {
+        error: Error,
+        phase: &'static str,
+        mutation_id: Option<i64>,
+    },
     /// The client row belongs to another user or workspace; answer 400.
     ClientTaken,
 }
 
-async fn abort(op: Operation<'_>) -> PushFailure {
+async fn abort(
+    op: Operation<'_>,
+    error: Error,
+    phase: &'static str,
+    mutation_id: i64,
+) -> PushFailure {
     let tx = op.tx;
     let _ = tx.rollback().await;
-    PushFailure::Transient
+    PushFailure::Transient {
+        error,
+        phase,
+        mutation_id: Some(mutation_id),
+    }
+}
+
+/// One log line per truncated batch. Ids only: never mutation args,
+/// tokens or session ids.
+fn log_transient(
+    workspace_id: Uuid,
+    client_id: Uuid,
+    mutation_id: Option<i64>,
+    phase: &str,
+    error: &Error,
+) {
+    tracing::error!(
+        workspace_id = %workspace_id,
+        client_id = %client_id,
+        mutation_id = ?mutation_id,
+        phase = phase,
+        error = %error,
+        "sync push transient failure"
+    );
 }
 
 fn build_command(name: &str, args: &Value) -> Result<Command> {
@@ -145,19 +178,51 @@ impl Store {
             previous = mutation.id;
         }
 
+        // Preflight failures carry no transaction, so they truncate the
+        // batch with the high-water mark as known (0 here: nothing has
+        // been read yet). Membership and ownership rejections stay 400/403.
+        let preflight = |error: Error| {
+            log_transient(workspace_id, client_id, None, "preflight", &error);
+            PushOutcome {
+                response: PushResponse {
+                    last_mutation_id: 0,
+                    results: Vec::new(),
+                },
+                truncated: true,
+            }
+        };
+
         {
-            let mut conn = self.pool.acquire().await?;
-            super::reads::authorize(&mut conn, workspace_id, actor).await?;
+            let mut conn = match self.pool.acquire().await {
+                Ok(conn) => conn,
+                Err(error) => return Ok(preflight(error.into())),
+            };
+            if let Err(error) = super::reads::authorize(&mut conn, workspace_id, actor).await {
+                if matches!(error, Error::Forbidden) {
+                    return Err(error);
+                }
+                return Ok(preflight(error));
+            }
         }
 
         if let Some(row) =
-            sqlx::query("SELECT workspace_id, user_id FROM sync_clients WHERE client_id = $1")
+            match sqlx::query("SELECT workspace_id, user_id FROM sync_clients WHERE client_id = $1")
                 .bind(client_id)
                 .fetch_optional(&self.pool)
-                .await?
+                .await
+            {
+                Ok(row) => row,
+                Err(error) => return Ok(preflight(error.into())),
+            }
         {
-            let owner_ws: Uuid = row.try_get("workspace_id")?;
-            let owner: Uuid = row.try_get("user_id")?;
+            let owner_ws: Uuid = match row.try_get("workspace_id") {
+                Ok(value) => value,
+                Err(error) => return Ok(preflight(error.into())),
+            };
+            let owner: Uuid = match row.try_get("user_id") {
+                Ok(value) => value,
+                Err(error) => return Ok(preflight(error.into())),
+            };
             if owner_ws != workspace_id || owner != actor {
                 return Err(Error::BadRequest(
                     "client_id belongs to another user or workspace".into(),
@@ -165,12 +230,16 @@ impl Store {
             }
         }
 
-        let last: i64 =
-            sqlx::query_scalar("SELECT last_mutation_id FROM sync_clients WHERE client_id = $1")
-                .bind(client_id)
-                .fetch_optional(&self.pool)
-                .await?
-                .unwrap_or(0);
+        let last: i64 = match sqlx::query_scalar(
+            "SELECT last_mutation_id FROM sync_clients WHERE client_id = $1",
+        )
+        .bind(client_id)
+        .fetch_optional(&self.pool)
+        .await
+        {
+            Ok(row) => row.unwrap_or(0),
+            Err(error) => return Ok(preflight(error.into())),
+        };
 
         let mut outcome = PushOutcome {
             response: PushResponse {
@@ -195,7 +264,12 @@ impl Store {
                         "client_id belongs to another user or workspace".into(),
                     ));
                 }
-                Err(PushFailure::Transient) => {
+                Err(PushFailure::Transient {
+                    error,
+                    phase,
+                    mutation_id,
+                }) => {
+                    log_transient(workspace_id, client_id, mutation_id, phase, &error);
                     outcome.truncated = true;
                     break;
                 }
@@ -225,10 +299,16 @@ impl Store {
         {
             Ok(op) => op,
             Err(Error::Forbidden) => return Err(PushFailure::Forbidden),
-            Err(_) => return Err(PushFailure::Transient),
+            Err(error) => {
+                return Err(PushFailure::Transient {
+                    error,
+                    phase: "begin",
+                    mutation_id: Some(mutation.id),
+                });
+            }
         };
 
-        if sqlx::query(
+        if let Err(error) = sqlx::query(
             "INSERT INTO sync_clients (client_id, workspace_id, user_id) VALUES ($1, $2, $3) \
              ON CONFLICT (client_id) DO NOTHING",
         )
@@ -237,9 +317,8 @@ impl Store {
         .bind(actor)
         .execute(&mut *op.tx)
         .await
-        .is_err()
         {
-            return Err(abort(op).await);
+            return Err(abort(op, error.into(), "client row", mutation.id).await);
         }
 
         let row = match sqlx::query(
@@ -251,16 +330,29 @@ impl Store {
         .await
         {
             Ok(row) => row,
-            Err(_) => return Err(abort(op).await),
+            Err(error) => {
+                return Err(abort(op, error.into(), "client row", mutation.id).await);
+            }
         };
 
-        let owner_ws: Uuid = row
-            .try_get("workspace_id")
-            .map_err(|_| PushFailure::Transient)?;
-        let owner: Uuid = row.try_get("user_id").map_err(|_| PushFailure::Transient)?;
-        let stored: i64 = row
-            .try_get("last_mutation_id")
-            .map_err(|_| PushFailure::Transient)?;
+        let owner_ws: Uuid = match row.try_get("workspace_id") {
+            Ok(value) => value,
+            Err(error) => {
+                return Err(abort(op, error.into(), "client row", mutation.id).await);
+            }
+        };
+        let owner: Uuid = match row.try_get("user_id") {
+            Ok(value) => value,
+            Err(error) => {
+                return Err(abort(op, error.into(), "client row", mutation.id).await);
+            }
+        };
+        let stored: i64 = match row.try_get("last_mutation_id") {
+            Ok(value) => value,
+            Err(error) => {
+                return Err(abort(op, error.into(), "client row", mutation.id).await);
+            }
+        };
         if owner_ws != workspace_id || owner != actor {
             let tx = op.tx;
             let _ = tx.rollback().await;
@@ -278,16 +370,19 @@ impl Store {
                         error: None,
                     },
                 )),
-                Err(_) => Err(PushFailure::Transient),
+                Err(error) => Err(PushFailure::Transient {
+                    error: error.into(),
+                    phase: "client row",
+                    mutation_id: Some(mutation.id),
+                }),
             };
         }
 
-        if sqlx::query("SAVEPOINT sync_mutation")
+        if let Err(error) = sqlx::query("SAVEPOINT sync_mutation")
             .execute(&mut *op.tx)
             .await
-            .is_err()
         {
-            return Err(abort(op).await);
+            return Err(abort(op, error.into(), "savepoint", mutation.id).await);
         }
 
         let run: Result<()> = async {
@@ -325,7 +420,7 @@ impl Store {
                 status: MutationStatus::Rejected,
                 error: Some(rejection(&error)),
             },
-            Err(_) => return Err(abort(op).await),
+            Err(error) => return Err(abort(op, error, "command", mutation.id).await),
         };
 
         match sqlx::query(
@@ -339,9 +434,13 @@ impl Store {
         {
             Ok(_) => match op.tx.commit().await {
                 Ok(()) => Ok((mutation.id, result)),
-                Err(_) => Err(PushFailure::Transient),
+                Err(error) => Err(PushFailure::Transient {
+                    error: error.into(),
+                    phase: "commit",
+                    mutation_id: Some(mutation.id),
+                }),
             },
-            Err(_) => Err(abort(op).await),
+            Err(error) => Err(abort(op, error.into(), "advance", mutation.id).await),
         }
     }
 

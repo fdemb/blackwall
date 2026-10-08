@@ -161,6 +161,8 @@ The server handles the mutations in order. For each one, it runs one transaction
 4. On a business error, rolls back the command's writes to a savepoint and records `rejected` with the `{status, message}` the REST endpoint returns for that error.
 5. Sets `last_mutation_id = id` and commits, so rejected mutations still advance the id.
 
+The server treats `last_mutation_id` as a high-water mark, so a client must never let a later mutation reach the server before an earlier one. Only the leader pushes. It sends the outbox from its oldest entry, in id order, one request at a time, and retries a failed request with the same mutations before sending anything newer. Online-only commands allocate their id only when the outbox is empty, so they never overtake a pending mutation.
+
 - Business errors are `BadRequest`, `NotFound`, `Conflict` and `Forbidden` from the command, malformed `name`/`args`, and database errors with SQLSTATE class `22` (data exception) or `23` (integrity constraint, including the ownership conflict the REST mapper turns into 409).
 - A transient failure, such as a lost database connection, stops the batch and returns 503 with the results committed so far. Losing membership mid-batch stops it with 403 instead. The client retries the same batch with backoff. Because the server dedupes by id, retries are safe.
 
@@ -259,7 +261,7 @@ Opening a replica loads every store into memory, replays the outbox, and renders
 
 Some commands aren't queued offline: `invite`, `resend_invitation`, `create_integration` because of its secret, `set_role`, `remove_member`, `import_issues`, file uploads, import, export, workspace creation, and OpenProject settings.
 
-- They wait until the outbox is empty, then go to the server directly. Commands go through push with a freshly allocated id and are never written to the outbox store. Uploads and imports use their REST endpoints.
+- They wait until the outbox is empty, then go to the server through the leader. Commands go through push with a freshly allocated id and are never written to the outbox store. Uploads and imports use their REST endpoints.
 - Their effects arrive through the next pull.
 - The UI disables them while offline.
 - An upload targets an issue or comment that must already be confirmed. It waits until no outbox mutation creates its target.
