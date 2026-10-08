@@ -81,52 +81,86 @@ pub(super) fn id_conflict(error: sqlx::Error) -> Error {
 }
 
 impl Operation<'_> {
-    /// Reserve a client-chosen id across every entity table. Server-generated
-    /// ids skip the check. The advisory lock serializes concurrent creates
-    /// using the same id so only one wins.
-    pub(super) async fn reserve_client_id(&mut self, provided: Option<Uuid>) -> Result<Uuid> {
-        let id = client_id(provided)?;
-        if provided.is_none() {
-            return Ok(id);
+    /// Reserve client-chosen ids across every entity table. Server-generated
+    /// ids skip the check. Locks are taken in UUID order so concurrent
+    /// multi-id operations cannot deadlock acquiring the same locks; callers
+    /// that use more than one id must pass them all in one call before
+    /// inserting anything.
+    pub(super) async fn reserve_client_ids(
+        &mut self,
+        provided: &[Option<Uuid>],
+    ) -> Result<Vec<Uuid>> {
+        let mut resolved = Vec::with_capacity(provided.len());
+        for id in provided {
+            resolved.push(client_id(*id)?);
         }
 
-        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 53177))")
-            .bind(id.to_string())
-            .execute(&mut *self.tx)
+        let mut ordered: Vec<Uuid> = provided
+            .iter()
+            .zip(&resolved)
+            .filter(|(p, _)| p.is_some())
+            .map(|(_, r)| *r)
+            .collect();
+        ordered.sort_unstable();
+        ordered.dedup();
+
+        for id in &ordered {
+            sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 53177))")
+                .bind(id.to_string())
+                .execute(&mut *self.tx)
+                .await?;
+        }
+
+        if !ordered.is_empty() {
+            let taken: bool = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM issues WHERE id = ANY($1)) \
+                 OR EXISTS(SELECT 1 FROM teams WHERE id = ANY($1)) \
+                 OR EXISTS(SELECT 1 FROM stages WHERE id = ANY($1)) \
+                 OR EXISTS(SELECT 1 FROM labels WHERE id = ANY($1)) \
+                 OR EXISTS(SELECT 1 FROM projects WHERE id = ANY($1)) \
+                 OR EXISTS(SELECT 1 FROM milestones WHERE id = ANY($1)) \
+                 OR EXISTS(SELECT 1 FROM sprints WHERE id = ANY($1)) \
+                 OR EXISTS(SELECT 1 FROM comments WHERE id = ANY($1)) \
+                 OR EXISTS(SELECT 1 FROM time_entries WHERE id = ANY($1)) \
+                 OR EXISTS(SELECT 1 FROM saved_views WHERE id = ANY($1)) \
+                 OR EXISTS(SELECT 1 FROM invitations WHERE id = ANY($1)) \
+                 OR EXISTS(SELECT 1 FROM integrations WHERE id = ANY($1)) \
+                 OR EXISTS(SELECT 1 FROM notifications WHERE id = ANY($1)) \
+                 OR EXISTS(SELECT 1 FROM attachments WHERE id = ANY($1)) \
+                 OR EXISTS(SELECT 1 FROM users WHERE id = ANY($1)) \
+                 OR EXISTS(SELECT 1 FROM workspaces WHERE id = ANY($1)) \
+                 OR EXISTS(SELECT 1 FROM activity WHERE id = ANY($1)) \
+                 OR EXISTS(SELECT 1 FROM source_links WHERE id = ANY($1)) \
+                 OR EXISTS(SELECT 1 FROM openproject_connections WHERE id = ANY($1))",
+            )
+            .bind(&ordered)
+            .fetch_one(&mut *self.tx)
             .await?;
 
-        let taken: bool = sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM issues WHERE id=$1) \
-             OR EXISTS(SELECT 1 FROM teams WHERE id=$1) \
-             OR EXISTS(SELECT 1 FROM stages WHERE id=$1) \
-             OR EXISTS(SELECT 1 FROM labels WHERE id=$1) \
-             OR EXISTS(SELECT 1 FROM projects WHERE id=$1) \
-             OR EXISTS(SELECT 1 FROM milestones WHERE id=$1) \
-             OR EXISTS(SELECT 1 FROM sprints WHERE id=$1) \
-             OR EXISTS(SELECT 1 FROM comments WHERE id=$1) \
-             OR EXISTS(SELECT 1 FROM time_entries WHERE id=$1) \
-             OR EXISTS(SELECT 1 FROM saved_views WHERE id=$1) \
-             OR EXISTS(SELECT 1 FROM invitations WHERE id=$1) \
-             OR EXISTS(SELECT 1 FROM integrations WHERE id=$1) \
-             OR EXISTS(SELECT 1 FROM notifications WHERE id=$1) \
-             OR EXISTS(SELECT 1 FROM attachments WHERE id=$1) \
-             OR EXISTS(SELECT 1 FROM users WHERE id=$1)",
-        )
-        .bind(id)
-        .fetch_one(&mut *self.tx)
-        .await?;
-
-        if taken {
-            return Err(Error::Conflict("id already exists".into()));
+            if taken {
+                return Err(Error::Conflict("id already exists".into()));
+            }
         }
 
-        Ok(id)
+        Ok(resolved)
+    }
+
+    pub(super) async fn reserve_client_id(&mut self, provided: Option<Uuid>) -> Result<Uuid> {
+        let mut resolved = self.reserve_client_ids(&[provided]).await?;
+        Ok(resolved.pop().expect("batch of one resolves to one id"))
     }
 
     pub(super) fn response_versions(&self) -> BTreeMap<Uuid, i64> {
-        // Ids are unique across entities, so collapsing loses nothing.
+        // Hand-written rows can reuse one id across tables. A UUID recorded
+        // under more than one table is ambiguous, so it is left out instead of
+        // reporting one table's version as another's.
+        let mut tables_per_id: BTreeMap<Uuid, usize> = BTreeMap::new();
+        for (_, id) in self.versions.keys() {
+            *tables_per_id.entry(*id).or_default() += 1;
+        }
         self.versions
             .iter()
+            .filter(|((_, id), _)| tables_per_id[id] == 1)
             .map(|((_, id), version)| (*id, *version))
             .collect()
     }

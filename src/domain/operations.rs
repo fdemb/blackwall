@@ -3,8 +3,11 @@ use std::collections::{BTreeMap, BTreeSet};
 
 impl Workspace {
     /// A client-chosen id is taken when any collection already uses it.
+    /// Source links carry no id in the model and OpenProject connections are
+    /// not modeled; both are still covered by the SQL check.
     fn id_taken(&self, id: Uuid) -> bool {
-        self.members.iter().any(|m| m.user_id == id)
+        self.id == id
+            || self.members.iter().any(|m| m.user_id == id)
             || self.teams.iter().any(|t| t.id == id)
             || self
                 .teams
@@ -28,6 +31,7 @@ impl Workspace {
             || self.invitations.iter().any(|i| i.id == id)
             || self.integrations.iter().any(|i| i.id == id)
             || self.notifications.iter().any(|n| n.id == id)
+            || self.activity.iter().any(|a| a.id == id)
     }
 
     /// Resolve a client-chosen id, rejecting one used by any collection.

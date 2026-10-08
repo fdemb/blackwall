@@ -876,7 +876,9 @@ async fn sprint_completion_bumps_colliding_issue_version() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{result}");
-    assert_eq!(result["versions"][sprint.to_string()], 2);
+    // The id is recorded under both sprints and issues, so it is ambiguous
+    // and left out of the response instead of reporting one version.
+    assert!(result["versions"].get(sprint.to_string()).is_none());
 
     let sprint_version: i64 = sqlx::query_scalar("SELECT version FROM sprints WHERE id=$1")
         .bind(sprint)
@@ -995,4 +997,319 @@ async fn in_memory_model_rejects_cross_collection_ids() {
         ),
         Err(Error::Conflict(_))
     ));
+
+    let activity_id = w.activity[0].id;
+    assert!(matches!(
+        w.apply(
+            owner,
+            Command::CreateLabel {
+                id: Some(activity_id),
+                name: "bug".into(),
+                color: "#ef4444".into(),
+            },
+            now,
+        ),
+        Err(Error::Conflict(_))
+    ));
+    let workspace_id = w.id;
+    assert!(matches!(
+        w.apply(
+            owner,
+            Command::CreateLabel {
+                id: Some(workspace_id),
+                name: "bug".into(),
+                color: "#ef4444".into(),
+            },
+            now,
+        ),
+        Err(Error::Conflict(_))
+    ));
+}
+
+#[tokio::test]
+async fn concurrent_imports_in_opposite_order_never_deadlock() {
+    let database = support::TestDatabase::new().await;
+    let store = Store::connect(&database.url).await.unwrap();
+    let app = router(store.clone());
+    let owner = account(&store, "owner").await;
+    let ws_a = workspace(&app, &owner, "Import A").await;
+    let team_a = created(
+        &app,
+        &owner,
+        ws_a,
+        json!({"type": "create_team", "name": "Team", "members": [owner.profile.id]}),
+    )
+    .await;
+    let ws_b = workspace(&app, &owner, "Import B").await;
+    let team_b = created(
+        &app,
+        &owner,
+        ws_b,
+        json!({"type": "create_team", "name": "Team", "members": [owner.profile.id]}),
+    )
+    .await;
+
+    let first = Uuid::new_v4();
+    let second = Uuid::new_v4();
+
+    // Hold both id locks open so both imports queue behind this transaction.
+    // Releasing it lets the imports overlap while each waits for the other's
+    // first lock; sorted reservation still lets one finish with 409 for the
+    // loser instead of deadlocking into a 500.
+    let mut holder = store.pool.begin().await.unwrap();
+    for id in [first, second] {
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 53177))")
+            .bind(id.to_string())
+            .execute(&mut *holder)
+            .await
+            .unwrap();
+    }
+
+    let url_a = format!("/api/workspaces/{ws_a}/import");
+    let url_b = format!("/api/workspaces/{ws_b}/import");
+    let import_a = call(
+        &app,
+        &owner,
+        "POST",
+        &url_a,
+        Some(json!({"issues": [
+            {"id": first, "team_id": team_a, "title": "A first"},
+            {"id": second, "team_id": team_a, "title": "A second"},
+        ]})),
+    );
+    let import_b = call(
+        &app,
+        &owner,
+        "POST",
+        &url_b,
+        Some(json!({"issues": [
+            {"id": second, "team_id": team_b, "title": "B second"},
+            {"id": first, "team_id": team_b, "title": "B first"},
+        ]})),
+    );
+    let release = async {
+        let start = std::time::Instant::now();
+        loop {
+            let blocked: i64 = sqlx::query_scalar(
+                "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted",
+            )
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+            if blocked >= 2 {
+                break;
+            }
+            assert!(
+                start.elapsed() < std::time::Duration::from_secs(20),
+                "imports never queued on the held id locks"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        holder.commit().await.unwrap();
+    };
+
+    let (a, b, ()) = tokio::join!(import_a, import_b, release);
+    for (status, body) in [&a, &b] {
+        assert_ne!(*status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
+    }
+    let mut outcomes = [(&a, ws_a), (&b, ws_b)];
+    outcomes.sort_by_key(|((status, _), _)| *status);
+    assert_eq!(outcomes[0].0.0, StatusCode::OK, "{}", outcomes[0].0.1);
+    assert_eq!(outcomes[1].0.0, StatusCode::CONFLICT, "{}", outcomes[1].0.1);
+    assert_eq!(outcomes[1].0.1["error"], "id already exists");
+
+    // The winner imported both issues in request order; the loser none.
+    assert_eq!(items(&app, &owner, outcomes[0].1, "issues").await.len(), 2);
+
+    drop(app);
+    store.pool.close().await;
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn client_ids_conflict_with_workspace_activity_source_link_and_connection_ids() {
+    let database = support::TestDatabase::new().await;
+    let store = Store::connect(&database.url).await.unwrap();
+    let app = router(store.clone());
+    let owner = account(&store, "owner").await;
+    let (ws, team) = setup(&app, &owner).await;
+
+    // Every command leaves an activity row; its id is reserved.
+    let activity_id: Uuid =
+        sqlx::query_scalar("SELECT id FROM activity WHERE workspace_id = $1 LIMIT 1")
+            .bind(ws)
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+    let (status, result) = command(
+        &app,
+        &owner,
+        ws,
+        json!({"type": "create_label", "id": activity_id, "name": "collision", "color": "#000000"}),
+        Some(json!({})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{result}");
+    assert_eq!(result["error"], "id already exists");
+
+    // The workspace id itself is reserved too.
+    let (status, result) = command(
+        &app,
+        &owner,
+        ws,
+        json!({"type": "create_label", "id": ws, "name": "collision", "color": "#000000"}),
+        Some(json!({})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{result}");
+    assert_eq!(result["error"], "id already exists");
+
+    // Source link ids are server-generated; reusing one still conflicts.
+    let issue = created(
+        &app,
+        &owner,
+        ws,
+        json!({"type": "create_issue", "input": {"team_id": team, "title": "Target"}}),
+    )
+    .await;
+    let (status, result) = command(
+        &app,
+        &owner,
+        ws,
+        json!({"type": "add_source_link", "issue_id": issue, "url": "https://example.invalid/spec", "title": "Spec"}),
+        Some(json!({})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+    let link_id: Uuid =
+        sqlx::query_scalar("SELECT id FROM source_links WHERE workspace_id = $1 LIMIT 1")
+            .bind(ws)
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+    let (status, result) = command(
+        &app,
+        &owner,
+        ws,
+        json!({"type": "create_label", "id": link_id, "name": "collision", "color": "#000000"}),
+        Some(json!({})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{result}");
+    assert_eq!(result["error"], "id already exists");
+
+    // So are OpenProject connection ids.
+    let connection = Uuid::new_v4();
+    sqlx::query("INSERT INTO openproject_connections(id, workspace_id, name, base_url, token) VALUES($1, $2, 'Legacy', 'https://example.invalid', 'secret')")
+        .bind(connection)
+        .bind(ws)
+        .execute(&store.pool)
+        .await
+        .unwrap();
+    let (status, result) = command(
+        &app,
+        &owner,
+        ws,
+        json!({"type": "create_label", "id": connection, "name": "collision", "color": "#000000"}),
+        Some(json!({})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{result}");
+    assert_eq!(result["error"], "id already exists");
+
+    drop(app);
+    store.pool.close().await;
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn colliding_stage_and_issue_omit_ambiguous_version() {
+    let database = support::TestDatabase::new().await;
+    let store = Store::connect(&database.url).await.unwrap();
+    let app = router(store.clone());
+    let owner = account(&store, "owner").await;
+    let (ws, team) = setup(&app, &owner).await;
+
+    // A stage at version 2 and an issue at version 1 sharing one id.
+    let stage = created(
+        &app,
+        &owner,
+        ws,
+        json!({"type": "create_stage", "team_id": team, "name": "Review", "kind": "active", "position": 99}),
+    )
+    .await;
+    let (status, result) = command(
+        &app,
+        &owner,
+        ws,
+        json!({"type": "update_stage", "team_id": team, "id": stage, "name": "Review", "kind": "active", "position": 100}),
+        Some(json!({})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+    assert_eq!(result["versions"][stage.to_string()], 2);
+
+    let replacement = created(
+        &app,
+        &owner,
+        ws,
+        json!({"type": "create_stage", "team_id": team, "name": "Later", "kind": "planned", "position": 101}),
+    )
+    .await;
+    let issue = created(
+        &app,
+        &owner,
+        ws,
+        json!({"type": "create_issue", "input": {"team_id": team, "stage_id": stage, "title": "Work"}}),
+    )
+    .await;
+
+    // The API refuses cross-type reuse, so collide the rows with SQL.
+    sqlx::query("DELETE FROM issue_followers WHERE workspace_id=$1 AND issue_id=$2")
+        .bind(ws)
+        .bind(issue)
+        .execute(&store.pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE issues SET id=$1 WHERE workspace_id=$2 AND id=$3")
+        .bind(stage)
+        .bind(ws)
+        .bind(issue)
+        .execute(&store.pool)
+        .await
+        .unwrap();
+
+    // Deleting the stage touches the stage row and the colliding issue row
+    // under the same id at unequal versions.
+    let (status, result) = command(
+        &app,
+        &owner,
+        ws,
+        json!({"type": "delete_stage", "team_id": team, "id": stage, "replacement": replacement}),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+    assert!(
+        result["versions"].get(stage.to_string()).is_none(),
+        "{result}"
+    );
+
+    // The issue row itself still moved and bumped to version 2.
+    let issue_version: i64 = sqlx::query_scalar("SELECT version FROM issues WHERE id=$1")
+        .bind(stage)
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+    assert_eq!(issue_version, 2);
+    let moved: Uuid = sqlx::query_scalar("SELECT stage_id FROM issues WHERE id=$1")
+        .bind(stage)
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+    assert_eq!(moved, replacement);
+
+    drop(app);
+    store.pool.close().await;
+    database.cleanup().await;
 }

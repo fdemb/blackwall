@@ -677,7 +677,14 @@ impl Operation<'_> {
                 if issues.is_empty() || issues.len() > 5000 {
                     return Err(Error::BadRequest("import 1 to 5000 issues".into()));
                 }
-                for input in issues {
+                // Reserve every supplied id up front in UUID order, before any
+                // insert takes further locks, so concurrent imports cannot
+                // deadlock. Issues still insert in request order so parents
+                // come before children.
+                let supplied: Vec<Option<Uuid>> = issues.iter().map(|input| input.id).collect();
+                let resolved = self.reserve_client_ids(&supplied).await?;
+                for (mut input, id) in issues.into_iter().zip(resolved) {
+                    input.id = Some(id);
                     self.create_issue_sql(input).await?;
                 }
                 None
