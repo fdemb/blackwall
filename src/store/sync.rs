@@ -469,6 +469,29 @@ const PULL_BATCH: i64 = 2000;
 /// Most in-flight txids a request cursor may list. Longer cursors are 400.
 const MAX_XIP: usize = 10_000;
 
+/// Ordered batches from the pull window at or above the request's xmax.
+pub const PULL_BATCH_RANGE_SQL: &str = "SELECT txid, id, entity, entity_id FROM changes \
+     WHERE workspace_id = $1 AND txid >= $2 AND (txid, id) > ($3, $4) \
+       AND (user_id IS NULL OR user_id = $5) \
+     ORDER BY txid, id LIMIT $6";
+
+/// Ordered batches from the request's in-flight transactions, below xmax.
+pub const PULL_BATCH_XIP_SQL: &str = "SELECT txid, id, entity, entity_id FROM changes \
+     WHERE workspace_id = $1 AND txid = ANY($2::bigint[]) AND (txid, id) > ($3, $4) \
+       AND (user_id IS NULL OR user_id = $5) \
+     ORDER BY txid, id LIMIT $6";
+
+/// Ordered, limited probes keep generic plans from scanning historical roles.
+/// The limits sit inside subqueries so EXISTS does not discard their ordering.
+pub const PULL_ROLE_CHANGED_SQL: &str = "SELECT EXISTS(SELECT 1 FROM (SELECT 1 FROM changes \
+     WHERE workspace_id = $1 AND entity = 'roles' AND entity_id = $2 \
+       AND (user_id IS NULL OR user_id = $2) AND txid >= $3 \
+     ORDER BY txid LIMIT 1) markers) \
+     OR EXISTS(SELECT 1 FROM (SELECT 1 FROM changes \
+     WHERE workspace_id = $1 AND entity = 'roles' AND entity_id = $2 \
+       AND (user_id IS NULL OR user_id = $2) AND txid = ANY($4::bigint[]) \
+     ORDER BY txid LIMIT 1) markers)";
+
 /// A PostgreSQL snapshot in its `xmin:xmax:xip` text form. A cursor `C`
 /// promises that every txid below `C.xmax` except those in `C.xip` is
 /// reflected in the client's base.
@@ -661,18 +684,13 @@ impl Store {
         }
 
         // Check the full window, even when a role change sits beyond this page.
-        let role_changed: bool = sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM changes \
-             WHERE workspace_id = $1 AND entity = 'roles' AND entity_id = $2 \
-               AND (user_id IS NULL OR user_id = $2) \
-               AND (txid >= $3 OR txid = ANY($4::bigint[])))",
-        )
-        .bind(workspace_id)
-        .bind(actor)
-        .bind(requested.xmax)
-        .bind(&requested.xip)
-        .fetch_one(&mut *tx)
-        .await?;
+        let role_changed: bool = sqlx::query_scalar(PULL_ROLE_CHANGED_SQL)
+            .bind(workspace_id)
+            .bind(actor)
+            .bind(requested.xmax)
+            .bind(&requested.xip)
+            .fetch_one(&mut *tx)
+            .await?;
         if role_changed {
             tx.commit().await?;
             return Ok(PullResponse {
@@ -684,8 +702,9 @@ impl Store {
             });
         }
 
-        // Separate index ranges keep the request's xip transactions from
-        // forcing a scan of the already reflected interval below xmax.
+        // Every xip txid is below xmax, so scanning xip first preserves
+        // (txid, id) order without merging or sorting the two index ranges.
+        let mut scanning_xip = !requested.xip.is_empty();
         let mut last = (-1i64, -1i64);
         let mut pairs = std::collections::BTreeSet::new();
         let mut group = std::collections::BTreeSet::new();
@@ -695,28 +714,22 @@ impl Store {
         let mut excluded = None;
 
         'scan: loop {
-            let rows: Vec<(i64, i64, String, Uuid)> = sqlx::query_as(
-                "SELECT txid, id, entity, entity_id FROM (\
-                  (SELECT txid, id, entity, entity_id FROM changes \
-                  WHERE workspace_id = $1 AND txid >= $2 AND (txid, id) > ($3, $4) \
-                    AND (user_id IS NULL OR user_id = $5) \
-                  ORDER BY txid, id LIMIT $7) \
-                  UNION ALL \
-                  (SELECT txid, id, entity, entity_id FROM changes \
-                  WHERE workspace_id = $1 AND txid = ANY($6::bigint[]) \
-                    AND (txid, id) > ($3, $4) \
-                    AND (user_id IS NULL OR user_id = $5) \
-                  ORDER BY txid, id LIMIT $7)) s ORDER BY txid, id LIMIT $7",
-            )
-            .bind(workspace_id)
-            .bind(requested.xmax)
-            .bind(last.0)
-            .bind(last.1)
-            .bind(actor)
-            .bind(&requested.xip)
-            .bind(PULL_BATCH)
-            .fetch_all(&mut *tx)
-            .await?;
+            let query = if scanning_xip {
+                sqlx::query_as(PULL_BATCH_XIP_SQL)
+                    .bind(workspace_id)
+                    .bind(&requested.xip)
+            } else {
+                sqlx::query_as(PULL_BATCH_RANGE_SQL)
+                    .bind(workspace_id)
+                    .bind(requested.xmax)
+            };
+            let rows: Vec<(i64, i64, String, Uuid)> = query
+                .bind(last.0)
+                .bind(last.1)
+                .bind(actor)
+                .bind(PULL_BATCH)
+                .fetch_all(&mut *tx)
+                .await?;
             let batch_full = rows.len() as i64 == PULL_BATCH;
             for (txid, id, entity, entity_id) in rows {
                 last = (txid, id);
@@ -746,6 +759,10 @@ impl Store {
                 }
             }
             if !batch_full {
+                if scanning_xip {
+                    scanning_xip = false;
+                    continue;
+                }
                 pairs.append(&mut group);
                 break;
             }

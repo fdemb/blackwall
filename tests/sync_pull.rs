@@ -1120,6 +1120,91 @@ async fn pull_pages_committed_xip_transactions_below_request_xmax() {
 }
 
 #[tokio::test]
+async fn pull_keeps_pair_cap_and_deduplication_across_xip_and_range() {
+    let database = support::TestDatabase::new().await;
+    let store = Store::connect(&database.url).await.unwrap();
+    let app = router(store.clone());
+    let owner = account(&store, "owner").await;
+    let (ws, _) = setup(&app, &owner).await;
+    let client = Uuid::new_v4();
+    let ids: Vec<Uuid> = (0..1001).map(|_| Uuid::new_v4()).collect();
+    let mut tx = store.pool.begin().await.unwrap();
+    let xip_txid: i64 = sqlx::query_scalar("SELECT pg_current_xact_id()::text::bigint")
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO changes(workspace_id, entity, entity_id) \
+         SELECT $1, 'issues', id FROM unnest($2::uuid[]) AS t(id)",
+    )
+    .bind(ws)
+    .bind(&ids[..600])
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+    sqlx::query("SELECT pg_current_xact_id()")
+        .execute(&store.pool)
+        .await
+        .unwrap();
+    let before = cursor_of(&pull_ok(&app, &owner.token, ws, client, None).await);
+    assert!(cursor_xmax(&before) > xip_txid);
+    tx.commit().await.unwrap();
+
+    // The range repeats 200 pairs from xip, then fills the 1,000-pair page.
+    sqlx::query(
+        "INSERT INTO changes(workspace_id, entity, entity_id) \
+         SELECT $1, 'issues', id FROM unnest($2::uuid[]) AS t(id)",
+    )
+    .bind(ws)
+    .bind(&ids[400..1000])
+    .execute(&store.pool)
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO changes(workspace_id, entity, entity_id) VALUES($1, 'issues', $2)")
+        .bind(ws)
+        .bind(ids[1000])
+        .execute(&store.pool)
+        .await
+        .unwrap();
+
+    let first = pull_ok(&app, &owner.token, ws, client, Some(&before)).await;
+    assert_eq!(first["reset"], false);
+    assert_eq!(first["more"], true);
+    assert_eq!(first["last_mutation_id"], Value::Null);
+    assert_eq!(first["changes"].as_array().unwrap().len(), 1000);
+    for entity_id in &ids[..1000] {
+        assert_eq!(
+            record(&first["changes"], "issues", &entity_id.to_string()),
+            Some(&Value::Null)
+        );
+    }
+    assert!(record(&first["changes"], "issues", &ids[1000].to_string()).is_none());
+    let next = cursor_of(&first);
+    assert!(cursor_xmax(&next) > cursor_xmax(&before));
+    assert!(
+        !next
+            .split(':')
+            .nth(2)
+            .unwrap()
+            .split(',')
+            .any(|txid| txid == xip_txid.to_string())
+    );
+    let second = pull_ok(&app, &owner.token, ws, client, Some(&next)).await;
+    assert_eq!(second["reset"], false);
+    assert_eq!(second["more"], false);
+    assert_eq!(second["last_mutation_id"], 0);
+    assert_eq!(second["changes"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        record(&second["changes"], "issues", &ids[1000].to_string()),
+        Some(&Value::Null)
+    );
+
+    drop(app);
+    store.pool.close().await;
+    database.cleanup().await;
+}
+
+#[tokio::test]
 async fn pull_profile_edit_and_team_join_do_not_reset() {
     let database = support::TestDatabase::new().await;
     let store = Store::connect(&database.url).await.unwrap();

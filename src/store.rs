@@ -23,8 +23,8 @@ pub(crate) use queue::LEASE_SECONDS;
 pub use queue::{Claim, NewJob, Outbox};
 pub use reads::CollectionQuery;
 pub use sync::{
-    MutationError, MutationResult, MutationStatus, PullResponse, PushOutcome, PushRequest,
-    PushResponse, SyncMutation,
+    MutationError, MutationResult, MutationStatus, PULL_BATCH_RANGE_SQL, PULL_BATCH_XIP_SQL,
+    PULL_ROLE_CHANGED_SQL, PullResponse, PushOutcome, PushRequest, PushResponse, SyncMutation,
 };
 
 #[derive(Clone)]
