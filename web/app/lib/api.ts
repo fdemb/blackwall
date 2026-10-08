@@ -1,6 +1,5 @@
 import { safeGet, safeSet } from "./storage";
 import type {
-  Command,
   ImportSummary,
   Issue,
   IssueFilter,
@@ -8,11 +7,9 @@ import type {
   Profile,
   Report,
   WorkspaceSummary,
-  ChangeFeed,
   CommandResult,
   EntityVersions,
   PageResult,
-  WorkspaceResources,
 } from "./types";
 
 export interface SearchResult {
@@ -102,38 +99,13 @@ export const workspaces = {
       body: { name, idempotency_key },
     }),
   get: (id: string) => api<{ workspace: WorkspaceSummary }>(`/api/workspaces/${id}`),
-  members: (id: string) => api<MemberProfile[]>(`/api/workspaces/${id}/members`),
-  resource: <K extends keyof WorkspaceResources>(
-    id: string,
-    resource: K,
-    params: Record<string, string | number> = {},
-  ) =>
-    api<PageResult<WorkspaceResources[K]>>(
-      `/api/workspaces/${id}/${resource}?${new URLSearchParams(Object.entries({ limit: 200, ...params }).map(([k, v]) => [k, String(v)]))}`,
-    ),
   issues: (id: string, filter: IssueFilter = {}, offset = 0, limit = 100) =>
     api<PageResult<Issue>>(
       `/api/workspaces/${id}/issues?${filterQuery(filter)}&limit=${limit}&offset=${offset}`,
     ),
-  issue: (id: string, issueId: string) => api<Issue>(`/api/workspaces/${id}/issues/${issueId}`),
-  command: (
-    id: string,
-    expected_versions: EntityVersions,
-    command: Command,
-    idempotency_key: string = crypto.randomUUID(),
-  ) =>
-    api<CommandResult>(`/api/workspaces/${id}/commands`, {
-      method: "POST",
-      body: { expected_versions, idempotency_key, command },
-    }),
   search: (id: string, q: string) =>
     api<SearchResult>(`/api/workspaces/${id}/search?q=${encodeURIComponent(q)}`),
   report: (id: string) => api<Report>(`/api/workspaces/${id}/report`),
-  /** Omit `since` to get a starting cursor; take it before loading records. */
-  changes: (id: string, since?: string) =>
-    api<ChangeFeed>(
-      `/api/workspaces/${id}/changes${since === undefined ? "" : `?since=${encodeURIComponent(since)}`}`,
-    ),
   accept: (id: string, token: string) =>
     api<{ workspace: WorkspaceSummary }>(`/api/workspaces/${id}/invitations/accept`, {
       method: "POST",

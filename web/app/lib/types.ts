@@ -436,36 +436,7 @@ export interface PageResult<T> {
   has_more: boolean;
   next_offset: number | null;
 }
-/** A changed record in the shape its list endpoint returns. `null` means deleted or no longer visible. */
-export interface Change {
-  entity: "workspace" | "members" | "issues" | keyof WorkspaceResources;
-  id: Id;
-  record: unknown;
-}
 export interface CommandResult {
   result: { id: Id | null };
   versions: EntityVersions;
-  /** Every record the command changed, including side effects such as a parent's subtask counts. */
-  changes: Change[];
-}
-/** When `reset` is true, reload everything and continue from `cursor`. */
-export interface ChangeFeed {
-  cursor: string;
-  reset: boolean;
-  changes: Change[];
-}
-export interface WorkspaceResources {
-  teams: Team;
-  labels: Label;
-  projects: Project;
-  milestones: Milestone;
-  sprints: Sprint;
-  views: SavedView;
-  notifications: Notification;
-  alert_preferences: AlertPrefsWs;
-  invitations: Invitation;
-  integrations: Integration;
-  activity: Activity;
-  comments: Comment;
-  time_entries: TimeEntry;
 }

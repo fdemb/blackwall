@@ -2,10 +2,7 @@ import { QueryClient, queryOptions } from "@tanstack/react-query";
 import { ApiError, workspaces } from "./api";
 import type { Id } from "./types";
 
-/**
- * Shared by TanStack Query and every TanStack DB collection. The change feed keeps collections
- * current, so cached data stays fresh for a while and isn't refetched on focus.
- */
+/** Server reads that aren't part of the synced workspace data. */
 export const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
@@ -20,24 +17,8 @@ export const queryClient = new QueryClient({
 
 export const keys = {
   all: (ws: Id) => ["ws", ws] as const,
-  workspace: (ws: Id) => ["ws", ws, "workspace"] as const,
   report: (ws: Id) => ["ws", ws, "report"] as const,
-  changes: (ws: Id) => ["ws", ws, "changes"] as const,
-  /** Backing queries of the workspace's TanStack DB collections. */
-  db: (ws: Id, entity: string) => ["ws", ws, "db", entity] as const,
-  commands: (ws: Id) => ["ws", ws, "command"] as const,
 };
-
-export const workspaceQuery = (ws: Id) =>
-  queryOptions({ queryKey: keys.workspace(ws), queryFn: () => workspaces.get(ws) });
 
 export const reportQuery = (ws: Id) =>
   queryOptions({ queryKey: keys.report(ws), queryFn: () => workspaces.report(ws) });
-
-/** Refetches everything the workspace shows, except the change feed driving the refresh. */
-export function refreshWorkspace(client: QueryClient, ws: Id) {
-  return client.invalidateQueries({
-    queryKey: keys.all(ws),
-    predicate: (query) => query.queryKey[2] !== "changes",
-  });
-}
