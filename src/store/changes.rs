@@ -25,7 +25,7 @@ pub(super) async fn pending(
     let rows: Vec<(String, Uuid)> = sqlx::query_as(
         "SELECT DISTINCT entity,entity_id FROM changes \
          WHERE workspace_id=$1 AND txid=pg_current_xact_id_if_assigned()::text::bigint \
-         AND (user_id IS NULL OR user_id=$2) ORDER BY entity,entity_id",
+         AND (user_id IS NULL OR user_id=$2) AND entity <> 'roles' ORDER BY entity,entity_id",
     )
     .bind(workspace)
     .bind(actor)

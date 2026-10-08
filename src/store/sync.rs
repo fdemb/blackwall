@@ -461,19 +461,108 @@ impl Store {
 }
 
 /// Most distinct `(entity, id)` pairs one pull page may carry.
-const PULL_LIMIT: usize = 1000;
+const PULL_PAIRS: usize = 1000;
+/// Stop before the next txid once this many raw rows have been exceeded.
+const PULL_ROWS: usize = 20_000;
+/// Change rows read per round trip while scanning the pull window.
+const PULL_BATCH: i64 = 2000;
+/// Most in-flight txids a request cursor may list. Longer cursors are 400.
+const MAX_XIP: usize = 10_000;
+
+/// A PostgreSQL snapshot in its `xmin:xmax:xip` text form. A cursor `C`
+/// promises that every txid below `C.xmax` except those in `C.xip` is
+/// reflected in the client's base.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Snapshot {
+    xmin: i64,
+    xmax: i64,
+    /// Sorted, unique, every entry in `[xmin, xmax)`.
+    xip: Vec<i64>,
+}
+
+fn snapshot_text(snapshot: &Snapshot) -> String {
+    let xip = snapshot
+        .xip
+        .iter()
+        .map(i64::to_string)
+        .collect::<Vec<_>>()
+        .join(",");
+    format!("{}:{}:{xip}", snapshot.xmin, snapshot.xmax)
+}
+
+/// Strictly parses a request cursor. Anything that is not a snapshot the
+/// server could have produced is 400.
+fn parse_cursor(cursor: &str, snapshot_xmax: i64) -> Result<Snapshot> {
+    let invalid = || Error::BadRequest("cursor must be a cursor from this server".into());
+    let (xmin_s, xmax_s, xip_s) = match cursor.split(':').collect::<Vec<_>>().as_slice() {
+        [xmin, xmax, xip] => (*xmin, *xmax, *xip),
+        _ => return Err(invalid()),
+    };
+    let integer = |value: &str| {
+        if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+            return Err(invalid());
+        }
+        value.parse::<i64>().map_err(|_| invalid())
+    };
+    let xmin = integer(xmin_s)?;
+    let xmax = integer(xmax_s)?;
+    let mut xip: Vec<i64> = Vec::new();
+    if !xip_s.is_empty() {
+        for entry in xip_s.split(',') {
+            if xip.len() == MAX_XIP {
+                return Err(invalid());
+            }
+            xip.push(integer(entry)?);
+        }
+    }
+    if xmin > xmax
+        || xmax > snapshot_xmax
+        || xip.windows(2).any(|pair| pair[0] >= pair[1])
+        || xip.first().is_some_and(|first| *first != xmin)
+        || xip.is_empty() && xmin != xmax
+        || xip.last().is_some_and(|last| *last >= xmax)
+    {
+        return Err(invalid());
+    }
+    Ok(Snapshot { xmin, xmax, xip })
+}
+
+/// The cursor after a page that stopped before txid `T`: everything below `T`
+/// visible in the pull's snapshot joins what the request cursor promised.
+/// `xmax'` moves at least to `T`, and in-flight txids stay listed, so every
+/// `more: true` page strictly grows the reflected set.
+fn advance_cursor(current: &Snapshot, snapshot: &Snapshot, excluded: i64) -> Snapshot {
+    let xmax = current.xmax.max(excluded);
+    let mut xip: Vec<i64> = current
+        .xip
+        .iter()
+        .filter(|x| **x >= excluded || snapshot.xip.binary_search(*x).is_ok())
+        .copied()
+        .collect();
+    for x in &snapshot.xip {
+        if *x >= current.xmax && *x < xmax {
+            xip.push(*x);
+        }
+    }
+    xip.sort_unstable();
+    xip.dedup();
+    let xmin = xip.first().copied().unwrap_or(xmax);
+    Snapshot { xmin, xmax, xip }
+}
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct PullResponse {
-    /// Snapshot xmin. Every transaction below it is reflected.
+    /// Snapshot in `xmin:xmax:xip` text form. Every txid below its xmax
+    /// except those listed is reflected.
     pub cursor: String,
     /// True when more pages remain. `last_mutation_id` is null then.
     pub more: bool,
     /// True when the client must bootstrap again.
     pub reset: bool,
-    /// The client's high-water mark, or 0 for a new client. Null on
-    /// intermediate pages so the outbox is dropped only once all effects
-    /// have arrived.
+    /// The client's high-water mark on a final page. Null on intermediate
+    /// pages so the outbox is dropped only once all effects have arrived,
+    /// and null on resets and cursorless responses, which must not
+    /// acknowledge the outbox.
     pub last_mutation_id: Option<i64>,
     pub changes: Vec<super::changes::Change>,
 }
@@ -518,128 +607,162 @@ impl Store {
             0
         };
 
-        // Every transaction still in flight has a txid at or above xmin.
-        let (xmin, xmax, horizon): (i64, i64, i64) = sqlx::query_as(
-            "SELECT pg_snapshot_xmin(pg_current_snapshot())::text::bigint, \
-             pg_snapshot_xmax(pg_current_snapshot())::text::bigint, \
-             (SELECT txid FROM change_horizon)",
+        // The pull's own snapshot. Rows committed after it are invisible to
+        // the queries below, so the window is exactly "visible here but not
+        // in the request cursor". A transaction open elsewhere only sits in
+        // xip lists; it never holds the cursor back.
+        let (snap_text, snapshot_xmin, snapshot_xmax, snapshot_xip, horizon): (
+            String,
+            i64,
+            i64,
+            Vec<i64>,
+            i64,
+        ) = sqlx::query_as(
+            "SELECT pg_current_snapshot()::text, \
+              pg_snapshot_xmin(pg_current_snapshot())::text::bigint, \
+              pg_snapshot_xmax(pg_current_snapshot())::text::bigint, \
+              COALESCE((SELECT array_agg(x::text::bigint) \
+                        FROM pg_snapshot_xip(pg_current_snapshot()) AS t(x)), '{}'::bigint[]), \
+              (SELECT txid FROM change_horizon)",
         )
         .fetch_one(&mut *tx)
         .await?;
+        let mut snapshot_xip = snapshot_xip;
+        snapshot_xip.sort_unstable();
+        snapshot_xip.dedup();
+        let snapshot = Snapshot {
+            xmin: snapshot_xmin,
+            xmax: snapshot_xmax,
+            xip: snapshot_xip,
+        };
 
         let Some(cursor) = cursor else {
             let response = PullResponse {
-                cursor: xmin.to_string(),
+                cursor: snap_text,
                 more: false,
                 reset: false,
-                last_mutation_id: Some(last_mutation_id),
+                last_mutation_id: None,
                 changes: Vec::new(),
             };
             tx.commit().await?;
             return Ok(response);
         };
-        let requested: i64 = cursor
-            .parse()
-            .ok()
-            .filter(|cursor| (0..=xmax).contains(cursor))
-            .ok_or_else(|| Error::BadRequest("cursor must be a cursor from this server".into()))?;
-        if requested < horizon {
+        let requested = parse_cursor(cursor, snapshot.xmax)?;
+        if requested.xmin < horizon {
             let response = PullResponse {
-                cursor: xmin.to_string(),
+                cursor: snap_text,
                 more: false,
                 reset: true,
-                last_mutation_id: Some(last_mutation_id),
+                last_mutation_id: None,
                 changes: Vec::new(),
             };
             tx.commit().await?;
             return Ok(response);
         }
 
-        let own_change: bool = sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM changes WHERE workspace_id = $1 AND txid >= $2 \
-             AND entity = 'members' AND entity_id = $3 \
-             AND (user_id IS NULL OR user_id = $3))",
+        // Check the full window, even when a role change sits beyond this page.
+        let role_changed: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM changes \
+             WHERE workspace_id = $1 AND entity = 'roles' AND entity_id = $2 \
+               AND (user_id IS NULL OR user_id = $2) \
+               AND (txid >= $3 OR txid = ANY($4::bigint[])))",
         )
         .bind(workspace_id)
-        .bind(requested)
         .bind(actor)
+        .bind(requested.xmax)
+        .bind(&requested.xip)
         .fetch_one(&mut *tx)
         .await?;
-        if own_change {
-            let response = PullResponse {
-                cursor: xmin.to_string(),
+        if role_changed {
+            tx.commit().await?;
+            return Ok(PullResponse {
+                cursor: snap_text,
                 more: false,
                 reset: true,
-                last_mutation_id: Some(last_mutation_id),
+                last_mutation_id: None,
                 changes: Vec::new(),
-            };
-            tx.commit().await?;
-            return Ok(response);
+            });
         }
 
-        // One row per distinct pair at its earliest txid in the window,
-        // ordered by that txid. LIMIT 1001 bounds Rust memory: when more
-        // than PULL_LIMIT pairs changed, the 1001st row's txid is the first
-        // txid T whose cumulative count exceeds the limit.
-        //
-        // Pages cut only at txid boundaries, so every transaction below the
-        // next cursor is fully included. The next cursor is capped at the
-        // snapshot xmin, because transactions at or above xmin may still be
-        // in flight and invisible; promising them would break the cursor
-        // guarantee that every txid below the cursor is reflected. Repeats
-        // across pages are harmless: records apply as current state.
-        let rows: Vec<(String, Uuid, i64)> = sqlx::query_as(
-            "SELECT entity, entity_id, MIN(txid) FROM changes \
-             WHERE workspace_id = $1 AND txid >= $2 AND (user_id IS NULL OR user_id = $3) \
-             GROUP BY entity, entity_id ORDER BY MIN(txid), entity, entity_id LIMIT 1001",
-        )
-        .bind(workspace_id)
-        .bind(requested)
-        .bind(actor)
-        .fetch_all(&mut *tx)
-        .await?;
+        // Separate index ranges keep the request's xip transactions from
+        // forcing a scan of the already reflected interval below xmax.
+        let mut last = (-1i64, -1i64);
+        let mut pairs = std::collections::BTreeSet::new();
+        let mut group = std::collections::BTreeSet::new();
+        let mut group_txid = None;
+        let mut included_txids = 0;
+        let mut scanned = 0;
+        let mut excluded = None;
 
-        if rows.len() <= PULL_LIMIT {
-            let mut changes: Vec<super::changes::Change> = rows
-                .into_iter()
-                .map(|(entity, id, _)| super::changes::Change {
-                    entity,
-                    id,
-                    record: None,
-                })
-                .collect();
-            super::changes::render(&mut tx, workspace_id, actor, &mut changes).await?;
-            let response = PullResponse {
-                cursor: xmin.to_string(),
-                more: false,
-                reset: false,
-                last_mutation_id: Some(last_mutation_id),
-                changes,
-            };
-            tx.commit().await?;
-            return Ok(response);
+        'scan: loop {
+            let rows: Vec<(i64, i64, String, Uuid)> = sqlx::query_as(
+                "SELECT txid, id, entity, entity_id FROM (\
+                  (SELECT txid, id, entity, entity_id FROM changes \
+                  WHERE workspace_id = $1 AND txid >= $2 AND (txid, id) > ($3, $4) \
+                    AND (user_id IS NULL OR user_id = $5) \
+                  ORDER BY txid, id LIMIT $7) \
+                  UNION ALL \
+                  (SELECT txid, id, entity, entity_id FROM changes \
+                  WHERE workspace_id = $1 AND txid = ANY($6::bigint[]) \
+                    AND (txid, id) > ($3, $4) \
+                    AND (user_id IS NULL OR user_id = $5) \
+                  ORDER BY txid, id LIMIT $7)) s ORDER BY txid, id LIMIT $7",
+            )
+            .bind(workspace_id)
+            .bind(requested.xmax)
+            .bind(last.0)
+            .bind(last.1)
+            .bind(actor)
+            .bind(&requested.xip)
+            .bind(PULL_BATCH)
+            .fetch_all(&mut *tx)
+            .await?;
+            let batch_full = rows.len() as i64 == PULL_BATCH;
+            for (txid, id, entity, entity_id) in rows {
+                last = (txid, id);
+                if group_txid != Some(txid) {
+                    if group_txid.is_some() {
+                        pairs.append(&mut group);
+                        included_txids += 1;
+                    }
+                    if scanned > PULL_ROWS {
+                        excluded = Some(txid);
+                        break 'scan;
+                    }
+                    group_txid = Some(txid);
+                }
+                scanned += 1;
+                if entity != "roles" {
+                    let pair = (entity, entity_id);
+                    if !pairs.contains(&pair) {
+                        group.insert(pair);
+                    }
+                    // Exclude the entire transaction as soon as it cannot fit.
+                    // Its remaining rows need not be read or retained.
+                    if pairs.len() + group.len() > PULL_PAIRS {
+                        excluded = Some(txid);
+                        break 'scan;
+                    }
+                }
+            }
+            if !batch_full {
+                pairs.append(&mut group);
+                break;
+            }
         }
 
-        let first_overflow = rows.last().map(|row| row.2).unwrap_or(requested);
-        let page: Vec<(String, Uuid)> = rows
-            .into_iter()
-            .filter(|row| row.2 < first_overflow)
-            .map(|row| (row.0, row.1))
-            .collect();
-        let next = first_overflow.min(xmin);
-        if page.is_empty() || next == requested {
-            let response = PullResponse {
-                cursor: xmin.to_string(),
+        if excluded.is_some() && included_txids == 0 {
+            tx.commit().await?;
+            return Ok(PullResponse {
+                cursor: snap_text,
                 more: false,
                 reset: true,
-                last_mutation_id: Some(last_mutation_id),
+                last_mutation_id: None,
                 changes: Vec::new(),
-            };
-            tx.commit().await?;
-            return Ok(response);
+            });
         }
 
-        let mut changes: Vec<super::changes::Change> = page
+        let mut changes: Vec<super::changes::Change> = pairs
             .into_iter()
             .map(|(entity, id)| super::changes::Change {
                 entity,
@@ -648,14 +771,131 @@ impl Store {
             })
             .collect();
         super::changes::render(&mut tx, workspace_id, actor, &mut changes).await?;
+        let more = excluded.is_some();
+        let next = excluded
+            .map(|txid| snapshot_text(&advance_cursor(&requested, &snapshot, txid)))
+            .unwrap_or(snap_text);
         let response = PullResponse {
-            cursor: next.to_string(),
-            more: true,
+            cursor: next,
+            more,
             reset: false,
-            last_mutation_id: None,
+            last_mutation_id: (!more).then_some(last_mutation_id),
             changes,
         };
         tx.commit().await?;
         Ok(response)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{MAX_XIP, Snapshot, advance_cursor, parse_cursor, snapshot_text};
+
+    fn snapshot(xmin: i64, xmax: i64, xip: &[i64]) -> Snapshot {
+        Snapshot {
+            xmin,
+            xmax,
+            xip: xip.to_vec(),
+        }
+    }
+
+    #[test]
+    fn cursor_round_trip() {
+        for text in ["847:847:", "845:847:845,846", "0:0:"] {
+            let parsed = parse_cursor(text, 1000).unwrap();
+            assert_eq!(snapshot_text(&parsed), text);
+        }
+    }
+
+    #[test]
+    fn cursor_rejects_garbage() {
+        for bad in [
+            "",
+            "845",
+            "845:847",
+            "845:847::",
+            "845:847:845,",
+            "845:847:,845",
+            "nope",
+            "845:x:847",
+            "-1:5:",
+            "+0:0:",
+            "0:+0:",
+            "0:5:+0",
+            "0:5:",
+            "5:5:5",
+            "847:845:",
+            "845:847:847",
+            "846:847:845,846",
+            "845:847:846,845",
+            "845:847:845,845",
+            "845:847:844",
+        ] {
+            assert!(parse_cursor(bad, 1000).is_err(), "{bad:?}");
+        }
+        // Beyond the pull's own snapshot: from the future.
+        assert!(parse_cursor("990:1010:", 1000).is_err());
+        assert!(parse_cursor("990:1000:990", 1000).is_ok());
+        // Over the xip cap.
+        let huge = format!(
+            "1:20000:{}",
+            (1..=MAX_XIP as i64 + 1)
+                .map(|x| x.to_string())
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+        assert!(parse_cursor(&huge, 1_000_000).is_err());
+    }
+
+    #[test]
+    fn advance_below_request_xmax_keeps_later_xip() {
+        // The page delivered only transactions from the request xip; T sits
+        // below the request xmax, so xmax stays and later xip entries stay.
+        let current = snapshot(12, 20, &[12, 15]);
+        let pulled = snapshot(18, 22, &[18, 21]);
+        assert_eq!(
+            advance_cursor(&current, &pulled, 15),
+            snapshot(15, 20, &[15])
+        );
+    }
+
+    #[test]
+    fn advance_above_request_xmax_absorbs_inflight() {
+        // T moves past the request xmax; in-flight transactions below it
+        // stay listed, committed ones drop.
+        let current = snapshot(12, 20, &[12]);
+        let pulled = snapshot(21, 25, &[21, 24]);
+        assert_eq!(
+            advance_cursor(&current, &pulled, 23),
+            snapshot(21, 23, &[21])
+        );
+    }
+
+    #[test]
+    fn advance_drops_snapshot_xip_below_request_xmax() {
+        // 18 was already reflected in the request cursor (below its xmax
+        // and not listed), so it stays dropped even though still in flight.
+        let current = snapshot(20, 20, &[]);
+        let pulled = snapshot(18, 30, &[18, 25]);
+        assert_eq!(advance_cursor(&current, &pulled, 22), snapshot(22, 22, &[]));
+    }
+
+    #[test]
+    fn advance_keeps_unresolved_request_xip() {
+        // The page delivered 15, but 12 is still in flight and 18 is
+        // excluded. Both unresolved request entries must stay listed.
+        let current = snapshot(12, 20, &[12, 15, 18]);
+        let pulled = snapshot(12, 22, &[12, 21]);
+        assert_eq!(
+            advance_cursor(&current, &pulled, 18),
+            snapshot(12, 20, &[12, 18])
+        );
+    }
+
+    #[test]
+    fn advance_empty_xips() {
+        let current = snapshot(20, 20, &[]);
+        let pulled = snapshot(25, 25, &[]);
+        assert_eq!(advance_cursor(&current, &pulled, 23), snapshot(23, 23, &[]));
     }
 }

@@ -85,7 +85,7 @@ Removing the counts also removes the reason the `record_change` trigger marks a 
 
 A pull renders each changed record as the actor sees it now. `null` means deleted or no longer visible, and the client deletes it from base either way. The existing `changes.user_id` column limits private rows to their owner. `push_visibility` in `src/store/reads.rs` holds the read rules.
 
-Some visibility changes don't produce a change row for every record they affect. When the actor gains admin, invitations and integrations become visible. When the pull window contains a change to the actor's own membership row, the server answers `reset: true` and the client bootstraps again.
+Some visibility changes don't produce a change row for every record they affect. When the actor gains admin, invitations and integrations become visible. When the pull window contains a change to the actor's own role, the server answers `reset: true` and the client bootstraps again.
 
 ## Protocol
 
@@ -99,16 +99,16 @@ Prune rows untouched for longer than the session lifetime, currently 30 days. A 
 
 ### Cursor
 
-The cursor is the snapshot `xmin` already used by `Store::changes` in `src/store/changes.rs`. Every transaction still in flight has a txid at or above it. A cursor `C` promises that every transaction with txid below `C` is reflected. Changes can repeat across responses, and the client applies records as current state, so repeats are harmless.
+The cursor is a PostgreSQL snapshot in its text form, `xmin:xmax:xip`. Clients treat it as opaque. A cursor `C` promises that every transaction visible in `C` is reflected in base: every txid below `C.xmax` except those listed in `C.xip`. A pull returns the change rows of transactions visible in its own snapshot but not in `C`, which is `txid >= C.xmax` or `txid` in `C.xip`. A long-running transaction elsewhere in the cluster only stays in the cursor's `xip` list; it never holds the cursor back.
 
-Keep the `changes` table, its triggers and `change_horizon`. They are correct and the pull endpoint reads them. Replace the `/changes` HTTP endpoint with pull.
+Keep the `changes` table, its triggers and `change_horizon`. They are correct and the pull endpoint reads them.
 
 ### Bootstrap
 
 `GET sync/bootstrap?client_id=` streams the whole always-loaded data set from one `REPEATABLE READ READ ONLY` transaction, as gzip-compressed NDJSON.
 
 ```
-{"cursor":"812","last_mutation_id":0,"schema":3}
+{"cursor":"812:812:","last_mutation_id":0,"schema":3}
 {"entity":"teams","record":{...}}
 {"entity":"issues","record":{...}}
 ...
@@ -122,7 +122,7 @@ The first line comes from the same snapshot as every record. The client writes e
 
 ```json
 {
-  "cursor": "845",
+  "cursor": "845:847:845",
   "more": false,
   "reset": false,
   "last_mutation_id": 17,
@@ -130,11 +130,12 @@ The first line comes from the same snapshot as every record. The client writes e
 }
 ```
 
-- `reset` is true when the cursor predates `change_horizon`, when the actor's own membership changed in the window, or when the page can't advance the cursor. A single transaction with more changed records than the page limit is the usual cause of the last case. The client bootstraps again.
-- Pages hold up to 1,000 distinct `(entity, id)` pairs. Cut pages only at txid boundaries, and never return a cursor above the snapshot's `xmin`.
-- `last_mutation_id` is the client's `sync_clients.last_mutation_id`, or 0 when the client has no row yet. It is `null` whenever `more` is true and set only on the final page. Intermediate pages leave the outbox alone, so the client doesn't drop a mutation before all of its effects have arrived.
-- Omit `cursor` for a starting cursor. The server returns `{cursor: xmin, more: false, reset: false, last_mutation_id, changes: []}`; bootstrap is the normal source of a first cursor.
-- Request errors: the actor not being a member is 403. A `client_id` registered to another user or workspace is 400, as is a missing or unparsable `client_id`. A `cursor` that is not an integer in `[0, snapshot xmax]` is 400.
+- `reset` is true when the cursor's `xmin` predates `change_horizon`, when the window holds the actor's own role change, or when the window's first transaction alone holds more than the page limit. The client bootstraps again. A role change is marked by a `roles` change row private to that member. Role markers never appear in rendered records. Profile updates and team joins return normal `members` and `teams` changes.
+- The cursor is a snapshot in `xmin:xmax:xip` text form; clients treat it as opaque. The window is the change rows with `txid >= C.xmax` or `txid` in `C.xip`, as visible in the pull's own snapshot.
+- Pages hold up to 1,000 distinct `(entity, id)` pairs, read in `(txid, id)` order in batches of about 2,000 rows. A page stops at the first txid boundary where adding the next txid would pass 1,000 pairs or more than about 20,000 raw rows have been read, and never cuts inside a transaction. A complete page returns the pull snapshot as its cursor; an early page returns a cursor that promises exactly the delivered transactions, with `more: true`.
+- `last_mutation_id` is the client's `sync_clients.last_mutation_id`, or 0 when the client has no row yet. It is set only on a final page (`more: false`, `reset: false`). It is `null` on intermediate pages, on resets, and on the cursorless response, which must not acknowledge the outbox; bootstrap returns its own value from its own snapshot. Intermediate pages leave the outbox alone, so the client doesn't drop a mutation before all of its effects have arrived.
+- Omit `cursor` for a starting cursor. The server returns `{cursor: snapshot, more: false, reset: false, last_mutation_id: null, changes: []}`; bootstrap is the normal source of a first cursor.
+- Request errors: the actor not being a member is 403. A `client_id` registered to another user or workspace is 400, as is a missing or unparsable `client_id`. A `cursor` that is not a snapshot from this server (three `:`-separated parts, `xmin <= xmax`, every xip entry in `[xmin, xmax)`, xip sorted and unique, `xmin` the smallest xip or equal to `xmax` when empty, `xmax` at or below the pull snapshot's, at most 10,000 xip entries) is 400.
 - The client applies each page and its cursor in one IndexedDB transaction, then rebases.
 - Comment and activity changes for scopes the client hasn't loaded are dropped.
 

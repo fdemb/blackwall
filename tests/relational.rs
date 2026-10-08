@@ -924,3 +924,168 @@ async fn non_postgres_urls_are_rejected() {
         assert!(Store::connect(url).await.is_err(), "accepted {url}");
     }
 }
+
+/// The record for an entity, or None when the change set does not mention it.
+fn record<'a>(changes: &'a Value, entity: &str, id: &str) -> Option<&'a Value> {
+    changes
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["entity"] == entity && c["id"] == id)
+        .map(|c| &c["record"])
+}
+
+#[tokio::test]
+async fn idempotent_finish_child_replay_reports_current_records() {
+    let database = support::TestDatabase::new().await;
+    let store = Store::connect(&database.url).await.unwrap();
+    let app = router(store.clone());
+    let owner = account(&store, "owner").await;
+    let ws = workspace(&app, &owner, "Finish replay").await;
+
+    let (status, result) = command(
+        &app,
+        &owner,
+        ws,
+        json!({"type": "create_team", "name": "Ops", "members": [owner.profile.id]}),
+        json!({}),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+    let team = id(&result["result"]["id"]);
+    let stages = record(&result["changes"], "teams", &team.to_string()).unwrap()["stages"]
+        .as_array()
+        .unwrap()
+        .clone();
+    let done = stages.iter().find(|s| s["kind"] == "done").unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    let parent = created(
+        &app,
+        &owner,
+        ws,
+        json!({"type": "create_issue", "input": {"team_id": team, "title": "Parent"}}),
+    )
+    .await;
+
+    // Creating a subtask returns the parent with its new count.
+    let (status, result) = command(
+        &app,
+        &owner,
+        ws,
+        json!({"type": "create_issue", "input": {"team_id": team, "title": "Child", "parent_id": parent}}),
+        json!({}),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+    let child = id(&result["result"]["id"]);
+    let parent_record =
+        record(&result["changes"], "issues", &parent.to_string()).expect("parent in changes");
+    assert_eq!(parent_record["subtask_total"], 1);
+    assert_eq!(parent_record["subtask_completed"], 0);
+    let child_version =
+        record(&result["changes"], "issues", &child.to_string()).unwrap()["version"].clone();
+
+    let (status, result) = command(
+        &app,
+        &owner,
+        ws,
+        json!({"type": "create_issue", "input": {"team_id": team, "title": "Blocked", "dependencies": [child]}}),
+        json!({}),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+    let blocked = id(&result["result"]["id"]);
+    assert_eq!(
+        record(&result["changes"], "issues", &blocked.to_string()).unwrap()["blocked_count"],
+        1
+    );
+
+    // Finishing it returns the child in its new stage and the parent with its
+    // new count, with an idempotency key to check replays later.
+    let move_child =
+        json!({"type": "move_issue", "id": child, "stage_id": done, "before_id": null});
+    let finish_versions = json!({ child.to_string(): child_version });
+    let (status, result) = command(
+        &app,
+        &owner,
+        ws,
+        move_child.clone(),
+        finish_versions.clone(),
+        Some("finish-child"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+    assert_eq!(
+        record(&result["changes"], "issues", &child.to_string()).unwrap()["stage_id"],
+        done
+    );
+    assert_eq!(
+        record(&result["changes"], "issues", &parent.to_string()).unwrap()["subtask_completed"],
+        1
+    );
+
+    assert_eq!(
+        record(&result["changes"], "issues", &blocked.to_string()).unwrap()["blocked_count"],
+        0
+    );
+    let updated = created(
+        &app,
+        &owner,
+        ws,
+        json!({"type": "update_issue", "id": parent, "patch": {"title": "Parent edited after finish"}}),
+    )
+    .await;
+    assert_eq!(updated, parent);
+    let changes_before: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM changes WHERE workspace_id = $1")
+            .bind(ws)
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+
+    // A replayed command reports the records as they are now.
+    let (status, replay) = command(
+        &app,
+        &owner,
+        ws,
+        move_child,
+        finish_versions,
+        Some("finish-child"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{replay}");
+    assert_eq!(
+        record(&replay["changes"], "issues", &child.to_string()).unwrap()["stage_id"],
+        done
+    );
+    assert_eq!(
+        record(&replay["changes"], "issues", &parent.to_string()).unwrap()["subtask_completed"],
+        1
+    );
+
+    assert_eq!(
+        record(&replay["changes"], "issues", &parent.to_string()).unwrap()["title"],
+        "Parent edited after finish"
+    );
+    assert_eq!(
+        record(&replay["changes"], "issues", &blocked.to_string()).unwrap()["blocked_count"],
+        0
+    );
+    let changes_after: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM changes WHERE workspace_id = $1")
+            .bind(ws)
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+    assert_eq!(changes_after, changes_before);
+
+    drop(app);
+    store.pool.close().await;
+    database.cleanup().await;
+}

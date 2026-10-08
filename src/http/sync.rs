@@ -6,8 +6,9 @@ use crate::store::{PullResponse, PushRequest, PushResponse};
 pub struct PullQuery {
     /// Client replica id. A client_id owned by another user or workspace is 400.
     pub client_id: Option<String>,
-    /// Cursor from a previous pull. Omit for a starting cursor. Must be an
-    /// integer in `[0, snapshot xmax]`; anything else is 400.
+    /// Cursor from a previous pull. Omit for a starting cursor. Must be a
+    /// snapshot in `xmin:xmax:xip` text form from this server; anything else
+    /// is 400.
     pub cursor: Option<String>,
 }
 
