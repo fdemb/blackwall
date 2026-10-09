@@ -3,11 +3,11 @@ import type { IssueFilter, Priority } from "./types";
 import type { SyncStore, DeepReadonly } from "../sync/store";
 import type { SyncIssue } from "../sync/records";
 import { parseTimestamp } from "../sync/records";
+import { compareCodePoints } from "./order";
 
 const rank: Record<Priority, number> = { none: 0, low: 1, normal: 2, high: 3, urgent: 4 };
-const compare = (a: string | number, b: string | number) => (a < b ? -1 : a > b ? 1 : 0);
-function nullable(a: string | number | null, b: string | number | null): number {
-  return a === null ? (b === null ? 0 : 1) : b === null ? -1 : compare(a, b);
+function nullable<T>(a: T | null, b: T | null, compareValues: (a: T, b: T) => number): number {
+  return a === null ? (b === null ? 0 : 1) : b === null ? -1 : compareValues(a, b);
 }
 
 // Search words are runs of letters, marks and digits. PostgreSQL's parser also keeps URLs, emails,
@@ -108,21 +108,31 @@ export function filterIssues(
   });
   return rows.sort((a, b) => {
     let group = 0;
-    if (filter.group_by === "stage") group = compare(a.stage_id, b.stage_id);
+    if (filter.group_by === "stage") group = compareCodePoints(a.stage_id, b.stage_id);
     if (filter.group_by === "priority") group = rank[b.priority] - rank[a.priority];
-    if (filter.group_by === "assignee") group = nullable(a.assignee, b.assignee);
+    if (filter.group_by === "assignee") group = nullable(a.assignee, b.assignee, compareCodePoints);
     if (group) return group;
     switch (filter.sort ?? "position") {
       case "deadline":
-        return nullable(a.deadline, b.deadline) || a.position - b.position || compare(a.id, b.id);
+        return (
+          nullable(a.deadline, b.deadline, compareCodePoints) ||
+          a.position - b.position ||
+          compareCodePoints(a.id, b.id)
+        );
       case "updated":
-        return compare(b.updated_at, a.updated_at) || compare(a.id, b.id);
+        return compareCodePoints(b.updated_at, a.updated_at) || compareCodePoints(a.id, b.id);
       case "priority":
         return (
-          rank[b.priority] - rank[a.priority] || a.position - b.position || compare(a.id, b.id)
+          rank[b.priority] - rank[a.priority] ||
+          a.position - b.position ||
+          compareCodePoints(a.id, b.id)
         );
       case "position":
-        return a.position - b.position || nullable(a.number, b.number) || compare(a.id, b.id);
+        return (
+          a.position - b.position ||
+          nullable(a.number, b.number, (x, y) => x - y) ||
+          compareCodePoints(a.id, b.id)
+        );
     }
   });
 }

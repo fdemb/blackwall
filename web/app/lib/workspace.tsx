@@ -29,7 +29,6 @@ import { useI18n } from "./i18n";
 
 export interface RunOptions {
   quiet?: boolean;
-  settled?: boolean;
   // Older editors still capture versions. Sync writes use field-level last-writer-wins.
   expectedVersions?: EntityVersions;
 }
@@ -139,7 +138,7 @@ function useWorkspaceValue() {
   const run = useCallback(
     async (command: Command, opts: RunOptions = {}) => {
       try {
-        return await runCommand(engine, command, opts.settled);
+        return await runCommand(engine, command);
       } catch (error) {
         // Server rejections already have an engine event; admission failures don't.
         if (!opts.quiet && !(error instanceof ServerRejection)) toast.error(describeError(error));

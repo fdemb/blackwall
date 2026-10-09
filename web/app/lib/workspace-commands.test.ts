@@ -101,32 +101,6 @@ describe("workspace commands", () => {
     ).rejects.toThrow();
     expect(engine.store.pending()).toHaveLength(0);
   });
-  it("settled waits for the server verdict and rejects a later server rejection", async () => {
-    const { engine, server, owner, workspace } = await fixture();
-    engine.stop();
-    let completed = false;
-    const settled = runCommand(
-      engine,
-      { type: "update_issue", id: id(2), patch: { title: "Rejected" } },
-      true,
-    );
-    const observed = settled.catch((error: unknown) => error);
-    void observed.then(() => {
-      completed = true;
-    });
-    await until(() => engine.store.pending().length === 1);
-    expect(completed).toBe(false);
-    server.setRole(workspace.id, owner.id, "viewer");
-    const rejected = vi.fn();
-    engine.subscribe((event) => {
-      if (event.type === "rejected") rejected(event.rejection);
-    });
-    await engine.start();
-    const error = await observed;
-    expect(error).toBeInstanceOf(Error);
-    expect(error).toMatchObject({ status: 403 });
-    expect(rejected).toHaveBeenCalledOnce();
-  });
   it("reports rejections that arrived before the provider mounted only once", async () => {
     const { engine, server, owner, workspace } = await fixture();
     engine.stop();

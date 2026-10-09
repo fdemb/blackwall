@@ -12,11 +12,7 @@ export class OnlineRequiredError extends ApiError {
   }
 }
 
-export async function runCommand(
-  engine: SyncEngine,
-  command: Command,
-  settled = false,
-): Promise<string | null> {
+export async function runCommand(engine: SyncEngine, command: Command): Promise<string | null> {
   if (command.type === "create_integration" && !command.id)
     command = { ...command, id: crypto.randomUUID() };
   const { type, ...args } = command;
@@ -29,10 +25,6 @@ export async function runCommand(
     return type === "create_integration" ? (command.id ?? null) : null;
   }
   const receipt = await engine.mutate(type, args);
-  if (settled) {
-    const outcome = await receipt.settled;
-    if (outcome !== "applied") throw new ServerRejection(outcome.message, outcome.status);
-  }
   return receipt.id;
 }
 
