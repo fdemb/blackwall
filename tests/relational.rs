@@ -971,7 +971,7 @@ async fn idempotent_finish_child_replay_reports_current_records() {
     )
     .await;
 
-    // Creating a subtask returns the parent with its new count.
+    // Counts are read through REST; creating a child changes only the child.
     let (status, result) = command(
         &app,
         &owner,
@@ -983,8 +983,16 @@ async fn idempotent_finish_child_replay_reports_current_records() {
     .await;
     assert_eq!(status, StatusCode::OK, "{result}");
     let child = id(&result["result"]["id"]);
-    let parent_record =
-        record(&result["changes"], "issues", &parent.to_string()).expect("parent in changes");
+    assert!(record(&result["changes"], "issues", &parent.to_string()).is_none());
+    let (status, parent_record) = call(
+        &app,
+        &owner,
+        "GET",
+        &format!("/api/workspaces/{ws}/issues/{parent}"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
     assert_eq!(parent_record["subtask_total"], 1);
     assert_eq!(parent_record["subtask_completed"], 0);
     let child_version =
@@ -1006,8 +1014,7 @@ async fn idempotent_finish_child_replay_reports_current_records() {
         1
     );
 
-    // Finishing it returns the child in its new stage and the parent with its
-    // new count, with an idempotency key to check replays later.
+    // Finishing returns the child in its new stage. Replay the same key later.
     let move_child =
         json!({"type": "move_issue", "id": child, "stage_id": done, "before_id": null});
     let finish_versions = json!({ child.to_string(): child_version });
@@ -1025,15 +1032,22 @@ async fn idempotent_finish_child_replay_reports_current_records() {
         record(&result["changes"], "issues", &child.to_string()).unwrap()["stage_id"],
         done
     );
-    assert_eq!(
-        record(&result["changes"], "issues", &parent.to_string()).unwrap()["subtask_completed"],
-        1
-    );
-
-    assert_eq!(
-        record(&result["changes"], "issues", &blocked.to_string()).unwrap()["blocked_count"],
-        0
-    );
+    for (issue, count, value) in [
+        (parent, "subtask_completed", 1),
+        (blocked, "blocked_count", 0),
+    ] {
+        assert!(record(&result["changes"], "issues", &issue.to_string()).is_none());
+        let (status, detail) = call(
+            &app,
+            &owner,
+            "GET",
+            &format!("/api/workspaces/{ws}/issues/{issue}"),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(detail[count], value);
+    }
     let updated = created(
         &app,
         &owner,
@@ -1064,19 +1078,29 @@ async fn idempotent_finish_child_replay_reports_current_records() {
         record(&replay["changes"], "issues", &child.to_string()).unwrap()["stage_id"],
         done
     );
-    assert_eq!(
-        record(&replay["changes"], "issues", &parent.to_string()).unwrap()["subtask_completed"],
-        1
-    );
-
-    assert_eq!(
-        record(&replay["changes"], "issues", &parent.to_string()).unwrap()["title"],
-        "Parent edited after finish"
-    );
-    assert_eq!(
-        record(&replay["changes"], "issues", &blocked.to_string()).unwrap()["blocked_count"],
-        0
-    );
+    assert!(record(&replay["changes"], "issues", &parent.to_string()).is_none());
+    assert!(record(&replay["changes"], "issues", &blocked.to_string()).is_none());
+    let (status, detail) = call(
+        &app,
+        &owner,
+        "GET",
+        &format!("/api/workspaces/{ws}/issues/{parent}"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(detail["subtask_completed"], 1);
+    assert_eq!(detail["title"], "Parent edited after finish");
+    let (status, detail) = call(
+        &app,
+        &owner,
+        "GET",
+        &format!("/api/workspaces/{ws}/issues/{blocked}"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(detail["blocked_count"], 0);
     let changes_after: i64 =
         sqlx::query_scalar("SELECT count(*) FROM changes WHERE workspace_id = $1")
             .bind(ws)

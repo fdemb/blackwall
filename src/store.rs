@@ -24,7 +24,8 @@ pub use queue::{Claim, NewJob, Outbox};
 pub use reads::CollectionQuery;
 pub use sync::{
     MutationError, MutationResult, MutationStatus, PULL_BATCH_RANGE_SQL, PULL_BATCH_XIP_SQL,
-    PULL_ROLE_CHANGED_SQL, PullResponse, PushOutcome, PushRequest, PushResponse, SyncMutation,
+    PULL_ROLE_CHANGED_SQL, PullResponse, PushOutcome, PushRequest, PushResponse, SYNC_SCHEMA,
+    ScopeResponse, SyncMutation, SyncScope,
 };
 
 #[derive(Clone)]
@@ -286,7 +287,14 @@ impl Store {
             if let Some(value) = row.try_get::<Option<serde_json::Value>, _>("result")? {
                 // Replays report the records as they are now, not as the first attempt saw them.
                 let mut result: OperationResult = serde_json::from_value(value)?;
-                changes::render(&mut op.tx, workspace_id, actor, &mut result.changes).await?;
+                changes::render(
+                    &mut op.tx,
+                    workspace_id,
+                    actor,
+                    &mut result.changes,
+                    changes::RecordShape::Rest,
+                )
+                .await?;
                 return Ok(result);
             }
         }
@@ -312,7 +320,14 @@ impl Store {
             .await?;
         }
 
-        changes::render(&mut op.tx, workspace_id, actor, &mut result.changes).await?;
+        changes::render(
+            &mut op.tx,
+            workspace_id,
+            actor,
+            &mut result.changes,
+            changes::RecordShape::Rest,
+        )
+        .await?;
         op.tx.commit().await?;
 
         Ok(result)

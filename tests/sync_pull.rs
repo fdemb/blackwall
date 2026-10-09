@@ -1680,7 +1680,7 @@ async fn pull_replays_command_changes_with_current_records() {
     )
     .await;
     assert!(
-        result["changes"]
+        !result["changes"]
             .as_array()
             .unwrap()
             .iter()

@@ -79,7 +79,7 @@ Records keep the shapes the REST list endpoints return, with one change: issues 
 
 The server stores timestamps with offsets. Normalize every timestamp to UTC ISO strings when records enter base, so string comparison sorts them correctly.
 
-Removing the counts also removes the reason the `record_change` trigger marks a changed issue's parent and dependents. Drop that fan-out, and `mark_issue_neighbors`, once nothing reads the counts from sync records. The REST issue endpoints may keep the counts.
+The `record_change` trigger no longer marks a changed issue's parent or dependents just to refresh counts. Stage kind changes mark the team, without marking issues or their neighbors. `mark_issue_neighbors` is gone. REST issue endpoints and command responses keep the counts, but count changes alone do not add parent or dependent records to command responses.
 
 ### Visibility
 
@@ -105,16 +105,21 @@ Keep the `changes` table, its triggers and `change_horizon`. They are correct an
 
 ### Bootstrap
 
-`GET sync/bootstrap?client_id=` streams the whole always-loaded data set from one `REPEATABLE READ READ ONLY` transaction, as gzip-compressed NDJSON.
+`GET sync/bootstrap?client_id=<uuid>` streams the whole always-loaded data set from one `REPEATABLE READ READ ONLY` transaction. The response is `application/x-ndjson`, compressed with gzip when the request's `Accept-Encoding` accepts gzip, and plain otherwise.
 
 ```
-{"cursor":"812:812:","last_mutation_id":0,"schema":3}
+{"cursor":"812:812:","last_mutation_id":0,"schema":1}
 {"entity":"teams","record":{...}}
 {"entity":"issues","record":{...}}
 ...
+{"end":true,"records":42}
 ```
 
-The first line comes from the same snapshot as every record. The client writes everything into a fresh base in one IndexedDB transaction with the cursor. A page reload in the middle of a bootstrap leaves no partial replica.
+The header, client mutation id and every record come from the same snapshot. `schema` is the server constant `SYNC_SCHEMA`, currently 1; bump it whenever a sync record shape changes. Record lines use pull's shapes and visibility rules, including trashed and archived issues. Comments and activity are excluded.
+
+The trailer counts only record lines. A failure ends the body without a trailer. The client discards any bootstrap without a trailer, and writes a completed bootstrap into a fresh base with its cursor in one IndexedDB transaction. A page reload in the middle leaves no partial replica.
+
+Request errors: a non-member receives 403. A missing or malformed `client_id`, or one registered to another user or workspace, receives 400.
 
 ### Pull
 
@@ -194,7 +199,15 @@ The client never writes push results into base. It pulls after every push.
 
 ### Scopes
 
-`GET sync/scope?client_id=&entity=comments&issue_id=` returns the scope's records. `entity=activity` takes `entity_id`. The client records the scope as loaded in the same IndexedDB transaction as its records, and from then on applies pull changes for it.
+`GET sync/scope?client_id=<uuid>&entity=comments&issue_id=<uuid>` returns all comments for one issue. `entity=activity&entity_id=<uuid>` returns all activity for one entity. Each request runs in one `REPEATABLE READ READ ONLY` transaction with pull's record shapes and visibility rules. There is no pagination.
+
+```json
+{"records": [{"id": "…", "issue_id": "…", "body": "…"}]}
+```
+
+Request errors: a non-member receives 403. A missing or malformed `client_id`, or one registered to another user or workspace, receives 400. An unknown or missing `entity`, or a missing or malformed scope id, also receives 400. An empty scope returns `{"records": []}`.
+
+The client records the scope as loaded in the same IndexedDB transaction as its records, and from then on applies pull changes for it.
 
 ### Serial reads
 

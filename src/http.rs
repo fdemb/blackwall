@@ -24,7 +24,7 @@ use uuid::Uuid;
 mod files;
 use files::{download, export, import, incoming, upload};
 mod sync;
-use sync::{pull, push};
+use sync::{bootstrap, pull, push, scope};
 
 pub struct Actor {
     pub profile: Profile,
@@ -218,6 +218,11 @@ pub fn router_with_web(store: Store, web_dir: std::path::PathBuf) -> Router {
         .route("/api/workspaces/{id}/commands", post(command))
         .route("/api/workspaces/{id}/sync/push", post(push))
         .route("/api/workspaces/{id}/sync/pull", get(pull))
+        .route(
+            "/api/workspaces/{id}/sync/bootstrap",
+            get(bootstrap).layer(tower_http::compression::CompressionLayer::new().gzip(true)),
+        )
+        .route("/api/workspaces/{id}/sync/scope", get(scope))
         .route("/api/workspaces/{id}/issues", get(issues))
         .route("/api/workspaces/{id}/issues/{issue}", get(issue_detail))
         .route("/api/workspaces/{id}/members", get(members))
@@ -833,6 +838,8 @@ async fn markdown(
         command,
         sync::push,
         sync::pull,
+        sync::bootstrap,
+        sync::scope,
         issues,
         issue_detail,
         members,
@@ -863,6 +870,7 @@ async fn markdown(
         crate::store::MutationError,
         crate::store::MutationStatus,
         crate::store::PullResponse,
+        crate::store::ScopeResponse,
         crate::error::ErrorBody
     )),
     info(

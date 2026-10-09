@@ -603,32 +603,7 @@ impl Store {
         client_id: Uuid,
         cursor: Option<&str>,
     ) -> Result<PullResponse> {
-        let mut tx = self.pool.begin().await?;
-        sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
-            .execute(&mut *tx)
-            .await?;
-
-        super::reads::authorize(&mut tx, workspace_id, actor).await?;
-
-        let row = sqlx::query(
-            "SELECT workspace_id, user_id, last_mutation_id FROM sync_clients \
-             WHERE client_id = $1",
-        )
-        .bind(client_id)
-        .fetch_optional(&mut *tx)
-        .await?;
-        let last_mutation_id = if let Some(row) = row {
-            let owner_ws: Uuid = row.try_get("workspace_id")?;
-            let owner: Uuid = row.try_get("user_id")?;
-            if owner_ws != workspace_id || owner != actor {
-                return Err(Error::BadRequest(
-                    "client_id belongs to another user or workspace".into(),
-                ));
-            }
-            row.try_get::<i64, _>("last_mutation_id")?
-        } else {
-            0
-        };
+        let (mut tx, last_mutation_id) = self.sync_read(workspace_id, actor, client_id).await?;
 
         // The pull's own snapshot. Rows committed after it are invisible to
         // the queries below, so the window is exactly "visible here but not
@@ -787,7 +762,14 @@ impl Store {
                 record: None,
             })
             .collect();
-        super::changes::render(&mut tx, workspace_id, actor, &mut changes).await?;
+        super::changes::render(
+            &mut tx,
+            workspace_id,
+            actor,
+            &mut changes,
+            super::changes::RecordShape::Sync,
+        )
+        .await?;
         let more = excluded.is_some();
         let next = excluded
             .map(|txid| snapshot_text(&advance_cursor(&requested, &snapshot, txid)))
@@ -801,6 +783,196 @@ impl Store {
         };
         tx.commit().await?;
         Ok(response)
+    }
+}
+
+impl Store {
+    async fn sync_read(
+        &self,
+        workspace_id: Uuid,
+        actor: Uuid,
+        client_id: Uuid,
+    ) -> Result<(Transaction<'static, Postgres>, i64)> {
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
+            .execute(&mut *tx)
+            .await?;
+
+        super::reads::authorize(&mut tx, workspace_id, actor).await?;
+
+        let row = sqlx::query(
+            "SELECT workspace_id, user_id, last_mutation_id FROM sync_clients \
+             WHERE client_id = $1",
+        )
+        .bind(client_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let last_mutation_id = if let Some(row) = row {
+            let owner_ws: Uuid = row.try_get("workspace_id")?;
+            let owner: Uuid = row.try_get("user_id")?;
+            if owner_ws != workspace_id || owner != actor {
+                return Err(Error::BadRequest(
+                    "client_id belongs to another user or workspace".into(),
+                ));
+            }
+            row.try_get::<i64, _>("last_mutation_id")?
+        } else {
+            0
+        };
+
+        Ok((tx, last_mutation_id))
+    }
+}
+
+/// Bump whenever a sync record shape changes.
+pub const SYNC_SCHEMA: u32 = 1;
+
+const BOOTSTRAP_ENTITIES: &[&str] = &[
+    "workspace",
+    "members",
+    "teams",
+    "labels",
+    "projects",
+    "milestones",
+    "sprints",
+    "views",
+    "alert_preferences",
+    "notifications",
+    "invitations",
+    "integrations",
+    "issues",
+    "time_entries",
+];
+
+pub enum SyncScope {
+    Comments(Uuid),
+    Activity(Uuid),
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct ScopeResponse {
+    pub records: Vec<Value>,
+}
+
+async fn send_line(
+    sender: &tokio::sync::mpsc::Sender<Result<Vec<u8>>>,
+    value: Value,
+) -> Result<()> {
+    let mut bytes = serde_json::to_vec(&value)?;
+    bytes.push(b'\n');
+    sender
+        .send(Ok(bytes))
+        .await
+        .map_err(|_| Error::Internal("bootstrap disconnected".into()))
+}
+
+async fn bootstrap_on(
+    mut tx: Transaction<'static, Postgres>,
+    workspace: Uuid,
+    actor: Uuid,
+    header: Value,
+    sender: &tokio::sync::mpsc::Sender<Result<Vec<u8>>>,
+) -> Result<()> {
+    use tokio_stream::StreamExt;
+
+    send_line(sender, header).await?;
+    let mut records = 0u64;
+    for entity in BOOTSTRAP_ENTITIES {
+        let mut query =
+            super::changes::select(workspace, actor, entity, super::changes::RecordShape::Sync)?;
+        query.push(" ORDER BY 1");
+        let mut rows = query.build_query_as::<(Uuid, Value)>().fetch(&mut *tx);
+        loop {
+            let row = tokio::select! {
+                _ = sender.closed() => return Ok(()),
+                row = rows.next() => row,
+            };
+            let Some((_, record)) = row.transpose()? else {
+                break;
+            };
+            send_line(
+                sender,
+                serde_json::json!({"entity": entity, "record": record}),
+            )
+            .await?;
+            records += 1;
+        }
+    }
+    tx.commit().await?;
+    send_line(sender, serde_json::json!({"end": true, "records": records})).await
+}
+
+impl Store {
+    pub async fn sync_bootstrap(
+        &self,
+        workspace: Uuid,
+        actor: Uuid,
+        client_id: Uuid,
+    ) -> Result<tokio::sync::mpsc::Receiver<Result<Vec<u8>>>> {
+        let store = self.clone();
+        let (sender, receiver) = tokio::sync::mpsc::channel(16);
+        let (ready, started) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            let prepared: Result<_> = async {
+                let (mut tx, last_mutation_id) =
+                    store.sync_read(workspace, actor, client_id).await?;
+                let cursor: String = sqlx::query_scalar("SELECT pg_current_snapshot()::text")
+                    .fetch_one(&mut *tx)
+                    .await?;
+                Ok((
+                    tx,
+                    serde_json::json!({
+                        "cursor": cursor,
+                        "last_mutation_id": last_mutation_id,
+                        "schema": SYNC_SCHEMA,
+                    }),
+                ))
+            }
+            .await;
+            match prepared {
+                Err(error) => {
+                    let _ = ready.send(Err(error));
+                }
+                Ok((tx, header)) => {
+                    if ready.send(Ok(())).is_err() {
+                        return;
+                    }
+                    if let Err(error) = bootstrap_on(tx, workspace, actor, header, &sender).await
+                        && !sender.is_closed()
+                    {
+                        tracing::error!(%workspace, %error, "sync bootstrap failed");
+                        let _ = sender.send(Err(error)).await;
+                    }
+                }
+            }
+        });
+        started
+            .await
+            .map_err(|_| Error::Internal("bootstrap task stopped".into()))??;
+        Ok(receiver)
+    }
+
+    pub async fn sync_scope(
+        &self,
+        workspace: Uuid,
+        actor: Uuid,
+        client_id: Uuid,
+        scope: SyncScope,
+    ) -> Result<ScopeResponse> {
+        let (mut tx, _) = self.sync_read(workspace, actor, client_id).await?;
+        let (entity, column, id) = match scope {
+            SyncScope::Comments(id) => ("comments", "issue_id", id),
+            SyncScope::Activity(id) => ("activity", "entity_id", id),
+        };
+        let mut query =
+            super::changes::select(workspace, actor, entity, super::changes::RecordShape::Sync)?;
+        query.push(format!(" AND t.{column}=")).push_bind(id);
+        query.push(" ORDER BY t.id");
+        let rows: Vec<(Uuid, Value)> = query.build_query_as().fetch_all(&mut *tx).await?;
+        tx.commit().await?;
+        Ok(ScopeResponse {
+            records: rows.into_iter().map(|(_, record)| record).collect(),
+        })
     }
 }
 

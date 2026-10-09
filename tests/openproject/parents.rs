@@ -211,7 +211,7 @@ async fn parent_in_unmapped_project_links_after_mapping() {
 }
 
 #[tokio::test]
-async fn reparenting_moves_link_and_marks_old_and_new_parents() {
+async fn reparenting_moves_link_and_marks_only_the_child() {
     let db = support::TestDatabase::new().await;
     let store = Store::connect(&db.url).await.unwrap();
     let owner = account(&store).await;
@@ -260,11 +260,19 @@ async fn reparenting_moves_link_and_marks_old_and_new_parents() {
     .fetch_all(&store.pool)
     .await
     .unwrap();
-    for wp in [8, 9, 7] {
-        assert!(
-            marked.contains(&issue_id(&list, wp)),
-            "change feed must mark the child and both parents"
-        );
+    assert_eq!(marked, vec![child]);
+    for (wp, total) in [(7, 0), (9, 1)] {
+        let parent = issue_id(&list, wp);
+        let (status, detail) = call(
+            &app,
+            &owner,
+            "GET",
+            &format!("/api/workspaces/{workspace}/issues/{parent}"),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(detail["subtask_total"], total);
     }
     server.abort();
     store.pool.close().await;
