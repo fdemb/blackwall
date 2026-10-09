@@ -38,6 +38,7 @@
   },
   "devDependencies": {
     "@tanstack/react-query-devtools": "^5.104.1",
+    "fake-indexeddb": "^6.2.5",
     "vite-plus": "catalog:"
   },
   "packageManager": "pnpm@12.8.1"

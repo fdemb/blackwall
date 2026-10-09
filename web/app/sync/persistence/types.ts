@@ -1,0 +1,62 @@
+import type { Change, Entity } from "../records";
+import type { PendingMutation } from "../store";
+
+export interface ReplicaMeta {
+  schema: number;
+  serverSchema: number;
+  sessionId: string;
+  workspaceId: string;
+  clientId: string;
+  cursor: string | null;
+  lastMutationId: number;
+  nextMutationId: number;
+}
+
+export type Scope =
+  | { entity: "comments"; issueId: string }
+  | { entity: "activity"; entityId: string };
+
+export interface LoadedReplica {
+  meta: ReplicaMeta;
+  records: Partial<Record<Entity, readonly object[]>>;
+  outbox: readonly PendingMutation[];
+  scopes: readonly Scope[];
+}
+
+/** Each write is one atomic transaction, including its metadata and outbox changes. */
+export interface Replica {
+  load(): Promise<LoadedReplica>;
+  writeBootstrap(input: {
+    cursor: string;
+    lastMutationId: number;
+    serverSchema: number;
+    records: Partial<Record<Entity, readonly object[]>>;
+    entities: readonly Entity[];
+  }): Promise<void>;
+  applyPull(input: {
+    changes: readonly Change[];
+    cursor: string;
+    acknowledgedUpTo: number | null;
+  }): Promise<void>;
+  writeScope(input: { scope: Scope; records: readonly object[] }): Promise<void>;
+  appendMutation(build: (id: number) => Omit<PendingMutation, "id">): Promise<PendingMutation>;
+  allocateMutationId(): Promise<number>;
+  close(): void;
+}
+
+export interface ReplicaIdentity {
+  sessionId: string;
+  workspaceId: string;
+}
+
+export interface ReplicaStorage {
+  open(input: ReplicaIdentity & { schema: number }): Promise<Replica>;
+  list(): Promise<readonly ReplicaIdentity[]>;
+  delete(input: ReplicaIdentity): Promise<void>;
+  deleteAllExcept(sessionId: string | null): Promise<void>;
+}
+
+/** External closure only. Explicit Replica.close() does not notify. */
+export type ReplicaCloseListener = (
+  event: ReplicaIdentity & { reason: "versionchange" | "terminated" },
+) => void;
