@@ -77,6 +77,8 @@ Sync clients push ordered mutations to `POST /api/workspaces/{id}/sync/push` wit
 
 `GET /api/workspaces/{id}/sync/scope?client_id=<uuid>&entity=comments&issue_id=<uuid>` returns `{records:[...]}` for one issue. `entity=activity&entity_id=<uuid>` loads one entity's history. Both read all scope records from one repeatable-read snapshot. Bootstrap and scope reject non-members with 403 and invalid or mismatched client ids with 400. Scope also rejects unknown entities and missing or malformed scope ids with 400.
 
+`GET /api/workspaces/{id}/sync/events?client_id=<uuid>` streams `text/event-stream` pokes. Each poke is `event: poke` with `data: {}`, sent once on connect and once per committing workspace transaction, coalesced to one per 250 ms with keep-alive comments every 15 seconds. Each stream ends after 30 minutes; clients reconnect. Non-members get 403 and invalid or mismatched client ids get 400.
+
 Uploads may send `expected_versions` as multipart JSON alongside the file. Imports may send `expected_versions` with `issues` or `transfer`. Creates (`create_team`, `create_stage`, `create_label`, `create_project`, `create_milestone`, `create_sprint`, `create_issue` through `IssueInput`, `add_comment`, `log_time`, `save_view`, `create_integration`) accept an optional client-chosen `id`, so offline clients can reference records before the server confirms them. Reusing an existing id returns 409; the nil UUID returns 400.
 
 The API includes membership and invitations, workflows, labels, issue relations, projects, milestones, sprint carryover, saved views, comments, uploads, inbox preferences, time corrections, reports, search, bulk actions, trash, activity, JSON transfer, signed webhooks, and account recovery.

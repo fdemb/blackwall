@@ -192,10 +192,11 @@ The client never writes push results into base. It pulls after every push.
 
 ### Poke
 
-`GET sync/events?client_id=` is a server-sent event stream. It sends an event, with no data the client needs, whenever a transaction touching the workspace commits.
+`GET sync/events?client_id=<uuid>` is a server-sent event stream. Each poke is `event: poke` with `data: {}`. The server sends one poke immediately on connect, so the client pulls whatever it missed while disconnected, and one poke whenever a transaction touching the workspace commits.
 
-- `mark_change` calls `pg_notify('blackwall_changes', workspace_id::text)`. PostgreSQL collapses identical notifications within a transaction.
-- One `PgListener` per server process fans notifications out to that workspace's open streams. `src/store/queue.rs` already uses `PgListener` for jobs.
+- `mark_change` calls `pg_notify('blackwall_changes', workspace_id::text)` when called with a non-null workspace and id. PostgreSQL collapses identical notifications within a transaction and drops them on rollback.
+- One `PgListener` per server process listens on `blackwall_changes` and fans notifications out through a broadcast channel to that workspace's open streams. `src/store/queue.rs` already uses `PgListener` for jobs. A lagged subscriber treats the gap as a poke. After every reconnect the listener broadcasts a wildcard poke (`Uuid::nil()`) that every subscriber accepts, because notifications may have been lost.
+- Pokes coalesce to at most one per 250 ms per stream, with a trailing poke when notifications arrive inside the window. Keep-alive comments go every 15 seconds. Each stream ends after 30 minutes; clients reconnect, which re-runs authentication and the membership check.
 - On an event, the leader pulls. Coalesce events that arrive while a pull is running into one follow-up pull.
 - Polling remains the fallback. Pull every 30 seconds while the stream is down, and also on window focus and on the browser's `online` event.
 

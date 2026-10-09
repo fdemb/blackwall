@@ -826,6 +826,34 @@ impl Store {
 
         Ok((tx, last_mutation_id))
     }
+
+    /// The same membership and client checks as pull, done once when an
+    /// event stream connects. Streams hold no database connection afterwards.
+    pub async fn sync_events_check(
+        &self,
+        workspace_id: Uuid,
+        actor: Uuid,
+        client_id: Uuid,
+    ) -> Result<()> {
+        let mut conn = self.pool.acquire().await?;
+        super::reads::authorize(&mut conn, workspace_id, actor).await?;
+
+        if let Some(row) =
+            sqlx::query("SELECT workspace_id, user_id FROM sync_clients WHERE client_id = $1")
+                .bind(client_id)
+                .fetch_optional(&mut *conn)
+                .await?
+        {
+            let owner_ws: Uuid = row.try_get("workspace_id")?;
+            let owner: Uuid = row.try_get("user_id")?;
+            if owner_ws != workspace_id || owner != actor {
+                return Err(Error::BadRequest(
+                    "client_id belongs to another user or workspace".into(),
+                ));
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Bump whenever a sync record shape changes.

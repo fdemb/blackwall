@@ -71,6 +71,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let bind = std::env::var("BIND_ADDR").unwrap_or_else(|_| "127.0.0.1:3000".into());
     let listener = tokio::net::TcpListener::bind(&bind).await?;
 
+    // One change listener per HTTP process; the worker never starts one.
+    let _sync_events = store.spawn_sync_events();
     tracing::info!(address = %listener.local_addr()?, "Blackwall listening");
     axum::serve(
         listener,

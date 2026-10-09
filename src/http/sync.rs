@@ -1,5 +1,8 @@
 use super::*;
 use crate::store::{PullResponse, PushRequest, PushResponse, ScopeResponse, SyncScope};
+use axum::response::sse::{Event, KeepAlive, Sse};
+use tokio_stream::Stream;
+use tokio_stream::wrappers::ReceiverStream;
 
 #[derive(Debug, Deserialize, utoipa::IntoParams)]
 #[into_params(parameter_in = Query)]
@@ -139,4 +142,83 @@ pub(super) async fn scope(
             .sync_scope(id, actor.profile.id, client_id, scope)
             .await?,
     ))
+}
+
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct EventsQuery {
+    /// Client replica id. A client_id owned by another user or workspace is 400.
+    pub client_id: Option<String>,
+}
+
+fn poke_event() -> Event {
+    Event::default().event("poke").data("{}")
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/workspaces/{id}/sync/events",
+    params(("id" = Uuid, Path), EventsQuery),
+    responses((status = 200, content_type = "text/event-stream")),
+    description = "Server-sent pokes for workspace commits. Sends one poke on connect and one per commit, coalesced to one per 250 ms with keep-alive comments every 15 seconds. Each stream ends after 30 minutes; clients reconnect."
+)]
+pub(super) async fn events(
+    State(store): State<Store>,
+    actor: Actor,
+    Path(id): Path<Uuid>,
+    Query(query): Query<EventsQuery>,
+) -> Result<Sse<impl Stream<Item = std::result::Result<Event, std::convert::Infallible>> + Send>> {
+    let client_id = client_id(query.client_id.as_deref())?;
+    store
+        .sync_events_check(id, actor.profile.id, client_id)
+        .await?;
+    let workspace = id;
+    let mut subscriber = store.sync_broadcast.subscribe();
+    let config = store.sync_events.clone();
+    let keepalive = config.keepalive;
+    let (sender, receiver) =
+        tokio::sync::mpsc::channel::<std::result::Result<Event, std::convert::Infallible>>(16);
+    tokio::spawn(async move {
+        if sender.send(Ok(poke_event())).await.is_err() {
+            return;
+        }
+        let mut last_send = tokio::time::Instant::now();
+        let mut pending = false;
+        let deadline = tokio::time::Instant::now() + config.lifetime;
+        loop {
+            let window_end = last_send + config.coalesce;
+            tokio::select! {
+                biased;
+                _ = tokio::time::sleep_until(deadline) => break,
+                received = subscriber.recv() => {
+                    let poke = match received {
+                        Ok(changed) => changed == workspace || changed.is_nil(),
+                        // A gap means something was missed: pull.
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => true,
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                    };
+                    if !poke {
+                        continue;
+                    }
+                    if !pending && tokio::time::Instant::now().duration_since(last_send) >= config.coalesce
+                    {
+                        if sender.send(Ok(poke_event())).await.is_err() {
+                            break;
+                        }
+                        last_send = tokio::time::Instant::now();
+                    } else {
+                        pending = true;
+                    }
+                },
+                _ = tokio::time::sleep_until(window_end), if pending => {
+                    if sender.send(Ok(poke_event())).await.is_err() {
+                        break;
+                    }
+                    last_send = tokio::time::Instant::now();
+                    pending = false;
+                },
+            }
+        }
+    });
+    Ok(Sse::new(ReceiverStream::new(receiver)).keep_alive(KeepAlive::new().interval(keepalive)))
 }

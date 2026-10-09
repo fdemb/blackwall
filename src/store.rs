@@ -19,6 +19,7 @@ mod reads;
 mod sync;
 mod transfer;
 
+pub use crate::sync_events::SyncEventsConfig;
 pub use changes::Change;
 pub(crate) use queue::LEASE_SECONDS;
 pub use queue::{Claim, NewJob, Outbox};
@@ -31,8 +32,8 @@ pub use sync::{
 };
 
 /// Tuning for [`Store::connect_with_config`]. Production uses [`Default`],
-/// which reads pool sizes from the environment and bootstrap deadlines from
-/// the named constants in `store::sync`.
+/// which reads pool sizes from the environment and bootstrap and sync-events
+/// deadlines from the named constants in `store::sync` and `sync_events`.
 #[derive(Clone, Debug)]
 pub struct StoreConfig {
     pub max_connections: u32,
@@ -40,6 +41,7 @@ pub struct StoreConfig {
     pub bootstrap_permit_wait: Duration,
     pub bootstrap_send_timeout: Duration,
     pub bootstrap_overall_timeout: Duration,
+    pub sync_events: SyncEventsConfig,
 }
 
 impl Default for StoreConfig {
@@ -50,6 +52,7 @@ impl Default for StoreConfig {
             bootstrap_permit_wait: sync::BOOTSTRAP_PERMIT_WAIT,
             bootstrap_send_timeout: sync::BOOTSTRAP_SEND_TIMEOUT,
             bootstrap_overall_timeout: sync::BOOTSTRAP_OVERALL_TIMEOUT,
+            sync_events: SyncEventsConfig::default(),
         }
     }
 }
@@ -78,6 +81,8 @@ pub struct Store {
     pub(crate) bootstrap_permit_wait: Duration,
     pub(crate) bootstrap_send_timeout: Duration,
     pub(crate) bootstrap_overall_timeout: Duration,
+    pub(crate) sync_broadcast: tokio::sync::broadcast::Sender<Uuid>,
+    pub(crate) sync_events: SyncEventsConfig,
 }
 
 pub struct NewAttachment {
@@ -266,8 +271,24 @@ impl Store {
             bootstrap_permit_wait: config.bootstrap_permit_wait,
             bootstrap_send_timeout: config.bootstrap_send_timeout,
             bootstrap_overall_timeout: config.bootstrap_overall_timeout,
+            sync_broadcast: tokio::sync::broadcast::channel(
+                crate::sync_events::SYNC_EVENTS_CHANNEL,
+            )
+            .0,
+            sync_events: config.sync_events,
             pool,
         })
+    }
+
+    /// Starts the workspace-change listener that fans `blackwall_changes`
+    /// notifications out to `/sync/events` streams. Call once when the HTTP
+    /// server starts; the worker never calls it.
+    pub fn spawn_sync_events(&self) -> tokio::task::JoinHandle<()> {
+        crate::sync_events::spawn_listener(
+            self.pool.clone(),
+            self.sync_broadcast.clone(),
+            self.sync_events.reconnect_delay,
+        )
     }
 
     pub async fn operation(
