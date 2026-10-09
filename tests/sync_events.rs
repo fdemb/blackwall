@@ -383,7 +383,7 @@ async fn events_burst_coalesces_to_one_trailing_poke() {
     let store = connect_store(
         &database.url,
         events_config(
-            Duration::from_millis(500),
+            Duration::from_millis(1500),
             Duration::from_secs(60),
             Duration::from_secs(30 * 60),
             Duration::from_secs(1),
@@ -405,19 +405,18 @@ async fn events_burst_coalesces_to_one_trailing_poke() {
     .into_body();
     drain_poke(&mut body).await;
 
-    // Separate commits inside one coalesce window: exactly one trailing poke,
-    // not zero and not one per commit.
+    // Five fast autocommitted notifies land inside one coalesce window:
+    // exactly one trailing poke, not zero and not one per notify.
     for _ in 0..5 {
-        sqlx::query("SELECT mark_change($1, 'issues', $2)")
-            .bind(ws)
-            .bind(Uuid::new_v4())
+        sqlx::query("SELECT pg_notify('blackwall_changes', $1)")
+            .bind(ws.to_string())
             .execute(&store.pool)
             .await
             .unwrap();
     }
 
-    expect_poke(&mut body, Duration::from_secs(2)).await;
-    expect_no_data(&mut body, Duration::from_millis(800)).await;
+    expect_poke(&mut body, Duration::from_secs(5)).await;
+    expect_no_data(&mut body, Duration::from_millis(2000)).await;
 
     drop(app);
     store.pool.close().await;
@@ -635,19 +634,369 @@ async fn events_keepalive_comments() {
     )
     .await
     .into_body();
-    drain_poke(&mut body).await;
 
-    let found = tokio::time::timeout(Duration::from_secs(2), async {
-        while let Some(bytes) = next_data(&mut body, Duration::from_secs(2)).await {
-            if is_comment(&bytes) {
-                return true;
-            }
+    // Frames may arrive in any order: the keep-alive comment can precede the
+    // initial poke when the stream is slow to yield it.
+    let mut seen_poke = false;
+    let mut seen_comment = false;
+    for _ in 0..5 {
+        let bytes = next_data(&mut body, Duration::from_secs(2))
+            .await
+            .expect("expected frame");
+        if is_poke(&bytes) {
+            seen_poke = true;
         }
-        false
-    })
+        if is_comment(&bytes) {
+            seen_comment = true;
+        }
+        if seen_poke && seen_comment {
+            break;
+        }
+    }
+    assert!(seen_poke, "no poke in the first frames");
+    assert!(seen_comment, "no keep-alive comment arrived");
+
+    drop(app);
+    store.pool.close().await;
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn events_failed_reconnect_recovers_with_wildcard() {
+    use std::str::FromStr;
+    let database = support::TestDatabase::new().await;
+    let store = Store::connect_with_config(
+        &database.url,
+        events_config(
+            Duration::from_millis(250),
+            Duration::from_secs(60),
+            Duration::from_secs(30 * 60),
+            Duration::from_millis(50),
+        ),
+    )
     .await
     .unwrap();
-    assert!(found, "no keep-alive comment arrived");
+    // A dedicated role used only by the listener, so blocking its reconnects
+    // never affects the request pool or other tests sharing the cluster role.
+    let role = format!("bw_evt_{}", Uuid::new_v4().simple());
+    let password = "test-listener-pw-123";
+    sqlx::query(&format!(
+        "CREATE ROLE \"{role}\" WITH LOGIN PASSWORD '{password}'"
+    ))
+    .execute(&store.pool)
+    .await
+    .unwrap();
+    let options = sqlx::postgres::PgConnectOptions::from_str(&database.url).unwrap();
+    sqlx::query(&format!(
+        "GRANT CONNECT ON DATABASE \"{}\" TO \"{role}\"",
+        options.get_database().unwrap()
+    ))
+    .execute(&store.pool)
+    .await
+    .unwrap();
+    let listener_url = format!(
+        "postgres://{role}:{password}@{}:{}/{}",
+        options.get_host(),
+        options.get_port(),
+        options.get_database().unwrap()
+    );
+    let listener = store.spawn_sync_events_with_url(&listener_url);
+    wait_for_listener(&store).await;
+
+    let app = router(store.clone());
+    let owner = account(&store, "owner").await;
+    let (ws_a, team_a) = setup(&app, &owner).await;
+    let ws_b = workspace(&app, &owner, "Other").await;
+    let client_a = Uuid::new_v4();
+    let client_b = Uuid::new_v4();
+
+    let mut body_a = sse_response(
+        &app,
+        Some(&owner.token),
+        ws_a,
+        &format!("?client_id={client_a}"),
+    )
+    .await
+    .into_body();
+    let mut body_b = sse_response(
+        &app,
+        Some(&owner.token),
+        ws_b,
+        &format!("?client_id={client_b}"),
+    )
+    .await
+    .into_body();
+    drain_poke(&mut body_a).await;
+    drain_poke(&mut body_b).await;
+
+    // Block reconnects first, then kill the listener: every reconnect attempt
+    // fails until the role is allowed back in.
+    sqlx::query(&format!("ALTER ROLE \"{role}\" NOLOGIN"))
+        .execute(&store.pool)
+        .await
+        .unwrap();
+    let pid: i32 = sqlx::query_scalar(
+        "SELECT pid FROM pg_stat_activity WHERE datname = current_database() \
+         AND query LIKE 'LISTEN%'",
+    )
+    .fetch_one(&store.pool)
+    .await
+    .unwrap();
+    sqlx::query("SELECT pg_terminate_backend($1)")
+        .bind(pid)
+        .execute(&store.pool)
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    // A change committed while reconnects fail is lost to the listener.
+    sqlx::query("SELECT mark_change($1, 'issues', $2)")
+        .bind(ws_a)
+        .bind(Uuid::new_v4())
+        .execute(&store.pool)
+        .await
+        .unwrap();
+
+    sqlx::query(&format!("ALTER ROLE \"{role}\" LOGIN"))
+        .execute(&store.pool)
+        .await
+        .unwrap();
+
+    // Recovery broadcasts the wildcard, so every subscriber pokes.
+    expect_poke(&mut body_a, Duration::from_secs(10)).await;
+    expect_poke(&mut body_b, Duration::from_secs(10)).await;
+
+    // A later commit still pokes normally: only its workspace.
+    created(
+        &app,
+        &owner,
+        ws_a,
+        json!({"type": "create_issue", "input": {"team_id": team_a, "title": "After"}}),
+    )
+    .await;
+    expect_poke(&mut body_a, Duration::from_secs(2)).await;
+    expect_no_data(&mut body_b, Duration::from_millis(500)).await;
+
+    drop(app);
+    listener.abort();
+    sqlx::query(&format!(
+        "REVOKE CONNECT ON DATABASE \"{}\" FROM \"{role}\"",
+        options.get_database().unwrap()
+    ))
+    .execute(&store.pool)
+    .await
+    .unwrap();
+    sqlx::query(&format!("DROP ROLE IF EXISTS \"{role}\""))
+        .execute(&store.pool)
+        .await
+        .unwrap();
+    store.pool.close().await;
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn events_initial_listen_pokes_subscriber() {
+    let database = support::TestDatabase::new().await;
+    let store = Store::connect_with_config(
+        &database.url,
+        events_config(
+            Duration::from_millis(250),
+            Duration::from_secs(60),
+            Duration::from_secs(30 * 60),
+            Duration::from_millis(50),
+        ),
+    )
+    .await
+    .unwrap();
+    let app = router(store.clone());
+    let owner = account(&store, "owner").await;
+    let (ws, team) = setup(&app, &owner).await;
+    let client = Uuid::new_v4();
+
+    // Subscribe before the listener has finished its first LISTEN.
+    let mut body = sse_response(
+        &app,
+        Some(&owner.token),
+        ws,
+        &format!("?client_id={client}"),
+    )
+    .await
+    .into_body();
+    drain_poke(&mut body).await;
+
+    // A change committed before LISTEN has no listener to receive it.
+    sqlx::query("SELECT mark_change($1, 'issues', $2)")
+        .bind(ws)
+        .bind(Uuid::new_v4())
+        .execute(&store.pool)
+        .await
+        .unwrap();
+
+    // The first successful LISTEN broadcasts the wildcard that covers it.
+    let listener = store.spawn_sync_events();
+    wait_for_listener(&store).await;
+    expect_poke(&mut body, Duration::from_secs(10)).await;
+
+    // Later commits still poke normally.
+    created(
+        &app,
+        &owner,
+        ws,
+        json!({"type": "create_issue", "input": {"team_id": team, "title": "After"}}),
+    )
+    .await;
+    expect_poke(&mut body, Duration::from_secs(2)).await;
+
+    drop(app);
+    listener.abort();
+    store.pool.close().await;
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn events_lifetime_cap_with_unread_body() {
+    let database = support::TestDatabase::new().await;
+    let store = connect_store(
+        &database.url,
+        events_config(
+            Duration::from_millis(250),
+            Duration::from_secs(60),
+            Duration::from_millis(200),
+            Duration::from_secs(1),
+        ),
+    )
+    .await;
+    let app = router(store.clone());
+    let owner = account(&store, "owner").await;
+    let (ws, _) = setup(&app, &owner).await;
+    let client = Uuid::new_v4();
+
+    let mut body = sse_response(
+        &app,
+        Some(&owner.token),
+        ws,
+        &format!("?client_id={client}"),
+    )
+    .await
+    .into_body();
+    // Never read: the task must still end at the deadline instead of blocking
+    // on the full channel.
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if store.sync_broadcast_receiver_count() == 0 {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("stream task did not end at the lifetime cap");
+
+    // Resuming reads delivers at most the one buffered poke, then the end.
+    let mut pokes = 0;
+    for _ in 0..4 {
+        match tokio::time::timeout(Duration::from_secs(2), body.frame()).await {
+            Ok(Some(Ok(frame))) => {
+                if let Ok(data) = frame.into_data()
+                    && is_poke(&data)
+                {
+                    pokes += 1;
+                }
+            }
+            Ok(Some(Err(_))) | Ok(None) => break,
+            Err(_) => panic!("stream did not end after the lifetime cap"),
+        }
+    }
+    assert!(
+        pokes <= 1,
+        "expected at most one buffered poke, got {pokes}"
+    );
+    expect_no_data(&mut body, Duration::from_millis(300)).await;
+
+    drop(app);
+    store.pool.close().await;
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn events_listener_with_single_connection_pool() {
+    let database = support::TestDatabase::new().await;
+    let config = StoreConfig {
+        max_connections: 1,
+        acquire_timeout: Duration::from_secs(2),
+        ..events_config(
+            Duration::from_millis(250),
+            Duration::from_secs(60),
+            Duration::from_secs(30 * 60),
+            Duration::from_millis(50),
+        )
+    };
+    let store = Store::connect_with_config(&database.url, config)
+        .await
+        .unwrap();
+    let listener = store.spawn_sync_events();
+    wait_for_listener(&store).await;
+
+    // The listener holds no pool slot, so a normal request succeeds with only
+    // one connection in the pool instead of timing out on acquire.
+    let app = router(store.clone());
+    let owner = account(&store, "owner").await;
+    let (_ws, _team) = setup(&app, &owner).await;
+
+    drop(app);
+    listener.abort();
+    store.pool.close().await;
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn events_dropped_body_releases_receiver() {
+    let database = support::TestDatabase::new().await;
+    let store = connect_store(
+        &database.url,
+        events_config(
+            Duration::from_millis(250),
+            Duration::from_secs(60),
+            Duration::from_secs(30 * 60),
+            Duration::from_secs(1),
+        ),
+    )
+    .await;
+    let app = router(store.clone());
+    let owner = account(&store, "owner").await;
+    let (ws, _) = setup(&app, &owner).await;
+
+    assert_eq!(store.sync_broadcast_receiver_count(), 0);
+    let mut bodies = Vec::new();
+    for _ in 0..3 {
+        let client = Uuid::new_v4();
+        let mut body = sse_response(
+            &app,
+            Some(&owner.token),
+            ws,
+            &format!("?client_id={client}"),
+        )
+        .await
+        .into_body();
+        drain_poke(&mut body).await;
+        bodies.push(body);
+    }
+    assert_eq!(store.sync_broadcast_receiver_count(), 3);
+    drop(bodies);
+
+    // Dropped idle bodies end their tasks promptly instead of lingering until
+    // the lifetime cap.
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if store.sync_broadcast_receiver_count() == 0 {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("idle streams did not release their receivers");
 
     drop(app);
     store.pool.close().await;

@@ -17,6 +17,9 @@ pub const SYNC_EVENTS_RECONNECT_DELAY: Duration = Duration::from_secs(1);
 /// workspace; overflow surfaces as `Lagged`, which subscribers treat as a poke.
 pub const SYNC_EVENTS_CHANNEL: usize = 1024;
 
+/// Cap for the listener's reconnect backoff.
+const MAX_RECONNECT_DELAY: Duration = Duration::from_secs(30);
+
 /// Tuning for the sync event stream. Production uses [`Default`]; tests
 /// shorten the durations through [`crate::store::StoreConfig`].
 #[derive(Clone, Debug)]
@@ -39,65 +42,98 @@ impl Default for SyncEventsConfig {
 }
 
 /// One `PgListener` per server process. Started when the HTTP server starts,
-/// never in the worker. The only database connection is the listener's;
-/// subscribers share it through the broadcast channel.
+/// never in the worker. The listener opens its own dedicated connection
+/// outside the request pool, so it never takes a pool slot; subscribers share
+/// it through the broadcast channel. The pool is only watched for shutdown.
 pub fn spawn_listener(
     pool: PgPool,
+    database_url: String,
     sender: tokio::sync::broadcast::Sender<Uuid>,
     reconnect_delay: Duration,
 ) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(async move { run(&pool, &sender, reconnect_delay).await })
+    tokio::spawn(async move { run(&pool, &database_url, &sender, reconnect_delay).await })
 }
 
-async fn connect(pool: &PgPool) -> Result<PgListener, sqlx::Error> {
-    let mut listener = PgListener::connect_with(pool).await?;
-    // Surface pool closure so the task can exit instead of waiting forever.
-    listener.ignore_pool_close_event(false);
+async fn connect(database_url: &str) -> Result<PgListener, sqlx::Error> {
+    let mut listener = PgListener::connect(database_url).await?;
+    // The task owns reconnects; a failed eager reconnect must not silently
+    // recover on a later `try_recv` without a wildcard.
+    listener.eager_reconnect(false);
     listener.listen("blackwall_changes").await?;
     Ok(listener)
 }
 
-async fn run(pool: &PgPool, sender: &tokio::sync::broadcast::Sender<Uuid>, delay: Duration) {
-    let mut listener = loop {
-        match connect(pool).await {
-            Ok(listener) => break listener,
-            Err(error) => {
-                tracing::warn!(error = %error, "sync events listen failed; retrying");
-                tokio::time::sleep(delay).await;
-            }
-        }
+async fn run(
+    pool: &PgPool,
+    database_url: &str,
+    sender: &tokio::sync::broadcast::Sender<Uuid>,
+    delay: Duration,
+) {
+    let initial = if delay.is_zero() {
+        Duration::from_millis(10)
+    } else {
+        delay
     };
-    tracing::info!("sync events listener connected");
-
+    let mut backoff = initial;
     loop {
-        match listener.try_recv().await {
-            Ok(Some(notification)) => match notification.payload().parse::<Uuid>() {
-                Ok(workspace) => {
-                    let _ = sender.send(workspace);
-                }
-                Err(_) => {
-                    tracing::warn!(
-                        payload = notification.payload(),
-                        "sync events invalid payload; poking all subscribers"
-                    );
-                    let _ = sender.send(Uuid::nil());
-                }
-            },
-            // The connection dropped and (with eager reconnect) is already
-            // re-listening. Notifications in between may be lost, so poke
-            // every subscriber; each pulls what it missed.
-            Ok(None) => {
-                tracing::warn!("sync events listener reconnected; poking all subscribers");
+        if pool.is_closed() {
+            return;
+        }
+        match connect(database_url).await {
+            Ok(mut listener) => {
+                tracing::info!("sync events listener connected");
+                // After every successful LISTEN, including the first:
+                // notifications may have been lost while disconnected.
                 let _ = sender.send(Uuid::nil());
+                backoff = initial;
+                loop {
+                    if pool.is_closed() {
+                        return;
+                    }
+                    match listener.try_recv().await {
+                        Ok(Some(notification)) => match notification.payload().parse::<Uuid>() {
+                            Ok(workspace) => {
+                                let _ = sender.send(workspace);
+                            }
+                            Err(_) => {
+                                tracing::warn!(
+                                    payload = notification.payload(),
+                                    "sync events invalid payload; poking all subscribers"
+                                );
+                                let _ = sender.send(Uuid::nil());
+                            }
+                        },
+                        // The connection dropped. Drop the listener and
+                        // reconnect with backoff; the next successful LISTEN
+                        // broadcasts the wildcard that covers the gap.
+                        Ok(None) => {
+                            tracing::warn!("sync events listener connection lost; reconnecting");
+                            break;
+                        }
+                        Err(error) => {
+                            if pool.is_closed() {
+                                return;
+                            }
+                            tracing::warn!(
+                                error = %error,
+                                "sync events notification failed; reconnecting"
+                            );
+                            break;
+                        }
+                    }
+                }
             }
             Err(error) => {
-                if matches!(error, sqlx::Error::PoolClosed) {
-                    tracing::info!("sync events listener pool closed");
+                if pool.is_closed() {
                     return;
                 }
-                tracing::warn!(error = %error, "sync events notification failed; retrying");
-                tokio::time::sleep(delay).await;
+                tracing::warn!(error = %error, "sync events listen failed; retrying");
             }
         }
+        tokio::select! {
+            _ = tokio::time::sleep(backoff) => {},
+            _ = pool.close_event() => return,
+        }
+        backoff = std::cmp::min(backoff.saturating_mul(2), MAX_RECONNECT_DELAY);
     }
 }

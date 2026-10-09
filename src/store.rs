@@ -83,6 +83,7 @@ pub struct Store {
     pub(crate) bootstrap_overall_timeout: Duration,
     pub(crate) sync_broadcast: tokio::sync::broadcast::Sender<Uuid>,
     pub(crate) sync_events: SyncEventsConfig,
+    pub(crate) database_url: String,
 }
 
 pub struct NewAttachment {
@@ -276,16 +277,30 @@ impl Store {
             )
             .0,
             sync_events: config.sync_events,
+            database_url: url.to_owned(),
             pool,
         })
+    }
+
+    /// Open broadcast receivers held by live `/sync/events` streams.
+    pub fn sync_broadcast_receiver_count(&self) -> usize {
+        self.sync_broadcast.receiver_count()
     }
 
     /// Starts the workspace-change listener that fans `blackwall_changes`
     /// notifications out to `/sync/events` streams. Call once when the HTTP
     /// server starts; the worker never calls it.
     pub fn spawn_sync_events(&self) -> tokio::task::JoinHandle<()> {
+        self.spawn_sync_events_with_url(&self.database_url)
+    }
+
+    /// Starts the listener with an explicit database URL for the dedicated
+    /// connection. Production passes the pool's URL; tests point it at a
+    /// dedicated role to block reconnects without affecting the pool.
+    pub fn spawn_sync_events_with_url(&self, database_url: &str) -> tokio::task::JoinHandle<()> {
         crate::sync_events::spawn_listener(
             self.pool.clone(),
+            database_url.to_owned(),
             self.sync_broadcast.clone(),
             self.sync_events.reconnect_delay,
         )
