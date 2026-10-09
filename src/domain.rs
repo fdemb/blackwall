@@ -318,6 +318,17 @@ pub fn default_archive_days() -> Option<u32> {
     Some(30)
 }
 
+/// Default stages for a new team, in order. Positions are the index. The sync
+/// client predicts them from client-chosen ids (`CreateTeam::default_stage_ids`).
+pub(crate) fn default_stages() -> [(&'static str, StageKind); 4] {
+    [
+        ("Backlog", StageKind::Backlog),
+        ("Todo", StageKind::Planned),
+        ("In progress", StageKind::Active),
+        ("Done", StageKind::Done),
+    ]
+}
+
 pub(crate) fn validate_archive_days(value: Option<u32>) -> Result<()> {
     if let Some(days) = value
         && !(1..=3650).contains(&days)
@@ -383,6 +394,7 @@ mod tests {
                     id: None,
                     name: "Infra".into(),
                     members: vec![owner],
+                    default_stage_ids: None,
                 },
                 Utc::now(),
             )
@@ -465,6 +477,7 @@ mod tests {
                         id: Some(chosen),
                         name: "Taken".into(),
                         members: vec![],
+                        default_stage_ids: None,
                     },
                     now
                 ),

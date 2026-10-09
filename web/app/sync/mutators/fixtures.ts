@@ -501,9 +501,18 @@ export function seedStore(actor: Id = MEMBER): SyncStore {
 }
 
 /** Appends one mutation to the outbox, replaying synchronously. */
-export function mutate(store: SyncStore, name: string, args: unknown, at: string = AT): number {
+export function mutate(
+  store: SyncStore,
+  name: string,
+  args: unknown,
+  at: string = AT,
+  local?: unknown,
+): number {
   const id = store.pending().length + 1;
-  store.setPending([...store.pending(), { id, name, args, at }]);
+  store.setPending([
+    ...store.pending(),
+    { id, name, args, at, ...(local === undefined ? {} : { local }) },
+  ]);
   return id;
 }
 

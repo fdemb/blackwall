@@ -45,6 +45,7 @@ async fn setup() -> (
                 id: None,
                 name: "Team".into(),
                 members: vec![],
+                default_stage_ids: None,
             },
             BTreeMap::new(),
             None,

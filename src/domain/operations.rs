@@ -746,30 +746,57 @@ impl Workspace {
         let mut fields = vec![];
 
         match command {
-            Command::CreateTeam { id, name, members } => {
+            Command::CreateTeam {
+                id,
+                name,
+                members,
+                default_stage_ids,
+            } => {
                 self.admin(actor)?;
                 text(&name, 200)?;
                 for user in &members {
                     self.member(*user)?;
                 }
 
+                let stage_ids = match default_stage_ids {
+                    None => None,
+                    Some(ids) => {
+                        if ids.len() != super::default_stages().len() {
+                            return Err(Error::BadRequest(
+                                "default_stage_ids must contain exactly 4 ids".into(),
+                            ));
+                        }
+                        let mut seen = BTreeSet::new();
+                        for stage in &ids {
+                            if !seen.insert(*stage) || self.id_taken(*stage) {
+                                return Err(Error::Conflict("id already exists".into()));
+                            }
+                            client_id(Some(*stage))?;
+                        }
+                        Some(ids)
+                    }
+                };
                 let id = self.take_client_id(id)?;
-                let stages = [
-                    ("Backlog", StageKind::Backlog),
-                    ("Todo", StageKind::Planned),
-                    ("In progress", StageKind::Active),
-                    ("Done", StageKind::Done),
-                ]
-                .into_iter()
-                .enumerate()
-                .map(|(p, (name, kind))| Stage {
-                    version: 1,
-                    id: Uuid::new_v4(),
-                    name: name.into(),
-                    kind,
-                    position: p as i64,
-                })
-                .collect();
+                if stage_ids.as_ref().is_some_and(|ids| ids.contains(&id)) {
+                    return Err(Error::Conflict("id already exists".into()));
+                }
+                let mut supplied = stage_ids.map(|ids| ids.into_iter());
+                let stages = super::default_stages()
+                    .into_iter()
+                    .enumerate()
+                    .map(|(p, (name, kind))| Stage {
+                        version: 1,
+                        id: match &mut supplied {
+                            Some(ids) => ids
+                                .next()
+                                .expect("checked exactly one id per default stage"),
+                            None => Uuid::new_v4(),
+                        },
+                        name: name.into(),
+                        kind,
+                        position: p as i64,
+                    })
+                    .collect();
                 self.teams.push(Team {
                     version: 1,
                     id,

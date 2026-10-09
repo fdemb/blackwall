@@ -109,6 +109,24 @@ function twice(name: string, args: unknown, actor: Id = MEMBER): void {
 }
 
 describe("add_comment", () => {
+  it("materializes omitted mentions and attachments", () => {
+    const args = { id: "comment-defaults", issue_id: "issue-1", body: "Defaults" };
+    const store = seedStore();
+    admit(store, MEMBER, { name: "add_comment", args, at: AT });
+    mutate(store, "add_comment", args);
+    expectRecord(store, "comments", args.id, {
+      id: args.id,
+      version: 1,
+      issue_id: args.issue_id,
+      author: MEMBER,
+      body: args.body,
+      mentions: [],
+      attachments: [],
+      created_at: AT,
+      edited_at: null,
+    });
+    twice("add_comment", args);
+  });
   it("creates with the actor as author and sorted mentions", () => {
     const store = seedStore();
     mutate(store, "add_comment", {
@@ -147,17 +165,84 @@ describe("add_comment", () => {
     expect(liveComment(store, "comment-new").body).toBe("First here");
   });
 
-  it("stores attachments as given and allows archived issues", () => {
+  it("moves attachments from the issue to the comment, using stored metadata", () => {
     const store = seedStore();
-    const attachment = { id: "att-9", name: "a.txt", content_type: "text/plain", size: 3 };
+    store.applyBase([
+      {
+        entity: "issues",
+        id: "issue-attached",
+        record: {
+          ...(store.get("issues", "issue-attached") as object),
+          attachments: [
+            { id: "att-1", name: "spec.txt", content_type: "text/plain", size: 12 },
+            { id: "att-2", name: "plan.txt", content_type: "text/plain", size: 7 },
+          ],
+        },
+      },
+    ]);
+    const before = store.get("issues", "issue-attached");
+    if (before === undefined) throw new Error("missing issue");
+    const args = {
+      id: "comment-move",
+      issue_id: "issue-attached",
+      body: "See attached",
+      mentions: [],
+      // Argument metadata is ignored: the server moves the stored uploads,
+      // ordered by attachment id.
+      attachments: [
+        { id: "att-2", name: "wrong.txt", content_type: "text/plain", size: 1 },
+        { id: "att-1", name: "wrong.txt", content_type: "text/plain", size: 1 },
+      ],
+    };
+    admit(store, MEMBER, { name: "add_comment", args, at: AT });
+    mutate(store, "add_comment", args);
+    const expectedAttachments = [
+      { id: "att-1", name: "spec.txt", content_type: "text/plain", size: 12 },
+      { id: "att-2", name: "plan.txt", content_type: "text/plain", size: 7 },
+    ];
+    expectRecord(store, "comments", args.id, {
+      id: args.id,
+      version: 1,
+      issue_id: args.issue_id,
+      author: MEMBER,
+      body: args.body,
+      mentions: [],
+      attachments: expectedAttachments,
+      created_at: AT,
+      edited_at: null,
+    });
+    expect(store.get("issues", "issue-attached")).toEqual({ ...before, attachments: [] });
+    const once = beforeAll(store);
+    mutate(store, "add_comment", args);
+    expect(store.replayErrors().size).toBe(0);
+    expectSame(store, once);
+  });
+
+  it("rejects attachments that are not on the issue", () => {
+    rejects(
+      "add_comment",
+      {
+        id: "comment-missing",
+        issue_id: "issue-attached",
+        body: "B",
+        mentions: [],
+        attachments: [{ id: "att-ghost", name: "g.txt", content_type: "text/plain", size: 1 }],
+      },
+      400,
+      "attachment must be uploaded to this issue first",
+    );
+  });
+
+  it("allows archived issues", () => {
+    const store = seedStore();
     mutate(store, "add_comment", {
       id: "comment-arch",
       issue_id: "issue-archived",
       body: "On archived",
       mentions: [],
-      attachments: [attachment],
+      attachments: [],
     });
-    expect(liveComment(store, "comment-arch").attachments).toEqual([attachment]);
+    expect(liveComment(store, "comment-arch").body).toBe("On archived");
   });
 
   it("creates are upserts", () => {
@@ -304,6 +389,19 @@ describe("delete_comment", () => {
 });
 
 describe("log_time", () => {
+  it("materializes an omitted note", () => {
+    const args = { id: "time-defaults", issue_id: "issue-1", minutes: 15, logged_at: AT };
+    const store = seedStore();
+    admit(store, MEMBER, { name: "log_time", args, at: AT });
+    mutate(store, "log_time", args);
+    expectRecord(store, "time_entries", args.id, {
+      ...args,
+      version: 1,
+      user_id: MEMBER,
+      note: "",
+    });
+    twice("log_time", args);
+  });
   it("logs with the actor as user", () => {
     const store = seedStore();
     mutate(store, "log_time", {

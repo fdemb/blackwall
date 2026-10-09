@@ -218,7 +218,7 @@ The leader runs bootstrap, pull and scope requests one at a time through one que
 
 ## Server changes
 
-1. **Client ids on creates.** Every create command takes an `id` chosen by the client: `create_team`, `create_stage`, `create_label`, `create_project`, `create_milestone`, `create_sprint`, `create_issue` through `IssueInput`, `add_comment`, `log_time`, `save_view` and `create_integration`. A collision is a business error. The client can create an issue and a sub-issue offline before the server has seen either.
+1. **Client ids on creates.** Every create command takes an `id` chosen by the client: `create_team`, `create_stage`, `create_label`, `create_project`, `create_milestone`, `create_sprint`, `create_issue` through `IssueInput`, `add_comment`, `log_time`, `save_view` and `create_integration`. `create_team` also takes `default_stage_ids`, chosen by the client for its default stages in server order. A collision is a business error. The client can create an issue and a sub-issue offline before the server has seen either.
 2. **Optional preconditions.** `expected_versions` becomes optional on the REST command, upload and import endpoints. Absent means last-writer-wins. REST clients that send versions keep getting 409 on a stale version. Sync never sends them.
 3. **Field-level writes.** An `update_issue` patch writes only the fields it names. Two clients editing different fields of the same issue both win. Bulk edits follow the same rule.
 4. **Issue numbers** stay server-assigned. A locally created issue has no number until the pull that confirms it.
@@ -243,12 +243,13 @@ One mutator per command in the `Command` union in `web/app/lib/types.ts`, with t
 
 - Signature: `(tx, args, ctx) => void`. `tx` reads and writes the view through the overlay. `ctx` holds the actor, their role and the mutation's `at`.
 - Deterministic. Read the time from `at`, never from `Date.now()`. Generate ids before the mutation is created and pass them in `args`, never inside the mutator. Replays must produce the same result.
+- A pending mutation may carry `local`: data captured at admission, stored with the mutation and never sent. Replay uses it where re-deriving would change the command's meaning, such as the notifications "mark all read" applied to.
 - Idempotent in effect: set values, never toggle or increment. Running a mutation twice locally must give the same view as running it once.
 - Check what the client can know: the actor's role, the ownership policy in `web/app/lib/ownership.ts` for OpenProject-imported issues, and references to records that exist. A failed check throws before the mutation enters the outbox, and the UI shows the error right away.
 - Predict only what the client can compute. Server-only values such as issue numbers, notifications, activity rows and positions for `move_issue` with no `before_id` either take placeholders or are left for the server. The pull corrects them.
 - Commands with server-generated secrets or bulk server work don't get mutators. See online-only operations below.
 
-> A mutator runs in one of two modes. **Admit** runs once when the user issues the command, against the current view; a failure there rejects the edit before it reaches the outbox and is shown to the user. **Replay** runs on every rebase; a command whose effect is already in place, because the server applied it before acknowledging it, is a no-op there. Replay errors are diagnostics and are never shown to the user; the user learns about a server rejection from the push result. Before either mode, the engine strips `null`-valued keys from command arguments, because the server treats `null` and an absent field the same.
+> A mutator runs in one of two modes. **Admit** runs once when the user issues the command, against the current view; a failure there rejects the edit before it reaches the outbox and is shown to the user. **Replay** runs on every rebase; a command whose effect is already in place, because the server applied it before acknowledging it, is a no-op there. Replay errors are diagnostics and are never shown to the user; the user learns about a server rejection from the push result. Before either mode, the engine normalizes command arguments the way the server deserializes them: an absent field gets the server's default, and `null` is dropped except where the server gives it a meaning of its own, such as a team's `archive_after_days`.
 
 ### Persistence
 

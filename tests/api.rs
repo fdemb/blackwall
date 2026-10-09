@@ -227,6 +227,7 @@ async fn complete_contract_on_postgres() {
             id: None,
             name: "Operations".into(),
             members: vec![owner.profile.id],
+            default_stage_ids: None,
         },
     )
     .await;

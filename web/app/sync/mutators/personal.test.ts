@@ -80,15 +80,26 @@ function admitsRejects(
   expect(store.replayErrors().size).toBe(0);
 }
 
+function queueMarkAll(store: ReturnType<typeof seedStore>, actor: Id = MEMBER): number {
+  const result = admit(store, actor, { name: "mark_all_notifications_read", args: {}, at: AT });
+  return mutate(store, "mark_all_notifications_read", result.args, AT, result.local);
+}
+
 /** Running a mutation twice leaves the same view as running it once, with no errors. */
 function twice(name: string, args: unknown, actor: Id = MEMBER): void {
   const once = seedStore(actor);
-  mutate(once, name, args);
+  if (name === "mark_all_notifications_read") queueMarkAll(once, actor);
+  else mutate(once, name, args);
   expect(once.replayErrors().size).toBe(0);
   const first = beforeAll(once);
   const both = seedStore(actor);
-  mutate(both, name, args);
-  mutate(both, name, args);
+  if (name === "mark_all_notifications_read") {
+    queueMarkAll(both, actor);
+    queueMarkAll(both, actor);
+  } else {
+    mutate(both, name, args);
+    mutate(both, name, args);
+  }
   expect(both.replayErrors().size).toBe(0);
   expectSame(both, first);
 }
@@ -186,7 +197,7 @@ describe("mark_all_notifications_read", () => {
     if (unread === undefined || read === undefined || other === undefined) {
       throw new Error("missing notifications");
     }
-    mutate(store, "mark_all_notifications_read", {});
+    queueMarkAll(store);
     expect(store.get("notifications", NOTIF_UNREAD)).toEqual(
       normalize("notifications", { ...(unread as RecordOf["notifications"]), read_at: AT }),
     );
@@ -199,7 +210,60 @@ describe("mark_all_notifications_read", () => {
     );
   });
 
-  it("succeeds with nothing unread", () => {
+  it("replay marks only the notifications admitted, not newer ones", () => {
+    const store = seedStore();
+    const admitted = admit(store, MEMBER, {
+      name: "mark_all_notifications_read",
+      args: {},
+      at: AT,
+    });
+    expect(admitted.local).toEqual({ ids: [NOTIF_UNREAD] });
+    store.setPending([
+      ...store.pending(),
+      {
+        id: store.pending().length + 1,
+        name: "mark_all_notifications_read",
+        args: admitted.args,
+        at: AT,
+        local: admitted.local,
+      },
+    ]);
+    const unread = store.get("notifications", NOTIF_UNREAD);
+    if (unread === undefined) throw new Error("missing notification");
+    expect(unread.read_at).toBe(AT);
+    const confirmed = {
+      ...unread,
+      version: unread.version + 1,
+      read_at: "2026-10-09T12:00:01.000000Z",
+    };
+    const newer: RecordOf["notifications"] = {
+      id: "notif-new",
+      version: 1,
+      user_id: MEMBER,
+      issue_id: "issue-1",
+      kind: "mention",
+      message: "Later",
+      read_at: null,
+      created_at: AT,
+      dedup_key: "d-new",
+    };
+    // A notification created after the server applied mark-all arrives on an
+    // intermediate pull while the mutation is still pending: it stays unread.
+    store.applyBase([
+      { entity: "notifications", id: NOTIF_UNREAD, record: confirmed },
+      { entity: "notifications", id: newer.id, record: newer },
+    ]);
+    expect(store.replayErrors().size).toBe(0);
+    expect(store.get("notifications", newer.id)).toEqual(normalize("notifications", newer));
+    expect(store.get("notifications", NOTIF_UNREAD)).toEqual(normalize("notifications", confirmed));
+    const once = beforeAll(store);
+    store.setPending([...store.pending()]);
+    expect(store.replayErrors().size).toBe(0);
+    expectSame(store, once);
+    twice("mark_all_notifications_read", {});
+  });
+
+  it("is a no-op when all notifications are already read", () => {
     const store = seedStore(OWNER);
     store.applyBase([
       {
@@ -209,15 +273,19 @@ describe("mark_all_notifications_read", () => {
       },
     ]);
     const before = beforeAll(store);
-    const id = mutate(store, "mark_all_notifications_read", {});
+    const id = queueMarkAll(store, OWNER);
     expect(store.replayErrors().get(id)).toBeUndefined();
     expectSame(store, before);
     twice("mark_all_notifications_read", {});
   });
 
+  it("does not expand mark-all during replay when local data is absent", () => {
+    rejects("mark_all_notifications_read", {}, 400, "mark all read requires local.ids");
+  });
+
   it("viewers may mark all read but ghosts may not", () => {
     const store = seedStore(VIEWER);
-    const id = mutate(store, "mark_all_notifications_read", {});
+    const id = queueMarkAll(store, VIEWER);
     expect(store.replayErrors().get(id)).toBeUndefined();
     rejects("mark_all_notifications_read", {}, 403, "permission denied", GHOST);
   });

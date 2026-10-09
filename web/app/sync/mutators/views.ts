@@ -4,7 +4,9 @@ import { MutationError } from "./errors";
 
 export const saveView: Mutator<ArgsOf<"save_view">> = (tx, args, ctx) => {
   requireRole(tx, ctx.actor, "save_view", args);
-  // Order mirrors `discussion::SaveView`: name, filter timestamp, id.
+  // Order mirrors `discussion::SaveView`: name, filter timestamp, id. The
+  // filter is already canonical (`normalizeArgs`): defaults filled and
+  // `due_before` in UTC, as the server stores it.
   checkText(args.name, 200);
   checkTimestamp(args.filter.due_before);
   const id = args.id ?? null;
@@ -28,12 +30,24 @@ export const updateView: Mutator<ArgsOf<"update_view">> = (tx, args, ctx) => {
   // Order mirrors `discussion::UpdateView`: validation, the owner lookup and
   // its author check. A viewer reaching this point only holds a private view:
   // `requireRole` already rejected sharing one, as the server's viewer rule
-  // would, with the same 403.
+  // would, with the same 403. The filter is already canonical (`normalizeArgs`).
   checkText(args.name, 200);
   checkTimestamp(args.filter.due_before);
   const view = tx.get("views", args.id);
-  if (view === undefined) throw new MutationError(404, "not found");
+  // A replay over a base that already dropped the view is a no-op, as for
+  // deleted views; admission against that view fails as on the server.
+  if (view === undefined) {
+    if (ctx.mode === "replay") return;
+    throw new MutationError(404, "not found");
+  }
   requireAuthorOrAdmin(tx, ctx.actor, view.owner);
+  // Unsharing another owner's view hides it from the actor (the server's
+  // visibility rule in `src/store/reads.rs:push_visibility`); predict the
+  // deletion the pull will render instead of an invisible record.
+  if (args.shared === false && view.owner !== ctx.actor) {
+    tx.delete("views", args.id);
+    return;
+  }
   tx.put("views", {
     ...view,
     name: args.name,

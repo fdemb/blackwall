@@ -112,12 +112,19 @@ function admitsRejects(
 }
 
 /** Running a mutation twice leaves the same view as running it once, with no errors. */
-function twice(name: string, args: unknown, actor: Id = OWNER): void {
+function twice(
+  name: string,
+  args: unknown,
+  actor: Id = OWNER,
+  setup?: (store: SyncStore) => void,
+): void {
   const once = seedStore(actor);
+  setup?.(once);
   mutate(once, name, args);
   expect(once.replayErrors().size).toBe(0);
   const first = beforeAll(once);
   const both = seedStore(actor);
+  setup?.(both);
   mutate(both, name, args);
   mutate(both, name, args);
   expect(both.replayErrors().size).toBe(0);
@@ -125,17 +132,29 @@ function twice(name: string, args: unknown, actor: Id = OWNER): void {
 }
 
 describe("create_team", () => {
-  it("creates with sorted members, no stages and the server default archive", () => {
+  const STAGES_NEW = ["stage-new-backlog", "stage-new-todo", "stage-new-active", "stage-new-done"];
+
+  it("creates with sorted members, default stages and the server default archive", () => {
     const store = seedStore(OWNER);
-    mutate(store, "create_team", { id: "team-new", name: "New", members: [MEMBER, ADMIN] });
+    mutate(store, "create_team", {
+      id: "team-new",
+      name: "New",
+      members: [MEMBER, ADMIN],
+      default_stage_ids: STAGES_NEW,
+    });
     expectRecord(store, "teams", "team-new", {
       id: "team-new",
       version: 1,
       name: "New",
       members: [ADMIN, MEMBER],
-      // The default stages have server-generated ids the client cannot
-      // predict; they arrive through the pull.
-      stages: [],
+      // The default stages are predicted from the client-chosen ids, in the
+      // server's order; issue creates for the pending team resolve them.
+      stages: [
+        { id: STAGES_NEW[0]!, version: 1, name: "Backlog", kind: "backlog", position: 0 },
+        { id: STAGES_NEW[1]!, version: 1, name: "Todo", kind: "planned", position: 1 },
+        { id: STAGES_NEW[2]!, version: 1, name: "In progress", kind: "active", position: 2 },
+        { id: STAGES_NEW[3]!, version: 1, name: "Done", kind: "done", position: 3 },
+      ],
       archive_after_days: 30,
     });
     expect(store.get("members", ADMIN)?.team_ids).toEqual([TEAM, "team-new"]);
@@ -143,10 +162,127 @@ describe("create_team", () => {
     expect(store.get("members", OWNER)?.team_ids).toEqual([TEAM]);
   });
 
-  it("is idempotent and keeps pulled stages on replay", () => {
-    twice("create_team", { id: "team-new", name: "New", members: [MEMBER] });
+  it("predicts stages so issues can be created for a pending team", () => {
     const store = seedStore(OWNER);
-    mutate(store, "create_team", { id: "team-new", name: "New", members: [MEMBER] });
+    const stages = [
+      "team-pending-backlog",
+      "team-pending-todo",
+      "team-pending-active",
+      "team-pending-done",
+    ];
+    mutate(store, "create_team", {
+      id: "team-pending",
+      name: "Pending",
+      members: [],
+      default_stage_ids: stages,
+    });
+    expect(store.replayErrors().size).toBe(0);
+    // Without a stage the server picks the generated Backlog stage: the
+    // prediction resolves the same first stage by position.
+    const defaulted = mutate(store, "create_issue", {
+      input: { id: "issue-pending", title: "P", team_id: "team-pending" },
+    });
+    expect(store.replayErrors().get(defaulted)).toBeUndefined();
+    const expected = {
+      openproject: null,
+      id: "issue-pending",
+      version: 1,
+      number: null,
+      title: "P",
+      description: "",
+      team_id: "team-pending",
+      stage_id: "team-pending-backlog",
+      assignee: null,
+      created_by: OWNER,
+      priority: "none",
+      labels: [],
+      estimate: null,
+      deadline: null,
+      project_id: null,
+      milestone_id: null,
+      sprint_id: null,
+      parent_id: null,
+      dependencies: [],
+      position: 0,
+      followers: [OWNER],
+      attachments: [],
+      source_links: [],
+      deleted_at: null,
+      archived_at: null,
+      done_at: null,
+      created_at: AT,
+      updated_at: AT,
+    } satisfies RecordOf["issues"];
+    expectRecord(store, "issues", expected.id, expected);
+    const placed = mutate(store, "create_issue", {
+      input: { id: "issue-placed", title: "Q", team_id: "team-pending", stage_id: stages[2] },
+    });
+    expect(store.replayErrors().get(placed)).toBeUndefined();
+    expectRecord(store, "issues", "issue-placed", {
+      ...expected,
+      id: "issue-placed",
+      title: "Q",
+      stage_id: "team-pending-active",
+    });
+    const once = beforeAll(store);
+    store.setPending([...store.pending()]);
+    expect(store.replayErrors().size).toBe(0);
+    expectSame(store, once);
+    twice("create_team", { id: "team-pending", name: "Pending", default_stage_ids: stages });
+  });
+
+  it("keeps a stored never-archive setting on replay", () => {
+    const store = seedStore(OWNER);
+    const stages = [
+      "team-never-backlog",
+      "team-never-todo",
+      "team-never-active",
+      "team-never-done",
+    ];
+    mutate(store, "create_team", {
+      id: "team-never",
+      name: "Never",
+      members: [],
+      default_stage_ids: stages,
+    });
+    // The server confirms the team with archiving disabled; replaying the
+    // create must not turn the stored null back into the 30-day default.
+    store.applyBase([
+      {
+        entity: "teams",
+        id: "team-never",
+        record: { ...(liveTeam(store, "team-never") as object), archive_after_days: null },
+      },
+    ]);
+    const id = mutate(store, "create_team", {
+      id: "team-never",
+      name: "Never",
+      members: [],
+      default_stage_ids: stages,
+    });
+    expect(store.replayErrors().get(id)).toBeUndefined();
+    const expected = { ...liveTeam(store, "team-never"), archive_after_days: null };
+    expectRecord(store, "teams", "team-never", expected);
+    const once = beforeAll(store);
+    store.setPending([...store.pending()]);
+    expect(store.replayErrors().size).toBe(0);
+    expectSame(store, once);
+  });
+
+  it("is idempotent and keeps pulled stages on replay", () => {
+    twice("create_team", {
+      id: "team-new",
+      name: "New",
+      members: [MEMBER],
+      default_stage_ids: STAGES_NEW,
+    });
+    const store = seedStore(OWNER);
+    mutate(store, "create_team", {
+      id: "team-new",
+      name: "New",
+      members: [MEMBER],
+      default_stage_ids: STAGES_NEW,
+    });
     const created = liveTeam(store, "team-new");
     store.applyBase([
       {
@@ -155,35 +291,72 @@ describe("create_team", () => {
         record: {
           ...created,
           stages: [
-            { id: "stage-server-1", version: 1, name: "Backlog", kind: "backlog", position: 0 },
+            ...created.stages.map((stage) => ({
+              ...stage,
+              name: `${stage.name} updated`,
+              version: 2,
+            })),
+            { id: "stage-added", version: 1, name: "Cancelled", kind: "cancelled", position: 4 },
           ],
         },
       },
     ]);
-    const id = mutate(store, "create_team", { id: "team-new", name: "New", members: [MEMBER] });
+    const id = mutate(store, "create_team", {
+      id: "team-new",
+      name: "New",
+      members: [MEMBER],
+      default_stage_ids: STAGES_NEW,
+    });
     expect(store.replayErrors().get(id)).toBeUndefined();
-    expect(liveTeam(store, "team-new").stages.map((stage) => stage.id)).toEqual(["stage-server-1"]);
+    expect(liveTeam(store, "team-new").stages).toEqual([
+      ...created.stages.map((stage) => ({ ...stage, name: `${stage.name} updated`, version: 2 })),
+      { id: "stage-added", version: 1, name: "Cancelled", kind: "cancelled", position: 4 },
+    ]);
   });
 
-  it("validates the name, members and id", () => {
+  it("validates the name, members, stage ids and id", () => {
+    const base = {
+      id: "t",
+      name: "N",
+      members: [] as string[],
+      default_stage_ids: ["s1", "s2", "s3", "s4"],
+    };
+    rejects("create_team", { ...base, name: "  " }, 400, "text must contain 1 to 200 bytes");
+    rejects("create_team", { ...base, members: [GHOST] }, 403, "permission denied");
     rejects(
       "create_team",
-      { id: "t", name: "  ", members: [] },
+      { ...base, default_stage_ids: ["s1", "s2", "s3"] },
       400,
-      "text must contain 1 to 200 bytes",
+      "default_stage_ids must contain exactly 4 ids",
     );
-    rejects("create_team", { id: "t", name: "N", members: [GHOST] }, 403, "permission denied");
-    rejects("create_team", { name: "N", members: [] }, 400, "id is required");
     rejects(
       "create_team",
-      { id: "00000000-0000-0000-0000-000000000000", name: "N", members: [] },
+      { ...base, default_stage_ids: ["s1", "s2", "s3", "s4", "s5"] },
+      400,
+      "default_stage_ids must contain exactly 4 ids",
+    );
+    rejects(
+      "create_team",
+      { id: "t", name: "N", members: [] },
+      400,
+      "default_stage_ids is required",
+    );
+    rejects(
+      "create_team",
+      { name: "N", members: [], default_stage_ids: base.default_stage_ids },
+      400,
+      "id is required",
+    );
+    rejects(
+      "create_team",
+      { ...base, id: "00000000-0000-0000-0000-000000000000" },
       400,
       "id must not be nil",
     );
   });
 
   it("requires owner or admin", () => {
-    const args = { id: "t", name: "N", members: [] };
+    const args = { id: "t", name: "N", members: [], default_stage_ids: ["s1", "s2", "s3", "s4"] };
     rejects("create_team", args, 403, "permission denied", MEMBER);
     rejects("create_team", args, 403, "permission denied", VIEWER);
     rejects("create_team", args, 403, "permission denied", GHOST);
@@ -222,6 +395,24 @@ describe("set_team_members", () => {
 });
 
 describe("set_team_archive", () => {
+  it("distinguishes omitted archive days from explicit null", () => {
+    const store = seedStore(OWNER);
+    const before = liveTeam(store, TEAM);
+    store.applyBase([
+      { entity: "teams", id: TEAM, record: { ...before, archive_after_days: null } },
+    ]);
+    const args = { id: TEAM };
+    expect(admit(store, OWNER, { name: "set_team_archive", args, at: AT }).args).toEqual({
+      ...args,
+      archive_after_days: 30,
+    });
+    mutate(store, "set_team_archive", args);
+    expectRecord(store, "teams", TEAM, { ...before, archive_after_days: 30 });
+    mutate(store, "set_team_archive", { ...args, archive_after_days: null });
+    expectRecord(store, "teams", TEAM, { ...before, archive_after_days: null });
+    twice("set_team_archive", args);
+    twice("set_team_archive", { ...args, archive_after_days: null });
+  });
   it("sets days and null", () => {
     const store = seedStore(OWNER);
     const before = liveTeam(store, TEAM);
@@ -440,6 +631,55 @@ describe("update_stage", () => {
     expectSame(store, before);
   });
 
+  it("admits done to backlog when an active issue depends into the stage", () => {
+    // The server validates the touched stage before restamping the Done-entry
+    // clock: the dependent is untouched by the kind change, so the move
+    // succeeds and the restamp clears the clock afterwards.
+    const setup = (store: SyncStore) => {
+      const issue = store.get("issues", "issue-1");
+      if (issue === undefined) throw new Error("missing issue");
+      store.applyBase([
+        { entity: "issues", id: issue.id, record: { ...issue, dependencies: ["issue-3"] } },
+      ]);
+    };
+    const store = seedStore(OWNER);
+    setup(store);
+    const team = liveTeam(store, TEAM);
+    const done = store.get("issues", "issue-3");
+    const dependent = store.get("issues", "issue-1");
+    const args = { team_id: TEAM, id: STAGE_DONE, name: "Done", kind: "backlog", position: 2 };
+    admit(store, OWNER, { name: "update_stage", args, at: AT });
+    mutate(store, "update_stage", args);
+    expect(store.replayErrors().size).toBe(0);
+    expect(store.get("issues", "issue-3")).toEqual({ ...done, done_at: null, updated_at: AT });
+    expect(store.get("issues", "issue-1")).toEqual(dependent);
+    expectRecord(store, "teams", TEAM, {
+      ...team,
+      stages: team.stages.map((stage) =>
+        stage.id === STAGE_DONE ? { ...stage, kind: "backlog" } : stage,
+      ),
+    });
+    twice("update_stage", args, OWNER, setup);
+  });
+
+  it("rejects backlog to active when the stage holds unfinished dependencies", () => {
+    // issue-x sits in backlog depending on the unfinished issue-y; entering
+    // active strands it, and the server reports 409 before restamping.
+    const args = { team_id: TEAM, id: STAGE_BACKLOG, name: "Backlog", kind: "active", position: 0 };
+    admitsRejects(
+      "update_stage",
+      args,
+      409,
+      "workflow would leave an issue with unfinished dependencies",
+    );
+    rejects(
+      "update_stage",
+      args,
+      409,
+      "workflow would leave an issue with unfinished dependencies",
+    );
+  });
+
   it("requires owner or admin", () => {
     const args = { team_id: TEAM, id: STAGE_ACTIVE, name: "N", kind: "active", position: 1 };
     rejects("update_stage", args, 403, "permission denied", MEMBER);
@@ -449,6 +689,41 @@ describe("update_stage", () => {
 });
 
 describe("delete_stage", () => {
+  it("does not validate untouched replacement-stage issues merely restamped after a delete", () => {
+    const store = seedStore(OWNER);
+    const active = store.get("issues", "issue-1");
+    if (active === undefined) throw new Error("missing issue");
+    store.applyBase([
+      { entity: "issues", id: active.id, record: { ...active, dependencies: ["issue-y"] } },
+    ]);
+    // This state is reachable after the server allows a dependency's stage
+    // to leave Done without touching its active dependents.
+    const before = store.get("issues", active.id);
+    const moved = store.get("issues", "issue-3");
+    const args = { team_id: TEAM, id: STAGE_DONE, replacement: STAGE_ACTIVE };
+    admit(store, OWNER, { name: "delete_stage", args, at: AT });
+    mutate(store, "delete_stage", args);
+    expect(store.replayErrors().size).toBe(0);
+    expect(store.get("issues", active.id)).toEqual({ ...before, done_at: null, updated_at: AT });
+    expect(store.get("issues", "issue-3")).toEqual({
+      ...moved,
+      stage_id: STAGE_ACTIVE,
+      done_at: null,
+      updated_at: AT,
+    });
+    const once = beforeAll(store);
+    store.setPending([...store.pending()]);
+    expect(store.replayErrors().size).toBe(0);
+    expectSame(store, once);
+    twice("delete_stage", args, OWNER, (target) => {
+      const issue = target.get("issues", active.id);
+      if (issue === undefined) throw new Error("missing issue");
+      target.applyBase([
+        { entity: "issues", id: issue.id, record: { ...issue, dependencies: ["issue-y"] } },
+      ]);
+    });
+  });
+
   it("moves its issues to the replacement", () => {
     const store = seedStore(OWNER);
     const before = liveTeam(store, TEAM);

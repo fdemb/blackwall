@@ -46,6 +46,38 @@ function expectSame(
 }
 
 /**
+ * The filter as the server stores it: every default filled, `due_before`
+ * normalized to UTC. Expected fields come from Rust `IssueFilter`.
+ */
+function canonical(filter: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    parent_id: null,
+    dependency_id: null,
+    ids: null,
+    no_sprint: false,
+    open: false,
+    assignee: null,
+    created_by: null,
+    team_id: null,
+    stage_id: null,
+    priority: null,
+    label_id: null,
+    sprint_id: null,
+    project_id: null,
+    due_before: null,
+    search: null,
+    unassigned: false,
+    trash: false,
+    archived: false,
+    sort: "position",
+    group_by: null,
+    after: null,
+    projection: "full",
+    ...filter,
+  };
+}
+
+/**
  * Runs a mutation that must fail: asserts the replay error carries the
  * server's status and message, and that the view is unchanged.
  */
@@ -105,6 +137,24 @@ function twice(name: string, args: unknown, actor: Id = MEMBER): void {
 }
 
 describe("save_view", () => {
+  it("stores filter defaults and UTC due_before", () => {
+    const args = {
+      id: "view-defaults",
+      name: "Due",
+      shared: false,
+      filter: { due_before: "2026-10-09T15:30:00.123456+02:00" },
+    };
+    const store = seedStore();
+    admit(store, MEMBER, { name: "save_view", args, at: AT });
+    mutate(store, "save_view", args);
+    expect(store.get("views", args.id)).toEqual({
+      ...args,
+      version: 1,
+      owner: MEMBER,
+      filter: canonical({ due_before: "2026-10-09T13:30:00.123456Z" }),
+    });
+    twice("save_view", args);
+  });
   it("saves with the actor as owner", () => {
     const store = seedStore();
     mutate(store, "save_view", {
@@ -119,7 +169,7 @@ describe("save_view", () => {
       owner: MEMBER,
       name: "Mine",
       shared: false,
-      filter: { search: "foo" },
+      filter: canonical({ search: "foo" }),
     });
   });
 
@@ -162,6 +212,24 @@ describe("save_view", () => {
 });
 
 describe("update_view", () => {
+  it("canonicalizes updated filters just like saved filters", () => {
+    const store = seedStore();
+    const before = store.get("views", VIEW_PRIVATE);
+    if (before === undefined) throw new Error("missing view");
+    const args = {
+      id: VIEW_PRIVATE,
+      name: "Due",
+      shared: false,
+      filter: { due_before: "2026-10-09T15:30:00.123456+02:00" },
+    };
+    mutate(store, "update_view", args);
+    expect(store.get("views", args.id)).toEqual({
+      ...before,
+      ...args,
+      filter: canonical({ due_before: "2026-10-09T13:30:00.123456Z" }),
+    });
+    twice("update_view", args);
+  });
   it("updates name, sharing and filter", () => {
     const store = seedStore();
     const before = store.get("views", VIEW_PRIVATE);
@@ -176,20 +244,42 @@ describe("update_view", () => {
       ...(before as RecordOf["views"]),
       name: "Renamed",
       shared: true,
-      filter: { team_id: TEAM },
+      filter: canonical({ team_id: TEAM }),
     });
   });
 
-  it("admins may update others' views", () => {
+  it("admins may update others' views while they stay visible", () => {
     const store = seedStore(ADMIN);
     mutate(store, "update_view", {
-      id: VIEW_OTHER_PRIVATE,
+      id: VIEW_SHARED,
       name: "Taken",
-      shared: false,
+      shared: true,
       filter: {},
     });
     expect(store.replayErrors().size).toBe(0);
-    expect(store.get("views", VIEW_OTHER_PRIVATE)?.name).toBe("Taken");
+    expect(store.get("views", VIEW_SHARED)?.name).toBe("Taken");
+  });
+
+  it("unsharing another owner's view deletes it locally", () => {
+    const store = seedStore(ADMIN);
+    const args = { id: VIEW_SHARED, name: "Taken", shared: false, filter: {} };
+    admit(store, ADMIN, { name: "update_view", args, at: AT });
+    const before = beforeAll(store);
+    mutate(store, "update_view", args);
+    expect(store.replayErrors().size).toBe(0);
+    expectSame(
+      store,
+      before.map(({ entity, rows }) => ({
+        entity,
+        rows:
+          entity === "views" ? rows.filter((row) => "id" in row && row.id !== VIEW_SHARED) : rows,
+      })),
+    );
+    // The server's visibility removal arrives before acknowledgement.
+    store.applyBase([{ entity: "views", id: VIEW_SHARED, record: null }]);
+    expect(store.replayErrors().size).toBe(0);
+    expect(store.get("views", VIEW_SHARED)).toBeUndefined();
+    twice("update_view", args, ADMIN);
   });
 
   it("viewers may update their own private views but not share them", () => {
@@ -216,8 +306,27 @@ describe("update_view", () => {
       400,
       "timestamp year must be between 1 and 9999",
     );
-    rejects("update_view", { ...base, id: "view-ghost" }, 404, "not found");
     admitsRejects("update_view", { ...base, id: "view-ghost" }, 404, "not found");
+  });
+
+  it("replays a missing view as a no-op but admission fails", () => {
+    const replayed = seedStore();
+    replayed.applyBase([{ entity: "views", id: VIEW_PRIVATE, record: null }]);
+    const before = beforeAll(replayed);
+    const id = mutate(replayed, "update_view", {
+      id: VIEW_PRIVATE,
+      name: "Renamed",
+      shared: false,
+      filter: {},
+    });
+    expect(replayed.replayErrors().get(id)).toBeUndefined();
+    expectSame(replayed, before);
+    admitsRejects(
+      "update_view",
+      { id: "view-ghost", name: "N", shared: false, filter: {} },
+      404,
+      "not found",
+    );
   });
 
   it("enforces owner or admin", () => {

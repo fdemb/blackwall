@@ -790,6 +790,7 @@ mod tests {
                     id: None,
                     name: "Team".into(),
                     members: vec![actor],
+                    default_stage_ids: None,
                 },
                 BTreeMap::new(),
                 None,

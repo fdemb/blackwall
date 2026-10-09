@@ -17,6 +17,13 @@ export interface PendingMutation {
   name: string;
   args: unknown;
   at: string;
+  /**
+   * Client-only data captured at admission, stored with the mutation and
+   * never sent to the server. Replay uses it where re-deriving would change
+   * the command's meaning, such as the notifications "mark all read" applied
+   * to. Deep-cloned and frozen with the rest of the mutation by `setPending`.
+   */
+  local?: unknown;
 }
 
 /** Index names per entity. Part of the store API. */
@@ -461,14 +468,15 @@ export class SyncStore {
 
   /**
    * Runs `fn` against the current view and discards its writes. Admission
-   * uses it to validate a mutation without entering the outbox.
+   * uses it to validate a mutation without entering the outbox, capturing
+   * the returned client-only data for the pending mutation.
    */
-  dryRun(fn: (tx: Tx) => void): void {
+  dryRun<T>(fn: (tx: Tx) => T): T {
     const journal = new Map<Entity, Map<string, OverlayValue | undefined>>();
     const previousJournal = this.activeJournal;
     this.activeJournal = journal;
     try {
-      fn(this.tx);
+      return fn(this.tx);
     } finally {
       for (const [entity, table] of journal) {
         const overlayTable = this.overlay[entity];

@@ -1,4 +1,4 @@
-import type { Stage, Team } from "../../lib/types";
+import type { Stage, StageKind, Team } from "../../lib/types";
 import type { DeepReadonly, Tx } from "../store";
 import type { ArgsOf, Mutator } from "./common";
 import {
@@ -41,29 +41,64 @@ function joinTeam(tx: Tx, user: string, teamId: string): void {
   tx.put("members", { ...member, team_ids: dedupeSortUuids([...member.team_ids, teamId]) });
 }
 
+/**
+ * Default stages for a new team, in server order. Names, kinds and positions
+ * mirror `default_stages` in `src/domain.rs`; ids come from the command's
+ * `default_stage_ids`, which the engine generates before admission.
+ */
+const DEFAULT_STAGES: readonly { name: string; kind: StageKind; position: number }[] = [
+  { name: "Backlog", kind: "backlog", position: 0 },
+  { name: "Todo", kind: "planned", position: 1 },
+  { name: "In progress", kind: "active", position: 2 },
+  { name: "Done", kind: "done", position: 3 },
+];
+
 export const createTeam: Mutator<ArgsOf<"create_team">> = (tx, args, ctx) => {
   requireAdmin(requireRole(tx, ctx.actor, "create_team", args));
-  // Order mirrors `planning::CreateTeam`: name, members, then the client id.
-  // Capacity is left to the server, as for the issue mutators.
+  // Order mirrors `planning::CreateTeam`: name, members, stage ids, then the
+  // client id. Capacity is left to the server, as for the issue mutators.
   checkText(args.name, 200);
   const members = dedupeSortUuids(args.members);
   for (const user of members) requireMember(tx, user);
+  const stageIds = args.default_stage_ids ?? null;
+  if (stageIds === null) throw new MutationError(400, "default_stage_ids is required");
+  if (stageIds.length !== DEFAULT_STAGES.length) {
+    throw new MutationError(400, "default_stage_ids must contain exactly 4 ids");
+  }
+  const seen = new Set<string>();
+  for (const stage of stageIds) {
+    if (stage === NIL_UUID) throw new MutationError(400, "id must not be nil");
+    if (seen.has(stage)) throw new MutationError(409, "id already exists");
+    seen.add(stage);
+  }
   const id = args.id ?? null;
   if (id === null) throw new MutationError(400, "id is required");
   if (id === NIL_UUID) throw new MutationError(400, "id must not be nil");
-  // Creates are upserts. The default stages and any later archive setting
-  // survive the replay: their ids are server-generated and the command does
-  // not name them, so a replay over a base that already holds the team keeps
-  // them instead of wiping them.
+  if (seen.has(id)) throw new MutationError(409, "id already exists");
+  // Creates are upserts. Pulled stages and archive settings survive replay,
+  // including changes made after the server created this team.
   const previous = tx.get("teams", id);
   tx.put("teams", {
     id,
     version: previous?.version ?? 1,
     name: args.name,
     members,
-    stages: previous ? previous.stages.map((stage) => ({ ...stage })) : [],
+    stages: previous
+      ? previous.stages.map((stage) => ({ ...stage }))
+      : DEFAULT_STAGES.map((stage, position) => {
+          const stageId = stageIds[position];
+          if (stageId === undefined)
+            throw new MutationError(400, "default_stage_ids must contain exactly 4 ids");
+          return {
+            id: stageId,
+            version: 1,
+            name: stage.name,
+            kind: stage.kind,
+            position: stage.position,
+          };
+        }),
     // The server inserts `archive_after_days = 30` for a new team.
-    archive_after_days: previous?.archive_after_days ?? 30,
+    archive_after_days: previous ? previous.archive_after_days : 30,
   });
   for (const user of members) joinTeam(tx, user, id);
 };
@@ -129,30 +164,20 @@ export const createStage: Mutator<ArgsOf<"create_stage">> = (tx, args, ctx) => {
  * stamps every unstamped, unarchived issue in the stage; leaving done clears
  * every unarchived one. Archived rows are untouched either way, and deleted
  * rows move with the rest because the server's `UPDATE` filters only on
- * `archived_at`. Returns the ids it wrote for `checkWorkflow`.
+ * `archived_at`. Workflow candidates are collected separately.
  */
-function restampStage(
-  tx: Tx,
-  stageId: string,
-  previous: string,
-  next: string,
-  at: string,
-): string[] {
-  const affected: string[] = [];
+function restampStage(tx: Tx, stageId: string, previous: string, next: string, at: string): void {
   if (next === "done") {
     for (const issue of tx.byIndex("issues", "stage_id", stageId)) {
       if (issue.archived_at !== null || issue.done_at !== null) continue;
       tx.put("issues", { ...issue, done_at: at, updated_at: at });
-      affected.push(issue.id);
     }
   } else if (previous === "done") {
     for (const issue of tx.byIndex("issues", "stage_id", stageId)) {
       if (issue.archived_at !== null) continue;
       tx.put("issues", { ...issue, done_at: null, updated_at: at });
-      affected.push(issue.id);
     }
   }
-  return affected;
 }
 
 export const updateStage: Mutator<ArgsOf<"update_stage">> = (tx, args, ctx) => {
@@ -172,8 +197,10 @@ export const updateStage: Mutator<ArgsOf<"update_stage">> = (tx, args, ctx) => {
   );
   tx.put("teams", next);
   if (previous === args.kind) return;
-  const affected = restampStage(tx, args.id, previous, args.kind, ctx.at);
-  checkWorkflow(tx, affected);
+  // The server validates the touched stage before restamping the Done-entry
+  // clock, independent of the restamp writes, which cannot change the outcome.
+  checkWorkflow(tx, [args.id]);
+  restampStage(tx, args.id, previous, args.kind, ctx.at);
 };
 
 export const deleteStage: Mutator<ArgsOf<"delete_stage">> = (tx, args, ctx) => {
@@ -200,10 +227,10 @@ export const deleteStage: Mutator<ArgsOf<"delete_stage">> = (tx, args, ctx) => {
   const nextTeam = copyTeam(team);
   nextTeam.stages = nextTeam.stages.filter((stage) => stage.id !== args.id);
   tx.put("teams", nextTeam);
-  for (const id of restampStage(tx, args.replacement, previous, next, ctx.at)) {
-    if (!affected.includes(id)) affected.push(id);
-  }
-  checkWorkflow(tx, affected);
+  // The server validates the touched stage and the moved issues before
+  // restamping the Done-entry clock, independent of the restamp writes.
+  checkWorkflow(tx, [args.id, ...affected]);
+  restampStage(tx, args.replacement, previous, next, ctx.at);
 };
 
 export const createLabel: Mutator<ArgsOf<"create_label">> = (tx, args, ctx) => {

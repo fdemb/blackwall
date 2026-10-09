@@ -286,6 +286,7 @@ async fn setup(store: &Store, owner: &Session) -> (Uuid, Uuid, Uuid) {
                     id: None,
                     name: name.into(),
                     members: vec![],
+                    default_stage_ids: None,
                 },
                 BTreeMap::new(),
                 None,

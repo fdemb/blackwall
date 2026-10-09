@@ -198,6 +198,10 @@ export interface IssueFilter {
   sort?: IssueSort;
   unassigned?: boolean;
   group_by?: IssueGroup;
+  /** Paging cursor for ungrouped Updated pages. Stored as given. */
+  after?: string;
+  /** Record shape. The server defaults it to full. */
+  projection?: "full" | "summary";
 }
 export interface SavedView {
   id: Id;
@@ -355,7 +359,7 @@ export interface IssuePatch {
   dependencies?: Id[];
 }
 export type Command =
-  | { type: "create_team"; id?: Id; name: string; members: Id[] }
+  | { type: "create_team"; id?: Id; name: string; members: Id[]; default_stage_ids: Id[] }
   | { type: "set_team_members"; id: Id; members: Id[] }
   | { type: "set_team_archive"; id: Id; archive_after_days: number | null }
   | { type: "create_stage"; id?: Id; team_id: Id; name: string; kind: StageKind; position: number }

@@ -3,6 +3,7 @@ import type { DeepReadonly, PendingMutation, ReplayFn, Tx } from "../store";
 import { SyncStore } from "../store";
 import type { ArgsOf, Mutator } from "./common";
 import { MutationError } from "./errors";
+import { normalizeArgs } from "./normalize";
 import { cancelInvitation, deleteIntegration, updateIntegration } from "./admin";
 import {
   addComment,
@@ -53,6 +54,7 @@ import { deleteView, saveView, updateView } from "./views";
 
 export type { Mutator, MutatorContext } from "./common";
 export { MutationError } from "./errors";
+export { normalizeArgs };
 
 /** Every command name with a mutator, for the registry annotation below. */
 const NAMES = [
@@ -168,27 +170,6 @@ export const ONLINE_ONLY = [
 
 export type OnlineOnly = (typeof ONLINE_ONLY)[number];
 
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-/**
- * Strips every `null`-valued key from objects in `args`, recursively through
- * nested objects but not inside arrays. Serde treats `null` and an absent field
- * the same for every `Option` field, so this matches the server for every command.
- * A `null` inside an array is preserved.
- */
-export function stripNulls<T>(value: T): T {
-  if (Array.isArray(value)) return value;
-  if (!isPlainObject(value)) return value;
-  const out: Record<string, unknown> = {};
-  for (const [key, item] of Object.entries(value)) {
-    if (item === null) continue;
-    out[key] = isPlainObject(item) ? stripNulls(item) : item;
-  }
-  return out as T;
-}
-
 /** Dispatches a pending mutation to its mutator with time from the mutation. */
 export function createReplay(actor: Id): ReplayFn {
   const table = MUTATORS as unknown as Record<string, Mutator<unknown>>;
@@ -197,27 +178,41 @@ export function createReplay(actor: Id): ReplayFn {
       throw new MutationError(400, `unknown command ${mutation.name}`);
     }
     const mutator = table[mutation.name] as Mutator<unknown>;
-    mutator(tx, stripNulls(mutation.args), { actor, at: mutation.at, mode: "replay" });
+    mutator(tx, normalizeArgs(mutation.name, mutation.args), {
+      actor,
+      at: mutation.at,
+      mode: "replay",
+      local: mutation.local,
+    });
   };
+}
+
+/** What admission validated: the normalized args to send, and client-only data to store. */
+export interface AdmitResult {
+  args: unknown;
+  local?: unknown;
 }
 
 /**
  * Runs a mutation once in admit mode against the current view, without writing
  * anything. A throw rejects the edit before it enters the outbox and is shown
- * to the user; replay errors are diagnostics and never reach the user.
+ * to the user; replay errors are diagnostics and never reach the user. The
+ * returned args are normalized the way the server deserializes them; `local`
+ * is client-only data for the pending mutation and is never sent.
  */
 export function admit(
   store: SyncStore,
   actor: Id,
   mutation: Pick<DeepReadonly<PendingMutation>, "name" | "args" | "at">,
-): void {
+): AdmitResult {
   const table = MUTATORS as unknown as Record<string, Mutator<unknown>>;
   if (!Object.prototype.hasOwnProperty.call(table, mutation.name)) {
     throw new MutationError(400, `unknown command ${mutation.name}`);
   }
   const mutator = table[mutation.name] as Mutator<unknown>;
-  const args = stripNulls(mutation.args);
-  store.dryRun((tx) => {
-    mutator(tx, args, { actor, at: mutation.at, mode: "admit" });
+  const args = normalizeArgs(mutation.name, mutation.args);
+  const local = store.dryRun((tx) => {
+    return mutator(tx, args, { actor, at: mutation.at, mode: "admit" });
   });
+  return local === undefined ? { args } : { args, local };
 }

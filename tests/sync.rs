@@ -933,6 +933,7 @@ async fn in_memory_model_rejects_cross_collection_ids() {
                 id: None,
                 name: "Team".into(),
                 members: vec![owner],
+                default_stage_ids: None,
             },
             now,
         )

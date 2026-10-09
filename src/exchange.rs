@@ -346,6 +346,7 @@ mod tests {
                     id: None,
                     name: "Infra".into(),
                     members: vec![source_user],
+                    default_stage_ids: None,
                 },
                 now,
             )
@@ -510,6 +511,7 @@ mod tests {
                     id: None,
                     name: "Infra".into(),
                     members: vec![source_user],
+                    default_stage_ids: None,
                 },
                 now,
             )
@@ -582,6 +584,7 @@ mod tests {
                     id: None,
                     name: "Team".into(),
                     members: vec![],
+                    default_stage_ids: None,
                 },
                 now,
             )

@@ -852,6 +852,22 @@ describe("review N1-N5", () => {
     expect(() => normalize("issues", makeIssue("a", { created_at: "not-a-date" }))).toThrow();
   });
 
+  it("detaches and freezes client-only pending mutation data", () => {
+    const local = { ids: ["original"] };
+    let replayed: unknown;
+    const store = new SyncStore((_tx, mutation) => {
+      replayed = mutation.local;
+    });
+    store.setPending([{ id: 1, name: "noop", args: {}, at: NOW, local }]);
+    local.ids.push("newer");
+    expect(replayed).toEqual({ ids: ["original"] });
+    expect(store.pending()[0]?.local).toEqual({ ids: ["original"] });
+    expect(Object.isFrozen(replayed)).toBe(true);
+    if (typeof replayed !== "object" || replayed === null || !("ids" in replayed))
+      throw new Error("missing local data");
+    expect(Object.isFrozen(replayed.ids)).toBe(true);
+  });
+
   it("N6: pending mutations are deeply readonly", () => {
     const store = new SyncStore(testReplay);
     store.replaceBase({ issues: [makeIssue("a", { title: "Base" })] }, ["issues"]);

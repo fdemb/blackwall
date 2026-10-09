@@ -8,6 +8,11 @@ pub enum Command {
         name: String,
         #[serde(default)]
         members: Vec<Uuid>,
+        /// Client-chosen ids for the default stages, in stage order
+        /// (Backlog, Todo, In progress, Done). Absent means the server
+        /// generates them.
+        #[serde(default)]
+        default_stage_ids: Option<Vec<Uuid>>,
     },
     SetTeamMembers {
         id: Uuid,

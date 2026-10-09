@@ -12,10 +12,19 @@ export interface MutatorContext {
   at: string;
   /** Admit runs once when the user issues the command; replay runs on every rebase. */
   mode: "admit" | "replay";
+  /**
+   * The pending mutation's client-only data. Undefined in admit mode, where
+   * the mutator returns it instead; the stored value in replay mode.
+   */
+  local?: unknown;
 }
 
-/** One command's predicted effect on the view. Must be deterministic and idempotent. */
-export type Mutator<A> = (tx: Tx, args: DeepReadonly<A>, ctx: MutatorContext) => void;
+/**
+ * One command's predicted effect on the view. Must be deterministic and
+ * idempotent. May return client-only data for the pending mutation, captured
+ * at admission and read back from `ctx.local` on replay.
+ */
+export type Mutator<A> = (tx: Tx, args: DeepReadonly<A>, ctx: MutatorContext) => unknown;
 
 /** The command's arguments: the `Command` union member without its `type` tag. */
 export type ArgsOf<T extends Command["type"]> = Omit<Extract<Command, { type: T }>, "type">;
@@ -406,18 +415,22 @@ export function checkImportedForSave(issue: DeepReadonly<SyncIssue>): void {
 }
 
 /**
- * `validate_workflow` mirror (`src/store/issues.rs:27`). After all writes of
- * a mutation, any active/done, non-deleted issue that is affected or depends
- * on an affected issue must not have an unfinished dependency (deleted or not
- * done/cancelled). `affected` is the set of issue ids the mutation wrote.
- * Uses point reads and the dependency index only, never a table scan.
+ * `validate_workflow` mirror (`src/store/issues.rs:27`). The server checks
+ * every touched id after the command's writes but before the Done-entry
+ * restamp: any active/done, non-deleted issue whose id, stage id or one of
+ * whose dependencies is touched must not have an unfinished dependency
+ * (deleted or not done/cancelled). `affected` is the set of ids the command
+ * touched, including stage ids, independent of the restamp writes, which only
+ * move the Done clock and cannot change the outcome. Uses point reads and
+ * the stage and dependency indexes only, never a table scan.
  */
 export function checkWorkflow(tx: Tx, affected: readonly string[]): void {
   if (affected.length === 0) return;
   const affectedSet = new Set(affected);
   const candidates = new Set<string>();
-  for (const id of affectedSet) candidates.add(id);
   for (const id of affectedSet) {
+    candidates.add(id);
+    for (const issue of tx.byIndex("issues", "stage_id", id)) candidates.add(issue.id);
     for (const dependent of tx.byIndex("issues", "dependency", id)) {
       candidates.add(dependent.id);
     }
@@ -427,9 +440,14 @@ export function checkWorkflow(tx: Tx, affected: readonly string[]): void {
     if (issue === undefined || issue.deleted_at !== null) continue;
     const kind = stageKindOf(tx, issue.team_id, issue.stage_id);
     if (kind !== "active" && kind !== "done") continue;
-    // Only issues affected by this mutation (directly or as dependents) can
-    // newly violate the invariant; untouched issues already satisfied it.
-    if (!affectedSet.has(id) && !issue.dependencies.some((dep) => affectedSet.has(dep))) {
+    // The server only checks issues the command touched directly, through
+    // their stage, or through a dependency; untouched issues already
+    // satisfied the invariant.
+    if (
+      !affectedSet.has(id) &&
+      !affectedSet.has(issue.stage_id) &&
+      !issue.dependencies.some((dep) => affectedSet.has(dep))
+    ) {
       continue;
     }
     for (const dep of new Set(issue.dependencies)) {

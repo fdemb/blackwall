@@ -12,14 +12,16 @@ import {
   utf8Length,
 } from "./common";
 import { MutationError } from "./errors";
-import type { Comment } from "../../lib/types";
+import type { Attachment, Comment } from "../../lib/types";
+import type { SyncIssue } from "../records";
 
 /** The issue must exist and be untrashed (`discussion::discussion_issue`). Archived issues may be discussed. */
-function requireDiscussionIssue(tx: Tx, issueId: string): void {
+function requireDiscussionIssue(tx: Tx, issueId: string): DeepReadonly<SyncIssue> {
   const issue = tx.get("issues", issueId);
   if (issue === undefined || issue.deleted_at !== null) {
     throw new MutationError(404, "not found");
   }
+  return issue;
 }
 
 /** `discussion::validate_time`: minutes and note byte length share one message. */
@@ -43,19 +45,44 @@ function requireComment(tx: Tx, id: string): DeepReadonly<Comment> {
 export const addComment: Mutator<ArgsOf<"add_comment">> = (tx, args, ctx) => {
   requireRole(tx, ctx.actor, "add_comment", args);
   // Order mirrors `discussion::AddComment`: the issue, the body, the
-  // mentions, then the client id. Attachment uploads are verified by the
-  // server against rows the replica does not hold, so they are stored as
-  // given and left for the pull to correct.
-  requireDiscussionIssue(tx, args.issue_id);
+  // mentions, then the client id.
+  const issue = requireDiscussionIssue(tx, args.issue_id);
   checkText(args.body, 100_000);
   const mentions = dedupeSortUuids(args.mentions);
   for (const user of mentions) requireMember(tx, user);
   const id = args.id ?? null;
   if (id === null) throw new MutationError(400, "id is required");
   if (id === NIL_UUID) throw new MutationError(400, "id must not be nil");
+  // The server moves the attachments from the issue to the comment, keeping
+  // the stored upload metadata ordered by attachment id. An id that is not on
+  // the issue fails as on the server. A replay over a base that already holds
+  // the comment reads the metadata back from the comment itself, so running
+  // twice gives the same view as running once.
+  const previous = tx.get("comments", id);
+  const remaining = new Map(issue.attachments.map((attachment) => [attachment.id, attachment]));
+  const carried = new Map(
+    (previous?.attachments ?? []).map((attachment) => [attachment.id, attachment]),
+  );
+  const seen = new Set<string>();
+  const moved: Attachment[] = [];
+  for (const attachment of args.attachments) {
+    if (seen.has(attachment.id)) {
+      throw new MutationError(400, "attachment must be uploaded to this issue first");
+    }
+    seen.add(attachment.id);
+    const stored = remaining.get(attachment.id) ?? carried.get(attachment.id);
+    if (stored === undefined) {
+      throw new MutationError(400, "attachment must be uploaded to this issue first");
+    }
+    remaining.delete(attachment.id);
+    moved.push({ ...stored });
+  }
+  moved.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  if (moved.length > 0) {
+    tx.put("issues", { ...issue, attachments: [...remaining.values()] });
+  }
   // Creates are upserts: a replay over a base that already holds the id
   // keeps its version and creation time, as for created issues.
-  const previous = tx.get("comments", id);
   tx.put("comments", {
     id,
     version: previous?.version ?? 1,
@@ -63,7 +90,7 @@ export const addComment: Mutator<ArgsOf<"add_comment">> = (tx, args, ctx) => {
     author: ctx.actor,
     body: args.body,
     mentions,
-    attachments: args.attachments.map((attachment) => ({ ...attachment })),
+    attachments: moved,
     created_at: previous?.created_at ?? ctx.at,
     edited_at: null,
   });

@@ -7,6 +7,7 @@ impl Operation<'_> {
                 id,
                 name,
                 mut members,
+                default_stage_ids,
             } => {
                 self.admin()?;
                 text(&name, 200)?;
@@ -17,40 +18,63 @@ impl Operation<'_> {
                     self.member(*user).await?;
                 }
 
-                let id = self.reserve_client_id(id).await?;
+                let stage_ids = match default_stage_ids {
+                    None => None,
+                    Some(ids) => {
+                        if ids.len() != crate::domain::default_stages().len() {
+                            return Err(Error::BadRequest(
+                                "default_stage_ids must contain exactly 4 ids".into(),
+                            ));
+                        }
+                        Some(ids)
+                    }
+                };
+                // Reserve the team id together with the stage ids in one
+                // batch call, so a collision on any of them is a 409.
+                let mut provided = vec![id];
+                if let Some(ids) = &stage_ids {
+                    provided.extend(ids.iter().map(|stage| Some(*stage)));
+                }
+                let resolved = self.reserve_client_ids(&provided).await?;
+                let unique: std::collections::BTreeSet<_> = resolved.iter().collect();
+                if unique.len() != resolved.len() {
+                    return Err(Error::Conflict("id already exists".into()));
+                }
+                let team_id = resolved[0];
+                let mut supplied = stage_ids.map(|ids| ids.into_iter());
+
                 sqlx::query("INSERT INTO teams(id,workspace_id,name,archive_after_days) VALUES($1,$2,$3,30)")
-                    .bind(id)
+                    .bind(team_id)
                     .bind(self.workspace_id)
                     .bind(name)
                     .execute(&mut *self.tx)
                     .await
                     .map_err(id_conflict)?;
-                self.created("teams", id);
+                self.created("teams", team_id);
                 for user in members {
                     sqlx::query(
                         "INSERT INTO team_members(workspace_id,team_id,user_id) VALUES($1,$2,$3)",
                     )
                     .bind(self.workspace_id)
-                    .bind(id)
+                    .bind(team_id)
                     .bind(user)
                     .execute(&mut *self.tx)
                     .await?;
                 }
 
-                for (position, (name, kind)) in [
-                    ("Backlog", StageKind::Backlog),
-                    ("Todo", StageKind::Planned),
-                    ("In progress", StageKind::Active),
-                    ("Done", StageKind::Done),
-                ]
-                .into_iter()
-                .enumerate()
+                for (position, (name, kind)) in
+                    crate::domain::default_stages().into_iter().enumerate()
                 {
-                    let stage_id = Uuid::new_v4();
+                    let stage_id = match &mut supplied {
+                        Some(ids) => ids
+                            .next()
+                            .expect("reserved exactly one id per default stage"),
+                        None => Uuid::new_v4(),
+                    };
                     sqlx::query("INSERT INTO stages(id,workspace_id,team_id,name,kind,position) VALUES($1,$2,$3,$4,$5,$6)")
                         .bind(stage_id)
                         .bind(self.workspace_id)
-                        .bind(id)
+                        .bind(team_id)
                         .bind(name)
                         .bind(enum_text(&kind))
                         .bind(position as i64)
@@ -59,7 +83,7 @@ impl Operation<'_> {
                     self.created("stages", stage_id);
                 }
 
-                id
+                team_id
             }
 
             Command::SetTeamMembers { id, mut members } => {
@@ -784,4 +808,190 @@ fn validate_sprint(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support as support;
+    use serde_json::json;
+
+    async fn setup() -> (support::TestDatabase, Store, Uuid, Uuid) {
+        let database = support::TestDatabase::new().await;
+        let store = Store::connect(&database.url).await.unwrap();
+        let owner = store
+            .register(crate::auth::Register {
+                email: format!("owner-{}@example.com", Uuid::new_v4()),
+                password: "team-stage-id-password".into(),
+                display_name: "owner".into(),
+            })
+            .await
+            .unwrap()
+            .profile
+            .id;
+        let workspace: Uuid = serde_json::from_value(
+            store.create_workspace("Teams".into(), owner).await.unwrap()["id"].clone(),
+        )
+        .unwrap();
+        (database, store, workspace, owner)
+    }
+
+    #[tokio::test]
+    async fn create_team_honors_client_stage_ids() {
+        let (database, store, workspace, owner) = setup().await;
+        let team = Uuid::new_v4();
+        let stages: Vec<Uuid> = (0..4).map(|_| Uuid::new_v4()).collect();
+        store
+            .operation(
+                workspace,
+                owner,
+                serde_json::from_value(json!({
+                    "type": "create_team",
+                    "id": team,
+                    "name": "Team",
+                    "default_stage_ids": stages,
+                }))
+                .unwrap(),
+                BTreeMap::new(),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+
+        let rows = sqlx::query(
+            "SELECT id,name,kind,position FROM stages WHERE workspace_id=$1 AND team_id=$2 ORDER BY position",
+        )
+        .bind(workspace)
+        .bind(team)
+        .fetch_all(&store.pool)
+        .await
+        .unwrap();
+        let kinds: Vec<(Uuid, String, String, i64)> = rows
+            .into_iter()
+            .map(|row| {
+                (
+                    row.try_get("id").unwrap(),
+                    row.try_get("name").unwrap(),
+                    row.try_get("kind").unwrap(),
+                    row.try_get("position").unwrap(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            kinds,
+            vec![
+                (stages[0], "Backlog".into(), "backlog".into(), 0),
+                (stages[1], "Todo".into(), "planned".into(), 1),
+                (stages[2], "In progress".into(), "active".into(), 2),
+                (stages[3], "Done".into(), "done".into(), 3),
+            ]
+        );
+
+        store.pool.close().await;
+        database.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn create_team_rejects_wrong_stage_id_count() {
+        let (database, store, workspace, owner) = setup().await;
+        for count in [0, 3, 5] {
+            let stages: Vec<Uuid> = (0..count).map(|_| Uuid::new_v4()).collect();
+            let result = store
+                .operation(
+                    workspace,
+                    owner,
+                    serde_json::from_value(json!({
+                        "type": "create_team",
+                        "name": "Team",
+                        "default_stage_ids": stages,
+                    }))
+                    .unwrap(),
+                    BTreeMap::new(),
+                    None,
+                    None,
+                )
+                .await;
+            assert!(
+                matches!(result, Err(Error::BadRequest(ref message)) if message == "default_stage_ids must contain exactly 4 ids"),
+                "count {count}: {result:?}"
+            );
+        }
+
+        store.pool.close().await;
+        database.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn create_team_rejects_colliding_stage_ids() {
+        let (database, store, workspace, owner) = setup().await;
+        let stages: Vec<Uuid> = (0..4).map(|_| Uuid::new_v4()).collect();
+        store
+            .operation(
+                workspace,
+                owner,
+                serde_json::from_value(json!({
+                    "type": "create_team",
+                    "name": "First",
+                    "default_stage_ids": stages,
+                }))
+                .unwrap(),
+                BTreeMap::new(),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+
+        let team_id = Uuid::new_v4();
+        let duplicate = Uuid::new_v4();
+        for (id, ids) in [
+            (
+                None,
+                vec![stages[0], Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4()],
+            ),
+            (
+                None,
+                vec![owner, Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4()],
+            ),
+            (
+                None,
+                vec![duplicate, duplicate, Uuid::new_v4(), Uuid::new_v4()],
+            ),
+            (
+                Some(team_id),
+                vec![team_id, Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4()],
+            ),
+        ] {
+            let result = store
+                .operation(
+                    workspace,
+                    owner,
+                    serde_json::from_value(json!({
+                        "type": "create_team",
+                        "id": id,
+                        "name": "Second",
+                        "default_stage_ids": ids,
+                    }))
+                    .unwrap(),
+                    BTreeMap::new(),
+                    None,
+                    None,
+                )
+                .await;
+            assert!(
+                matches!(result, Err(Error::Conflict(_))),
+                "colliding stage id: {result:?}"
+            );
+        }
+        let count: i64 = sqlx::query_scalar("SELECT count(*) FROM teams WHERE workspace_id=$1")
+            .bind(workspace)
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+        assert_eq!(count, 1, "collisions must roll back the entire team create");
+
+        store.pool.close().await;
+        database.cleanup().await;
+    }
 }

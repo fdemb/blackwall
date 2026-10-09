@@ -49,6 +49,7 @@ impl Fixture {
                     id: None,
                     name: "Team".into(),
                     members: vec![],
+                    default_stage_ids: None,
                 },
                 BTreeMap::new(),
                 None,

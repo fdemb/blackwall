@@ -38,11 +38,38 @@ export const markAllNotificationsRead: Mutator<ArgsOf<"mark_all_notifications_re
   ctx,
 ) => {
   requireRole(tx, ctx.actor, "mark_all_notifications_read", args);
-  // The server only touches unread rows; repeating the command is a no-op.
+  // Admission fixes the set of unread ids. Replay must never expand it to
+  // notifications created after the server applied this command.
+  if (ctx.mode === "replay") {
+    const local = ctx.local;
+    if (
+      typeof local !== "object" ||
+      local === null ||
+      !("ids" in local) ||
+      !Array.isArray(local.ids)
+    ) {
+      throw new MutationError(400, "mark all read requires local.ids");
+    }
+    for (const id of local.ids) {
+      if (typeof id !== "string") continue;
+      const notification = tx.get("notifications", id);
+      if (
+        notification === undefined ||
+        notification.user_id !== ctx.actor ||
+        notification.read_at !== null
+      )
+        continue;
+      tx.put("notifications", { ...notification, read_at: ctx.at });
+    }
+    return;
+  }
+  const ids: string[] = [];
   for (const notification of tx.all("notifications")) {
     if (notification.user_id !== ctx.actor || notification.read_at !== null) continue;
     tx.put("notifications", { ...notification, read_at: ctx.at });
+    ids.push(notification.id);
   }
+  return { ids };
 };
 
 export const configureAlerts: Mutator<ArgsOf<"configure_alerts">> = (tx, args, ctx) => {
