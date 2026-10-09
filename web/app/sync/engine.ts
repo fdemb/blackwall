@@ -4,9 +4,9 @@ import { acceptsChange, recordKey, recordScope, scopeKey } from "./persistence/s
 import type { Replica, Scope } from "./persistence/types";
 import { BOOTSTRAP_ENTITIES, BOOTSTRAP_REPLACED_ENTITIES } from "./records";
 import type { Entity } from "./records";
-import { SyncStore } from "./store";
+import { immutableCopy, ingest, SyncStore } from "./store";
 import { AccessError, ProtocolError, UnauthorizedError, UnavailableError } from "./transport";
-import type { Mutation, MutationResult } from "./transport";
+import type { Mutation, MutationResult, PullResponse } from "./transport";
 import { backoff, Cancelled, cancellable, pause, SerialQueue } from "./engine-scheduling";
 import type {
   EngineDependencies,
@@ -34,6 +34,7 @@ type OnlineJob = {
   args: unknown;
   resolve: (result: MutationResult) => void;
   reject: (error: Error) => void;
+  settled: boolean;
 };
 type PushBatch = {
   mutations: readonly Mutation[];
@@ -41,6 +42,7 @@ type PushBatch = {
   processed: boolean;
   attempt: number;
   retryAt: number;
+  csrfRefreshes: number;
 };
 
 /** One replica. Only start/stop controls leadership and network ownership. */
@@ -60,7 +62,14 @@ export class SyncEngine {
   private readonly heldScopes = new Map<string, { scope: Scope; holders: number }>();
   private readonly scopeWork = new Map<string, Promise<void>>();
   private readonly blocked = new Set<RequestKind>();
-  private readonly outcomes = new Map<number, (result: "applied" | Rejection) => void>();
+  private readonly outcomes = new Map<
+    number,
+    {
+      resolve: (result: "applied" | Rejection) => void;
+      reject: (error: Error) => void;
+    }
+  >();
+  private readonly ackWaiters = new Set<() => void>();
   private readonly reported = new Set<number>();
   private readonly onlineJobs: OnlineJob[] = [];
   private readonly delay: ReturnType<typeof backoff>;
@@ -161,6 +170,14 @@ export class SyncEngine {
     this.started = false;
     this.lifecycle += 1;
     this.cancelNetwork();
+    this.rejectCallers(new Error(this.closed ? "Engine is closed" : "Engine is stopped"));
+  }
+
+  private rejectCallers(error: Error): void {
+    for (const outcome of this.outcomes.values()) outcome.reject(error);
+    this.outcomes.clear();
+    for (const job of this.onlineJobs.splice(0)) job.reject(error);
+    this.batch?.job?.reject(error);
   }
 
   async close(): Promise<void> {
@@ -171,12 +188,12 @@ export class SyncEngine {
     await this.commits.drain();
     this.replica?.close();
     this.replica = null;
-    for (const job of this.onlineJobs.splice(0)) job.reject(new Cancelled());
-    this.batch?.job?.reject(new Cancelled());
+    this.rejectCallers(new Error("Engine is closed"));
   }
 
   async mutate(name: string, args: unknown): Promise<MutationReceipt> {
     await this.open();
+    const lifecycle = this.lifecycle;
     return this.commits.run(async () => {
       const replica = this.requireReplica();
       if (ONLINE_ONLY.some((command) => command === name))
@@ -190,9 +207,18 @@ export class SyncEngine {
         at,
         ...(admitted.local === undefined ? {} : { local: admitted.local }),
       }));
-      const settled = new Promise<"applied" | Rejection>((resolve) =>
-        this.outcomes.set(mutation.id, resolve),
+      const settled = new Promise<"applied" | Rejection>((resolve, reject) =>
+        this.outcomes.set(mutation.id, { resolve, reject }),
       );
+      void settled.catch(() => undefined);
+      if (this.closed || this.terminal || lifecycle !== this.lifecycle) {
+        this.outcomes
+          .get(mutation.id)
+          ?.reject(
+            new Error(this.closed || this.terminal ? "Engine is closed" : "Engine is stopped"),
+          );
+        this.outcomes.delete(mutation.id);
+      }
       this.store.setPending([...this.store.pending(), mutation].sort((a, b) => a.id - b.id));
       this.requestPush();
       return { id: prepared.id, mutationId: mutation.id, settled };
@@ -211,8 +237,27 @@ export class SyncEngine {
       throw new MutationError(400, "Not an online sync command");
     const prepared = this.prepare(name, args);
     this.requireReplica();
+    if (this.blocked.has("push")) throw this.snapshot.lastError ?? new Error("Push is blocked");
     return new Promise((resolve, reject) => {
-      this.onlineJobs.push({ name, args: prepared.args, resolve, reject });
+      const finish = () => {
+        if (job.settled) return false;
+        job.settled = true;
+        const index = this.onlineJobs.indexOf(job);
+        if (index !== -1) this.onlineJobs.splice(index, 1);
+        return true;
+      };
+      const job: OnlineJob = {
+        name,
+        args: immutableCopy(prepared.args),
+        settled: false,
+        resolve: (result) => {
+          if (finish()) resolve(result);
+        },
+        reject: (error) => {
+          if (finish()) reject(error);
+        },
+      };
+      this.onlineJobs.push(job);
       this.requestPush();
     });
   }
@@ -235,17 +280,16 @@ export class SyncEngine {
 
   pull(): Promise<void> {
     const controller = this.controller;
-    if (!controller || this.blocked.has("pull")) return Promise.resolve();
+    if (!controller || this.blocked.has("pull") || this.blocked.has("bootstrap"))
+      return Promise.resolve();
     this.pullAgain = true;
     if (this.pulling) return this.pulling;
-    const work = this.reads
-      .run(async () => {
-        while (this.pullAgain && this.active(controller)) {
-          this.pullAgain = false;
-          await this.pullPages(controller);
-        }
-      })
-      .catch((error: unknown) => this.finishError(error));
+    const work = (async () => {
+      while (this.pullAgain && this.active(controller)) {
+        this.pullAgain = false;
+        if (await this.pullPages(controller)) this.pullAgain = true;
+      }
+    })().catch((error: unknown) => this.finishError(error));
     this.pulling = work;
     void work.then(() => {
       if (this.pulling !== work) return;
@@ -368,15 +412,19 @@ export class SyncEngine {
 
   private async bootstrap(controller: AbortController): Promise<void> {
     this.update({ phase: "bootstrapping" });
-    const response = await this.retry("bootstrap", controller, async () => {
-      const response = await this.deps.transport.bootstrap(this.deps.workspaceId, this.clientId, {
-        signal: controller.signal,
-      });
-      const records: Partial<Record<Entity, object[]>> = {};
-      for await (const { entity, record } of response.records)
-        (records[entity] ??= []).push(record);
-      return { header: response.header, records };
-    });
+    this.check(controller);
+    const response = await cancellable(
+      (async () => {
+        const response = await this.deps.transport.bootstrap(this.deps.workspaceId, this.clientId, {
+          signal: controller.signal,
+        });
+        const records: Partial<Record<Entity, object[]>> = {};
+        for await (const { entity, record } of response.records)
+          (records[entity] ??= []).push(this.prepareRecord(entity, record));
+        return { header: response.header, records };
+      })(),
+      controller.signal,
+    );
     await this.commits.run(async () => {
       this.check(controller);
       await this.requireReplica().writeBootstrap({
@@ -393,57 +441,79 @@ export class SyncEngine {
         this.acknowledge(response.header.last_mutation_id);
       });
     });
-    for (const { scope } of this.heldScopes.values()) {
-      if (this.blocked.has("scope")) break;
-      try {
-        await this.loadScope(scope, controller);
-      } catch (error) {
-        this.check(controller);
-        if (!(error instanceof Cancelled) || !this.blocked.has("scope")) throw error;
-      }
-    }
     this.check(controller);
     this.update({ phase: "ready" });
+    for (const { scope } of this.heldScopes.values()) this.requestScope(scope);
+    this.requestPush();
   }
 
-  private async pullPages(controller: AbortController): Promise<void> {
-    if (this.cursor === null) await this.bootstrap(controller);
-    else {
-      for (;;) {
-        const response = await this.retry("pull", controller, () =>
-          this.deps.transport.pull(this.deps.workspaceId, this.clientId, this.cursor, {
-            signal: controller.signal,
-          }),
-        );
-        if (response.reset) {
-          await this.bootstrap(controller);
-          break;
-        }
-        await this.commits.run(async () => {
-          this.check(controller);
-          await this.requireReplica().applyPull({
-            changes: response.changes,
-            cursor: response.cursor,
-            acknowledgedUpTo: response.last_mutation_id,
-          });
-          const changes = response.changes.filter((change) =>
-            acceptsChange(
-              change.entity,
-              change.record ?? this.store.baseGet(change.entity, change.id),
-              this.loadedScopes,
-            ),
-          );
-          this.cursor = response.cursor;
-          this.store.batch(() => {
-            this.store.applyBase(changes);
-            if (response.last_mutation_id !== null) this.acknowledge(response.last_mutation_id);
-          });
-        });
-        if (!response.more) break;
-      }
+  private prepareRecord(entity: Entity, record: object): object {
+    try {
+      const prepared = ingest(entity, record);
+      recordKey(entity, prepared);
+      return prepared;
+    } catch (cause) {
+      throw new ProtocolError(`Invalid ${entity} record`, 200, { cause });
     }
+  }
+
+  private async pullPages(controller: AbortController): Promise<boolean> {
+    if (this.cursor === null) {
+      await this.retry("bootstrap", controller, () =>
+        this.reads.run(() => this.bootstrap(controller)),
+      );
+      return false;
+    }
+    const response = await this.retry("pull", controller, () =>
+      this.reads.run(() => this.readPull(controller)),
+    );
+    if (response.reset)
+      await this.retry("bootstrap", controller, () =>
+        this.reads.run(() => this.bootstrap(controller)),
+      );
     this.check(controller);
     this.update({ phase: "ready" });
+    return response.more;
+  }
+
+  private async readPull(controller: AbortController): Promise<PullResponse> {
+    this.check(controller);
+    const response = await cancellable(
+      this.deps.transport.pull(this.deps.workspaceId, this.clientId, this.cursor, {
+        signal: controller.signal,
+      }),
+      controller.signal,
+    );
+    this.check(controller);
+    const changes = response.changes.map((change) => {
+      const record =
+        change.record === null ? null : this.prepareRecord(change.entity, change.record);
+      if (record !== null && recordKey(change.entity, record) !== change.id)
+        throw new ProtocolError("Change id does not match record key", 200);
+      return { ...change, record };
+    });
+    if (response.reset) return response;
+    await this.commits.run(async () => {
+      this.check(controller);
+      await this.requireReplica().applyPull({
+        changes,
+        cursor: response.cursor,
+        acknowledgedUpTo: response.last_mutation_id,
+      });
+      const accepted = changes.filter((change) =>
+        acceptsChange(
+          change.entity,
+          change.record ?? this.store.baseGet(change.entity, change.id),
+          this.loadedScopes,
+        ),
+      );
+      this.cursor = response.cursor;
+      this.store.batch(() => {
+        this.store.applyBase(accepted);
+        if (response.last_mutation_id !== null) this.acknowledge(response.last_mutation_id);
+      });
+    });
+    return response;
   }
 
   private acknowledge(id: number): void {
@@ -452,15 +522,16 @@ export class SyncEngine {
       this.store.pending().filter((mutation) => mutation.id > this.acknowledged),
     );
     this.settleAcknowledged();
+    for (const wake of this.ackWaiters) wake();
   }
 
   private settleAcknowledged(): void {
-    for (const [id, resolve] of this.outcomes) {
+    for (const [id, outcome] of this.outcomes) {
       if (
         id <= this.acknowledged &&
         (this.blocked.has("push") || !this.batch?.mutations.some((mutation) => mutation.id === id))
       ) {
-        resolve("applied");
+        outcome.resolve("applied");
         this.outcomes.delete(id);
       }
     }
@@ -477,12 +548,12 @@ export class SyncEngine {
       this.blocked.has("scope")
     )
       return;
-    const work = this.reads
-      .run(async () => {
+    const work = this.retry("scope", controller, () =>
+      this.reads.run(async () => {
         this.check(controller);
         if (!this.loadedScopes.has(key)) await this.loadScope(scope, controller);
-      })
-      .catch((error: unknown) => this.finishError(error));
+      }),
+    ).catch((error: unknown) => this.finishError(error));
     this.scopeWork.set(key, work);
     void work.then(() => {
       this.scopeWork.delete(key);
@@ -491,14 +562,16 @@ export class SyncEngine {
   }
 
   private async loadScope(scope: Scope, controller: AbortController): Promise<void> {
-    const response = await this.retry("scope", controller, () =>
+    const response = await cancellable(
       this.deps.transport.scope(this.deps.workspaceId, this.clientId, scope, {
         signal: controller.signal,
       }),
+      controller.signal,
     );
+    const records = response.records.map((record) => this.prepareRecord(scope.entity, record));
     await this.commits.run(async () => {
       this.check(controller);
-      await this.requireReplica().writeScope({ scope, records: response.records });
+      await this.requireReplica().writeScope({ scope, records });
       const key = scopeKey(scope);
       const changes = this.store
         .baseAll(scope.entity)
@@ -515,7 +588,7 @@ export class SyncEngine {
       this.store.batch(() => {
         this.store.applyBase(changes);
         this.store.applyBase(
-          response.records.map((record) => ({
+          records.map((record) => ({
             entity: scope.entity,
             id: recordKey(scope.entity, record),
             record,
@@ -529,11 +602,9 @@ export class SyncEngine {
     const controller = this.controller;
     if (
       !controller ||
-      this.cursor === null ||
-      this.snapshot.phase !== "ready" ||
       this.pushing ||
-      this.pulling ||
-      this.blocked.has("push")
+      this.blocked.has("push") ||
+      (this.batch?.processed && (this.blocked.has("pull") || this.blocked.has("bootstrap")))
     )
       return;
     const work = this.push(controller).catch((error: unknown) => this.finishError(error));
@@ -557,7 +628,14 @@ export class SyncEngine {
           this.check(controller);
           const mutations = this.store.pending().slice(0, 100);
           if (mutations.length)
-            return { mutations, job: null, processed: false, attempt: 0, retryAt: 0 };
+            return {
+              mutations,
+              job: null,
+              processed: false,
+              attempt: 0,
+              retryAt: 0,
+              csrfRefreshes: 0,
+            };
           const job = this.onlineJobs[0];
           if (!job) return null;
           const id = await this.requireReplica().allocateMutationIdIfOutboxEmpty();
@@ -567,13 +645,13 @@ export class SyncEngine {
             this.store.setPending(loaded.outbox);
             return null;
           }
-          this.onlineJobs.shift();
           return {
             mutations: [{ id, name: job.name, args: job.args, at: this.deps.clock.now() }],
             job,
             processed: false,
             attempt: 0,
             retryAt: 0,
+            csrfRefreshes: 0,
           };
         });
       }
@@ -582,7 +660,7 @@ export class SyncEngine {
         if (!this.onlineJobs.length) return;
         if (allocationRefused) {
           await pause(this.deps.clock, 1000, controller.signal);
-          await this.pull();
+          void this.pull();
         }
         continue;
       }
@@ -603,6 +681,8 @@ export class SyncEngine {
           );
           this.check(controller);
           for (const result of response.results) this.recordResult(result, batch);
+          if (response.status === "ok" && batch.job && !batch.job.settled)
+            throw new ProtocolError("Push did not settle its online command", 200);
           void this.pull();
           if (response.status === "partial") {
             batch.retryAt =
@@ -612,6 +692,28 @@ export class SyncEngine {
           batch.processed = true;
         } catch (error) {
           this.check(controller);
+          if (error instanceof AccessError && error.status === 403) {
+            if (batch.csrfRefreshes === 0)
+              await this.retry("push", controller, async () => {
+                try {
+                  return await this.deps.transport.me();
+                } catch (cause) {
+                  if (cause instanceof AccessError)
+                    throw new ProtocolError("CSRF refresh failed", cause.status, { cause });
+                  throw cause;
+                }
+              });
+            const read = await this.retry("pull", controller, () =>
+              this.reads.run(() => this.readPull(controller)),
+            );
+            if (read.reset || read.more) void this.pull();
+            if (batch.csrfRefreshes++ === 0) continue;
+            await this.handleError(
+              new ProtocolError("Push forbidden after CSRF refresh", 403, { cause: error }),
+              "push",
+            );
+            return;
+          }
           if (await this.handleError(error, "push")) return;
           batch.retryAt =
             Date.parse(this.deps.clock.now()) +
@@ -622,15 +724,33 @@ export class SyncEngine {
           continue;
         }
       }
-      await this.pull();
       this.check(controller);
       if (this.blocked.has("pull") || this.blocked.has("bootstrap")) return;
+      void this.pull();
       if (batch.mutations.some((mutation) => mutation.id > this.acknowledged)) {
-        await pause(this.deps.clock, this.delay(batch.attempt++), controller.signal);
+        await this.waitForAcknowledgement(batch, controller);
         continue;
       }
       this.batch = null;
       this.settleAcknowledged();
+    }
+  }
+
+  private async waitForAcknowledgement(
+    batch: PushBatch,
+    controller: AbortController,
+  ): Promise<void> {
+    let wake = () => {};
+    const work = new Promise<void>((resolve) => {
+      wake = resolve;
+    });
+    this.ackWaiters.add(wake);
+    const cancel = this.deps.clock.schedule(this.delay(batch.attempt++), wake);
+    try {
+      await cancellable(work, controller.signal);
+    } finally {
+      cancel();
+      this.ackWaiters.delete(wake);
     }
   }
 
@@ -642,8 +762,8 @@ export class SyncEngine {
         this.update({ rejected: Object.freeze([...this.snapshot.rejected, rejection]) });
         this.emit({ type: "rejected", rejection });
       }
-      this.outcomes.get(result.id)?.(rejection);
-    } else this.outcomes.get(result.id)?.("applied");
+      this.outcomes.get(result.id)?.resolve(rejection);
+    } else this.outcomes.get(result.id)?.resolve("applied");
     this.outcomes.delete(result.id);
     batch.job?.resolve(result);
   }
@@ -651,6 +771,7 @@ export class SyncEngine {
   private async events(controller: AbortController): Promise<void> {
     let attempt = 0;
     while (this.active(controller) && !this.blocked.has("events")) {
+      let retryAfter: number | string | null = null;
       try {
         const stream = await cancellable(
           this.deps.transport.events(this.deps.workspaceId, this.clientId, {
@@ -669,9 +790,10 @@ export class SyncEngine {
       } catch (error) {
         this.check(controller);
         if (await this.handleError(error, "events")) return;
+        if (error instanceof UnavailableError) retryAfter = error.retryAfter;
       }
       this.update({ connected: false });
-      await pause(this.deps.clock, this.delay(attempt++), controller.signal);
+      await pause(this.deps.clock, this.delay(attempt++, retryAfter), controller.signal);
     }
   }
 
@@ -688,6 +810,7 @@ export class SyncEngine {
     this.emit({ type: "error", error: failure });
     if (failure instanceof UnauthorizedError || failure instanceof AccessError) {
       this.terminal = true;
+      this.rejectCallers(failure);
       this.stop();
       this.unsubscribeSignals?.();
       this.unsubscribeSignals = null;
@@ -708,11 +831,6 @@ export class SyncEngine {
           this.store.setPending([]);
         });
         this.update({ phase: "loading" });
-        for (const [id, resolve] of this.outcomes)
-          resolve({ id, status: failure.status ?? 403, message: failure.message });
-        this.outcomes.clear();
-        for (const job of this.onlineJobs.splice(0)) job.reject(failure);
-        this.batch?.job?.reject(failure);
         this.emit({ type: failure instanceof UnauthorizedError ? "unauthorized" : "accessLost" });
       });
       return true;
@@ -721,7 +839,7 @@ export class SyncEngine {
       this.blocked.add(kind);
       if (kind === "push") this.settleAcknowledged();
       if (kind === "events") this.update({ connected: false });
-      if (kind === "push") this.batch?.job?.reject(failure);
+      if (kind === "push") for (const job of [...this.onlineJobs]) job.reject(failure);
       return true;
     }
     return false;

@@ -1,4 +1,4 @@
-import { setCsrf } from "../lib/api";
+import { getCsrf, setCsrf } from "../lib/api";
 import type { Profile } from "../lib/types";
 import type { Scope } from "./persistence/types";
 import { ENTITIES } from "./records";
@@ -109,6 +109,7 @@ export function createTransport(options: TransportOptions) {
   async function request(path: string, init: RequestInit = {}): Promise<Response> {
     const headers = new Headers(options.headers?.());
     new Headers(init.headers).forEach((value, key) => headers.set(key, value));
+    if ((init.method ?? "GET").toUpperCase() !== "GET") headers.set("X-CSRF-Token", getCsrf());
     let response: Response;
     try {
       response = await options.fetch(`${baseUrl}${path}`, {
@@ -143,7 +144,7 @@ export function createTransport(options: TransportOptions) {
         const first = await iterator.next();
         if (first.done)
           throw new TruncatedError("Bootstrap ended without a header or trailer", response.status);
-        const header = parseHeader(parseJson(first.value, response.status), response.status);
+        const header = parseHeader(parseLine(first.value, response.status), response.status);
         return { header, records: bootstrapRecords(iterator, response.status) };
       } catch (error) {
         await iterator.return(undefined);
@@ -178,7 +179,10 @@ export function createTransport(options: TransportOptions) {
         }),
       });
       if (!response.ok && response.status !== 503) await fail(response, true);
-      const text = await bodyText(response);
+      const text = await bodyText(response).catch((error: unknown) => {
+        if (response.ok) throw error;
+        throw httpError(response, response.statusText || `HTTP ${response.status}`, true);
+      });
       let value: unknown;
       try {
         value = parseJson(text, response.status);
@@ -188,7 +192,7 @@ export function createTransport(options: TransportOptions) {
       }
       if (response.status === 503 && object(value) && typeof value.error === "string")
         throw httpError(response, value.error, true);
-      const result = parsePush(value, response.status);
+      const result = parsePush(value, response.status, mutations);
       if (response.status === 503) {
         const retry = retryAfter(response);
         if (retry !== null) result.retryAfter = retry;
@@ -284,11 +288,18 @@ function httpError(response: Response, message: string, workspace: boolean): Tra
   return new ProtocolError(message, status);
 }
 async function fail(response: Response, workspace: boolean): Promise<never> {
-  const text = await bodyText(response);
-  let message = text || response.statusText;
+  const fallback = response.statusText || `HTTP ${response.status}`;
+  const failure = httpError(response, fallback, workspace);
+  let text: string;
+  try {
+    text = await response.text();
+  } catch {
+    throw failure;
+  }
+  let message = text || fallback;
   try {
     const value: unknown = JSON.parse(text);
-    message = object(value) && typeof value.error === "string" ? value.error : response.statusText;
+    message = object(value) && typeof value.error === "string" ? value.error : fallback;
   } catch {
     // Axum's JSON extractor returns plain text for 400, 415 and 422.
   }
@@ -340,7 +351,7 @@ function parsePull(value: unknown, status: number): PullResponse {
     changes,
   };
 }
-function parsePush(value: unknown, status: number): PushResponse {
+function parsePush(value: unknown, status: number, mutations: readonly Mutation[]): PushResponse {
   if (!object(value) || !integer(value.last_mutation_id) || !Array.isArray(value.results))
     throw new ProtocolError("Invalid push response", status);
   const results = value.results.map((result: unknown): MutationResult => {
@@ -363,6 +374,12 @@ function parsePush(value: unknown, status: number): PushResponse {
       };
     throw new ProtocolError("Invalid mutation result", status);
   });
+  if (
+    results.length > mutations.length ||
+    (status !== 503 && results.length !== mutations.length) ||
+    results.some((result, index) => result.id !== mutations[index].id)
+  )
+    throw new ProtocolError("Push results do not cover the submitted batch in order", status);
   return {
     status: status === 503 ? "partial" : "ok",
     lastMutationId: value.last_mutation_id,
@@ -405,12 +422,27 @@ function parseProfile(value: unknown, status: number): SessionProfile {
   };
 }
 
+interface Line {
+  text: string;
+  terminated: boolean;
+}
+
+function parseLine(line: Line, status: number): unknown {
+  try {
+    return parseJson(line.text, status);
+  } catch (cause) {
+    if (!line.terminated)
+      throw new TruncatedError("Bootstrap ended inside a line", status, { cause });
+    throw cause;
+  }
+}
+
 /** Decode UTF-8 incrementally and split LF, CRLF or CR, including split CRLF. */
 async function* lines(
   response: Response,
   signal: AbortSignal | undefined,
   kind: "bootstrap" | "events",
-): AsyncGenerator<string> {
+): AsyncGenerator<Line> {
   if (!response.body) throw new ProtocolError("Missing response body", response.status);
   const reader = response.body.getReader();
   const decoder = new TextDecoder("utf-8", { fatal: true });
@@ -440,7 +472,8 @@ async function* lines(
       try {
         text = chunk.done ? decoder.decode() : decoder.decode(chunk.value, { stream: true });
       } catch (cause) {
-        throw new ProtocolError("Invalid UTF-8 response", response.status, { cause });
+        const ErrorType = kind === "bootstrap" && chunk.done ? TruncatedError : ProtocolError;
+        throw new ErrorType("Invalid UTF-8 response", response.status, { cause });
       }
       for (const char of text) {
         if (skipLf && char === "\n") {
@@ -450,13 +483,13 @@ async function* lines(
         skipLf = char === "\r";
         if (char === "\r" || char === "\n") {
           if (kind === "events" && signal?.aborted) return;
-          yield pending;
+          yield { text: pending, terminated: true };
           pending = "";
         } else pending += char;
       }
       if (chunk.done) {
         done = true;
-        if (pending) yield pending;
+        if (pending) yield { text: pending, terminated: false };
         return;
       }
     }
@@ -468,15 +501,15 @@ async function* lines(
 }
 
 async function* bootstrapRecords(
-  iterator: AsyncGenerator<string>,
+  iterator: AsyncGenerator<Line>,
   status: number,
 ): AsyncGenerator<BootstrapRecord> {
   let count = 0;
   let ended = false;
   try {
     for await (const line of iterator) {
-      const value = parseJson(line, status);
       if (ended) throw new ProtocolError("Data after bootstrap trailer", status);
+      const value = parseLine(line, status);
       if (object(value) && "end" in value) {
         if (value.end !== true || !integer(value.records) || value.records !== count)
           throw new ProtocolError("Invalid bootstrap trailer", status);
@@ -498,7 +531,7 @@ async function* pokes(response: Response | null, signal?: AbortSignal): AsyncGen
   if (response === null) return;
   let event = "";
   let data: string[] = [];
-  for await (const line of lines(response, signal, "events")) {
+  for await (const { text: line } of lines(response, signal, "events")) {
     if (signal?.aborted) return;
     if (line === "") {
       if (event === "poke" && data.length > 0) {

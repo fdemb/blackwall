@@ -24,7 +24,11 @@ export type Fault =
     }
   | { kind: "drop_response"; route?: Route }
   | { kind: "duplicate_push" }
-  | { kind: "unavailable"; route: "push" | "pull" | "bootstrap"; after?: number }
+  | {
+      kind: "unavailable";
+      route: "push" | "pull" | "bootstrap" | "scope" | "events";
+      after?: number;
+    }
   | { kind: "truncate_bootstrap"; afterRecords?: number }
   | { kind: "close_events"; afterMs: number }
   | { kind: "reset_pull" };
@@ -52,6 +56,7 @@ interface Session {
   user: string;
   session_id: string;
   expires: number;
+  csrf: string;
 }
 interface LogRow extends Pair {
   user: string | null;
@@ -213,9 +218,21 @@ export class FakeServer {
     this.sessions.set(token, {
       user: id,
       session_id: this.id(),
+      csrf: `fake-csrf-${this.id()}`,
       expires: this.clock.milliseconds() + (this.options.sessionLifetimeMs ?? SESSION_LIFETIME),
     });
     return token;
+  }
+  csrfToken(token: string): string {
+    const session = this.sessions.get(token);
+    if (!session) throw new Error("unknown session");
+    return session.csrf;
+  }
+  rotateCsrf(token: string, csrf = `fake-csrf-${this.id()}`): string {
+    const session = this.sessions.get(token);
+    if (!session) throw new Error("unknown session");
+    session.csrf = csrf;
+    return csrf;
   }
   logout(token: string): void {
     this.sessions.delete(token);
@@ -424,13 +441,26 @@ export class FakeServer {
     let response: Response;
     try {
       const authorization = request.headers.get("authorization");
-      const session = authorization?.startsWith("Bearer ")
-        ? this.sessions.get(authorization.slice(7))
-        : undefined;
+      const bearer = authorization?.startsWith("Bearer ") ? authorization.slice(7) : undefined;
+      const cookie = request.headers
+        .get("cookie")
+        ?.split(";")
+        .map((part) => part.trim())
+        .find((part) => part.startsWith("blackwall_session="))
+        ?.slice("blackwall_session=".length);
+      const session = this.sessions.get(bearer ?? cookie ?? "");
       if (!session || session.expires <= this.clock.milliseconds())
         throw new MutationError(401, "authentication required");
+      if (
+        !bearer &&
+        request.method !== "GET" &&
+        request.headers.get("X-CSRF-Token") !== session.csrf
+      )
+        throw new MutationError(403, "permission denied");
       if (route === "me")
-        response = json({ ...this.users.get(session.user), session_id: session.session_id });
+        response = json({ ...this.users.get(session.user), session_id: session.session_id }, 200, {
+          "X-CSRF-Token": session.csrf,
+        });
       else {
         const workspace = uuid(matched?.[1], "workspace_id");
         const payload: unknown = route === "push" ? await extractPushJson(request) : null;

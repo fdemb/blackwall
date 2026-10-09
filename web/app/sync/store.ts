@@ -147,11 +147,19 @@ function deepFreeze<T>(value: T, seen = new WeakSet<object>()): T {
   return Object.freeze(value);
 }
 
+export function immutableCopy<T>(value: T): T {
+  return deepFreeze(deepClone(value));
+}
+
 /** Normalize, then detach from the caller and freeze, so the store never holds caller-owned objects. */
-function ingest<E extends Entity>(entity: E, record: DeepReadonly<RecordOf[E]>): AnyRecord {
-  return deepFreeze(
-    deepClone(normalize(entity, record as unknown as RecordOf[E])) as unknown as AnyRecord,
-  );
+export function ingest(entity: Entity, record: object): AnyRecord {
+  const clean = immutableCopy(
+    normalize(entity, record as RecordOf[Entity]),
+  ) as unknown as AnyRecord;
+  for (const def of defsFor(entity))
+    if (!Array.isArray(def.values(clean)))
+      throw new Error(`invalid ${entity}.${def.name} index values`);
+  return clean;
 }
 
 function emptyTables<T>(): Record<Entity, Map<string, T>> {
@@ -447,7 +455,7 @@ export class SyncStore {
 
   setPending(mutations: readonly PendingMutation[]): void {
     const clean = Object.freeze(
-      mutations.map((mutation) => deepFreeze(deepClone(mutation))),
+      mutations.map((mutation) => immutableCopy(mutation)),
     ) as readonly PendingMutation[];
     this.pendingList = clean;
     this.scheduleRebase();

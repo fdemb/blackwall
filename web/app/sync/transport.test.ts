@@ -24,6 +24,80 @@ const HEADER = { cursor: "10:10:", last_mutation_id: 0, schema: 1 };
 const POKE = { event: "poke", data: {} };
 const COMMENT_SCOPE: Scope = { entity: "comments", issueId: ISSUE };
 
+describe("review regressions", () => {
+  it("classifies EOF inside a bootstrap record as truncation", async () => {
+    const snapshot = await responseTransport(
+      byteResponse(
+        `${JSON.stringify(HEADER)}\n{"entity":"issues","record":{"id":"unfinished`,
+        "application/x-ndjson",
+      ),
+    ).bootstrap(id(50), CLIENT);
+    await expect(collect(snapshot.records)).rejects.toBeInstanceOf(TruncatedError);
+  });
+
+  it.each([401, 403, 404, 503])("preserves HTTP %i when its error body fails", async (status) => {
+    const response = new Response(
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.error(new Error("body lost"));
+        },
+      }),
+      { status, headers: { "Retry-After": "5" } },
+    );
+    await expect(responseTransport(response).pull(id(50), CLIENT, null)).rejects.toMatchObject({
+      name:
+        status === 401 ? "UnauthorizedError" : status === 503 ? "UnavailableError" : "AccessError",
+      status,
+      ...(status === 503 ? { retryAfter: 5 } : {}),
+    });
+  });
+
+  it.each([
+    { status: 200, results: [] },
+    { status: 200, results: [{ id: 1, status: "applied" }] },
+    {
+      status: 200,
+      results: [
+        { id: 2, status: "applied" },
+        { id: 1, status: "applied" },
+      ],
+    },
+    {
+      status: 200,
+      results: [
+        { id: 1, status: "applied" },
+        { id: 1, status: "duplicate" },
+      ],
+    },
+    {
+      status: 200,
+      results: [
+        { id: 1, status: "applied" },
+        { id: 3, status: "applied" },
+      ],
+    },
+    { status: 503, results: [{ id: 2, status: "applied" }] },
+    {
+      status: 503,
+      results: [
+        { id: 1, status: "applied" },
+        { id: 2, status: "applied" },
+        { id: 3, status: "applied" },
+      ],
+    },
+  ])(
+    "rejects push results outside the submitted ordered batch: %j",
+    async ({ status, results }) => {
+      const transport = responseTransport(
+        Response.json({ last_mutation_id: 2, results }, { status }),
+      );
+      await expect(transport.push(id(50), CLIENT, [label(1), label(2)])).rejects.toBeInstanceOf(
+        ProtocolError,
+      );
+    },
+  );
+});
+
 function label(n: number): Mutation {
   return {
     id: n,
@@ -38,6 +112,7 @@ function fixture(options: FakeServerOptions = {}) {
   const workspace = server.addWorkspace();
   server.addMember(workspace.id, owner, "owner");
   const token = server.login(owner);
+  setCsrf("csrf");
   const fetch = vi.fn(server.fetch);
   const transport = createTransport({
     fetch,
@@ -261,19 +336,22 @@ describe("sync transport requests", () => {
   it("uses baseUrl and fresh injected headers for every request", async () => {
     const f = fixture();
     let token = "first";
+    setCsrf(token);
     const fetch = vi.fn(f.server.fetch);
     const transport = createTransport({
       fetch,
       baseUrl: "https://example.test/",
-      headers: () => ({ authorization: `Bearer ${f.token}`, "X-CSRF-Token": token }),
+      headers: () => ({ authorization: `Bearer ${f.token}`, "X-Request": token }),
     });
     await transport.push(f.workspace.id, CLIENT, [label(1)]);
     token = "second";
+    setCsrf(token);
     await transport.push(f.workspace.id, CLIENT, [label(2)]);
     expect(String(fetch.mock.calls[0][0])).toBe(
       `https://example.test/api/workspaces/${f.workspace.id}/sync/push?client_id=${CLIENT}`,
     );
     expect(new Headers(fetch.mock.calls[1][1]?.headers).get("X-CSRF-Token")).toBe("second");
+    expect(new Headers(fetch.mock.calls[1][1]?.headers).get("X-Request")).toBe("second");
   });
 
   it("refreshes the REST client's CSRF token from response headers", async () => {
@@ -832,4 +910,47 @@ describe("response shape validation", () => {
       expect(cancel).toHaveBeenCalledTimes(1);
     },
   );
+});
+
+describe("bootstrap EOF boundaries", () => {
+  it("rejects a complete malformed line as protocol failure", async () => {
+    const snapshot = await responseTransport(
+      byteResponse(`${JSON.stringify(HEADER)}\n{broken}\n`, "application/x-ndjson"),
+    ).bootstrap(id(50), CLIENT);
+    await expect(collect(snapshot.records)).rejects.toBeInstanceOf(ProtocolError);
+  });
+
+  it("classifies EOF in the header as truncation", async () => {
+    await expect(
+      responseTransport(byteResponse('{"cursor":"cut', "application/x-ndjson")).bootstrap(
+        id(50),
+        CLIENT,
+      ),
+    ).rejects.toBeInstanceOf(TruncatedError);
+  });
+
+  it("classifies an incomplete UTF-8 character at EOF as truncation", async () => {
+    const prefix = new TextEncoder().encode(
+      `${JSON.stringify(HEADER)}\n{"entity":"workspace","record":{"name":"ą`,
+    );
+    const transport = responseTransport(
+      new Response(prefix.slice(0, -1), { headers: { "Content-Type": "application/x-ndjson" } }),
+    );
+    const snapshot = await transport.bootstrap(id(50), CLIENT);
+    await expect(collect(snapshot.records)).rejects.toBeInstanceOf(TruncatedError);
+  });
+
+  it("keeps failed partial push bodies classified as unavailable", async () => {
+    const response = new Response(
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.error(new Error("body lost"));
+        },
+      }),
+      { status: 503, headers: { "Retry-After": "5" } },
+    );
+    await expect(
+      responseTransport(response).push(id(50), CLIENT, [label(1)]),
+    ).rejects.toMatchObject({ name: "UnavailableError", status: 503, retryAfter: 5 });
+  });
 });

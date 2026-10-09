@@ -28,6 +28,9 @@ export class ApiError extends Error {
 
 const CSRF_KEY = "bw-csrf:v1";
 let csrf = safeGet("session", CSRF_KEY) ?? "";
+export function getCsrf(): string {
+  return csrf;
+}
 export function setCsrf(token: string) {
   csrf = token;
   safeSet("session", CSRF_KEY, token);

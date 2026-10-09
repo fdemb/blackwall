@@ -1561,3 +1561,35 @@ describe("fake server fidelity regressions", () => {
     },
   );
 });
+
+describe("cookie authentication", () => {
+  it("requires matching CSRF on cookie pushes, captures token rotation on me, and exempts bearer requests", async () => {
+    const f = fixture();
+    const cookie = `unrelated=value; blackwall_session=${f.token}; other=value`;
+    const me = await f.server.fetch("/api/me", { headers: { cookie } });
+    expect(me.status).toBe(200);
+    expect(me.headers.get("X-CSRF-Token")).toBe(f.server.csrfToken(f.token));
+    const push = (csrf?: string) =>
+      f.server.fetch(f.url("push"), {
+        method: "POST",
+        headers: {
+          cookie,
+          "Content-Type": "application/json",
+          ...(csrf === undefined ? {} : { "X-CSRF-Token": csrf }),
+        },
+        body: JSON.stringify({ client_id: CLIENT, mutations: [label(1)] }),
+      });
+    expect((await push()).status).toBe(403);
+    expect((await push("incorrect")).status).toBe(403);
+    expect(f.server.clientState(CLIENT).last_mutation_id).toBe(0);
+    const old = f.server.csrfToken(f.token);
+    const rotated = f.server.rotateCsrf(f.token, "test-rotation");
+    expect((await push(old)).status).toBe(403);
+    expect(
+      (await f.server.fetch("/api/me", { headers: { cookie } })).headers.get("X-CSRF-Token"),
+    ).toBe(rotated);
+    expect((await push(rotated)).status).toBe(200);
+    expect((await f.push([label(2)])).status).toBe(200);
+    expect(f.server.records("labels")).toHaveLength(2);
+  });
+});
