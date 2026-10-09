@@ -4,11 +4,18 @@ import { normalize } from "../records";
 import type { DeepReadonly } from "../store";
 import { MEMBER, TEAM, mutate, seedStore, snapshotIssues } from "./fixtures";
 import { MUTATORS, ONLINE_ONLY, admit, createReplay } from "./index";
-import type { MutatorName } from "./index";
+import type { MutatorName, OnlineOnly } from "./index";
 import type { ArgsOf } from "./common";
 
-/** Every non-online-only command this task covers must have a mutator. */
-const TASK_COMMANDS = [
+/**
+ * Every command in the `Command` union, plus the online-only upload commands,
+ * which the frontend sends through the REST upload endpoint and which are
+ * absent from the push union. The `satisfies` annotation rejects an unknown
+ * name, and `AssertListed` below rejects a missing union member, so adding a
+ * command to the union breaks this test until it gains a mutator or joins
+ * `ONLINE_ONLY`.
+ */
+const ALL_COMMANDS = [
   "create_issue",
   "update_issue",
   "move_issue",
@@ -20,16 +27,66 @@ const TASK_COMMANDS = [
   "follow",
   "add_source_link",
   "remove_attachment",
-] as const satisfies readonly Command["type"][];
+  "create_team",
+  "set_team_members",
+  "set_team_archive",
+  "create_stage",
+  "update_stage",
+  "delete_stage",
+  "create_label",
+  "update_label",
+  "create_project",
+  "update_project",
+  "create_milestone",
+  "update_milestone",
+  "create_sprint",
+  "update_sprint",
+  "complete_sprint",
+  "archive_sprint",
+  "add_comment",
+  "edit_comment",
+  "delete_comment",
+  "log_time",
+  "update_time",
+  "delete_time",
+  "save_view",
+  "update_view",
+  "delete_view",
+  "invite",
+  "resend_invitation",
+  "cancel_invitation",
+  "set_role",
+  "remove_member",
+  "mark_notification_read",
+  "mark_notification_unread",
+  "mark_all_notifications_read",
+  "configure_alerts",
+  "create_integration",
+  "update_integration",
+  "delete_integration",
+  "import_issues",
+  "add_attachment",
+  "attach_comment_file",
+] as const satisfies readonly (Command["type"] | OnlineOnly)[];
 
-type Missing = Exclude<(typeof TASK_COMMANDS)[number], MutatorName>;
+type Missing = Exclude<Command["type"], MutatorName | OnlineOnly>;
 type AssertComplete = Missing extends never ? true : false;
 const complete: AssertComplete = true;
 
+type Unlisted = Exclude<Command["type"], (typeof ALL_COMMANDS)[number]>;
+type AssertListed = Unlisted extends never ? true : false;
+const listed: AssertListed = true;
+
 describe("mutator registry", () => {
-  it("registers every command of this task", () => {
+  it("registers every command in the union or marks it online-only", () => {
     expect(complete).toBe(true);
-    for (const name of TASK_COMMANDS) expect(name in MUTATORS).toBe(true);
+    expect(listed).toBe(true);
+    expect(ALL_COMMANDS.length).toBe(new Set(ALL_COMMANDS).size);
+    for (const name of ALL_COMMANDS) {
+      const registered = name in MUTATORS;
+      const online = (ONLINE_ONLY as readonly string[]).includes(name);
+      expect(registered !== online).toBe(true);
+    }
   });
 
   it("keeps online-only commands without mutators", () => {
@@ -117,6 +174,110 @@ describe("mutator registry", () => {
     expectTypeOf(MUTATORS.remove_attachment)
       .parameter(1)
       .toEqualTypeOf<DeepReadonly<ArgsOf<"remove_attachment">>>();
+    expectTypeOf(MUTATORS.create_team)
+      .parameter(1)
+      .toEqualTypeOf<DeepReadonly<ArgsOf<"create_team">>>();
+    expectTypeOf(MUTATORS.set_team_members)
+      .parameter(1)
+      .toEqualTypeOf<DeepReadonly<ArgsOf<"set_team_members">>>();
+    expectTypeOf(MUTATORS.set_team_archive)
+      .parameter(1)
+      .toEqualTypeOf<DeepReadonly<ArgsOf<"set_team_archive">>>();
+    expectTypeOf(MUTATORS.create_stage)
+      .parameter(1)
+      .toEqualTypeOf<DeepReadonly<ArgsOf<"create_stage">>>();
+    expectTypeOf(MUTATORS.update_stage)
+      .parameter(1)
+      .toEqualTypeOf<DeepReadonly<ArgsOf<"update_stage">>>();
+    expectTypeOf(MUTATORS.delete_stage)
+      .parameter(1)
+      .toEqualTypeOf<DeepReadonly<ArgsOf<"delete_stage">>>();
+    expectTypeOf(MUTATORS.create_label)
+      .parameter(1)
+      .toEqualTypeOf<DeepReadonly<ArgsOf<"create_label">>>();
+    expectTypeOf(MUTATORS.update_label)
+      .parameter(1)
+      .toEqualTypeOf<DeepReadonly<ArgsOf<"update_label">>>();
+    expectTypeOf(MUTATORS.create_project)
+      .parameter(1)
+      .toEqualTypeOf<DeepReadonly<ArgsOf<"create_project">>>();
+    expectTypeOf(MUTATORS.update_project)
+      .parameter(1)
+      .toEqualTypeOf<DeepReadonly<ArgsOf<"update_project">>>();
+    expectTypeOf(MUTATORS.create_milestone)
+      .parameter(1)
+      .toEqualTypeOf<DeepReadonly<ArgsOf<"create_milestone">>>();
+    expectTypeOf(MUTATORS.update_milestone)
+      .parameter(1)
+      .toEqualTypeOf<DeepReadonly<ArgsOf<"update_milestone">>>();
+    expectTypeOf(MUTATORS.create_sprint)
+      .parameter(1)
+      .toEqualTypeOf<DeepReadonly<ArgsOf<"create_sprint">>>();
+    expectTypeOf(MUTATORS.update_sprint)
+      .parameter(1)
+      .toEqualTypeOf<DeepReadonly<ArgsOf<"update_sprint">>>();
+    expectTypeOf(MUTATORS.complete_sprint)
+      .parameter(1)
+      .toEqualTypeOf<DeepReadonly<ArgsOf<"complete_sprint">>>();
+    expectTypeOf(MUTATORS.archive_sprint)
+      .parameter(1)
+      .toEqualTypeOf<DeepReadonly<ArgsOf<"archive_sprint">>>();
+    expectTypeOf(MUTATORS.add_comment)
+      .parameter(1)
+      .toEqualTypeOf<DeepReadonly<ArgsOf<"add_comment">>>();
+    expectTypeOf(MUTATORS.edit_comment)
+      .parameter(1)
+      .toEqualTypeOf<DeepReadonly<ArgsOf<"edit_comment">>>();
+    expectTypeOf(MUTATORS.delete_comment)
+      .parameter(1)
+      .toEqualTypeOf<DeepReadonly<ArgsOf<"delete_comment">>>();
+    expectTypeOf(MUTATORS.log_time).parameter(1).toEqualTypeOf<DeepReadonly<ArgsOf<"log_time">>>();
+    expectTypeOf(MUTATORS.update_time)
+      .parameter(1)
+      .toEqualTypeOf<DeepReadonly<ArgsOf<"update_time">>>();
+    expectTypeOf(MUTATORS.delete_time)
+      .parameter(1)
+      .toEqualTypeOf<DeepReadonly<ArgsOf<"delete_time">>>();
+    expectTypeOf(MUTATORS.save_view)
+      .parameter(1)
+      .toEqualTypeOf<DeepReadonly<ArgsOf<"save_view">>>();
+    expectTypeOf(MUTATORS.update_view)
+      .parameter(1)
+      .toEqualTypeOf<DeepReadonly<ArgsOf<"update_view">>>();
+    expectTypeOf(MUTATORS.delete_view)
+      .parameter(1)
+      .toEqualTypeOf<DeepReadonly<ArgsOf<"delete_view">>>();
+    expectTypeOf(MUTATORS.cancel_invitation)
+      .parameter(1)
+      .toEqualTypeOf<DeepReadonly<ArgsOf<"cancel_invitation">>>();
+    expectTypeOf(MUTATORS.mark_notification_read)
+      .parameter(1)
+      .toEqualTypeOf<DeepReadonly<ArgsOf<"mark_notification_read">>>();
+    expectTypeOf(MUTATORS.mark_notification_unread)
+      .parameter(1)
+      .toEqualTypeOf<DeepReadonly<ArgsOf<"mark_notification_unread">>>();
+    expectTypeOf(MUTATORS.mark_all_notifications_read)
+      .parameter(1)
+      .toEqualTypeOf<DeepReadonly<ArgsOf<"mark_all_notifications_read">>>();
+    expectTypeOf(MUTATORS.configure_alerts)
+      .parameter(1)
+      .toEqualTypeOf<DeepReadonly<ArgsOf<"configure_alerts">>>();
+    expectTypeOf(MUTATORS.update_integration)
+      .parameter(1)
+      .toEqualTypeOf<DeepReadonly<ArgsOf<"update_integration">>>();
+    expectTypeOf(MUTATORS.delete_integration)
+      .parameter(1)
+      .toEqualTypeOf<DeepReadonly<ArgsOf<"delete_integration">>>();
+    expectTypeOf<OnlineOnly>().toEqualTypeOf<
+      | "invite"
+      | "resend_invitation"
+      | "create_integration"
+      | "set_role"
+      | "remove_member"
+      | "import_issues"
+      | "add_attachment"
+      | "attach_comment_file"
+    >();
   });
 
   it("predicts whole records, not single fields", () => {

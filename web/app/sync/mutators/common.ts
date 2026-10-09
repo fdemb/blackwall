@@ -29,9 +29,8 @@ export const OWNERSHIP_MESSAGE = "OpenProject imported issues are read-only";
 /**
  * The actor's role, from the members table. A missing member means the actor
  * lost membership, which the server reports as 403 (`Store::begin_operation`).
- * Viewers may only run personal commands (`Operation::run_command`); `follow`
- * is the only personal command with a mutator in this task, but the rule is
- * shared so later commands reuse it as-is.
+ * Viewers may only run personal commands (`Operation::run_command`); the
+ * personal set is shared so every command reuses it as-is.
  */
 export function requireRole(tx: Tx, actor: Id, name: string, args: unknown): Role {
   const member = tx.get("members", actor);
@@ -86,6 +85,68 @@ export function checkOwnership(tx: Tx, command: DeepReadonly<Command>): void {
     const allowed = (issueCapabilities(issue) as Record<string, boolean>)[capability];
     if (!allowed) throw new MutationError(409, OWNERSHIP_MESSAGE);
   }
+}
+
+/** Rejects unless the actor is an owner or admin (`Operation::admin`). */
+export function requireAdmin(role: Role): void {
+  if (role !== "owner" && role !== "admin") {
+    throw new MutationError(403, "permission denied");
+  }
+}
+
+/**
+ * Rejects unless the actor authored the record or is an owner or admin
+ * (`Operation::author_or_admin`). Membership was already checked by
+ * `requireRole`, so a missing member here also means 403.
+ */
+export function requireAuthorOrAdmin(tx: Tx, actor: Id, author: Id): void {
+  if (author === actor) return;
+  const member = tx.get("members", actor);
+  if (member === undefined || (member.role !== "owner" && member.role !== "admin")) {
+    throw new MutationError(403, "permission denied");
+  }
+}
+
+/** A workspace member must exist (`Operation::member`). */
+export function requireMember(tx: Tx, user: Id): void {
+  if (tx.get("members", user) === undefined) {
+    throw new MutationError(403, "permission denied");
+  }
+}
+
+/** Any record by id, or the 404 the server's `touch` reports when missing. */
+export function requireRecord<E extends Entity>(
+  tx: Tx,
+  entity: E,
+  id: string,
+): DeepReadonly<RecordOf[E]> {
+  const record = tx.get(entity, id);
+  if (record === undefined) throw new MutationError(404, "not found");
+  return record;
+}
+
+/**
+ * `domain::validate_archive_days`: null means never, otherwise an integer of
+ * 1 to 3650 days.
+ */
+export function checkArchiveDays(value: number | null | undefined): void {
+  if (value === null || value === undefined) return;
+  if (!Number.isInteger(value) || (value as number) < 1 || (value as number) > 3650) {
+    throw new MutationError(400, "archive_after_days must be between 1 and 3650 days or null");
+  }
+}
+
+/**
+ * A client-writable timestamp the server requires (sprint bounds, time
+ * entries). Optional timestamps use `checkTimestamp` directly; absent here
+ * means the server would reject the command while parsing it.
+ */
+export function requireTimestamp(value: string | null | undefined): string {
+  if (value === null || value === undefined) {
+    throw new MutationError(400, "timestamp year must be between 1 and 9999");
+  }
+  checkTimestamp(value);
+  return parseTimestamp(value);
 }
 
 /** The issue or a 404, mirroring `reads::issue_on` without deleted rows. */

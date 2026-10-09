@@ -1,5 +1,18 @@
-import type { Id, Label, MemberProfile, Milestone, Project, Sprint, Team } from "../../lib/types";
-import type { SyncIssue } from "../records";
+import type {
+  AlertPrefsWs,
+  Id,
+  Label,
+  MemberProfile,
+  Milestone,
+  Project,
+  SavedView,
+  Sprint,
+  Team,
+  TimeEntry,
+} from "../../lib/types";
+import type { Comment } from "../../lib/types";
+import type { SyncInvitation, SyncIntegration, SyncIssue, SyncNotification } from "../records";
+import type { Entity, RecordOf } from "../records";
 import { NOW } from "../fixtures";
 import { SyncStore } from "../store";
 import { createReplay } from "./index";
@@ -32,6 +45,22 @@ export const MILESTONE_OTHER = "milestone-other";
 export const SPRINT = "sprint-1";
 export const SPRINT_FINISHED = "sprint-finished";
 export const SPRINT_OTHER = "sprint-2";
+export const COMMENT_ONE = "comment-1";
+export const COMMENT_TWO = "comment-2";
+export const COMMENT_OTHER_ISSUE = "comment-other";
+export const TIME_ONE = "time-1";
+export const TIME_OTHER = "time-other";
+export const VIEW_PRIVATE = "view-1";
+export const VIEW_SHARED = "view-shared";
+export const VIEW_OTHER_PRIVATE = "view-other";
+export const NOTIF_UNREAD = "notif-1";
+export const NOTIF_READ = "notif-read";
+export const NOTIF_OTHER = "notif-other";
+export const INVITE_PENDING = "invite-1";
+export const INVITE_ACCEPTED = "invite-accepted";
+export const INVITE_CANCELLED = "invite-cancelled";
+export const INTEGRATION_ONE = "integration-1";
+export const INTEGRATION_DISABLED = "integration-disabled";
 
 function member(id: Id, role: MemberProfile["role"]): MemberProfile {
   return {
@@ -245,6 +274,187 @@ function issues(): SyncIssue[] {
   ];
 }
 
+function comments(): Comment[] {
+  return [
+    {
+      id: COMMENT_ONE,
+      version: 1,
+      issue_id: "issue-1",
+      author: MEMBER,
+      body: "First",
+      mentions: [OWNER],
+      attachments: [],
+      created_at: NOW,
+      edited_at: null,
+    },
+    {
+      id: COMMENT_TWO,
+      version: 1,
+      issue_id: "issue-1",
+      author: OWNER,
+      body: "Reply",
+      mentions: [],
+      attachments: [{ id: "att-c1", name: "note.txt", content_type: "text/plain", size: 4 }],
+      created_at: NOW,
+      edited_at: null,
+    },
+    {
+      id: COMMENT_OTHER_ISSUE,
+      version: 1,
+      issue_id: "issue-2",
+      author: OWNER,
+      body: "Other issue",
+      mentions: [],
+      attachments: [],
+      created_at: NOW,
+      edited_at: null,
+    },
+  ];
+}
+
+function timeEntries(): TimeEntry[] {
+  return [
+    {
+      id: TIME_ONE,
+      version: 1,
+      issue_id: "issue-1",
+      user_id: MEMBER,
+      minutes: 30,
+      note: "Work",
+      logged_at: NOW,
+    },
+    {
+      id: TIME_OTHER,
+      version: 1,
+      issue_id: "issue-2",
+      user_id: OWNER,
+      minutes: 60,
+      note: "",
+      logged_at: NOW,
+    },
+  ];
+}
+
+function views(): SavedView[] {
+  return [
+    { id: VIEW_PRIVATE, version: 1, owner: MEMBER, name: "Mine", shared: false, filter: {} },
+    {
+      id: VIEW_SHARED,
+      version: 1,
+      owner: OWNER,
+      name: "Shared",
+      shared: true,
+      filter: { team_id: TEAM },
+    },
+    { id: VIEW_OTHER_PRIVATE, version: 1, owner: OWNER, name: "Theirs", shared: false, filter: {} },
+  ];
+}
+
+function notifications(): SyncNotification[] {
+  return [
+    {
+      id: NOTIF_UNREAD,
+      version: 1,
+      user_id: MEMBER,
+      issue_id: "issue-1",
+      kind: "mention",
+      message: "Hi",
+      read_at: null,
+      created_at: NOW,
+      dedup_key: "d1",
+    },
+    {
+      id: NOTIF_READ,
+      version: 1,
+      user_id: MEMBER,
+      issue_id: "issue-2",
+      kind: "reply",
+      message: "Done",
+      read_at: NOW,
+      created_at: NOW,
+      dedup_key: "d2",
+    },
+    {
+      id: NOTIF_OTHER,
+      version: 1,
+      user_id: OWNER,
+      issue_id: "issue-1",
+      kind: "change",
+      message: "Changed",
+      read_at: null,
+      created_at: NOW,
+      dedup_key: "d3",
+    },
+  ];
+}
+
+function invitations(): SyncInvitation[] {
+  return [
+    {
+      id: INVITE_PENDING,
+      version: 1,
+      email: "new@example.com",
+      role: "member",
+      expires_at: "2026-10-20T12:00:00.000Z",
+      state: "pending",
+      token_hash: "",
+    },
+    {
+      id: INVITE_ACCEPTED,
+      version: 1,
+      email: "old@example.com",
+      role: "member",
+      expires_at: "2026-10-20T12:00:00.000Z",
+      state: "accepted",
+      token_hash: "",
+    },
+    {
+      id: INVITE_CANCELLED,
+      version: 1,
+      email: "gone@example.com",
+      role: "member",
+      expires_at: "2026-10-20T12:00:00.000Z",
+      state: "cancelled",
+      token_hash: "",
+    },
+  ];
+}
+
+function integrations(): SyncIntegration[] {
+  return [
+    {
+      id: INTEGRATION_ONE,
+      version: 1,
+      name: "Hooks",
+      webhook_url: "https://example.com/hook",
+      enabled: true,
+      secret: "",
+    },
+    {
+      id: INTEGRATION_DISABLED,
+      version: 1,
+      name: "Quiet",
+      webhook_url: "https://example.com/quiet",
+      enabled: false,
+      secret: "",
+    },
+  ];
+}
+
+function alertPreferences(): AlertPrefsWs[] {
+  return [
+    {
+      user_id: MEMBER,
+      version: 1,
+      assignment: true,
+      reply: true,
+      change: true,
+      mention: true,
+      deadline: true,
+    },
+  ];
+}
+
 /** A store seeded with the full fixture, replaying mutations as `actor`. */
 export function seedStore(actor: Id = MEMBER): SyncStore {
   const store = new SyncStore(createReplay(actor));
@@ -262,8 +472,30 @@ export function seedStore(actor: Id = MEMBER): SyncStore {
       milestones: milestones(),
       sprints: sprints(),
       issues: issues(),
+      comments: comments(),
+      time_entries: timeEntries(),
+      views: views(),
+      notifications: notifications(),
+      invitations: invitations(),
+      integrations: integrations(),
+      alert_preferences: alertPreferences(),
     },
-    ["members", "teams", "labels", "projects", "milestones", "sprints", "issues"],
+    [
+      "members",
+      "teams",
+      "labels",
+      "projects",
+      "milestones",
+      "sprints",
+      "issues",
+      "comments",
+      "time_entries",
+      "views",
+      "notifications",
+      "invitations",
+      "integrations",
+      "alert_preferences",
+    ],
   );
   return store;
 }
@@ -278,4 +510,9 @@ export function mutate(store: SyncStore, name: string, args: unknown, at: string
 /** Detached copy of every issue in the view, for before/after comparisons. */
 export function snapshotIssues(store: SyncStore): SyncIssue[] {
   return store.all("issues").map((issue) => ({ ...(issue as SyncIssue) }));
+}
+
+/** Detached copies of every record of one entity, for before/after comparisons. */
+export function snapshot<E extends Entity>(store: SyncStore, entity: E): RecordOf[E][] {
+  return store.all(entity).map((record) => ({ ...(record as RecordOf[E]) }));
 }

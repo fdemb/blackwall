@@ -1,0 +1,147 @@
+import type { DeepReadonly, Tx } from "../store";
+import type { ArgsOf, Mutator } from "./common";
+import {
+  NIL_UUID,
+  checkText,
+  checkTimestamp,
+  dedupeSortUuids,
+  requireAuthorOrAdmin,
+  requireMember,
+  requireRole,
+  requireTimestamp,
+  utf8Length,
+} from "./common";
+import { MutationError } from "./errors";
+import type { Comment } from "../../lib/types";
+
+/** The issue must exist and be untrashed (`discussion::discussion_issue`). Archived issues may be discussed. */
+function requireDiscussionIssue(tx: Tx, issueId: string): void {
+  const issue = tx.get("issues", issueId);
+  if (issue === undefined || issue.deleted_at !== null) {
+    throw new MutationError(404, "not found");
+  }
+}
+
+/** `discussion::validate_time`: minutes and note byte length share one message. */
+function checkTime(minutes: number, note: string): void {
+  if (
+    !Number.isInteger(minutes) ||
+    minutes === 0 ||
+    minutes > 24 * 60 ||
+    utf8Length(note) > 10_000
+  ) {
+    throw new MutationError(400, "time entry must contain 1 to 1440 minutes");
+  }
+}
+
+function requireComment(tx: Tx, id: string): DeepReadonly<Comment> {
+  const comment = tx.get("comments", id);
+  if (comment === undefined) throw new MutationError(404, "not found");
+  return comment;
+}
+
+export const addComment: Mutator<ArgsOf<"add_comment">> = (tx, args, ctx) => {
+  requireRole(tx, ctx.actor, "add_comment", args);
+  // Order mirrors `discussion::AddComment`: the issue, the body, the
+  // mentions, then the client id. Attachment uploads are verified by the
+  // server against rows the replica does not hold, so they are stored as
+  // given and left for the pull to correct.
+  requireDiscussionIssue(tx, args.issue_id);
+  checkText(args.body, 100_000);
+  const mentions = dedupeSortUuids(args.mentions);
+  for (const user of mentions) requireMember(tx, user);
+  const id = args.id ?? null;
+  if (id === null) throw new MutationError(400, "id is required");
+  if (id === NIL_UUID) throw new MutationError(400, "id must not be nil");
+  // Creates are upserts: a replay over a base that already holds the id
+  // keeps its version and creation time, as for created issues.
+  const previous = tx.get("comments", id);
+  tx.put("comments", {
+    id,
+    version: previous?.version ?? 1,
+    issue_id: args.issue_id,
+    author: ctx.actor,
+    body: args.body,
+    mentions,
+    attachments: args.attachments.map((attachment) => ({ ...attachment })),
+    created_at: previous?.created_at ?? ctx.at,
+    edited_at: null,
+  });
+};
+
+export const editComment: Mutator<ArgsOf<"edit_comment">> = (tx, args, ctx) => {
+  requireRole(tx, ctx.actor, "edit_comment", args);
+  // Order mirrors `discussion::EditComment`: the body, the record and its
+  // author check, then the mentions. The issue itself is unchecked, so
+  // comments on trashed issues stay editable, as on the server.
+  checkText(args.body, 100_000);
+  const comment = requireComment(tx, args.id);
+  requireAuthorOrAdmin(tx, ctx.actor, comment.author);
+  const mentions = dedupeSortUuids(args.mentions);
+  for (const user of mentions) requireMember(tx, user);
+  tx.put("comments", { ...comment, body: args.body, mentions, edited_at: ctx.at });
+};
+
+export const deleteComment: Mutator<ArgsOf<"delete_comment">> = (tx, args, ctx) => {
+  requireRole(tx, ctx.actor, "delete_comment", args);
+  const comment = tx.get("comments", args.id);
+  // A replay over a base that already dropped the comment is a no-op, as for
+  // deleted issues; admission against that view fails as on the server.
+  if (comment === undefined) {
+    if (ctx.mode === "replay") return;
+    throw new MutationError(404, "not found");
+  }
+  requireAuthorOrAdmin(tx, ctx.actor, comment.author);
+  tx.delete("comments", args.id);
+};
+
+export const logTime: Mutator<ArgsOf<"log_time">> = (tx, args, ctx) => {
+  requireRole(tx, ctx.actor, "log_time", args);
+  // Order mirrors `discussion::LogTime`: the issue, the minutes and note,
+  // the timestamp, then the client id.
+  requireDiscussionIssue(tx, args.issue_id);
+  checkTime(args.minutes, args.note);
+  checkTimestamp(args.logged_at);
+  const id = args.id ?? null;
+  if (id === null) throw new MutationError(400, "id is required");
+  if (id === NIL_UUID) throw new MutationError(400, "id must not be nil");
+  const previous = tx.get("time_entries", id);
+  tx.put("time_entries", {
+    id,
+    version: previous?.version ?? 1,
+    issue_id: args.issue_id,
+    user_id: ctx.actor,
+    minutes: args.minutes,
+    note: args.note,
+    logged_at: args.logged_at,
+  });
+};
+
+export const updateTime: Mutator<ArgsOf<"update_time">> = (tx, args, ctx) => {
+  requireRole(tx, ctx.actor, "update_time", args);
+  // Order mirrors `discussion::UpdateTime`: validation before the lookup.
+  checkTime(args.minutes, args.note);
+  requireTimestamp(args.logged_at);
+  const entry = tx.get("time_entries", args.id);
+  if (entry === undefined) throw new MutationError(404, "not found");
+  requireAuthorOrAdmin(tx, ctx.actor, entry.user_id);
+  tx.put("time_entries", {
+    ...entry,
+    minutes: args.minutes,
+    note: args.note,
+    logged_at: args.logged_at,
+  });
+};
+
+export const deleteTime: Mutator<ArgsOf<"delete_time">> = (tx, args, ctx) => {
+  requireRole(tx, ctx.actor, "delete_time", args);
+  const entry = tx.get("time_entries", args.id);
+  // A replay over a base that already dropped the entry is a no-op, as for
+  // deleted comments; admission against that view fails as on the server.
+  if (entry === undefined) {
+    if (ctx.mode === "replay") return;
+    throw new MutationError(404, "not found");
+  }
+  requireAuthorOrAdmin(tx, ctx.actor, entry.user_id);
+  tx.delete("time_entries", args.id);
+};
