@@ -1,12 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { createEngine, SCHEMA, type SyncEngine } from "../sync/engine";
+import { createdLabel } from "../sync/mutators";
 import { MemoryReplicaStorage } from "../sync/persistence/memory";
 import { createFakeServer } from "../sync/testing/fake-server";
 import { createTransport } from "../sync/transport";
 import { setCsrf } from "./api";
 import {
   OnlineRequiredError,
-  rejectedCreateName,
   runCommand,
   uuidsIn,
   waitForUploadTarget,
@@ -291,6 +291,23 @@ describe("confirmation for REST writes", () => {
     await expect(whenConfirmed(engine, [])).resolves.toBeUndefined();
   });
 
+  it("waits for the default stage ids a pending create_team names", async () => {
+    const { engine } = await fixture();
+    engine.stop();
+    await runCommand(engine, { type: "create_team", name: "Ops", members: [] });
+    const [team] = engine.store.pending();
+    const [stage] = (team!.args as { default_stage_ids: string[] }).default_stage_ids;
+    let confirmed = false;
+    const wait = whenConfirmed(engine, [stage!]).then(() => {
+      confirmed = true;
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(confirmed).toBe(false);
+    await engine.start();
+    await wait;
+    expect(engine.store.pending().some((mutation) => mutation.name === "create_team")).toBe(false);
+  });
+
   it("rejects waiting callers when the engine closes before the creates are sent", async () => {
     const { engine } = await fixture();
     engine.stop();
@@ -388,7 +405,7 @@ describe("offline and rejected commands", () => {
     await until(() => engine.status.get().rejected.length === 1);
     const [rejection] = engine.status.get().rejected;
     expect(rejection).toBeDefined();
-    expect(rejectedCreateName(rejection!)).toBe("Precious draft");
+    expect(createdLabel(rejection!.command)).toBe("Precious draft");
   });
 
   it("does not name an edit, which the toast reports by its server message alone", async () => {
@@ -398,6 +415,6 @@ describe("offline and rejected commands", () => {
     server.setRole(workspace.id, owner.id, "viewer");
     await engine.start();
     await until(() => engine.status.get().rejected.length === 1);
-    expect(rejectedCreateName(engine.status.get().rejected[0]!)).toBeNull();
+    expect(createdLabel(engine.status.get().rejected[0]!.command)).toBeNull();
   });
 });

@@ -170,6 +170,60 @@ export const ONLINE_ONLY = [
 
 export type OnlineOnly = (typeof ONLINE_ONLY)[number];
 
+/** Client-chosen ids and names of a command that creates records. Other commands have no entry. */
+interface CreateInfo<A> {
+  /** Every id the client picked for the records the command creates, including child records. */
+  creates: (args: DeepReadonly<A>) => string[];
+  /** The title or name the user typed, so a rejected create can say what was lost. */
+  label?: (args: DeepReadonly<A>) => string | null;
+}
+
+const present = (...ids: (Id | undefined)[]): string[] =>
+  ids.filter((id): id is Id => id !== undefined);
+
+/** Online creates are listed too, because the engine fills their ids as well. */
+const CREATE_INFO: { [T in Command["type"]]?: CreateInfo<ArgsOf<T>> } = {
+  create_issue: { creates: (a) => present(a.input.id), label: (a) => a.input.title },
+  create_team: {
+    creates: (a) => present(a.id, ...(a.default_stage_ids ?? [])),
+    label: (a) => a.name,
+  },
+  create_stage: { creates: (a) => present(a.id), label: (a) => a.name },
+  create_label: { creates: (a) => present(a.id), label: (a) => a.name },
+  create_project: { creates: (a) => present(a.id), label: (a) => a.name },
+  create_milestone: { creates: (a) => present(a.id), label: (a) => a.name },
+  create_sprint: { creates: (a) => present(a.id), label: (a) => a.name },
+  add_comment: { creates: (a) => present(a.id) },
+  log_time: { creates: (a) => present(a.id) },
+  save_view: { creates: (a) => present(a.id), label: (a) => a.name },
+  create_integration: { creates: (a) => present(a.id), label: (a) => a.name },
+};
+
+const createTable = CREATE_INFO as unknown as Record<string, CreateInfo<unknown> | undefined>;
+function createInfo(name: string): CreateInfo<unknown> | undefined {
+  return Object.prototype.hasOwnProperty.call(createTable, name) ? createTable[name] : undefined;
+}
+
+/** Whether the engine picks a client id for this command's record. */
+export function createsRecord(name: string): boolean {
+  return createInfo(name) !== undefined;
+}
+
+/** A command as the outbox or a rejection holds it. */
+type Named = { name: string; args: unknown } | null;
+
+/** The ids a command's records were given, so a REST write can wait until the server knows them. */
+export function createdIds(command: Named): string[] {
+  if (!command || typeof command.args !== "object" || command.args === null) return [];
+  return createInfo(command.name)?.creates(command.args) ?? [];
+}
+
+/** The title or name a create was typed with, or null for other commands. */
+export function createdLabel(command: Named): string | null {
+  if (!command || typeof command.args !== "object" || command.args === null) return null;
+  return createInfo(command.name)?.label?.(command.args) ?? null;
+}
+
 /** Dispatches a pending mutation to its mutator with time from the mutation. */
 export function createReplay(actor: Id): ReplayFn {
   const table = MUTATORS as unknown as Record<string, Mutator<unknown>>;

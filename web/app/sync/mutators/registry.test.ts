@@ -3,7 +3,15 @@ import type { Command } from "../../lib/types";
 import { normalize } from "../records";
 import type { DeepReadonly } from "../store";
 import { MEMBER, TEAM, mutate, seedStore, snapshotIssues } from "./fixtures";
-import { MUTATORS, ONLINE_ONLY, admit, createReplay } from "./index";
+import {
+  MUTATORS,
+  ONLINE_ONLY,
+  admit,
+  createdIds,
+  createdLabel,
+  createReplay,
+  createsRecord,
+} from "./index";
 import type { MutatorName, OnlineOnly } from "./index";
 import type { ArgsOf } from "./common";
 
@@ -278,6 +286,106 @@ describe("mutator registry", () => {
       | "add_attachment"
       | "attach_comment_file"
     >();
+  });
+
+  it("declares the ids and the typed name of every create command", () => {
+    type CreateName =
+      | "create_issue"
+      | "create_team"
+      | "create_stage"
+      | "create_label"
+      | "create_project"
+      | "create_milestone"
+      | "create_sprint"
+      | "add_comment"
+      | "log_time"
+      | "save_view"
+      | "create_integration";
+    // Typed against each command's args, so a sample that drifts from the union fails to compile.
+    const samples: { [T in CreateName]: { args: ArgsOf<T>; ids: string[]; label: string | null } } =
+      {
+        create_issue: {
+          args: { input: { id: "issue-1", title: "Bug", team_id: TEAM } },
+          ids: ["issue-1"],
+          label: "Bug",
+        },
+        create_team: {
+          args: {
+            id: "team-1",
+            name: "Ops",
+            members: [],
+            default_stage_ids: ["stage-1", "stage-2"],
+          },
+          ids: ["team-1", "stage-1", "stage-2"],
+          label: "Ops",
+        },
+        create_stage: {
+          args: { id: "stage-1", team_id: TEAM, name: "Review", kind: "planned", position: 1 },
+          ids: ["stage-1"],
+          label: "Review",
+        },
+        create_label: {
+          args: { id: "label-1", name: "Bug", color: "#f00" },
+          ids: ["label-1"],
+          label: "Bug",
+        },
+        create_project: {
+          args: { id: "project-1", name: "Launch", description: "", team_ids: [TEAM] },
+          ids: ["project-1"],
+          label: "Launch",
+        },
+        create_milestone: {
+          args: { id: "milestone-1", project_id: "project-1", name: "Beta", deadline: null },
+          ids: ["milestone-1"],
+          label: "Beta",
+        },
+        create_sprint: {
+          args: {
+            id: "sprint-1",
+            team_id: TEAM,
+            name: "Sprint 1",
+            goal: "",
+            starts_at: "2026-10-09",
+            ends_at: "2026-10-16",
+          },
+          ids: ["sprint-1"],
+          label: "Sprint 1",
+        },
+        add_comment: {
+          args: { id: "comment-1", issue_id: "issue-1", body: "Hi", mentions: [], attachments: [] },
+          ids: ["comment-1"],
+          label: null,
+        },
+        log_time: {
+          args: {
+            id: "time-1",
+            issue_id: "issue-1",
+            minutes: 5,
+            note: "",
+            logged_at: "2026-10-09T12:00:00Z",
+          },
+          ids: ["time-1"],
+          label: null,
+        },
+        save_view: {
+          args: { id: "view-1", name: "Mine", shared: false, filter: {} },
+          ids: ["view-1"],
+          label: "Mine",
+        },
+        create_integration: {
+          args: { id: "hook-1", name: "Hook", webhook_url: "https://example.test", secret: "s" },
+          ids: ["hook-1"],
+          label: "Hook",
+        },
+      };
+    for (const [name, sample] of Object.entries(samples)) {
+      expect(createsRecord(name), name).toBe(true);
+      expect(createdIds({ name, args: sample.args }), name).toEqual(sample.ids);
+      expect(createdLabel({ name, args: sample.args }), name).toBe(sample.label);
+    }
+    expect(createsRecord("update_issue")).toBe(false);
+    expect(createdIds({ name: "update_issue", args: { id: "issue-1" } })).toEqual([]);
+    expect(createdLabel(null)).toBeNull();
   });
 
   it("predicts whole records, not single fields", () => {

@@ -1,4 +1,11 @@
-import { admit, createReplay, MutationError, normalizeArgs, ONLINE_ONLY } from "./mutators";
+import {
+  admit,
+  createReplay,
+  createsRecord,
+  MutationError,
+  normalizeArgs,
+  ONLINE_ONLY,
+} from "./mutators";
 import { DEFAULT_STAGES } from "./mutators/planning";
 import { acceptsChange, recordKey, recordScope, scopeKey } from "./persistence/shared";
 import type { Replica, Scope } from "./persistence/types";
@@ -399,21 +406,7 @@ export class SyncEngine {
       if (typeof id !== "string") throw new MutationError(400, "id must be a string");
       return { args: { ...args, input: { ...input, id } }, id };
     }
-    if (
-      ![
-        "create_team",
-        "create_stage",
-        "create_label",
-        "create_project",
-        "create_milestone",
-        "create_sprint",
-        "add_comment",
-        "log_time",
-        "save_view",
-        "create_integration",
-      ].includes(name)
-    )
-      return { args, id: null };
+    if (!createsRecord(name)) return { args, id: null };
     const id = "id" in args ? args.id : this.deps.randomId();
     if (typeof id !== "string") throw new MutationError(400, "id must be a string");
     return {

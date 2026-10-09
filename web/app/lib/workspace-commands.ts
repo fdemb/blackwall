@@ -1,6 +1,5 @@
 import type { SyncEngine, Rejection } from "../sync/engine";
-import type { DeepReadonly, PendingMutation } from "../sync/store";
-import { ONLINE_ONLY } from "../sync/mutators";
+import { createdIds, ONLINE_ONLY } from "../sync/mutators";
 import { ApiError, workspaces } from "./api";
 import type { Command } from "./types";
 
@@ -37,28 +36,6 @@ export async function runCommand(
   return receipt.id;
 }
 
-// Creates that give their record a client-chosen id, which the server later confirms.
-const CREATING = new Set([
-  "create_team",
-  "create_stage",
-  "create_label",
-  "create_project",
-  "create_milestone",
-  "create_sprint",
-  "add_comment",
-  "log_time",
-  "save_view",
-]);
-
-function createdId(mutation: DeepReadonly<PendingMutation>): string | null {
-  const args = mutation.args;
-  if (args === null || typeof args !== "object") return null;
-  if (mutation.name === "create_issue" && "input" in args && isObject(args.input))
-    return typeof args.input.id === "string" ? args.input.id : null;
-  if (CREATING.has(mutation.name) && "id" in args && typeof args.id === "string") return args.id;
-  return null;
-}
-
 function isObject(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object";
 }
@@ -80,10 +57,7 @@ export function whenConfirmed(engine: SyncEngine, ids: Iterable<string>): Promis
   const wanted = new Set(ids);
   return new Promise((resolve, reject) => {
     const waiting = () =>
-      engine.store.pending().some((mutation) => {
-        const id = createdId(mutation);
-        return id !== null && wanted.has(id);
-      });
+      engine.store.pending().some((mutation) => createdIds(mutation).some((id) => wanted.has(id)));
     const finish = (error?: Error) => {
       unsubscribeStore();
       unsubscribeStatus();
@@ -128,33 +102,6 @@ export async function uploadFile(
   const result = await workspaces.upload(workspaceId, issueId, undefined, file, commentId);
   await engine.pull();
   return result.result.id;
-}
-
-// The creates whose records a user typed a name or title for, in the order the server reads them.
-const NAMED_CREATES = new Set([
-  "create_issue",
-  "create_team",
-  "create_stage",
-  "create_label",
-  "create_project",
-  "create_milestone",
-  "create_sprint",
-  "save_view",
-]);
-
-/** The title or name of a rejected create, so the toast can say what was lost. */
-export function rejectedCreateName(rejection: Rejection): string | null {
-  const args = rejection.command?.args;
-  if (
-    !NAMED_CREATES.has(rejection.command?.name ?? "") ||
-    args === null ||
-    typeof args !== "object"
-  )
-    return null;
-  if ("input" in args && args.input !== null && typeof args.input === "object") {
-    return "title" in args.input && typeof args.input.title === "string" ? args.input.title : null;
-  }
-  return "name" in args && typeof args.name === "string" ? args.name : null;
 }
 
 const shownRejections = new WeakMap<SyncEngine, Set<number>>();

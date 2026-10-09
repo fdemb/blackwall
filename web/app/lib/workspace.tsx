@@ -11,6 +11,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useToast } from "~/components/ui/toast";
 import { EngineProvider, useEngine, useSyncStatus, useView } from "../sync/react";
 import type { SyncEngine } from "../sync/engine";
+import { createdLabel } from "../sync/mutators";
 import { reportQuery, watchReportChanges } from "./query-client";
 import { byDisplayName, byExpiryDesc, byName, byPosition, bySprintStart, byUserId } from "./order";
 import { useSession } from "./session";
@@ -18,7 +19,6 @@ import type { Command, EntityVersions, IssueInput, Report, Workspace } from "./t
 import {
   uploadFile,
   OnlineRequiredError,
-  rejectedCreateName,
   runCommand,
   ServerRejection,
   uuidsIn,
@@ -119,7 +119,7 @@ function useWorkspaceValue() {
   useEffect(
     () =>
       watchRejections(engine, (rejection) => {
-        const name = rejectedCreateName(rejection);
+        const name = createdLabel(rejection.command);
         toast.error(
           name === null
             ? rejection.message
