@@ -137,6 +137,29 @@ function twice(name: string, args: unknown, actor: Id = MEMBER): void {
 }
 
 describe("save_view", () => {
+  it.each([
+    ["2026-10-09T15:30:00.000+02:00", "2026-10-09T13:30:00Z"],
+    ["2026-10-09T15:30:00.120000+02:00", "2026-10-09T13:30:00.120Z"],
+    ["2026-10-09T15:30:00.123456+02:00", "2026-10-09T13:30:00.123456Z"],
+    ["2026-10-09T15:30:00.123456789+02:00", "2026-10-09T13:30:00.123456789Z"],
+    ["2016-12-31T23:59:60Z", "2016-12-31T23:59:60Z"],
+  ])("matches chrono JSON for saved and updated filter date %s", (input, expected) => {
+    const store = seedStore();
+    mutate(store, "save_view", {
+      id: "chrono-view",
+      name: "Due",
+      shared: false,
+      filter: { due_before: input },
+    });
+    expect(store.get("views", "chrono-view")?.filter.due_before).toBe(expected);
+    mutate(store, "update_view", {
+      id: VIEW_PRIVATE,
+      name: "Due",
+      shared: false,
+      filter: { due_before: input },
+    });
+    expect(store.get("views", VIEW_PRIVATE)?.filter.due_before).toBe(expected);
+  });
   it("stores filter defaults and UTC due_before", () => {
     const args = {
       id: "view-defaults",

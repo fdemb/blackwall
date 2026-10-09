@@ -244,7 +244,7 @@ function normalizeObject(value: unknown, fields: Fields): unknown {
       }
       if (field.timestamp && typeof item === "string") {
         try {
-          item = parseTimestamp(item, true);
+          item = parseTimestamp(item, true, "chrono");
         } catch {
           // The mutator reports invalid timestamps through its usual check.
         }

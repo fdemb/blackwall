@@ -173,7 +173,11 @@ export function normalize<E extends Entity>(entity: E, record: RecordOf[E]): Rec
  * PostgreSQL rejects them; chrono accepts the shape and the prediction only
  * needs to be storable for the non-fractional case the server can persist.
  */
-export function parseTimestamp(value: unknown, strict = false): string {
+export function parseTimestamp(
+  value: unknown,
+  strict = false,
+  format: "microseconds" | "chrono" = "microseconds",
+): string {
   if (typeof value !== "string") throw new Error(`unparseable timestamp ${String(value)}`);
   const syntax =
     /^\p{White_Space}*([+-]\d+|\d{1,4})\p{White_Space}*-\p{White_Space}*(\d{1,2})\p{White_Space}*-\p{White_Space}*(\d{1,2})[Tt ]\p{White_Space}*(\d{1,2})\p{White_Space}*:\p{White_Space}*(\d{1,2})\p{White_Space}*:\p{White_Space}*(\d{1,2})(?:\.(\d+))?\p{White_Space}*([Zz]|[Uu][Tt][Cc]|[+\-−]\d{2}[:\p{White_Space}]*\d{2}|[+\-−]\d{2})?\p{White_Space}*$/u;
@@ -232,11 +236,17 @@ export function parseTimestamp(value: unknown, strict = false): string {
     `T${pad(hour, 2)}:${pad(minute, 2)}:${pad(leap ? 59 : second, 2)}`;
   const probe = new Date(`${datePart}${zoneForProbe}`);
   if (Number.isNaN(probe.getTime())) throw new Error(`unparseable timestamp ${value}`);
-  const utcMillis = probe.getTime() + (leap ? 1000 : 0);
+  const utcMillis = probe.getTime() + (leap && format === "microseconds" ? 1000 : 0);
   const utc = new Date(utcMillis);
   const out =
     `${pad(utc.getUTCFullYear(), 4)}-${pad(utc.getUTCMonth() + 1, 2)}-${pad(utc.getUTCDate(), 2)}` +
-    `T${pad(utc.getUTCHours(), 2)}:${pad(utc.getUTCMinutes(), 2)}:${pad(utc.getUTCSeconds(), 2)}`;
+    `T${pad(utc.getUTCHours(), 2)}:${pad(utc.getUTCMinutes(), 2)}:${pad(leap && format === "chrono" ? 60 : utc.getUTCSeconds(), 2)}`;
+  if (format === "chrono") {
+    const nanos = fractionRaw.slice(0, 9).padEnd(9, "0");
+    const width =
+      Number(nanos) === 0 ? 0 : nanos.endsWith("000000") ? 3 : nanos.endsWith("000") ? 6 : 9;
+    return width === 0 ? `${out}Z` : `${out}.${nanos.slice(0, width)}Z`;
+  }
   const fraction = fractionRaw.slice(0, 6).padEnd(6, "0");
   return `${out}.${fraction}Z`;
 }
