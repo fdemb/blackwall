@@ -4,9 +4,12 @@ Blackwall's frontend keeps a local replica of each open workspace and syncs it w
 
 ## Status
 
-The sync layer is being reimplemented from scratch. The previous frontend data layer was deleted on purpose. Don't reconstruct it, and don't look for it in history. Its idea of "optimistic updates" was a per-command patch rolled back on failure, and it read server records through a query cache. This design replaces both.
+The sync layer is rewritten. The engine, the server protocol and the UI port are done, and the frontend typechecks. The previous frontend data layer was deleted on purpose. Don't reconstruct it, and don't look for it in history. Its idea of "optimistic updates" was a per-command patch rolled back on failure, and it read server records through a query cache. This design replaces both.
 
-The frontend doesn't typecheck right now. Every UI file that read data through the deleted layer has broken imports. Each of those errors marks a call site to port to the new engine.
+Phases 1 to 4 are done. Phase 5 is partly done. Session cleanup and online-only gating are implemented in the engine and the UI. Schema migration is in the engine: `open()` resets base on a schema mismatch and keeps the outbox. Still missing:
+
+- **Tabs.** Nothing elects a leader. `navigator.locks` and `BroadcastChannel` aren't used, and every tab starts its own network workers (`web/app/lib/workspace-engine.ts`). Mutation ids are allocated in IndexedDB transactions, but no test runs two engines on one database.
+- **Tab tests.** The two-engine test that checks distinct ids and a single puller doesn't exist.
 
 ## Fixed decisions
 
