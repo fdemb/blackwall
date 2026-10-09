@@ -3,6 +3,7 @@ import tailwindcss from "@tailwindcss/vite";
 import { defineConfig, lazyPlugins } from "vite-plus";
 
 export default defineConfig({
+  test: { globalSetup: ["./app/sync/contract/setup.ts"] },
   fmt: {},
   lint: {
     plugins: ["react", "react-perf"],

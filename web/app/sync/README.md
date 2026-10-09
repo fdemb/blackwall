@@ -12,6 +12,8 @@ Replica: base (server state) plus an overlay of replayed outbox mutations. The s
 - `engine-scheduling.ts`: serial queues, abort-aware waits, and deterministic capped backoff with jitter.
 - `engine.test.ts`: deterministic fake-server scenarios, including reload and schema recovery with both memory and IndexedDB persistence.
 - `convergence.test.ts`: fixed CI seeds, optional soak runs, action coverage, and trace determinism.
+- `testing/seeded.ts` and `testing/traffic.ts`: seeded randomness, ids, and command generation shared by fake and real-server convergence.
+- `contract/`: isolated Rust-server fixtures, prediction contracts for every registered mutator, and real-server convergence.
 - `testing/convergence.ts`: seeded traffic across two or three cookie-authenticated engines with separate memory and IndexedDB replicas.
 - `fixtures.ts`: test factories and a hand-written replay. Tests only.
 - `mutators/index.ts`: command registry, admission, replay, and online-only command names.
@@ -85,6 +87,36 @@ The oracle compares whole eager records and held scopes with the server's actor-
 The fake and clients use separate seeded generators; client UUID allocation is deterministic in the test runner. Each simulated tab has its own cookie and CSRF jar. The fetch adapter isolates the REST client's shared token singleton so one simulated tab cannot overwrite another tab's token.
 
 Seed 179 currently exposes an outcome-contract question. A server-rejected command whose response is lost can later settle as `"applied"` after acknowledgement or a duplicate retry. That follows the documented fallback below, but fails the acceptance property that every applied receipt proves a server effect. The soak keeps this assertion strict. The minimized scenario is `cannot recover a rejection status from an acknowledgement and duplicate retry` in `engine.test.ts`.
+
+## Run real-server contract tests
+
+Install `psql`, Rust, and the web dependencies. Start PostgreSQL 17 from the repository root:
+
+```sh
+docker compose up -d postgres
+export TEST_POSTGRES_URL=postgres://blackwall:blackwall@127.0.0.1:5432/blackwall
+cd web
+SYNC_CONTRACT=1 vp test run app/sync/contract
+```
+
+The database role needs `CREATEDB`. Both environment variables are required. Without them, the contract suites are skipped and their names explain how to enable them. Ordinary `vp test run` needs no server or database.
+
+Global setup runs `cargo build --locked` once, creates a UUID-named database, and starts `target/debug/blackwall serve` on a free loopback port. The server applies migrations at startup. Setup uses an empty temporary `WEB_DIR`, waits for `/health`, and shares the server address with the test workers. Teardown terminates the process, forcibly drops only that test database, and removes the temporary directory, including after setup or test failures.
+
+User registration, login, workspace creation, invitations, invitation acceptance, and uploads use REST. The membership fixture reads the invitation token from its queued email with `psql`; it writes no database state. Tests use bearer authentication, with a separate cookie and CSRF case.
+
+Prediction tests stop the engine before mutation, capture its full view, restart it, and compare with confirmed records after the outbox empties. `contract/compare.ts` lists every exclusion and its reason: versions, newly allocated issue numbers, server-clock timestamp values, new notifications, and activity. Timestamp presence and nullness still compare. Existing notifications and all client-supplied dates compare, including saved-view dates stored as JSON.
+
+Real-server convergence runs seeds 1, 42, and 1337 with 45 random actions each. It shares command generation with the fake-server runner. Three users exercise roles, scopes, offline edits, response loss after commit, stop/start, and reload with pending work. A role downgrade forces a server rejection of an admitted offline edit. After healing, each engine and its persisted records must match a fresh bootstrap and loaded scopes for that user, with empty memory and disk outboxes. The server receives no injected faults.
+
+To run more seeds or reproduce a failure:
+
+```sh
+SYNC_CONTRACT=1 SYNC_FUZZ_SEEDS=100 vp test run app/sync/contract/convergence.real.test.ts
+SYNC_CONTRACT=1 SYNC_FUZZ_SEED=42 SYNC_FUZZ_STEPS=200 vp test run app/sync/contract/convergence.real.test.ts
+```
+
+The action sequence is seeded; real network timing remains concurrent. Failures print the seed and action trace. `scripts/check.sh` enables the contract suite in CI after the ordinary web tests.
 
 ## Engine invariants
 
