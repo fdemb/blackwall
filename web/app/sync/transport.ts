@@ -52,6 +52,8 @@ export interface PushResponse {
   status: "ok" | "partial";
   lastMutationId: number;
   results: MutationResult[];
+  /** Seconds or an HTTP date. The engine interprets dates with its injected clock. */
+  retryAfter?: number | string | null;
 }
 
 export interface ScopeResponse {
@@ -85,7 +87,7 @@ export class UnavailableError extends TransportError {
   constructor(
     message: string,
     status: number,
-    public readonly retryAfter: number | null = null,
+    public readonly retryAfter: number | string | null = null,
   ) {
     super(message, status);
   }
@@ -148,17 +150,27 @@ export function createTransport(options: TransportOptions) {
         throw error;
       }
     },
-    async pull(ws: string, clientId: string, cursor: string | null): Promise<PullResponse> {
-      const response = await checked(path(ws, "pull", clientId, cursor === null ? {} : { cursor }));
+    async pull(
+      ws: string,
+      clientId: string,
+      cursor: string | null,
+      requestOptions: StreamOptions = {},
+    ): Promise<PullResponse> {
+      const response = await checked(
+        path(ws, "pull", clientId, cursor === null ? {} : { cursor }),
+        { signal: signalFor(requestOptions.signal) },
+      );
       return parsePull(await json(response), response.status);
     },
     async push(
       ws: string,
       clientId: string,
       mutations: readonly Mutation[],
+      requestOptions: StreamOptions = {},
     ): Promise<PushResponse> {
       const response = await request(path(ws, "push", clientId), {
         method: "POST",
+        signal: signalFor(requestOptions.signal),
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           client_id: clientId,
@@ -176,14 +188,26 @@ export function createTransport(options: TransportOptions) {
       }
       if (response.status === 503 && object(value) && typeof value.error === "string")
         throw httpError(response, value.error, true);
-      return parsePush(value, response.status);
+      const result = parsePush(value, response.status);
+      if (response.status === 503) {
+        const retry = retryAfter(response);
+        if (retry !== null) result.retryAfter = retry;
+      }
+      return result;
     },
-    async scope(ws: string, clientId: string, scope: Scope): Promise<ScopeResponse> {
+    async scope(
+      ws: string,
+      clientId: string,
+      scope: Scope,
+      requestOptions: StreamOptions = {},
+    ): Promise<ScopeResponse> {
       const query: Record<string, string> =
         scope.entity === "comments"
           ? { entity: scope.entity, issue_id: scope.issueId }
           : { entity: scope.entity, entity_id: scope.entityId };
-      const response = await checked(path(ws, "scope", clientId, query));
+      const response = await checked(path(ws, "scope", clientId, query), {
+        signal: signalFor(requestOptions.signal),
+      });
       const value = await json(response);
       if (!object(value) || !Array.isArray(value.records) || !value.records.every(object))
         throw new ProtocolError("Invalid scope response", response.status);
@@ -241,18 +265,21 @@ async function bodyText(response: Response): Promise<string> {
 async function json(response: Response): Promise<unknown> {
   return parseJson(await bodyText(response), response.status);
 }
+function retryAfter(response: Response): number | string | null {
+  const value = response.headers.get("Retry-After")?.trim();
+  if (value === undefined) return null;
+  if (/^\d+$/.test(value) && Number.isSafeInteger(Number(value))) return Number(value);
+  if (/^(Mon|Tue|Wed|Thu|Fri|Sat|Sun)/.test(value) && Number.isFinite(Date.parse(value)))
+    return value;
+  return null;
+}
+
 function httpError(response: Response, message: string, workspace: boolean): TransportError {
   const status = response.status;
   if (status === 401) return new UnauthorizedError(message, status);
   if (status === 403 || (status === 404 && workspace)) return new AccessError(message, status);
   if (status >= 500) {
-    const retry = response.headers.get("Retry-After");
-    const seconds = retry !== null && /^\d+$/.test(retry.trim()) ? Number(retry) : null;
-    return new UnavailableError(
-      message,
-      status,
-      seconds !== null && Number.isSafeInteger(seconds) ? seconds : null,
-    );
+    return new UnavailableError(message, status, retryAfter(response));
   }
   return new ProtocolError(message, status);
 }

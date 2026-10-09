@@ -132,6 +132,8 @@ export class FakeServer {
 
   now = (): string => this.clock.now();
   advance = (milliseconds: number): void => this.clock.advance(milliseconds);
+  schedule = (milliseconds: number, run: () => void): (() => void) =>
+    this.clock.schedule(milliseconds, run);
   private id(): string {
     for (;;) {
       const id = `00000000-0000-4000-8000-${(++this.sequence).toString(16).padStart(12, "0")}`;

@@ -1,12 +1,16 @@
 # Sync engine core
 
-Replica: base (server state) plus an overlay of replayed outbox mutations. The store and mutators run in memory; persistence stores raw server records and pending mutations. The core has no React or network dependencies.
+Replica: base (server state) plus an overlay of replayed outbox mutations. The store and mutators run in memory; persistence stores raw server records and pending mutations. The engine connects them through an injected transport, clock, ids, and signals. The core has no React dependency and reads no browser state.
 
 ## Files
 
 - `records.ts`: entities, sync record shapes, keys, timestamp normalization, pull changes.
 - `store.ts`: `SyncStore` (base, overlay replay, incremental indexes, subscriptions).
 - `derived.ts`: issue counts over the store view, using the server's definitions.
+- `engine.ts`: `createEngine`, `SyncEngine`, and the client `SCHEMA`; lifecycle, serial reads, admission, ordered pushes, outcomes, events, polling, scopes, and session cleanup.
+- `engine-types.ts`: injected clock and signal contracts, dependencies, status snapshots, engine events, rejection details, and mutation receipts.
+- `engine-scheduling.ts`: serial queues, abort-aware waits, and deterministic capped backoff with jitter.
+- `engine.test.ts`: deterministic fake-server scenarios, including reload and schema recovery with both memory and IndexedDB persistence.
 - `fixtures.ts`: test factories and a hand-written replay. Tests only.
 - `mutators/index.ts`: command registry, admission, replay, and online-only command names.
 - `mutators/`: argument normalization, validation, and command implementations grouped by domain.
@@ -28,9 +32,38 @@ Replica: base (server state) plus an overlay of replayed outbox mutations. The s
 
 ## Later tasks
 
-- 2e orchestration: pull/push/scope calls through `applyBase`/`batch`/`setPending`.
 - 2f convergence tests: random traffic across engines must equal server state.
 - React bindings: `useSyncExternalStore` over `subscribe`/`version`/`get`, status over `pendingVersion`.
+- Tabs: leader election around `start`/`stop`, plus broadcast handling for shared persistence writes.
+
+## Engine lifecycle and API
+
+`createEngine(deps)` constructs one session/workspace replica. `deps` contains `storage`, `transport`, `sessionId`, `workspaceId`, `actor`, `schema`, `randomId`, `clock`, and `signals`. `clock.now()` returns an ISO timestamp. `clock.schedule(milliseconds, callback)` returns a cancellation function, equivalent to paired `setTimeout`/`clearTimeout` methods. The fake server exposes `now` and `schedule` from its own clock, so `server.advance(ms)` drives network delays, retries, and polling together. Jitter uses a seed derived from the session/workspace identity and never consumes `randomId`.
+
+`signals.getOnline()` supplies the initial connectivity state. `signals.subscribe(listener)` returns an unsubscribe function; its events are `online`, `offline`, `focus`, and `visible`. The application maps visibility changes to `visible` when the page becomes visible. Signals update status after open, including while stopped, but network work requires a running engine.
+
+- `open(): Promise<void>` loads disk state and immediately exposes `store`. A client schema mismatch resets base and scopes while keeping the outbox and mutation ids. It performs no network requests. Repeated opens share one promise.
+- `start(): Promise<void>` opens if needed and begins network work. It resolves after starting the workers; use the status subscription to observe bootstrap completion. The first pull finishes before a new push batch starts. Calling `stop()` during open cancels that start.
+- `stop(): void` aborts requests and timer waits. It preserves the replica and any captured push batch. A later `start()` retries that batch before newer mutations, including online-only commands. Offline signals pause the same workers until an online signal arrives.
+- `close(): Promise<void>` stops, drains persistence/store commits, unsubscribes signals, and closes the replica. It preserves the stored outbox. Outstanding online-only calls reject with cancellation. A closed or wiped engine cannot reopen.
+- `pull(): Promise<void>` requests synchronization while started and online. Concurrent calls coalesce into the running pull and one follow-up. Stopped/offline calls perform no network work. Request errors appear through status and engine events.
+- `mutate(name, args): Promise<MutationReceipt>` normalizes and admits a command, allocates missing create ids, stores it, and updates the optimistic view before returning. Issue ids live in `args.input.id`; other creates use `args.id`. Teams get ids for all default stages. The receipt contains the created record `id`, or null for an edit, the numeric `mutationId`, and `settled`. Settlement resolves to `"applied"` or `{id, status, message}` from the server. An acknowledgement with no push result in this engine also settles as applied. Receipts belong to the engine that admitted them; reloading restores mutations, not promises held by the old caller.
+- `runOnline(name, args): Promise<MutationResult>` requires online status, waits for the outbox, allocates an id atomically, and sends one command without persistence or prediction. It returns the server result and requests a pull. Attachment uploads are excluded. A stopped engine can queue an online call, which waits for start.
+- `useScope(scope): () => void` holds a comment or activity scope and returns an idempotent release function. The first hold loads it while started; further holds share the load. Releasing the last holder keeps its records loaded. Bootstrap discards loaded scopes and reloads those still held.
+- `status.get()` returns a stable, frozen `EngineStatus`; `status.subscribe(listener)` returns an unsubscribe function. Snapshots contain `phase`, `connected`, `online`, `pending`, `lastError`, and `rejected`. Phases are `loading`, `bootstrapping`, and `ready`; `connected` means the event stream is open. Errors and rejections remain available after recovery.
+- `subscribe(listener)` emits `rejected`, `error`, `unauthorized`, and `accessLost` events and returns an unsubscribe function. Rejection events contain the same frozen details as `status.rejected`.
+
+The engine assumes it is the leader between start and stop. React bindings and tab coordination remain separate tasks.
+
+## Engine invariants
+
+- Bootstrap, every pull page, and scope loads share one serial read queue. A read finishes both its atomic persistence write and its store batch before another read begins. Bootstrap collects the entire stream before writing; an incomplete stream leaves disk and view untouched. Reads queued for an aborted network generation cannot commit. Since reset runs through the same queue, earlier scope/pull snapshots cannot land after it.
+- A second serial queue owns mutation admission, persistence writes, and their store updates. Each admission reads the latest view, appends once, and merges into the current sorted pending list. An acknowledgement cannot overwrite a concurrent append. Existing persistence methods handle server acknowledgements atomically with records and cursor; the engine applies the matching base changes and pending removal in one store batch.
+- Only bootstrap/pull acknowledgements remove mutations during normal synchronization. Push results settle callers and report rejections but never write base or remove outbox entries. An active batch defers acknowledgement-only settlement until its push result, preserving a rejection even when an SSE-triggered pull acknowledges first.
+- Push sends at most 100 mutations in increasing id order, with one request in flight. Partial responses and transient failures retain the exact batch, including any already processed prefix, across retries and stop/start. Successful batches wait for acknowledgement before newer work. Online-only allocation shares the commit queue and the push worker; a failed outbox-empty check waits and retries without consuming an id.
+- Bootstrap, pull, scope, push, and event requests retry with deterministic jitter, capped at 30 seconds. A server `Retry-After` can extend that delay; seconds and HTTP dates are supported, and dates use the injected clock. Protocol errors block that request kind and emit an error; a scope protocol error does not block core sync. Offline and stop cancel all retry waits. Polling runs every 30 seconds while events are disconnected, and online/focus/visibility signals request a pull.
+- Unloaded comment/activity scopes reject incoming pull records. Deletions check the previous base record, so optimistic overlays cannot hide the scope needed for filtering. Scope replacement deletes only that scope's base records and rebases pending mutations on the replacement.
+- A 401 stops all work, closes this replica, lists storage, and deletes only replicas whose `sessionId` matches. A workspace access error deletes only this replica. Both wipes clear the view/outbox, set phase to loading, and emit the navigation event after deletion. Other sessions and workspaces remain intact.
 
 ## Invariants
 
@@ -65,6 +98,8 @@ The control API returns detached records:
 - `now()` returns the server timestamp. `advance(milliseconds)` runs due timers in order. `close()` ends all event streams.
 
 `options` accepts `at`, `pageSize`, `horizon`, `sessionLifetimeMs`, and `events: {coalesceMs, keepaliveMs, lifetimeMs}`. Defaults match the server protocol: 1,000 pairs per pull page, 250 ms between pokes, 15 s between keepalives, and a 30-minute stream lifetime. The initial clock is `2026-10-09T12:00:00Z`. Time advances only through `advance`; waiting on a delayed request does not advance it.
+
+`schedule(milliseconds, callback)` exposes this clock to the engine and returns a cancellation function. It does not advance time.
 
 `inject(fault)` queues a one-shot fault. Each matching request consumes at most one fault of each kind. Different kinds can combine on one request. `route` limits a fault to that endpoint; omitted routes match the next request of any kind.
 

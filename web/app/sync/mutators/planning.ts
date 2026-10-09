@@ -48,7 +48,7 @@ function joinTeam(tx: Tx, user: string, teamId: string): void {
  * mirror `default_stages` in `src/domain.rs`; ids come from the command's
  * `default_stage_ids`, which the engine generates before admission.
  */
-const DEFAULT_STAGES: readonly { name: string; kind: StageKind; position: number }[] = [
+export const DEFAULT_STAGES: readonly { name: string; kind: StageKind; position: number }[] = [
   { name: "Backlog", kind: "backlog", position: 0 },
   { name: "Todo", kind: "planned", position: 1 },
   { name: "In progress", kind: "active", position: 2 },
