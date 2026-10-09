@@ -16,4 +16,5 @@ pnpm install --frozen-lockfile
 pnpm run typecheck
 pnpm exec vp check
 pnpm exec vp test run
+SYNC_CONTRACT=1 pnpm exec vp test run app/sync/contract
 pnpm run build
