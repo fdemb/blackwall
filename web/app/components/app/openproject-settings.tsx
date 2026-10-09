@@ -217,7 +217,7 @@ function ConnectionForm({
   close: () => void;
   refresh: () => Promise<void>;
 }) {
-  const { ws, members, run } = useWorkspace();
+  const { ws, members, run, confirmed } = useWorkspace();
   const { t } = useI18n();
   const connection = editor.kind === "edit" ? editor.connection : null;
   const [name, setName] = useState(connection?.name ?? "");
@@ -302,6 +302,7 @@ function ConnectionForm({
             }
             resolvedProjects.push(mapping);
           }
+          await confirmed(resolvedProjects);
           if (connection) {
             const body = {
               name: name.trim(),

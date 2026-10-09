@@ -1,7 +1,7 @@
 import type { SyncEngine, Rejection } from "../sync/engine";
+import type { DeepReadonly, PendingMutation } from "../sync/store";
 import { ONLINE_ONLY } from "../sync/mutators";
 import { ApiError, workspaces } from "./api";
-import { workspaceEngineSignal } from "./session-replicas";
 import type { Command } from "./types";
 
 export class ServerRejection extends ApiError {}
@@ -29,61 +29,84 @@ export async function runCommand(
   return receipt.id;
 }
 
-export function waitForUploadTarget(
-  engine: SyncEngine,
-  issueId: string,
-  commentId?: string,
-): Promise<void> {
-  const signal = workspaceEngineSignal(engine);
+// Creates that give their record a client-chosen id, which the server later confirms.
+const CREATING = new Set([
+  "create_team",
+  "create_stage",
+  "create_label",
+  "create_project",
+  "create_milestone",
+  "create_sprint",
+  "add_comment",
+  "log_time",
+  "save_view",
+]);
+
+function createdId(mutation: DeepReadonly<PendingMutation>): string | null {
+  const args = mutation.args;
+  if (args === null || typeof args !== "object") return null;
+  if (mutation.name === "create_issue" && "input" in args && isObject(args.input))
+    return typeof args.input.id === "string" ? args.input.id : null;
+  if (CREATING.has(mutation.name) && "id" in args && typeof args.id === "string") return args.id;
+  return null;
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object";
+}
+
+const UUID = /^[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}$/i;
+/** Every UUID string in a request body. Pending creates among them must reach the server first. */
+export function uuidsIn(value: unknown): string[] {
+  if (typeof value === "string") return UUID.test(value) ? [value] : [];
+  if (Array.isArray(value)) return value.flatMap(uuidsIn);
+  if (isObject(value)) return Object.values(value).flatMap(uuidsIn);
+  return [];
+}
+
+/**
+ * Resolves once no pending mutation creates any of `ids`, so the server knows them. Rejects when
+ * the engine closes, access is lost, or the engine goes offline while those creates still wait.
+ */
+export function whenConfirmed(engine: SyncEngine, ids: Iterable<string>): Promise<void> {
+  const wanted = new Set(ids);
   return new Promise((resolve, reject) => {
-    const pending = () =>
+    const waiting = () =>
       engine.store.pending().some((mutation) => {
-        const args = mutation.args;
-        if (args === null || typeof args !== "object") return false;
-        if (
-          mutation.name === "create_issue" &&
-          "input" in args &&
-          args.input !== null &&
-          typeof args.input === "object" &&
-          "id" in args.input &&
-          args.input.id === issueId
-        )
-          return true;
-        return (
-          commentId !== undefined &&
-          mutation.name === "add_comment" &&
-          "id" in args &&
-          args.id === commentId
-        );
+        const id = createdId(mutation);
+        return id !== null && wanted.has(id);
       });
     const finish = (error?: Error) => {
       unsubscribeStore();
       unsubscribeStatus();
       unsubscribeEvents();
-      signal.removeEventListener("abort", aborted);
       if (error) reject(error);
       else resolve();
     };
     const check = () => {
-      if (!engine.status.get().online)
+      if (engine.isClosed()) finish(new Error("Workspace engine closed"));
+      else if (!waiting()) finish();
+      else if (!engine.status.get().online)
         finish(new ApiError("This command requires an online connection", 400));
-      else if (!pending()) {
-        if (!engine.store.get("issues", issueId))
-          finish(new ApiError("Upload target not found", 404));
-        else finish();
-      }
     };
-    const aborted = () => finish(new Error("Workspace engine closed"));
     const unsubscribeStore = engine.store.subscribe(check);
     const unsubscribeStatus = engine.status.subscribe(check);
     const unsubscribeEvents = engine.subscribe((event) => {
-      if (event.type === "unauthorized" || event.type === "accessLost")
-        finish(new ApiError("Upload target unavailable", 403));
+      if (event.type === "closed") finish(new Error("Workspace engine closed"));
+      else if (event.type === "unauthorized" || event.type === "accessLost")
+        finish(new ApiError("Workspace access lost", 403));
     });
-    signal.addEventListener("abort", aborted, { once: true });
-    if (signal.aborted) aborted();
-    else check();
+    check();
   });
+}
+
+export async function waitForUploadTarget(
+  engine: SyncEngine,
+  issueId: string,
+  commentId?: string,
+): Promise<void> {
+  await whenConfirmed(engine, commentId === undefined ? [issueId] : [issueId, commentId]);
+  if (!engine.store.get("issues", issueId)) throw new ApiError("Upload target not found", 404);
 }
 
 export async function uploadFile(

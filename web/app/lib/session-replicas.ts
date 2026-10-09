@@ -3,16 +3,6 @@ import { SCHEMA } from "../sync/engine";
 import type { SyncEngine } from "../sync/engine";
 import type { SessionProfile } from "../sync/transport";
 
-const lifetimes = new WeakMap<SyncEngine, AbortController>();
-export function workspaceEngineSignal(engine: SyncEngine): AbortSignal {
-  let lifetime = lifetimes.get(engine);
-  if (!lifetime) {
-    lifetime = new AbortController();
-    lifetimes.set(engine, lifetime);
-  }
-  return lifetime.signal;
-}
-
 interface WorkspaceEngine {
   workspaceId: string;
   sessionId: string;
@@ -42,7 +32,6 @@ export function activeWorkspaceEngine() {
   return active;
 }
 export function setWorkspaceEngine(next: WorkspaceEngine) {
-  workspaceEngineSignal(next.engine);
   active = next;
 }
 /** Stops the active engine from taking edits. It closes after its outbox has been sent. */
@@ -54,7 +43,6 @@ export function retireActiveWorkspaceEngine() {
   void previous.engine.retire().then(() => {
     if (leaving.get(previous.workspaceId)?.engine === previous.engine)
       leaving.delete(previous.workspaceId);
-    lifetimes.get(previous.engine)?.abort();
   });
 }
 export function retireWorkspaceEngine(engine: SyncEngine) {
@@ -63,7 +51,6 @@ export function retireWorkspaceEngine(engine: SyncEngine) {
 /** Closes one engine now. A failed open must not be reclaimed, so its retry starts fresh. */
 export async function discardWorkspaceEngine(engine: SyncEngine) {
   if (active?.engine === engine) active = null;
-  lifetimes.get(engine)?.abort();
   await engine.close();
 }
 /** Makes a retiring engine active again, when the user returns to its workspace. */
@@ -105,9 +92,7 @@ export async function closeWorkspaceEngine() {
   leaving.clear();
   await Promise.all(
     engines.map(async (entry) => {
-      if (!entry) return;
-      lifetimes.get(entry.engine)?.abort();
-      await entry.engine.close();
+      await entry?.engine.close();
     }),
   );
 }

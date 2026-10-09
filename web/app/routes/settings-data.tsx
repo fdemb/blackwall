@@ -62,7 +62,7 @@ function inspect(name: string, parsed: unknown): Preview | null {
 
 export default function Data() {
   const { t } = useI18n();
-  const { ws, canWrite, canAdmin, reload } = useWorkspace();
+  const { ws, canWrite, canAdmin, reload, confirmed } = useWorkspace();
   const toast = useToast();
   const [busy, setBusy] = useState(false);
   const importKey = useRef(crypto.randomUUID());
@@ -155,6 +155,7 @@ export default function Data() {
               allowed={preview.kind === "issues" || canAdmin}
               onCancel={close}
               onImport={async () => {
+                await confirmed(preview.body);
                 const res = await workspaces.import(ws.id, preview.body, importKey.current);
                 await reload().catch(() => undefined);
                 setResult(res.summary);

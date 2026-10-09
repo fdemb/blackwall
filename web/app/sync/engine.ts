@@ -204,8 +204,14 @@ export class SyncEngine {
     this.batch?.job?.reject(error);
   }
 
+  isClosed(): boolean {
+    return this.closed;
+  }
+
   async close(): Promise<void> {
+    const first = !this.closed;
     this.closed = true;
+    if (first) this.emit({ type: "closed" });
     this.stop();
     this.unsubscribeSignals?.();
     this.unsubscribeSignals = null;

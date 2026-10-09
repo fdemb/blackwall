@@ -4,7 +4,14 @@ import { MemoryReplicaStorage } from "../sync/persistence/memory";
 import { createFakeServer } from "../sync/testing/fake-server";
 import { createTransport } from "../sync/transport";
 import { setCsrf } from "./api";
-import { runCommand, waitForUploadTarget, uploadFile, watchRejections } from "./workspace-commands";
+import {
+  runCommand,
+  uuidsIn,
+  waitForUploadTarget,
+  uploadFile,
+  watchRejections,
+  whenConfirmed,
+} from "./workspace-commands";
 import { waitUntilReady } from "./workspace-engine";
 
 const id = (n: number) => `11111111-1111-4111-8111-${String(n).padStart(12, "0")}`;
@@ -242,5 +249,97 @@ describe("bootstrap readiness", () => {
     controller.abort();
     await expect(ready).rejects.toThrow("navigation cancelled");
     get.mockRestore();
+  });
+});
+
+describe("confirmation for REST writes", () => {
+  it("resolves only after the pending creates of the given ids are acknowledged", async () => {
+    const { engine } = await fixture();
+    engine.stop();
+    const stage = await runCommand(engine, {
+      type: "create_stage",
+      team_id: id(1),
+      name: "Review",
+      kind: "active",
+      position: 4,
+    });
+    await runCommand(engine, {
+      type: "create_issue",
+      input: { id: id(300), title: "Unrelated", team_id: id(1) },
+    });
+    let confirmed = false;
+    const wait = whenConfirmed(engine, [stage!]).then(() => {
+      confirmed = true;
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(confirmed).toBe(false);
+    await engine.start();
+    await wait;
+    expect(engine.store.pending().some((mutation) => mutation.name === "create_stage")).toBe(false);
+  });
+
+  it("resolves at once for ids with no pending create, even while other creates wait", async () => {
+    const { engine } = await fixture();
+    engine.stop();
+    await runCommand(engine, {
+      type: "create_issue",
+      input: { id: id(300), title: "Waiting", team_id: id(1) },
+    });
+    await expect(whenConfirmed(engine, [id(2), id(999)])).resolves.toBeUndefined();
+    await expect(whenConfirmed(engine, [])).resolves.toBeUndefined();
+  });
+
+  it("rejects waiting callers when the engine closes before the creates are sent", async () => {
+    const { engine } = await fixture();
+    engine.stop();
+    const issue = await runCommand(engine, {
+      type: "create_issue",
+      input: { id: id(300), title: "Never sent", team_id: id(1) },
+    });
+    const wait = whenConfirmed(engine, [issue!]).catch((error: unknown) => error);
+    await engine.close();
+    expect(await wait).toMatchObject({ message: "Workspace engine closed" });
+  });
+
+  it("collects every UUID in a request body, however deeply nested", () => {
+    expect(
+      uuidsIn({
+        name: "not-an-id",
+        token: "secret",
+        projects: [{ team_id: id(1), stage_mapping: { "10": id(2) } }],
+        nested: { list: [id(3), 4, null] },
+      }),
+    ).toEqual([id(1), id(2), id(3)]);
+  });
+
+  it("an OpenProject mapping waits for a stage created offline, so its REST save never sees an unknown stage", async () => {
+    const { engine } = await fixture();
+    engine.stop();
+    const stage = await runCommand(engine, {
+      type: "create_stage",
+      team_id: id(1),
+      name: "Migrated",
+      kind: "active",
+      position: 4,
+    });
+    const body = {
+      name: "OpenProject",
+      base_url: "https://openproject.example.test",
+      token: "review-token",
+      projects: [{ project_id: 1, team_id: id(1), stage_mapping: { "10": stage } }],
+      people_mapping: {},
+    };
+    let pendingWhenSent = -1;
+    const post = vi.fn(() => {
+      pendingWhenSent = engine.store.pending().length;
+      return new Response(null, { status: 201 });
+    });
+    const save = whenConfirmed(engine, uuidsIn(body)).then(post);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(post).not.toHaveBeenCalled();
+    await engine.start();
+    await save;
+    expect(post).toHaveBeenCalledTimes(1);
+    expect(pendingWhenSent).toBe(0);
   });
 });

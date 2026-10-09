@@ -48,7 +48,8 @@ export type EngineEvent =
   | { type: "rejected"; rejection: Rejection }
   | { type: "error"; error: Error }
   | { type: "unauthorized" }
-  | { type: "accessLost" };
+  | { type: "accessLost" }
+  | { type: "closed" };
 
 export interface MutationReceipt {
   /** Created record id, or null for an edit. */

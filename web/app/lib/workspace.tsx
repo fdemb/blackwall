@@ -15,7 +15,14 @@ import { reportQuery, watchReportChanges } from "./query-client";
 import { byDisplayName, byExpiryDesc, byName, byPosition, bySprintStart, byUserId } from "./order";
 import { useSession } from "./session";
 import type { Command, EntityVersions, IssueInput, Report, Workspace } from "./types";
-import { uploadFile, runCommand, ServerRejection, watchRejections } from "./workspace-commands";
+import {
+  uploadFile,
+  runCommand,
+  ServerRejection,
+  uuidsIn,
+  watchRejections,
+  whenConfirmed,
+} from "./workspace-commands";
 
 export interface RunOptions {
   quiet?: boolean;
@@ -131,6 +138,8 @@ function useWorkspaceValue() {
     },
     [engine, ws.id, toast],
   );
+  // REST writes that send record ids wait here until the server has those records.
+  const confirmed = useCallback((body: unknown) => whenConfirmed(engine, uuidsIn(body)), [engine]);
   const [createState, setCreateState] = useState<{ open: boolean; defaults: Partial<IssueInput> }>({
     open: false,
     defaults: {},
@@ -163,6 +172,7 @@ function useWorkspaceValue() {
     reload: retrySync,
     run,
     upload,
+    confirmed,
     create,
   };
 }
