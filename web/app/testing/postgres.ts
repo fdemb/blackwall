@@ -13,6 +13,7 @@ export function psqlRows(sql: string): string[] {
   if (!postgresUrl) throw new Error("TEST_POSTGRES_URL is not set");
   const output = execFileSync("psql", [postgresUrl, "-XAtq", "-v", "ON_ERROR_STOP=1", "-c", sql], {
     encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
   });
   return output.split("\n").slice(0, -1);
 }

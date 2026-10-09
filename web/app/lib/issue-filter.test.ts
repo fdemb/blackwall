@@ -266,8 +266,8 @@ describe("issue SQL search", () => {
     ["abc-123-def", "def -123", true],
     ["a-b-1", "1 a-b", true],
     ["foo123-bar", "bar foo123", true],
-    ["naïve—test foo😀bar", "test naïve", false],
-    ["naïve—test foo😀bar", "bar foo", false],
+    ["naïve—test foo😀bar", "test naïve", true],
+    ["naïve—test foo😀bar", "bar foo", true],
   ] as const)("matches PostgreSQL parsing of %j for %j", (title, search, expected) => {
     expect(matchesSearch(makeIssue(id(2), { title, number: null }), search)).toBe(expected);
   });
