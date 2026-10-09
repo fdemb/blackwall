@@ -5,9 +5,14 @@ import {
   activeWorkspaceEngine,
   closeWorkspaceEngine,
   currentSession,
+  reclaimEngine,
+  reclaimWorkspaceEngine,
   replicaStorage,
+  retireActiveWorkspaceEngine,
+  retireWorkspaceEngine,
   setWorkspaceEngine,
   clearSession,
+  discardWorkspaceEngine,
 } from "./session-replicas";
 import { currentProfile, clearLastWs } from "./auth-guard";
 import { queryClient } from "./query-client";
@@ -60,6 +65,12 @@ export function waitUntilReady(engine: SyncEngine, signal?: AbortSignal): Promis
   });
 }
 
+/** Keeps an engine while its workspace screen is mounted. Unmounting retires it. */
+export function attachWorkspaceEngine(engine: SyncEngine): () => void {
+  reclaimEngine(engine);
+  return () => retireWorkspaceEngine(engine);
+}
+
 let opening: Promise<unknown> = Promise.resolve();
 export function openWorkspaceEngine(
   workspaceId: string,
@@ -73,7 +84,12 @@ export function openWorkspaceEngine(
       await waitUntilReady(previous.engine, signal);
       return previous.engine;
     }
-    await closeWorkspaceEngine();
+    retireActiveWorkspaceEngine();
+    const returning = reclaimWorkspaceEngine(workspaceId, profile.session_id);
+    if (returning) {
+      await waitUntilReady(returning.engine, signal);
+      return returning.engine;
+    }
     if (signal?.aborted) throw new Error("Workspace navigation cancelled");
     const engine = createEngine({
       storage: replicaStorage(),
@@ -111,7 +127,7 @@ export function openWorkspaceEngine(
       await waitUntilReady(engine, signal);
       return engine;
     } catch (error) {
-      if (activeWorkspaceEngine()?.engine === engine) await closeWorkspaceEngine();
+      await discardWorkspaceEngine(engine);
       throw error;
     }
   });

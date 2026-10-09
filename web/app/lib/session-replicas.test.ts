@@ -13,7 +13,7 @@ import {
   replicaStorage,
   sessionHasPending,
 } from "./session-replicas";
-import { openWorkspaceEngine } from "./workspace-engine";
+import { attachWorkspaceEngine, openWorkspaceEngine } from "./workspace-engine";
 import { logoutSession } from "./session";
 import { runCommand, waitForUploadTarget } from "./workspace-commands";
 
@@ -177,6 +177,10 @@ describe("session replica lifetime", () => {
   });
 });
 
+async function settle() {
+  for (let step = 0; step < 50; step += 1)
+    await new Promise<void>((resolve) => setImmediate(resolve));
+}
 describe("workspace loader lifecycle", () => {
   it("opens a disk replica while its pull is delayed and reuses the current engine", async () => {
     const { server, owner, workspace } = await fixture();
@@ -199,6 +203,68 @@ describe("workspace loader lifecycle", () => {
     expect(activeWorkspaceEngine()?.engine).toBe(next);
     expect(next.store.get("workspace", other.id)?.id).toBe(other.id);
     await expect(previous.mutate("mark_all_notifications_read", {})).rejects.toThrow("closed");
+  });
+  it("leaving a workspace with an empty outbox closes its engine", async () => {
+    const { workspace } = await fixture();
+    const engine = await openWorkspaceEngine(workspace.id);
+    attachWorkspaceEngine(engine)();
+    await engine.retire();
+    expect(activeWorkspaceEngine()).toBeNull();
+    await expect(engine.mutate("mark_all_notifications_read", {})).rejects.toThrow("closed");
+  });
+  it("leaving with pending edits keeps sending them and closes only after the outbox is empty", async () => {
+    const { server, workspace, fetch } = await fixture();
+    const engine = await openWorkspaceEngine(workspace.id);
+    server.inject({ kind: "delay", route: "push", milliseconds: 60_000 });
+    await engine.mutate("update_issue", { id: id(2), patch: { title: "Sent after leaving" } });
+    await until(() => fetch.mock.calls.some(([url]) => String(url).includes("/push?")));
+    attachWorkspaceEngine(engine)();
+    let closed = false;
+    void engine.retire().then(() => {
+      closed = true;
+    });
+    await expect(engine.mutate("mark_all_notifications_read", {})).rejects.toThrow("retiring");
+    await settle();
+    expect(closed).toBe(false);
+    server.advance(60_000);
+    await until(() => closed);
+    expect(server.record("issues", id(2))?.title).toBe("Sent after leaving");
+    expect(activeWorkspaceEngine()).toBeNull();
+  });
+  it("returning to a leaving workspace before it closes reuses its engine", async () => {
+    const { server, workspace, fetch } = await fixture();
+    const engine = await openWorkspaceEngine(workspace.id);
+    server.inject({ kind: "delay", route: "push", milliseconds: 60_000 });
+    await engine.mutate("update_issue", { id: id(2), patch: { title: "Kept" } });
+    await until(() => fetch.mock.calls.some(([url]) => String(url).includes("/push?")));
+    attachWorkspaceEngine(engine)();
+    let closed = false;
+    void engine.retire().then(() => {
+      closed = true;
+    });
+    expect(await openWorkspaceEngine(workspace.id)).toBe(engine);
+    expect(activeWorkspaceEngine()?.engine).toBe(engine);
+    server.advance(60_000);
+    await until(() => engine.status.get().pending === 0);
+    await settle();
+    expect(closed).toBe(false);
+    await expect(engine.mutate("mark_all_notifications_read", {})).resolves.toBeDefined();
+  });
+  it("a leaving workspace stays open while offline and closes once it is back online and drained", async () => {
+    const { server, workspace } = await fixture();
+    const engine = await openWorkspaceEngine(workspace.id);
+    window.dispatchEvent(new Event("offline"));
+    await engine.mutate("update_issue", { id: id(2), patch: { title: "Offline edit" } });
+    attachWorkspaceEngine(engine)();
+    let closed = false;
+    void engine.retire().then(() => {
+      closed = true;
+    });
+    await settle();
+    expect(closed).toBe(false);
+    window.dispatchEvent(new Event("online"));
+    await until(() => closed);
+    expect(server.record("issues", id(2))?.title).toBe("Offline edit");
   });
   it("closing a workspace rejects uploads waiting for unconfirmed creates", async () => {
     const { workspace } = await fixture();

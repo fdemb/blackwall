@@ -5,7 +5,7 @@ import { CreateIssueDialog } from "~/components/app/create-issue";
 import { Dialog } from "~/components/ui/dialog";
 import { Kbd } from "~/components/ui/tooltip";
 import { ApiError } from "~/lib/api";
-import { openWorkspaceEngine } from "~/lib/workspace-engine";
+import { attachWorkspaceEngine, openWorkspaceEngine } from "~/lib/workspace-engine";
 import { AccessError, UnauthorizedError } from "~/sync/transport";
 import { clearLastWs, writeLastWs } from "~/lib/auth-guard";
 import { WorkspaceProvider, useWorkspace } from "~/lib/workspace";
@@ -47,6 +47,7 @@ export function shouldRevalidate({
 }
 
 export default function WorkspaceLayout({ loaderData }: Route.ComponentProps) {
+  useEffect(() => attachWorkspaceEngine(loaderData.engine), [loaderData.engine]);
   return (
     <WorkspaceProvider key={loaderData.id} engine={loaderData.engine}>
       <Workspace />

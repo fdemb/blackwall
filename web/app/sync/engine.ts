@@ -75,6 +75,9 @@ export class SyncEngine {
     }
   >();
   private readonly ackWaiters = new Set<() => void>();
+  private readonly changes = new Set<() => void>();
+  private retirement: Promise<void> | null = null;
+  private sealed = false;
   private readonly reported = new Set<number>();
   private readonly onlineJobs: OnlineJob[] = [];
   private readonly delay: ReturnType<typeof backoff>;
@@ -206,16 +209,53 @@ export class SyncEngine {
     this.stop();
     this.unsubscribeSignals?.();
     this.unsubscribeSignals = null;
+    this.notifyChange();
     await this.commits.drain();
     this.replica?.close();
     this.replica = null;
     this.rejectCallers(new Error("Engine is closed"));
   }
 
+  /**
+   * Refuses new mutations and closes once the outbox is empty. Network work keeps running until
+   * then. Offline, the engine stays open and idle until it drains or the page unloads.
+   */
+  retire(): Promise<void> {
+    this.sealed = true;
+    this.retirement ??= this.closeWhenDrained();
+    this.notifyChange();
+    return this.retirement;
+  }
+
+  /** Accepts mutations again after retire(), unless the engine has already closed. */
+  reclaim(): void {
+    this.sealed = false;
+    this.notifyChange();
+  }
+
+  private async closeWhenDrained(): Promise<void> {
+    // A reclaim in the same turn must win, so the first check waits a turn.
+    await Promise.resolve();
+    while (!this.closed) {
+      if (this.sealed && this.store.pending().length === 0) {
+        await this.close();
+        return;
+      }
+      await new Promise<void>((resolve) => this.changes.add(resolve));
+    }
+  }
+
+  private notifyChange(): void {
+    const waiting = [...this.changes];
+    this.changes.clear();
+    for (const wake of waiting) wake();
+  }
+
   async mutate(name: string, args: unknown): Promise<MutationReceipt> {
     await this.open();
     const lifecycle = this.lifecycle;
     return this.commits.run(async () => {
+      if (this.sealed) throw new Error("Engine is retiring");
       const replica = this.requireReplica();
       if (ONLINE_ONLY.some((command) => command === name))
         throw new MutationError(400, "Use runOnline for this command");
@@ -248,6 +288,7 @@ export class SyncEngine {
 
   async runOnline(name: string, args: unknown): Promise<MutationResult> {
     await this.open();
+    if (this.sealed) throw new Error("Engine is retiring");
     if (!this.snapshot.online)
       throw new MutationError(400, "This command requires an online connection");
     if (
@@ -544,6 +585,7 @@ export class SyncEngine {
       this.store.pending().filter((mutation) => mutation.id > this.acknowledged),
     );
     for (const wake of this.ackWaiters) wake();
+    this.notifyChange();
   }
 
   private pushCandidates(): Mutation[] {
