@@ -569,6 +569,11 @@ export class SyncEngine {
       controller.signal,
     );
     const records = response.records.map((record) => this.prepareRecord(scope.entity, record));
+    for (const record of records) {
+      const receivedScope = recordScope(scope.entity, record);
+      if (receivedScope === null || scopeKey(receivedScope) !== scopeKey(scope))
+        throw new ProtocolError("Record does not belong to requested scope", 200);
+    }
     await this.commits.run(async () => {
       this.check(controller);
       await this.requireReplica().writeScope({ scope, records });

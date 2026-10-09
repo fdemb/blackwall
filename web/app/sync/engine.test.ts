@@ -1226,6 +1226,42 @@ describe("cookie sessions and pending callers", () => {
 
 describe("record preparation", () => {
   it.each(["memory", "indexeddb"])(
+    "rejects records outside the requested scope before writing %s state",
+    async (backend) => {
+      const f = fixture(
+        backend === "memory"
+          ? new MemoryReplicaStorage()
+          : new IndexedDBReplicaStorage({ indexedDB: new IDBFactory() }),
+      );
+      await f.ready();
+      const before = await f.disk();
+      const valid = f.server.records("activity").find((row) => row.entity_id === ISSUE);
+      if (!valid) throw new Error("missing activity fixture");
+      f.transport.scope = async () => ({
+        records: [valid, { id: id(87), created_at: "bad timestamp" }],
+      });
+      const release = f.engine.useScope({ entity: "activity", entityId: ISSUE });
+      await until(() => f.engine.status.get().lastError instanceof ProtocolError);
+      expect(await f.disk()).toEqual(before);
+      expect(f.engine.store.all("activity")).toEqual([]);
+      release();
+    },
+  );
+
+  it("rejects a well-formed record belonging to a different scope", async () => {
+    const f = fixture();
+    await f.ready();
+    const foreign = f.server.records("activity").find((row) => row.entity_id === OTHER_ISSUE);
+    if (!foreign) throw new Error("missing foreign activity");
+    f.transport.scope = async () => ({ records: [foreign] });
+    const release = f.engine.useScope({ entity: "activity", entityId: ISSUE });
+    await until(() => f.engine.status.get().lastError instanceof ProtocolError);
+    expect((await f.disk()).scopes).toEqual([]);
+    expect(f.engine.store.all("activity")).toEqual([]);
+    release();
+  });
+
+  it.each(["memory", "indexeddb"])(
     "rejects a malformed bootstrap before replacing or acknowledging %s state",
     async (backend) => {
       const f = fixture(
