@@ -11,9 +11,10 @@ interface WorkspaceEngine {
 
 let storage: IndexedDBReplicaStorage | undefined;
 let session: SessionProfile | null = null;
-let active: WorkspaceEngine | null = null;
-// Workspaces the user has left. Each keeps sending its outbox until it is empty, then closes.
-const leaving = new Map<string, WorkspaceEngine>();
+// Engines that take edits, one per workspace. Opening another workspace leaves these open.
+const active = new Map<string, WorkspaceEngine>();
+// Engines whose screen unmounted. Each keeps sending its outbox until it is empty, then closes.
+const leaving = new Set<WorkspaceEngine>();
 
 export function replicaStorage() {
   storage ??= new IndexedDBReplicaStorage();
@@ -28,48 +29,46 @@ export async function acceptSession(profile: SessionProfile) {
   session = profile;
   return profile;
 }
-export function activeWorkspaceEngine() {
-  return active;
+export function activeWorkspaceEngine(workspaceId: string) {
+  return active.get(workspaceId) ?? null;
 }
 export function setWorkspaceEngine(next: WorkspaceEngine) {
-  active = next;
+  active.set(next.workspaceId, next);
 }
-/**
- * Stops an engine from taking edits; it closes after its outbox is sent. Defaults to the active one.
- */
-export function retireWorkspaceEngine(engine?: SyncEngine) {
-  const previous = active;
-  if (!previous || (engine !== undefined && previous.engine !== engine)) return;
-  active = null;
-  leaving.set(previous.workspaceId, previous);
-  void previous.engine.retire().then(() => {
-    if (leaving.get(previous.workspaceId)?.engine === previous.engine)
-      leaving.delete(previous.workspaceId);
-  });
+function activeEntry(engine: SyncEngine) {
+  return [...active.values()].find((entry) => entry.engine === engine);
 }
-/** Makes a retiring engine active again, retiring the active one first. */
+/** Stops an engine from taking edits; it closes after its outbox is sent. */
+export function retireWorkspaceEngine(engine: SyncEngine) {
+  const entry = activeEntry(engine);
+  if (!entry) return;
+  active.delete(entry.workspaceId);
+  leaving.add(entry);
+  void entry.engine.retire().then(() => leaving.delete(entry));
+}
+/** Makes a retiring engine active again. */
 export function reclaimWorkspaceEngine(
   match: (entry: WorkspaceEngine) => boolean,
 ): WorkspaceEngine | null {
-  const entry = [...leaving.values()].find(match);
+  const entry = [...leaving].find(match);
   if (!entry) return null;
-  retireWorkspaceEngine();
-  leaving.delete(entry.workspaceId);
+  leaving.delete(entry);
+  active.set(entry.workspaceId, entry);
   entry.engine.reclaim();
-  active = entry;
   return entry;
 }
 /** Closes one engine now. A failed open must not be reclaimed, so its retry starts fresh. */
 export async function discardWorkspaceEngine(engine: SyncEngine) {
-  if (active?.engine === engine) active = null;
+  const entry = activeEntry(engine);
+  if (entry) active.delete(entry.workspaceId);
   await engine.close();
 }
 export async function sessionHasPending(): Promise<boolean> {
   const sessionId = session?.session_id;
   if (!sessionId) return false;
-  if (active?.engine.store.pending().length) return true;
+  for (const entry of active.values()) if (entry.engine.store.pending().length) return true;
   for (const identity of await replicaStorage().list()) {
-    if (identity.sessionId !== sessionId || identity.workspaceId === active?.workspaceId) continue;
+    if (identity.sessionId !== sessionId || active.has(identity.workspaceId)) continue;
     const replica = await replicaStorage().open({ ...identity, schema: SCHEMA });
     try {
       if ((await replica.load()).outbox.length) return true;
@@ -84,14 +83,10 @@ export async function sessionHasPending(): Promise<boolean> {
  * sent the next time their replica opens.
  */
 export async function closeAllWorkspaceEngines() {
-  const engines = [active, ...leaving.values()];
-  active = null;
+  const engines = [...active.values(), ...leaving];
+  active.clear();
   leaving.clear();
-  await Promise.all(
-    engines.map(async (entry) => {
-      await entry?.engine.close();
-    }),
-  );
+  await Promise.all(engines.map((entry) => entry.engine.close()));
 }
 export async function clearSession() {
   const sessionId = session?.session_id;

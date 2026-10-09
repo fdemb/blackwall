@@ -63,7 +63,10 @@ export function waitUntilReady(engine: SyncEngine, signal?: AbortSignal): Promis
   });
 }
 
-/** Keeps an engine while its workspace screen is mounted. Unmounting retires it. */
+/**
+ * Keeps an engine while its workspace screen is mounted. Unmounting retires it. Opening another
+ * workspace does not, so an aborted navigation leaves this engine working.
+ */
 export function attachWorkspaceEngine(engine: SyncEngine): () => void {
   reclaimWorkspaceEngine((entry) => entry.engine === engine);
   return () => retireWorkspaceEngine(engine);
@@ -77,12 +80,12 @@ export function openWorkspaceEngine(
   const next = opening.then(async () => {
     const profile = currentSession() ?? (await currentProfile());
     if (!profile) throw new UnauthorizedError("Session expired", 401);
-    const previous = activeWorkspaceEngine();
-    if (previous?.workspaceId === workspaceId && previous.sessionId === profile.session_id) {
+    const previous = activeWorkspaceEngine(workspaceId);
+    if (previous?.sessionId === profile.session_id) {
       await waitUntilReady(previous.engine, signal);
       return previous.engine;
     }
-    retireWorkspaceEngine();
+    if (previous) retireWorkspaceEngine(previous.engine);
     const returning = reclaimWorkspaceEngine(
       (entry) => entry.workspaceId === workspaceId && entry.sessionId === profile.session_id,
     );
