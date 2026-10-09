@@ -663,7 +663,6 @@ async fn events_keepalive_comments() {
 
 #[tokio::test]
 async fn events_failed_reconnect_recovers_with_wildcard() {
-    use std::str::FromStr;
     let database = support::TestDatabase::new().await;
     let store = Store::connect_with_config(
         &database.url,
@@ -676,30 +675,11 @@ async fn events_failed_reconnect_recovers_with_wildcard() {
     )
     .await
     .unwrap();
-    // A dedicated role used only by the listener, so blocking its reconnects
-    // never affects the request pool or other tests sharing the cluster role.
-    let role = format!("bw_evt_{}", Uuid::new_v4().simple());
-    let password = "test-listener-pw-123";
-    sqlx::query(&format!(
-        "CREATE ROLE \"{role}\" WITH LOGIN PASSWORD '{password}'"
-    ))
-    .execute(&store.pool)
-    .await
-    .unwrap();
-    let options = sqlx::postgres::PgConnectOptions::from_str(&database.url).unwrap();
-    sqlx::query(&format!(
-        "GRANT CONNECT ON DATABASE \"{}\" TO \"{role}\"",
-        options.get_database().unwrap()
-    ))
-    .execute(&store.pool)
-    .await
-    .unwrap();
-    let listener_url = format!(
-        "postgres://{role}:{password}@{}:{}/{}",
-        options.get_host(),
-        options.get_port(),
-        options.get_database().unwrap()
-    );
+    // The listener connects through a loopback proxy so blocked reconnects
+    // never affect the request pool or other tests sharing the cluster.
+    let (target_host, target_port) = support::proxy::target_from_url(&database.url);
+    let proxy = support::proxy::TestProxy::new(target_host, target_port).await;
+    let listener_url = support::proxy::proxy_url(&database.url, proxy.port);
     let listener = store.spawn_sync_events_with_url(&listener_url);
     wait_for_listener(&store).await;
 
@@ -729,24 +709,10 @@ async fn events_failed_reconnect_recovers_with_wildcard() {
     drain_poke(&mut body_a).await;
     drain_poke(&mut body_b).await;
 
-    // Block reconnects first, then kill the listener: every reconnect attempt
-    // fails until the role is allowed back in.
-    sqlx::query(&format!("ALTER ROLE \"{role}\" NOLOGIN"))
-        .execute(&store.pool)
-        .await
-        .unwrap();
-    let pid: i32 = sqlx::query_scalar(
-        "SELECT pid FROM pg_stat_activity WHERE datname = current_database() \
-         AND query LIKE 'LISTEN%'",
-    )
-    .fetch_one(&store.pool)
-    .await
-    .unwrap();
-    sqlx::query("SELECT pg_terminate_backend($1)")
-        .bind(pid)
-        .execute(&store.pool)
-        .await
-        .unwrap();
+    // Refuse reconnects first, then cut the listener: every reconnect attempt
+    // fails until forwarding resumes.
+    proxy.refuse_new();
+    proxy.disconnect_all();
     tokio::time::sleep(Duration::from_millis(300)).await;
 
     // A change committed while reconnects fail is lost to the listener.
@@ -757,10 +723,7 @@ async fn events_failed_reconnect_recovers_with_wildcard() {
         .await
         .unwrap();
 
-    sqlx::query(&format!("ALTER ROLE \"{role}\" LOGIN"))
-        .execute(&store.pool)
-        .await
-        .unwrap();
+    proxy.forward();
 
     // Recovery broadcasts the wildcard, so every subscriber pokes.
     expect_poke(&mut body_a, Duration::from_secs(10)).await;
@@ -779,17 +742,6 @@ async fn events_failed_reconnect_recovers_with_wildcard() {
 
     drop(app);
     listener.abort();
-    sqlx::query(&format!(
-        "REVOKE CONNECT ON DATABASE \"{}\" FROM \"{role}\"",
-        options.get_database().unwrap()
-    ))
-    .execute(&store.pool)
-    .await
-    .unwrap();
-    sqlx::query(&format!("DROP ROLE IF EXISTS \"{role}\""))
-        .execute(&store.pool)
-        .await
-        .unwrap();
     store.pool.close().await;
     database.cleanup().await;
 }
@@ -808,12 +760,19 @@ async fn events_initial_listen_pokes_subscriber() {
     )
     .await
     .unwrap();
+    // Start the proxy refusing so the first connects fail: the startup gap is
+    // deterministic and needs no role changes.
+    let (target_host, target_port) = support::proxy::target_from_url(&database.url);
+    let proxy = support::proxy::TestProxy::new(target_host, target_port).await;
+    proxy.refuse_new();
+    let listener_url = support::proxy::proxy_url(&database.url, proxy.port);
+    let listener = store.spawn_sync_events_with_url(&listener_url);
+
     let app = router(store.clone());
     let owner = account(&store, "owner").await;
     let (ws, team) = setup(&app, &owner).await;
     let client = Uuid::new_v4();
 
-    // Subscribe before the listener has finished its first LISTEN.
     let mut body = sse_response(
         &app,
         Some(&owner.token),
@@ -824,7 +783,8 @@ async fn events_initial_listen_pokes_subscriber() {
     .into_body();
     drain_poke(&mut body).await;
 
-    // A change committed before LISTEN has no listener to receive it.
+    // A change committed while the listener cannot connect has no listener
+    // to receive it.
     sqlx::query("SELECT mark_change($1, 'issues', $2)")
         .bind(ws)
         .bind(Uuid::new_v4())
@@ -833,7 +793,7 @@ async fn events_initial_listen_pokes_subscriber() {
         .unwrap();
 
     // The first successful LISTEN broadcasts the wildcard that covers it.
-    let listener = store.spawn_sync_events();
+    proxy.forward();
     wait_for_listener(&store).await;
     expect_poke(&mut body, Duration::from_secs(10)).await;
 
@@ -1000,5 +960,138 @@ async fn events_dropped_body_releases_receiver() {
 
     drop(app);
     store.pool.close().await;
+    database.cleanup().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn events_trailing_poke_beats_other_workspace_flood() {
+    let coalesce = Duration::from_millis(500);
+    let database = support::TestDatabase::new().await;
+    let store = connect_store(
+        &database.url,
+        events_config(
+            coalesce,
+            Duration::from_secs(60),
+            Duration::from_secs(30 * 60),
+            Duration::from_secs(1),
+        ),
+    )
+    .await;
+    let app = router(store.clone());
+    let owner = account(&store, "owner").await;
+    let (ws, _) = setup(&app, &owner).await;
+    let client = Uuid::new_v4();
+
+    let mut body = sse_response(
+        &app,
+        Some(&owner.token),
+        ws,
+        &format!("?client_id={client}"),
+    )
+    .await
+    .into_body();
+    drain_poke(&mut body).await;
+
+    // Arm a trailing poke: this lands inside the coalesce window, so the
+    // stream defers it to the window's end instead of sending immediately.
+    store.sync_broadcast_poke(ws);
+    let start = std::time::Instant::now();
+
+    // Flood with notifications for other workspaces while the trailing poke
+    // is pending. The timer branch runs before broadcast reception, so the
+    // overdue poke fires on time instead of waiting out the flood. One fixed
+    // id keeps the producer faster than the consumer without RNG overhead.
+    let other = Uuid::new_v4();
+    let flooder_store = store.clone();
+    let flooder = tokio::spawn(async move {
+        let mut n: u64 = 0;
+        loop {
+            // Never matches the stream's workspace or the wildcard.
+            flooder_store.sync_broadcast_poke(other);
+            n += 1;
+            if n.is_multiple_of(1024) {
+                tokio::task::yield_now().await;
+            }
+        }
+    });
+
+    let bytes = next_data(&mut body, coalesce + Duration::from_millis(500))
+        .await
+        .expect("trailing poke starved by other workspaces' notifications");
+    flooder.abort();
+    assert!(
+        is_poke(&bytes),
+        "expected poke, got {:?}",
+        String::from_utf8_lossy(&bytes)
+    );
+    assert!(
+        start.elapsed() <= coalesce + Duration::from_millis(500),
+        "trailing poke arrived late: {:?}",
+        start.elapsed()
+    );
+
+    drop(app);
+    store.pool.close().await;
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn events_pool_close_ends_listener() {
+    let database = support::TestDatabase::new().await;
+    let store = Store::connect_with_config(
+        &database.url,
+        events_config(
+            Duration::from_millis(250),
+            Duration::from_secs(60),
+            Duration::from_secs(30 * 60),
+            Duration::from_millis(50),
+        ),
+    )
+    .await
+    .unwrap();
+    let listener = store.spawn_sync_events();
+    wait_for_listener(&store).await;
+
+    // A separate connection observes the listener backend: the request pool
+    // itself cannot be used after it closes.
+    let observer = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .connect(&database.url)
+        .await
+        .unwrap();
+    let pid: i32 = sqlx::query_scalar(
+        "SELECT pid FROM pg_stat_activity WHERE datname = current_database() \
+         AND query LIKE 'LISTEN%'",
+    )
+    .fetch_one(&observer)
+    .await
+    .unwrap();
+
+    // Closing the request pool interrupts the idle receive wait and ends the
+    // listener task instead of leaving it parked on its backend.
+    store.pool.close().await;
+    tokio::time::timeout(Duration::from_secs(5), listener)
+        .await
+        .expect("listener task did not end after pool close")
+        .unwrap();
+
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let alive: bool =
+                sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE pid = $1)")
+                    .bind(pid)
+                    .fetch_one(&observer)
+                    .await
+                    .unwrap();
+            if !alive {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("listener backend still in pg_stat_activity after pool close");
+
+    observer.close().await;
     database.cleanup().await;
 }

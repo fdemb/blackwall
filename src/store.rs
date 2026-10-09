@@ -287,6 +287,12 @@ impl Store {
         self.sync_broadcast.receiver_count()
     }
 
+    /// Broadcasts a workspace poke to live `/sync/events` streams. Tests use
+    /// it to flood subscribers without touching the database.
+    pub fn sync_broadcast_poke(&self, workspace: Uuid) {
+        let _ = self.sync_broadcast.send(workspace);
+    }
+
     /// Starts the workspace-change listener that fans `blackwall_changes`
     /// notifications out to `/sync/events` streams. Call once when the HTTP
     /// server starts; the worker never calls it.
@@ -295,8 +301,8 @@ impl Store {
     }
 
     /// Starts the listener with an explicit database URL for the dedicated
-    /// connection. Production passes the pool's URL; tests point it at a
-    /// dedicated role to block reconnects without affecting the pool.
+    /// connection. Production passes the pool's URL; tests point it at a TCP
+    /// proxy to fail connects without touching database roles.
     pub fn spawn_sync_events_with_url(&self, database_url: &str) -> tokio::task::JoinHandle<()> {
         crate::sync_events::spawn_listener(
             self.pool.clone(),

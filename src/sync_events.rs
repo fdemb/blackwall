@@ -76,10 +76,15 @@ async fn run(
     };
     let mut backoff = initial;
     loop {
-        if pool.is_closed() {
-            return;
-        }
-        match connect(database_url).await {
+        // Race connection establishment against the request pool's close
+        // signal: `connect` opens its own dedicated connection and would
+        // otherwise wait out network stalls past pool shutdown.
+        let connected = tokio::select! {
+            biased;
+            _ = pool.close_event() => return,
+            result = connect(database_url) => result,
+        };
+        match connected {
             Ok(mut listener) => {
                 tracing::info!("sync events listener connected");
                 // After every successful LISTEN, including the first:
@@ -87,10 +92,16 @@ async fn run(
                 let _ = sender.send(Uuid::nil());
                 backoff = initial;
                 loop {
-                    if pool.is_closed() {
-                        return;
-                    }
-                    match listener.try_recv().await {
+                    // Race reception against the request pool's close signal:
+                    // `try_recv` waits on the socket and would otherwise hold
+                    // the backend past pool shutdown. On closure the listener
+                    // is dropped with the task, releasing its backend.
+                    let received = tokio::select! {
+                        biased;
+                        _ = pool.close_event() => return,
+                        result = listener.try_recv() => result,
+                    };
+                    match received {
                         Ok(Some(notification)) => match notification.payload().parse::<Uuid>() {
                             Ok(workspace) => {
                                 let _ = sender.send(workspace);

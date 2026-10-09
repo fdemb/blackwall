@@ -1,3 +1,5 @@
+pub mod proxy;
+
 use sqlx::{ConnectOptions, Connection, PgConnection, postgres::PgConnectOptions};
 use std::str::FromStr;
 use uuid::Uuid;

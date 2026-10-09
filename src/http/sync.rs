@@ -194,6 +194,20 @@ pub(super) async fn events(
                 biased;
                 _ = tokio::time::sleep_until(deadline) => break,
                 _ = sender.closed() => break,
+                _ = tokio::time::sleep_until(window_end), if pending => {
+                    match sender.try_send(Ok(poke_event())) {
+                        Ok(()) => {
+                            last_send = tokio::time::Instant::now();
+                            pending = false;
+                        }
+                        Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                            // The queued poke covers the burst; start fresh.
+                            last_send = tokio::time::Instant::now();
+                            pending = false;
+                        }
+                        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => break,
+                    }
+                },
                 received = subscriber.recv() => {
                     let poke = match received {
                         Ok(changed) => changed == workspace || changed.is_nil(),
@@ -217,20 +231,6 @@ pub(super) async fn events(
                         }
                     } else {
                         pending = true;
-                    }
-                },
-                _ = tokio::time::sleep_until(window_end), if pending => {
-                    match sender.try_send(Ok(poke_event())) {
-                        Ok(()) => {
-                            last_send = tokio::time::Instant::now();
-                            pending = false;
-                        }
-                        Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-                            // The queued poke covers the burst; start fresh.
-                            last_send = tokio::time::Instant::now();
-                            pending = false;
-                        }
-                        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => break,
                     }
                 },
             }
