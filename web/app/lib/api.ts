@@ -1,21 +1,12 @@
 import { safeGet, safeSet } from "./storage";
 import type {
   ImportSummary,
-  Issue,
-  IssueFilter,
-  MemberProfile,
   Profile,
   Report,
   WorkspaceSummary,
   CommandResult,
   EntityVersions,
-  PageResult,
 } from "./types";
-
-export interface SearchResult {
-  issues: Issue[];
-  people: MemberProfile[];
-}
 
 export class ApiError extends Error {
   constructor(
@@ -101,13 +92,6 @@ export const workspaces = {
       method: "POST",
       body: { name, idempotency_key },
     }),
-  get: (id: string) => api<{ workspace: WorkspaceSummary }>(`/api/workspaces/${id}`),
-  issues: (id: string, filter: IssueFilter = {}, offset = 0, limit = 100) =>
-    api<PageResult<Issue>>(
-      `/api/workspaces/${id}/issues?${filterQuery(filter)}&limit=${limit}&offset=${offset}`,
-    ),
-  search: (id: string, q: string) =>
-    api<SearchResult>(`/api/workspaces/${id}/search?q=${encodeURIComponent(q)}`),
   report: (id: string) => api<Report>(`/api/workspaces/${id}/report`),
   accept: (id: string, token: string) =>
     api<{ workspace: WorkspaceSummary }>(`/api/workspaces/${id}/invitations/accept`, {
@@ -148,30 +132,8 @@ export const workspaces = {
   },
 };
 
-export async function collectPages<T>(
-  read: (offset: number) => Promise<PageResult<T>>,
-): Promise<T[]> {
-  const items: T[] = [];
-  let offset = 0;
-  while (true) {
-    const page = await read(offset);
-    items.push(...page.items);
-    if (!page.has_more) return items;
-    if (page.next_offset === null || page.next_offset <= offset)
-      throw new Error("Invalid pagination offset");
-    offset = page.next_offset;
-  }
-}
-
 export function markdown(text: string) {
   return api<{ html: string }>("/api/markdown", { method: "POST", body: { text } }).then(
     (r) => r.html,
   );
-}
-
-export function filterQuery(filter: IssueFilter) {
-  const params = new URLSearchParams();
-  for (const [k, v] of Object.entries(filter))
-    if (v !== undefined && v !== "" && v !== false) params.set(k, String(v));
-  return params.toString();
 }

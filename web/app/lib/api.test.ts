@@ -1,8 +1,6 @@
 import { createServer, type Server } from "node:http";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vite-plus/test";
-import { collectPages, workspaces } from "./api";
 import { openproject, openprojectQuery } from "./openproject";
-import type { Issue, PageResult } from "./types";
 
 interface ReceivedRequest {
   url: URL;
@@ -112,84 +110,5 @@ describe("OpenProject connection API", () => {
     await expect(openproject.sync("workspace-a", "connection-a")).rejects.toThrow(
       "Queue unavailable",
     );
-  });
-});
-
-const page = <T>(items: T[], next: number | null = null): PageResult<T> => ({
-  items,
-  has_more: next !== null,
-  next_offset: next,
-});
-const issue: Issue = {
-  id: "issue-a",
-  version: 4,
-  blocked_count: 1,
-  subtask_total: 2,
-  subtask_completed: 1,
-  number: 1,
-  title: "Planning",
-  description: "",
-  team_id: "team-a",
-  stage_id: "stage-a",
-  assignee: null,
-  created_by: null,
-  priority: "normal",
-  labels: [],
-  estimate: null,
-  deadline: null,
-  project_id: null,
-  milestone_id: null,
-  sprint_id: null,
-  parent_id: null,
-  dependencies: [],
-  position: 1,
-  followers: [],
-  attachments: [],
-  source_links: [],
-  deleted_at: null,
-  archived_at: null,
-  done_at: null,
-  created_at: "2026-10-04T00:00:00Z",
-  updated_at: "2026-10-04T00:00:00Z",
-};
-
-describe("HTTP client", () => {
-  it("encodes targeted issue filters and follows the server's pagination offsets", async () => {
-    respond = ({ url }) => ({
-      body:
-        url.searchParams.get("offset") === "0"
-          ? page([issue], 100)
-          : page([{ ...issue, id: "issue-b", version: 2 }]),
-    });
-    const issues = await collectPages((offset) =>
-      workspaces.issues(
-        "workspace-a",
-        {
-          trash: true,
-          archived: true,
-          ids: "issue-a,issue-b",
-          parent_id: "parent-a",
-          dependency_id: "dependency-a",
-          no_sprint: true,
-          open: true,
-          search: "żółć & planning",
-        },
-        offset,
-      ),
-    );
-    expect(issues.map((issue) => issue.id)).toEqual(["issue-a", "issue-b"]);
-    expect(requests.map(({ url }) => url.searchParams.get("offset"))).toEqual(["0", "100"]);
-    expect(requests[0]!.url.searchParams.get("search")).toBe("żółć & planning");
-    for (const field of ["trash", "archived", "no_sprint", "open"])
-      expect(requests[0]!.url.searchParams.get(field)).toBe("true");
-    expect(requests[0]!.url.searchParams.get("ids")).toBe("issue-a,issue-b");
-  });
-
-  it("rejects a non-advancing page cursor instead of issuing an infinite request loop", async () => {
-    respond = () => ({ body: page([issue], 0) });
-    await expect(
-      collectPages((offset) => workspaces.issues("workspace-a", {}, offset)),
-    ).rejects.toThrow("Invalid pagination offset");
-    expect(requests).toHaveLength(1);
   });
 });

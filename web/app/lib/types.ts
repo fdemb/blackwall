@@ -444,11 +444,6 @@ export type Command =
   | { type: "import_issues"; issues: IssueInput[] };
 
 export type EntityVersions = Record<Id, number>;
-export interface PageResult<T> {
-  items: T[];
-  has_more: boolean;
-  next_offset: number | null;
-}
 export interface CommandResult {
   result: { id: Id | null };
   versions: EntityVersions;
