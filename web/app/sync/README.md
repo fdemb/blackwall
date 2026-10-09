@@ -15,6 +15,8 @@ Replica: base (server state) plus an overlay of replayed outbox mutations. The s
 - `persistence/memory.ts`: `MemoryReplicaStorage`, retaining replicas across opens for tests and the fake server.
 - `persistence/idb.ts`: `IndexedDBReplicaStorage`, using raw IndexedDB with one `blackwall:{sessionId}:{workspaceId}` database per replica.
 - `persistence/persistence.test.ts`: shared contracts for both backends and IndexedDB lifecycle checks.
+- `transport.ts`: injected-fetch HTTP transport, response validation, streaming bootstrap and SSE pokes, shared-session CSRF updates, and typed errors. Each method makes one request; no retries or replica writes.
+- `transport.test.ts`: transport contracts against the fake server and byte-level stream and malformed-response cases.
 - `testing/fake-server.ts`: fetch-compatible protocol server, workspace state, authentication, control API, transaction log, and one-shot faults.
 - `testing/tables.ts`: workspace tables and a scanning `Tx`, forked for each command and committed only on success.
 - `testing/effects.ts`: `applyServerOnlyEffects`, correcting client predictions with server ids, numbers, versions, timestamps, positions, notifications, and activity.
@@ -26,7 +28,7 @@ Replica: base (server state) plus an overlay of replayed outbox mutations. The s
 
 ## Later tasks
 
-- 2e transport and orchestration: pull/push/scope calls through `applyBase`/`batch`/`setPending`.
+- 2e orchestration: pull/push/scope calls through `applyBase`/`batch`/`setPending`.
 - 2f convergence tests: random traffic across engines must equal server state.
 - React bindings: `useSyncExternalStore` over `subscribe`/`version`/`get`, status over `pendingVersion`.
 
