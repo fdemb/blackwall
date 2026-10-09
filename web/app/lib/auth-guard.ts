@@ -5,10 +5,24 @@ import { acceptSession, clearSession } from "./session-replicas";
 import type { SessionProfile } from "../sync/transport";
 import type { WorkspaceSummary } from "./types";
 
-export async function currentProfile(): Promise<SessionProfile | null> {
+let meRequests = 0;
+let newestMe: Promise<SessionProfile | null> = Promise.resolve(null);
+
+export function currentProfile(): Promise<SessionProfile | null> {
+  const sequence = (meRequests += 1);
+  newestMe = readProfile(sequence);
+  return newestMe;
+}
+
+// Only the newest /api/me may change the session. An older reply that lands last answers with
+// the newest one, so it can't delete the replicas of the session the newest reply started.
+async function readProfile(sequence: number): Promise<SessionProfile | null> {
   try {
-    return await acceptSession(await auth.me());
+    const profile = await auth.me();
+    if (sequence !== meRequests) return newestMe;
+    return await acceptSession(profile);
   } catch (e) {
+    if (sequence !== meRequests) return newestMe;
     if (e instanceof ApiError && e.status === 401) {
       await clearSession();
       return null;

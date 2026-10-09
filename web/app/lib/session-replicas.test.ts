@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test"
 import { SCHEMA } from "../sync/engine";
 import { createFakeServer } from "../sync/testing/fake-server";
 import { currentProfile } from "./auth-guard";
-import { setCsrf } from "./api";
+import { auth, setCsrf } from "./api";
 import {
   activeWorkspaceEngine,
   acceptSession,
@@ -79,6 +79,7 @@ beforeEach(() => {
   });
 });
 afterEach(async () => {
+  vi.restoreAllMocks();
   await clearSession();
   await replicaStorage().deleteAllExcept(null);
   for (const server of servers.splice(0)) server.close();
@@ -95,6 +96,36 @@ describe("session replica lifetime", () => {
       { sessionId: profile.session_id, workspaceId: id(92) },
     ]);
     expect(currentSession()?.session_id).toBe(profile.session_id);
+  });
+  it("an older /api/me reply that lands last neither changes the session nor deletes the newer replica", async () => {
+    const { profile } = await fixture();
+    let resolveOlder: (value: typeof profile) => void = () => {};
+    let resolveNewer: (value: typeof profile) => void = () => {};
+    vi.spyOn(auth, "me")
+      .mockImplementationOnce(() => new Promise((resolve) => (resolveOlder = resolve)))
+      .mockImplementationOnce(() => new Promise((resolve) => (resolveNewer = resolve)));
+    const older = currentProfile();
+    const newer = currentProfile();
+    const newerProfile = { ...profile, session_id: id(99) };
+    resolveNewer(newerProfile);
+    await expect(newer).resolves.toEqual(newerProfile);
+    const replica = await replicaStorage().open({
+      sessionId: newerProfile.session_id,
+      workspaceId: id(90),
+      schema: SCHEMA,
+    });
+    await replica.appendMutation(() => ({
+      name: "mark_all_notifications_read",
+      args: {},
+      at: "2026-10-09T12:00:00Z",
+    }));
+    replica.close();
+    resolveOlder(profile);
+    await expect(older).resolves.toEqual(newerProfile);
+    expect(currentSession()?.session_id).toBe(newerProfile.session_id);
+    expect(await replicaStorage().list()).toEqual([
+      { sessionId: newerProfile.session_id, workspaceId: id(90) },
+    ]);
   });
   it("detects pending edits in an unopened workspace and deletes replicas before the logout request", async () => {
     const { profile, fetch } = await fixture();
