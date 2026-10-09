@@ -223,6 +223,7 @@ impl Workspace {
 
     fn validate_issue(&self, issue: &Issue) -> Result<()> {
         text(&issue.title, 500)?;
+        optional_timestamp(issue.deadline)?;
         if issue.description.len() > 100_000 {
             return Err(Error::BadRequest("description too long".into()));
         }
@@ -622,6 +623,7 @@ impl Workspace {
 
         for milestone in &self.milestones {
             text(&milestone.name, 200)?;
+            optional_timestamp(milestone.deadline)?;
             if !self.projects.iter().any(|p| p.id == milestone.project_id) {
                 return Err(Error::BadRequest("unknown milestone project".into()));
             }
@@ -630,6 +632,8 @@ impl Workspace {
         for sprint in &self.sprints {
             self.team(sprint.team_id)?;
             text(&sprint.name, 200)?;
+            timestamp(sprint.starts_at)?;
+            timestamp(sprint.ends_at)?;
             if sprint.ends_at <= sprint.starts_at || sprint.goal.len() > 100000 {
                 return Err(Error::BadRequest("invalid sprint".into()));
             }
@@ -645,6 +649,11 @@ impl Workspace {
 
         for issue in &self.issues {
             check.validate_issue(issue)?;
+            optional_timestamp(issue.deleted_at)?;
+            optional_timestamp(issue.archived_at)?;
+            optional_timestamp(issue.done_at)?;
+            timestamp(issue.created_at)?;
+            timestamp(issue.updated_at)?;
             if issue.archived_at.is_some() && !check.archivable_done(issue) {
                 return Err(Error::BadRequest(
                     "only issues in a Done stage can be archived".into(),
@@ -663,6 +672,8 @@ impl Workspace {
 
         for comment in &self.comments {
             text(&comment.body, 100000)?;
+            timestamp(comment.created_at)?;
+            optional_timestamp(comment.edited_at)?;
             if !self.issues.iter().any(|i| i.id == comment.issue_id) {
                 return Err(Error::BadRequest("unknown comment issue".into()));
             }
@@ -670,9 +681,14 @@ impl Workspace {
 
         for entry in &self.time_entries {
             Self::validate_time(entry.minutes, &entry.note)?;
+            timestamp(entry.logged_at)?;
             if !self.issues.iter().any(|i| i.id == entry.issue_id) {
                 return Err(Error::BadRequest("unknown time entry issue".into()));
             }
+        }
+
+        for event in &self.activity {
+            timestamp(event.at)?;
         }
 
         for view in &self.views {
@@ -1002,6 +1018,7 @@ impl Workspace {
                 deadline,
             } => {
                 text(&name, 200)?;
+                optional_timestamp(deadline)?;
                 if !self.projects.iter().any(|p| p.id == project_id) {
                     return Err(Error::NotFound);
                 }
@@ -1019,6 +1036,7 @@ impl Workspace {
 
             Command::UpdateMilestone { id, name, deadline } => {
                 text(&name, 200)?;
+                optional_timestamp(deadline)?;
 
                 let m = self
                     .milestones
@@ -1040,6 +1058,8 @@ impl Workspace {
             } => {
                 self.team(team_id)?;
                 text(&name, 200)?;
+                timestamp(starts_at)?;
+                timestamp(ends_at)?;
                 if ends_at <= starts_at {
                     return Err(Error::BadRequest("sprint end must follow start".into()));
                 }
@@ -1068,6 +1088,8 @@ impl Workspace {
                 state,
             } => {
                 text(&name, 200)?;
+                timestamp(starts_at)?;
+                timestamp(ends_at)?;
                 if ends_at <= starts_at
                     || matches!(state, SprintState::Completed | SprintState::Archived)
                 {
@@ -1455,6 +1477,7 @@ impl Workspace {
             } => {
                 self.issue(issue_id)?;
                 Self::validate_time(minutes, &note)?;
+                timestamp(logged_at)?;
 
                 let id = self.take_client_id(id)?;
                 self.time_entries.push(TimeEntry {
@@ -1476,6 +1499,7 @@ impl Workspace {
                 logged_at,
             } => {
                 Self::validate_time(minutes, &note)?;
+                timestamp(logged_at)?;
 
                 let e = self
                     .time_entries
@@ -1514,6 +1538,7 @@ impl Workspace {
                 filter,
             } => {
                 text(&name, 200)?;
+                optional_timestamp(filter.due_before)?;
 
                 let id = self.take_client_id(id)?;
                 self.views.push(SavedView {
@@ -1534,6 +1559,7 @@ impl Workspace {
                 filter,
             } => {
                 text(&name, 200)?;
+                optional_timestamp(filter.due_before)?;
 
                 let owner = self
                     .views

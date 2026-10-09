@@ -48,6 +48,7 @@ impl Operation<'_> {
 
     async fn validate_issue_sql(&mut self, i: &Issue) -> Result<()> {
         crate::domain::text(&i.title, 500)?;
+        crate::domain::optional_timestamp(i.deadline)?;
 
         if i.description.len() > 100_000 {
             return Err(Error::BadRequest("description too long".into()));

@@ -58,6 +58,28 @@ export const ENTITIES: readonly Entity[] = [
   "activity",
 ];
 
+/**
+ * Every always-loaded entity from the spec's table: everything except
+ * `comments` and `activity`, which load per scope. The orchestrator passes
+ * this to `replaceBase` on bootstrap so an empty scope clears stale rows.
+ */
+export const BOOTSTRAP_ENTITIES: readonly Entity[] = [
+  "workspace",
+  "members",
+  "teams",
+  "labels",
+  "projects",
+  "milestones",
+  "sprints",
+  "views",
+  "alert_preferences",
+  "notifications",
+  "invitations",
+  "integrations",
+  "issues",
+  "time_entries",
+];
+
 /** Sync issue shape: the server shape without the derived counts. */
 export type SyncIssue = Omit<
   Issue,

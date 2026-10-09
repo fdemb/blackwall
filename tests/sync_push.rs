@@ -172,6 +172,60 @@ async fn last_mutation_id(store: &Store, client: Uuid) -> Option<i64> {
 }
 
 #[tokio::test]
+async fn command_timestamps_outside_years_1_to_9999_are_rejected() {
+    let database = support::TestDatabase::new().await;
+    let store = Store::connect(&database.url).await.unwrap();
+    let app = router(store.clone());
+    let owner = account(&store, "owner").await;
+    let (ws, team) = setup(&app, &owner).await;
+
+    // 9999-12-31T23:30:00-01:00 is year 10000 in UTC; 0001-01-01T00:30:00+01:00
+    // is year 0. PostgreSQL would store both, but the sync client could never
+    // ingest them back.
+    for deadline in ["9999-12-31T23:30:00-01:00", "0001-01-01T00:30:00+01:00"] {
+        let (status, result) = command(
+            &app,
+            &owner,
+            ws,
+            json!({"type": "create_issue", "input": {"team_id": team, "title": "Out of range", "deadline": deadline}}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{result}");
+    }
+
+    let (status, result) = command(
+        &app,
+        &owner,
+        ws,
+        json!({"type": "create_issue", "input": {"team_id": team, "title": "Latest valid", "deadline": "9999-12-31T23:59:59Z"}}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+    let issue = id(&result["result"]["id"]);
+
+    let client = Uuid::new_v4();
+    let (status, result) = push(
+        &app,
+        &owner.token,
+        ws,
+        client,
+        vec![mutation(
+            1,
+            "update_issue",
+            json!({"id": issue, "patch": {"deadline": "9999-12-31T23:30:00-01:00"}}),
+        )],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+    assert_eq!(result["results"][0]["status"], "rejected");
+    assert_eq!(result["results"][0]["error"]["status"], 400);
+
+    drop(app);
+    store.pool.close().await;
+    database.cleanup().await;
+}
+
+#[tokio::test]
 async fn push_applies_batch_in_order() {
     let database = support::TestDatabase::new().await;
     let store = Store::connect(&database.url).await.unwrap();

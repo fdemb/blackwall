@@ -58,7 +58,7 @@ export interface Tx {
 }
 
 /** Replays one pending mutation against the view. Task 2b provides the real one. */
-export type ReplayFn = (tx: Tx, mutation: PendingMutation) => void;
+export type ReplayFn = (tx: Tx, mutation: DeepReadonly<PendingMutation>) => void;
 
 /** What changed in one rebase: view changes plus outbox bookkeeping. */
 export interface StoreEvent {
@@ -221,9 +221,46 @@ interface AllEntry {
   dirty: boolean;
 }
 
-function errorFingerprint(error: unknown): string {
-  if (error instanceof Error) return `${error.name}:${error.message}`;
-  return String(error);
+/**
+ * A replay failure, frozen. Replays may throw anything; the store converts it
+ * here so error changes are observable per mutation id.
+ */
+export interface ReplayError {
+  name: string;
+  message: string;
+  status?: number;
+  code?: string;
+}
+
+/** Convert anything a replay throws into a frozen ReplayError. */
+function toReplayError(value: unknown): ReplayError {
+  let name: string | undefined;
+  let message: string | undefined;
+  let status: number | undefined;
+  let code: string | undefined;
+  if (typeof value === "object" && value !== null) {
+    const record = value as Record<string, unknown>;
+    if (typeof record["name"] === "string") name = record["name"];
+    if (typeof record["message"] === "string") message = record["message"];
+    else if (record["message"] !== undefined) message = String(record["message"]);
+    if (typeof record["status"] === "number") status = record["status"];
+    if (typeof record["code"] === "string") code = record["code"];
+  }
+  if (value instanceof Error) {
+    if (name === undefined) name = value.name;
+    if (message === undefined) message = value.message;
+  }
+  const error: ReplayError = {
+    name: name ?? "Error",
+    message: message ?? String(value),
+  };
+  if (status !== undefined) error.status = status;
+  if (code !== undefined) error.code = code;
+  return deepFreeze(error);
+}
+
+function replayErrorEqual(a: ReplayError, b: ReplayError): boolean {
+  return a.name === b.name && a.message === b.message && a.status === b.status && a.code === b.code;
 }
 
 /**
@@ -236,12 +273,12 @@ export class SyncStore {
   private readonly baseIndexes = new Map<Entity, Map<string, Map<string, Set<string>>>>();
   private overlay = emptyTables<OverlayValue>();
   private readonly dirtyBase = new Map<Entity, Map<string, AnyRecord | undefined>>();
-  private pendingList: readonly PendingMutation[] = Object.freeze([]);
-  private errors = new Map<number, unknown>();
+  private pendingList: readonly DeepReadonly<PendingMutation>[] = Object.freeze([]);
+  private errors = new Map<number, ReplayError>();
   private readonly versions = new Map<Entity, number>();
   private pendingVer = 0;
-  private notifiedPending: readonly PendingMutation[] = Object.freeze([]);
-  private notifiedErrors = new Map<number, string>();
+  private notifiedPending: readonly DeepReadonly<PendingMutation>[] = Object.freeze([]);
+  private notifiedErrors = new Map<number, ReplayError>();
   private readonly allCache = {} as Record<Entity, AllEntry>;
   private readonly viewIndexes = new Map<Entity, Map<string, Map<string, ViewBucket>>>();
   private readonly stageKinds = new Map<string, StageKind>();
@@ -252,7 +289,7 @@ export class SyncStore {
   private needsRebase = false;
   private activeJournal: Map<Entity, Map<string, OverlayValue | undefined>> | null = null;
 
-  /** Test-only counters: lazy rebuilds and base-table scans. Never reset by the store. */
+  /** Test-only counters: lazy rebuilds and base rows visited by table scans. Never reset by the store. */
   readonly debug = { allRebuilds: 0, indexRebuilds: 0, baseScans: 0 };
 
   constructor(replay: ReplayFn) {
@@ -304,10 +341,9 @@ export class SyncStore {
       },
       all: <E extends Entity>(entity: E): readonly DeepReadonly<RecordOf[E]>[] => {
         this.assertEntity(entity);
-        this.debug.baseScans += 1;
         const out: AnyRecord[] = [];
         const seen = new Set<string>();
-        for (const [key, record] of this.base[entity]) {
+        for (const [key, record] of this.scanBase(entity)) {
           const overlaid = this.overlay[entity].get(key);
           seen.add(key);
           if (overlaid === undefined) out.push(record);
@@ -323,15 +359,15 @@ export class SyncStore {
 
   /**
    * Bootstrap: each entity in `entities` is fully replaced. An entity with no
-   * records ends up empty, so a fresh bootstrap clears stale rows. Entities not
-   * listed are untouched, so comment and activity scopes survive. When
-   * `entities` is omitted it defaults to the keys present in `records`.
+   * records ends up empty, so a bootstrap scope with no rows clears stale
+   * records. Entities not listed are untouched, so comment and activity
+   * scopes survive. The orchestrator passes BOOTSTRAP_ENTITIES.
    */
   replaceBase(
     records: Partial<Record<Entity, readonly object[]>>,
-    entities?: readonly Entity[],
+    entities: readonly Entity[],
   ): void {
-    const covered = (entities ?? (Object.keys(records) as Entity[])).slice();
+    const covered = entities.slice();
     for (const entity of covered) this.assertEntity(entity);
     const incoming = new Map<Entity, Map<string, AnyRecord>>();
     for (const entity of covered) {
@@ -354,13 +390,15 @@ export class SyncStore {
         baseTable.set(key, clean);
         this.maintainBaseIndex(entity, key, before, clean);
       }
-      for (const key of [...baseTable.keys()]) {
-        if (!table.has(key)) {
-          this.stashBase(entity, key);
-          const before = baseTable.get(key);
-          baseTable.delete(key);
-          this.maintainBaseIndex(entity, key, before, undefined);
-        }
+      const doomed: string[] = [];
+      for (const [key] of this.scanBase(entity)) {
+        if (!table.has(key)) doomed.push(key);
+      }
+      for (const key of doomed) {
+        this.stashBase(entity, key);
+        const before = baseTable.get(key);
+        baseTable.delete(key);
+        this.maintainBaseIndex(entity, key, before, undefined);
       }
     }
     this.scheduleRebase();
@@ -439,7 +477,7 @@ export class SyncStore {
     if (!entry.dirty) return entry.rows as unknown as readonly DeepReadonly<RecordOf[E]>[];
     const out: AnyRecord[] = [];
     const seen = new Set<string>();
-    for (const [key, record] of this.base[entity]) {
+    for (const [key, record] of this.scanBase(entity)) {
       const overlaid = this.overlay[entity].get(key);
       seen.add(key);
       if (overlaid === undefined) out.push(record);
@@ -488,17 +526,17 @@ export class SyncStore {
   /** Base records without the overlay. For persistence; built on demand. */
   baseAll<E extends Entity>(entity: E): readonly DeepReadonly<RecordOf[E]>[] {
     this.assertEntity(entity);
-    return Object.freeze([...this.base[entity].values()]) as unknown as readonly DeepReadonly<
-      RecordOf[E]
-    >[];
+    const out: AnyRecord[] = [];
+    for (const [, record] of this.scanBase(entity)) out.push(record);
+    return Object.freeze(out) as unknown as readonly DeepReadonly<RecordOf[E]>[];
   }
 
-  pending(): readonly PendingMutation[] {
+  pending(): readonly DeepReadonly<PendingMutation>[] {
     return this.pendingList;
   }
 
   /** Replay failures from the latest rebase, by mutation id. The mutations stay pending. */
-  replayErrors(): ReadonlyMap<number, unknown> {
+  replayErrors(): ReadonlyMap<number, ReplayError> {
     return this.errors;
   }
 
@@ -533,6 +571,18 @@ export class SyncStore {
     const overlaid = this.overlay[entity].get(key);
     if (overlaid !== undefined) return overlaid === TOMBSTONE ? undefined : overlaid;
     return this.base[entity].get(key);
+  }
+
+  /**
+   * The one way to iterate whole base tables. Counts every row visited so the
+   * F6/F7 guards catch table scans in hot paths; index bucket lookups are
+   * point reads and don't count.
+   */
+  private *scanBase(entity: Entity): Generator<[string, AnyRecord]> {
+    for (const entry of this.base[entity]) {
+      this.debug.baseScans += 1;
+      yield entry;
+    }
   }
 
   private journalTouch(entity: Entity, key: string): void {
@@ -609,9 +659,17 @@ export class SyncStore {
     }
     this.isInRebase = true;
     try {
+      let passes = 0;
       do {
         this.needsRebase = false;
         this.rebaseOnce();
+        passes += 1;
+        if (passes >= 100 && this.needsRebase) {
+          // A subscriber keeps making real changes. The store is consistent
+          // after this pass; the queued change stays flagged for the next
+          // outermost call, which rebases again.
+          throw new Error("sync store: rebase feedback loop");
+        }
       } while (this.needsRebase);
     } finally {
       this.isInRebase = false;
@@ -622,7 +680,7 @@ export class SyncStore {
     const oldOverlay = this.overlay;
     this.overlay = emptyTables<OverlayValue>();
     const fresh = this.overlay;
-    const nextErrors = new Map<number, unknown>();
+    const nextErrors = new Map<number, ReplayError>();
     for (const mutation of this.pendingList) {
       const journal = new Map<Entity, Map<string, OverlayValue | undefined>>();
       this.activeJournal = journal;
@@ -636,7 +694,7 @@ export class SyncStore {
             else freshTable.set(key, previous);
           }
         }
-        nextErrors.set(mutation.id, error);
+        nextErrors.set(mutation.id, toReplayError(error));
       } finally {
         this.activeJournal = null;
       }
@@ -675,7 +733,14 @@ export class SyncStore {
         const old = oldView(entity, key);
         const next = newView(entity, key);
         if (deepEqual(old, next)) {
-          if (fresh[entity].has(key)) {
+          if (old !== next && old !== undefined && next !== undefined) {
+            // Equal but not identical: keep the old object as the visible one
+            // wherever the new value lives, so get and the cached all/byIndex
+            // arrays agree. Both are frozen, so swapping base entries leaves
+            // base indexes unaffected.
+            if (fresh[entity].has(key)) fresh[entity].set(key, old);
+            else this.base[entity].set(key, old);
+          } else if (fresh[entity].has(key)) {
             if (next === undefined) {
               if (!this.base[entity].has(key)) fresh[entity].delete(key);
             } else if (old !== undefined) {
@@ -695,12 +760,12 @@ export class SyncStore {
     this.dirtyBase.clear();
 
     const pendingChanged = !deepEqual(this.pendingList, this.notifiedPending);
-    const nextFingerprints = new Map<number, string>();
-    for (const [id, error] of this.errors) nextFingerprints.set(id, errorFingerprint(error));
-    let errorsChanged = nextFingerprints.size !== this.notifiedErrors.size;
+    const freshErrors = this.errors;
+    let errorsChanged = freshErrors.size !== this.notifiedErrors.size;
     if (!errorsChanged) {
-      for (const [id, fingerprint] of nextFingerprints) {
-        if (this.notifiedErrors.get(id) !== fingerprint) {
+      for (const [id, error] of freshErrors) {
+        const previous = this.notifiedErrors.get(id);
+        if (previous === undefined || !replayErrorEqual(previous, error)) {
           errorsChanged = true;
           break;
         }
@@ -709,7 +774,7 @@ export class SyncStore {
     if (pendingChanged || errorsChanged) {
       this.pendingVer += 1;
       this.notifiedPending = this.pendingList;
-      this.notifiedErrors = nextFingerprints;
+      this.notifiedErrors = new Map(freshErrors);
     }
 
     if (changed.size === 0 && !pendingChanged && !errorsChanged) return;

@@ -1,6 +1,6 @@
 import type { Team } from "../lib/types";
 import type { SyncIssue } from "./records";
-import type { PendingMutation, Tx } from "./store";
+import type { DeepReadonly, PendingMutation, Tx } from "./store";
 
 export const NOW = "2026-10-08T12:00:00.000Z";
 
@@ -52,7 +52,7 @@ export function makeIssue(id: string, overrides: Partial<SyncIssue> = {}): SyncI
 }
 
 /** Hand-written replay for tests: a rename, an append proving read-your-writes, a delete, a thrower. */
-export function testReplay(tx: Tx, mutation: PendingMutation): void {
+export function testReplay(tx: Tx, mutation: DeepReadonly<PendingMutation>): void {
   const args = mutation.args as { id: string; title: string; suffix: string };
   if (mutation.name === "set_title") {
     const issue = tx.get("issues", args.id);

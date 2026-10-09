@@ -1,4 +1,3 @@
-import type { Issue } from "../lib/types";
 import type { DeepReadonly } from "./store";
 import type { SyncIssue } from "./records";
 import type { SyncStore } from "./store";
@@ -41,13 +40,19 @@ export function subtaskCompleted(store: SyncStore, issueId: string): number {
   return count;
 }
 
-/** The UI issue shape: the sync record with derived counts attached. */
-export function withCounts(store: SyncStore, issue: DeepReadonly<SyncIssue>): Issue {
+/** The UI issue shape: the sync record with derived counts attached. Read-only: records are frozen. */
+export type CountedIssue = DeepReadonly<SyncIssue> & {
+  blocked_count: number;
+  subtask_total: number;
+  subtask_completed: number;
+};
+
+export function withCounts(store: SyncStore, issue: DeepReadonly<SyncIssue>): CountedIssue {
   const src = issue as unknown as SyncIssue;
   return {
     ...src,
     blocked_count: blockedCount(store, issue.id),
     subtask_total: subtaskTotal(store, issue.id),
     subtask_completed: subtaskCompleted(store, issue.id),
-  } as Issue;
+  };
 }

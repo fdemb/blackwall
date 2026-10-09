@@ -487,6 +487,89 @@ mod tests {
     }
 
     #[test]
+    fn import_rejects_timestamps_outside_years_1_to_9999() {
+        use chrono::NaiveDate;
+
+        fn utc(year: i32, month: u32, day: u32) -> DateTime<Utc> {
+            DateTime::from_naive_utc_and_offset(
+                NaiveDate::from_ymd_opt(year, month, day)
+                    .unwrap()
+                    .and_hms_opt(0, 0, 0)
+                    .unwrap(),
+                Utc,
+            )
+        }
+
+        let now = Utc::now();
+        let source_user = Uuid::new_v4();
+        let mut source = Workspace::new("Source".into(), source_user).unwrap();
+        let team = source
+            .apply(
+                source_user,
+                Command::CreateTeam {
+                    id: None,
+                    name: "Infra".into(),
+                    members: vec![source_user],
+                },
+                now,
+            )
+            .unwrap()
+            .id
+            .unwrap();
+        source
+            .apply(
+                source_user,
+                Command::CreateIssue {
+                    input: IssueInput {
+                        id: None,
+                        title: "Timed".into(),
+                        description: String::new(),
+                        team_id: team,
+                        stage_id: None,
+                        assignee: None,
+                        priority: Priority::Normal,
+                        labels: vec![],
+                        estimate: None,
+                        deadline: None,
+                        project_id: None,
+                        milestone_id: None,
+                        sprint_id: None,
+                        parent_id: None,
+                        dependencies: vec![],
+                    },
+                },
+                now,
+            )
+            .unwrap();
+
+        let target_user = Uuid::new_v4();
+        let fresh_target = || Workspace::new("Target".into(), target_user).unwrap();
+
+        // Year 10000 in UTC cannot be ingested back by the sync client.
+        let mut late = Transfer::export(&source, vec![]);
+        late.issues[0].deadline = Some(utc(10000, 1, 1));
+        assert!(matches!(
+            late.import(&mut fresh_target(), target_user, &BTreeMap::new(), now),
+            Err(Error::BadRequest(_))
+        ));
+
+        // Year 0 in UTC is rejected too.
+        let mut early = Transfer::export(&source, vec![]);
+        early.issues[0].deadline = Some(utc(0, 12, 31));
+        assert!(matches!(
+            early.import(&mut fresh_target(), target_user, &BTreeMap::new(), now),
+            Err(Error::BadRequest(_))
+        ));
+
+        // The largest valid UTC instant imports fine.
+        let mut valid = Transfer::export(&source, vec![]);
+        valid.issues[0].deadline = Some(utc(9999, 12, 31));
+        valid
+            .import(&mut fresh_target(), target_user, &BTreeMap::new(), now)
+            .unwrap();
+    }
+
+    #[test]
     fn invalid_transfer_is_atomic_and_unknown_authors_report_fallback() {
         let actor = Uuid::new_v4();
         let mut source = Workspace::new("Source".into(), actor).unwrap();

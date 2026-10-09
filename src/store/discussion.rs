@@ -228,6 +228,7 @@ impl Operation<'_> {
             } => {
                 self.discussion_issue(issue_id).await?;
                 validate_time(minutes, &note)?;
+                crate::domain::timestamp(logged_at)?;
                 self.capacity("time_entries", 20_000).await?;
                 let id = self.reserve_client_id(id).await?;
 
@@ -257,6 +258,7 @@ impl Operation<'_> {
                 logged_at,
             } => {
                 validate_time(minutes, &note)?;
+                crate::domain::timestamp(logged_at)?;
 
                 let row = self
                     .discussion_record("time_entries", "user_id", id)
@@ -300,6 +302,7 @@ impl Operation<'_> {
                 filter,
             } => {
                 crate::domain::text(&name, 200)?;
+                crate::domain::optional_timestamp(filter.due_before)?;
                 self.capacity("saved_views", 5_000).await?;
                 let id = self.reserve_client_id(id).await?;
 
@@ -328,6 +331,7 @@ impl Operation<'_> {
                 filter,
             } => {
                 crate::domain::text(&name, 200)?;
+                crate::domain::optional_timestamp(filter.due_before)?;
 
                 let owner: Uuid = sqlx::query_scalar(
                     "SELECT owner FROM saved_views WHERE workspace_id=$1 AND id=$2 FOR \

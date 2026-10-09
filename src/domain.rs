@@ -1,5 +1,5 @@
 use crate::error::{Error, Result};
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Datelike, Utc};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use uuid::Uuid;
@@ -348,6 +348,26 @@ pub(crate) fn client_id(provided: Option<Uuid>) -> Result<Uuid> {
     }
 }
 
+/// A timestamp a client wrote. PostgreSQL stores years outside 1-9999 that the
+/// sync client cannot ingest, so every client-writable timestamp is rejected
+/// unless its UTC value falls in years 1 through 9999.
+pub(crate) fn timestamp(value: DateTime<Utc>) -> Result<()> {
+    if (1..=9999).contains(&value.year()) {
+        Ok(())
+    } else {
+        Err(Error::BadRequest(
+            "timestamp year must be between 1 and 9999".into(),
+        ))
+    }
+}
+
+pub(crate) fn optional_timestamp(value: Option<DateTime<Utc>>) -> Result<()> {
+    if let Some(value) = value {
+        timestamp(value)?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -452,6 +472,247 @@ mod tests {
             ),
             "ids are unique across entities in the domain model, as in SQL"
         );
+    }
+
+    #[test]
+    fn client_timestamps_outside_years_1_to_9999_are_rejected() {
+        use chrono::NaiveDate;
+
+        fn utc(year: i32, month: u32, day: u32, hour: u32, min: u32, sec: u32) -> DateTime<Utc> {
+            DateTime::from_naive_utc_and_offset(
+                NaiveDate::from_ymd_opt(year, month, day)
+                    .unwrap()
+                    .and_hms_opt(hour, min, sec)
+                    .unwrap(),
+                Utc,
+            )
+        }
+
+        // 9999-12-31T23:30:00-01:00 lands in year 10000 UTC; PostgreSQL would
+        // store it, but the sync client could never ingest it back.
+        let after_range = utc(10000, 1, 1, 0, 30, 0);
+        let before_range = utc(0, 12, 31, 23, 30, 0);
+        let max_valid = utc(9999, 12, 31, 23, 59, 59);
+
+        let (mut w, owner, team) = setup();
+        let now = Utc::now();
+
+        for deadline in [after_range, before_range] {
+            let mut named = input(team);
+            named.deadline = Some(deadline);
+            assert!(
+                matches!(
+                    w.apply(owner, Command::CreateIssue { input: named }, now),
+                    Err(Error::BadRequest(_))
+                ),
+                "deadline {deadline} must be rejected"
+            );
+        }
+
+        let mut valid = input(team);
+        valid.deadline = Some(max_valid);
+        let issue = w
+            .apply(owner, Command::CreateIssue { input: valid }, now)
+            .unwrap()
+            .id
+            .unwrap();
+
+        for deadline in [after_range, before_range] {
+            assert!(
+                matches!(
+                    w.apply(
+                        owner,
+                        Command::UpdateIssue {
+                            id: issue,
+                            patch: IssuePatch {
+                                deadline: Some(deadline),
+                                ..Default::default()
+                            }
+                        },
+                        now
+                    ),
+                    Err(Error::BadRequest(_))
+                ),
+                "patch deadline {deadline} must be rejected"
+            );
+        }
+
+        let project = w
+            .apply(
+                owner,
+                Command::CreateProject {
+                    id: None,
+                    name: "Launch".into(),
+                    description: String::new(),
+                    team_ids: vec![team],
+                },
+                now,
+            )
+            .unwrap()
+            .id
+            .unwrap();
+
+        for deadline in [after_range, before_range] {
+            assert!(
+                matches!(
+                    w.apply(
+                        owner,
+                        Command::CreateMilestone {
+                            id: None,
+                            project_id: project,
+                            name: "Beta".into(),
+                            deadline: Some(deadline),
+                        },
+                        now
+                    ),
+                    Err(Error::BadRequest(_))
+                ),
+                "milestone deadline {deadline} must be rejected"
+            );
+        }
+        let milestone = w
+            .apply(
+                owner,
+                Command::CreateMilestone {
+                    id: None,
+                    project_id: project,
+                    name: "Beta".into(),
+                    deadline: Some(max_valid),
+                },
+                now,
+            )
+            .unwrap()
+            .id
+            .unwrap();
+        assert!(matches!(
+            w.apply(
+                owner,
+                Command::UpdateMilestone {
+                    id: milestone,
+                    name: "Beta".into(),
+                    deadline: Some(after_range),
+                },
+                now
+            ),
+            Err(Error::BadRequest(_))
+        ));
+
+        for instant in [after_range, before_range] {
+            assert!(
+                matches!(
+                    w.apply(
+                        owner,
+                        Command::CreateSprint {
+                            id: None,
+                            team_id: team,
+                            name: "Sprint".into(),
+                            goal: "Ship".into(),
+                            starts_at: instant,
+                            ends_at: instant + chrono::Duration::days(14),
+                        },
+                        now
+                    ),
+                    Err(Error::BadRequest(_))
+                ),
+                "sprint start {instant} must be rejected"
+            );
+        }
+        let sprint = w
+            .apply(
+                owner,
+                Command::CreateSprint {
+                    id: None,
+                    team_id: team,
+                    name: "Sprint".into(),
+                    goal: "Ship".into(),
+                    starts_at: max_valid - chrono::Duration::days(14),
+                    ends_at: max_valid,
+                },
+                now,
+            )
+            .unwrap()
+            .id
+            .unwrap();
+        assert!(matches!(
+            w.apply(
+                owner,
+                Command::UpdateSprint {
+                    id: sprint,
+                    name: "Sprint".into(),
+                    goal: "Ship".into(),
+                    starts_at: max_valid - chrono::Duration::days(14),
+                    ends_at: after_range,
+                    state: SprintState::Planned,
+                },
+                now
+            ),
+            Err(Error::BadRequest(_))
+        ));
+
+        for logged_at in [after_range, before_range] {
+            assert!(
+                matches!(
+                    w.apply(
+                        owner,
+                        Command::LogTime {
+                            id: None,
+                            issue_id: issue,
+                            minutes: 30,
+                            note: "Review".into(),
+                            logged_at,
+                        },
+                        now
+                    ),
+                    Err(Error::BadRequest(_))
+                ),
+                "logged_at {logged_at} must be rejected"
+            );
+        }
+        let entry = w
+            .apply(
+                owner,
+                Command::LogTime {
+                    id: None,
+                    issue_id: issue,
+                    minutes: 30,
+                    note: "Review".into(),
+                    logged_at: max_valid,
+                },
+                now,
+            )
+            .unwrap()
+            .id
+            .unwrap();
+        assert!(matches!(
+            w.apply(
+                owner,
+                Command::UpdateTime {
+                    id: entry,
+                    minutes: 30,
+                    note: "Review".into(),
+                    logged_at: before_range,
+                },
+                now
+            ),
+            Err(Error::BadRequest(_))
+        ));
+
+        assert!(matches!(
+            w.apply(
+                owner,
+                Command::SaveView {
+                    id: None,
+                    name: "Late".into(),
+                    shared: false,
+                    filter: IssueFilter {
+                        due_before: Some(after_range),
+                        ..Default::default()
+                    },
+                },
+                now
+            ),
+            Err(Error::BadRequest(_))
+        ));
     }
 
     #[test]

@@ -415,6 +415,7 @@ impl Operation<'_> {
                 deadline,
             } => {
                 text(&name, 200)?;
+                crate::domain::optional_timestamp(deadline)?;
                 self.capacity("milestones", 5000).await?;
                 sqlx::query("SELECT id FROM projects WHERE workspace_id=$1 AND id=$2 FOR SHARE")
                     .bind(self.workspace_id)
@@ -439,6 +440,7 @@ impl Operation<'_> {
 
             Command::UpdateMilestone { id, name, deadline } => {
                 text(&name, 200)?;
+                crate::domain::optional_timestamp(deadline)?;
                 self.touch("milestones", id).await?;
                 sqlx::query(
                     "UPDATE milestones SET name=$3,deadline=$4 WHERE workspace_id=$1 AND id=$2",
@@ -771,6 +773,8 @@ fn validate_sprint(
     ends_at: DateTime<Utc>,
 ) -> Result<()> {
     text(name, 200)?;
+    crate::domain::timestamp(starts_at)?;
+    crate::domain::timestamp(ends_at)?;
     if ends_at <= starts_at {
         return Err(Error::BadRequest("sprint end must follow start".into()));
     }
