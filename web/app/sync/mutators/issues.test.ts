@@ -13,6 +13,7 @@ import {
   MEMBER,
   MILESTONE,
   MILESTONE_OTHER,
+  OWNER,
   PROJECT,
   PROJECT_OTHER,
   SPRINT,
@@ -29,6 +30,7 @@ import {
   seedStore,
   snapshotIssues,
 } from "./fixtures";
+import { admit } from "./index";
 
 function live(store: SyncStore, id: string): SyncIssue {
   const issue = store.get("issues", id);
@@ -36,9 +38,9 @@ function live(store: SyncStore, id: string): SyncIssue {
   return issue as SyncIssue;
 }
 
-/** Runs one mutation and asserts the whole resulting record. */
-function expectRecord(store: SyncStore, id: string, changes: Partial<SyncIssue>): void {
-  expect(store.get("issues", id)).toEqual(normalize("issues", { ...live(store, id), ...changes }));
+/** Asserts the whole resulting record against an explicit full expected record. */
+function expectRecord(store: SyncStore, id: string, expected: SyncIssue): void {
+  expect(store.get("issues", id)).toEqual(normalize("issues", expected));
 }
 
 /**
@@ -61,14 +63,42 @@ function rejects(
   expect(snapshotIssues(store)).toEqual(before);
 }
 
-/** Running a mutation twice leaves the same view as running it once. */
+/**
+ * Admission rejects without writing: asserts `admit` throws the server's
+ * status and message and leaves the view unchanged.
+ */
+function admitsRejects(
+  name: string,
+  args: unknown,
+  status: number,
+  message: string,
+  actor: Id = MEMBER,
+): void {
+  const store = seedStore(actor);
+  const before = snapshotIssues(store);
+  let error: unknown;
+  try {
+    admit(store, actor, { name, args, at: AT });
+  } catch (caught) {
+    error = caught;
+  }
+  const record = error as { status?: number; message?: string } | undefined;
+  expect(record?.status).toBe(status);
+  expect(record?.message).toBe(message);
+  expect(snapshotIssues(store)).toEqual(before);
+  expect(store.replayErrors().size).toBe(0);
+}
+
+/** Running a mutation twice leaves the same view as running it once, with no errors. */
 function twice(name: string, args: unknown, actor: Id = MEMBER): void {
   const once = seedStore(actor);
   mutate(once, name, args);
+  expect(once.replayErrors().size).toBe(0);
   const first = snapshotIssues(once);
   const both = seedStore(actor);
   mutate(both, name, args);
   mutate(both, name, args);
+  expect(both.replayErrors().size).toBe(0);
   expect(snapshotIssues(both)).toEqual(first);
 }
 
@@ -88,7 +118,7 @@ describe("create_issue", () => {
         stage_id: STAGE_BACKLOG,
         assignee: null,
         created_by: MEMBER,
-        priority: "normal",
+        priority: "none",
         labels: [],
         estimate: null,
         deadline: null,
@@ -97,7 +127,8 @@ describe("create_issue", () => {
         sprint_id: null,
         parent_id: null,
         dependencies: [],
-        position: 0,
+        // Backlog holds issue-x at 0 and issue-y at 1024: max + 1024.
+        position: 2048,
         followers: [MEMBER],
         attachments: [],
         source_links: [],
@@ -151,7 +182,8 @@ describe("create_issue", () => {
         sprint_id: SPRINT,
         parent_id: "issue-1",
         dependencies: ["issue-3"],
-        position: 0,
+        // Done holds issue-3 at 0, issue-archived at 1024 and issue-op-done at 2048.
+        position: 3072,
         followers: [MEMBER],
         done_at: AT,
         created_at: AT,
@@ -671,16 +703,18 @@ describe("delete_issue / restore_issue", () => {
     const restored = seedStore();
     mutate(restored, "delete_issue", { id: "issue-2" });
     mutate(restored, "restore_issue", { id: "issue-2" });
+    expect(restored.replayErrors().size).toBe(0);
     const first = snapshotIssues(restored);
     mutate(restored, "restore_issue", { id: "issue-2" });
+    expect(restored.replayErrors().size).toBe(0);
     expect(snapshotIssues(restored)).toEqual(first);
   });
 
   it("rejects bad trash transitions", () => {
     rejects("delete_issue", { id: "issue-ghost" }, 404, "not found");
-    rejects("delete_issue", { id: "issue-deleted" }, 404, "not found");
+    admitsRejects("delete_issue", { id: "issue-deleted" }, 404, "not found");
     rejects("restore_issue", { id: "issue-ghost" }, 404, "not found");
-    rejects("restore_issue", { id: "issue-1" }, 400, "issue is not deleted");
+    admitsRejects("restore_issue", { id: "issue-1" }, 400, "issue is not deleted");
   });
 
   it("enforces viewer and ownership rules", () => {
@@ -703,18 +737,32 @@ describe("archive_issue / unarchive_issue", () => {
     expectRecord(store, "issue-3", { ...before, archived_at: null, done_at: AT, updated_at: AT });
   });
 
-  it("archives imported issues: archiving has no ownership rule", () => {
-    const store = seedStore();
-    mutate(store, "archive_issue", { id: "issue-op-done" });
-    expect(live(store, "issue-op-done").archived_at).toBe(AT);
+  it("rejects imported issues: persistence owns imported rows", () => {
+    admitsRejects("archive_issue", { id: "issue-op-done" }, 409, OWNERSHIP_MESSAGE);
+    rejects("archive_issue", { id: "issue-op-done" }, 409, OWNERSHIP_MESSAGE);
+    const archived = seedStore();
+    archived.applyBase([
+      {
+        entity: "issues",
+        id: "issue-op-done",
+        record: { ...(archived.get("issues", "issue-op-done") as SyncIssue), archived_at: AT },
+      },
+    ]);
+    const before = snapshotIssues(archived);
+    const id = mutate(archived, "unarchive_issue", { id: "issue-op-done" });
+    expect(archived.replayErrors().get(id)?.status).toBe(409);
+    expect(archived.replayErrors().get(id)?.message).toBe(OWNERSHIP_MESSAGE);
+    expect(snapshotIssues(archived)).toEqual(before);
   });
 
   it("is idempotent in effect", () => {
     twice("archive_issue", { id: "issue-3" });
     const unarchived = seedStore();
     mutate(unarchived, "unarchive_issue", { id: "issue-archived" });
+    expect(unarchived.replayErrors().size).toBe(0);
     const first = snapshotIssues(unarchived);
     mutate(unarchived, "unarchive_issue", { id: "issue-archived" });
+    expect(unarchived.replayErrors().size).toBe(0);
     expect(snapshotIssues(unarchived)).toEqual(first);
   });
 
@@ -728,10 +776,10 @@ describe("archive_issue / unarchive_issue", () => {
       400,
       "only issues in a Done stage can be archived",
     );
-    rejects("archive_issue", { id: "issue-archived" }, 400, "issue is already archived");
+    admitsRejects("archive_issue", { id: "issue-archived" }, 400, "issue is already archived");
     rejects("unarchive_issue", { id: "issue-ghost" }, 404, "not found");
     rejects("unarchive_issue", { id: "issue-deleted" }, 404, "not found");
-    rejects("unarchive_issue", { id: "issue-1" }, 400, "issue is not archived");
+    admitsRejects("unarchive_issue", { id: "issue-1" }, 400, "issue is not archived");
   });
 
   it("enforces the viewer rule", () => {
@@ -805,7 +853,7 @@ describe("bulk_issues", () => {
       409,
       "issue is archived",
     );
-    rejects("bulk_issues", { ids: ["issue-deleted"], action: "delete" }, 404, "not found");
+    admitsRejects("bulk_issues", { ids: ["issue-deleted"], action: "delete" }, 404, "not found");
   });
 
   it("enforces viewer and ownership rules", () => {
@@ -927,7 +975,7 @@ describe("remove_attachment", () => {
   it("rejects missing rows before and after the archived check", () => {
     const args = { issue_id: "issue-attached", attachment_id: "att-1" };
     rejects("remove_attachment", { ...args, issue_id: "issue-ghost" }, 404, "not found");
-    rejects("remove_attachment", { ...args, attachment_id: "att-ghost" }, 404, "not found");
+    admitsRejects("remove_attachment", { ...args, attachment_id: "att-ghost" }, 404, "not found");
     rejects(
       "remove_attachment",
       { issue_id: "issue-deleted", attachment_id: "att-1" },
@@ -985,5 +1033,295 @@ describe("team and stage references", () => {
     const view = live(store, "issue-x");
     expect(view.stage_id).toBe(STAGE_CANCELLED);
     expect(view.done_at).toBeNull();
+  });
+});
+
+describe("review findings", () => {
+  it("F1: deleting a completed dependency fails workflow so a later rename succeeds", () => {
+    const store = seedStore();
+    // Active A depends on completed B (issue-3 is done).
+    mutate(store, "create_issue", {
+      input: {
+        id: "issue-f1-a",
+        title: "A",
+        team_id: TEAM,
+        stage_id: STAGE_ACTIVE,
+        dependencies: ["issue-3"],
+      },
+    });
+    expect(store.replayErrors().size).toBe(0);
+    const beforeDelete = snapshotIssues(store);
+    const deleteId = mutate(store, "delete_issue", { id: "issue-3" });
+    expect(store.replayErrors().get(deleteId)?.status).toBe(409);
+    expect(store.replayErrors().get(deleteId)?.message).toBe(
+      "workflow would leave an issue with unfinished dependencies",
+    );
+    expect(snapshotIssues(store)).toEqual(beforeDelete);
+    // The server rejects the deletion, so the rename applies.
+    const renameId = mutate(store, "update_issue", {
+      id: "issue-f1-a",
+      patch: { title: "Valid rename" },
+    });
+    expect(store.replayErrors().get(renameId)).toBeUndefined();
+    expect(live(store, "issue-f1-a").title).toBe("Valid rename");
+  });
+
+  it("F2: replay over a base already containing the effect is a no-op", () => {
+    const store = seedStore();
+    const pending = mutate(store, "delete_issue", { id: "issue-2" });
+    expect(store.replayErrors().get(pending)).toBeUndefined();
+    const deletedView = live(store, "issue-2");
+    expect(deletedView.deleted_at).toBe(AT);
+    // An intermediate pull page already contains the deletion while the
+    // mutation is still pending; rebasing over it must not record 404.
+    store.applyBase([{ entity: "issues", id: "issue-2", record: { ...deletedView } }]);
+    expect(store.replayErrors().get(pending)).toBeUndefined();
+    expect(live(store, "issue-2").deleted_at).toBe(AT);
+  });
+
+  it("F3: explicit null patch fields are treated as absent", () => {
+    const first = seedStore();
+    mutate(first, "update_issue", {
+      id: "issue-2",
+      patch: { stage_id: null, title: "Valid rename" } as unknown as Record<string, unknown>,
+    } as unknown as never);
+    expect(first.replayErrors().size).toBe(0);
+    expect(live(first, "issue-2").title).toBe("Valid rename");
+
+    const second = seedStore();
+    mutate(second, "update_issue", {
+      id: "issue-2",
+      patch: { labels: null, title: "Valid rename" } as unknown as Record<string, unknown>,
+    } as unknown as never);
+    expect(second.replayErrors().size).toBe(0);
+    expect(live(second, "issue-2").title).toBe("Valid rename");
+
+    const third = seedStore();
+    mutate(third, "update_issue", {
+      id: "issue-2",
+      patch: { title: null, description: "Valid body" } as unknown as Record<string, unknown>,
+    } as unknown as never);
+    expect(third.replayErrors().size).toBe(0);
+    expect(live(third, "issue-2").description).toBe("Valid body");
+    expect(live(third, "issue-2").title).toBe("Issue two");
+  });
+
+  it("F3: null inside an array is preserved", () => {
+    const store = seedStore();
+    const id = mutate(store, "update_issue", {
+      id: "issue-2",
+      patch: { labels: [null] } as unknown as Record<string, unknown>,
+    } as unknown as never);
+    // Preserved nulls fail reference validation instead of being stripped.
+    expect(store.replayErrors().get(id)?.status).toBe(400);
+  });
+
+  it("F4: accepts chrono RFC 3339 timestamps and normalizes leap seconds like Postgres", () => {
+    const lower = seedStore();
+    mutate(lower, "update_issue", {
+      id: "issue-2",
+      patch: { deadline: "2026-11-01t00:00:00z" },
+    });
+    expect(lower.replayErrors().size).toBe(0);
+    expect(live(lower, "issue-2").deadline).toBe("2026-11-01T00:00:00.000000Z");
+
+    const leap = seedStore();
+    mutate(leap, "update_issue", {
+      id: "issue-2",
+      patch: { deadline: "2016-12-31T23:59:60Z" },
+    });
+    expect(leap.replayErrors().size).toBe(0);
+    // PostgreSQL stores 23:59:60Z as midnight the next day.
+    expect(live(leap, "issue-2").deadline).toBe("2017-01-01T00:00:00.000000Z");
+
+    const offset = seedStore();
+    mutate(offset, "update_issue", {
+      id: "issue-2",
+      patch: { deadline: "2026-11-01T02:00:00.123456789+02:00" },
+    });
+    expect(offset.replayErrors().size).toBe(0);
+    expect(live(offset, "issue-2").deadline).toBe("2026-11-01T00:00:00.123456Z");
+  });
+
+  it("F5: trims with Rust whitespace and measures byte limits in UTF-8 bytes", () => {
+    // BOM-only titles are blank under JS trim but non-blank under Rust trim.
+    const bom = seedStore();
+    mutate(bom, "create_issue", { input: { id: "issue-bom", title: "\uFEFF", team_id: TEAM } });
+    expect(bom.replayErrors().size).toBe(0);
+    expect(live(bom, "issue-bom").title).toBe("\uFEFF");
+
+    // 30k emoji: 60k UTF-16 units (under 100k) but 120k UTF-8 bytes (over).
+    const long = seedStore();
+    const emoji30k = "😀".repeat(30_000);
+    const longId = mutate(long, "create_issue", {
+      input: { id: "issue-long", title: "Long", team_id: TEAM, description: emoji30k },
+    });
+    expect(long.replayErrors().get(longId)?.status).toBe(400);
+    expect(long.replayErrors().get(longId)?.message).toBe("description too long");
+
+    // URL with 1500 emoji: 3020 units (under 4096) but 6020 bytes (over).
+    const url = seedStore();
+    const bigUrl = `https://example.com/${"😀".repeat(1500)}`;
+    const urlId = mutate(url, "add_source_link", {
+      issue_id: "issue-2",
+      url: bigUrl,
+      title: "Big",
+    });
+    expect(url.replayErrors().get(urlId)?.status).toBe(400);
+    expect(url.replayErrors().get(urlId)?.message).toBe("invalid URL");
+  });
+
+  it("F6: create uses none as the default priority", () => {
+    const store = seedStore();
+    mutate(store, "create_issue", { input: { id: "issue-prio", title: "P", team_id: TEAM } });
+    expect(store.replayErrors().size).toBe(0);
+    expect(live(store, "issue-prio").priority).toBe("none");
+  });
+
+  it("F7: create appends at max+1024 and midpoints use known predecessors", () => {
+    const store = seedStore();
+    mutate(store, "create_issue", { input: { id: "issue-f7", title: "F7", team_id: TEAM } });
+    // Backlog max is 1024 (issue-y), so the new row lands at 2048.
+    expect(live(store, "issue-f7").position).toBe(2048);
+    // Replay gives the same position (the created id is excluded).
+    mutate(store, "create_issue", { input: { id: "issue-f7", title: "F7", team_id: TEAM } });
+    expect(store.replayErrors().size).toBe(0);
+    expect(live(store, "issue-f7").position).toBe(2048);
+
+    const staged = seedStore();
+    staged.applyBase([
+      {
+        entity: "issues",
+        id: "issue-neg",
+        record: {
+          ...(staged.get("issues", "issue-x") as SyncIssue),
+          id: "issue-neg",
+          title: "Neg",
+          stage_id: STAGE_BACKLOG,
+          position: -5000,
+          dependencies: [],
+          parent_id: null,
+        },
+      },
+    ]);
+    mutate(staged, "move_issue", { id: "issue-y", stage_id: STAGE_BACKLOG, before_id: "issue-x" });
+    // Predecessor -5000 sits below the synthetic -2048 bound; the server
+    // uses the real predecessor, so the midpoint is (-5000+0)/2.
+    expect(live(staged, "issue-y").position).toBe(-2500);
+  });
+
+  it("F8: relation arrays dedupe and sort in UUID order", () => {
+    const store = seedStore();
+    mutate(store, "create_issue", {
+      input: {
+        id: "issue-f8",
+        title: "F8",
+        team_id: TEAM,
+        stage_id: STAGE_BACKLOG,
+        labels: [LABEL_TWO, LABEL_ONE, LABEL_ONE],
+        dependencies: ["issue-y", "issue-x", "issue-y"],
+      },
+    });
+    expect(store.replayErrors().size).toBe(0);
+    expect(live(store, "issue-f8").labels).toEqual([LABEL_ONE, LABEL_TWO]);
+    expect(live(store, "issue-f8").dependencies).toEqual(["issue-x", "issue-y"]);
+
+    const followed = seedStore(ADMIN);
+    mutate(followed, "follow", { issue_id: "issue-followed", following: true });
+    expect(followed.replayErrors().size).toBe(0);
+    // UUID byte order: admin < member < owner.
+    expect(live(followed, "issue-followed").followers).toEqual([ADMIN, MEMBER, OWNER]);
+  });
+
+  it("F9: imported issues reject archive and unarchive with 409", () => {
+    admitsRejects("archive_issue", { id: "issue-op-done" }, 409, OWNERSHIP_MESSAGE);
+    rejects("archive_issue", { id: "issue-op-done" }, 409, OWNERSHIP_MESSAGE);
+  });
+
+  it("F10: source-link validation runs before the issue lookup", () => {
+    const base = { issue_id: "issue-ghost", url: "https://example.com/a", title: "A" };
+    rejects("add_source_link", { ...base, title: "" }, 400, "text must contain 1 to 500 bytes");
+    rejects("add_source_link", { ...base, url: "not a url" }, 400, "invalid URL");
+  });
+
+  it("F11: registry dispatch rejects inherited properties", () => {
+    const store = seedStore();
+    const before = snapshotIssues(store);
+    const id = mutate(store, "toString", {});
+    expect(store.replayErrors().get(id)?.status).toBe(400);
+    expect(store.replayErrors().get(id)?.message).toBe("unknown command toString");
+    expect(snapshotIssues(store)).toEqual(before);
+  });
+});
+
+describe("admission vs replay", () => {
+  it("delete of an already-deleted issue is a replay no-op but admission rejects", () => {
+    const replayed = seedStore();
+    const before = snapshotIssues(replayed);
+    const id = mutate(replayed, "delete_issue", { id: "issue-deleted" });
+    expect(replayed.replayErrors().get(id)).toBeUndefined();
+    expect(snapshotIssues(replayed)).toEqual(before);
+    admitsRejects("delete_issue", { id: "issue-deleted" }, 404, "not found");
+  });
+
+  it("restore of a live issue is a replay no-op but admission rejects", () => {
+    const replayed = seedStore();
+    const before = snapshotIssues(replayed);
+    const id = mutate(replayed, "restore_issue", { id: "issue-1" });
+    expect(replayed.replayErrors().get(id)).toBeUndefined();
+    expect(snapshotIssues(replayed)).toEqual(before);
+    admitsRejects("restore_issue", { id: "issue-1" }, 400, "issue is not deleted");
+  });
+
+  it("archive of an archived issue is a replay no-op but admission rejects", () => {
+    const replayed = seedStore();
+    const before = snapshotIssues(replayed);
+    const id = mutate(replayed, "archive_issue", { id: "issue-archived" });
+    expect(replayed.replayErrors().get(id)).toBeUndefined();
+    expect(snapshotIssues(replayed)).toEqual(before);
+    admitsRejects("archive_issue", { id: "issue-archived" }, 400, "issue is already archived");
+  });
+
+  it("unarchive of a live issue is a replay no-op but admission rejects", () => {
+    const replayed = seedStore();
+    const before = snapshotIssues(replayed);
+    const id = mutate(replayed, "unarchive_issue", { id: "issue-1" });
+    expect(replayed.replayErrors().get(id)).toBeUndefined();
+    expect(snapshotIssues(replayed)).toEqual(before);
+    admitsRejects("unarchive_issue", { id: "issue-1" }, 400, "issue is not archived");
+  });
+
+  it("removing a missing attachment is a replay no-op but admission rejects", () => {
+    const replayed = seedStore();
+    const before = snapshotIssues(replayed);
+    const id = mutate(replayed, "remove_attachment", {
+      issue_id: "issue-attached",
+      attachment_id: "att-ghost",
+    });
+    expect(replayed.replayErrors().get(id)).toBeUndefined();
+    expect(snapshotIssues(replayed)).toEqual(before);
+    admitsRejects(
+      "remove_attachment",
+      { issue_id: "issue-attached", attachment_id: "att-ghost" },
+      404,
+      "not found",
+    );
+  });
+
+  it("follow already in the target state is a no-op in both modes", () => {
+    const replayed = seedStore();
+    const before = snapshotIssues(replayed);
+    const id = mutate(replayed, "follow", { issue_id: "issue-followed", following: true });
+    expect(replayed.replayErrors().get(id)).toBeUndefined();
+    expect(snapshotIssues(replayed)).toEqual(before);
+  });
+
+  it("create with an existing id replays without error", () => {
+    const replayed = seedStore();
+    const before = live(replayed, "issue-1");
+    const id = mutate(replayed, "create_issue", {
+      input: { id: "issue-1", title: before.title, team_id: before.team_id },
+    });
+    expect(replayed.replayErrors().get(id)).toBeUndefined();
   });
 });

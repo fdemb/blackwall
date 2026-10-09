@@ -459,6 +459,28 @@ export class SyncStore {
     }
   }
 
+  /**
+   * Runs `fn` against the current view and discards its writes. Admission
+   * uses it to validate a mutation without entering the outbox.
+   */
+  dryRun(fn: (tx: Tx) => void): void {
+    const journal = new Map<Entity, Map<string, OverlayValue | undefined>>();
+    const previousJournal = this.activeJournal;
+    this.activeJournal = journal;
+    try {
+      fn(this.tx);
+    } finally {
+      for (const [entity, table] of journal) {
+        const overlayTable = this.overlay[entity];
+        for (const [key, previous] of table) {
+          if (previous === undefined) overlayTable.delete(key);
+          else overlayTable.set(key, previous);
+        }
+      }
+      this.activeJournal = previousJournal;
+    }
+  }
+
   get<E extends Entity>(entity: E, key: string): DeepReadonly<RecordOf[E]> | undefined {
     this.assertEntity(entity);
     return this.viewOf(entity, key) as unknown as DeepReadonly<RecordOf[E]> | undefined;

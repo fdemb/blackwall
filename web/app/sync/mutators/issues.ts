@@ -3,9 +3,12 @@ import type { SyncIssue } from "../records";
 import type { DeepReadonly, Tx } from "../store";
 import type { ArgsOf, Mutator, MutatorContext } from "./common";
 import {
+  checkImportedForSave,
   checkOwnership,
   checkSourceUrl,
   checkText,
+  checkWorkflow,
+  dedupeSortUuids,
   NIL_UUID,
   requireIssue,
   requireLiveIssue,
@@ -46,12 +49,29 @@ function resolveStage(tx: Tx, teamId: string, stageId: string | null | undefined
 }
 
 /**
+ * Position for a new issue over the rows the client holds, mirroring
+ * `persistence::create` (`COALESCE(max(position),-1024)+1024`). Excludes the
+ * created id itself so a replay gives the same result.
+ */
+function createPosition(tx: Tx, teamId: string, stageId: string, excludeId: string): number {
+  let max = -1024;
+  for (const peer of tx.byIndex("issues", "stage_id", stageId)) {
+    if (peer.id === excludeId || peer.team_id !== teamId || peer.deleted_at !== null) continue;
+    max = Math.max(max, peer.position);
+  }
+  return max + 1024;
+}
+
+/**
  * Position for `move_issue` over the rows the client holds. Without
  * `before_id` this matches the server exactly (`max + 1024`, `0` when empty).
  * With `before_id` it mirrors the midpoint between the neighbor and the
- * closest lower row; when the gap holds no integer the server rebalances the
- * whole stage, which the client cannot predict, so it slots just before the
- * neighbor and lets the pull correct the rest.
+ * closest lower row (by `(position, id)` order, as the server's
+ * `max(position) ... WHERE (position,id)<(neighbor)`); the synthetic
+ * `neighbor - 2048` bound applies only when no real predecessor exists.
+ * When the gap holds no integer the server rebalances the whole stage, which
+ * the client cannot predict, so it slots just before the neighbor and lets
+ * the pull correct the rest.
  */
 function orderPosition(
   tx: Tx,
@@ -79,18 +99,19 @@ function orderPosition(
   ) {
     throw new MutationError(400, "invalid ordering neighbor");
   }
-  let lower = neighbor.position - 2048;
+  let lower: number | null = null;
   for (const peer of others) {
     if (peer.id === beforeId) continue;
     if (
       peer.position < neighbor.position ||
       (peer.position === neighbor.position && peer.id < beforeId)
     ) {
-      lower = Math.max(lower, peer.position);
+      lower = lower === null ? peer.position : Math.max(lower, peer.position);
     }
   }
-  const gap = neighbor.position - lower;
-  return gap <= 1 ? neighbor.position - 1 : lower + Math.floor(gap / 2);
+  const low = lower ?? neighbor.position - 2048;
+  const gap = neighbor.position - low;
+  return gap <= 1 ? neighbor.position - 1 : low + Math.floor(gap / 2);
 }
 
 /** `done_at` follows the stage: set on entering done, cleared on leaving it. */
@@ -124,15 +145,15 @@ export const createIssue: Mutator<ArgsOf<"create_issue">> = (tx, args, ctx) => {
     stage_id: stageId,
     assignee: input.assignee ?? null,
     created_by: ctx.actor,
-    priority: input.priority ?? "normal",
-    labels: input.labels ? [...input.labels] : [],
+    priority: input.priority ?? "none",
+    labels: input.labels ? dedupeSortUuids(input.labels) : [],
     estimate: input.estimate ?? null,
     deadline: input.deadline ?? null,
     project_id: input.project_id ?? null,
     milestone_id: input.milestone_id ?? null,
     sprint_id: input.sprint_id ?? null,
     parent_id: input.parent_id ?? null,
-    dependencies: input.dependencies ? [...input.dependencies] : [],
+    dependencies: input.dependencies ? dedupeSortUuids(input.dependencies) : [],
     position: 0,
     followers: [ctx.actor],
     attachments: [],
@@ -145,8 +166,18 @@ export const createIssue: Mutator<ArgsOf<"create_issue">> = (tx, args, ctx) => {
     created_at: previous?.created_at ?? ctx.at,
     updated_at: ctx.at,
   };
+  next.position = createPosition(tx, next.team_id, next.stage_id, id);
+  // A replay over a base that already holds this id keeps the stored number,
+  // version and timestamps; `createPosition` excludes the id itself so the
+  // second run lands on the same position.
+  if (previous !== undefined) {
+    next.number = previous.number;
+    next.version = previous.version;
+    next.created_at = previous.created_at;
+  }
   validateIssue(tx, next, null);
   tx.put("issues", next);
+  checkWorkflow(tx, [id]);
 };
 
 /** Shared by `update_issue` and the bulk update action. */
@@ -164,7 +195,7 @@ function patchIssue(
   if (patch.stage_id !== undefined) next.stage_id = patch.stage_id;
   next.assignee = patch.clear_assignee ? null : (patch.assignee ?? current.assignee);
   if (patch.priority !== undefined) next.priority = patch.priority;
-  if (patch.labels !== undefined) next.labels = [...patch.labels];
+  if (patch.labels !== undefined) next.labels = dedupeSortUuids(patch.labels);
   next.estimate = patch.clear_estimate ? null : (patch.estimate ?? current.estimate);
   next.deadline = patch.clear_deadline ? null : (patch.deadline ?? current.deadline);
   // clear_project also clears the milestone, unless the patch names one.
@@ -174,7 +205,7 @@ function patchIssue(
   else if (patch.milestone_id !== undefined) next.milestone_id = patch.milestone_id;
   next.sprint_id = patch.clear_sprint ? null : (patch.sprint_id ?? current.sprint_id);
   next.parent_id = patch.clear_parent ? null : (patch.parent_id ?? current.parent_id);
-  if (patch.dependencies !== undefined) next.dependencies = [...patch.dependencies];
+  if (patch.dependencies !== undefined) next.dependencies = dedupeSortUuids(patch.dependencies);
   validateIssue(tx, next, current.sprint_id);
   if (next.stage_id !== current.stage_id) {
     next.done_at = doneAt(tx, next.team_id, next.stage_id, current.done_at, ctx.at);
@@ -187,6 +218,7 @@ export const updateIssue: Mutator<ArgsOf<"update_issue">> = (tx, args, ctx) => {
   requireRole(tx, ctx.actor, "update_issue", args);
   checkOwnership(tx, { type: "update_issue", id: args.id, patch: args.patch });
   patchIssue(tx, args.id, args.patch, ctx);
+  checkWorkflow(tx, [args.id]);
 };
 
 export const moveIssue: Mutator<ArgsOf<"move_issue">> = (tx, args, ctx) => {
@@ -212,12 +244,16 @@ export const moveIssue: Mutator<ArgsOf<"move_issue">> = (tx, args, ctx) => {
   }
   next.updated_at = ctx.at;
   tx.put("issues", next);
+  checkWorkflow(tx, [args.id]);
 };
 
 /** Shared by `delete_issue` and the bulk delete action. Archived issues can be deleted. */
 function deleteIssueById(tx: Tx, id: string, ctx: MutatorContext): void {
   const current = requireIssue(tx, id);
-  if (current.deleted_at !== null) throw new MutationError(404, "not found");
+  if (current.deleted_at !== null) {
+    if (ctx.mode === "replay") return;
+    throw new MutationError(404, "not found");
+  }
   update(tx, "issues", id, (issue) => {
     const next = copyIssue(issue);
     next.deleted_at = ctx.at;
@@ -230,12 +266,16 @@ export const deleteIssue: Mutator<ArgsOf<"delete_issue">> = (tx, args, ctx) => {
   requireRole(tx, ctx.actor, "delete_issue", args);
   checkOwnership(tx, { type: "delete_issue", id: args.id });
   deleteIssueById(tx, args.id, ctx);
+  checkWorkflow(tx, [args.id]);
 };
 
 /** Shared by `restore_issue` and the bulk restore action. Restoring revalidates references. */
 function restoreIssueById(tx: Tx, id: string, ctx: MutatorContext): void {
   const current = requireIssue(tx, id);
-  if (current.deleted_at === null) throw new MutationError(400, "issue is not deleted");
+  if (current.deleted_at === null) {
+    if (ctx.mode === "replay") return;
+    throw new MutationError(400, "issue is not deleted");
+  }
   const next = copyIssue(current);
   next.deleted_at = null;
   validateIssue(tx, next, current.sprint_id);
@@ -247,16 +287,21 @@ export const restoreIssue: Mutator<ArgsOf<"restore_issue">> = (tx, args, ctx) =>
   requireRole(tx, ctx.actor, "restore_issue", args);
   checkOwnership(tx, { type: "restore_issue", id: args.id });
   restoreIssueById(tx, args.id, ctx);
+  checkWorkflow(tx, [args.id]);
 };
 
 /** Shared by `archive_issue` and the bulk archive action. Only done-stage issues archive. */
 function archiveIssueById(tx: Tx, id: string, ctx: MutatorContext): void {
   const current = requireIssue(tx, id);
   if (current.deleted_at !== null) throw new MutationError(404, "not found");
-  if (current.archived_at !== null) throw new MutationError(400, "issue is already archived");
+  if (current.archived_at !== null) {
+    if (ctx.mode === "replay") return;
+    throw new MutationError(400, "issue is already archived");
+  }
   if (stageKindOf(tx, current.team_id, current.stage_id) !== "done") {
     throw new MutationError(400, "only issues in a Done stage can be archived");
   }
+  checkImportedForSave(current);
   update(tx, "issues", id, (issue) => {
     const next = copyIssue(issue);
     next.archived_at = ctx.at;
@@ -268,13 +313,18 @@ function archiveIssueById(tx: Tx, id: string, ctx: MutatorContext): void {
 export const archiveIssue: Mutator<ArgsOf<"archive_issue">> = (tx, args, ctx) => {
   requireRole(tx, ctx.actor, "archive_issue", args);
   archiveIssueById(tx, args.id, ctx);
+  checkWorkflow(tx, [args.id]);
 };
 
 /** Shared by `unarchive_issue` and the bulk unarchive action. Unarchiving restarts the done clock. */
 function unarchiveIssueById(tx: Tx, id: string, ctx: MutatorContext): void {
   const current = requireIssue(tx, id);
   if (current.deleted_at !== null) throw new MutationError(404, "not found");
-  if (current.archived_at === null) throw new MutationError(400, "issue is not archived");
+  if (current.archived_at === null) {
+    if (ctx.mode === "replay") return;
+    throw new MutationError(400, "issue is not archived");
+  }
+  checkImportedForSave(current);
   const next = copyIssue(current);
   next.archived_at = null;
   next.done_at = doneAt(tx, next.team_id, next.stage_id, null, ctx.at);
@@ -285,6 +335,7 @@ function unarchiveIssueById(tx: Tx, id: string, ctx: MutatorContext): void {
 export const unarchiveIssue: Mutator<ArgsOf<"unarchive_issue">> = (tx, args, ctx) => {
   requireRole(tx, ctx.actor, "unarchive_issue", args);
   unarchiveIssueById(tx, args.id, ctx);
+  checkWorkflow(tx, [args.id]);
 };
 
 export const bulkIssues: Mutator<ArgsOf<"bulk_issues">> = (tx, args, ctx) => {
@@ -308,6 +359,7 @@ export const bulkIssues: Mutator<ArgsOf<"bulk_issues">> = (tx, args, ctx) => {
       patchIssue(tx, id, action.update, ctx);
     }
   }
+  checkWorkflow(tx, sorted);
 };
 
 export const followIssue: Mutator<ArgsOf<"follow">> = (tx, args, ctx) => {
@@ -318,10 +370,11 @@ export const followIssue: Mutator<ArgsOf<"follow">> = (tx, args, ctx) => {
   update(tx, "issues", args.issue_id, (issue) => {
     const next = copyIssue(issue);
     next.followers = args.following
-      ? [...issue.followers, ctx.actor]
-      : issue.followers.filter((follower: Id) => follower !== ctx.actor);
+      ? dedupeSortUuids([...issue.followers, ctx.actor])
+      : dedupeSortUuids(issue.followers.filter((follower: Id) => follower !== ctx.actor));
     return next;
   });
+  checkWorkflow(tx, [args.issue_id]);
 };
 
 export const addSourceLink: Mutator<ArgsOf<"add_source_link">> = (tx, args, ctx) => {
@@ -332,10 +385,11 @@ export const addSourceLink: Mutator<ArgsOf<"add_source_link">> = (tx, args, ctx)
     url: args.url,
     title: args.title,
   });
-  const current = requireLiveIssue(tx, args.issue_id);
-  if (current.archived_at !== null) throw new MutationError(409, "issue is archived");
+  // The server validates title and URL before the issue lookup.
   checkText(args.title, 500);
   checkSourceUrl(args.url);
+  const current = requireLiveIssue(tx, args.issue_id);
+  if (current.archived_at !== null) throw new MutationError(409, "issue is archived");
   // The server inserts with ON CONFLICT DO NOTHING, so repeats are no-ops.
   if (current.source_links.some((link) => link.url === args.url && link.title === args.title)) {
     return;
@@ -345,6 +399,7 @@ export const addSourceLink: Mutator<ArgsOf<"add_source_link">> = (tx, args, ctx)
     next.source_links = [...issue.source_links, { url: args.url, title: args.title }];
     return next;
   });
+  checkWorkflow(tx, [args.issue_id]);
 };
 
 export const removeAttachment: Mutator<ArgsOf<"remove_attachment">> = (tx, args, ctx) => {
@@ -359,6 +414,7 @@ export const removeAttachment: Mutator<ArgsOf<"remove_attachment">> = (tx, args,
   if (current.archived_at !== null) throw new MutationError(409, "issue is archived");
   if (current.deleted_at !== null) throw new MutationError(404, "not found");
   if (!current.attachments.some((attachment) => attachment.id === args.attachment_id)) {
+    if (ctx.mode === "replay") return;
     throw new MutationError(404, "not found");
   }
   update(tx, "issues", args.issue_id, (issue) => {
@@ -368,4 +424,5 @@ export const removeAttachment: Mutator<ArgsOf<"remove_attachment">> = (tx, args,
     );
     return next;
   });
+  checkWorkflow(tx, [args.issue_id]);
 };

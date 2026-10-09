@@ -1,5 +1,6 @@
 import type { Command, Id } from "../../lib/types";
 import type { DeepReadonly, PendingMutation, ReplayFn, Tx } from "../store";
+import { SyncStore } from "../store";
 import type { ArgsOf, Mutator } from "./common";
 import { MutationError } from "./errors";
 import {
@@ -69,12 +70,56 @@ export const ONLINE_ONLY = [
 
 export type OnlineOnly = (typeof ONLINE_ONLY)[number];
 
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Strips every `null`-valued key from objects in `args`, recursively through
+ * nested objects but not inside arrays. Serde treats `null` and absent the
+ * same for every `Option` field, so this matches the server for every command.
+ * A `null` inside an array is preserved.
+ */
+export function stripNulls<T>(value: T): T {
+  if (Array.isArray(value)) return value;
+  if (!isPlainObject(value)) return value;
+  const out: Record<string, unknown> = {};
+  for (const [key, item] of Object.entries(value)) {
+    if (item === null) continue;
+    out[key] = isPlainObject(item) ? stripNulls(item) : item;
+  }
+  return out as T;
+}
+
 /** Dispatches a pending mutation to its mutator with time from the mutation. */
 export function createReplay(actor: Id): ReplayFn {
   const table = MUTATORS as unknown as Record<string, Mutator<unknown>>;
   return (tx: Tx, mutation: DeepReadonly<PendingMutation>) => {
-    const mutator = table[mutation.name];
-    if (mutator === undefined) throw new MutationError(400, `unknown command ${mutation.name}`);
-    mutator(tx, mutation.args, { actor, at: mutation.at });
+    if (!Object.prototype.hasOwnProperty.call(table, mutation.name)) {
+      throw new MutationError(400, `unknown command ${mutation.name}`);
+    }
+    const mutator = table[mutation.name] as Mutator<unknown>;
+    mutator(tx, stripNulls(mutation.args), { actor, at: mutation.at, mode: "replay" });
   };
+}
+
+/**
+ * Runs a mutation once in admit mode against the current view, without writing
+ * anything. A throw rejects the edit before it enters the outbox and is shown
+ * to the user; replay errors are diagnostics and never reach the user.
+ */
+export function admit(
+  store: SyncStore,
+  actor: Id,
+  mutation: Pick<DeepReadonly<PendingMutation>, "name" | "args" | "at">,
+): void {
+  const table = MUTATORS as unknown as Record<string, Mutator<unknown>>;
+  if (!Object.prototype.hasOwnProperty.call(table, mutation.name)) {
+    throw new MutationError(400, `unknown command ${mutation.name}`);
+  }
+  const mutator = table[mutation.name] as Mutator<unknown>;
+  const args = stripNulls(mutation.args);
+  store.dryRun((tx) => {
+    mutator(tx, args, { actor, at: mutation.at, mode: "admit" });
+  });
 }

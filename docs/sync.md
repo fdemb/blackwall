@@ -248,6 +248,8 @@ One mutator per command in the `Command` union in `web/app/lib/types.ts`, with t
 - Predict only what the client can compute. Server-only values such as issue numbers, notifications, activity rows and positions for `move_issue` with no `before_id` either take placeholders or are left for the server. The pull corrects them.
 - Commands with server-generated secrets or bulk server work don't get mutators. See online-only operations below.
 
+> A mutator runs in one of two modes. **Admit** runs once when the user issues the command, against the current view; a failure there rejects the edit before it reaches the outbox and is shown to the user. **Replay** runs on every rebase; a command whose effect is already in place, because the server applied it before acknowledging it, is a no-op there. Replay errors are diagnostics and are never shown to the user; the user learns about a server rejection from the push result. Before either mode, the engine strips `null`-valued keys from command arguments, because the server treats `null` and an absent field the same.
+
 ### Persistence
 
 IndexedDB database `blackwall:{session_id}:{workspace_id}` with object stores:

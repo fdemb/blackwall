@@ -3,7 +3,7 @@ import type { Command } from "../../lib/types";
 import { normalize } from "../records";
 import type { DeepReadonly } from "../store";
 import { MEMBER, TEAM, mutate, seedStore, snapshotIssues } from "./fixtures";
-import { MUTATORS, ONLINE_ONLY, createReplay } from "./index";
+import { MUTATORS, ONLINE_ONLY, admit, createReplay } from "./index";
 import type { MutatorName } from "./index";
 import type { ArgsOf } from "./common";
 
@@ -54,6 +54,22 @@ describe("mutator registry", () => {
     expect(error?.status).toBe(400);
     expect(error?.message).toBe("unknown command no_such_command");
     expect(snapshotIssues(store)).toEqual(before);
+  });
+
+  it("rejects inherited properties like toString in both modes", () => {
+    const store = seedStore();
+    const before = snapshotIssues(store);
+    const id = mutate(store, "toString", {});
+    expect(store.replayErrors().get(id)?.status).toBe(400);
+    expect(store.replayErrors().get(id)?.message).toBe("unknown command toString");
+    expect(snapshotIssues(store)).toEqual(before);
+    let error: unknown;
+    try {
+      admit(store, MEMBER, { name: "toString", args: {}, at: "2026-10-09T12:00:00.000000Z" });
+    } catch (caught) {
+      error = caught;
+    }
+    expect((error as { status?: number })?.status).toBe(400);
   });
 
   it("uses the mutation time and the replay actor", () => {
@@ -119,7 +135,7 @@ describe("mutator registry", () => {
         stage_id: "stage-backlog",
         assignee: null,
         created_by: MEMBER,
-        priority: "normal",
+        priority: "none",
         labels: [],
         estimate: null,
         deadline: null,
@@ -128,7 +144,7 @@ describe("mutator registry", () => {
         sprint_id: null,
         parent_id: null,
         dependencies: [],
-        position: 0,
+        position: 2048,
         followers: [MEMBER],
         attachments: [],
         source_links: [],

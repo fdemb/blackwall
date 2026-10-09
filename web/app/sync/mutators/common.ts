@@ -1,6 +1,8 @@
 import { commandOwnershipTargets, issueCapabilities } from "../../lib/ownership";
+import policy from "../../lib/ownership-policy.generated.json";
 import type { Command, Id, Role, StageKind } from "../../lib/types";
 import type { Entity, RecordOf, SyncIssue } from "../records";
+import { parseTimestamp } from "../records";
 import type { DeepReadonly, Tx } from "../store";
 import { MutationError } from "./errors";
 
@@ -8,6 +10,8 @@ import { MutationError } from "./errors";
 export interface MutatorContext {
   actor: Id;
   at: string;
+  /** Admit runs once when the user issues the command; replay runs on every rebase. */
+  mode: "admit" | "replay";
 }
 
 /** One command's predicted effect on the view. Must be deterministic and idempotent. */
@@ -55,16 +59,16 @@ function isPersonal(name: string, args: unknown): boolean {
   }
 }
 
-const CAPABILITY: Partial<Record<Command["type"], string>> = {
-  create_issue: "relation",
-  update_issue: "edit",
-  move_issue: "move",
-  bulk_issues: "edit",
-  delete_issue: "delete",
-  restore_issue: "restore",
-  add_source_link: "source_links",
-  remove_attachment: "remove_attachment",
-};
+/**
+ * Command to capability mapping derived from the generated policy (`rules`),
+ * not hand-written, so the client admits exactly what the server authorizes.
+ */
+const CAPABILITY: Partial<Record<Command["type"], string>> = Object.fromEntries(
+  (policy.rules as readonly { command: string; capability: string }[]).map((rule) => [
+    rule.command,
+    rule.capability,
+  ]),
+);
 
 /**
  * Rejects commands touching OpenProject-imported issues without the needed
@@ -110,9 +114,62 @@ export function update<E extends Entity>(
   tx.put(entity, fn(current) as DeepReadonly<RecordOf[E]>);
 }
 
+/**
+ * Rust `char::is_whitespace` set (Unicode `White_Space`): U+0009-000D, U+0020,
+ * U+0085, U+00A0, U+1680, U+2000-200A, U+2028, U+2029, U+202F, U+205F, U+3000.
+ * JS `trim` additionally strips U+FEFF and misses U+0085, so a BOM-only title
+ * is rejected locally but accepted by the server (`domain::text` uses Rust
+ * `trim` and byte length). Every text helper here uses this trim and UTF-8
+ * byte lengths (`TextEncoder`), matching Rust `value.len()`.
+ */
+const RUST_TRIM_CHARS = new Set([
+  "\u0009",
+  "\u000a",
+  "\u000b",
+  "\u000c",
+  "\u000d",
+  "\u0020",
+  "\u0085",
+  "\u00a0",
+  "\u1680",
+  "\u2000",
+  "\u2001",
+  "\u2002",
+  "\u2003",
+  "\u2004",
+  "\u2005",
+  "\u2006",
+  "\u2007",
+  "\u2008",
+  "\u2009",
+  "\u200a",
+  "\u2028",
+  "\u2029",
+  "\u202f",
+  "\u205f",
+  "\u3000",
+]);
+
+export function rustTrim(value: string): string {
+  let start = 0;
+  let end = value.length;
+  while (start < end && RUST_TRIM_CHARS.has(value[start] as string)) start += 1;
+  while (end > start && RUST_TRIM_CHARS.has(value[end - 1] as string)) end -= 1;
+  return value.slice(start, end);
+}
+
+export function utf8Length(value: string): number {
+  return new TextEncoder().encode(value).length;
+}
+
+/** Dedupe and sort by PostgreSQL `uuid` byte order (equivalent to lowercase hex string order). */
+export function dedupeSortUuids(ids: readonly string[]): string[] {
+  return [...new Set(ids)].sort();
+}
+
 /** `domain::text`: blank or over-long values are a 400 with this message. */
 export function checkText(value: string, max: number): void {
-  if (value.trim() === "" || new TextEncoder().encode(value).length > max) {
+  if (rustTrim(value) === "" || utf8Length(value) > max) {
     throw new MutationError(400, `text must contain 1 to ${max} bytes`);
   }
 }
@@ -120,18 +177,24 @@ export function checkText(value: string, max: number): void {
 /**
  * `domain::optional_timestamp`: client timestamps must land in years 1-9999,
  * which is what the replica can ingest. Unparseable input fails the same
- * check; the server rejects it while parsing the command instead.
+ * check; the server rejects it while parsing the command instead. Uses the
+ * shared RFC 3339 parser so anything accepted here can be stored.
  */
 export function checkTimestamp(value: string | null | undefined): void {
   if (value === null || value === undefined) return;
-  const time = new Date(value).getTime();
-  const year = Number.isNaN(time) ? NaN : new Date(time).getUTCFullYear();
-  if (Number.isNaN(year) || year < 1 || year > 9999) {
+  let normalized: string;
+  try {
+    normalized = parseTimestamp(value);
+  } catch {
+    throw new MutationError(400, "timestamp year must be between 1 and 9999");
+  }
+  const year = Number(normalized.slice(0, 4));
+  if (!Number.isInteger(year) || year < 1 || year > 9999) {
     throw new MutationError(400, "timestamp year must be between 1 and 9999");
   }
 }
 
-/** `Operation::issues` source-link validation: http(s) URLs up to 4096 chars. */
+/** `Operation::issues` source-link validation: http(s) URLs up to 4096 bytes. */
 export function checkSourceUrl(url: string): void {
   let protocol = "";
   try {
@@ -139,7 +202,7 @@ export function checkSourceUrl(url: string): void {
   } catch {
     throw new MutationError(400, "invalid URL");
   }
-  if ((protocol !== "http:" && protocol !== "https:") || url.length > 4096) {
+  if ((protocol !== "http:" && protocol !== "https:") || utf8Length(url) > 4096) {
     throw new MutationError(400, "invalid URL");
   }
 }
@@ -156,10 +219,6 @@ export function stageKindOf(tx: Tx, teamId: string, stageId: string): StageKind 
  * sprint before the command; staying in a finished sprint is allowed only
  * from a done/cancelled stage. Unknown stage kinds are skipped: the server
  * cannot see them, and the replica always loads every team.
- *
- * The cross-issue workflow check (`validate_workflow`, which rejects moves
- * that strand dependents) is left to the server: it needs the whole
- * transaction graph, and the pull corrects a wrong prediction.
  */
 export function validateIssue(
   tx: Tx,
@@ -168,7 +227,7 @@ export function validateIssue(
 ): void {
   checkText(issue.title, 500);
   checkTimestamp(issue.deadline);
-  if (issue.description.length > 100_000) {
+  if (utf8Length(issue.description) > 100_000) {
     throw new MutationError(400, "description too long");
   }
 
@@ -270,4 +329,58 @@ function hasAncestor(tx: Tx, parentId: string, id: string): boolean {
     current = tx.get("issues", current)?.parent_id ?? null;
   }
   return false;
+}
+
+/**
+ * `persistence::save` ownership mirror: any write the server routes through
+ * `persistence::save` with `Ownership::Local` rejects an imported issue with
+ * 409, even without a policy rule. Of the mutators here, archive and unarchive
+ * are the ones without a policy rule that still persist through `save`
+ * (`save_issue_fields`); other writes are already covered by the policy check
+ * above, which runs first on the server. Runs at the save point, after the
+ * per-command checks, as on the server.
+ */
+export function checkImportedForSave(issue: DeepReadonly<SyncIssue>): void {
+  if (issue.openproject != null) throw new MutationError(409, OWNERSHIP_MESSAGE);
+}
+
+/**
+ * `validate_workflow` mirror (`src/store/issues.rs:27`). After all writes of
+ * a mutation, any active/done, non-deleted issue that is affected or depends
+ * on an affected issue must not have an unfinished dependency (deleted or not
+ * done/cancelled). `affected` is the set of issue ids the mutation wrote.
+ * Uses point reads and the dependency index only, never a table scan.
+ */
+export function checkWorkflow(tx: Tx, affected: readonly string[]): void {
+  if (affected.length === 0) return;
+  const affectedSet = new Set(affected);
+  const candidates = new Set<string>();
+  for (const id of affectedSet) candidates.add(id);
+  for (const id of affectedSet) {
+    for (const dependent of tx.byIndex("issues", "dependency", id)) {
+      candidates.add(dependent.id);
+    }
+  }
+  for (const id of candidates) {
+    const issue = tx.get("issues", id);
+    if (issue === undefined || issue.deleted_at !== null) continue;
+    const kind = stageKindOf(tx, issue.team_id, issue.stage_id);
+    if (kind !== "active" && kind !== "done") continue;
+    // Only issues affected by this mutation (directly or as dependents) can
+    // newly violate the invariant; untouched issues already satisfied it.
+    if (!affectedSet.has(id) && !issue.dependencies.some((dep) => affectedSet.has(dep))) {
+      continue;
+    }
+    for (const dep of new Set(issue.dependencies)) {
+      const other = tx.get("issues", dep);
+      if (other === undefined) continue;
+      if (other.deleted_at !== null) {
+        throw new MutationError(409, "workflow would leave an issue with unfinished dependencies");
+      }
+      const depKind = stageKindOf(tx, other.team_id, other.stage_id);
+      if (depKind !== undefined && depKind !== "done" && depKind !== "cancelled") {
+        throw new MutationError(409, "workflow would leave an issue with unfinished dependencies");
+      }
+    }
+  }
 }

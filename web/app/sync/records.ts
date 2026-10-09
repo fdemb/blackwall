@@ -148,41 +148,91 @@ export function normalize<E extends Entity>(entity: E, record: RecordOf[E]): Rec
   for (const field of TIMESTAMP_FIELDS[entity]) {
     const value = copy[field];
     if (value === null || value === undefined) continue;
-    copy[field] = normalizeTimestamp(value);
+    copy[field] = parseTimestamp(value);
   }
   return copy as RecordOf[E];
 }
 
 /**
- * Timestamps to UTC with fixed-width microseconds: YYYY-MM-DDTHH:MM:SS.ffffffZ.
- * Keeps up to 6 fraction digits (pads short fractions with zeros), so Date's
- * millisecond truncation can't collapse distinct server timestamps. Throws on
- * unparseable input instead of producing Invalid Date.
+ * RFC 3339 parser shared by mutator validation and base ingestion, mirroring
+ * the server's chrono parser: case-insensitive `T`/`Z`, `+HH:MM`/`+HHMM`/`+HH`
+ * offsets, fractional seconds of any length, and leap second 60.
+ *
+ * Leap seconds normalize the way PostgreSQL stores them: `23:59:60Z` becomes
+ * `00:00:00Z` the next day (verified with `SELECT '2016-12-31T23:59:60Z'::timestamptz`
+ * reading back `2017-01-01 00:00:00+00`; `12:34:60Z` becomes `12:35:00Z`).
+ * Fractional leap seconds (`60.xxx`) keep their fraction, even though
+ * PostgreSQL rejects them; chrono accepts the shape and the prediction only
+ * needs to be storable for the non-fractional case the server can persist.
  */
-function normalizeTimestamp(value: unknown): string {
+export function parseTimestamp(value: unknown): string {
   if (typeof value !== "string") throw new Error(`unparseable timestamp ${String(value)}`);
   const match =
-    /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d+))?(Z|[+-]\d{2}:?\d{2}|[+-]\d{4}|[+-]\d{2})?$/.exec(
+    /^(\d{4})-(\d{2})-(\d{2})[Tt](\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?([Zz]|[+-]\d{2}:?\d{2}|[+-]\d{4}|[+-]\d{2})?$/.exec(
       value,
     );
   if (match === null) throw new Error(`unparseable timestamp ${value}`);
-  const datePart = match[1] as string;
-  const fractionRaw = match[2] ?? "";
-  const zoneRaw = match[3] ?? "Z";
-  let zone = zoneRaw;
-  if (zone !== "Z") {
-    const sign = zone[0] as string;
-    const digits = zone.slice(1).replace(":", "");
-    const hour = digits.slice(0, 2);
-    const minute = digits.length <= 2 ? "00" : digits.slice(2, 4);
-    zone = `${sign}${hour}:${minute}`;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const hour = Number(match[4]);
+  const minute = Number(match[5]);
+  const second = Number(match[6]);
+  const fractionRaw = match[7] ?? "";
+  const zoneRaw = match[8];
+
+  if (month < 1 || month > 12) throw new Error(`unparseable timestamp ${value}`);
+  if (hour > 23 || minute > 59 || second > 60) throw new Error(`unparseable timestamp ${value}`);
+  const leap = second === 60;
+  const dim = daysInMonth(year, month);
+  if (day < 1 || day > dim) throw new Error(`unparseable timestamp ${value}`);
+
+  let zoneForProbe = "Z";
+  if (zoneRaw !== undefined) {
+    if (/^[Zz]$/.test(zoneRaw)) {
+      zoneForProbe = "Z";
+    } else {
+      const sign = zoneRaw[0] === "-" ? "-" : "+";
+      const digits = zoneRaw.slice(1).replace(":", "");
+      let zh: number;
+      let zm: number;
+      if (digits.length === 2) {
+        zh = Number(digits);
+        zm = 0;
+      } else if (digits.length === 4) {
+        zh = Number(digits.slice(0, 2));
+        zm = Number(digits.slice(2, 4));
+      } else {
+        throw new Error(`unparseable timestamp ${value}`);
+      }
+      if (!Number.isInteger(zh) || !Number.isInteger(zm) || zh > 23 || zm > 59) {
+        throw new Error(`unparseable timestamp ${value}`);
+      }
+      const pad2 = (n: number): string => String(n).padStart(2, "0");
+      zoneForProbe = `${sign}${pad2(zh)}:${pad2(zm)}`;
+    }
   }
-  const probe = new Date(`${datePart}${zone}`);
-  if (Number.isNaN(probe.getTime())) throw new Error(`unparseable timestamp ${value}`);
+
   const pad = (n: number, width: number): string => String(n).padStart(width, "0");
-  const utc =
-    `${pad(probe.getUTCFullYear(), 4)}-${pad(probe.getUTCMonth() + 1, 2)}-${pad(probe.getUTCDate(), 2)}` +
-    `T${pad(probe.getUTCHours(), 2)}:${pad(probe.getUTCMinutes(), 2)}:${pad(probe.getUTCSeconds(), 2)}`;
+  const datePart =
+    `${pad(year, 4)}-${pad(month, 2)}-${pad(day, 2)}` +
+    `T${pad(hour, 2)}:${pad(minute, 2)}:${pad(leap ? 59 : second, 2)}`;
+  const probe = new Date(`${datePart}${zoneForProbe}`);
+  if (Number.isNaN(probe.getTime())) throw new Error(`unparseable timestamp ${value}`);
+  const utcMillis = probe.getTime() + (leap ? 1000 : 0);
+  const utc = new Date(utcMillis);
+  const out =
+    `${pad(utc.getUTCFullYear(), 4)}-${pad(utc.getUTCMonth() + 1, 2)}-${pad(utc.getUTCDate(), 2)}` +
+    `T${pad(utc.getUTCHours(), 2)}:${pad(utc.getUTCMinutes(), 2)}:${pad(utc.getUTCSeconds(), 2)}`;
   const fraction = fractionRaw.slice(0, 6).padEnd(6, "0");
-  return `${utc}.${fraction}Z`;
+  return `${out}.${fraction}Z`;
+}
+
+function daysInMonth(year: number, month: number): number {
+  if (month === 2) {
+    const leapYear = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+    return leapYear ? 29 : 28;
+  }
+  if (month === 4 || month === 6 || month === 9 || month === 11) return 30;
+  return 31;
 }
