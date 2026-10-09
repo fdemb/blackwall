@@ -90,10 +90,23 @@ export const BOOTSTRAP_REPLACED_ENTITIES: readonly Entity[] = [
 /** Sync issue shape: the server shape without the derived counts. */
 export type SyncIssue = Omit<
   Issue,
-  "blocked_count" | "subtask_total" | "subtask_completed" | "number"
+  | "blocked_count"
+  | "subtask_total"
+  | "subtask_completed"
+  | "number"
+  | "labels"
+  | "dependencies"
+  | "followers"
+  | "attachments"
+  | "source_links"
 > & {
   /** Null until the server confirms a locally created issue and assigns a number. */
   number: number | null;
+  labels: Id[];
+  dependencies: Id[];
+  followers: Id[];
+  attachments: Issue["attachments"][number][];
+  source_links: Issue["source_links"][number][];
 };
 
 /** Workspace pull shape: only the workspace row itself. */

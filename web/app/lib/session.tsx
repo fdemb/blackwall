@@ -7,20 +7,43 @@ import {
   useState,
   type ReactNode,
 } from "react";
+import { ConfirmDialog } from "~/components/app/confirm";
+import { clearSession, sessionHasPending } from "./session-replicas";
+import { queryClient } from "./query-client";
+import { clearLastWs } from "./auth-guard";
 import { auth } from "./api";
 import { useI18n } from "./i18n";
 import { applyTheme } from "./theme";
 import type { Profile } from "./types";
 
+export async function logoutSession() {
+  await clearSession();
+  queryClient.clear();
+  clearLastWs();
+  try {
+    await auth.logout();
+  } finally {
+    sessionStorage.clear();
+    window.location.assign("/login");
+  }
+}
+
 interface Session {
   profile: Profile;
+  logout: () => Promise<void>;
   setProfile: (p: Profile) => void;
   saveProfile: (patch: Partial<Omit<Profile, "id" | "email">>) => Promise<void>;
 }
 const Ctx = createContext<Session | null>(null);
 
 export function SessionProvider({ initial, children }: { initial: Profile; children: ReactNode }) {
-  const { setLang } = useI18n();
+  const { setLang, t } = useI18n();
+  const [confirmLogout, setConfirmLogout] = useState(false);
+  const finishLogout = useCallback(() => logoutSession(), []);
+  const logout = useCallback(async () => {
+    if (await sessionHasPending()) setConfirmLogout(true);
+    else await finishLogout();
+  }, [finishLogout]);
   const [profile, setProfileState] = useState(initial);
   const latest = useRef(initial);
   const writes = useRef<Promise<unknown>>(Promise.resolve());
@@ -47,10 +70,22 @@ export function SessionProvider({ initial, children }: { initial: Profile; child
     [setProfile],
   );
   const value = useMemo(
-    () => ({ profile, setProfile, saveProfile }),
-    [profile, setProfile, saveProfile],
+    () => ({ profile, setProfile, saveProfile, logout }),
+    [profile, setProfile, saveProfile, logout],
   );
-  return <Ctx value={value}>{children}</Ctx>;
+  return (
+    <Ctx value={value}>
+      {children}
+      <ConfirmDialog
+        title={t("draft.discardTitle")}
+        description={t("draft.discardSub")}
+        confirmLabel={t("nav.signOut")}
+        isOpen={confirmLogout}
+        onOpenChange={setConfirmLogout}
+        onConfirm={finishLogout}
+      />
+    </Ctx>
+  );
 }
 
 export function useSession() {

@@ -26,7 +26,6 @@ import { Avatar } from "~/components/ui/avatar";
 import { Button } from "~/components/ui/button";
 import { Kbd } from "~/components/ui/tooltip";
 import { Menu, MenuItem, MenuPopover, MenuSeparator, MenuTrigger } from "~/components/ui/menu";
-import { auth } from "~/lib/api";
 import { LAST_WS } from "~/lib/auth-guard";
 import { useI18n } from "~/lib/i18n";
 import { useSession } from "~/lib/session";
@@ -52,7 +51,7 @@ export function Sidebar({
   const { t } = useI18n();
   const nav = useNavigate();
   const { ws, unread, create, canWrite } = useWorkspace();
-  const { profile } = useSession();
+  const { profile, logout } = useSession();
   const { workspaces } = useOutletContext<{ workspaces: WorkspaceSummary[] }>();
   const base = `/${ws.id}`;
   const myTeams = ws.teams.filter((tm) => tm.members.includes(profile.id));
@@ -80,11 +79,7 @@ export function Sidebar({
             <Menu
               onAction={(k) => {
                 if (k === "new") void nav("/welcome");
-                else if (k === "signout")
-                  void auth.logout().finally(() => {
-                    sessionStorage.clear();
-                    location.href = "/login";
-                  });
+                else if (k === "signout") void logout();
                 else if (k === "account") void nav(`${base}/settings/profile`);
                 else if (k === "settings") void nav(`${base}/settings/general`);
                 else if (String(k).startsWith("ws:")) {

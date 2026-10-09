@@ -6,7 +6,7 @@ import { Button } from "~/components/ui/button";
 import { FormError, TextField } from "~/components/ui/field";
 import { Logo } from "~/components/app/logo";
 import { LanguageToggle } from "~/components/app/preferences";
-import { auth, workspaces } from "~/lib/api";
+import { workspaces } from "~/lib/api";
 import { writeLastWs } from "~/lib/auth-guard";
 import { useI18n } from "~/lib/i18n";
 import { useSession } from "~/lib/session";
@@ -17,7 +17,7 @@ import { formText } from "~/lib/utils";
 export default function Welcome() {
   const { t } = useI18n();
   const nav = useNavigate();
-  const { profile } = useSession();
+  const { profile, logout } = useSession();
   const { revalidate } = useRevalidator();
   const { workspaces: list } = useOutletContext<{ workspaces: WorkspaceSummary[] }>();
   const [params] = useSearchParams();
@@ -37,15 +37,7 @@ export default function Welcome() {
       />
       <div className="absolute right-4 top-4 flex items-center gap-1">
         <LanguageToggle />
-        <Button
-          variant="ghost"
-          size="sm"
-          onPress={() =>
-            auth.logout().finally(() => {
-              location.href = "/login";
-            })
-          }
-        >
+        <Button variant="ghost" size="sm" onPress={() => logout()}>
           {t("nav.signOut")}
         </Button>
       </div>

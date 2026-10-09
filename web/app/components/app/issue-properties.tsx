@@ -49,7 +49,7 @@ export function Properties({
       <Prop label={t("field.labels")}>
         <LabelsPicker
           isDisabled={!canWrite}
-          value={issue.labels}
+          value={[...issue.labels]}
           onChange={(labels) => patch({ labels })}
         />
       </Prop>

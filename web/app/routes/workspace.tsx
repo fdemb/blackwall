@@ -5,9 +5,8 @@ import { CreateIssueDialog } from "~/components/app/create-issue";
 import { Dialog } from "~/components/ui/dialog";
 import { Kbd } from "~/components/ui/tooltip";
 import { ApiError } from "~/lib/api";
-import { preloadWorkspace } from "~/lib/db";
-import { queryClient } from "~/lib/query-client";
-import { startChangeFeed } from "~/lib/sync";
+import { openWorkspaceEngine } from "~/lib/workspace-engine";
+import { AccessError, UnauthorizedError } from "~/sync/transport";
 import { clearLastWs, writeLastWs } from "~/lib/auth-guard";
 import { WorkspaceProvider, useWorkspace } from "~/lib/workspace";
 import { useI18n, type Key } from "~/lib/i18n";
@@ -15,15 +14,17 @@ import { useShortcutsEnabled } from "~/lib/shortcuts";
 import type { WorkspaceSummary } from "~/lib/types";
 import type { Route } from "./+types/workspace";
 
-export async function clientLoader({ params }: Route.ClientLoaderArgs) {
+export async function clientLoader({ params, request }: Route.ClientLoaderArgs) {
   try {
-    // The cursor comes first, so changes made while the records load still reach the client.
-    await startChangeFeed(params.ws);
-    await preloadWorkspace(queryClient, params.ws);
+    const engine = await openWorkspaceEngine(params.ws, request.signal);
     writeLastWs(params.ws);
-    return { id: params.ws };
+    return { id: params.ws, engine };
   } catch (e) {
-    if (e instanceof ApiError && (e.status === 404 || e.status === 403)) {
+    if (e instanceof UnauthorizedError) throw redirect("/login");
+    if (
+      e instanceof AccessError ||
+      (e instanceof ApiError && (e.status === 404 || e.status === 403))
+    ) {
       clearLastWs();
       throw redirect("/");
     }
@@ -47,7 +48,7 @@ export function shouldRevalidate({
 
 export default function WorkspaceLayout({ loaderData }: Route.ComponentProps) {
   return (
-    <WorkspaceProvider key={loaderData.id} id={loaderData.id}>
+    <WorkspaceProvider key={loaderData.id} engine={loaderData.engine}>
       <Workspace />
     </WorkspaceProvider>
   );

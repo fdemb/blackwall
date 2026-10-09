@@ -1,5 +1,6 @@
 import { QueryClient, queryOptions } from "@tanstack/react-query";
 import { ApiError, workspaces } from "./api";
+import type { SyncStore } from "../sync/store";
 import type { Id } from "./types";
 
 /** Server reads that aren't part of the synced workspace data. */
@@ -22,3 +23,18 @@ export const keys = {
 
 export const reportQuery = (ws: Id) =>
   queryOptions({ queryKey: keys.report(ws), queryFn: () => workspaces.report(ws) });
+
+export function watchReportChanges(store: SyncStore, workspaceId: Id): () => void {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const unsubscribe = store.subscribe((event) => {
+    if (!event.entities.has("issues") && !event.entities.has("time_entries")) return;
+    clearTimeout(timer);
+    timer = setTimeout(() => {
+      void queryClient.invalidateQueries({ queryKey: keys.report(workspaceId) });
+    }, 250);
+  });
+  return () => {
+    clearTimeout(timer);
+    unsubscribe();
+  };
+}

@@ -72,7 +72,7 @@ export async function api<T>(
 }
 
 export const auth = {
-  me: () => api<Profile>("/api/me"),
+  me: () => api<Profile & { session_id: string }>("/api/me"),
   login: (email: string, password: string) =>
     api<{ csrf_token: string; profile: Profile }>("/api/auth/login", {
       method: "POST",
@@ -130,13 +130,14 @@ export const workspaces = {
   upload: (
     id: string,
     issueId: string,
-    expected_versions: EntityVersions,
+    expected_versions: EntityVersions | undefined,
     file: File,
     commentId?: string,
     idempotency_key: string = crypto.randomUUID(),
   ) => {
     const form = new FormData();
-    form.append("expected_versions", JSON.stringify(expected_versions));
+    if (expected_versions !== undefined)
+      form.append("expected_versions", JSON.stringify(expected_versions));
     form.append("idempotency_key", idempotency_key);
     if (commentId) form.append("comment_id", commentId);
     form.append("file", file);

@@ -1,13 +1,18 @@
 import { redirect } from "react-router";
 import { ApiError, auth, workspaces } from "./api";
 import { safeGet, safeRemove, safeSet } from "./storage";
-import type { Profile, WorkspaceSummary } from "./types";
+import { acceptSession, clearSession } from "./session-replicas";
+import type { SessionProfile } from "../sync/transport";
+import type { WorkspaceSummary } from "./types";
 
-export async function currentProfile(): Promise<Profile | null> {
+export async function currentProfile(): Promise<SessionProfile | null> {
   try {
-    return await auth.me();
+    return await acceptSession(await auth.me());
   } catch (e) {
-    if (e instanceof ApiError && e.status === 401) return null;
+    if (e instanceof ApiError && e.status === 401) {
+      await clearSession();
+      return null;
+    }
     throw e;
   }
 }
@@ -26,7 +31,7 @@ export function clearLastWs() {
   safeRemove("local", LAST_WS);
 }
 
-export async function landing(): Promise<{ profile: Profile; list: WorkspaceSummary[] }> {
+export async function landing(): Promise<{ profile: SessionProfile; list: WorkspaceSummary[] }> {
   const profile = await currentProfile();
   if (!profile) throw redirect("/login");
   return { profile, list: await workspaces.list() };

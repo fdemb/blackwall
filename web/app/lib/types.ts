@@ -122,7 +122,7 @@ export interface Issue {
   blocked_count: number;
   subtask_total: number;
   subtask_completed: number;
-  number: number;
+  number: number | null;
   title: string;
   description: string;
   team_id: Id;
@@ -131,18 +131,18 @@ export interface Issue {
   /** Null for OpenProject issues and issues created before creators were stored. */
   created_by: Id | null;
   priority: Priority;
-  labels: Id[];
+  labels: readonly Id[];
   estimate: number | null;
   deadline: string | null;
   project_id: Id | null;
   milestone_id: Id | null;
   sprint_id: Id | null;
   parent_id: Id | null;
-  dependencies: Id[];
+  dependencies: readonly Id[];
   position: number;
-  followers: Id[];
-  attachments: Attachment[];
-  source_links: SourceLink[];
+  followers: readonly Id[];
+  attachments: readonly Attachment[];
+  source_links: readonly SourceLink[];
   deleted_at: string | null;
   archived_at: string | null;
   done_at: string | null;
@@ -155,8 +155,8 @@ export interface Comment {
   issue_id: Id;
   author: Id;
   body: string;
-  mentions: Id[];
-  attachments: Attachment[];
+  mentions: readonly Id[];
+  attachments: readonly Attachment[];
   created_at: string;
   edited_at: string | null;
 }
@@ -243,10 +243,10 @@ export interface Activity {
   action: string;
   entity_id: Id | null;
   at: string;
-  fields?: string[];
+  fields?: readonly string[];
 }
 
-/** Workspace records loaded once and kept current. Issues and their discussion load per page. */
+/** Workspace metadata assembled from the current replica view. */
 export interface Workspace {
   id: Id;
   name: string;
@@ -359,7 +359,7 @@ export interface IssuePatch {
   dependencies?: Id[];
 }
 export type Command =
-  | { type: "create_team"; id?: Id; name: string; members: Id[]; default_stage_ids: Id[] }
+  | { type: "create_team"; id?: Id; name: string; members: Id[]; default_stage_ids?: Id[] }
   | { type: "set_team_members"; id: Id; members: Id[] }
   | { type: "set_team_archive"; id: Id; archive_after_days: number | null }
   | { type: "create_stage"; id?: Id; team_id: Id; name: string; kind: StageKind; position: number }
