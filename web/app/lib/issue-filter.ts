@@ -14,14 +14,20 @@ function nullable<T>(a: T | null, b: T | null, compareValues: (a: T, b: T) => nu
 // versions and tags whole, so the two disagree on punctuation-heavy text. docs/sync.md notes it.
 const WORD = /[\p{L}\p{M}\p{N}]+/gu;
 
+// Lowercases one code point at a time. Whole-string toLowerCase() turns a word-final Σ into ς, and
+// PostgreSQL keeps σ, so "ΟΣ" would miss "ΟΣΟ".
+function lowercase(text: string): string {
+  return Array.from(text, (char) => char.toLowerCase()).join("");
+}
+
 function words(text: string): string[] {
-  return (text.match(WORD) ?? []).map((word) => word.toLowerCase());
+  return (text.match(WORD) ?? []).map((word) => lowercase(word));
 }
 
 export function matchesSearch(issue: DeepReadonly<SyncIssue>, search: string): boolean {
   if (!search.trim()) return true;
   const text = `${issue.title} ${issue.description}`;
-  if (text.toLowerCase().includes(search.toLowerCase())) return true;
+  if (lowercase(text).includes(lowercase(search))) return true;
   const query = words(search);
   const document = new Set(words(text));
   if (query.length > 0 && query.every((word) => document.has(word))) return true;

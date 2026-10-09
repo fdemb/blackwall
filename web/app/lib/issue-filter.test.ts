@@ -269,6 +269,8 @@ describe("issue SQL search", () => {
     ["naïve—test foo😀bar", "test naïve", true],
     ["naïve—test foo😀bar", "bar foo", true],
     ["Café au lait", "cafe", false],
+    ["ΟΣΟ", "ΟΣ", true],
+    ["ΟΣ", "ΟΣΟ", false],
   ] as const)("matches %j against %j by words", (title, search, expected) => {
     expect(matchesSearch(makeIssue(id(2), { title, number: null }), search)).toBe(expected);
   });

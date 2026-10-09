@@ -37,6 +37,8 @@ export const SEARCH_CORPUS: readonly SearchCase[] = [
   c("étude facile", "étude"),
   c("zoë test", "zoë"),
   c("Ἀθῆναι", "ἀθῆναι"),
+  c("ΟΣΟ", "ΟΣ"),
+  c("ΟΣ", "ΟΣΟ"),
 
   // Dashes, apostrophes, and separators
   c("state-of-the-art design", "state of the art"),
