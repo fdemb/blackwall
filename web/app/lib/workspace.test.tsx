@@ -183,6 +183,20 @@ afterEach(async () => {
   queryClient.clear();
 });
 
+function OrderProbe() {
+  const { ws, members } = useWorkspace();
+  return (
+    <pre>
+      {JSON.stringify({
+        teams: ws.teams.map((team) => team.name),
+        firstStages: ws.teams[0]?.stages.map((stage) => stage.name),
+        memberNames: members.map((member) => member.display_name),
+        memberIds: ws.members.map((member) => member.user_id),
+      })}
+    </pre>
+  );
+}
+
 function HookProbe() {
   const workspace = useWorkspace();
   const detail = useIssueDetail("issue");
@@ -303,6 +317,38 @@ describe("workspace React integration without a DOM", () => {
       allTimeCount: 1,
       record: "Replica issue",
       phase: "ready",
+    });
+  });
+  it("keeps server order for teams, stages and member lists", async () => {
+    const engine = await fixture();
+    const reversed = { ...makeTeam("team-alpha"), name: "Alpha" };
+    reversed.stages.reverse();
+    engine.store.applyBase([
+      { entity: "teams", id: "team-zulu", record: { ...makeTeam("team-zulu"), name: "Zulu" } },
+      { entity: "teams", id: "team-alpha", record: reversed },
+      {
+        entity: "members",
+        id: "aaa",
+        record: {
+          id: "aaa",
+          email: "bob@example.com",
+          display_name: "Bob",
+          avatar_url: null,
+          contact: "",
+          role: "member",
+          version: 1,
+          team_ids: [],
+        },
+      },
+    ]);
+    const html = render(engine, <OrderProbe />);
+    expect(
+      JSON.parse((html.match(/<pre>(.*?)<\/pre>/s)?.[1] ?? "").replaceAll("&quot;", '"')),
+    ).toEqual({
+      teams: ["Alpha", "Team", "Zulu"],
+      firstStages: ["Todo", "Done"],
+      memberNames: ["Ada", "Bob"],
+      memberIds: ["aaa", "user"],
     });
   });
   it("accepts fresh dependency objects during local React rerenders", async () => {

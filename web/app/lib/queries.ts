@@ -4,6 +4,7 @@ import type { SyncStore } from "../sync/store";
 import { shallowEqual } from "../sync/selection";
 import type { IssueFilter } from "./types";
 import { filterIssues } from "./issue-filter";
+import { byAtDesc, byCreatedAsc, byCreatedDesc, byLoggedDesc } from "./order";
 
 export interface PaginationState {
   loading: boolean;
@@ -76,7 +77,7 @@ export function useNotifications(unreadOnly = false) {
       store
         .all("notifications")
         .filter((notification) => !unreadOnly || notification.read_at === null)
-        .sort((a, b) => b.created_at.localeCompare(a.created_at) || a.id.localeCompare(b.id)),
+        .sort(byCreatedDesc),
     ["notifications"],
     [unreadOnly],
   );
@@ -86,10 +87,7 @@ export function useNotifications(unreadOnly = false) {
 export function useComments(issueId: string) {
   useScope({ entity: "comments", issueId });
   const items = useView(
-    (store) =>
-      [...store.byIndex("comments", "issue_id", issueId)].sort(
-        (a, b) => a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id),
-      ),
+    (store) => [...store.byIndex("comments", "issue_id", issueId)].sort(byCreatedAsc),
     ["comments"],
     [issueId],
   );
@@ -103,7 +101,7 @@ export function useTimeEntries(issueId?: string) {
         ...(issueId
           ? store.byIndex("time_entries", "issue_id", issueId)
           : store.all("time_entries")),
-      ].sort((a, b) => b.logged_at.localeCompare(a.logged_at) || a.id.localeCompare(b.id)),
+      ].sort(byLoggedDesc),
     ["time_entries"],
     [issueId],
   );
@@ -113,10 +111,7 @@ export function useTimeEntries(issueId?: string) {
 export function useActivity(entityId: string) {
   useScope({ entity: "activity", entityId });
   const items = useView(
-    (store) =>
-      [...store.byIndex("activity", "entity_id", entityId)].sort(
-        (a, b) => b.at.localeCompare(a.at) || a.id.localeCompare(b.id),
-      ),
+    (store) => [...store.byIndex("activity", "entity_id", entityId)].sort(byAtDesc),
     ["activity"],
     [entityId],
   );

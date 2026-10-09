@@ -12,6 +12,7 @@ import { useToast } from "~/components/ui/toast";
 import { EngineProvider, useEngine, useSyncStatus, useView } from "../sync/react";
 import type { SyncEngine } from "../sync/engine";
 import { reportQuery, watchReportChanges } from "./query-client";
+import { byDisplayName, byExpiryDesc, byName, byPosition, bySprintStart, byUserId } from "./order";
 import { useSession } from "./session";
 import type { Command, EntityVersions, IssueInput, Report, Workspace } from "./types";
 import { uploadFile, runCommand, ServerRejection, watchRejections } from "./workspace-commands";
@@ -47,24 +48,33 @@ function useWorkspaceValue() {
       if (!row) throw new Error("Workspace replica missing");
       const members = store
         .all("members")
-        .map((member) => ({ ...member, team_ids: [...member.team_ids] }));
+        .map((member) => ({ ...member, team_ids: [...member.team_ids] }))
+        .sort(byDisplayName);
       const ws: Workspace = {
         id: row.id,
         name: row.name,
-        members: members.map(({ id, role, version }) => ({ user_id: id, role, version })),
+        members: members
+          .map(({ id, role, version }) => ({ user_id: id, role, version }))
+          .sort(byUserId),
         teams: store
           .all("teams")
-          .map((team) => ({ ...team, members: [...team.members], stages: [...team.stages] })),
-        labels: [...store.all("labels")],
+          .map((team) => ({
+            ...team,
+            members: [...team.members],
+            stages: [...team.stages].sort(byPosition),
+          }))
+          .sort(byName),
+        labels: [...store.all("labels")].sort(byName),
         projects: store
           .all("projects")
-          .map((project) => ({ ...project, team_ids: [...project.team_ids] })),
-        milestones: [...store.all("milestones")],
-        sprints: [...store.all("sprints")],
-        invitations: [...store.all("invitations")],
-        views: [...store.all("views")],
-        alert_preferences: [...store.all("alert_preferences")],
-        integrations: [...store.all("integrations")],
+          .map((project) => ({ ...project, team_ids: [...project.team_ids] }))
+          .sort(byName),
+        milestones: [...store.all("milestones")].sort(byName),
+        sprints: [...store.all("sprints")].sort(bySprintStart),
+        invitations: [...store.all("invitations")].sort(byExpiryDesc),
+        views: [...store.all("views")].sort(byName),
+        alert_preferences: [...store.all("alert_preferences")].sort(byUserId),
+        integrations: [...store.all("integrations")].sort(byName),
       };
       return { ws, members };
     },
