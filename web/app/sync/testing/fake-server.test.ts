@@ -1235,6 +1235,53 @@ it("rejects malformed filter enums and alert preference types per mutation", asy
 });
 
 describe("fake server fidelity regressions", () => {
+  it("delays push acknowledgements after committing without blocking newer snapshots", async () => {
+    const pushes: { clientId: string; previous: number }[] = [];
+    const results: string[] = [];
+    const f = fixture({
+      onPush: (input) => pushes.push(input),
+      onResult: (_client, result) => results.push(result.status),
+    });
+    f.server.inject({ kind: "response_delay", route: "push", milliseconds: 100 });
+    let delivered = false;
+    const response = f.push([label(1)]).then((value) => {
+      delivered = true;
+      return value;
+    });
+    await f.pull();
+    expect(f.server.records("labels")).toHaveLength(1);
+    expect(delivered).toBe(false);
+    expect(pushes).toMatchObject([{ clientId: CLIENT, previous: 0 }]);
+    expect(results).toEqual(["applied"]);
+    f.server.advance(100);
+    expect((await response).status).toBe(200);
+  });
+
+  it("clears queued faults when healing traffic", async () => {
+    const f = fixture();
+    f.server.inject({ kind: "unavailable", route: "pull" });
+    f.server.inject({ kind: "delay", route: "push", milliseconds: 100 });
+    f.server.clearFaults();
+    expect((await f.get("pull")).status).toBe(200);
+    expect((await f.push([label(1)])).status).toBe(200);
+  });
+
+  it("combines byte cuts with delayed bootstrap delivery", async () => {
+    const f = fixture();
+    f.server.inject({ kind: "cut_bootstrap", byte: 13 });
+    f.server.inject({ kind: "response_delay", route: "bootstrap", milliseconds: 100 });
+    const response = await f.get("bootstrap");
+    let delivered = false;
+    const body = response.arrayBuffer().then((bytes) => {
+      delivered = true;
+      return bytes;
+    });
+    await f.pull();
+    expect(delivered).toBe(false);
+    f.server.advance(100);
+    expect((await body).byteLength).toBe(13);
+  });
+
   it("lets overlapping pulls return the older captured snapshot last", async () => {
     const f = fixture();
     f.createIssue();

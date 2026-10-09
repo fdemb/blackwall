@@ -11,6 +11,8 @@ Replica: base (server state) plus an overlay of replayed outbox mutations. The s
 - `engine-types.ts`: injected clock and signal contracts, dependencies, status snapshots, engine events, rejection details, and mutation receipts.
 - `engine-scheduling.ts`: serial queues, abort-aware waits, and deterministic capped backoff with jitter.
 - `engine.test.ts`: deterministic fake-server scenarios, including reload and schema recovery with both memory and IndexedDB persistence.
+- `convergence.test.ts`: fixed CI seeds, optional soak runs, action coverage, and trace determinism.
+- `testing/convergence.ts`: seeded traffic across two or three cookie-authenticated engines with separate memory and IndexedDB replicas.
 - `fixtures.ts`: test factories and a hand-written replay. Tests only.
 - `mutators/index.ts`: command registry, admission, replay, and online-only command names.
 - `mutators/`: argument normalization, validation, and command implementations grouped by domain.
@@ -32,7 +34,6 @@ Replica: base (server state) plus an overlay of replayed outbox mutations. The s
 
 ## Later tasks
 
-- 2f convergence tests: random traffic across engines must equal server state.
 - React bindings: `useSyncExternalStore` over `subscribe`/`version`/`get`, status over `pendingVersion`.
 - Tabs: leader election around `start`/`stop`, plus broadcast handling for shared persistence writes.
 
@@ -54,6 +55,36 @@ Replica: base (server state) plus an overlay of replayed outbox mutations. The s
 - `subscribe(listener)` emits `rejected`, `error`, `unauthorized`, and `accessLost` events and returns an unsubscribe function. Rejection events contain the same frozen details as `status.rejected`.
 
 The engine assumes it is the leader between start and stop. React bindings and tab coordination remain separate tasks.
+
+## Run convergence tests
+
+From `web/`, run the fixed seeds with the sync suite:
+
+```sh
+vp test run app/sync
+```
+
+For a local soak, run seeds 1 through 500:
+
+```sh
+SYNC_FUZZ_SEEDS=500 vp test run app/sync/convergence.test.ts
+```
+
+To reproduce a failure, use the seed printed in its trace:
+
+```sh
+SYNC_FUZZ_SEED=179 vp test run app/sync/convergence.test.ts
+```
+
+`SYNC_FUZZ_STEPS` overrides the 90-action budget. The first 12 actions combine sustained pokes, delayed pulls, queued mutations, held scopes, and scope retry backoff. Random actions then mix issue and planning commands, comments, time, views, personal settings, concurrent server edits, online commands, scope holds, faults, clock advances, offline signals, stop/start, and reload. Persistence gates expose admission, allocation, and disk/store boundaries.
+
+Healing removes faults, restores connectivity, starts stopped clients, and reloads engines with blocked protocol lanes. Each run has a 200-second simulated recovery bound and a bounded host-IO drain. Quiescence requires an empty outbox, finished reads and writes, connected events, completed online calls, and persisted markers for every held scope.
+
+The oracle compares whole eager records and held scopes with the server's actor-specific records, computes issue counts independently, and reopens persistence to compare every loaded table. Server observers check mutation order, identical retry batches and mutation content, receipts against original server results, and created-record existence. A final seeded auth failure checks 401/403 classification with unreadable error bodies on bootstrap, pull, push, scope, events, and CSRF refresh. Cleanup must preserve other replicas. The determinism test hashes actions, server push payloads, and outcomes across two runs.
+
+The fake and clients use separate seeded generators; client UUID allocation is deterministic in the test runner. Each simulated tab has its own cookie and CSRF jar. The fetch adapter isolates the REST client's shared token singleton so one simulated tab cannot overwrite another tab's token.
+
+Seed 179 currently exposes an outcome-contract question. A server-rejected command whose response is lost can later settle as `"applied"` after acknowledgement or a duplicate retry. That follows the documented fallback below, but fails the acceptance property that every applied receipt proves a server effect. The soak keeps this assertion strict. The minimized scenario is `cannot recover a rejection status from an acknowledgement and duplicate retry` in `engine.test.ts`.
 
 ## Engine invariants
 
@@ -107,14 +138,17 @@ The control API returns detached records:
 `inject(fault)` queues a one-shot fault. Each matching request consumes at most one fault of each kind. Different kinds can combine on one request. `route` limits a fault to that endpoint; omitted routes match the next request of any kind.
 
 - `{kind: "delay", route?, milliseconds}` delays handling. A `[min, max]` range selects an inclusive integer duration using `options.random`, a seeded function returning values in `[0, 1)`. The default selects the minimum. Other requests can finish before a delayed request, which observes state when its delay ends. Requests otherwise execute serially.
-- `{kind: "response_delay", route?: "pull" | "bootstrap" | "scope", milliseconds}` captures the snapshot before delaying delivery. Pull and scope fetches resolve after the delay; bootstrap headers resolve immediately and its frozen body waits. Later reads can return newer snapshots first. The delay runs outside the handling queue and supports abort and the same seeded duration ranges as `delay`. An omitted route matches the next read.
+- `{kind: "response_delay", route?: "pull" | "bootstrap" | "scope" | "push", milliseconds}` captures the snapshot or commits the push before delaying delivery. Pull, scope, and push fetches resolve after the delay; bootstrap headers resolve immediately and its frozen body waits. Later reads can return newer snapshots first. The delay runs outside the handling queue and supports abort and the same seeded duration ranges as `delay`. An omitted route matches the next read or push.
 - `{kind: "drop_response", route?}` completes handling, discards the response, and rejects fetch with a network `TypeError`. A committed push remains applied.
 - `{kind: "duplicate_push"}` executes the same push twice and returns the first result. The high-water mark deduplicates the second execution.
 - `{kind: "unavailable", route: "push" | "pull" | "bootstrap" | "scope" | "events", after?}` returns 503. Push stops after `after` committed results, defaulting to zero, and includes those results and the high-water mark. Pull, bootstrap, scope, and events return a JSON error and `Retry-After: 5`.
 - `{kind: "truncate_bootstrap", afterRecords?}` ends the NDJSON stream after that many record lines, defaulting to zero, with a header and no trailer.
+- `{kind: "cut_bootstrap", byte}` cuts the encoded snapshot at an arbitrary byte offset, including inside a record or UTF-8 character.
 - `{kind: "close_events", afterMs}` ends the next event stream early, measured from connection time.
 - `{kind: "reset_pull"}` makes the next pull return a reset with no acknowledgement or changes.
 - `advanceHorizon(txid?)` prunes older transactions and resets cursors whose `xmin` predates the new horizon. The default is the current snapshot's `xmax`.
+
+`clearFaults()` removes unconsumed faults. Optional `onFault(route, fault)`, `onPush({clientId, mutations, previous})`, and `onResult(clientId, result)` observers receive detached inputs for convergence assertions. Push observation happens after authentication and envelope validation. Result observation includes original rejections and duplicate retries.
 
 `set_role` and `remove_member` are implemented online-only commands. `invite`, `resend_invitation`, `create_integration`, and `import_issues` reject with 400, `not supported by the fake`. `add_attachment` and `attach_comment_file` reject with the real server's 400, `use the attachment upload endpoint`.
 

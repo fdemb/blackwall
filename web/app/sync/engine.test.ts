@@ -590,6 +590,33 @@ describe("sync engine", () => {
     expect(f.server.records("issues").filter((issue) => issue.title === "Once")).toHaveLength(1);
   });
 
+  it("cannot recover a rejection status from an acknowledgement and duplicate retry", async () => {
+    const results: { status: string }[] = [];
+    const f = fixture(new MemoryReplicaStorage(), {
+      onResult: (_client, result) => results.push(result),
+    });
+    await f.ready();
+    f.signals.send("offline");
+    const receipt = await f.engine.mutate("update_issue", {
+      id: ISSUE,
+      patch: { dependencies: [OTHER_ISSUE] },
+    });
+    f.server.run(f.peer, {
+      type: "update_issue",
+      id: OTHER_ISSUE,
+      patch: { dependencies: [ISSUE] },
+    });
+    f.server.inject({ kind: "drop_response", route: "push" });
+    f.signals.send("online");
+    await until(() => results.some((result) => result.status === "rejected"));
+    await f.advance(1000);
+    expect(await receipt.settled).toBe("applied");
+    expect(results.map((result) => result.status)).toEqual(["rejected", "duplicate"]);
+    await until(() => f.engine.status.get().pending === 0);
+    expect(f.server.record("issues", ISSUE)?.dependencies).toEqual([]);
+    expect(f.engine.store.get("issues", ISSUE)?.dependencies).toEqual([]);
+  });
+
   it("keeps pending work through intermediate pull pages until the final snapshot", async () => {
     const f = fixture(new MemoryReplicaStorage(), { pageSize: 2 });
     await f.ready();
@@ -1225,6 +1252,32 @@ describe("cookie sessions and pending callers", () => {
 });
 
 describe("record preparation", () => {
+  it.each([0, 1, 70, 113, 256, "utf8-1", "utf8-2", "utf8-3"])(
+    "retries a bootstrap cut at byte boundary %s without persisting its prefix",
+    async (boundary) => {
+      const f = fixture();
+      f.server.run(f.owner, { type: "update_issue", id: ISSUE, patch: { title: "Cut 🦊 here" } });
+      await f.engine.open();
+      const before = await f.disk();
+      const full = await f.server.fetch(
+        `/api/workspaces/${f.workspace.id}/sync/bootstrap?client_id=${before.meta.clientId}`,
+        { headers: { cookie: `blackwall_session=${f.token}` } },
+      );
+      const bytes = new Uint8Array(await full.arrayBuffer());
+      const emoji = bytes.findIndex((byte) => byte === 0xf0);
+      expect(emoji).toBeGreaterThan(0);
+      const byte = typeof boundary === "number" ? boundary : emoji + Number(boundary.at(-1));
+      f.server.inject({ kind: "cut_bootstrap", byte });
+      await f.engine.start();
+      await until(() => f.engine.status.get().lastError instanceof TruncatedError);
+      expect(await f.disk()).toEqual(before);
+      expect(f.engine.store.all("issues")).toEqual([]);
+      await f.advance(1000);
+      await until(() => f.engine.status.get().phase === "ready");
+      expect(f.engine.store.get("issues", ISSUE)).toEqual(f.authoritativeIssue(ISSUE));
+    },
+  );
+
   it.each(["memory", "indexeddb"])(
     "rejects records outside the requested scope before writing %s state",
     async (backend) => {

@@ -19,7 +19,7 @@ export type Fault =
   | { kind: "delay"; route?: Route; milliseconds: number | readonly [number, number] }
   | {
       kind: "response_delay";
-      route?: "pull" | "bootstrap" | "scope";
+      route?: "pull" | "bootstrap" | "scope" | "push";
       milliseconds: number | readonly [number, number];
     }
   | { kind: "drop_response"; route?: Route }
@@ -30,6 +30,7 @@ export type Fault =
       after?: number;
     }
   | { kind: "truncate_bootstrap"; afterRecords?: number }
+  | { kind: "cut_bootstrap"; byte: number }
   | { kind: "close_events"; afterMs: number }
   | { kind: "reset_pull" };
 
@@ -41,6 +42,9 @@ export interface FakeServerOptions {
   horizon?: number;
   sessionLifetimeMs?: number;
   events?: Partial<EventTiming>;
+  onPush?: (input: { clientId: string; mutations: readonly Mutation[]; previous: number }) => void;
+  onResult?: (clientId: string, result: MutationResult) => void;
+  onFault?: (route: string, fault: Fault) => void;
 }
 interface WorkspaceState {
   tables: Tables;
@@ -353,6 +357,9 @@ export class FakeServer {
   inject(fault: Fault): void {
     this.faults.push(structuredClone(fault));
   }
+  clearFaults(): void {
+    this.faults.length = 0;
+  }
   advanceHorizon(txid = this.txid): void {
     if (!Number.isSafeInteger(txid) || txid < this.horizon || txid > this.txid)
       throw new Error("invalid horizon");
@@ -391,6 +398,7 @@ export class FakeServer {
     if (!route || (route === "push" ? request.method !== "POST" : request.method !== "GET"))
       return json({ error: "not found" }, 404);
     const faults = this.takeFaults(route);
+    for (const fault of faults) this.options.onFault?.(route, structuredClone(fault));
     const delay = faults.find((fault) => fault.kind === "delay");
     if (delay?.kind === "delay") {
       const duration = this.delayDuration(delay.milliseconds);
@@ -401,7 +409,12 @@ export class FakeServer {
       () => {},
       () => {},
     );
-    const response = await task;
+    let response = await task;
+    const cut = faults.find((fault) => fault.kind === "cut_bootstrap");
+    if (cut?.kind === "cut_bootstrap" && response.ok) {
+      const bytes = new Uint8Array(await response.arrayBuffer());
+      response = new Response(bytes.slice(0, cut.byte), { headers: response.headers });
+    }
     const delayed = faults.find((fault) => fault.kind === "response_delay");
     if (delayed?.kind !== "response_delay") return response;
     const duration = this.delayDuration(delayed.milliseconds);
@@ -552,7 +565,10 @@ export class FakeServer {
     const kinds = new Set<string>();
     for (let index = 0; index < this.faults.length;) {
       const fault = this.faults[index];
-      if (fault.kind === "response_delay" && !["pull", "bootstrap", "scope"].includes(route)) {
+      if (
+        fault.kind === "response_delay" &&
+        !["pull", "bootstrap", "scope", "push"].includes(route)
+      ) {
         index += 1;
         continue;
       }
@@ -562,7 +578,7 @@ export class FakeServer {
         fault.kind === "drop_response" ||
         fault.kind === "unavailable"
           ? fault.route
-          : fault.kind === "truncate_bootstrap"
+          : fault.kind === "truncate_bootstrap" || fault.kind === "cut_bootstrap"
             ? "bootstrap"
             : fault.kind === "close_events"
               ? "events"
@@ -854,6 +870,11 @@ export class FakeServer {
     mutations: Mutation[],
     after?: number,
   ): { status: number; body: PushResponse } {
+    this.options.onPush?.({
+      clientId,
+      mutations: structuredClone(mutations),
+      previous: this.clientState(clientId).last_mutation_id,
+    });
     const body: PushResponse = {
       last_mutation_id: this.clientState(clientId).last_mutation_id,
       results: [],
@@ -893,6 +914,7 @@ export class FakeServer {
       }
       client.updatedAt = this.clock.milliseconds();
       body.last_mutation_id = client.last_mutation_id;
+      this.options.onResult?.(clientId, structuredClone(body.results[body.results.length - 1]));
     }
     return { status: 200, body };
   }
