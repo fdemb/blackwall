@@ -1,0 +1,68 @@
+import { describe, expect, it } from "vite-plus/test";
+import { blockedCount, subtaskCompleted, subtaskTotal, withCounts } from "./derived";
+import { makeIssue, makeTeam, testReplay } from "./fixtures";
+import { SyncStore } from "./store";
+
+function countedStore(): SyncStore {
+  const store = new SyncStore(testReplay);
+  store.replaceBase({
+    teams: [makeTeam()],
+    issues: [
+      makeIssue("parent", { dependencies: ["dep-open", "dep-done", "dep-deleted"] }),
+      makeIssue("child-open", { parent_id: "parent", stage_id: "stage-todo" }),
+      makeIssue("child-done", { parent_id: "parent", stage_id: "stage-done" }),
+      makeIssue("child-deleted", {
+        parent_id: "parent",
+        stage_id: "stage-todo",
+        deleted_at: "2026-10-08T12:00:00.000Z",
+      }),
+      makeIssue("dep-open", { stage_id: "stage-todo" }),
+      makeIssue("dep-done", { stage_id: "stage-done" }),
+      makeIssue("dep-deleted", {
+        stage_id: "stage-todo",
+        deleted_at: "2026-10-08T12:00:00.000Z",
+      }),
+    ],
+  });
+  return store;
+}
+
+describe("derived counts", () => {
+  it("matches the server definitions", () => {
+    const store = countedStore();
+    expect(blockedCount(store, "parent")).toBe(1);
+    expect(subtaskTotal(store, "parent")).toBe(2);
+    expect(subtaskCompleted(store, "parent")).toBe(1);
+  });
+
+  it("returns zero for a missing issue", () => {
+    const store = countedStore();
+    expect(blockedCount(store, "ghost")).toBe(0);
+    expect(subtaskTotal(store, "ghost")).toBe(0);
+    expect(subtaskCompleted(store, "ghost")).toBe(0);
+  });
+
+  it("follows stage-kind changes on the team", () => {
+    const store = countedStore();
+    const team = { ...makeTeam(), stages: makeTeam().stages.map((stage) => ({ ...stage })) };
+    team.stages[0] = { ...team.stages[0], id: "stage-todo", kind: "done" };
+    store.applyBase([{ entity: "teams", id: "team-1", record: team }]);
+    expect(blockedCount(store, "parent")).toBe(0);
+    expect(subtaskCompleted(store, "parent")).toBe(2);
+    expect(subtaskTotal(store, "parent")).toBe(2);
+  });
+
+  it("withCounts returns the UI issue shape", () => {
+    const store = countedStore();
+    const parent = store.get("issues", "parent");
+    if (parent === undefined) throw new Error("missing parent");
+    const full = withCounts(store, parent);
+    expect(full).toMatchObject({
+      id: "parent",
+      title: "Issue parent",
+      blocked_count: 1,
+      subtask_total: 2,
+      subtask_completed: 1,
+    });
+  });
+});
