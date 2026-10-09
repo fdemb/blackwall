@@ -166,10 +166,12 @@ Request errors: a non-member receives 403. A missing or malformed `client_id`, o
 The server handles the mutations in order. For each one, it runs one transaction that:
 
 1. Opens the operation the same way the REST command path does, and locks the `sync_clients` row (inserting it on first use).
-2. Skips the mutation as `duplicate` when `id <= last_mutation_id`, because it was already processed. Ids must increase but may have gaps.
+2. Skips applying the mutation when `id <= last_mutation_id`, because it was already processed. If `sync_rejections` holds its outcome, returns `rejected` with the original `{status, message}`. Otherwise returns `duplicate`, meaning applied. Ids must increase but may have gaps.
 3. Runs the command through the same store code the REST command endpoint uses, without version preconditions and without an idempotency key, inside a savepoint. `add_attachment` and `attach_comment_file` are rejected; uploads go through the REST upload endpoint.
-4. On a business error, rolls back the command's writes to a savepoint and records `rejected` with the `{status, message}` the REST endpoint returns for that error.
+4. On a business error, rolls back the command's writes to a savepoint and records `rejected` with the `{status, message}` the REST endpoint returns for that error. Inserts that outcome into `sync_rejections` and deletes all but the client's 1,000 most recent rejections in the same transaction.
 5. Sets `last_mutation_id = id` and commits, so rejected mutations still advance the id.
+
+`sync_rejections(client_id uuid, mutation_id bigint, status smallint, message text)` has a primary key on `(client_id, mutation_id)`. All columns are non-null. Its foreign key to `sync_clients(client_id)` cascades deletes, so pruning a client also removes its rejections.
 
 The server treats `last_mutation_id` as a high-water mark, so a client must never let a later mutation reach the server before an earlier one. Only the leader pushes. It sends the outbox from its oldest entry, in id order, one request at a time, and retries a failed request with the same mutations before sending anything newer. Online-only commands allocate their id only when the outbox is empty, so they never overtake a pending mutation.
 
@@ -250,6 +252,8 @@ One mutator per command in the `Command` union in `web/app/lib/types.ts`, with t
 - Commands with server-generated secrets or bulk server work don't get mutators. See online-only operations below.
 
 > A mutator runs in one of two modes. **Admit** runs once when the user issues the command, against the current view; a failure there rejects the edit before it reaches the outbox and is shown to the user. **Replay** runs on every rebase; a command whose effect is already in place, because the server applied it before acknowledging it, is a no-op there. Replay errors are diagnostics and are never shown to the user; the user learns about a server rejection from the push result. Before either mode, the engine normalizes command arguments the way the server deserializes them: an absent field gets the server's default, and `null` is dropped except where the server gives it a meaning of its own, such as a team's `archive_after_days`.
+
+A mutation acknowledged by a pull without a known push result is pushed once more to learn its outcome; the server answers from its record without applying it again. The engine retains the payload in memory while its caller waits, and sends confirmations in id order through the normal push lane, after any batch already in flight. The caller's `settled` promise resolves only after a push result arrives. Closing the engine rejects waiting callers. A reloaded engine has no waiting callers for earlier mutations and does not recover their outcomes.
 
 ### Persistence
 

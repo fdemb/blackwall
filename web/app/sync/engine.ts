@@ -65,6 +65,7 @@ export class SyncEngine {
   private readonly outcomes = new Map<
     number,
     {
+      mutation: Mutation;
       resolve: (result: "applied" | Rejection) => void;
       reject: (error: Error) => void;
     }
@@ -208,7 +209,7 @@ export class SyncEngine {
         ...(admitted.local === undefined ? {} : { local: admitted.local }),
       }));
       const settled = new Promise<"applied" | Rejection>((resolve, reject) =>
-        this.outcomes.set(mutation.id, { resolve, reject }),
+        this.outcomes.set(mutation.id, { mutation, resolve, reject }),
       );
       void settled.catch(() => undefined);
       if (this.closed || this.terminal || lifecycle !== this.lifecycle) {
@@ -521,20 +522,14 @@ export class SyncEngine {
     this.store.setPending(
       this.store.pending().filter((mutation) => mutation.id > this.acknowledged),
     );
-    this.settleAcknowledged();
     for (const wake of this.ackWaiters) wake();
   }
 
-  private settleAcknowledged(): void {
-    for (const [id, outcome] of this.outcomes) {
-      if (
-        id <= this.acknowledged &&
-        (this.blocked.has("push") || !this.batch?.mutations.some((mutation) => mutation.id === id))
-      ) {
-        outcome.resolve("applied");
-        this.outcomes.delete(id);
-      }
-    }
+  private pushCandidates(): Mutation[] {
+    const confirmations = [...this.outcomes.values()]
+      .map((outcome) => outcome.mutation)
+      .filter((mutation) => mutation.id <= this.acknowledged);
+    return [...confirmations, ...this.store.pending()].sort((a, b) => a.id - b.id);
   }
 
   private requestScope(scope: Scope): void {
@@ -619,7 +614,7 @@ export class SyncEngine {
       if (
         this.controller &&
         (this.controller !== controller ||
-          (!this.batch && (this.store.pending().length > 0 || this.onlineJobs.length > 0)))
+          (!this.batch && (this.pushCandidates().length > 0 || this.onlineJobs.length > 0)))
       )
         this.requestPush();
     });
@@ -631,7 +626,7 @@ export class SyncEngine {
       if (!this.batch) {
         this.batch = await this.commits.run(async () => {
           this.check(controller);
-          const mutations = this.store.pending().slice(0, 100);
+          const mutations = this.pushCandidates().slice(0, 100);
           if (mutations.length)
             return {
               mutations,
@@ -737,7 +732,6 @@ export class SyncEngine {
         continue;
       }
       this.batch = null;
-      this.settleAcknowledged();
     }
   }
 
@@ -842,7 +836,6 @@ export class SyncEngine {
     }
     if (failure instanceof ProtocolError) {
       this.blocked.add(kind);
-      if (kind === "push") this.settleAcknowledged();
       if (kind === "events") this.update({ connected: false });
       if (kind === "push") for (const job of [...this.onlineJobs]) job.reject(failure);
       return true;

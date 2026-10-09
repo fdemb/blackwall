@@ -364,14 +364,35 @@ impl Store {
         }
 
         if mutation.id <= stored {
+            let remembered = match sqlx::query_as::<_, (i16, String)>(
+                "SELECT status, message FROM sync_rejections WHERE client_id = $1 AND mutation_id = $2",
+            )
+            .bind(client_id)
+            .bind(mutation.id)
+            .fetch_optional(&mut *op.tx)
+            .await
+            {
+                Ok(row) => row,
+                Err(error) => {
+                    return Err(abort(op, error.into(), "rejection lookup", mutation.id).await);
+                }
+            };
+            let error = remembered.map(|(status, message)| MutationError {
+                status: status as u16,
+                message,
+            });
             let tx = op.tx;
             return match tx.rollback().await {
                 Ok(()) => Ok((
                     stored,
                     MutationResult {
                         id: mutation.id,
-                        status: MutationStatus::Duplicate,
-                        error: None,
+                        status: if error.is_some() {
+                            MutationStatus::Rejected
+                        } else {
+                            MutationStatus::Duplicate
+                        },
+                        error,
                     },
                 )),
                 Err(error) => Err(PushFailure::Transient {
@@ -426,6 +447,33 @@ impl Store {
             },
             Err(error) => return Err(abort(op, error, "command", mutation.id).await),
         };
+
+        if let Some(error) = &result.error {
+            if let Err(error) = sqlx::query(
+                "INSERT INTO sync_rejections (client_id, mutation_id, status, message) \
+                 VALUES ($1, $2, $3, $4)",
+            )
+            .bind(client_id)
+            .bind(mutation.id)
+            .bind(error.status as i16)
+            .bind(&error.message)
+            .execute(&mut *op.tx)
+            .await
+            {
+                return Err(abort(op, error.into(), "remember rejection", mutation.id).await);
+            }
+            if let Err(error) = sqlx::query(
+                "DELETE FROM sync_rejections WHERE client_id = $1 AND mutation_id IN (\
+                 SELECT mutation_id FROM sync_rejections WHERE client_id = $1 \
+                 ORDER BY mutation_id DESC OFFSET 1000)",
+            )
+            .bind(client_id)
+            .execute(&mut *op.tx)
+            .await
+            {
+                return Err(abort(op, error.into(), "prune rejections", mutation.id).await);
+            }
+        }
 
         match sqlx::query(
             "UPDATE sync_clients SET last_mutation_id = $1, updated_at = now() \

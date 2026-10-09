@@ -163,7 +163,31 @@ describe("fake sync push", () => {
     expect(f.server.record("issues", ISSUE)).toEqual(before);
     expect(f.server.records("activity")).toHaveLength(activities.length + 1);
     expect(f.server.clientState(CLIENT).last_mutation_id).toBe(3);
-    expect((await (await f.push([rejected])).json()).results[0].status).toBe("duplicate");
+    expect((await (await f.push([rejected])).json()).results[0]).toEqual(response.results[0]);
+  });
+
+  it("retains only the 1,000 most recent rejections per client", async () => {
+    const f = fixture();
+    const rejected = (n: number) => ({ id: n * 2, name: "unknown", args: {}, at: CLIENT_AT });
+    for (let start = 1; start <= 1001; start += 100) {
+      const batch = Array.from({ length: Math.min(100, 1002 - start) }, (_, n) =>
+        rejected(start + n),
+      );
+      expect((await f.push(batch)).status).toBe(200);
+    }
+    const response: PushResponse = await (
+      await f.push([rejected(1), rejected(2), rejected(1001)])
+    ).json();
+    expect(response.results[0]).toEqual({ id: 2, status: "duplicate" });
+    expect(response.results.slice(1)).toMatchObject([
+      { id: 4, status: "rejected", error: { status: 400 } },
+      { id: 2002, status: "rejected", error: { status: 400 } },
+    ]);
+    const applied: PushResponse = await (await f.push([label(2003)])).json();
+    expect(applied.results[0].status).toBe("applied");
+    expect((await (await f.push([rejected(2)])).json()).results[0]).toEqual(response.results[1]);
+    const other: PushResponse = await (await f.push([label(2)], f.token, id(12))).json();
+    expect(other.results[0].status).toBe("applied");
   });
 
   it("rejects malformed commands per mutation, including upload commands", async () => {
@@ -700,10 +724,16 @@ describe("fake bootstrap, scope and sessions", () => {
 
   it("prunes idle clients after the session lifetime", async () => {
     const f = fixture();
-    await f.push([label(1)]);
+    await f.push([{ ...label(1), name: "unknown" }]);
     f.server.advance(30 * 24 * 60 * 60 * 1000 + 1);
     f.server.pruneClients();
     expect(f.server.clientState(CLIENT).last_mutation_id).toBe(0);
+    const token = f.server.login(f.owner);
+    const response: PushResponse = await (await f.push([label(1)], token)).json();
+    expect(response.results).toEqual([{ id: 1, status: "applied" }]);
+    expect((await (await f.push([label(1)], token)).json()).results).toEqual([
+      { id: 1, status: "duplicate" },
+    ]);
   });
 });
 

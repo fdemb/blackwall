@@ -55,6 +55,7 @@ interface ClientState {
   user: string;
   last_mutation_id: number;
   updatedAt: number;
+  rejections: Map<number, { status: number; message: string }>;
 }
 interface Session {
   user: string;
@@ -889,25 +890,31 @@ export class FakeServer {
           user: actor,
           last_mutation_id: 0,
           updatedAt: this.clock.milliseconds(),
+          rejections: new Map(),
         };
         this.clients.set(clientId, client);
       }
-      if (mutation.id <= client.last_mutation_id)
-        body.results.push({ id: mutation.id, status: "duplicate" });
-      else {
+      if (mutation.id <= client.last_mutation_id) {
+        const error = client.rejections.get(mutation.id);
+        body.results.push(
+          error
+            ? { id: mutation.id, status: "rejected", error: { ...error } }
+            : { id: mutation.id, status: "duplicate" },
+        );
+      } else {
         try {
           this.execute(actor, mutation.name, commandArgs(mutation.name, mutation.args), workspace);
           body.results.push({ id: mutation.id, status: "applied" });
         } catch (error) {
           if (!(error instanceof MutationError) && !(error instanceof TypeError)) throw error;
-          body.results.push({
-            id: mutation.id,
-            status: "rejected",
-            error: {
-              status: error instanceof MutationError ? error.status : 400,
-              message: error instanceof MutationError ? error.message : "invalid command arguments",
-            },
-          });
+          const rejection = {
+            status: error instanceof MutationError ? error.status : 400,
+            message: error instanceof MutationError ? error.message : "invalid command arguments",
+          };
+          client.rejections.set(mutation.id, rejection);
+          for (const id of [...client.rejections.keys()].sort((a, b) => b - a).slice(1000))
+            client.rejections.delete(id);
+          body.results.push({ id: mutation.id, status: "rejected", error: { ...rejection } });
           this.txid += 1; // Rejection still commits the client high-water mark.
         }
         client.last_mutation_id = mutation.id;

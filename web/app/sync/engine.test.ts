@@ -344,6 +344,85 @@ describe("sync engine", () => {
     expect(f.engine.status.get().pending).toBe(0);
   });
 
+  it.each(["applied", "rejected"] as const)(
+    "confirms a mutation acknowledged by pull first as %s, behind the in-flight batch",
+    async (outcome) => {
+      const f = fixture();
+      await f.ready();
+      const original = f.transport.push;
+      let release = () => {};
+      const held = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      let committed = false;
+      f.transport.push = async (...args) => {
+        const response = await original(...args);
+        if (!committed) {
+          committed = true;
+          await held;
+        }
+        return response;
+      };
+      const older = await f.engine.mutate("update_issue", {
+        id: ISSUE,
+        patch: { title: "Older" },
+      });
+      await until(() => committed);
+      const receipt = await f.engine.mutate("create_label", {
+        name: "Prediction",
+        color: "#ff0000",
+      });
+      if (outcome === "rejected")
+        f.server.run(f.owner, {
+          type: "create_label",
+          id: receipt.id ?? "",
+          name: "Server",
+          color: "#000000",
+        });
+      const disk = await f.disk();
+      const result = await original(f.workspace.id, disk.meta.clientId, disk.outbox);
+      expect(result.results.at(-1)?.status).toBe(outcome);
+      const settle = vi.fn();
+      void receipt.settled.then(settle);
+      await f.engine.pull();
+      expect(f.engine.status.get().pending).toBe(0);
+      expect(settle).not.toHaveBeenCalled();
+      const newer = await f.engine.mutate("update_issue", {
+        id: ISSUE,
+        patch: { title: "Newer" },
+      });
+      f.fetch.mockClear();
+      release();
+      expect(await older.settled).toBe("applied");
+      if (outcome === "rejected")
+        expect(await receipt.settled).toMatchObject({ id: receipt.mutationId, status: 409 });
+      else expect(await receipt.settled).toBe("applied");
+      expect(await newer.settled).toBe("applied");
+      expect(f.pushes().map((batch) => batch.map((mutation) => mutation.id))).toEqual([
+        [receipt.mutationId, newer.mutationId],
+      ]);
+    },
+  );
+
+  it("rejects an unknown pull-acknowledged outcome when closed before confirmation", async () => {
+    const f = fixture();
+    await f.ready();
+    const original = f.transport.push;
+    let committed = false;
+    f.transport.push = async (...args) => {
+      const response = await original(...args);
+      committed = true;
+      await new Promise<void>((resolve) => f.server.schedule(1000, resolve));
+      return response;
+    };
+    const receipt = await f.engine.mutate("update_issue", { id: ISSUE, patch: { title: "Held" } });
+    await until(() => committed);
+    await f.engine.pull();
+    const closed = expect(receipt.settled).rejects.toThrow("Engine is closed");
+    await f.engine.close();
+    await closed;
+  });
+
   it("honors Retry-After on bootstrap and partial pushes", async () => {
     const f = fixture();
     f.server.inject({ kind: "unavailable", route: "bootstrap" });
@@ -590,7 +669,7 @@ describe("sync engine", () => {
     expect(f.server.records("issues").filter((issue) => issue.title === "Once")).toHaveLength(1);
   });
 
-  it("cannot recover a rejection status from an acknowledgement and duplicate retry", async () => {
+  it("recovers the rejection after a dropped response and duplicate retry, seed 179", async () => {
     const results: { status: string }[] = [];
     const f = fixture(new MemoryReplicaStorage(), {
       onResult: (_client, result) => results.push(result),
@@ -610,8 +689,8 @@ describe("sync engine", () => {
     f.signals.send("online");
     await until(() => results.some((result) => result.status === "rejected"));
     await f.advance(1000);
-    expect(await receipt.settled).toBe("applied");
-    expect(results.map((result) => result.status)).toEqual(["rejected", "duplicate"]);
+    expect(await receipt.settled).toMatchObject({ id: receipt.mutationId, status: 400 });
+    expect(results.map((result) => result.status)).toEqual(["rejected", "rejected"]);
     await until(() => f.engine.status.get().pending === 0);
     expect(f.server.record("issues", ISSUE)?.dependencies).toEqual([]);
     expect(f.engine.store.get("issues", ISSUE)?.dependencies).toEqual([]);

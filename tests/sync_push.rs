@@ -602,8 +602,8 @@ async fn push_rejected_mutation_advances_id_and_rolls_back() {
             .await
             .unwrap();
     assert_eq!(issues_after, issues_before);
-    // The rejected mutation's transaction committed only the high-water
-    // mark; sync_clients has no change trigger, so no change row remains.
+    // A rejection commits the high-water mark and its outcome. Neither
+    // sync table has a change trigger, so no change row remains.
     let changes_after: i64 =
         sqlx::query_scalar("SELECT count(*) FROM changes WHERE workspace_id = $1")
             .bind(ws)
@@ -612,6 +612,136 @@ async fn push_rejected_mutation_advances_id_and_rolls_back() {
             .unwrap();
     assert_eq!(changes_after, changes_before);
 
+    drop(app);
+    store.pool.close().await;
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn push_retries_return_original_rejections() {
+    let database = support::TestDatabase::new().await;
+    let store = Store::connect(&database.url).await.unwrap();
+    let app = router(store.clone());
+    let owner = account(&store, "owner").await;
+    let (ws, _) = setup(&app, &owner).await;
+    let client = Uuid::new_v4();
+    let label = Uuid::new_v4();
+    let batch = vec![
+        mutation(
+            1,
+            "create_label",
+            json!({"id": label, "name": "Original", "color": "#000000"}),
+        ),
+        mutation(
+            2,
+            "create_label",
+            json!({"id": label, "name": "Conflict", "color": "#ffffff"}),
+        ),
+        mutation(
+            3,
+            "update_issue",
+            json!({"id": Uuid::new_v4(), "patch": {"title": "Missing"}}),
+        ),
+        mutation(4, "unknown", json!({})),
+    ];
+    let (status, first) = push(&app, &owner.token, ws, client, batch.clone()).await;
+    assert_eq!(status, StatusCode::OK, "{first}");
+    assert_eq!(first["results"][0]["status"], "applied");
+    for (index, status) in [(1, 409), (2, 404), (3, 400)] {
+        assert_eq!(first["results"][index]["status"], "rejected");
+        assert_eq!(first["results"][index]["error"]["status"], status);
+    }
+    let (status, second) = push(&app, &owner.token, ws, client, batch).await;
+    assert_eq!(status, StatusCode::OK, "{second}");
+    assert_eq!(second["last_mutation_id"], 4);
+    assert_eq!(
+        second["results"][0],
+        json!({"id": 1, "status": "duplicate"})
+    );
+    for index in 1..4 {
+        assert_eq!(second["results"][index], first["results"][index]);
+    }
+    drop(app);
+    store.pool.close().await;
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn push_rejections_retain_only_the_latest_thousand_per_client() {
+    let database = support::TestDatabase::new().await;
+    let store = Store::connect(&database.url).await.unwrap();
+    let app = router(store.clone());
+    let owner = account(&store, "owner").await;
+    let (ws, _) = setup(&app, &owner).await;
+    let client = Uuid::new_v4();
+    for start in (1..=1001).step_by(100) {
+        let batch = (start..=(start + 99).min(1001))
+            .map(|id| mutation(id * 2, "unknown", json!({})))
+            .collect();
+        let (status, result) = push(&app, &owner.token, ws, client, batch).await;
+        assert_eq!(status, StatusCode::OK, "{result}");
+        assert!(
+            result["results"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|row| row["status"] == "rejected")
+        );
+    }
+    let ids: Vec<i64> = sqlx::query_scalar(
+        "SELECT mutation_id FROM sync_rejections WHERE client_id = $1 ORDER BY mutation_id",
+    )
+    .bind(client)
+    .fetch_all(&store.pool)
+    .await
+    .unwrap();
+    assert_eq!(ids, (2..=1001).map(|id| id * 2).collect::<Vec<_>>());
+    let (status, result) = push(
+        &app,
+        &owner.token,
+        ws,
+        client,
+        vec![
+            mutation(2, "unknown", json!({})),
+            mutation(4, "unknown", json!({})),
+            mutation(2002, "unknown", json!({})),
+            mutation(
+                2003,
+                "create_label",
+                json!({"name": "Applied", "color": "#000000"}),
+            ),
+        ],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+    assert_eq!(
+        result["results"][0],
+        json!({"id": 2, "status": "duplicate"})
+    );
+    assert_eq!(result["results"][1]["status"], "rejected");
+    assert_eq!(result["results"][2]["status"], "rejected");
+    assert_eq!(result["results"][3]["status"], "applied");
+    let (status, other) = push(
+        &app,
+        &owner.token,
+        ws,
+        Uuid::new_v4(),
+        vec![mutation(
+            4,
+            "create_label",
+            json!({"name": "Other client", "color": "#000000"}),
+        )],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{other}");
+    assert_eq!(other["results"][0]["status"], "applied");
+    let count: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM sync_rejections WHERE client_id = $1")
+            .bind(client)
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+    assert_eq!(count, 1000);
     drop(app);
     store.pool.close().await;
     database.cleanup().await;
@@ -981,7 +1111,15 @@ async fn push_pruning_removes_idle_clients() {
     .await
     .unwrap();
 
+    sqlx::query("INSERT INTO sync_rejections (client_id, mutation_id, status, message) VALUES ($1, 9, 400, 'idle rejection'), ($2, 1, 409, 'fresh rejection')")
+        .bind(idle).bind(fresh).execute(&store.pool).await.unwrap();
     assert_eq!(store.prune_sync_clients().await.unwrap(), 1);
+    let retained: Vec<Uuid> =
+        sqlx::query_scalar("SELECT client_id FROM sync_rejections ORDER BY client_id")
+            .fetch_all(&store.pool)
+            .await
+            .unwrap();
+    assert_eq!(retained, vec![fresh]);
     assert_eq!(last_mutation_id(&store, idle).await, None);
     assert_eq!(last_mutation_id(&store, fresh).await, Some(1));
     assert_eq!(store.prune_sync_clients().await.unwrap(), 0);
