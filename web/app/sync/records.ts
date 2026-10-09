@@ -162,8 +162,9 @@ export function normalize<E extends Entity>(entity: E, record: RecordOf[E]): Rec
 
 /**
  * RFC 3339 parser shared by mutator validation and base ingestion, mirroring
- * the server's chrono parser: case-insensitive `T`/`Z`, `+HH:MM`/`+HHMM`/`+HH`
- * offsets, fractional seconds of any length, and leap second 60.
+ * the server's chrono parser: case-insensitive `T`/`Z`, `+HH:MM`/`+HHMM`
+ * offsets, UTC, whitespace, fractional seconds of any length, and leap second 60.
+ * Strict mode requires a complete explicit timezone for command arguments.
  *
  * Leap seconds normalize the way PostgreSQL stores them: `23:59:60Z` becomes
  * `00:00:00Z` the next day (verified with `SELECT '2016-12-31T23:59:60Z'::timestamptz`
@@ -172,13 +173,15 @@ export function normalize<E extends Entity>(entity: E, record: RecordOf[E]): Rec
  * PostgreSQL rejects them; chrono accepts the shape and the prediction only
  * needs to be storable for the non-fractional case the server can persist.
  */
-export function parseTimestamp(value: unknown): string {
+export function parseTimestamp(value: unknown, strict = false): string {
   if (typeof value !== "string") throw new Error(`unparseable timestamp ${String(value)}`);
-  const match =
-    /^(\d{4})-(\d{2})-(\d{2})[Tt](\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?([Zz]|[+-]\d{2}:?\d{2}|[+-]\d{4}|[+-]\d{2})?$/.exec(
-      value,
-    );
+  const syntax =
+    /^\p{White_Space}*([+-]\d+|\d{1,4})\p{White_Space}*-\p{White_Space}*(\d{1,2})\p{White_Space}*-\p{White_Space}*(\d{1,2})[Tt ]\p{White_Space}*(\d{1,2})\p{White_Space}*:\p{White_Space}*(\d{1,2})\p{White_Space}*:\p{White_Space}*(\d{1,2})(?:\.(\d+))?\p{White_Space}*([Zz]|[Uu][Tt][Cc]|[+\-−]\d{2}[:\p{White_Space}]*\d{2}|[+\-−]\d{2})?\p{White_Space}*$/u;
+  const match = syntax.exec(value);
   if (match === null) throw new Error(`unparseable timestamp ${value}`);
+  if (strict && (match[8] === undefined || /^[+\-−]\d{2}$/.test(match[8]))) {
+    throw new Error("premature end of input");
+  }
   const year = Number(match[1]);
   const month = Number(match[2]);
   const day = Number(match[3]);
@@ -188,19 +191,22 @@ export function parseTimestamp(value: unknown): string {
   const fractionRaw = match[7] ?? "";
   const zoneRaw = match[8];
 
-  if (month < 1 || month > 12) throw new Error(`unparseable timestamp ${value}`);
-  if (hour > 23 || minute > 59 || second > 60) throw new Error(`unparseable timestamp ${value}`);
+  if (month < 1 || month > 12)
+    throw new Error(strict ? "input is out of range" : `unparseable timestamp ${value}`);
+  if (hour > 23 || minute > 59 || second > 60)
+    throw new Error(strict ? "input is out of range" : `unparseable timestamp ${value}`);
   const leap = second === 60;
   const dim = daysInMonth(year, month);
-  if (day < 1 || day > dim) throw new Error(`unparseable timestamp ${value}`);
+  if (day < 1 || day > dim)
+    throw new Error(strict ? "input is out of range" : `unparseable timestamp ${value}`);
 
   let zoneForProbe = "Z";
   if (zoneRaw !== undefined) {
-    if (/^[Zz]$/.test(zoneRaw)) {
+    if (/^(?:[Zz]|UTC)$/i.test(zoneRaw)) {
       zoneForProbe = "Z";
     } else {
-      const sign = zoneRaw[0] === "-" ? "-" : "+";
-      const digits = zoneRaw.slice(1).replace(":", "");
+      const sign = zoneRaw[0] === "-" || zoneRaw[0] === "−" ? "-" : "+";
+      const digits = zoneRaw.slice(1).replace(/[:\p{White_Space}]/gu, "");
       let zh: number;
       let zm: number;
       if (digits.length === 2) {
@@ -213,7 +219,7 @@ export function parseTimestamp(value: unknown): string {
         throw new Error(`unparseable timestamp ${value}`);
       }
       if (!Number.isInteger(zh) || !Number.isInteger(zm) || zh > 23 || zm > 59) {
-        throw new Error(`unparseable timestamp ${value}`);
+        throw new Error(strict ? "input is out of range" : `unparseable timestamp ${value}`);
       }
       const pad2 = (n: number): string => String(n).padStart(2, "0");
       zoneForProbe = `${sign}${pad2(zh)}:${pad2(zm)}`;
@@ -222,7 +228,7 @@ export function parseTimestamp(value: unknown): string {
 
   const pad = (n: number, width: number): string => String(n).padStart(width, "0");
   const datePart =
-    `${pad(year, 4)}-${pad(month, 2)}-${pad(day, 2)}` +
+    `${year < 0 ? `-${pad(-year, 6)}` : year > 9999 ? `+${pad(year, 6)}` : pad(year, 4)}-${pad(month, 2)}-${pad(day, 2)}` +
     `T${pad(hour, 2)}:${pad(minute, 2)}:${pad(leap ? 59 : second, 2)}`;
   const probe = new Date(`${datePart}${zoneForProbe}`);
   if (Number.isNaN(probe.getTime())) throw new Error(`unparseable timestamp ${value}`);

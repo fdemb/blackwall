@@ -2,16 +2,20 @@ import type { Command } from "../../lib/types";
 import { parseTimestamp } from "../records";
 import { MutationError } from "./errors";
 
-type Field =
+type Field = (
   | { kind: "required" }
   | { kind: "option"; stored?: boolean; timestamp?: boolean }
   | { kind: "default"; value: unknown; nullable?: boolean; items?: Fields }
   | { kind: "object"; fields: Fields }
   | { kind: "array"; items: Fields }
-  | { kind: "bulk" };
+  | { kind: "bulk" }
+) & { integer?: "u32" | "u64" | "i64"; commandTimestamp?: boolean };
 type Fields = Readonly<Record<string, Field>>;
 
 const required: Field = { kind: "required" };
+const unsignedOption: Field = { kind: "option", integer: "u32" };
+const timestampOption: Field = { kind: "option", commandTimestamp: true };
+const timestampRequired: Field = { kind: "required", commandTimestamp: true };
 const option: Field = { kind: "option" };
 const storedOption: Field = { kind: "option", stored: true };
 const defaulted = (value: unknown): Field => ({ kind: "default", value });
@@ -28,8 +32,8 @@ const ISSUE_INPUT: Fields = {
   assignee: option,
   priority: defaulted("none"),
   labels: defaulted([]),
-  estimate: option,
-  deadline: option,
+  estimate: unsignedOption,
+  deadline: timestampOption,
   project_id: option,
   milestone_id: option,
   sprint_id: option,
@@ -44,9 +48,9 @@ const ISSUE_PATCH: Fields = {
   clear_assignee: defaulted(false),
   priority: option,
   labels: option,
-  estimate: option,
+  estimate: unsignedOption,
   clear_estimate: defaulted(false),
-  deadline: option,
+  deadline: timestampOption,
   clear_deadline: defaulted(false),
   project_id: option,
   clear_project: defaulted(false),
@@ -72,7 +76,7 @@ const ISSUE_FILTER: Fields = {
   label_id: storedOption,
   sprint_id: storedOption,
   project_id: storedOption,
-  due_before: { kind: "option", stored: true, timestamp: true },
+  due_before: { kind: "option", stored: true, timestamp: true, commandTimestamp: true },
   search: storedOption,
   unassigned: defaulted(false),
   trash: defaulted(false),
@@ -86,7 +90,7 @@ const ATTACHMENT: Fields = {
   id: required,
   name: required,
   content_type: required,
-  size: required,
+  size: { kind: "required", integer: "u64" },
 };
 const id: Fields = { id: required };
 
@@ -98,43 +102,43 @@ const COMMAND_FIELDS: Record<Command["type"] | "add_attachment" | "attach_commen
   set_team_members: { id: required, members: required },
   set_team_archive: {
     id: required,
-    archive_after_days: { kind: "default", value: 30, nullable: true },
+    archive_after_days: { kind: "default", value: 30, nullable: true, integer: "u32" },
   },
   create_stage: {
     id: option,
     team_id: required,
     name: required,
     kind: required,
-    position: required,
+    position: { kind: "required", integer: "i64" },
   },
   update_stage: {
     id: required,
     team_id: required,
     name: required,
     kind: required,
-    position: required,
+    position: { kind: "required", integer: "i64" },
   },
   delete_stage: { id: required, team_id: required, replacement: required },
   create_label: { id: option, name: required, color: required },
   update_label: { id: required, name: required, color: required },
   create_project: { id: option, name: required, description: defaulted(""), team_ids: required },
   update_project: { id: required, name: required, description: required, team_ids: required },
-  create_milestone: { id: option, project_id: required, name: required, deadline: option },
-  update_milestone: { id: required, name: required, deadline: option },
+  create_milestone: { id: option, project_id: required, name: required, deadline: timestampOption },
+  update_milestone: { id: required, name: required, deadline: timestampOption },
   create_sprint: {
     id: option,
     team_id: required,
     name: required,
     goal: required,
-    starts_at: required,
-    ends_at: required,
+    starts_at: timestampRequired,
+    ends_at: timestampRequired,
   },
   update_sprint: {
     id: required,
     name: required,
     goal: required,
-    starts_at: required,
-    ends_at: required,
+    starts_at: timestampRequired,
+    ends_at: timestampRequired,
     state: required,
   },
   complete_sprint: { id: required, carryover_sprint_id: option },
@@ -163,11 +167,16 @@ const COMMAND_FIELDS: Record<Command["type"] | "add_attachment" | "attach_commen
   log_time: {
     id: option,
     issue_id: required,
-    minutes: required,
+    minutes: { kind: "required", integer: "u32" },
     note: defaulted(""),
-    logged_at: required,
+    logged_at: timestampRequired,
   },
-  update_time: { id: required, minutes: required, note: required, logged_at: required },
+  update_time: {
+    id: required,
+    minutes: { kind: "required", integer: "u32" },
+    note: required,
+    logged_at: timestampRequired,
+  },
   delete_time: id,
   save_view: {
     id: option,
@@ -217,6 +226,17 @@ function normalizeObject(value: unknown, fields: Fields): unknown {
     if (item === null && field.kind !== "option" && !(field.kind === "default" && field.nullable)) {
       throw new MutationError(400, `invalid command arguments: ${key} cannot be null`);
     }
+    if (item !== null && item !== undefined && field.integer) checkInteger(item, field.integer);
+    if (item !== null && item !== undefined && field.commandTimestamp) {
+      try {
+        parseTimestamp(item, true);
+      } catch (error) {
+        if (error instanceof Error && error.message === "premature end of input") {
+          throw new MutationError(400, error.message);
+        }
+        // Domain checks report the server timestamp range error.
+      }
+    }
     if (field.kind === "option") {
       if (item === null || item === undefined) {
         if (field.stored) result[key] = null;
@@ -224,7 +244,7 @@ function normalizeObject(value: unknown, fields: Fields): unknown {
       }
       if (field.timestamp && typeof item === "string") {
         try {
-          item = parseTimestamp(item);
+          item = parseTimestamp(item, true);
         } catch {
           // The mutator reports invalid timestamps through its usual check.
         }
@@ -252,4 +272,29 @@ function normalizeObject(value: unknown, fields: Fields): unknown {
 export function normalizeArgs(name: string, args: unknown): unknown {
   const fields = commands.get(name);
   return fields === undefined ? args : normalizeObject(args, fields);
+}
+
+/** Serde integer errors, shared by command admission and the fake. */
+function checkInteger(value: unknown, type: "u32" | "u64" | "i64"): void {
+  if (typeof value === "number" && Number.isInteger(value)) {
+    const valid =
+      type === "u32"
+        ? value >= 0 && value <= 0xffff_ffff
+        : type === "u64"
+          ? value >= 0 && value < 2 ** 64
+          : value >= -(2 ** 63) && value < 2 ** 63;
+    if (valid) return;
+    throw new MutationError(400, `invalid value: integer \`${value}\`, expected ${type}`);
+  }
+  const actual =
+    typeof value === "number"
+      ? `floating point \`${value}\``
+      : typeof value === "string"
+        ? `string ${JSON.stringify(value)}`
+        : typeof value === "boolean"
+          ? `boolean \`${value}\``
+          : Array.isArray(value)
+            ? "sequence"
+            : "map";
+  throw new MutationError(400, `invalid type: ${actual}, expected ${type}`);
 }

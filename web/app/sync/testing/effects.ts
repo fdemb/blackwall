@@ -77,7 +77,7 @@ export function applyServerOnlyEffects(context: ServerEffects): number {
       const childChanged =
         (entity === "members" && ["create_team", "set_team_members"].includes(name)) ||
         (entity === "teams" && ["create_stage", "update_stage", "delete_stage"].includes(name)) ||
-        (entity === "issues" && name === "update_stage");
+        (entity === "issues" && ["update_stage", "add_comment"].includes(name));
       const version = before && "version" in before ? before.version + (childChanged ? 0 : 1) : 1;
       tx.put(entity, { ...row, version });
     }
@@ -96,14 +96,10 @@ export function applyServerOnlyEffects(context: ServerEffects): number {
           : {}),
         updated_at:
           (name === "move_issue" && key !== id) ||
-          ["follow", "add_source_link", "remove_attachment"].includes(name)
+          ["follow", "add_source_link", "remove_attachment", "add_comment"].includes(name)
             ? issue.updated_at
             : context.now(),
       });
-      if (created) {
-        const workspace = tx.all("workspace")[0];
-        if (workspace) tx.put("workspace", workspace); // next_issue_number UPDATE triggers workspace change without a version bump.
-      }
       const oldIssue = context.before.get("issues", key);
       if (
         (name === "create_issue" || name === "update_issue" || name === "bulk_issues") &&
@@ -177,7 +173,7 @@ export function applyServerOnlyEffects(context: ServerEffects): number {
         ),
       );
   const sendsCompletion =
-    ["create_issue", "update_issue", "move_issue", "update_stage"].includes(name) ||
+    ["create_issue", "update_issue", "move_issue", "update_stage", "delete_stage"].includes(name) ||
     (name === "bulk_issues" && object(args.action));
   if (sendsCompletion) {
     const candidates =
@@ -222,6 +218,13 @@ export function applyServerOnlyEffects(context: ServerEffects): number {
     "dependencies",
   ] as const;
   const fields: string[] = [];
+  if (
+    name === "move_issue" &&
+    id &&
+    context.before.get("issues", id)?.stage_id !== tx.get("issues", id)?.stage_id
+  )
+    fields.push("stage");
+  if (["archive_issue", "unarchive_issue"].includes(name)) fields.push("archived");
   if (name === "update_issue" || (name === "bulk_issues" && object(args.action))) {
     for (const { entity, id: key } of tx.touched.values()) {
       if (entity !== "issues") continue;

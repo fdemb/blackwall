@@ -2,6 +2,8 @@ import type { DeepReadonly, Tx } from "../store";
 import type { ArgsOf, Mutator } from "./common";
 import {
   NIL_UUID,
+  checkCreateId,
+  checkCapacity,
   checkText,
   checkTimestamp,
   dedupeSortUuids,
@@ -28,7 +30,7 @@ function requireDiscussionIssue(tx: Tx, issueId: string): DeepReadonly<SyncIssue
 function checkTime(minutes: number, note: string): void {
   if (
     !Number.isInteger(minutes) ||
-    minutes === 0 ||
+    minutes <= 0 ||
     minutes > 24 * 60 ||
     utf8Length(note) > 10_000
   ) {
@@ -53,6 +55,7 @@ export const addComment: Mutator<ArgsOf<"add_comment">> = (tx, args, ctx) => {
   const id = args.id ?? null;
   if (id === null) throw new MutationError(400, "id is required");
   if (id === NIL_UUID) throw new MutationError(400, "id must not be nil");
+  checkCreateId(tx, id, ctx);
   // The server moves the attachments from the issue to the comment, keeping
   // the stored upload metadata ordered by attachment id. An id that is not on
   // the issue fails as on the server. A replay over a base that already holds
@@ -81,8 +84,7 @@ export const addComment: Mutator<ArgsOf<"add_comment">> = (tx, args, ctx) => {
   if (moved.length > 0) {
     tx.put("issues", { ...issue, attachments: [...remaining.values()] });
   }
-  // Creates are upserts: a replay over a base that already holds the id
-  // keeps its version and creation time, as for created issues.
+  // Replay over a base that already holds the id keeps its version and creation time.
   tx.put("comments", {
     id,
     version: previous?.version ?? 1,
@@ -132,6 +134,8 @@ export const logTime: Mutator<ArgsOf<"log_time">> = (tx, args, ctx) => {
   const id = args.id ?? null;
   if (id === null) throw new MutationError(400, "id is required");
   if (id === NIL_UUID) throw new MutationError(400, "id must not be nil");
+  checkCapacity(tx, "time_entries", 20_000, ctx, id);
+  checkCreateId(tx, id, ctx);
   const previous = tx.get("time_entries", id);
   tx.put("time_entries", {
     id,

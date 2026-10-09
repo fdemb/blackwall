@@ -1,4 +1,4 @@
-import type { Command, MemberProfile, Profile, Role } from "../../lib/types";
+import type { Attachment, Command, MemberProfile, Profile, Role } from "../../lib/types";
 import { MUTATORS, MutationError, ONLINE_ONLY } from "../mutators";
 import type { Mutator } from "../mutators";
 import { requireAdmin } from "../mutators/common";
@@ -7,6 +7,7 @@ import type { Change, Entity, RecordOf, SyncWorkspace } from "../records";
 import { FakeClock } from "./clock";
 import { applyServerOnlyEffects } from "./effects";
 import { commandArgs, object, uuid } from "./commands";
+import { extractPushJson } from "./push-json";
 import { EventConnection } from "./events";
 import type { EventTiming } from "./events";
 import { Tables } from "./tables";
@@ -16,6 +17,11 @@ import type { DeepReadonly } from "../store";
 export type Route = "me" | "bootstrap" | "pull" | "push" | "scope" | "events";
 export type Fault =
   | { kind: "delay"; route?: Route; milliseconds: number | readonly [number, number] }
+  | {
+      kind: "response_delay";
+      route?: "pull" | "bootstrap" | "scope";
+      milliseconds: number | readonly [number, number];
+    }
   | { kind: "drop_response"; route?: Route }
   | { kind: "duplicate_push" }
   | { kind: "unavailable"; route: "push" | "pull" | "bootstrap"; after?: number }
@@ -92,6 +98,11 @@ export class FakeServer {
   private readonly users = new Map<string, Profile>();
   private readonly workspaces = new Map<string, WorkspaceState>();
   private readonly sessions = new Map<string, Session>();
+  private readonly uploaders = new Map<string, string>();
+  private readonly sourceLinks = new Map<
+    string,
+    { issue: string; workspace: string; url: string; title: string }
+  >();
   private readonly clients = new Map<string, ClientState>();
   private readonly history: Transaction[] = [];
   private readonly faults: Fault[] = [];
@@ -127,8 +138,17 @@ export class FakeServer {
       if (!this.takenId(id)) return id;
     }
   }
+  private sourceId(): string {
+    for (;;) {
+      const id = this.id();
+      // Hidden source ids have no insertion-order guarantee, even with deterministic fixtures.
+      const prefix = (Math.imul(this.sequence, 0x9e3779b1) >>> 0).toString(16).padStart(8, "0");
+      const sourceId = `${prefix}${id.slice(8)}`;
+      if (!this.takenId(sourceId)) return sourceId;
+    }
+  }
   private takenId(id: string): boolean {
-    if (this.users.has(id) || this.workspaces.has(id)) return true;
+    if (this.users.has(id) || this.workspaces.has(id) || this.sourceLinks.has(id)) return true;
     for (const state of this.workspaces.values()) {
       for (const entity of ENTITIES) if (state.tables.get(entity, id)) return true;
       for (const team of state.tables.all("teams"))
@@ -228,6 +248,53 @@ export class FakeServer {
       state.nextIssueNumber = Math.max(state.nextIssueNumber, (issue.number ?? 0) + 1);
   }
 
+  /** Upload fixtures retain private uploader ownership, absent from sync records. */
+  uploadAttachment(
+    actor: string | Profile,
+    issueId: string,
+    attachment: Attachment,
+    workspace = this.onlyWorkspace(),
+  ): void {
+    const user = typeof actor === "string" ? actor : actor.id;
+    this.authorize(workspace, user);
+    const state = this.workspace(workspace);
+    const issue = state.tables.get("issues", issueId);
+    if (!issue || issue.deleted_at !== null) throw new MutationError(404, "not found");
+    if (this.takenId(attachment.id)) throw new MutationError(409, "id already exists");
+    const tx = new Tables(state.tables);
+    tx.put("issues", {
+      ...issue,
+      version: issue.version + 1,
+      attachments: [...issue.attachments, attachment].sort((a, b) => a.id.localeCompare(b.id)),
+    });
+    this.uploaders.set(attachment.id, user);
+    this.commit(workspace, tx);
+  }
+
+  /** Seed the hidden UUID used by ORDER BY source_links.id. */
+  seedSourceLink(
+    id: string,
+    issueId: string,
+    link: { url: string; title: string },
+    workspace = this.onlyWorkspace(),
+  ): void {
+    const state = this.workspace(workspace);
+    const issue = state.tables.get("issues", issueId);
+    if (!issue) throw new MutationError(404, "not found");
+    if (this.takenId(id)) throw new MutationError(409, "id already exists");
+    this.sourceLinks.set(id, { ...link, issue: issueId, workspace });
+    const tx = new Tables(state.tables);
+    tx.put("issues", { ...issue, source_links: this.orderedSourceLinks(issueId, workspace) });
+    this.commit(workspace, tx);
+  }
+
+  private orderedSourceLinks(issue: string, workspace: string): { url: string; title: string }[] {
+    return [...this.sourceLinks]
+      .filter(([, row]) => row.issue === issue && row.workspace === workspace)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([, { url, title }]) => ({ url, title }));
+  }
+
   records<E extends Entity>(
     entity: E,
     actor?: string,
@@ -307,13 +374,7 @@ export class FakeServer {
     const faults = this.takeFaults(route);
     const delay = faults.find((fault) => fault.kind === "delay");
     if (delay?.kind === "delay") {
-      const duration =
-        typeof delay.milliseconds === "number"
-          ? delay.milliseconds
-          : delay.milliseconds[0] +
-            Math.floor(
-              (this.options.random?.() ?? 0) * (delay.milliseconds[1] - delay.milliseconds[0] + 1),
-            );
+      const duration = this.delayDuration(delay.milliseconds);
       await this.wait(duration, request.signal);
     }
     const task = this.requests.then(() => this.handle(request, url, matched, route, faults));
@@ -321,7 +382,33 @@ export class FakeServer {
       () => {},
       () => {},
     );
-    return task;
+    const response = await task;
+    const delayed = faults.find((fault) => fault.kind === "response_delay");
+    if (delayed?.kind !== "response_delay") return response;
+    const duration = this.delayDuration(delayed.milliseconds);
+    if (route !== "bootstrap" || !response.body) {
+      await this.wait(duration, request.signal);
+      return response;
+    }
+    const reader = response.body.getReader();
+    const ready = this.wait(duration, request.signal);
+    const body = new ReadableStream<Uint8Array>({
+      async pull(controller) {
+        try {
+          await ready;
+          const chunk = await reader.read();
+          if (chunk.done) controller.close();
+          else controller.enqueue(chunk.value);
+        } catch (error) {
+          controller.error(error);
+          await reader.cancel(error);
+        }
+      },
+      cancel(reason) {
+        return reader.cancel(reason);
+      },
+    });
+    return new Response(body, { status: response.status, headers: response.headers });
   };
 
   private async handle(
@@ -344,12 +431,7 @@ export class FakeServer {
         response = json({ ...this.users.get(session.user), session_id: session.session_id });
       else {
         const workspace = uuid(matched?.[1], "workspace_id");
-        const payload: unknown =
-          route === "push"
-            ? await request.json().catch(() => {
-                throw new MutationError(400, "invalid JSON");
-              })
-            : null;
+        const payload: unknown = route === "push" ? await extractPushJson(request) : null;
         const clientId = uuid(
           route === "push" && object(payload)
             ? payload.client_id
@@ -438,8 +520,15 @@ export class FakeServer {
     const kinds = new Set<string>();
     for (let index = 0; index < this.faults.length;) {
       const fault = this.faults[index];
+      if (fault.kind === "response_delay" && !["pull", "bootstrap", "scope"].includes(route)) {
+        index += 1;
+        continue;
+      }
       const target =
-        fault.kind === "delay" || fault.kind === "drop_response" || fault.kind === "unavailable"
+        fault.kind === "delay" ||
+        fault.kind === "response_delay" ||
+        fault.kind === "drop_response" ||
+        fault.kind === "unavailable"
           ? fault.route
           : fault.kind === "truncate_bootstrap"
             ? "bootstrap"
@@ -455,6 +544,12 @@ export class FakeServer {
       } else index += 1;
     }
     return taken;
+  }
+  private delayDuration(milliseconds: number | readonly [number, number]): number {
+    return typeof milliseconds === "number"
+      ? milliseconds
+      : milliseconds[0] +
+          Math.floor((this.options.random?.() ?? 0) * (milliseconds[1] - milliseconds[0] + 1));
   }
   private wait(ms: number, signal: AbortSignal): Promise<void> {
     return new Promise((resolve, reject) => {
@@ -548,6 +643,19 @@ export class FakeServer {
     const tx = new Tables(state.tables);
     args = this.allocateServerIds(name, args);
     this.reserveIds(name, args);
+    if (
+      (name === "add_comment" && tx.all("comments").length >= 20_000) ||
+      (name === "save_view" && tx.all("views").length >= 5000)
+    ) {
+      throw new MutationError(400, "workspace capacity reached");
+    }
+    if (name === "add_comment" && Array.isArray(args.attachments)) {
+      for (const attachment of args.attachments) {
+        if (object(attachment) && this.uploaders.get(String(attachment.id)) !== actor) {
+          throw new MutationError(400, "attachment must be uploaded to this issue first");
+        }
+      }
+    }
     if (name === "set_role" || name === "remove_member") {
       requireAdmin(role);
       const user = uuid(args.user_id, "user_id");
@@ -605,6 +713,40 @@ export class FakeServer {
       generateId: () => this.id(),
       users: this.users,
     });
+    if (
+      name === "add_source_link" &&
+      typeof args.issue_id === "string" &&
+      typeof args.url === "string" &&
+      typeof args.title === "string"
+    ) {
+      const issue = tx.get("issues", args.issue_id);
+      const old = state.tables.get("issues", args.issue_id);
+      if (
+        issue &&
+        old &&
+        !old.source_links.some((link) => link.url === args.url && link.title === args.title)
+      ) {
+        for (const link of old.source_links) {
+          if (
+            ![...this.sourceLinks.values()].some(
+              (row) =>
+                row.issue === issue.id &&
+                row.workspace === workspace &&
+                row.url === link.url &&
+                row.title === link.title,
+            )
+          )
+            this.sourceLinks.set(this.id(), { ...link, issue: issue.id, workspace });
+        }
+        this.sourceLinks.set(this.sourceId(), {
+          url: args.url,
+          title: args.title,
+          issue: issue.id,
+          workspace,
+        });
+        tx.put("issues", { ...issue, source_links: this.orderedSourceLinks(issue.id, workspace) });
+      }
+    }
     const committed = this.commit(workspace, tx);
     state.nextIssueNumber = nextNumber;
     return {
@@ -848,14 +990,10 @@ function parseMutations(payload: unknown): Mutation[] {
       value.id <= previous
     )
       throw new MutationError(400, "mutation ids must be positive and strictly increasing");
-    if (
-      typeof value.name !== "string" ||
-      typeof value.at !== "string" ||
-      !/([Zz]|[+-]\d{2}(?::?\d{2})?)$/.test(value.at)
-    )
+    if (typeof value.name !== "string" || typeof value.at !== "string")
       throw new MutationError(400, "invalid mutation shape");
     try {
-      parseTimestamp(value.at);
+      parseTimestamp(value.at, true);
     } catch {
       throw new MutationError(400, "invalid mutation timestamp");
     }

@@ -10,6 +10,8 @@ import {
   checkWorkflow,
   dedupeSortUuids,
   NIL_UUID,
+  checkCreateId,
+  checkCapacity,
   requireIssue,
   requireLiveIssue,
   requireRole,
@@ -127,10 +129,12 @@ function doneAt(
 
 export const createIssue: Mutator<ArgsOf<"create_issue">> = (tx, args, ctx) => {
   requireRole(tx, ctx.actor, "create_issue", args);
+  checkCapacity(tx, "issues", 5000, ctx, args.input.id);
   const input = args.input;
   const id = input.id ?? null;
   if (id === null) throw new MutationError(400, "id is required");
   if (id === NIL_UUID) throw new MutationError(400, "id must not be nil");
+  checkCreateId(tx, id, ctx);
   checkOwnership(tx, { type: "create_issue", input });
   const stageId = resolveStage(tx, input.team_id, input.stage_id);
   const previous = tx.get("issues", id);

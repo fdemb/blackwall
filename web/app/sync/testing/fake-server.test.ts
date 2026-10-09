@@ -137,7 +137,7 @@ describe("fake sync push", () => {
       { ...label(2), name: null },
       { ...label(2), id: 1.5 },
     ]) {
-      expect((await f.push([label(1), invalid])).status).toBe(400);
+      expect((await f.push([label(1), invalid])).status).toBe(422);
       expect(f.server.records("labels")).toEqual([]);
     }
   });
@@ -374,7 +374,10 @@ describe("fake sync pull", () => {
   it("resets for a transaction larger than the pair limit", async () => {
     const f = fixture({ pageSize: 2 });
     const cursor = (await f.pull()).cursor;
-    f.createIssue(); // issue + workspace counter + activity
+    f.server.run(f.owner, {
+      type: "create_issue",
+      input: { id: ISSUE, team_id: TEAM, title: "Done", stage_id: STAGES[3] },
+    }); // issue + creation and completion activity
     expect(await f.pull(cursor)).toMatchObject({
       reset: true,
       more: false,
@@ -387,7 +390,10 @@ describe("fake sync pull", () => {
     const f = fixture({ pageSize: 2 });
     const cursor = (await f.pull()).cursor;
     await f.push([label(1)]);
-    f.createIssue();
+    f.server.run(f.owner, {
+      type: "create_issue",
+      input: { id: ISSUE, team_id: TEAM, title: "Done", stage_id: STAGES[3] },
+    });
     const first = await f.pull(cursor);
     expect(first.more).toBe(true);
     expect(first.reset).toBe(false);
@@ -672,7 +678,7 @@ describe("fake bootstrap, scope and sessions", () => {
         ).status,
       ).toBe(400);
     }
-    expect((await f.push([label(1)], f.token, "bad")).status).toBe(400);
+    expect((await f.push([label(1)], f.token, "bad")).status).toBe(422);
   });
 
   it("returns fresh session ids per login, never authenticates by session id, and expires sessions", async () => {
@@ -1226,4 +1232,332 @@ it("rejects malformed filter enums and alert preference types per mutation", asy
   expect(response.last_mutation_id).toBe(2);
   expect(f.server.records("views")).toEqual([]);
   expect(f.server.records("alert_preferences")).toEqual([]);
+});
+
+describe("fake server fidelity regressions", () => {
+  it("lets overlapping pulls return the older captured snapshot last", async () => {
+    const f = fixture();
+    f.createIssue();
+    const cursor = (await f.pull()).cursor;
+    f.server.run(f.owner, { type: "update_issue", id: ISSUE, patch: { title: "Older" } });
+    const arrivals: string[] = [];
+    f.server.inject({ kind: "response_delay", route: "pull", milliseconds: 100 });
+    const older = f.pull(cursor).then((page) => {
+      arrivals.push("older");
+      return page;
+    });
+    await f.pull();
+    f.server.run(f.owner, { type: "update_issue", id: ISSUE, patch: { title: "Newer" } });
+    const newer = await f.pull(cursor);
+    arrivals.push("newer");
+    expect(change(newer, "issues", ISSUE)?.record).toMatchObject({ title: "Newer" });
+    expect(arrivals).toEqual(["newer"]);
+    f.server.advance(100);
+    const old = await older;
+    expect(change(old, "issues", ISSUE)?.record).toMatchObject({ title: "Older" });
+    expect(old.cursor).not.toBe(newer.cursor);
+    expect(arrivals).toEqual(["newer", "older"]);
+  });
+
+  it("aborts delayed responses without blocking later snapshots", async () => {
+    const f = fixture();
+    const controller = new AbortController();
+    f.server.inject({ kind: "response_delay", route: "pull", milliseconds: 100 });
+    const delayed = f.server.fetch(f.url("pull"), {
+      signal: controller.signal,
+      headers: { authorization: `Bearer ${f.token}` },
+    });
+    await f.pull();
+    controller.abort();
+    await expect(delayed).rejects.toMatchObject({ name: "AbortError" });
+    expect((await f.get("pull")).status).toBe(200);
+  });
+
+  it("delays bootstrap bodies after capturing their snapshot", async () => {
+    const f = fixture();
+    f.createIssue();
+    f.server.inject({ kind: "response_delay", route: "bootstrap", milliseconds: 100 });
+    const older = ndjson(await f.get("bootstrap"));
+    f.server.run(f.owner, { type: "update_issue", id: ISSUE, patch: { title: "Newer" } });
+    const newer = await ndjson(await f.get("bootstrap"));
+    expect(newer.find((line) => line.entity === "issues")?.record).toMatchObject({
+      title: "Newer",
+    });
+    f.server.advance(100);
+    expect((await older).find((line) => line.entity === "issues")?.record).toMatchObject({
+      title: "Issue",
+    });
+  });
+
+  it("delays scope responses after capturing their snapshot", async () => {
+    const f = fixture();
+    f.createIssue();
+    f.server.run(f.owner, {
+      type: "add_comment",
+      id: id(90),
+      issue_id: ISSUE,
+      body: "Older",
+      mentions: [],
+      attachments: [],
+    });
+    f.server.inject({ kind: "response_delay", route: "scope", milliseconds: 100 });
+    const older = f.get("scope", { entity: "comments", issue_id: ISSUE });
+    await f.pull();
+    f.server.run(f.owner, { type: "edit_comment", id: id(90), body: "Newer", mentions: [] });
+    expect(
+      await (await f.get("scope", { entity: "comments", issue_id: ISSUE })).json(),
+    ).toMatchObject({ records: [{ body: "Newer" }] });
+    f.server.advance(100);
+    expect(await (await older).json()).toMatchObject({ records: [{ body: "Older" }] });
+  });
+
+  it("rejects missing or non-JSON content types before applying push", async () => {
+    const f = fixture();
+    for (const contentType of [undefined, "text/plain"]) {
+      const headers = new Headers({ authorization: `Bearer ${f.token}` });
+      if (contentType) headers.set("content-type", contentType);
+      const response = await f.server.fetch(f.url("push"), {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ client_id: CLIENT, mutations: [label(1)] }),
+      });
+      expect(response.status).toBe(415);
+      expect(await response.json()).toEqual({
+        error: "Expected request with `Content-Type: application/json`",
+      });
+      expect(f.server.records("labels")).toEqual([]);
+      expect(f.server.clientState(CLIENT).last_mutation_id).toBe(0);
+    }
+  });
+
+  it("matches Axum syntax and extraction errors, including malformed at", async () => {
+    const f = fixture();
+    const cases = [
+      [
+        "{",
+        400,
+        "Failed to parse the request body as JSON: EOF while parsing an object at line 1 column 1",
+      ],
+      [
+        `{"client_id":"${CLIENT}","mutations":[{"id":1,"name":"x","at":"bad"}]}`,
+        422,
+        "Failed to deserialize the JSON body into the target type: mutations[0].at: input contains invalid characters at line 1 column 94",
+      ],
+      [
+        `{"client_id":"${CLIENT}","mutations":[{"id":1,"name":"x","at":"2026-10-08T12:00:00"}]}`,
+        422,
+        "Failed to deserialize the JSON body into the target type: mutations[0].at: premature end of input at line 1 column 110",
+      ],
+      [
+        `{"client_id":"${CLIENT}","mutations":[{"id":"1","name":"x","at":"2026-10-08T12:00:00Z"}]}`,
+        422,
+        'Failed to deserialize the JSON body into the target type: mutations[0].id: invalid type: string "1", expected i64 at line 1 column 74',
+      ],
+      [
+        `{"client_id":"${CLIENT}","mutations":[{"id":1,"name":"x"}]}`,
+        422,
+        "Failed to deserialize the JSON body into the target type: mutations[0]: missing field `at` at line 1 column 84",
+      ],
+      [
+        `{"client_id":"${CLIENT}","mutations":[{"id":1.0,"name":"x","at":"2026-10-08T12:00:00Z"}]}`,
+        422,
+        "Failed to deserialize the JSON body into the target type: mutations[0].id: invalid type: floating point `1.0`, expected i64 at line 1 column 74",
+      ],
+      [
+        `{"client_id":"${CLIENT}","mutations":[{"id":1,"id":2,"name":"x","at":"2026-10-08T12:00:00Z"}]}`,
+        422,
+        "Failed to deserialize the JSON body into the target type: mutations[0]: duplicate field `id` at line 1 column 77",
+      ],
+      [
+        `{"client_id":"${CLIENT}","mutations":[{"id":1,"name":[],"at":"2026-10-08T12:00:00Z"}]}`,
+        422,
+        "Failed to deserialize the JSON body into the target type: mutations[0].name: invalid type: sequence, expected a string at line 1 column 80",
+      ],
+      [
+        '{"client_id":1e}',
+        400,
+        "Failed to parse the request body as JSON: client_id: invalid number at line 1 column 16",
+      ],
+      [
+        "",
+        400,
+        "Failed to parse the request body as JSON: EOF while parsing a value at line 1 column 0",
+      ],
+    ] as const;
+    for (const [body, status, error] of cases) {
+      const response = await f.server.fetch(f.url("push"), {
+        method: "POST",
+        headers: { authorization: `Bearer ${f.token}`, "content-type": "application/json" },
+        body,
+      });
+      expect(response.status).toBe(status);
+      expect(await response.json()).toEqual({ error });
+      expect(f.server.clientState(CLIENT).last_mutation_id).toBe(0);
+    }
+  });
+
+  it("requires comment attachments to belong to the actor's uploads", async () => {
+    const f = fixture();
+    f.createIssue();
+    const attachment = { id: id(400), name: "proof.txt", content_type: "text/plain", size: 12 };
+    f.server.uploadAttachment(f.member, ISSUE, attachment);
+    const before = f.server.record("issues", ISSUE);
+    const command: Command = {
+      type: "add_comment",
+      id: id(401),
+      issue_id: ISSUE,
+      body: "Comment",
+      mentions: [],
+      attachments: [attachment],
+    };
+    const rejected: PushResponse = await (await f.push([mutation(1, command)])).json();
+    expect(rejected.results[0]).toEqual({
+      id: 1,
+      status: "rejected",
+      error: { status: 400, message: "attachment must be uploaded to this issue first" },
+    });
+    expect(f.server.record("issues", ISSUE)).toEqual(before);
+    expect(f.server.record("comments", id(401))).toBeNull();
+    const accepted: PushResponse = await (
+      await f.push([mutation(1, command)], f.memberToken, id(11))
+    ).json();
+    expect(accepted.results[0].status).toBe("applied");
+  });
+
+  it("moves attachments to comments without changing issue version or updated_at", async () => {
+    const f = fixture();
+    f.createIssue();
+    const attachment = { id: id(400), name: "proof.txt", content_type: "text/plain", size: 12 };
+    f.server.uploadAttachment(f.owner, ISSUE, attachment);
+    const before = f.server.record("issues", ISSUE);
+    const cursor = (await f.pull()).cursor;
+    f.server.advance(1000);
+    f.server.run(f.owner, {
+      type: "add_comment",
+      id: id(401),
+      issue_id: ISSUE,
+      body: "Comment",
+      mentions: [],
+      attachments: [attachment],
+    });
+    expect(f.server.record("issues", ISSUE)).toEqual({ ...before, attachments: [] });
+    expect(f.server.record("comments", id(401))?.attachments).toEqual([attachment]);
+    expect(change(await f.pull(cursor), "issues", ISSUE)?.record).toEqual({
+      ...before,
+      attachments: [],
+    });
+  });
+
+  it("records stage and archived fields and completion when an open stage is deleted into Done", () => {
+    const f = fixture();
+    f.createIssue();
+    f.server.run(f.owner, { type: "move_issue", id: ISSUE, stage_id: STAGES[1], before_id: null });
+    expect(f.server.records("activity").find((row) => row.action === "move_issue")?.fields).toEqual(
+      ["stage"],
+    );
+    f.server.run(f.owner, {
+      type: "delete_stage",
+      id: STAGES[1],
+      team_id: TEAM,
+      replacement: STAGES[3],
+    });
+    expect(
+      f.server.records("activity").filter((row) => row.action === "issue_completed"),
+    ).toHaveLength(1);
+    f.server.run(f.owner, { type: "archive_issue", id: ISSUE });
+    f.server.run(f.owner, { type: "unarchive_issue", id: ISSUE });
+    for (const action of ["archive_issue", "unarchive_issue"])
+      expect(f.server.records("activity").find((row) => row.action === action)?.fields).toEqual([
+        "archived",
+      ]);
+  });
+
+  it("does not mark workspace changes when allocating an issue number", async () => {
+    const f = fixture();
+    const cursor = (await f.pull()).cursor;
+    const workspace = f.server.record("workspace", f.workspace.id);
+    f.createIssue();
+    expect((await f.pull(cursor)).changes.some((row) => row.entity === "workspace")).toBe(false);
+    expect(f.server.record("workspace", f.workspace.id)).toEqual(workspace);
+  });
+
+  it("orders source links by their private UUIDs rather than insertion order", () => {
+    const f = fixture();
+    f.createIssue();
+    const first = { url: "https://example.test/one", title: "one" };
+    const second = { url: "https://example.test/two", title: "two" };
+    f.server.seedSourceLink(id(500), ISSUE, first);
+    f.server.seedSourceLink(id(499), ISSUE, second);
+    expect(f.server.record("issues", ISSUE)?.source_links).toEqual([second, first]);
+    f.server.run(f.owner, { type: "add_source_link", issue_id: ISSUE, ...second });
+    expect(f.server.record("issues", ISSUE)?.source_links).toEqual([second, first]);
+  });
+
+  it("generated source-link ids also reorder inserts", () => {
+    const f = fixture();
+    f.createIssue();
+    const links = Array.from({ length: 6 }, (_, n) => ({
+      url: `https://example.test/${n}`,
+      title: String(n),
+    }));
+    for (const link of links)
+      f.server.run(f.owner, { type: "add_source_link", issue_id: ISSUE, ...link });
+    const rendered = f.server.record("issues", ISSUE)?.source_links;
+    expect(rendered).toHaveLength(6);
+    expect(rendered).not.toEqual(links);
+    expect(rendered).toEqual(expect.arrayContaining(links));
+  });
+
+  it.each(["comments", "views"] as const)(
+    "enforces private workspace %s capacity",
+    async (entity) => {
+      const f = fixture();
+      f.createIssue();
+      if (entity === "comments") {
+        f.server.seed(
+          "comments",
+          Array.from({ length: 20_000 }, (_, n) => ({
+            id: id(1000 + n),
+            version: 1,
+            issue_id: ISSUE,
+            author: f.owner.id,
+            body: "Comment",
+            mentions: [],
+            attachments: [],
+            created_at: f.server.now(),
+            edited_at: null,
+          })),
+        );
+      } else {
+        f.server.seed(
+          "views",
+          Array.from({ length: 5000 }, (_, n) => ({
+            id: id(1000 + n),
+            version: 1,
+            owner: f.member.id,
+            name: "Private",
+            shared: false,
+            filter: {},
+          })),
+        );
+        expect(f.server.records("views", f.owner.id)).toEqual([]);
+      }
+      const command: Command =
+        entity === "comments"
+          ? {
+              type: "add_comment",
+              id: id(99),
+              issue_id: ISSUE,
+              body: "overflow",
+              mentions: [],
+              attachments: [],
+            }
+          : { type: "save_view", id: id(99), name: "overflow", shared: false, filter: {} };
+      const response: PushResponse = await (await f.push([mutation(1, command)])).json();
+      expect(response.results[0]).toMatchObject({
+        status: "rejected",
+        error: { status: 400, message: "workspace capacity reached" },
+      });
+    },
+  );
 });

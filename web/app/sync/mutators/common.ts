@@ -2,7 +2,7 @@ import { commandOwnershipTargets, issueCapabilities } from "../../lib/ownership"
 import policy from "../../lib/ownership-policy.generated.json";
 import type { Command, Id, Role, StageKind } from "../../lib/types";
 import type { Entity, RecordOf, SyncIssue } from "../records";
-import { parseTimestamp } from "../records";
+import { ENTITIES, parseTimestamp } from "../records";
 import type { DeepReadonly, Tx } from "../store";
 import { MutationError } from "./errors";
 
@@ -254,11 +254,14 @@ export function checkTimestamp(value: string | null | undefined): void {
   if (value === null || value === undefined) return;
   let normalized: string;
   try {
-    normalized = parseTimestamp(value);
-  } catch {
+    normalized = parseTimestamp(value, true);
+  } catch (error) {
+    if (error instanceof Error && error.message === "premature end of input") {
+      throw new MutationError(400, error.message);
+    }
     throw new MutationError(400, "timestamp year must be between 1 and 9999");
   }
-  const year = Number(normalized.slice(0, 4));
+  const year = Number(/^([+-]?\d+)-/.exec(normalized)?.[1]);
   if (!Number.isInteger(year) || year < 1 || year > 9999) {
     throw new MutationError(400, "timestamp year must be between 1 and 9999");
   }
@@ -462,4 +465,27 @@ export function checkWorkflow(tx: Tx, affected: readonly string[]): void {
       }
     }
   }
+}
+
+/** Reject visible collisions at the server's id reservation point. Replay remains an upsert. */
+export function checkCreateId(tx: Tx, id: string, ctx: MutatorContext): void {
+  if (ctx.mode === "replay") return;
+  const exists =
+    ENTITIES.some((entity) => tx.get(entity, id) !== undefined) ||
+    tx.all("teams").some((team) => team.stages.some((stage) => stage.id === id)) ||
+    tx.all("issues").some((issue) => issue.attachments.some((file) => file.id === id)) ||
+    tx.all("comments").some((comment) => comment.attachments.some((file) => file.id === id));
+  if (exists) throw new MutationError(409, "id already exists");
+}
+
+/** Workspace counts include trashed and archived records, as SQL capacity does. */
+export function checkCapacity(
+  tx: Tx,
+  entity: Entity,
+  maximum: number,
+  ctx: MutatorContext,
+  id?: string,
+): void {
+  if (ctx.mode === "replay" && id !== undefined && tx.get(entity, id) !== undefined) return;
+  if (tx.all(entity).length >= maximum) throw new MutationError(400, "workspace capacity reached");
 }

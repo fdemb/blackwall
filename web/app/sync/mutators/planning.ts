@@ -3,6 +3,8 @@ import type { DeepReadonly, Tx } from "../store";
 import type { ArgsOf, Mutator } from "./common";
 import {
   NIL_UUID,
+  checkCreateId,
+  checkCapacity,
   checkArchiveDays,
   checkText,
   checkTimestamp,
@@ -56,8 +58,9 @@ const DEFAULT_STAGES: readonly { name: string; kind: StageKind; position: number
 export const createTeam: Mutator<ArgsOf<"create_team">> = (tx, args, ctx) => {
   requireAdmin(requireRole(tx, ctx.actor, "create_team", args));
   // Order mirrors `planning::CreateTeam`: name, members, stage ids, then the
-  // client id. Capacity is left to the server, as for the issue mutators.
+  // client id.
   checkText(args.name, 200);
+  checkCapacity(tx, "teams", 200, ctx, args.id);
   const members = dedupeSortUuids(args.members);
   for (const user of members) requireMember(tx, user);
   const stageIds = args.default_stage_ids ?? null;
@@ -68,14 +71,16 @@ export const createTeam: Mutator<ArgsOf<"create_team">> = (tx, args, ctx) => {
   const seen = new Set<string>();
   for (const stage of stageIds) {
     if (stage === NIL_UUID) throw new MutationError(400, "id must not be nil");
+    checkCreateId(tx, stage, ctx);
     if (seen.has(stage)) throw new MutationError(409, "id already exists");
     seen.add(stage);
   }
   const id = args.id ?? null;
   if (id === null) throw new MutationError(400, "id is required");
   if (id === NIL_UUID) throw new MutationError(400, "id must not be nil");
+  checkCreateId(tx, id, ctx);
   if (seen.has(id)) throw new MutationError(409, "id already exists");
-  // Creates are upserts. Pulled stages and archive settings survive replay,
+  // Replay upserts preserve pulled stages and archive settings,
   // including changes made after the server created this team.
   const previous = tx.get("teams", id);
   tx.put("teams", {
@@ -141,9 +146,16 @@ export const createStage: Mutator<ArgsOf<"create_stage">> = (tx, args, ctx) => {
   // Order mirrors `planning::CreateStage`: name, team, then the client id.
   checkText(args.name, 200);
   const team = requireRecord(tx, "teams", args.team_id);
+  if (
+    team.stages.length >= 100 &&
+    !(ctx.mode === "replay" && team.stages.some((stage) => stage.id === args.id))
+  ) {
+    throw new MutationError(400, "team must contain 1 to 100 stages");
+  }
   const id = args.id ?? null;
   if (id === null) throw new MutationError(400, "id is required");
   if (id === NIL_UUID) throw new MutationError(400, "id must not be nil");
+  checkCreateId(tx, id, ctx);
   const next = copyTeam(team);
   const existing = next.stages.findIndex((stage) => stage.id === id);
   const record: Stage = {
@@ -238,9 +250,11 @@ export const createLabel: Mutator<ArgsOf<"create_label">> = (tx, args, ctx) => {
   // Order mirrors `validate_label`: name, then color.
   checkText(args.name, 100);
   if (utf8Length(args.color) > 40) throw new MutationError(400, "invalid color");
+  checkCapacity(tx, "labels", 1000, ctx, args.id);
   const id = args.id ?? null;
   if (id === null) throw new MutationError(400, "id is required");
   if (id === NIL_UUID) throw new MutationError(400, "id must not be nil");
+  checkCreateId(tx, id, ctx);
   const previous = tx.get("labels", id);
   tx.put("labels", { id, version: previous?.version ?? 1, name: args.name, color: args.color });
 };
@@ -260,11 +274,13 @@ export const createProject: Mutator<ArgsOf<"create_project">> = (tx, args, ctx) 
   if (utf8Length(args.description) > 100_000) {
     throw new MutationError(400, "project description too long");
   }
+  checkCapacity(tx, "projects", 1000, ctx, args.id);
   const teamIds = dedupeSortUuids(args.team_ids);
   for (const team of teamIds) requireRecord(tx, "teams", team);
   const id = args.id ?? null;
   if (id === null) throw new MutationError(400, "id is required");
   if (id === NIL_UUID) throw new MutationError(400, "id must not be nil");
+  checkCreateId(tx, id, ctx);
   const previous = tx.get("projects", id);
   tx.put("projects", {
     id,
@@ -303,10 +319,12 @@ export const createMilestone: Mutator<ArgsOf<"create_milestone">> = (tx, args, c
   // Order mirrors `planning::CreateMilestone`: name, deadline, project, id.
   checkText(args.name, 200);
   checkTimestamp(args.deadline);
+  checkCapacity(tx, "milestones", 5000, ctx, args.id);
   requireRecord(tx, "projects", args.project_id);
   const id = args.id ?? null;
   if (id === null) throw new MutationError(400, "id is required");
   if (id === NIL_UUID) throw new MutationError(400, "id must not be nil");
+  checkCreateId(tx, id, ctx);
   const previous = tx.get("milestones", id);
   tx.put("milestones", {
     id,
@@ -343,10 +361,12 @@ function checkSprint(
 export const createSprint: Mutator<ArgsOf<"create_sprint">> = (tx, args, ctx) => {
   requireRole(tx, ctx.actor, "create_sprint", args);
   const { starts, ends } = checkSprint(args.name, args.goal, args.starts_at, args.ends_at);
+  checkCapacity(tx, "sprints", 2000, ctx, args.id);
   requireRecord(tx, "teams", args.team_id);
   const id = args.id ?? null;
   if (id === null) throw new MutationError(400, "id is required");
   if (id === NIL_UUID) throw new MutationError(400, "id must not be nil");
+  checkCreateId(tx, id, ctx);
   const previous = tx.get("sprints", id);
   tx.put("sprints", {
     id,

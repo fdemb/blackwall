@@ -427,7 +427,7 @@ describe("set_team_archive", () => {
   });
 
   it("validates days and the team", () => {
-    for (const days of [0, 3651, 1.5]) {
+    for (const days of [0, 3651]) {
       rejects(
         "set_team_archive",
         { id: TEAM, archive_after_days: days },

@@ -1,5 +1,12 @@
 import type { ArgsOf, Mutator } from "./common";
-import { NIL_UUID, checkText, checkTimestamp, requireAuthorOrAdmin, requireRole } from "./common";
+import {
+  checkCreateId,
+  NIL_UUID,
+  checkText,
+  checkTimestamp,
+  requireAuthorOrAdmin,
+  requireRole,
+} from "./common";
 import { MutationError } from "./errors";
 
 export const saveView: Mutator<ArgsOf<"save_view">> = (tx, args, ctx) => {
@@ -12,8 +19,8 @@ export const saveView: Mutator<ArgsOf<"save_view">> = (tx, args, ctx) => {
   const id = args.id ?? null;
   if (id === null) throw new MutationError(400, "id is required");
   if (id === NIL_UUID) throw new MutationError(400, "id must not be nil");
-  // Creates are upserts: a replay over a base that already holds the id
-  // keeps its version, as for created issues.
+  checkCreateId(tx, id, ctx);
+  // Replay over a base that already holds the id keeps its version.
   const previous = tx.get("views", id);
   tx.put("views", {
     id,
