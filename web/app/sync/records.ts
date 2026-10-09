@@ -59,7 +59,13 @@ export const ENTITIES: readonly Entity[] = [
 ];
 
 /** Sync issue shape: the server shape without the derived counts. */
-export type SyncIssue = Omit<Issue, "blocked_count" | "subtask_total" | "subtask_completed">;
+export type SyncIssue = Omit<
+  Issue,
+  "blocked_count" | "subtask_total" | "subtask_completed" | "number"
+> & {
+  /** Null until the server confirms a locally created issue and assigns a number. */
+  number: number | null;
+};
 
 /** Workspace pull shape: only the workspace row itself. */
 export interface SyncWorkspace {
@@ -120,7 +126,41 @@ export function normalize<E extends Entity>(entity: E, record: RecordOf[E]): Rec
   for (const field of TIMESTAMP_FIELDS[entity]) {
     const value = copy[field];
     if (value === null || value === undefined) continue;
-    copy[field] = new Date(value as string).toISOString();
+    copy[field] = normalizeTimestamp(value);
   }
   return copy as RecordOf[E];
+}
+
+/**
+ * Timestamps to UTC with fixed-width microseconds: YYYY-MM-DDTHH:MM:SS.ffffffZ.
+ * Keeps up to 6 fraction digits (pads short fractions with zeros), so Date's
+ * millisecond truncation can't collapse distinct server timestamps. Throws on
+ * unparseable input instead of producing Invalid Date.
+ */
+function normalizeTimestamp(value: unknown): string {
+  if (typeof value !== "string") throw new Error(`unparseable timestamp ${String(value)}`);
+  const match =
+    /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d+))?(Z|[+-]\d{2}:?\d{2}|[+-]\d{4}|[+-]\d{2})?$/.exec(
+      value,
+    );
+  if (match === null) throw new Error(`unparseable timestamp ${value}`);
+  const datePart = match[1] as string;
+  const fractionRaw = match[2] ?? "";
+  const zoneRaw = match[3] ?? "Z";
+  let zone = zoneRaw;
+  if (zone !== "Z") {
+    const sign = zone[0] as string;
+    const digits = zone.slice(1).replace(":", "");
+    const hour = digits.slice(0, 2);
+    const minute = digits.length <= 2 ? "00" : digits.slice(2, 4);
+    zone = `${sign}${hour}:${minute}`;
+  }
+  const probe = new Date(`${datePart}${zone}`);
+  if (Number.isNaN(probe.getTime())) throw new Error(`unparseable timestamp ${value}`);
+  const pad = (n: number, width: number): string => String(n).padStart(width, "0");
+  const utc =
+    `${pad(probe.getUTCFullYear(), 4)}-${pad(probe.getUTCMonth() + 1, 2)}-${pad(probe.getUTCDate(), 2)}` +
+    `T${pad(probe.getUTCHours(), 2)}:${pad(probe.getUTCMinutes(), 2)}:${pad(probe.getUTCSeconds(), 2)}`;
+  const fraction = fractionRaw.slice(0, 6).padEnd(6, "0");
+  return `${utc}.${fraction}Z`;
 }

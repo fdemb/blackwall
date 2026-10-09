@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 import { blockedCount, subtaskCompleted, subtaskTotal, withCounts } from "./derived";
-import { makeIssue, makeTeam, testReplay } from "./fixtures";
+import { makeIssue, makeTeam, NOW, testReplay } from "./fixtures";
 import { SyncStore } from "./store";
 
 function countedStore(): SyncStore {
@@ -64,5 +64,51 @@ describe("derived counts", () => {
       subtask_total: 2,
       subtask_completed: 1,
     });
+  });
+
+  it("F1: soft-deleting a child refreshes subtaskTotal", () => {
+    const store = new SyncStore(testReplay);
+    store.replaceBase({
+      teams: [makeTeam()],
+      issues: [makeIssue("parent"), makeIssue("child", { parent_id: "parent" })],
+    });
+    expect(subtaskTotal(store, "parent")).toBe(1);
+    store.applyBase([
+      {
+        entity: "issues",
+        id: "child",
+        record: { ...makeIssue("child", { parent_id: "parent" }), deleted_at: NOW },
+      },
+    ]);
+    expect(subtaskTotal(store, "parent")).toBe(0);
+  });
+
+  it("F1: completing a child refreshes subtaskCompleted", () => {
+    const store = new SyncStore(testReplay);
+    store.replaceBase({
+      teams: [makeTeam()],
+      issues: [makeIssue("parent"), makeIssue("child", { parent_id: "parent" })],
+    });
+    expect(subtaskCompleted(store, "parent")).toBe(0);
+    store.applyBase([
+      {
+        entity: "issues",
+        id: "child",
+        record: { ...makeIssue("child", { parent_id: "parent" }), stage_id: "stage-done" },
+      },
+    ]);
+    expect(subtaskCompleted(store, "parent")).toBe(1);
+  });
+
+  it("G2: unknown stage kinds are not counted as blocked", () => {
+    const store = new SyncStore(testReplay);
+    store.replaceBase({
+      teams: [makeTeam()],
+      issues: [
+        makeIssue("parent", { dependencies: ["mystery"] }),
+        makeIssue("mystery", { stage_id: "stage-unknown" }),
+      ],
+    });
+    expect(blockedCount(store, "parent")).toBe(0);
   });
 });

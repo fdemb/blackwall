@@ -1,4 +1,5 @@
 import type { Issue } from "../lib/types";
+import type { DeepReadonly } from "./store";
 import type { SyncIssue } from "./records";
 import type { SyncStore } from "./store";
 
@@ -11,6 +12,9 @@ export function blockedCount(store: SyncStore, issueId: string): number {
     const dependency = store.get("issues", dependencyId);
     if (dependency === undefined || dependency.deleted_at !== null) continue;
     const kind = store.stageKind(dependency.stage_id);
+    // The server's JOIN excludes stages it can't see: unknown kind counts as neither
+    // done nor open, so it is not counted here (and never completes a subtask).
+    if (kind === undefined) continue;
     if (kind === "done" || kind === "cancelled") continue;
     count += 1;
   }
@@ -38,11 +42,12 @@ export function subtaskCompleted(store: SyncStore, issueId: string): number {
 }
 
 /** The UI issue shape: the sync record with derived counts attached. */
-export function withCounts(store: SyncStore, issue: SyncIssue): Issue {
+export function withCounts(store: SyncStore, issue: DeepReadonly<SyncIssue>): Issue {
+  const src = issue as unknown as SyncIssue;
   return {
-    ...issue,
+    ...src,
     blocked_count: blockedCount(store, issue.id),
     subtask_total: subtaskTotal(store, issue.id),
     subtask_completed: subtaskCompleted(store, issue.id),
-  };
+  } as Issue;
 }

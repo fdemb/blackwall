@@ -400,7 +400,14 @@ export type Command =
   | { type: "archive_issue"; id: Id }
   | { type: "unarchive_issue"; id: Id }
   | { type: "remove_attachment"; issue_id: Id; attachment_id: Id }
-  | { type: "add_comment"; id?: Id; issue_id: Id; body: string; mentions: Id[]; attachments: Attachment[] }
+  | {
+      type: "add_comment";
+      id?: Id;
+      issue_id: Id;
+      body: string;
+      mentions: Id[];
+      attachments: Attachment[];
+    }
   | { type: "edit_comment"; id: Id; body: string; mentions: Id[] }
   | { type: "delete_comment"; id: Id }
   | { type: "follow"; issue_id: Id; following: boolean }

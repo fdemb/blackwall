@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 import { makeIssue, makeTeam, NOW, testReplay } from "./fixtures";
 import { keyOf, normalize } from "./records";
-import type { ChangeSet } from "./store";
+import type { ChangeSet, PendingMutation, Tx } from "./store";
 import { SyncStore } from "./store";
 
 function collect(store: SyncStore): { events: ChangeSet[]; stop: () => void } {
@@ -35,7 +35,7 @@ describe("records", () => {
     });
     const clean = normalize("issues", issue);
     expect(clean).not.toBe(issue);
-    expect(clean.deadline).toBe("2026-10-08T12:00:00.000Z");
+    expect(clean.deadline).toBe("2026-10-08T12:00:00.000000Z");
     expect(clean.deleted_at).toBeNull();
     expect(issue.deadline).toBe("2026-10-08T14:00:00+02:00");
   });
@@ -68,7 +68,7 @@ describe("base", () => {
       issues: [makeIssue("a", { deadline: "2026-10-08T14:00:00+02:00" })],
     });
     const issue = store.get("issues", "a");
-    expect(issue?.deadline).toBe("2026-10-08T12:00:00.000Z");
+    expect(issue?.deadline).toBe("2026-10-08T12:00:00.000000Z");
     expect(Object.isFrozen(issue)).toBe(true);
   });
 
@@ -355,5 +355,295 @@ describe("performance", () => {
     const elapsed = performance.now() - start;
     expect(store.get("issues", "issue-12345")?.title).toBe("Local");
     expect(elapsed).toBeLessThan(20);
+  });
+});
+
+describe("regressions F1-G2", () => {
+  it("F1: refreshes index buckets when membership is unchanged", () => {
+    const store = new SyncStore(testReplay);
+    store.replaceBase({ teams: [makeTeam()], issues: [makeIssue("a", { title: "Old" })] });
+    const before = store.byIndex("issues", "team_id", "team-1");
+    expect(before[0]?.title).toBe("Old");
+    store.applyBase([{ entity: "issues", id: "a", record: { ...makeIssue("a"), title: "New" } }]);
+    const after = store.byIndex("issues", "team_id", "team-1");
+    expect(after[0]?.title).toBe("New");
+    expect(after).not.toBe(before);
+  });
+
+  it("F2: deep-freezes records and detaches caller-owned objects", () => {
+    const store = new SyncStore(testReplay);
+    const input = makeIssue("a", { dependencies: ["x"] });
+    store.replaceBase({ issues: [input] });
+    input.dependencies.push("hacked");
+    expect(store.get("issues", "a")?.dependencies).toEqual(["x"]);
+    const issue = store.get("issues", "a");
+    if (issue === undefined) throw new Error("missing");
+    expect(Object.isFrozen(issue)).toBe(true);
+    expect(Object.isFrozen(issue.dependencies)).toBe(true);
+    expect(() => {
+      (issue.dependencies as unknown as string[]).push("y");
+    }).toThrow();
+    expect(store.get("issues", "a")?.dependencies).toEqual(["x"]);
+    const viaApply = { ...makeIssue("b", { dependencies: ["p"] }) };
+    store.applyBase([{ entity: "issues", id: "b", record: viaApply }]);
+    (viaApply as unknown as { dependencies: string[] }).dependencies.push("q");
+    expect(store.get("issues", "b")?.dependencies).toEqual(["p"]);
+  });
+
+  it("F2: Tx.put detaches nested arrays and Tx.get is frozen", () => {
+    const shared: string[] = ["x"];
+    let seenFrozen = false;
+    let seenNestedFrozen = false;
+    const replay = (tx: Tx, mutation: PendingMutation): void => {
+      if (mutation.name === "put_shared") {
+        tx.put("issues", makeIssue("s", { dependencies: shared }));
+      } else if (mutation.name === "observe") {
+        const got = tx.get("issues", "s");
+        if (got !== undefined) {
+          seenFrozen = Object.isFrozen(got);
+          seenNestedFrozen = Object.isFrozen(got.dependencies);
+        }
+      } else {
+        testReplay(tx, mutation);
+      }
+    };
+    const store = new SyncStore(replay);
+    store.replaceBase({ issues: [] });
+    store.setPending([
+      { id: 1, name: "put_shared", args: {}, at: NOW },
+      { id: 2, name: "observe", args: {}, at: NOW },
+    ]);
+    shared.push("hacked");
+    expect(store.get("issues", "s")?.dependencies).toEqual(["x"]);
+    expect(seenFrozen).toBe(true);
+    expect(seenNestedFrozen).toBe(true);
+  });
+
+  it("F3: failed mutations roll back their partial writes", () => {
+    const replay = (tx: Tx, mutation: PendingMutation): void => {
+      if (mutation.name === "write_then_throw") {
+        const a = tx.get("issues", "a");
+        if (a === undefined) throw new Error("missing a");
+        tx.put("issues", { ...a, title: "Partial" });
+        tx.delete("issues", "b");
+        throw new Error("boom");
+      } else {
+        testReplay(tx, mutation);
+      }
+    };
+    const store = new SyncStore(replay);
+    store.replaceBase({ issues: [makeIssue("a", { title: "Base" }), makeIssue("b")] });
+    store.setPending([{ id: 1, name: "write_then_throw", args: {}, at: NOW }]);
+    expect(store.get("issues", "a")?.title).toBe("Base");
+    expect(store.get("issues", "b")).toBeDefined();
+    expect(store.replayErrors().get(1)).toBeInstanceOf(Error);
+  });
+
+  it("F3: later mutations do not see a failed mutation's writes", () => {
+    const replay = (tx: Tx, mutation: PendingMutation): void => {
+      if (mutation.name === "fail_first") {
+        const a = tx.get("issues", "a");
+        if (a === undefined) throw new Error("missing");
+        tx.put("issues", { ...a, title: "Partial" });
+        throw new Error("boom");
+      } else {
+        testReplay(tx, mutation);
+      }
+    };
+    const store = new SyncStore(replay);
+    store.replaceBase({ issues: [makeIssue("a", { title: "Base" })] });
+    store.setPending([
+      { id: 1, name: "fail_first", args: {}, at: NOW },
+      { id: 2, name: "append_title", args: { id: "a", suffix: "!" }, at: NOW },
+    ]);
+    expect(store.get("issues", "a")?.title).toBe("Base!");
+  });
+
+  it("F4: unchanged replay preserves identity and emits nothing", () => {
+    const store = new SyncStore(testReplay);
+    store.replaceBase({ issues: [makeIssue("a", { title: "Base" })] });
+    store.setPending([{ id: 1, name: "set_title", args: { id: "a", title: "Local" }, at: NOW }]);
+    const first = store.get("issues", "a");
+    const versionBefore = store.version("issues");
+    const events: ChangeSet[] = [];
+    const stop = store.subscribe((e) => events.push(e));
+    store.applyBase([]);
+    stop();
+    expect(events).toHaveLength(0);
+    expect(store.version("issues")).toBe(versionBefore);
+    expect(store.get("issues", "a")).toBe(first);
+  });
+
+  it("F5: setPending detaches and freezes caller args", () => {
+    const store = new SyncStore(testReplay);
+    store.replaceBase({ issues: [makeIssue("a", { title: "Base" })] });
+    const args = { id: "a", title: "First" };
+    store.setPending([{ id: 1, name: "set_title", args, at: NOW }]);
+    args.title = "Hacked";
+    expect(store.get("issues", "a")?.title).toBe("First");
+    const pending = store.pending();
+    const first = pending[0];
+    if (first === undefined) throw new Error("missing pending");
+    expect((first.args as { title: string }).title).toBe("First");
+    expect(Object.isFrozen(pending)).toBe(true);
+    expect(Object.isFrozen(first)).toBe(true);
+    expect(Object.isFrozen(first.args)).toBe(true);
+  });
+
+  it("F6: one pending rename does no O(n) work until read", () => {
+    const store = new SyncStore(testReplay);
+    const issues: ReturnType<typeof makeIssue>[] = [];
+    for (let i = 0; i < 20000; i += 1) issues.push(makeIssue(`issue-${i}`));
+    store.replaceBase({ teams: [makeTeam()], issues });
+    void store.all("issues");
+    void store.byIndex("issues", "team_id", "team-1");
+    store.debug.allRebuilds = 0;
+    store.debug.indexRebuilds = 0;
+    const start = performance.now();
+    store.setPending([
+      { id: 1, name: "set_title", args: { id: "issue-12345", title: "Local" }, at: NOW },
+    ]);
+    const elapsed = performance.now() - start;
+    expect(elapsed).toBeLessThan(5);
+    expect(store.debug.allRebuilds).toBe(0);
+    expect(store.debug.indexRebuilds).toBe(0);
+    expect(store.get("issues", "issue-12345")?.title).toBe("Local");
+    void store.all("issues");
+    expect(store.debug.allRebuilds).toBe(1);
+  });
+
+  it("F7: Tx.byIndex does not scan the base table", () => {
+    let count = -1;
+    const replay = (tx: Tx, mutation: PendingMutation): void => {
+      if (mutation.name === "count_bucket") {
+        const rows = tx.byIndex("issues", "team_id", "team-2");
+        count = rows.length;
+        return;
+      }
+      testReplay(tx, mutation);
+    };
+    const store = new SyncStore(replay);
+    const issues: ReturnType<typeof makeIssue>[] = [];
+    for (let i = 0; i < 20000; i += 1) issues.push(makeIssue(`issue-${i}`));
+    issues.push(makeIssue("lonely", { team_id: "team-2" }));
+    store.replaceBase({ teams: [makeTeam()], issues });
+    store.debug.baseScans = 0;
+    const start = performance.now();
+    store.setPending([{ id: 1, name: "count_bucket", args: {}, at: NOW }]);
+    const elapsed = performance.now() - start;
+    expect(count).toBe(1);
+    expect(store.debug.baseScans).toBe(0);
+    expect(elapsed).toBeLessThan(5);
+  });
+
+  it("F8: timestamp normalization keeps microsecond precision", () => {
+    const a = normalize(
+      "issues",
+      makeIssue("a", { created_at: "2026-10-08T12:00:00.123001+00:00" }),
+    );
+    const b = normalize(
+      "issues",
+      makeIssue("b", { created_at: "2026-10-08T12:00:00.123999+00:00" }),
+    );
+    expect(a.created_at).toBe("2026-10-08T12:00:00.123001Z");
+    expect(b.created_at).toBe("2026-10-08T12:00:00.123999Z");
+    expect(a.created_at).not.toBe(b.created_at);
+    expect(
+      normalize("issues", makeIssue("c", { created_at: "2026-10-08T12:00:00.123Z" })).created_at,
+    ).toBe("2026-10-08T12:00:00.123000Z");
+    expect(
+      normalize("issues", makeIssue("d", { created_at: "2026-10-08T12:00:00Z" })).created_at,
+    ).toBe("2026-10-08T12:00:00.000000Z");
+    expect(() => normalize("issues", makeIssue("e", { created_at: "not-a-date" }))).toThrow();
+  });
+
+  it("G1: replaceBase with explicit entities clears empty ones", () => {
+    const store = new SyncStore(testReplay);
+    store.replaceBase({ teams: [makeTeam()], issues: [makeIssue("a")] });
+    store.replaceBase({ teams: [makeTeam()] }, ["issues", "teams"]);
+    expect(store.get("issues", "a")).toBeUndefined();
+    expect(store.get("teams", "team-1")).toBeDefined();
+    store.replaceBase({ teams: [makeTeam()], issues: [makeIssue("a")] });
+    store.replaceBase({ issues: [makeIssue("b")] }, ["issues"]);
+    expect(store.get("issues", "b")).toBeDefined();
+    expect(store.get("teams", "team-1")).toBeDefined();
+  });
+
+  it("re-entrancy: setPending(same) terminates with one no-op pass", () => {
+    const store = new SyncStore(testReplay);
+    store.replaceBase({ issues: [makeIssue("a", { title: "Base" }), makeIssue("b")] });
+    store.setPending([{ id: 1, name: "set_title", args: { id: "a", title: "Local" }, at: NOW }]);
+    let events = 0;
+    const stop = store.subscribe(() => {
+      events += 1;
+      store.setPending(store.pending());
+    });
+    store.applyBase([
+      { entity: "issues", id: "b", record: { ...makeIssue("b"), title: "Server" } },
+    ]);
+    stop();
+    expect(events).toBe(1);
+    expect(store.get("issues", "a")?.title).toBe("Local");
+    expect(store.get("issues", "b")?.title).toBe("Server");
+  });
+
+  it("re-entrancy: applyBase with a real change emits a second event", () => {
+    const store = new SyncStore(testReplay);
+    store.replaceBase({ issues: [makeIssue("a"), makeIssue("b")] });
+    const events: ChangeSet[] = [];
+    let calls = 0;
+    const stop = store.subscribe((e) => {
+      events.push(e);
+      calls += 1;
+      if (calls === 1) {
+        store.applyBase([
+          { entity: "issues", id: "b", record: { ...makeIssue("b"), title: "Second" } },
+        ]);
+      }
+    });
+    store.applyBase([{ entity: "issues", id: "a", record: { ...makeIssue("a"), title: "First" } }]);
+    stop();
+    expect(events).toHaveLength(2);
+    expect(events[0]?.keys.get("issues")).toEqual(new Set(["a"]));
+    expect(events[1]?.keys.get("issues")).toEqual(new Set(["b"]));
+  });
+
+  it("notifications: pending and error changes emit events with pendingVersion", () => {
+    const store = new SyncStore(testReplay);
+    store.replaceBase({ issues: [makeIssue("a")] });
+    const before = store.pendingVersion();
+    const events: ChangeSet[] = [];
+    const stop = store.subscribe((e) => events.push(e));
+    store.setPending([{ id: 1, name: "set_title", args: { id: "a", title: "Local" }, at: NOW }]);
+    expect(store.pendingVersion()).toBeGreaterThan(before);
+    expect(events).toHaveLength(1);
+    expect(events[0]?.pendingChanged).toBe(true);
+    store.setPending([{ id: 1, name: "boom", args: {}, at: NOW }]);
+    expect(events[events.length - 1]?.errorsChanged).toBe(true);
+    stop();
+  });
+
+  it("base API: baseGet reads through the overlay and number null is allowed", () => {
+    const store = new SyncStore(testReplay);
+    store.replaceBase({ issues: [makeIssue("a", { title: "Base", number: null })] });
+    expect(store.get("issues", "a")?.number).toBeNull();
+    expect(store.baseGet("issues", "a")?.title).toBe("Base");
+    store.setPending([{ id: 1, name: "set_title", args: { id: "a", title: "Local" }, at: NOW }]);
+    expect(store.get("issues", "a")?.title).toBe("Local");
+    expect(store.baseGet("issues", "a")?.title).toBe("Base");
+  });
+
+  it("batch still rebases when the callback throws", () => {
+    const store = new SyncStore(testReplay);
+    store.replaceBase({ issues: [makeIssue("a", { title: "Base" })] });
+    expect(() => {
+      store.batch(() => {
+        store.applyBase([
+          { entity: "issues", id: "a", record: { ...makeIssue("a"), title: "Server" } },
+        ]);
+        throw new Error("callback boom");
+      });
+    }).toThrow("callback boom");
+    expect(store.get("issues", "a")?.title).toBe("Server");
   });
 });
