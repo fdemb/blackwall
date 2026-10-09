@@ -298,7 +298,7 @@ Some commands aren't queued offline: `invite`, `resend_invitation`, `create_inte
 
 - Reports stay a server read through TanStack Query. Refetch after a pull that touched issues or time entries, debounced. Offline, show the last result.
 - `inbox_unread` and issue counts come from the replica.
-- Issue search, people search and the command palette search the replica: title, description and issue number for issues.
+- Issue search, people search and the command palette search the replica: title, description and issue number for issues. Local search splits text into runs of letters, marks and digits, so it can differ from the server's full-text search on punctuation-heavy text such as URLs and file paths.
 - OpenProject connection settings stay a TanStack Query read.
 
 ### React bindings

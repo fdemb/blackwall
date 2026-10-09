@@ -206,6 +206,7 @@ describe("issue SQL search", () => {
     "blue red",
     "the fix",
     "100%",
+    "%",
     "foo_bar",
     "\\path",
     "naïve",
@@ -232,43 +233,43 @@ describe("issue SQL search", () => {
     "-42",
     "9223372036854775808",
     "f.o.o",
-    "%",
   ])("does not match %j", (search) => {
     expect(matchesSearch(issue, search)).toBe(false);
   });
-  it("treats SQL wildcards literally and requires all full text lexemes", () => {
+  it("treats SQL wildcards literally and requires every search word", () => {
     expect(matchesSearch(makeIssue(id(2), { title: "any title" }), "%")).toBe(false);
     expect(matchesSearch(makeIssue(id(2), { title: "any title" }), "_")).toBe(false);
     expect(matchesSearch(makeIssue(id(2), { title: "Fix widget" }), "Fix & widget")).toBe(true);
     expect(matchesSearch(makeIssue(id(2), { title: "blue red" }), "red blue")).toBe(true);
     expect(matchesSearch(makeIssue(id(2), { title: "red" }), "red blue")).toBe(false);
-    expect(matchesSearch(makeIssue(id(2), { title: "red blue" }), "red-blue")).toBe(false);
+    expect(matchesSearch(makeIssue(id(2), { title: "red blue" }), "red-blue")).toBe(true);
     expect(matchesSearch(makeIssue(id(2), { title: "bar foo" }), "foo_bar")).toBe(true);
   });
-  it("matches PostgreSQL simple parser email, URL, version, and signed-number lexemes", () => {
+  it("splits URLs, emails, versions, and tags into words", () => {
     expect(matchesSearch(makeIssue(id(2), { title: "https://example.com/a" }), "example.com")).toBe(
       true,
     );
     expect(matchesSearch(makeIssue(id(2), { title: "https://example.com/a" }), "/a")).toBe(true);
     expect(
       matchesSearch(makeIssue(id(2), { title: "Contact user@example.com" }), "user example"),
-    ).toBe(false);
-    expect(matchesSearch(makeIssue(id(2), { title: "Install 1.2.3" }), "3 2")).toBe(false);
+    ).toBe(true);
+    expect(matchesSearch(makeIssue(id(2), { title: "Install 1.2.3" }), "3 2")).toBe(true);
     expect(matchesSearch(makeIssue(id(2), { title: "changed 2026-10-09" }), "-09 2026")).toBe(true);
     expect(matchesSearch(makeIssue(id(2), { title: "3.14e+10 value" }), "value 3.14e+10")).toBe(
       true,
     );
-    expect(matchesSearch(makeIssue(id(2), { title: "<b>Widget</b>" }), "b widget")).toBe(false);
+    expect(matchesSearch(makeIssue(id(2), { title: "<b>Widget</b>" }), "b widget")).toBe(true);
   });
   it.each([
     ["foo+bar@example.com Contact", "Contact foo", true],
-    ["&amp; entity", "amp entity", false],
+    ["&amp; entity", "amp entity", true],
     ["abc-123-def", "def -123", true],
     ["a-b-1", "1 a-b", true],
     ["foo123-bar", "bar foo123", true],
     ["naïve—test foo😀bar", "test naïve", true],
     ["naïve—test foo😀bar", "bar foo", true],
-  ] as const)("matches PostgreSQL parsing of %j for %j", (title, search, expected) => {
+    ["Café au lait", "cafe", false],
+  ] as const)("matches %j against %j by words", (title, search, expected) => {
     expect(matchesSearch(makeIssue(id(2), { title, number: null }), search)).toBe(expected);
   });
   it("limits UTF-8 query bytes and keeps search conjunctive with visibility and other filters", () => {

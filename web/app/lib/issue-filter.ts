@@ -10,85 +10,20 @@ function nullable(a: string | number | null, b: string | number | null): number 
   return a === null ? (b === null ? 0 : 1) : b === null ? -1 : compare(a, b);
 }
 
-// PostgreSQL's default parser in en_US.utf8. Letters, marks and format characters form words, and
-// so do non-ASCII digits. Symbols, punctuation, spaces, emoji and ASCII digits separate words. The
-// simple dictionary keeps those lexemes, lowercased, with no stemming or stop words.
-const WORD = String.raw`[\p{Alphabetic}\p{M}\p{Nd}\p{Nl}\p{Cf}]`;
-const LETTER = String.raw`(?:[\p{Alphabetic}\p{M}\p{Cf}]|(?!\d)[\p{Nd}\p{Nl}])`;
-const START = String.raw`(?:[\p{Alphabetic}]|(?!\d)[\p{Nd}\p{Nl}]|\d)`;
-const wordPart = `${WORD}*${LETTER}${WORD}*`;
-const compoundPattern = `${wordPart}(?:-${wordPart})+`;
-// Hosts and emails are ASCII. A file name continues over hyphens and underscores after its first
-// part, and a dot or slash starts a new part only when a letter, digit or underscore follows it.
-const HOST = "[a-z0-9_-]";
-const FILE_PART = "[a-z0-9_][a-z0-9_-]*";
-// A non-ASCII first part must hold a digit, as in "é3.14e"; "café.example" splits at the dot.
-const FILE_FIRST = `(?:(?=${WORD}*\\d)${WORD}+|[a-z0-9]+)`;
-const FILE_PATH = `${FILE_FIRST}(?:[./]${FILE_PART})+`;
-const ROOTED_PATH = String.raw`\/${FILE_PART}(?:[./]${FILE_PART})*`;
-// Printable ASCII that a URL path keeps: no space, quotes, angle brackets, backslash, caret,
-// backtick or braces.
-const URL_CHAR = String.raw`[!#$%&'()*+,\-./0-9:;=?@A-Z\[\]_a-z|~]`;
-const HOST_NAME = `${HOST}+(?:\\.${HOST}+)*\\.[a-z]{2,}(?::\\d+)?(?:\\/${URL_CHAR}*)?`;
-const URL_TOKEN = new RegExp(`^${HOST_NAME}$`, "i");
-const compoundWord = new RegExp(`^${compoundPattern}$`, "iu");
-// Tokens are matched as written, so "İ" stays non-ASCII and breaks a path, as in PostgreSQL.
-const searchTokens = new RegExp(
-  [
-    /<[^>]*>/,
-    /&(?:#[xX][\da-f]+|#\d+|[a-z][a-z0-9]*);/,
-    /[a-z]+:\/\//,
-    `[a-z0-9_.-]+@${HOST}+(?:\\.${HOST}+)*\\.[a-z]{2,}`,
-    HOST_NAME,
-    /\d+(?:\.\d+){2,}/,
-    /[+-]?\d+(?:\.\d+)?[eE][+-]?\d+/,
-    /[+-]?\d+\.\d+(?!\.\d)/,
-    compoundPattern,
-    ROOTED_PATH,
-    FILE_PATH,
-    /[+-]\d+(?!\.?\d|\/)/,
-    `${START}${WORD}*`,
-  ]
-    .map((pattern) => (typeof pattern === "string" ? pattern : pattern.source))
-    .join("|"),
-  "giu",
-);
+// Search words are runs of letters, marks and digits. PostgreSQL's parser also keeps URLs, emails,
+// versions and tags whole, so the two disagree on punctuation-heavy text. docs/sync.md notes it.
+const WORD = /[\p{L}\p{M}\p{N}]+/gu;
 
-/** Lowercases one character at a time, as PostgreSQL does. U+0130 keeps its first lowercase form, i. */
-function lowerPG(text: string): string {
-  let out = "";
-  for (const char of text) out += Array.from(char.toLowerCase())[0] ?? char;
-  return out;
-}
-
-export function lexemes(text: string): string[] {
-  const out: string[] = [];
-  let compoundEnd = -1;
-  for (const match of text.matchAll(searchTokens)) {
-    const token = match[0];
-    if (token.startsWith("<") || token.startsWith("&") || token.endsWith("://")) continue;
-    if (compoundWord.test(token)) {
-      out.push(lowerPG(token), ...token.split("-").map(lowerPG));
-      compoundEnd = match.index + token.length;
-    } else if (match.index === compoundEnd && /^-\d+$/.test(token)) {
-      out.push(token.slice(1));
-    } else {
-      const path = token.indexOf("/");
-      const lower = lowerPG(token);
-      if (URL_TOKEN.test(token) && path > 0)
-        out.push(lower, lower.slice(0, lower.indexOf("/")), lower.slice(lower.indexOf("/")));
-      else out.push(lower);
-    }
-  }
-  return out;
+function words(text: string): string[] {
+  return (text.match(WORD) ?? []).map((word) => word.toLowerCase());
 }
 
 export function matchesSearch(issue: DeepReadonly<SyncIssue>, search: string): boolean {
   if (!search.trim()) return true;
-  const text = lowerPG(`${issue.title} ${issue.description}`);
-  if (text.includes(lowerPG(search))) return true;
-  const query = lexemes(search);
-  const document = new Set(lexemes(text));
+  const text = `${issue.title} ${issue.description}`;
+  if (text.toLowerCase().includes(search.toLowerCase())) return true;
+  const query = words(search);
+  const document = new Set(words(text));
   if (query.length > 0 && query.every((word) => document.has(word))) return true;
   const raw = search.replace(/^#+/, "");
   return (

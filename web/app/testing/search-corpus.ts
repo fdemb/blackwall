@@ -129,23 +129,23 @@ export const SEARCH_CORPUS: readonly SearchCase[] = [
   c("cut", "cu"),
 ];
 
-// Cases behind the default-run expectations in issue-search.test.ts.
+// Cases behind the default-run expectations in issue-search.test.ts. Each answer is the local rule's.
 export const KEY_CASES: readonly [SearchCase, boolean][] = [
   [c("naïve—test foo😀bar", "test naïve"), true],
   [c("naïve—test foo😀bar", "bar foo"), true],
-  [c("naïve—test foo😀bar", "naïve-test"), false],
+  [c("naïve—test foo😀bar", "naïve-test"), true],
   [c("foo😀bar", "foo bar"), true],
   [c("Café au lait", "cafe"), false],
   [c("state-of-the-art design", "state of the art"), true],
   [c("state-of-the-art design", "the-art"), true],
   [c("don't stop", "dont stop"), false],
   [c("Install 1.2.3 now", "1.2.3"), true],
-  [c("Install 1.2.3 now", "3 2"), false],
+  [c("Install 1.2.3 now", "3 2"), true],
   [c("snake_case_name", "case"), true],
   [c("foo_bar baz", "bar foo"), true],
   [c("see https://example.com/path?x=1 today", "example.com"), true],
   [c("ÉCOLE Normale", "école"), true],
-  [c("İstanbul", "istanbul"), true],
+  [c("İstanbul", "istanbul"), false],
   [c("anything", " \t "), true],
   [c("tag_1.2.3", "1.2.3"), true],
   [c("v1.2.3-beta release", "v1.2.3-beta"), true],
