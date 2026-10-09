@@ -357,7 +357,9 @@ function Composer({ issue, hasItems }: { issue: Issue; hasItems: boolean }) {
 
   const uploadAll = async (commentId: Id, list: File[]) => {
     const failed: File[] = [];
-    await Promise.all(list.map((f) => upload(issue.id, f, commentId).catch(() => failed.push(f))));
+    await Promise.all(
+      list.map((f) => upload(issue.id, f, { commentId, quiet: true }).catch(() => failed.push(f))),
+    );
     setRetry(failed.length ? { commentId, files: failed } : null);
     return failed;
   };

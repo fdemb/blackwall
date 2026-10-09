@@ -32,6 +32,11 @@ export interface RunOptions {
   // Older editors still capture versions. Sync writes use field-level last-writer-wins.
   expectedVersions?: EntityVersions;
 }
+export interface UploadOptions {
+  commentId?: string;
+  // Callers that report a batch's failures themselves stay quiet, so each failure is not toasted twice.
+  quiet?: boolean;
+}
 const emptyReport: Report = {
   issue_count: 0,
   inbox_unread: 0,
@@ -148,11 +153,11 @@ function useWorkspaceValue() {
     [engine, toast, describeError],
   );
   const upload = useCallback(
-    async (issueId: string, file: File, commentId?: string) => {
+    async (issueId: string, file: File, opts: UploadOptions = {}) => {
       try {
-        return await uploadFile(engine, ws.id, issueId, file, commentId);
+        return await uploadFile(engine, ws.id, issueId, file, opts.commentId);
       } catch (error) {
-        toast.error(describeError(error));
+        if (!opts.quiet) toast.error(describeError(error));
         throw error;
       }
     },

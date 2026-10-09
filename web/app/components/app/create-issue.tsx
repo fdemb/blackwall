@@ -120,7 +120,9 @@ function CreateIssueForm() {
       const id = await run({ type: "create_issue", input }, { quiet: true });
       // The issue exists from here on, so a failed upload must not reopen the form and invite a duplicate.
       const failed: File[] = [];
-      if (id) for (const file of files) await upload(id, file).catch(() => failed.push(file));
+      if (id)
+        for (const file of files)
+          await upload(id, file, { quiet: true }).catch(() => failed.push(file));
       create.hide();
       toast.show(t("issue.created"));
       if (failed.length)

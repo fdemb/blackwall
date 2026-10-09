@@ -9,7 +9,7 @@ import {
   RouterProvider,
 } from "react-router";
 import { QueryClientProvider } from "@tanstack/react-query";
-import { afterEach, describe, expect, it } from "vite-plus/test";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import Members from "../routes/settings-members";
 import { Sidebar } from "../components/app/sidebar";
 import { AttachButton, useUploader } from "../components/app/issue-content";
@@ -19,7 +19,7 @@ import { IssueList } from "../components/app/issue-list";
 import { OfflineBanner } from "../components/app/offline-banner";
 import { SaveStatus } from "../components/app/save-status";
 import { QueryStatus } from "../components/app/query-status";
-import { ToastProvider } from "../components/ui/toast";
+import { ToastProvider, useToast } from "../components/ui/toast";
 import { createEngine, SCHEMA, type SyncEngine } from "../sync/engine";
 import { makeIssue, makeTeam, NOW } from "../sync/fixtures";
 import { MemoryReplicaStorage } from "../sync/persistence/memory";
@@ -460,4 +460,40 @@ describe("online-only controls", () => {
       expectGated(attach, "Attach files");
     },
   );
+});
+
+type Upload = ReturnType<typeof useWorkspace>["upload"];
+type Toast = ReturnType<typeof useToast>;
+function UploadProbeComponent({ observe }: { observe: (upload: Upload, toast: Toast) => void }) {
+  const { upload } = useWorkspace();
+  observe(upload, useToast());
+  return null;
+}
+/** Renders the workspace offline and returns the upload callback with the toast API it reports to. */
+function uploadAndToast(engine: SyncEngine) {
+  let seen: { upload: Upload; toast: Toast } | undefined;
+  render(engine, <UploadProbeComponent observe={(upload, toast) => (seen = { upload, toast })} />);
+  return seen!;
+}
+
+describe("upload failures", () => {
+  it("reports an offline upload with one toast", async () => {
+    const engine = await fixture();
+    const { upload, toast } = uploadAndToast(engine);
+    const error = vi.spyOn(toast, "error");
+    await expect(upload("issue", new File(["x"], "a.txt"))).rejects.toThrow("online connection");
+    expect(error).toHaveBeenCalledOnce();
+    expect(error).toHaveBeenCalledWith(
+      "This needs a connection to the server. Reconnect, then try again.",
+    );
+  });
+  it("leaves reporting to a caller that passes quiet", async () => {
+    const engine = await fixture();
+    const { upload, toast } = uploadAndToast(engine);
+    const error = vi.spyOn(toast, "error");
+    await expect(upload("issue", new File(["x"], "a.txt"), { quiet: true })).rejects.toThrow(
+      "online connection",
+    );
+    expect(error).not.toHaveBeenCalled();
+  });
 });
