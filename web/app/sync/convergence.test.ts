@@ -17,14 +17,19 @@ const seeds =
       ? defaultSeeds
       : Array.from({ length: envInteger("SYNC_FUZZ_SEEDS", 300) }, (_, index) => index + 1)
     : [envInteger("SYNC_FUZZ_SEED", 1)];
+// Tab runs use a few seeds by default, and the same seeds as the soak when one is requested.
+const tabSeeds =
+  process.env.SYNC_FUZZ_SEED === undefined && process.env.SYNC_FUZZ_SEEDS === undefined
+    ? [1, 2, 3, 4, 5, 6]
+    : seeds;
 const steps = envInteger("SYNC_FUZZ_STEPS", 90);
 const coverage = new Set<string>();
 
-async function run(seed: number) {
+async function run(seed: number, options: { tabs?: boolean } = {}) {
   let id = 1_000_000;
   const spy = vi.spyOn(crypto, "randomUUID").mockImplementation(() => simulationId(id++));
   try {
-    return await runConvergence(seed, steps);
+    return await runConvergence(seed, steps, options);
   } finally {
     spy.mockRestore();
   }
@@ -35,6 +40,16 @@ describe("sync convergence", () => {
     "converges seed %i",
     async (seed) => {
       const result = await run(seed);
+      for (const action of result.coverage) coverage.add(action);
+      expect(result.accepted).toBeGreaterThan(0);
+    },
+    60_000,
+  );
+
+  it.each(tabSeeds)(
+    "converges tabs of one browser, seed %i",
+    async (seed) => {
+      const result = await run(seed, { tabs: true });
       for (const action of result.coverage) coverage.add(action);
       expect(result.accepted).toBeGreaterThan(0);
     },

@@ -17,6 +17,7 @@ import { createTransport, ProtocolError } from "../transport";
 import { createFakeServer } from "./fake-server";
 import type { Fault, MutationResult, Route } from "./fake-server";
 import { object } from "./commands";
+import { createTabHub } from "./tabs";
 
 import { seededRandom, simulationId } from "./seeded";
 import { convergenceCommand } from "./traffic";
@@ -78,6 +79,8 @@ interface Client {
   clientId: string;
   blocked: boolean;
   retryPayload: string | null;
+  /** A tab closed by the harness; it reopens during healing. */
+  tabClosed: boolean;
 }
 
 export interface ConvergenceResult {
@@ -108,8 +111,19 @@ async function flush(turns = 24): Promise<void> {
   for (let i = 0; i < turns; i++) await new Promise<void>((resolve) => setImmediate(resolve));
 }
 
-/** Runs real engines, transports and storage. Only time, HTTP faults and host IO are controlled. */
-export async function runConvergence(seed: number, steps = 90): Promise<ConvergenceResult> {
+/**
+ * Runs real engines, transports and storage. Only time, HTTP faults and host IO are controlled.
+ * With `tabs`, every client is a tab of one browser: one session, one database, one lock and
+ * one channel. The leader tab may close at random.
+ */
+export async function runConvergence(
+  seed: number,
+  steps = 90,
+  options: { tabs?: boolean } = {},
+): Promise<ConvergenceResult> {
+  const tabs = options.tabs === true;
+  const hub = tabs ? createTabHub() : null;
+  const database = new IDBFactory();
   const random = seededRandom(seed);
   const faultRandom = seededRandom(seed ^ 0xf00d);
   const pick = <T>(items: readonly T[]): T => {
@@ -142,7 +156,11 @@ export async function runConvergence(seed: number, steps = 90): Promise<Converge
     },
     onPush({ clientId, mutations, previous }) {
       try {
-        const client = clients.find((entry) => entry.clientId === clientId);
+        // Tabs share one client id, so the pushing tab is the leader.
+        const client =
+          clients.find(
+            (entry) => entry.clientId === clientId && entry.engine.status.get().role === "leader",
+          ) ?? clients.find((entry) => entry.clientId === clientId);
         check(client !== undefined, "unrecognized server push client");
         let last = previous;
         for (const mutation of mutations) {
@@ -355,6 +373,7 @@ export async function runConvergence(seed: number, steps = 90): Promise<Converge
       signals: client.signals,
       clock: { now: server.now, schedule: server.schedule },
       randomId: () => simulationId(sequence++),
+      ...(hub ? { locks: hub.locks, channel: hub.channel } : {}),
     });
     engine.subscribe((event) => {
       if (event.type === "error" && event.error instanceof ProtocolError) client.blocked = true;
@@ -525,12 +544,17 @@ export async function runConvergence(seed: number, steps = 90): Promise<Converge
   }
 
   try {
-    const actors = seed % 2 === 0 ? [owner, admin, member] : [owner, member];
+    const actors = tabs
+      ? Array.from({ length: seed % 2 === 0 ? 3 : 2 }, () => owner)
+      : seed % 2 === 0
+        ? [owner, admin, member]
+        : [owner, member];
+    const browserToken = tabs ? server.login(owner) : null;
     for (const [index, actor] of actors.entries()) {
-      const token = server.login(actor);
+      const token = browserToken ?? server.login(actor);
       const storage: ReplicaStorage =
-        index === 1
-          ? new IndexedDBReplicaStorage({ indexedDB: new IDBFactory() })
+        tabs || index === 1
+          ? new IndexedDBReplicaStorage({ indexedDB: tabs ? database : new IDBFactory() })
           : new MemoryReplicaStorage();
       // build() does not start work, so the client is populated before its first request.
       const client = {
@@ -538,7 +562,7 @@ export async function runConvergence(seed: number, steps = 90): Promise<Converge
         actor: actor.id,
         token,
         csrf: server.csrfToken(token),
-        sessionId: simulationId(20 + index),
+        sessionId: simulationId(tabs ? 20 : 20 + index),
         signals: new Signals(),
         storage,
         generation: 0,
@@ -556,6 +580,7 @@ export async function runConvergence(seed: number, steps = 90): Promise<Converge
         clientId: "",
         blocked: false,
         retryPayload: null,
+        tabClosed: false,
       } satisfies Omit<Client, "engine">;
       let engine: SyncEngine;
       const entry: Client = {
@@ -590,9 +615,9 @@ export async function runConvergence(seed: number, steps = 90): Promise<Converge
     for (step = 12; step < steps; step++) {
       if (failure !== undefined) throw failure;
       for (const client of clients) client.gate?.();
-      const active = clients.filter((client) => !client.wiped);
+      const active = clients.filter((client) => !client.wiped && !client.tabClosed);
       const client = pick(active);
-      switch (integer(18)) {
+      switch (integer(tabs ? 19 : 18)) {
         case 0:
         case 1:
         case 2:
@@ -717,6 +742,18 @@ export async function runConvergence(seed: number, steps = 90): Promise<Converge
           log("advance-large");
           server.advance(1000 + integer(7000));
           break;
+        case 18: {
+          const leaderTab = clients.find(
+            (entry) =>
+              !entry.wiped && !entry.tabClosed && entry.engine.status.get().role === "leader",
+          );
+          // Keep one open tab, so the picks above always have a client.
+          if (!leaderTab || active.length < 2) break;
+          log(`close-leader c${leaderTab.index}`);
+          leaderTab.tabClosed = true;
+          await leaderTab.engine.close();
+          break;
+        }
       }
       server.advance(integer(160));
       await settleIO();
@@ -731,6 +768,10 @@ export async function runConvergence(seed: number, steps = 90): Promise<Converge
       client.wireFaults.length = 0;
       client.signals.send("online");
       client.running = true;
+      if (client.tabClosed) {
+        client.tabClosed = false;
+        await reload(client);
+      }
       // Protocol errors deliberately block their lane until a new engine opens.
       if (client.blocked) await reload(client);
       await client.engine.start();
@@ -898,6 +939,27 @@ export async function runConvergence(seed: number, steps = 90): Promise<Converge
         equal(item.outcome.status, result.error.status, "rejection lost server status");
       }
     }
+    const summarize = (): ConvergenceResult => {
+      trace.push(`server pushes: ${JSON.stringify(serverPushes)}`);
+      trace.push(
+        `outcomes: ${JSON.stringify(
+          accepted.map((item) => ({
+            client: item.client.index,
+            id: item.receipt.mutationId,
+            outcome: item.outcome,
+          })),
+        )}`,
+      );
+      return {
+        seed,
+        trace,
+        traceHash: createHash("sha256").update(trace.join("\n")).digest("hex"),
+        coverage: [...coverage].sort(),
+        accepted: accepted.length,
+      };
+    };
+    // Tabs share one storage identity, so the access-loss tail below does not apply.
+    if (tabs) return summarize();
     // Exercise a genuine access loss on a seeded route after the convergence oracle.
     // /me 403 only refuses CSRF refresh; it must preserve an otherwise authorized replica.
     const authClient = clients[1];
@@ -939,23 +1001,7 @@ export async function runConvergence(seed: number, steps = 90): Promise<Converge
     for (const other of clients.filter((client) => client !== authClient)) {
       check((await other.storage.list()).length === 1, "wipe removed another client's replica");
     }
-    trace.push(`server pushes: ${JSON.stringify(serverPushes)}`);
-    trace.push(
-      `outcomes: ${JSON.stringify(
-        accepted.map((item) => ({
-          client: item.client.index,
-          id: item.receipt.mutationId,
-          outcome: item.outcome,
-        })),
-      )}`,
-    );
-    return {
-      seed,
-      trace,
-      traceHash: createHash("sha256").update(trace.join("\n")).digest("hex"),
-      coverage: [...coverage].sort(),
-      accepted: accepted.length,
-    };
+    return summarize();
   } catch (error) {
     throw new Error(
       `Convergence seed=${seed} step=${step}\nReproduce: SYNC_FUZZ_SEED=${seed} vp test run app/sync/convergence.test.ts\n${trace.slice(-45).join("\n")}\n${error instanceof Error ? error.stack : String(error)}`,
