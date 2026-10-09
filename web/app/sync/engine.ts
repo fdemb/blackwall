@@ -12,31 +12,42 @@ import type { Replica, Scope } from "./persistence/types";
 import { BOOTSTRAP_ENTITIES, BOOTSTRAP_REPLACED_ENTITIES } from "./records";
 import type { Entity } from "./records";
 import { immutableCopy, ingest, SyncStore } from "./store";
+import type { PendingMutation } from "./store";
 import { AccessError, ProtocolError, UnauthorizedError, UnavailableError } from "./transport";
 import type { Mutation, MutationResult, PullResponse } from "./transport";
 import { backoff, Cancelled, cancellable, pause, SerialQueue } from "./engine-scheduling";
 import type {
   EngineDependencies,
   EngineEvent,
+  EngineRole,
   EngineStatus,
   MutationReceipt,
   Rejection,
   ScopeStatus,
+  TabChannel,
 } from "./engine-types";
+import type { LoadedReplica } from "./persistence/types";
+import type { TabBody, TabCall, TabError, TabMessage, TabOutcome } from "./tabs";
 
 export type {
   EngineClock,
   EngineDependencies,
   EngineEvent,
+  EngineRole,
   EngineSignal,
   EngineSignals,
   EngineStatus,
   MutationReceipt,
   Rejection,
   ScopeStatus,
+  TabChannel,
+  TabLocks,
 } from "./engine-types";
+export type { TabMessage } from "./tabs";
 
 export const SCHEMA = 1;
+/** A follower re-sends an unanswered request on this cadence, in case the leader went away. */
+const REQUEST_RESEND_MS = 1000;
 type RequestKind = "bootstrap" | "pull" | "scope" | "push" | "events";
 type OnlineJob = {
   name: string;
@@ -53,6 +64,28 @@ type PushBatch = {
   retryAt: number;
   csrfRefreshes: number;
 };
+/** A follower's request to the leader, kept until its reply or the engine stops. */
+type RemoteRequest = {
+  call: TabCall;
+  resolve: (value: unknown) => void;
+  reject: (error: Error) => void;
+  cancelResend: () => void;
+};
+type TabReply = { ok: true; value: unknown } | { ok: false; error: TabError };
+
+function tabError(error: unknown): TabError {
+  const message = error instanceof Error ? error.message : String(error);
+  const status = (error as { status?: unknown } | null)?.status;
+  return typeof status === "number" ? { message, status } : { message };
+}
+
+function errorFrom(error: TabError): Error {
+  return error.status === undefined
+    ? new Error(error.message)
+    : new MutationError(error.status, error.message);
+}
+
+const noop = () => {};
 
 /** One replica. Only start/stop controls leadership and network ownership. */
 export function createEngine(deps: EngineDependencies): SyncEngine {
@@ -63,6 +96,26 @@ export class SyncEngine {
   readonly store: SyncStore;
   readonly status: { get: () => EngineStatus; subscribe: (listener: () => void) => () => void };
   private snapshot: EngineStatus;
+  private readonly channel: TabChannel | null;
+  private readonly tabId: string;
+  private readonly lockName: string;
+  private role: EngineRole;
+  private lockPending = false;
+  private lockHeld = false;
+  private releaseLock: (() => void) | null = null;
+  /** Coordination messages wait here until open has loaded the replica. */
+  private ready = false;
+  private readonly inbox: TabMessage[] = [];
+  /** Acknowledged mutations whose push result is still unknown, retained for a confirmation push. */
+  private readonly unconfirmed = new Map<number, Mutation>();
+  /** Mutation ids another tab appended while this engine listened. */
+  private readonly appendedIds = new Set<number>();
+  /** The leader's replies, so a re-sent request runs once. */
+  private readonly served = new Map<string, Promise<TabReply>>();
+  private readonly remote = new Map<string, RemoteRequest>();
+  private requestCount = 0;
+  private leaderId = "";
+  private readonly onMessage = (event: { data: TabMessage }) => this.receive(event.data);
   private readonly statusListeners = new Set<() => void>();
   private readonly eventListeners = new Set<(event: EngineEvent) => void>();
   private readonly reads = new SerialQueue();
@@ -107,8 +160,14 @@ export class SyncEngine {
   constructor(private readonly deps: EngineDependencies) {
     this.store = new SyncStore(createReplay(deps.actor));
     this.delay = backoff(`${deps.sessionId}:${deps.workspaceId}`, deps.clock);
+    this.lockName = `blackwall-sync:${deps.sessionId}:${deps.workspaceId}`;
+    this.role = deps.locks ? "follower" : "leader";
+    this.tabId = deps.channel ? deps.randomId() : "";
+    this.channel = deps.channel?.(this.lockName) ?? null;
+    this.channel?.addEventListener("message", this.onMessage);
     this.snapshot = Object.freeze({
       phase: "loading",
+      role: this.role,
       online: deps.signals.getOnline(),
       connected: false,
       pending: 0,
@@ -162,14 +221,7 @@ export class SyncEngine {
         await replica.resetBase();
         loaded = await replica.load();
       }
-      this.clientId = loaded.meta.clientId;
-      this.cursor = loaded.meta.cursor;
-      this.acknowledged = loaded.meta.lastMutationId;
-      for (const scope of loaded.scopes) this.loadedScopes.set(scopeKey(scope), scope);
-      this.store.batch(() => {
-        this.store.replaceBase(loaded.records, BOOTSTRAP_REPLACED_ENTITIES);
-        this.store.setPending(loaded.outbox);
-      });
+      this.applyLoaded(loaded);
       this.update({ phase: this.cursor === null ? "bootstrapping" : "ready" });
       if (!this.closed && !this.terminal) {
         this.unsubscribeSignals = this.deps.signals.subscribe((signal) => {
@@ -184,8 +236,24 @@ export class SyncEngine {
         });
         this.update({ online: this.deps.signals.getOnline() });
       }
+      this.ready = true;
+      if (this.channel && !this.closed) this.post({ type: "hello" });
+      for (const message of this.inbox.splice(0)) this.receive(message);
     });
     return this.opening;
+  }
+
+  /** Replaces the in-memory replica with what the database holds. */
+  private applyLoaded(loaded: LoadedReplica): void {
+    this.clientId = loaded.meta.clientId;
+    this.cursor = loaded.meta.cursor;
+    this.acknowledged = loaded.meta.lastMutationId;
+    this.loadedScopes.clear();
+    for (const scope of loaded.scopes) this.loadedScopes.set(scopeKey(scope), scope);
+    this.store.batch(() => {
+      this.store.replaceBase(loaded.records, BOOTSTRAP_REPLACED_ENTITIES);
+      this.store.setPending(loaded.outbox);
+    });
   }
 
   async start(): Promise<void> {
@@ -194,13 +262,18 @@ export class SyncEngine {
     if (this.started || this.closed || this.terminal || lifecycle !== this.lifecycle) return;
     this.started = true;
     this.update({ online: this.deps.signals.getOnline() });
+    this.requestLeadership();
     this.beginNetwork();
+    // A follower has no network work to begin, so its holds are requested here instead.
+    if (this.role === "follower")
+      for (const { scope } of this.heldScopes.values()) this.requestScope(scope);
   }
 
   stop(): void {
     this.started = false;
     this.lifecycle += 1;
     this.cancelNetwork();
+    this.releaseLeadership();
     this.rejectCallers(new Error(this.closed ? "Engine is closed" : "Engine is stopped"));
   }
 
@@ -209,6 +282,11 @@ export class SyncEngine {
     this.outcomes.clear();
     for (const job of this.onlineJobs.splice(0)) job.reject(error);
     this.batch?.job?.reject(error);
+    for (const remote of this.remote.values()) {
+      remote.cancelResend();
+      remote.reject(error);
+    }
+    this.remote.clear();
   }
 
   isClosed(): boolean {
@@ -220,6 +298,8 @@ export class SyncEngine {
     this.closed = true;
     if (first) this.emit({ type: "closed" });
     this.stop();
+    this.channel?.removeEventListener("message", this.onMessage);
+    this.channel?.close();
     this.unsubscribeSignals?.();
     this.unsubscribeSignals = null;
     this.notifyChange();
@@ -227,6 +307,63 @@ export class SyncEngine {
     this.replica?.close();
     this.replica = null;
     this.rejectCallers(new Error("Engine is closed"));
+  }
+
+  /**
+   * Asks for the replica's lock. The callback holds it until stop or close, so a request made
+   * while stopped is released as soon as it is granted.
+   */
+  private requestLeadership(): void {
+    const locks = this.deps.locks;
+    if (!locks || this.lockPending || this.lockHeld) return;
+    this.lockPending = true;
+    locks
+      .request(this.lockName, () => {
+        this.lockPending = false;
+        if (!this.started || this.closed) return Promise.resolve();
+        this.lockHeld = true;
+        const released = new Promise<void>((resolve) => {
+          this.releaseLock = resolve;
+        });
+        this.takeLeadership().catch((error: unknown) => this.finishError(error));
+        return released;
+      })
+      .catch((error: unknown) => this.finishError(error));
+  }
+
+  private releaseLeadership(): void {
+    if (this.deps.locks) this.setRole("follower");
+    if (!this.lockHeld) return;
+    this.lockHeld = false;
+    const release = this.releaseLock;
+    this.releaseLock = null;
+    release?.();
+  }
+
+  /**
+   * Runs once the lock is granted. The leader role starts immediately, so messages from the
+   * previous leader are ignored. The replica reloads before network work, which picks up
+   * everything that leader persisted. Requests this tab sent as a follower run here instead.
+   */
+  private async takeLeadership(): Promise<void> {
+    this.setRole("leader");
+    await this.commits.run(async () => {
+      this.applyLoaded(await this.requireReplica().load());
+    });
+    for (const [requestId, remote] of [...this.remote]) {
+      this.remote.delete(requestId);
+      remote.cancelResend();
+      if (remote.call.kind !== "runOnline") continue;
+      this.queueOnline(remote.call.name, remote.call.args).then(remote.resolve, remote.reject);
+    }
+    this.post({ type: "status", connected: this.snapshot.connected, online: this.snapshot.online });
+    this.beginNetwork();
+  }
+
+  private setRole(role: EngineRole): void {
+    if (this.role === role) return;
+    this.role = role;
+    this.update({ role });
   }
 
   /**
@@ -294,6 +431,7 @@ export class SyncEngine {
         this.outcomes.delete(mutation.id);
       }
       this.store.setPending([...this.store.pending(), mutation].sort((a, b) => a.id - b.id));
+      this.post({ type: "appended", mutation });
       this.requestPush();
       return { id: prepared.id, mutationId: mutation.id, settled };
     });
@@ -312,7 +450,18 @@ export class SyncEngine {
       throw new MutationError(400, "Not an online sync command");
     const prepared = this.prepare(name, args);
     this.requireReplica();
+    if (this.role === "follower") {
+      const call: TabCall = { kind: "runOnline", name, args: immutableCopy(prepared.args) };
+      return new Promise((resolve, reject) =>
+        this.ask(call, (value) => resolve(value as MutationResult), reject),
+      );
+    }
     if (this.blocked.has("push")) throw this.snapshot.lastError ?? new Error("Push is blocked");
+    return this.queueOnline(name, prepared.args);
+  }
+
+  /** Queues a prepared online command for the leader's push lane. */
+  private queueOnline(name: string, args: unknown): Promise<MutationResult> {
     return new Promise((resolve, reject) => {
       const finish = () => {
         if (job.settled) return false;
@@ -323,7 +472,7 @@ export class SyncEngine {
       };
       const job: OnlineJob = {
         name,
-        args: immutableCopy(prepared.args),
+        args: immutableCopy(args),
         settled: false,
         resolve: (result) => {
           if (finish()) resolve(result);
@@ -380,6 +529,199 @@ export class SyncEngine {
       return;
     this.snapshot = Object.freeze({ ...this.snapshot, ...patch });
     for (const listener of this.statusListeners) listener();
+    if (this.role === "leader" && ("connected" in patch || "online" in patch))
+      this.post({
+        type: "status",
+        connected: this.snapshot.connected,
+        online: this.snapshot.online,
+      });
+  }
+
+  private post(body: TabBody): void {
+    if (!this.channel || this.closed) return;
+    this.channel.postMessage({ ...body, from: this.tabId } as TabMessage);
+  }
+
+  private receive(message: TabMessage): void {
+    if (this.closed || message.from === this.tabId) return;
+    if (!this.ready) {
+      this.inbox.push(message);
+      return;
+    }
+    switch (message.type) {
+      case "appended":
+        this.receiveAppended(message.mutation);
+        return;
+      case "pulled":
+        if (this.role === "follower") this.receivePulled(message);
+        return;
+      case "reset":
+        if (this.role === "follower") this.receiveReset();
+        return;
+      case "status":
+        if (this.role !== "follower") return;
+        this.update({ connected: message.connected, online: message.online });
+        // A new leader announces itself with its status, so waiting scope requests go to it.
+        if (message.from !== this.leaderId) {
+          this.leaderId = message.from;
+          this.resendScopeRequests();
+        }
+        return;
+      case "result":
+        this.receiveResult(message.mutationId, message.outcome);
+        return;
+      case "hello":
+        if (this.role === "leader")
+          this.post({
+            type: "status",
+            connected: this.snapshot.connected,
+            online: this.snapshot.online,
+          });
+        return;
+      case "request":
+        if (this.role === "leader") this.serve(message);
+        return;
+      case "reply":
+        this.receiveReply(
+          message.requestId,
+          message.ok ? { ok: true, value: message.value } : { ok: false, error: message.error },
+        );
+        return;
+    }
+  }
+
+  /** Another tab's mutation is in the database. Track it, unless its push already acknowledged it. */
+  private receiveAppended(mutation: PendingMutation): void {
+    this.appendedIds.add(mutation.id);
+    if (mutation.id <= this.acknowledged) {
+      this.unconfirmed.set(mutation.id, mutation);
+      return;
+    }
+    if (this.store.pending().some((pending) => pending.id === mutation.id)) return;
+    this.store.setPending([...this.store.pending(), mutation].sort((a, b) => a.id - b.id));
+    this.requestPush();
+  }
+
+  /** The leader persisted this page or scope before sending it, so the follower never runs ahead. */
+  private receivePulled(message: Extract<TabBody, { type: "pulled" }>): void {
+    if (message.scope) {
+      this.loadedScopes.set(scopeKey(message.scope), message.scope);
+      this.scopeFailures.delete(scopeKey(message.scope));
+    }
+    const accepted = message.changes.filter((change) =>
+      acceptsChange(
+        change.entity,
+        change.record ?? this.store.baseGet(change.entity, change.id),
+        this.loadedScopes,
+      ),
+    );
+    if (message.cursor !== null) this.cursor = message.cursor;
+    this.store.batch(() => {
+      this.store.applyBase(accepted);
+      if (message.acknowledgedUpTo !== null) this.acknowledge(message.acknowledgedUpTo);
+    });
+    this.update({ phase: this.cursor === null ? "bootstrapping" : "ready" });
+    if (message.scope) this.notifyScopes();
+  }
+
+  private receiveReset(): void {
+    this.commits
+      .run(async () => {
+        this.applyLoaded(await this.requireReplica().load());
+      })
+      .then(() => {
+        this.notifyScopes();
+        for (const { scope } of this.heldScopes.values()) this.requestScope(scope);
+      })
+      .catch((error: unknown) => this.finishError(error));
+  }
+
+  /** The leader's verdict for a mutation. Only the tab that created it settles its receipt. */
+  private receiveResult(mutationId: number, outcome: TabOutcome): void {
+    this.unconfirmed.delete(mutationId);
+    this.appendedIds.delete(mutationId);
+    this.settle(mutationId, outcome, false);
+  }
+
+  private receiveReply(requestId: string, reply: TabReply): void {
+    const remote = this.remote.get(requestId);
+    if (!remote) return;
+    this.remote.delete(requestId);
+    remote.cancelResend();
+    if (reply.ok) remote.resolve(reply.value);
+    else remote.reject(errorFrom(reply.error));
+  }
+
+  /** Runs a follower's request on the leader and replies. A repeated request joins the first run. */
+  private serve(request: Extract<TabBody, { type: "request" }>): void {
+    let served = this.served.get(request.requestId);
+    if (!served) {
+      served = this.perform(request);
+      this.served.set(request.requestId, served);
+    }
+    void served.then((reply) =>
+      this.post({ type: "reply", requestId: request.requestId, ...reply }),
+    );
+  }
+
+  private perform(request: Extract<TabBody, { type: "request" }>): Promise<TabReply> {
+    if (request.kind === "runOnline")
+      return this.runOnline(request.name, request.args).then(
+        (value): TabReply => ({ ok: true, value }),
+        (error: unknown): TabReply => ({ ok: false, error: tabError(error) }),
+      );
+    try {
+      // A scope the leader already loaded reaches the follower as a reload from the database.
+      if (this.loadedScopes.has(scopeKey(request.scope))) this.post({ type: "reset" });
+      this.useScope(request.scope);
+      return Promise.resolve({ ok: true, value: null });
+    } catch (error) {
+      return Promise.resolve({ ok: false, error: tabError(error) });
+    }
+  }
+
+  /**
+   * Sends a call to the leader and re-sends it until a reply arrives. This covers a leader that
+   * closed before answering. Re-sends reuse the request id, so the leader answers them from its
+   * record of the first run.
+   */
+  private ask(
+    call: TabCall,
+    resolve: (value: unknown) => void,
+    reject: (error: Error) => void,
+  ): void {
+    if (!this.channel) {
+      reject(new Error("Tab coordination needs a channel"));
+      return;
+    }
+    this.requestCount += 1;
+    const requestId = `${this.tabId}:${this.requestCount}`;
+    const remote: RemoteRequest = { call, resolve, reject, cancelResend: () => {} };
+    this.remote.set(requestId, remote);
+    const send = () => {
+      this.post({ type: "request", requestId, ...call });
+      remote.cancelResend = this.deps.clock.schedule(REQUEST_RESEND_MS, send);
+    };
+    send();
+  }
+
+  /** Settles this tab's receipt for a mutation. A rejection is reported once per engine. */
+  private settle(id: number, outcome: TabOutcome, reportOrphan: boolean): void {
+    const owned = this.outcomes.get(id);
+    this.outcomes.delete(id);
+    if (outcome === "applied") {
+      owned?.resolve("applied");
+      return;
+    }
+    const source = owned?.mutation ?? this.store.pending().find((mutation) => mutation.id === id);
+    const command = source ? { name: source.name, args: immutableCopy(source.args) } : null;
+    const rejection: Rejection = Object.freeze({ ...outcome, command });
+    if ((owned !== undefined || reportOrphan) && !this.reported.has(id)) {
+      this.reported.add(id);
+      this.update({ rejected: Object.freeze([...this.snapshot.rejected, rejection]) });
+      this.emit({ type: "rejected", rejection });
+    }
+    owned?.resolve(rejection);
   }
 
   private emit(event: EngineEvent): void {
@@ -429,8 +771,30 @@ export class SyncEngine {
     if (!this.active(controller)) throw new Cancelled();
   }
 
+  /**
+   * After a leader change, a follower's unloaded scopes are asked again. The old leader may have
+   * acknowledged them without loading them, and the new leader only loads its own holds.
+   */
+  private resendScopeRequests(): void {
+    for (const [requestId, remote] of [...this.remote]) {
+      if (remote.call.kind !== "loadScope") continue;
+      this.remote.delete(requestId);
+      remote.cancelResend();
+    }
+    for (const { scope } of this.heldScopes.values()) this.requestScope(scope);
+  }
+
+  /** The leader loads the scope and sends its records as `pulled` messages with the scope set. */
+  private askForScope(scope: Scope): void {
+    const key = scopeKey(scope);
+    if (!this.started || this.closed || this.loadedScopes.has(key)) return;
+    for (const remote of this.remote.values())
+      if (remote.call.kind === "loadScope" && scopeKey(remote.call.scope) === key) return;
+    this.ask({ kind: "loadScope", scope }, noop, noop);
+  }
+
   private beginNetwork(): void {
-    if (!this.started || !this.snapshot.online || this.controller) return;
+    if (!this.started || !this.snapshot.online || this.controller || this.role !== "leader") return;
     const controller = new AbortController();
     this.controller = controller;
     void this.pull();
@@ -502,6 +866,7 @@ export class SyncEngine {
         this.acknowledge(response.header.last_mutation_id);
       });
       this.notifyScopes();
+      this.post({ type: "reset" });
     });
     this.check(controller);
     this.update({ phase: "ready" });
@@ -574,12 +939,23 @@ export class SyncEngine {
         this.store.applyBase(accepted);
         if (response.last_mutation_id !== null) this.acknowledge(response.last_mutation_id);
       });
+      this.post({
+        type: "pulled",
+        changes,
+        cursor: response.cursor,
+        acknowledgedUpTo: response.last_mutation_id,
+      });
     });
     return response;
   }
 
   private acknowledge(id: number): void {
     this.acknowledged = Math.max(this.acknowledged, id);
+    // With tabs, another tab may be waiting on this payload's result, so keep it for a confirmation.
+    if (this.channel)
+      for (const mutation of this.store.pending())
+        if (mutation.id <= this.acknowledged && !this.outcomes.has(mutation.id))
+          this.unconfirmed.set(mutation.id, mutation);
     this.store.setPending(
       this.store.pending().filter((mutation) => mutation.id > this.acknowledged),
     );
@@ -588,13 +964,17 @@ export class SyncEngine {
   }
 
   private pushCandidates(): Mutation[] {
-    const confirmations = [...this.outcomes.values()]
-      .map((outcome) => outcome.mutation)
-      .filter((mutation) => mutation.id <= this.acknowledged);
-    return [...confirmations, ...this.store.pending()].sort((a, b) => a.id - b.id);
+    const confirmations = new Map<number, Mutation>(this.unconfirmed);
+    for (const { mutation } of this.outcomes.values())
+      if (mutation.id <= this.acknowledged) confirmations.set(mutation.id, mutation);
+    return [...confirmations.values(), ...this.store.pending()].sort((a, b) => a.id - b.id);
   }
 
   private requestScope(scope: Scope): void {
+    if (this.role === "follower") {
+      this.askForScope(scope);
+      return;
+    }
     const controller = this.controller;
     const key = scopeKey(scope);
     if (
@@ -652,15 +1032,21 @@ export class SyncEngine {
         }));
       this.loadedScopes.set(key, scope);
       this.scopeFailures.delete(key);
+      const upserts = records.map((record) => ({
+        entity: scope.entity,
+        id: recordKey(scope.entity, record),
+        record,
+      }));
       this.store.batch(() => {
         this.store.applyBase(changes);
-        this.store.applyBase(
-          records.map((record) => ({
-            entity: scope.entity,
-            id: recordKey(scope.entity, record),
-            record,
-          })),
-        );
+        this.store.applyBase(upserts);
+      });
+      this.post({
+        type: "pulled",
+        changes: [...changes, ...upserts],
+        cursor: this.cursor,
+        acknowledgedUpTo: null,
+        scope,
       });
       this.notifyScopes();
     });
@@ -703,6 +1089,8 @@ export class SyncEngine {
       if (!this.batch) {
         this.batch = await this.commits.run(async () => {
           this.check(controller);
+          // Another tab may have appended mutations whose messages were lost, so the database is the source.
+          if (this.channel) this.store.setPending((await this.requireReplica().load()).outbox);
           const mutations = this.pushCandidates().slice(0, 100);
           if (mutations.length)
             return {
@@ -831,20 +1219,17 @@ export class SyncEngine {
   }
 
   private recordResult(result: MutationResult, batch: PushBatch): void {
-    if (result.status === "rejected") {
-      const source =
-        this.outcomes.get(result.id)?.mutation ??
-        this.store.pending().find((mutation) => mutation.id === result.id);
-      const command = source ? { name: source.name, args: immutableCopy(source.args) } : null;
-      const rejection = Object.freeze({ id: result.id, ...result.error, command });
-      if (!this.reported.has(result.id)) {
-        this.reported.add(result.id);
-        this.update({ rejected: Object.freeze([...this.snapshot.rejected, rejection]) });
-        this.emit({ type: "rejected", rejection });
-      }
-      this.outcomes.get(result.id)?.resolve(rejection);
-    } else this.outcomes.get(result.id)?.resolve("applied");
-    this.outcomes.delete(result.id);
+    const outcome: TabOutcome =
+      result.status === "rejected"
+        ? { id: result.id, status: result.error.status, message: result.error.message }
+        : "applied";
+    // The creating tab reports its own rejections. The leader reports the others that no tab
+    // appended while it listened, since their creator may have closed.
+    const reportOrphan = this.role === "leader" && !this.appendedIds.has(result.id);
+    this.settle(result.id, outcome, reportOrphan);
+    this.unconfirmed.delete(result.id);
+    this.appendedIds.delete(result.id);
+    this.post({ type: "result", mutationId: result.id, outcome });
     batch.job?.resolve(result);
   }
 

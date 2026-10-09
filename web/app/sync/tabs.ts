@@ -1,0 +1,39 @@
+import type { Scope } from "./persistence/types";
+import type { Change } from "./records";
+import type { PendingMutation } from "./store";
+
+export interface TabError {
+  message: string;
+  status?: number;
+}
+
+/** A push result: applied, or the server's rejection without its command. */
+export type TabOutcome = "applied" | { id: number; status: number; message: string };
+
+/** Messages between engines that share one replica. Each one names its sender. */
+export type TabBody =
+  | { type: "appended"; mutation: PendingMutation }
+  | {
+      type: "pulled";
+      changes: readonly Change[];
+      cursor: string | null;
+      acknowledgedUpTo: number | null;
+      /** Set when this message loads a comment or activity scope. */
+      scope?: Scope;
+    }
+  | { type: "reset" }
+  | { type: "status"; connected: boolean; online: boolean }
+  | { type: "result"; mutationId: number; outcome: TabOutcome }
+  /** A new tab asks the leader to repeat its status. */
+  | { type: "hello" }
+  | ({ type: "request"; requestId: string } & TabCall)
+  | ({ type: "reply"; requestId: string } & (
+      | { ok: true; value: unknown }
+      | { ok: false; error: TabError }
+    ));
+
+export type TabCall =
+  | { kind: "runOnline"; name: string; args: unknown }
+  | { kind: "loadScope"; scope: Scope };
+
+export type TabMessage = TabBody & { from: string };

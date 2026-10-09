@@ -1,4 +1,5 @@
 import type { ReplicaStorage } from "./persistence/types";
+import type { TabMessage } from "./tabs";
 import type { Transport } from "./transport";
 
 export interface EngineClock {
@@ -14,6 +15,19 @@ export interface EngineSignals {
   subscribe(listener: (signal: EngineSignal) => void): () => void;
 }
 
+/** Shape of navigator.locks.request with the default exclusive mode. */
+export interface TabLocks {
+  request(name: string, callback: () => Promise<void>): Promise<void>;
+}
+
+/** Shape of BroadcastChannel, narrowed to what the engine uses. */
+export interface TabChannel {
+  postMessage(message: TabMessage): void;
+  addEventListener(type: "message", listener: (event: { data: TabMessage }) => void): void;
+  removeEventListener(type: "message", listener: (event: { data: TabMessage }) => void): void;
+  close(): void;
+}
+
 export interface EngineDependencies {
   storage: ReplicaStorage;
   transport: Transport;
@@ -24,7 +38,14 @@ export interface EngineDependencies {
   randomId(): string;
   schema: number;
   signals: EngineSignals;
+  /** Elects one leader per replica. Without it, the engine is always the leader. */
+  locks?: TabLocks;
+  /** Coordinates engines sharing one replica. Named by the session and workspace. */
+  channel?: (name: string) => TabChannel;
 }
+
+/** Only the leader does network work. Followers keep their store current from messages. */
+export type EngineRole = "leader" | "follower";
 
 /** A comment or activity scope: loaded into the replica, still loading, or blocked by a protocol error. */
 export type ScopeStatus = "loading" | "loaded" | "error";
@@ -39,6 +60,7 @@ export interface Rejection {
 
 export interface EngineStatus {
   phase: "loading" | "bootstrapping" | "ready";
+  role: EngineRole;
   connected: boolean;
   online: boolean;
   pending: number;
