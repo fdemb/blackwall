@@ -3,12 +3,10 @@ import type { EngineSignals } from "../sync/engine-types";
 import { createTransport, AccessError, UnauthorizedError, ProtocolError } from "../sync/transport";
 import {
   activeWorkspaceEngine,
-  closeWorkspaceEngine,
+  closeAllWorkspaceEngines,
   currentSession,
-  reclaimEngine,
   reclaimWorkspaceEngine,
   replicaStorage,
-  retireActiveWorkspaceEngine,
   retireWorkspaceEngine,
   setWorkspaceEngine,
   clearSession,
@@ -67,7 +65,7 @@ export function waitUntilReady(engine: SyncEngine, signal?: AbortSignal): Promis
 
 /** Keeps an engine while its workspace screen is mounted. Unmounting retires it. */
 export function attachWorkspaceEngine(engine: SyncEngine): () => void {
-  reclaimEngine(engine);
+  reclaimWorkspaceEngine((entry) => entry.engine === engine);
   return () => retireWorkspaceEngine(engine);
 }
 
@@ -84,8 +82,10 @@ export function openWorkspaceEngine(
       await waitUntilReady(previous.engine, signal);
       return previous.engine;
     }
-    retireActiveWorkspaceEngine();
-    const returning = reclaimWorkspaceEngine(workspaceId, profile.session_id);
+    retireWorkspaceEngine();
+    const returning = reclaimWorkspaceEngine(
+      (entry) => entry.workspaceId === workspaceId && entry.sessionId === profile.session_id,
+    );
     if (returning) {
       await waitUntilReady(returning.engine, signal);
       return returning.engine;
@@ -117,7 +117,7 @@ export function openWorkspaceEngine(
         });
       } else if (event.type === "accessLost") {
         clearLastWs();
-        void closeWorkspaceEngine().then(() => window.location.assign("/"));
+        void closeAllWorkspaceEngines().then(() => window.location.assign("/"));
       }
     });
     try {

@@ -8,7 +8,7 @@ import {
   activeWorkspaceEngine,
   acceptSession,
   clearSession,
-  closeWorkspaceEngine,
+  closeAllWorkspaceEngines,
   currentSession,
   replicaStorage,
   sessionHasPending,
@@ -186,7 +186,7 @@ describe("workspace loader lifecycle", () => {
     const { server, owner, workspace } = await fixture();
     const initial = await openWorkspaceEngine(workspace.id);
     await initial.pull();
-    await closeWorkspaceEngine();
+    await closeAllWorkspaceEngines();
     server.run(owner, { type: "update_issue", id: id(2), patch: { title: "On server" } });
     server.inject({ kind: "delay", route: "pull", milliseconds: 60_000 });
     const reopened = await openWorkspaceEngine(workspace.id);
@@ -276,7 +276,7 @@ describe("workspace loader lifecycle", () => {
     });
     const upload = waitForUploadTarget(engine, id(200));
     const observed = upload.catch((error: unknown) => error);
-    await closeWorkspaceEngine();
+    await closeAllWorkspaceEngines();
     expect(await observed).toMatchObject({ message: "Workspace engine closed" });
   });
 });

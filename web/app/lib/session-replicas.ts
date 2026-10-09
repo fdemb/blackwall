@@ -23,7 +23,7 @@ export function currentSession() {
   return session;
 }
 export async function acceptSession(profile: SessionProfile) {
-  if (session?.session_id !== profile.session_id) await closeWorkspaceEngine();
+  if (session?.session_id !== profile.session_id) await closeAllWorkspaceEngines();
   await replicaStorage().deleteAllExcept(profile.session_id);
   session = profile;
   return profile;
@@ -34,10 +34,12 @@ export function activeWorkspaceEngine() {
 export function setWorkspaceEngine(next: WorkspaceEngine) {
   active = next;
 }
-/** Stops the active engine from taking edits. It closes after its outbox has been sent. */
-export function retireActiveWorkspaceEngine() {
+/**
+ * Stops an engine from taking edits; it closes after its outbox is sent. Defaults to the active one.
+ */
+export function retireWorkspaceEngine(engine?: SyncEngine) {
   const previous = active;
-  if (!previous) return;
+  if (!previous || (engine !== undefined && previous.engine !== engine)) return;
   active = null;
   leaving.set(previous.workspaceId, previous);
   void previous.engine.retire().then(() => {
@@ -45,30 +47,22 @@ export function retireActiveWorkspaceEngine() {
       leaving.delete(previous.workspaceId);
   });
 }
-export function retireWorkspaceEngine(engine: SyncEngine) {
-  if (active?.engine === engine) retireActiveWorkspaceEngine();
+/** Makes a retiring engine active again, retiring the active one first. */
+export function reclaimWorkspaceEngine(
+  match: (entry: WorkspaceEngine) => boolean,
+): WorkspaceEngine | null {
+  const entry = [...leaving.values()].find(match);
+  if (!entry) return null;
+  retireWorkspaceEngine();
+  leaving.delete(entry.workspaceId);
+  entry.engine.reclaim();
+  active = entry;
+  return entry;
 }
 /** Closes one engine now. A failed open must not be reclaimed, so its retry starts fresh. */
 export async function discardWorkspaceEngine(engine: SyncEngine) {
   if (active?.engine === engine) active = null;
   await engine.close();
-}
-/** Makes a retiring engine active again, when the user returns to its workspace. */
-export function reclaimWorkspaceEngine(
-  workspaceId: string,
-  sessionId: string,
-): WorkspaceEngine | null {
-  const entry = leaving.get(workspaceId);
-  if (!entry || entry.sessionId !== sessionId) return null;
-  retireActiveWorkspaceEngine();
-  leaving.delete(workspaceId);
-  entry.engine.reclaim();
-  active = entry;
-  return entry;
-}
-export function reclaimEngine(engine: SyncEngine) {
-  const entry = [...leaving.values()].find((item) => item.engine === engine);
-  if (entry) reclaimWorkspaceEngine(entry.workspaceId, entry.sessionId);
 }
 export async function sessionHasPending(): Promise<boolean> {
   const sessionId = session?.session_id;
@@ -85,8 +79,11 @@ export async function sessionHasPending(): Promise<boolean> {
   }
   return false;
 }
-/** Closes every engine now, active or retiring. Pending edits in their outboxes are lost. */
-export async function closeWorkspaceEngine() {
+/**
+ * Closes every engine now, active or retiring. Pending edits stay in their outboxes on disk and are
+ * sent the next time their replica opens.
+ */
+export async function closeAllWorkspaceEngines() {
   const engines = [active, ...leaving.values()];
   active = null;
   leaving.clear();
@@ -98,7 +95,7 @@ export async function closeWorkspaceEngine() {
 }
 export async function clearSession() {
   const sessionId = session?.session_id;
-  await closeWorkspaceEngine();
+  await closeAllWorkspaceEngines();
   if (sessionId) {
     for (const identity of await replicaStorage().list()) {
       if (identity.sessionId === sessionId) await replicaStorage().delete(identity);
