@@ -132,7 +132,10 @@ fn is_business(error: &Error) -> bool {
         Error::Database(sqlx::Error::Database(db)) => db
             .code()
             .is_some_and(|code| code.starts_with("22") || code.starts_with("23")),
-        Error::Database(_) | Error::Internal(_) | Error::Unauthorized => false,
+        Error::Database(_)
+        | Error::Internal(_)
+        | Error::Unauthorized
+        | Error::ServiceUnavailable(_) => false,
     }
 }
 
@@ -150,9 +153,10 @@ fn rejection(error: &Error) -> MutationError {
         {
             (409, super::ownership::OWNERSHIP_MESSAGE.to_owned())
         }
-        Error::Database(_) | Error::Internal(_) | Error::Unauthorized => {
-            (500, "internal server error".to_owned())
-        }
+        Error::Database(_)
+        | Error::Internal(_)
+        | Error::Unauthorized
+        | Error::ServiceUnavailable(_) => (500, "internal server error".to_owned()),
     };
     MutationError { status, message }
 }
@@ -827,6 +831,20 @@ impl Store {
 /// Bump whenever a sync record shape changes.
 pub const SYNC_SCHEMA: u32 = 1;
 
+/// How long a bootstrap waits for a concurrency permit before answering 503.
+pub const BOOTSTRAP_PERMIT_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+/// Deadline for each channel send while streaming a bootstrap. A slow reader
+/// that stops consuming ends the body without a trailer after this long.
+pub const BOOTSTRAP_SEND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+/// Deadline for a whole bootstrap, from permit acquisition to trailer.
+pub const BOOTSTRAP_OVERALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// Concurrent bootstraps are capped at a quarter of the pool's connections,
+/// at least one, so slow readers cannot hold every shared connection.
+pub(crate) fn bootstrap_permits(max_connections: u32) -> usize {
+    ((max_connections / 4).max(1)) as usize
+}
+
 const BOOTSTRAP_ENTITIES: &[&str] = &[
     "workspace",
     "members",
@@ -854,28 +872,59 @@ pub struct ScopeResponse {
     pub records: Vec<Value>,
 }
 
-async fn send_line(
-    sender: &tokio::sync::mpsc::Sender<Result<Vec<u8>>>,
-    value: Value,
-) -> Result<()> {
-    let mut bytes = serde_json::to_vec(&value)?;
-    bytes.push(b'\n');
-    sender
-        .send(Ok(bytes))
-        .await
-        .map_err(|_| Error::Internal("bootstrap disconnected".into()))
+enum SendOutcome {
+    Sent,
+    /// The receiver stopped reading but is still open; the body ends without
+    /// a trailer after the send deadline.
+    Timeout,
+    /// The receiver was dropped; the body ends silently.
+    Closed,
 }
 
+async fn send_value(
+    sender: &tokio::sync::mpsc::Sender<Result<Vec<u8>>>,
+    value: Value,
+    timeout: std::time::Duration,
+) -> Result<SendOutcome> {
+    let mut bytes = serde_json::to_vec(&value)?;
+    bytes.push(b'\n');
+    Ok(
+        match tokio::time::timeout(timeout, sender.send(Ok(bytes))).await {
+            Ok(Ok(())) => SendOutcome::Sent,
+            Ok(Err(_)) => SendOutcome::Closed,
+            Err(_) => SendOutcome::Timeout,
+        },
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
 async fn bootstrap_on(
     mut tx: Transaction<'static, Postgres>,
     workspace: Uuid,
     actor: Uuid,
+    client_id: Uuid,
     header: Value,
     sender: &tokio::sync::mpsc::Sender<Result<Vec<u8>>>,
+    send_timeout: std::time::Duration,
+    sent: &std::sync::atomic::AtomicU64,
 ) -> Result<()> {
+    use std::sync::atomic::Ordering;
     use tokio_stream::StreamExt;
 
-    send_line(sender, header).await?;
+    match send_value(sender, header, send_timeout).await? {
+        SendOutcome::Sent => {}
+        SendOutcome::Timeout => {
+            tracing::warn!(
+                workspace_id = %workspace,
+                client_id = %client_id,
+                records = 0,
+                deadline = "send",
+                "sync bootstrap timed out"
+            );
+            return Ok(());
+        }
+        SendOutcome::Closed => return Ok(()),
+    }
     let mut records = 0u64;
     for entity in BOOTSTRAP_ENTITIES {
         let mut query =
@@ -890,16 +939,52 @@ async fn bootstrap_on(
             let Some((_, record)) = row.transpose()? else {
                 break;
             };
-            send_line(
+            match send_value(
                 sender,
                 serde_json::json!({"entity": entity, "record": record}),
+                send_timeout,
             )
-            .await?;
-            records += 1;
+            .await?
+            {
+                SendOutcome::Sent => {
+                    records += 1;
+                    sent.store(records, Ordering::Relaxed);
+                }
+                SendOutcome::Timeout => {
+                    tracing::warn!(
+                        workspace_id = %workspace,
+                        client_id = %client_id,
+                        records = records,
+                        deadline = "send",
+                        "sync bootstrap timed out"
+                    );
+                    return Ok(());
+                }
+                SendOutcome::Closed => return Ok(()),
+            }
         }
     }
     tx.commit().await?;
-    send_line(sender, serde_json::json!({"end": true, "records": records})).await
+    match send_value(
+        sender,
+        serde_json::json!({"end": true, "records": records}),
+        send_timeout,
+    )
+    .await?
+    {
+        SendOutcome::Sent => {}
+        SendOutcome::Timeout => {
+            tracing::warn!(
+                workspace_id = %workspace,
+                client_id = %client_id,
+                records = records,
+                deadline = "send",
+                "sync bootstrap timed out"
+            );
+        }
+        SendOutcome::Closed => {}
+    }
+    Ok(())
 }
 
 impl Store {
@@ -909,10 +994,30 @@ impl Store {
         actor: Uuid,
         client_id: Uuid,
     ) -> Result<tokio::sync::mpsc::Receiver<Result<Vec<u8>>>> {
+        // The permit comes before the connection and is held until the task
+        // ends, so queued bootstraps wait here instead of holding pool
+        // connections while unread.
+        let permit = match tokio::time::timeout(
+            self.bootstrap_permit_wait,
+            self.bootstrap_permits.clone().acquire_owned(),
+        )
+        .await
+        {
+            Err(_) => {
+                return Err(Error::ServiceUnavailable(
+                    "bootstrap busy, retry later".into(),
+                ));
+            }
+            Ok(Err(_)) => {
+                return Err(Error::Internal("bootstrap limiter closed".into()));
+            }
+            Ok(Ok(permit)) => permit,
+        };
         let store = self.clone();
         let (sender, receiver) = tokio::sync::mpsc::channel(16);
         let (ready, started) = tokio::sync::oneshot::channel();
         tokio::spawn(async move {
+            let _permit = permit;
             let prepared: Result<_> = async {
                 let (mut tx, last_mutation_id) =
                     store.sync_read(workspace, actor, client_id).await?;
@@ -937,11 +1042,41 @@ impl Store {
                     if ready.send(Ok(())).is_err() {
                         return;
                     }
-                    if let Err(error) = bootstrap_on(tx, workspace, actor, header, &sender).await
-                        && !sender.is_closed()
+                    let send_timeout = store.bootstrap_send_timeout;
+                    let overall_timeout = store.bootstrap_overall_timeout;
+                    let sent = std::sync::atomic::AtomicU64::new(0);
+                    match tokio::time::timeout(
+                        overall_timeout,
+                        bootstrap_on(
+                            tx,
+                            workspace,
+                            actor,
+                            client_id,
+                            header,
+                            &sender,
+                            send_timeout,
+                            &sent,
+                        ),
+                    )
+                    .await
                     {
-                        tracing::error!(%workspace, %error, "sync bootstrap failed");
-                        let _ = sender.send(Err(error)).await;
+                        Ok(Ok(())) => {}
+                        Ok(Err(error)) => {
+                            if !sender.is_closed() {
+                                tracing::error!(%workspace, %error, "sync bootstrap failed");
+                                let _ = sender.send(Err(error)).await;
+                            }
+                        }
+                        Err(_) => {
+                            tracing::warn!(
+                                workspace_id = %workspace,
+                                client_id = %client_id,
+                                records = sent
+                                    .load(std::sync::atomic::Ordering::Relaxed),
+                                deadline = "overall",
+                                "sync bootstrap timed out"
+                            );
+                        }
                     }
                 }
             }

@@ -19,6 +19,8 @@ pub enum Error {
     NotFound,
     #[error("{0}")]
     Conflict(String),
+    #[error("{0}")]
+    ServiceUnavailable(String),
     #[error(transparent)]
     Database(#[from] sqlx::Error),
     #[error(transparent)]
@@ -43,6 +45,14 @@ impl IntoResponse for Error {
                 Json(ErrorBody {
                     error: crate::store::ownership::OWNERSHIP_MESSAGE.into(),
                 }),
+            )
+                .into_response();
+        }
+        if let Self::ServiceUnavailable(message) = self {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                [(axum::http::header::RETRY_AFTER, "5")],
+                Json(ErrorBody { error: message }),
             )
                 .into_response();
         }

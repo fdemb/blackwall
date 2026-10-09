@@ -8,11 +8,14 @@ use axum::{
 use blackwall::{
     auth::{Register, Session},
     http::router,
-    store::{SYNC_SCHEMA, Store},
+    store::{SYNC_SCHEMA, Store, StoreConfig},
 };
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    time::{Duration, Instant},
+};
 use tower::ServiceExt;
 use uuid::Uuid;
 
@@ -1048,6 +1051,251 @@ async fn issue_and_stage_changes_do_not_fan_out_to_count_neighbors() {
             .await
             .unwrap();
     assert!(gone);
+    drop(app);
+    store.pool.close().await;
+    database.cleanup().await;
+}
+
+async fn bulk_issues_n(store: &Store, ws: Uuid, team: Uuid, n: i64) {
+    let stage: Uuid =
+        sqlx::query_scalar("SELECT id FROM stages WHERE team_id=$1 ORDER BY position LIMIT 1")
+            .bind(team)
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+    sqlx::query("INSERT INTO issues(id,workspace_id,number,title,description,team_id,stage_id,priority,position,created_at,updated_at) SELECT gen_random_uuid(),$1,n,'Bulk '||n,'',$2,$3,'normal',n*1024,now(),now() FROM generate_series(1,$4) n")
+        .bind(ws).bind(team).bind(stage).bind(n).execute(&store.pool).await.unwrap();
+    sqlx::query("UPDATE workspaces SET next_issue_number=$2 WHERE id=$1")
+        .bind(ws)
+        .bind(n + 1)
+        .execute(&store.pool)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn bootstrap_concurrency_limit_returns_503_and_spares_rest() {
+    let database = support::TestDatabase::new().await;
+    let store = Store::connect_with_config(
+        &database.url,
+        StoreConfig {
+            max_connections: 4,
+            ..StoreConfig::default()
+        },
+    )
+    .await
+    .unwrap();
+    let app = router(store.clone());
+    let (owner, ws, team) = setup(&store, &app).await;
+    bulk_issues_n(&store, ws, team, 200).await;
+    let client = Uuid::new_v4();
+    let mut filler = store
+        .sync_bootstrap(ws, owner.profile.id, client)
+        .await
+        .unwrap();
+    lines(&filler.recv().await.unwrap().unwrap());
+    // The filler stops consuming with a full channel, holding its permit and
+    // its snapshot while unread.
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while filler.len() != 16 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(open_snapshots(&store).await, 1);
+
+    let start = Instant::now();
+    let response = request(
+        &app,
+        &owner,
+        "GET",
+        &format!(
+            "/api/workspaces/{ws}/sync/bootstrap?client_id={}",
+            Uuid::new_v4()
+        ),
+        None,
+        None,
+    )
+    .await;
+    let waited = start.elapsed();
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(response.headers()["retry-after"], "5");
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let body: Value = serde_json::from_slice(&bytes).unwrap();
+    assert!(body["error"].is_string());
+    assert!(
+        waited >= Duration::from_secs(4),
+        "permit wait returned after {waited:?}"
+    );
+    assert!(
+        waited < Duration::from_secs(15),
+        "permit wait took {waited:?}"
+    );
+
+    // One held bootstrap leaves the rest of the pool usable.
+    let start = Instant::now();
+    let response = request(&app, &owner, "GET", "/api/workspaces", None, None).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(
+        start.elapsed() < Duration::from_secs(5),
+        "rest blocked behind bootstrap"
+    );
+
+    drop(filler);
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while open_snapshots(&store).await != 0 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    drop(app);
+    store.pool.close().await;
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn bootstrap_slow_reader_ends_without_trailer_and_frees_connection() {
+    let database = support::TestDatabase::new().await;
+    let store = Store::connect_with_config(
+        &database.url,
+        StoreConfig {
+            bootstrap_send_timeout: Duration::from_millis(200),
+            ..StoreConfig::default()
+        },
+    )
+    .await
+    .unwrap();
+    let app = router(store.clone());
+    let (owner, ws, team) = setup(&store, &app).await;
+    bulk_issues_n(&store, ws, team, 200).await;
+    let mut receiver = store
+        .sync_bootstrap(ws, owner.profile.id, Uuid::new_v4())
+        .await
+        .unwrap();
+    lines(&receiver.recv().await.unwrap().unwrap());
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while receiver.len() != 16 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    // Stop reading. The next send misses its deadline, so the body ends
+    // without a trailer long before the overall deadline.
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let start = Instant::now();
+    let mut saw_trailer = false;
+    let mut received = 0;
+    while let Some(item) = tokio::time::timeout(Duration::from_secs(10), receiver.recv())
+        .await
+        .unwrap()
+    {
+        let line = lines(&item.unwrap()).pop().unwrap();
+        received += 1;
+        if line.get("end") == Some(&json!(true)) {
+            saw_trailer = true;
+        }
+    }
+    assert!(!saw_trailer);
+    assert!(received > 0);
+    assert!(
+        start.elapsed() < Duration::from_secs(10),
+        "send deadline took {:?}",
+        start.elapsed()
+    );
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while open_snapshots(&store).await != 0 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    drop(app);
+    store.pool.close().await;
+    database.cleanup().await;
+}
+
+fn gunzip_lossy(compressed: &[u8]) -> Vec<u8> {
+    use std::{
+        io::Write,
+        process::{Command, Stdio},
+    };
+    let mut child = Command::new("gzip")
+        .arg("-dc")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut input = child.stdin.take().unwrap();
+    let owned = compressed.to_vec();
+    let writer = std::thread::spawn(move || {
+        let _ = input.write_all(&owned);
+    });
+    let output = child.wait_with_output().unwrap();
+    writer.join().unwrap();
+    output.stdout
+}
+
+#[tokio::test]
+async fn bootstrap_failure_without_trailer_under_gzip() {
+    let database = support::TestDatabase::new().await;
+    let store = Store::connect(&database.url).await.unwrap();
+    let app = router(store.clone());
+    let (owner, ws, team) = setup(&store, &app).await;
+    // Enough issues that the gzip encoder flushes compressed bytes before the
+    // failure at time_entries, so the decoded prefix is non-empty.
+    bulk_issues_n(&store, ws, team, 1000).await;
+    sqlx::query("ALTER TABLE time_entries RENAME TO unavailable_time_entries")
+        .execute(&store.pool)
+        .await
+        .unwrap();
+    let response = request(
+        &app,
+        &owner,
+        "GET",
+        &format!(
+            "/api/workspaces/{ws}/sync/bootstrap?client_id={}",
+            Uuid::new_v4()
+        ),
+        None,
+        Some("gzip"),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()["content-encoding"], "gzip");
+    let mut body = response.into_body();
+    let mut compressed = Vec::new();
+    let mut failed = false;
+    while let Some(frame) = body.frame().await {
+        match frame {
+            Ok(frame) => {
+                if let Ok(data) = frame.into_data() {
+                    compressed.extend_from_slice(&data);
+                }
+            }
+            Err(_) => {
+                failed = true;
+                break;
+            }
+        }
+    }
+    assert!(failed);
+    let decoded = gunzip_lossy(&compressed);
+    assert!(!decoded.is_empty());
+    // Truncated gzip ends mid-line; only complete lines decode as JSON.
+    let complete = decoded
+        .iter()
+        .rposition(|b| *b == b'\n')
+        .map(|i| &decoded[..i + 1])
+        .unwrap_or(&decoded[..]);
+    let data = lines(complete);
+    assert!(data[0]["cursor"].is_string());
+    assert!(data.iter().any(|line| line["entity"] == "teams"));
+    assert!(!data.iter().any(|line| line["end"] == true));
+    drop(body);
     drop(app);
     store.pool.close().await;
     database.cleanup().await;

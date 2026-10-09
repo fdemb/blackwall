@@ -119,6 +119,8 @@ The header, client mutation id and every record come from the same snapshot. `sc
 
 The trailer counts only record lines. A failure ends the body without a trailer. The client discards any bootstrap without a trailer, and writes a completed bootstrap into a fresh base with its cursor in one IndexedDB transaction. A page reload in the middle leaves no partial replica.
 
+Concurrent bootstraps are capped at a quarter of the pool's connections, at least one. A bootstrap takes its permit before its connection and holds both until its stream ends. When no permit is free within 5 seconds the server answers 503 with `Retry-After: 5` and a JSON error, before streaming starts. Each send waits at most 30 seconds for the reader; the whole bootstrap waits at most 5 minutes. Either deadline drops the transaction and ends the body without a trailer. The client treats a 503 like any transient failure and retries with backoff.
+
 Request errors: a non-member receives 403. A missing or malformed `client_id`, or one registered to another user or workspace, receives 400.
 
 ### Pull

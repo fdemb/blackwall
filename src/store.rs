@@ -4,7 +4,8 @@ use crate::{
 };
 use chrono::{DateTime, Utc};
 use sqlx::{PgConnection, PgPool, Postgres, Row, Transaction, postgres::PgPoolOptions};
-use std::{collections::BTreeMap, time::Duration};
+use std::{collections::BTreeMap, sync::Arc, time::Duration};
+use tokio::sync::Semaphore;
 use uuid::Uuid;
 
 mod changes;
@@ -23,16 +24,60 @@ pub(crate) use queue::LEASE_SECONDS;
 pub use queue::{Claim, NewJob, Outbox};
 pub use reads::CollectionQuery;
 pub use sync::{
-    MutationError, MutationResult, MutationStatus, PULL_BATCH_RANGE_SQL, PULL_BATCH_XIP_SQL,
+    BOOTSTRAP_OVERALL_TIMEOUT, BOOTSTRAP_PERMIT_WAIT, BOOTSTRAP_SEND_TIMEOUT, MutationError,
+    MutationResult, MutationStatus, PULL_BATCH_RANGE_SQL, PULL_BATCH_XIP_SQL,
     PULL_ROLE_CHANGED_SQL, PullResponse, PushOutcome, PushRequest, PushResponse, SYNC_SCHEMA,
     ScopeResponse, SyncMutation, SyncScope,
 };
+
+/// Tuning for [`Store::connect_with_config`]. Production uses [`Default`],
+/// which reads pool sizes from the environment and bootstrap deadlines from
+/// the named constants in `store::sync`.
+#[derive(Clone, Debug)]
+pub struct StoreConfig {
+    pub max_connections: u32,
+    pub acquire_timeout: Duration,
+    pub bootstrap_permit_wait: Duration,
+    pub bootstrap_send_timeout: Duration,
+    pub bootstrap_overall_timeout: Duration,
+}
+
+impl Default for StoreConfig {
+    fn default() -> Self {
+        Self {
+            max_connections: 16,
+            acquire_timeout: Duration::from_secs(10),
+            bootstrap_permit_wait: sync::BOOTSTRAP_PERMIT_WAIT,
+            bootstrap_send_timeout: sync::BOOTSTRAP_SEND_TIMEOUT,
+            bootstrap_overall_timeout: sync::BOOTSTRAP_OVERALL_TIMEOUT,
+        }
+    }
+}
+
+impl StoreConfig {
+    pub fn from_env() -> Result<Self> {
+        Ok(Self {
+            max_connections: database_setting("DATABASE_MAX_CONNECTIONS", 16, 1, 256)?,
+            acquire_timeout: Duration::from_secs(u64::from(database_setting(
+                "DATABASE_ACQUIRE_TIMEOUT_SECONDS",
+                10,
+                1,
+                60,
+            )?)),
+            ..Self::default()
+        })
+    }
+}
 
 #[derive(Clone)]
 pub struct Store {
     pub pool: PgPool,
     pub outbox: Outbox,
     pub(crate) openproject_client: reqwest::Client,
+    pub(crate) bootstrap_permits: Arc<Semaphore>,
+    pub(crate) bootstrap_permit_wait: Duration,
+    pub(crate) bootstrap_send_timeout: Duration,
+    pub(crate) bootstrap_overall_timeout: Duration,
 }
 
 pub struct NewAttachment {
@@ -193,16 +238,17 @@ pub(crate) fn membership_exclusive(command: &Command) -> bool {
 
 impl Store {
     pub async fn connect(url: &str) -> Result<Self> {
+        Self::connect_with_config(url, StoreConfig::from_env()?).await
+    }
+
+    pub async fn connect_with_config(url: &str, config: StoreConfig) -> Result<Self> {
         if !url.starts_with("postgres://") && !url.starts_with("postgresql://") {
             return Err(Error::BadRequest("DATABASE_URL must use PostgreSQL".into()));
         }
 
-        let max = database_setting("DATABASE_MAX_CONNECTIONS", 16, 1, 256)?;
-        let acquisition_seconds = database_setting("DATABASE_ACQUIRE_TIMEOUT_SECONDS", 10, 1, 60)?;
-
         let pool = PgPoolOptions::new()
-            .max_connections(max)
-            .acquire_timeout(Duration::from_secs(u64::from(acquisition_seconds)))
+            .max_connections(config.max_connections)
+            .acquire_timeout(config.acquire_timeout)
             .connect(url)
             .await?;
 
@@ -214,6 +260,12 @@ impl Store {
         Ok(Self {
             outbox: Outbox::new(pool.clone()),
             openproject_client: crate::openproject::http_client()?,
+            bootstrap_permits: Arc::new(Semaphore::new(sync::bootstrap_permits(
+                config.max_connections,
+            ))),
+            bootstrap_permit_wait: config.bootstrap_permit_wait,
+            bootstrap_send_timeout: config.bootstrap_send_timeout,
+            bootstrap_overall_timeout: config.bootstrap_overall_timeout,
             pool,
         })
     }
