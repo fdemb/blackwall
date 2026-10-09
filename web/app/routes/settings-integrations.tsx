@@ -17,7 +17,7 @@ import { OpenProjectSettings } from "~/components/app/openproject-settings";
 
 export default function Integrations() {
   const { t } = useI18n();
-  const { ws, run, canAdmin } = useWorkspace();
+  const { ws, run, canAdmin, offline } = useWorkspace();
   const toast = useToast();
   const [open, setOpen] = useState(false);
   const [removing, setRemoving] = useState<Integration | null>(null);
@@ -45,7 +45,7 @@ export default function Integrations() {
       title={t("settings.integrations")}
       description={t("integrations.sub")}
       actions={
-        <Button variant="primary" size="sm" onPress={() => setOpen(true)}>
+        <Button variant="primary" size="sm" isDisabled={offline} onPress={() => setOpen(true)}>
           <Plus />
           {t("integrations.add")}
         </Button>
@@ -141,7 +141,7 @@ curl -X POST "${sample}" \\
 
 function IntegrationForm({ close }: { close: () => void }) {
   const { t } = useI18n();
-  const { run } = useWorkspace();
+  const { run, offline } = useWorkspace();
   const { pending, error, guard } = usePending();
   const [name, setName] = useState("");
   const [url, setUrl] = useState("");
@@ -202,7 +202,7 @@ function IntegrationForm({ close }: { close: () => void }) {
         <Button
           type="submit"
           variant="primary"
-          isDisabled={!name.trim() || !url.trim() || secret.length < 16}
+          isDisabled={!name.trim() || !url.trim() || secret.length < 16 || offline}
           isPending={pending}
         >
           {pending && <Loader2 aria-hidden className="animate-spin" />}

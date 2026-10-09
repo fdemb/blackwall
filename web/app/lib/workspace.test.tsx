@@ -1,9 +1,18 @@
 import { useState } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { MemoryRouter, Outlet, Route, Routes } from "react-router";
+import {
+  createMemoryRouter,
+  MemoryRouter,
+  Outlet,
+  Route,
+  Routes,
+  RouterProvider,
+} from "react-router";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, describe, expect, it } from "vite-plus/test";
+import Members from "../routes/settings-members";
 import { Sidebar } from "../components/app/sidebar";
+import { AttachButton, useUploader } from "../components/app/issue-content";
 import { IssueBoard } from "../components/app/issue-board";
 import { useQueueState } from "../components/app/workbench";
 import { IssueList } from "../components/app/issue-list";
@@ -55,7 +64,10 @@ const report: Report = {
   delivery: [],
 };
 const engines: SyncEngine[] = [];
-async function fixture() {
+async function fixture({
+  online = false,
+  otherMember = false,
+}: { online?: boolean; otherMember?: boolean } = {}) {
   const storage = new MemoryReplicaStorage();
   const replica = await storage.open({
     sessionId: "session",
@@ -82,6 +94,20 @@ async function fixture() {
           version: 1,
           team_ids: [team.id],
         },
+        ...(otherMember
+          ? [
+              {
+                id: "other",
+                email: "grace@example.com",
+                display_name: "Grace",
+                avatar_url: null,
+                contact: "",
+                role: "member" as const,
+                version: 1,
+                team_ids: [team.id],
+              },
+            ]
+          : []),
       ],
       teams: [team],
       issues: [
@@ -158,7 +184,7 @@ async function fixture() {
     schema: SCHEMA,
     randomId: () => crypto.randomUUID(),
     clock: { now: () => NOW, schedule: () => () => {} },
-    signals: { getOnline: () => false, subscribe: () => () => {} },
+    signals: { getOnline: () => online, subscribe: () => () => {} },
   });
   engines.push(engine);
   await engine.open();
@@ -397,4 +423,41 @@ describe("workspace React integration without a DOM", () => {
     expect(html).toContain("Ada");
     expect(html).not.toContain("Load more");
   });
+});
+
+/** The opening tag of each button whose markup contains the label. */
+function buttonTags(html: string, label: string): string[] {
+  return html
+    .split("<button")
+    .slice(1)
+    .map((part) => part.slice(0, part.indexOf("</button>")))
+    .filter((part) => part.includes(label))
+    .map((part) => part.slice(0, part.indexOf(">") + 1));
+}
+
+function AttachProbe() {
+  const uploader = useUploader("issue");
+  return <AttachButton uploader={uploader} />;
+}
+
+describe("online-only controls", () => {
+  it.each([false, true])(
+    "disables connection-only controls while offline (online: %s)",
+    async (online) => {
+      const engine = await fixture({ online, otherMember: true });
+      const router = createMemoryRouter([{ path: "/", Component: Members }]);
+      const members = render(engine, <RouterProvider router={router} />);
+      const attach = render(engine, <AttachProbe />);
+      // Disabled exactly while offline. The class list has `disabled:` variants, so match the attribute.
+      const expectGated = (html: string, label: string) => {
+        const tags = buttonTags(html, label);
+        expect(tags, label).toHaveLength(1);
+        expect(/ disabled=""/.test(tags[0]), label).toBe(!online);
+      };
+      expectGated(members, "Invite people");
+      expectGated(members, "Role of Grace");
+      expectGated(members, "Remove member: Grace");
+      expectGated(attach, "Attach files");
+    },
+  );
 });

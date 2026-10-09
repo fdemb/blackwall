@@ -345,7 +345,7 @@ function CommentItem({ comment: c }: { comment: Comment }) {
 
 function Composer({ issue, hasItems }: { issue: Issue; hasItems: boolean }) {
   const { t } = useI18n();
-  const { members, run, upload, canWrite } = useWorkspace();
+  const { members, run, upload, canWrite, offline } = useWorkspace();
   const toast = useToast();
   const [body, setBody] = useState("");
   const [files, setFiles] = useState<File[]>([]);
@@ -446,7 +446,7 @@ function Composer({ issue, hasItems }: { issue: Issue; hasItems: boolean }) {
             {t("attachments.retryNote", { n: retry.files.length })}{" "}
             {retry.files.map((f) => f.name).join(", ")}
           </span>
-          <Button size="sm" variant="secondary" isDisabled={busy} onPress={retryUpload}>
+          <Button size="sm" variant="secondary" isDisabled={busy || offline} onPress={retryUpload}>
             {t("attachments.retry")}
           </Button>
           <Button size="sm" variant="ghost" onPress={() => setRetry(null)}>
@@ -456,7 +456,7 @@ function Composer({ issue, hasItems }: { issue: Issue; hasItems: boolean }) {
       )}
       <div className="flex items-center justify-between">
         <FileTrigger allowsMultiple onSelect={addFiles}>
-          <Button variant="ghost" size="sm" isDisabled={busy}>
+          <Button variant="ghost" size="sm" isDisabled={busy || offline}>
             <Paperclip />
             {t("attachments.add")}
           </Button>

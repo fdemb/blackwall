@@ -48,7 +48,7 @@ function CreateIssueForm() {
   const { t } = useI18n();
   const nav = useNavigate();
   const toast = useToast();
-  const { ws, me, create, run, upload } = useWorkspace();
+  const { ws, me, create, run, upload, offline } = useWorkspace();
   const myTeam = ws.teams.find((tm) => tm.members.includes(me)) ?? ws.teams[0];
   const d = create.defaults;
   const [teamId, setTeamId] = useState<Id | undefined>(d.team_id ?? myTeam?.id);
@@ -262,7 +262,7 @@ function CreateIssueForm() {
       )}
       <div className="mt-1 flex flex-wrap items-center gap-2">
         <FileTrigger allowsMultiple onSelect={addFiles}>
-          <Button variant="ghost">
+          <Button variant="ghost" isDisabled={offline}>
             <Paperclip aria-hidden />
             {t("attachments.add")}
           </Button>

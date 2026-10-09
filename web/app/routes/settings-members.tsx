@@ -21,7 +21,7 @@ const rank = (r: Role) => ROLES.length - ROLES.indexOf(r);
 
 export default function Members() {
   const { t, lang } = useI18n();
-  const { ws, members, me, role, run, canAdmin } = useWorkspace();
+  const { ws, members, me, role, run, canAdmin, offline } = useWorkspace();
   const toast = useToast();
   const [inviting, setInviting] = useState(false);
   const [removing, setRemoving] = useState<Id | null>(null);
@@ -44,7 +44,12 @@ export default function Members() {
       description={`${t("members.sub")} ${t("members.roleHelp")}`}
       actions={
         canAdmin && (
-          <Button variant="primary" size="sm" onPress={() => setInviting(true)}>
+          <Button
+            variant="primary"
+            size="sm"
+            isDisabled={offline}
+            onPress={() => setInviting(true)}
+          >
             <MailPlus />
             {t("invite.new")}
           </Button>
@@ -74,7 +79,7 @@ export default function Members() {
                   <Select
                     aria-label={t("members.roleFor", { name: m?.display_name ?? "" })}
                     className="w-32"
-                    isDisabled={pending}
+                    isDisabled={pending || offline}
                     selectedKey={wm.role}
                     options={roleOptions}
                     onSelectionChange={(k) => changeRole(wm.user_id, k as Role, wm.role)}
@@ -89,6 +94,7 @@ export default function Members() {
                         variant="ghost"
                         size="icon"
                         aria-label={`${t("members.remove")}: ${m?.display_name ?? ""}`}
+                        isDisabled={offline}
                         onPress={() => setRemoving(wm.user_id)}
                       >
                         <UserMinus />
@@ -126,7 +132,7 @@ export default function Members() {
                   <Button
                     variant="ghost"
                     size="sm"
-                    isDisabled={pending}
+                    isDisabled={pending || offline}
                     onPress={() =>
                       void guard(() =>
                         run({ type: "resend_invitation", id: i.id, token_hash: "" }).then(() =>
@@ -189,7 +195,7 @@ export default function Members() {
             </Button>
             <Button
               variant="destructive"
-              isDisabled={pending}
+              isDisabled={pending || offline}
               onPress={() =>
                 void guard(() => run({ type: "remove_member", user_id: removing! }).then(close))
               }
@@ -211,7 +217,7 @@ function InviteForm({
   roles: { id: string; label: string }[];
 }) {
   const { t } = useI18n();
-  const { run } = useWorkspace();
+  const { run, offline } = useWorkspace();
   const toast = useToast();
   const [email, setEmail] = useState("");
   const [role, setRole] = useState<Role>("member");
@@ -248,7 +254,7 @@ function InviteForm({
         <Button variant="ghost" onPress={close}>
           {t("action.cancel")}
         </Button>
-        <Button type="submit" variant="primary" isDisabled={!email.trim() || pending}>
+        <Button type="submit" variant="primary" isDisabled={!email.trim() || pending || offline}>
           {pending ? t("invite.sending") : t("invite.send")}
         </Button>
       </div>

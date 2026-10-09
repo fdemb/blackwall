@@ -62,7 +62,7 @@ function inspect(name: string, parsed: unknown): Preview | null {
 
 export default function Data() {
   const { t } = useI18n();
-  const { ws, canWrite, canAdmin, reload, confirmed } = useWorkspace();
+  const { ws, canWrite, canAdmin, reload, confirmed, offline } = useWorkspace();
   const toast = useToast();
   const [busy, setBusy] = useState(false);
   const importKey = useRef(crypto.randomUUID());
@@ -111,6 +111,7 @@ export default function Data() {
         <SettingsSection title={t("data.import")} description={t("data.importSub")}>
           <div className="px-4 py-4 sm:px-5 sm:py-5">
             <DropZone
+              isDisabled={offline}
               className="flex flex-col items-center gap-2 rounded-xl border border-dashed border-input px-6 py-10 text-center transition-colors drop-target:border-primary drop-target:bg-accent/50"
               onDrop={async (e) => {
                 for (const item of e.items)
@@ -128,7 +129,9 @@ export default function Data() {
                 acceptedFileTypes={["application/json", ".json"]}
                 onSelect={(l) => l?.[0] && void choose(l[0])}
               >
-                <Button variant="secondary">{t("data.choose")}</Button>
+                <Button variant="secondary" isDisabled={offline}>
+                  {t("data.choose")}
+                </Button>
               </FileTrigger>
             </DropZone>
           </div>
@@ -181,6 +184,7 @@ function Review({
   onImport: () => Promise<void>;
 }) {
   const { t } = useI18n();
+  const { offline } = useWorkspace();
   const { pending, error, guard } = usePending();
   return (
     <div className="space-y-4">
@@ -209,7 +213,7 @@ function Review({
         </Button>
         <Button
           variant="primary"
-          isDisabled={!allowed || pending}
+          isDisabled={!allowed || pending || offline}
           onPress={() => void guard(onImport)}
         >
           {pending ? t("data.importing") : t("data.confirm")}

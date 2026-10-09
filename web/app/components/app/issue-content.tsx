@@ -495,9 +495,10 @@ type Uploader = ReturnType<typeof useUploader>;
 
 export function AttachButton({ uploader }: { uploader: Uploader }) {
   const { t } = useI18n();
+  const { offline } = useWorkspace();
   return (
     <FileTrigger allowsMultiple onSelect={(list) => void uploader.pick(list)}>
-      <Button variant="ghost" size="sm" isDisabled={uploader.busy}>
+      <Button variant="ghost" size="sm" isDisabled={uploader.busy || offline}>
         {uploader.busy ? <Loader2 aria-hidden className="animate-spin" /> : <Paperclip />}
         {uploader.busy ? t("attachments.uploading") : t("attachments.add")}
       </Button>
