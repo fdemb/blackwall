@@ -3,8 +3,7 @@ import { RotateCcw, Trash2 } from "lucide-react";
 import { Link } from "react-router";
 import { Button } from "~/components/ui/button";
 import { EmptyState, Page, PageHeader, Scroll } from "~/components/app/page";
-import { expectedVersions } from "~/lib/entity-versions";
-import { collectPages, workspaces } from "~/lib/api";
+import { bulkIssueCommands } from "~/lib/bulk-issues";
 import { useIssues } from "~/lib/queries";
 import { issueCapabilities } from "~/lib/ownership";
 import { QueryStatus } from "~/components/app/query-status";
@@ -22,25 +21,23 @@ export default function Trash() {
   const issues = query.items;
   const keyLength = issueKeyLength(issues);
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
-  // The server accepts at most 500 issues per bulk command, so a large Trash is restored in batches.
   const restoreAll = async () => {
-    setProgress({ done: 0, total: issues.length });
+    // Snapshot: built before the first await, so later view changes do not affect this run.
+    const commands = bulkIssueCommands(
+      issues,
+      "restore",
+      (issue) => issueCapabilities(issue).restore,
+    );
+    const total = commands.reduce((sum, command) => sum + command.ids.length, 0);
+    setProgress({ done: 0, total });
     try {
-      const all = await collectPages((offset) => workspaces.issues(ws.id, { trash: true }, offset));
-      const ids = all.filter((issue) => issueCapabilities(issue).restore).map((issue) => issue.id);
-      for (let at = 0; at < ids.length; at += 500) {
-        await run(
-          { type: "bulk_issues", ids: ids.slice(at, at + 500), action: "restore" },
-          {
-            expectedVersions: expectedVersions(
-              ids.slice(at, at + 500),
-              Object.fromEntries(all.map((issue) => [issue.id, issue.version])),
-            ),
-          },
-        );
-        setProgress({ done: Math.min(at + 500, ids.length), total: ids.length });
+      let done = 0;
+      for (const command of commands) {
+        await run(command);
+        done += command.ids.length;
+        setProgress({ done, total });
       }
-      toast.show(t("trash.restoredN", { n: ids.length }));
+      toast.show(t("trash.restoredN", { n: total }));
     } catch {
       /* the failed batch already showed its error; the rest stay in Trash */
     }
