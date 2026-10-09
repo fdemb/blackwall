@@ -624,6 +624,7 @@ describe("sync engine", () => {
       id: receipt.mutationId,
       status: 409,
       message: "id already exists",
+      command: { name: "create_label", args: expect.objectContaining({ name: "Predicted" }) },
     });
     await until(() => f.engine.status.get().pending === 0);
     expect(f.engine.store.get("labels", receipt.id ?? "")?.name).toBe("Authoritative");

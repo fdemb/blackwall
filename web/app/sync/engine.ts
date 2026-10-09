@@ -839,7 +839,11 @@ export class SyncEngine {
 
   private recordResult(result: MutationResult, batch: PushBatch): void {
     if (result.status === "rejected") {
-      const rejection = Object.freeze({ id: result.id, ...result.error });
+      const source =
+        this.outcomes.get(result.id)?.mutation ??
+        this.store.pending().find((mutation) => mutation.id === result.id);
+      const command = source ? { name: source.name, args: immutableCopy(source.args) } : null;
+      const rejection = Object.freeze({ id: result.id, ...result.error, command });
       if (!this.reported.has(result.id)) {
         this.reported.add(result.id);
         this.update({ rejected: Object.freeze([...this.snapshot.rejected, rejection]) });

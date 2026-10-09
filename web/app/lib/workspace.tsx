@@ -17,12 +17,15 @@ import { useSession } from "./session";
 import type { Command, EntityVersions, IssueInput, Report, Workspace } from "./types";
 import {
   uploadFile,
+  OnlineRequiredError,
+  rejectedCreateName,
   runCommand,
   ServerRejection,
   uuidsIn,
   watchRejections,
   whenConfirmed,
 } from "./workspace-commands";
+import { useI18n } from "./i18n";
 
 export interface RunOptions {
   quiet?: boolean;
@@ -48,6 +51,7 @@ function useWorkspaceValue() {
   const engine = useEngine();
   const { profile } = useSession();
   const toast = useToast();
+  const { t } = useI18n();
   const status = useSyncStatus();
   const records = useView(
     (store) => {
@@ -112,7 +116,25 @@ function useWorkspaceValue() {
     useQuery({ ...reportQuery(ws.id), enabled: status.online, refetchOnMount: "always" }).data ??
     emptyReport;
   useEffect(() => watchReportChanges(engine.store, ws.id), [engine, ws.id]);
-  useEffect(() => watchRejections(engine, toast.error), [engine, toast]);
+  useEffect(
+    () =>
+      watchRejections(engine, (rejection) => {
+        const name = rejectedCreateName(rejection);
+        toast.error(
+          name === null
+            ? rejection.message
+            : t("error.createRejected", { name, message: rejection.message }),
+        );
+      }),
+    [engine, toast, t],
+  );
+  const describeError = useCallback(
+    (error: unknown) => {
+      if (error instanceof OnlineRequiredError) return t("error.onlineRequired");
+      return error instanceof Error ? error.message : String(error);
+    },
+    [t],
+  );
 
   const run = useCallback(
     async (command: Command, opts: RunOptions = {}) => {
@@ -120,23 +142,22 @@ function useWorkspaceValue() {
         return await runCommand(engine, command, opts.settled);
       } catch (error) {
         // Server rejections already have an engine event; admission failures don't.
-        if (!opts.quiet && !(error instanceof ServerRejection))
-          toast.error(error instanceof Error ? error.message : String(error));
+        if (!opts.quiet && !(error instanceof ServerRejection)) toast.error(describeError(error));
         throw error;
       }
     },
-    [engine, toast],
+    [engine, toast, describeError],
   );
   const upload = useCallback(
     async (issueId: string, file: File, commentId?: string) => {
       try {
         return await uploadFile(engine, ws.id, issueId, file, commentId);
       } catch (error) {
-        toast.error(error instanceof Error ? error.message : String(error));
+        toast.error(describeError(error));
         throw error;
       }
     },
-    [engine, ws.id, toast],
+    [engine, ws.id, toast, describeError],
   );
   // REST writes that send record ids wait here until the server has those records.
   const confirmed = useCallback((body: unknown) => whenConfirmed(engine, uuidsIn(body)), [engine]);

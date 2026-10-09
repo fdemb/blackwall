@@ -564,6 +564,8 @@ export const en = {
   "error.offlineRetry": "Retry now",
 
   "error.network": "Couldn't reach the server. Check your connection and try again.",
+  "error.onlineRequired": "This needs a connection to the server. Reconnect, then try again.",
+  "error.createRejected": "Not saved: {{name}}. {{message}}",
 
   "filter.status": "Status",
   "filter.back": "All filters",

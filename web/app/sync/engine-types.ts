@@ -33,6 +33,8 @@ export interface Rejection {
   id: number;
   status: number;
   message: string;
+  /** The rejected command, so the UI can say what was lost. Null if the mutation is gone. */
+  command: { name: string; args: unknown } | null;
 }
 
 export interface EngineStatus {

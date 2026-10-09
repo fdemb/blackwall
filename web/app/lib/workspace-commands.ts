@@ -6,6 +6,13 @@ import type { Command } from "./types";
 
 export class ServerRejection extends ApiError {}
 
+/** An online-only command attempted while offline. It fails at once instead of waiting. */
+export class OnlineRequiredError extends ApiError {
+  constructor() {
+    super("This command requires an online connection", 400);
+  }
+}
+
 export async function runCommand(
   engine: SyncEngine,
   command: Command,
@@ -15,6 +22,7 @@ export async function runCommand(
     command = { ...command, id: crypto.randomUUID() };
   const { type, ...args } = command;
   if (ONLINE_ONLY.some((name) => name === type)) {
+    if (!engine.status.get().online) throw new OnlineRequiredError();
     const result = await engine.runOnline(type, args);
     if (result.status === "rejected")
       throw new ServerRejection(result.error.message, result.error.status);
@@ -86,8 +94,7 @@ export function whenConfirmed(engine: SyncEngine, ids: Iterable<string>): Promis
     const check = () => {
       if (engine.isClosed()) finish(new Error("Workspace engine closed"));
       else if (!waiting()) finish();
-      else if (!engine.status.get().online)
-        finish(new ApiError("This command requires an online connection", 400));
+      else if (!engine.status.get().online) finish(new OnlineRequiredError());
     };
     const unsubscribeStore = engine.store.subscribe(check);
     const unsubscribeStatus = engine.status.subscribe(check);
@@ -116,16 +123,45 @@ export async function uploadFile(
   file: File,
   commentId?: string,
 ): Promise<string | null> {
-  if (!engine.status.get().online)
-    throw new ApiError("This command requires an online connection", 400);
+  if (!engine.status.get().online) throw new OnlineRequiredError();
   await waitForUploadTarget(engine, issueId, commentId);
   const result = await workspaces.upload(workspaceId, issueId, undefined, file, commentId);
   await engine.pull();
   return result.result.id;
 }
 
+// The creates whose records a user typed a name or title for, in the order the server reads them.
+const NAMED_CREATES = new Set([
+  "create_issue",
+  "create_team",
+  "create_stage",
+  "create_label",
+  "create_project",
+  "create_milestone",
+  "create_sprint",
+  "save_view",
+]);
+
+/** The title or name of a rejected create, so the toast can say what was lost. */
+export function rejectedCreateName(rejection: Rejection): string | null {
+  const args = rejection.command?.args;
+  if (
+    !NAMED_CREATES.has(rejection.command?.name ?? "") ||
+    args === null ||
+    typeof args !== "object"
+  )
+    return null;
+  if ("input" in args && args.input !== null && typeof args.input === "object") {
+    return "title" in args.input && typeof args.input.title === "string" ? args.input.title : null;
+  }
+  return "name" in args && typeof args.name === "string" ? args.name : null;
+}
+
 const shownRejections = new WeakMap<SyncEngine, Set<number>>();
-export function watchRejections(engine: SyncEngine, notify: (message: string) => void): () => void {
+export function watchRejections(
+  engine: SyncEngine,
+  notify: (rejection: Rejection) => void,
+): () => void {
   let shown = shownRejections.get(engine);
   if (!shown) {
     shown = new Set();
@@ -135,7 +171,7 @@ export function watchRejections(engine: SyncEngine, notify: (message: string) =>
   const show = (rejection: Rejection) => {
     if (seen.has(rejection.id)) return;
     seen.add(rejection.id);
-    notify(rejection.message);
+    notify(rejection);
   };
   const unsubscribe = engine.subscribe((event) => {
     if (event.type === "rejected") show(event.rejection);

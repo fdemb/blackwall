@@ -5,6 +5,8 @@ import { createFakeServer } from "../sync/testing/fake-server";
 import { createTransport } from "../sync/transport";
 import { setCsrf } from "./api";
 import {
+  OnlineRequiredError,
+  rejectedCreateName,
   runCommand,
   uuidsIn,
   waitForUploadTarget,
@@ -341,5 +343,61 @@ describe("confirmation for REST writes", () => {
     await save;
     expect(post).toHaveBeenCalledTimes(1);
     expect(pendingWhenSent).toBe(0);
+  });
+});
+
+describe("offline and rejected commands", () => {
+  it("fails online-only commands and uploads at once while offline, without sending anything", async () => {
+    const { server, owner, workspace } = await fixture();
+    const sent = vi.fn();
+    const offline = createEngine({
+      storage: new MemoryReplicaStorage(),
+      transport: createTransport({ fetch: sent, headers: () => ({}) }),
+      sessionId: id(3),
+      workspaceId: workspace.id,
+      actor: owner.id,
+      schema: SCHEMA,
+      randomId: () => crypto.randomUUID(),
+      clock: { now: server.now, schedule: server.schedule },
+      signals: { getOnline: () => false, subscribe: () => () => {} },
+    });
+    engines.push(offline);
+    await expect(
+      runCommand(offline, {
+        type: "invite",
+        email: "new@example.com",
+        role: "member",
+        token_hash: "server-generated",
+      }),
+    ).rejects.toBeInstanceOf(OnlineRequiredError);
+    await expect(
+      uploadFile(offline, workspace.id, id(2), new File(["notes"], "notes.txt")),
+    ).rejects.toBeInstanceOf(OnlineRequiredError);
+    expect(sent).not.toHaveBeenCalled();
+  });
+
+  it("names the title of a create the server rejects, after the form has closed", async () => {
+    const { engine, server, owner, workspace } = await fixture();
+    engine.stop();
+    await runCommand(engine, {
+      type: "create_issue",
+      input: { id: id(400), title: "Precious draft", team_id: id(1) },
+    });
+    server.setRole(workspace.id, owner.id, "viewer");
+    await engine.start();
+    await until(() => engine.status.get().rejected.length === 1);
+    const [rejection] = engine.status.get().rejected;
+    expect(rejection).toBeDefined();
+    expect(rejectedCreateName(rejection!)).toBe("Precious draft");
+  });
+
+  it("does not name an edit, which the toast reports by its server message alone", async () => {
+    const { engine, server, owner, workspace } = await fixture();
+    engine.stop();
+    await runCommand(engine, { type: "update_issue", id: id(2), patch: { title: "Rejected" } });
+    server.setRole(workspace.id, owner.id, "viewer");
+    await engine.start();
+    await until(() => engine.status.get().rejected.length === 1);
+    expect(rejectedCreateName(engine.status.get().rejected[0]!)).toBeNull();
   });
 });
