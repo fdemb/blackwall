@@ -7,14 +7,17 @@ Replica: base (server state) plus an overlay of replayed outbox mutations. The s
 - `records.ts`: entities, sync record shapes, keys, timestamp normalization, pull changes.
 - `store.ts`: `SyncStore` (base, overlay replay, incremental indexes, subscriptions), shared record ingestion, and immutable copies.
 - `derived.ts`: issue counts over the store view, using the server's definitions.
-- `engine.ts`: `createEngine`, `SyncEngine`, and the client `SCHEMA`; lifecycle, serial reads, admission, ordered pushes, outcomes, events, polling, scopes, and session cleanup.
-- `engine-types.ts`: injected clock and signal contracts, dependencies, status snapshots, engine events, rejection details, and mutation receipts.
+- `engine.ts`: `createEngine`, `SyncEngine`, and the client `SCHEMA`; lifecycle, serial reads, admission, ordered pushes, outcomes, events, polling, scopes, session cleanup, and tab roles.
+- `engine-types.ts`: injected clock and signal contracts, dependencies, tab lock and channel contracts, status snapshots, engine events, rejection details, and mutation receipts.
 - `engine-scheduling.ts`: serial queues, abort-aware waits, and deterministic capped backoff with jitter.
+- `tabs.ts`: messages between engines that share one replica: appends, pulls, resets, status, results, and requests with replies.
 - `engine.test.ts`: deterministic fake-server scenarios, including reload and schema recovery with both memory and IndexedDB persistence.
-- `convergence.test.ts`: fixed CI seeds, optional soak runs, action coverage, and trace determinism.
+- `tabs.test.ts`: two and three engines sharing one IndexedDB database, lock, and channel: leader-only network work, follower edits, handover, and cross-tab requests.
+- `convergence.test.ts`: fixed CI seeds, optional soak runs, tab-mode seeds, action coverage, and trace determinism.
 - `testing/seeded.ts` and `testing/traffic.ts`: seeded randomness, ids, and command generation shared by fake and real-server convergence.
 - `contract/`: isolated Rust-server fixtures, prediction contracts for every registered mutator, and real-server convergence.
-- `testing/convergence.ts`: seeded traffic across two or three cookie-authenticated engines with separate memory and IndexedDB replicas.
+- `testing/convergence.ts`: seeded traffic across two or three cookie-authenticated engines with separate memory and IndexedDB replicas. With `tabs`, the clients are tabs of one browser that share a database, lock, and channel, and the leader tab closes at random.
+- `testing/tabs.ts`: in-memory stand-ins for `navigator.locks` and `BroadcastChannel`, with ordered asynchronous delivery and controls to hold or drop messages.
 - `fixtures.ts`: test factories and a hand-written replay. Tests only.
 - `mutators/index.ts`: command registry, admission, replay, and online-only command names.
 - `mutators/`: argument normalization, validation, and command implementations grouped by domain.
@@ -37,11 +40,11 @@ Replica: base (server state) plus an overlay of replayed outbox mutations. The s
 ## Later tasks
 
 - React bindings: `useSyncExternalStore` over `subscribe`/`version`/`get`, status over `pendingVersion`.
-- Tabs: leader election around `start`/`stop`, plus broadcast handling for shared persistence writes.
+- App wiring: pass `locks` and `channel` from `web/app/lib/workspace-engine.ts`.
 
 ## Engine lifecycle and API
 
-`createEngine(deps)` constructs one session/workspace replica. `deps` contains `storage`, `transport`, `sessionId`, `workspaceId`, `actor`, `schema`, `randomId`, `clock`, and `signals`. `clock.now()` returns an ISO timestamp. `clock.schedule(milliseconds, callback)` returns a cancellation function, equivalent to paired `setTimeout`/`clearTimeout` methods. The fake server exposes `now` and `schedule` from its own clock, so `server.advance(ms)` drives network delays, retries, and polling together. Jitter uses a seed derived from the session/workspace identity and never consumes `randomId`.
+`createEngine(deps)` constructs one session/workspace replica. `deps` contains `storage`, `transport`, `sessionId`, `workspaceId`, `actor`, `schema`, `randomId`, `clock`, and `signals`. Optional `locks` (the shape of `navigator.locks.request`) and `channel` (a factory for `BroadcastChannel`, named by the session and workspace) coordinate tabs; without them, the engine is always the leader. `clock.now()` returns an ISO timestamp. `clock.schedule(milliseconds, callback)` returns a cancellation function, equivalent to paired `setTimeout`/`clearTimeout` methods. The fake server exposes `now` and `schedule` from its own clock, so `server.advance(ms)` drives network delays, retries, and polling together. Jitter uses a seed derived from the session/workspace identity and never consumes `randomId`.
 
 `signals.getOnline()` supplies the initial connectivity state. `signals.subscribe(listener)` returns an unsubscribe function; its events are `online`, `offline`, `focus`, and `visible`. The application maps visibility changes to `visible` when the page becomes visible. Signals update status after open, including while stopped, but network work requires a running engine.
 
@@ -53,10 +56,10 @@ Replica: base (server state) plus an overlay of replayed outbox mutations. The s
 - `mutate(name, args): Promise<MutationReceipt>` normalizes and admits a command, allocates missing create ids, stores it, and updates the optimistic view before returning. Issue ids live in `args.input.id`; other creates use `args.id`. Teams get ids for all default stages. The receipt contains the created record `id`, or null for an edit, the numeric `mutationId`, and `settled`. Settlement resolves to `"applied"` or `{id, status, message}` from the server. An acknowledgement with no push result in this engine also settles as applied. Receipts belong to the engine that admitted them; reloading restores mutations, not promises held by the old caller.
 - `runOnline(name, args): Promise<MutationResult>` requires online status, waits for the outbox, allocates an id atomically, and sends one command without persistence or prediction. It returns the server result and requests a pull. Attachment uploads are excluded. Prepared arguments are deep-cloned and frozen before queuing. A stopped engine can queue an online call, which waits for start or rejects on another stop or close.
 - `useScope(scope): () => void` holds a comment or activity scope and returns an idempotent release function. The first hold loads it while started; further holds share the load. Releasing the last holder keeps its records loaded. Bootstrap discards loaded scopes and queues reloads for those still held. These loads finish independently of the bootstrap pull promise. `scopeStatus(scope)` returns `loading`, `loaded`, or `error`; `error` means a protocol error blocked the scope, and `scopeError(scope)` returns that error. `subscribeScopes(listener)` fires when a scope loads, bootstrap clears scopes, or a scope fails.
-- `status.get()` returns a stable, frozen `EngineStatus`; `status.subscribe(listener)` returns an unsubscribe function. Snapshots contain `phase`, `connected`, `online`, `pending`, `lastError`, and `rejected`. Phases are `loading`, `bootstrapping`, and `ready`; `connected` means the event stream is open. Errors and rejections remain available after recovery.
+- `status.get()` returns a stable, frozen `EngineStatus`; `status.subscribe(listener)` returns an unsubscribe function. Snapshots contain `phase`, `role`, `connected`, `online`, `pending`, `lastError`, and `rejected`. `role` is `leader` or `follower`; a follower's `connected` and `online` come from the leader's status messages. Phases are `loading`, `bootstrapping`, and `ready`; `connected` means the event stream is open. Errors and rejections remain available after recovery.
 - `subscribe(listener)` emits `rejected`, `error`, `unauthorized`, `accessLost`, and `closed` events and returns an unsubscribe function. `isClosed()` reports whether `close()` has started. Rejection events contain the same frozen details as `status.rejected`.
 
-The engine assumes it is the leader between start and stop. React bindings and tab coordination remain separate tasks.
+With `locks`, the engine holds the replica's lock from `start()` until `stop()` or `close()`. A tab that doesn't hold it is a follower: it sends no network requests and keeps its store current from channel messages. Only the leader pulls, pushes, loads scopes, and runs online commands; a follower's calls go to the leader and are re-sent until answered. React bindings remain a separate task.
 
 ## Run convergence tests
 
@@ -78,7 +81,7 @@ To reproduce a failure, use the seed printed in its trace:
 SYNC_FUZZ_SEED=179 vp test run app/sync/convergence.test.ts
 ```
 
-`SYNC_FUZZ_STEPS` overrides the 90-action budget. The first 12 actions combine sustained pokes, delayed pulls, queued mutations, held scopes, and scope retry backoff. Random actions then mix issue and planning commands, comments, time, views, personal settings, concurrent server edits, online commands, scope holds, faults, clock advances, offline signals, stop/start, and reload. Persistence gates expose admission, allocation, and disk/store boundaries.
+`SYNC_FUZZ_STEPS` overrides the 90-action budget. Tab mode runs the same traffic with the clients as tabs of one browser, sharing a database, lock, and channel. Its `close-leader` action closes the leader tab, so the lock passes on. The default run covers six tab seeds; `SYNC_FUZZ_SEEDS` and `SYNC_FUZZ_SEED` cover the same seeds as the single-tab runs. The first 12 actions combine sustained pokes, delayed pulls, queued mutations, held scopes, and scope retry backoff. Random actions then mix issue and planning commands, comments, time, views, personal settings, concurrent server edits, online commands, scope holds, faults, clock advances, offline signals, stop/start, and reload. Persistence gates expose admission, allocation, and disk/store boundaries.
 
 Healing removes faults, restores connectivity, starts stopped clients, and reloads engines with blocked protocol lanes. Each run has a 200-second simulated recovery bound and a bounded host-IO drain. Quiescence requires an empty outbox, finished reads and writes, connected events, completed online calls, and persisted markers for every held scope.
 
@@ -129,6 +132,10 @@ The action sequence is seeded; real network timing remains concurrent. Failures 
 - Bootstrap, pull, scope, push, and event requests retry with deterministic jitter, capped at 30 seconds. A server `Retry-After` can extend that delay, including event reconnects; seconds and HTTP dates are supported, and dates use the injected clock. Protocol errors block that request kind and emit an error. A bootstrap protocol error also blocks further pulls until a new engine opens; a scope protocol error does not block core sync. Offline and stop cancel all retry waits. Polling runs every 30 seconds while events are disconnected, and online/focus/visibility signals request a pull.
 - Unloaded comment/activity scopes reject incoming pull records. Deletions check the previous base record, so optimistic overlays cannot hide the scope needed for filtering. Scope replacement deletes only that scope's base records and rebases pending mutations on the replacement.
 - A 401 stops all work, closes this replica, lists storage, and deletes only replicas whose `sessionId` matches. A 403 from a read, or a workspace 404, deletes only this replica. A push 403 first refreshes CSRF through `/api/me`, then checks workspace access with a queued pull. Only that read's 403 or 404 proves access loss. If access remains, the engine retries the exact push once; another push 403 is a protocol error and preserves the replica and outbox. Both wipes clear the view/outbox, set phase to loading, and emit the navigation event after deletion. Other sessions and workspaces remain intact.
+
+- Tabs: a leader's network work only starts after the lock is granted and the replica reloads from the database. A follower applies `pulled` and `reset` messages only after the leader persisted them, so its base never runs ahead of the database. `appended` messages come after the sender's database write, and the push lane reads the outbox from the database before each batch, so a lost message only delays a push until the next one.
+- Tabs: a push result settles the receipt of the tab that created the mutation. The leader reports a rejection itself only for mutations no other tab appended while it listened, since their creator may be gone. A payload acknowledged before its result is kept for a confirmation push, so the creator's receipt still settles.
+- Tabs: follower requests are answered by the leader and re-sent every second until answered, and a repeated request joins the first run. A scope the leader already loaded reaches a follower as a reset from the database. After a leader change, followers ask again for scopes they hold but haven't loaded.
 
 ## Invariants
 
