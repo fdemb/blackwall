@@ -517,6 +517,38 @@ describe("sync engine", () => {
     expect(f.transport.scope).toHaveBeenCalledTimes(1);
   });
 
+  it("reports a scope as loading until its first load, then loaded, and loaded from disk on reopen", async () => {
+    const f = fixture();
+    await f.ready();
+    const scope: Scope = { entity: "comments", issueId: ISSUE };
+    expect(f.engine.scopeStatus(scope)).toBe("loading");
+    const notified = vi.fn();
+    const unsubscribe = f.engine.subscribeScopes(notified);
+    const release = f.engine.useScope(scope);
+    await until(() => f.engine.scopeStatus(scope) === "loaded");
+    expect(notified).toHaveBeenCalled();
+    release();
+    unsubscribe();
+    const reopened = f.build();
+    await reopened.open();
+    expect(reopened.scopeStatus(scope)).toBe("loaded");
+    expect(reopened.scopeError(scope)).toBeNull();
+  });
+
+  it("reports a scope blocked by a protocol error as error and leaves other scopes loading", async () => {
+    const f = fixture();
+    const scope: Scope = { entity: "comments", issueId: ISSUE };
+    const failure = new ProtocolError("Invalid scope body", 200);
+    f.transport.scope = vi.fn(async () => {
+      throw failure;
+    });
+    f.engine.useScope(scope);
+    await f.engine.start();
+    await until(() => f.engine.scopeStatus(scope) === "error");
+    expect(f.engine.scopeError(scope)).toBe(failure);
+    expect(f.engine.scopeStatus({ entity: "activity", entityId: ISSUE })).toBe("loading");
+  });
+
   it("publishes stable frozen status snapshots and unsubscribes status listeners", async () => {
     const f = fixture();
     await f.ready();

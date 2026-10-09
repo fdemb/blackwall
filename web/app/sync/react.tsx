@@ -73,7 +73,8 @@ export function useRecord<E extends Entity>(entity: E, id: string) {
   return useSyncExternalStore(subscribe, snapshot, snapshot);
 }
 
-export function useScope(scope: Scope) {
+/** Holds a scope while mounted and reports whether its first load has finished. */
+export function useScope(scope: Scope): { loading: boolean; error: Error | null } {
   const engine = useEngine();
   const entity = scope.entity;
   const id = scope.entity === "comments" ? scope.issueId : scope.entityId;
@@ -82,4 +83,11 @@ export function useScope(scope: Scope) {
       engine.useScope(entity === "comments" ? { entity, issueId: id } : { entity, entityId: id }),
     [engine, entity, id],
   );
+  const subscribe = useMemo(() => (notify: () => void) => engine.subscribeScopes(notify), [engine]);
+  const snapshot = () => engine.scopeStatus(scope);
+  const status = useSyncExternalStore(subscribe, snapshot, snapshot);
+  return {
+    loading: status === "loading",
+    error: status === "error" ? engine.scopeError(scope) : null,
+  };
 }

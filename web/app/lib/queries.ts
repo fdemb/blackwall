@@ -36,6 +36,14 @@ export function countedIssue(store: SyncStore, id: string): CountedIssue | undef
   return next;
 }
 
+// A scope list loads on its own schedule, so its loading state comes from the scope, not the bootstrap.
+function scopeState<T>(
+  list: ListState<T>,
+  scope: { loading: boolean; error: Error | null },
+): ListState<T> {
+  return { ...list, loading: scope.loading, error: scope.error?.message ?? null };
+}
+
 function useListState<T>(items: T[], error: string | null = null): ListState<T> {
   const engine = useEngine();
   const status = useSyncStatus();
@@ -85,13 +93,13 @@ export function useNotifications(unreadOnly = false) {
 }
 
 export function useComments(issueId: string) {
-  useScope({ entity: "comments", issueId });
+  const scope = useScope({ entity: "comments", issueId });
   const items = useView(
     (store) => [...store.byIndex("comments", "issue_id", issueId)].sort(byCreatedAsc),
     ["comments"],
     [issueId],
   );
-  return useListState(items);
+  return scopeState(useListState(items), scope);
 }
 
 export function useTimeEntries(issueId?: string) {
@@ -109,13 +117,13 @@ export function useTimeEntries(issueId?: string) {
 }
 
 export function useActivity(entityId: string) {
-  useScope({ entity: "activity", entityId });
+  const scope = useScope({ entity: "activity", entityId });
   const items = useView(
     (store) => [...store.byIndex("activity", "entity_id", entityId)].sort(byAtDesc),
     ["activity"],
     [entityId],
   );
-  return useListState(items);
+  return scopeState(useListState(items), scope);
 }
 
 export interface IssueDetail extends Omit<PaginationState, "hasMore" | "loadMore"> {

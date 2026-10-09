@@ -26,6 +26,9 @@ export interface EngineDependencies {
   signals: EngineSignals;
 }
 
+/** A comment or activity scope: loaded into the replica, still loading, or blocked by a protocol error. */
+export type ScopeStatus = "loading" | "loaded" | "error";
+
 export interface Rejection {
   id: number;
   status: number;

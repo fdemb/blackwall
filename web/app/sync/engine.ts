@@ -14,6 +14,7 @@ import type {
   EngineStatus,
   MutationReceipt,
   Rejection,
+  ScopeStatus,
 } from "./engine-types";
 
 export type {
@@ -25,6 +26,7 @@ export type {
   EngineStatus,
   MutationReceipt,
   Rejection,
+  ScopeStatus,
 } from "./engine-types";
 
 export const SCHEMA = 1;
@@ -61,6 +63,8 @@ export class SyncEngine {
   private readonly loadedScopes = new Map<string, Scope>();
   private readonly heldScopes = new Map<string, { scope: Scope; holders: number }>();
   private readonly scopeWork = new Map<string, Promise<void>>();
+  private readonly scopeFailures = new Map<string, Error>();
+  private readonly scopeListeners = new Set<() => void>();
   private readonly blocked = new Set<RequestKind>();
   private readonly outcomes = new Map<
     number,
@@ -116,6 +120,22 @@ export class SyncEngine {
   subscribe(listener: (event: EngineEvent) => void): () => void {
     this.eventListeners.add(listener);
     return () => this.eventListeners.delete(listener);
+  }
+
+  /** Whether a scope is in the replica. A protocol error that blocks its loads reports "error". */
+  scopeStatus(scope: Scope): ScopeStatus {
+    const key = scopeKey(scope);
+    if (this.loadedScopes.has(key)) return "loaded";
+    return this.scopeFailures.has(key) ? "error" : "loading";
+  }
+
+  scopeError(scope: Scope): Error | null {
+    return this.scopeFailures.get(scopeKey(scope)) ?? null;
+  }
+
+  subscribeScopes(listener: () => void): () => void {
+    this.scopeListeners.add(listener);
+    return () => this.scopeListeners.delete(listener);
   }
 
   open(): Promise<void> {
@@ -441,6 +461,7 @@ export class SyncEngine {
         this.store.replaceBase(response.records, BOOTSTRAP_REPLACED_ENTITIES);
         this.acknowledge(response.header.last_mutation_id);
       });
+      this.notifyScopes();
     });
     this.check(controller);
     this.update({ phase: "ready" });
@@ -546,7 +567,11 @@ export class SyncEngine {
     const work = this.retry("scope", controller, () =>
       this.reads.run(async () => {
         this.check(controller);
-        if (!this.loadedScopes.has(key)) await this.loadScope(scope, controller);
+        if (this.loadedScopes.has(key)) return;
+        await this.loadScope(scope, controller).catch((error: unknown) => {
+          if (error instanceof ProtocolError) this.failScope(key, error);
+          throw error;
+        });
       }),
     ).catch((error: unknown) => this.finishError(error));
     this.scopeWork.set(key, work);
@@ -585,6 +610,7 @@ export class SyncEngine {
           record: null,
         }));
       this.loadedScopes.set(key, scope);
+      this.scopeFailures.delete(key);
       this.store.batch(() => {
         this.store.applyBase(changes);
         this.store.applyBase(
@@ -595,7 +621,17 @@ export class SyncEngine {
           })),
         );
       });
+      this.notifyScopes();
     });
+  }
+
+  private failScope(key: string, error: Error): void {
+    this.scopeFailures.set(key, error);
+    this.notifyScopes();
+  }
+
+  private notifyScopes(): void {
+    for (const listener of this.scopeListeners) listener();
   }
 
   private requestPush(): void {
