@@ -1,8 +1,9 @@
 import "fake-indexeddb/auto";
 import { forceCloseDatabase, IDBFactory } from "fake-indexeddb";
 import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
-import { BOOTSTRAP_ENTITIES, ENTITIES } from "../records";
+import { BOOTSTRAP_ENTITIES, BOOTSTRAP_REPLACED_ENTITIES, ENTITIES } from "../records";
 import type { Entity } from "../records";
+import { SyncStore } from "../store";
 import type { PendingMutation } from "../store";
 import { IDB_VERSION, IndexedDBReplicaStorage } from "./idb";
 import { MemoryReplicaStorage } from "./memory";
@@ -82,7 +83,7 @@ for (const backend of ["memory", "idb"]) {
       replica.close();
       expect(await (await open()).load()).toEqual(before);
       expect(before.records.issues).toEqual([issue]);
-      // The engine must be able to flush the old outbox before wiping on a schema mismatch.
+      // A schema mismatch remains visible until the engine calls resetBase.
       expect((await (await open({ ...INPUT, schema: 8 })).load()).meta.schema).toBe(7);
     });
 
@@ -94,7 +95,37 @@ for (const backend of ["memory", "idb"]) {
       expect((await a.load()).meta.clientId).toBe((await b.load()).meta.clientId);
     });
 
-    it("bootstrap replaces listed entities, empties omitted ones and preserves scopes and outbox", async () => {
+    it("resetBase clears all records and scopes but keeps meta ids and the outbox", async () => {
+      await replica.writeBootstrap(
+        bootstrap(
+          Object.fromEntries(ENTITIES.map((entity) => [entity, [{ id: entity, user_id: entity }]])),
+        ),
+      );
+      await replica.writeScope({ scope: COMMENT_SCOPE, records: [COMMENT] });
+      await replica.writeScope({ scope: ACTIVITY_SCOPE, records: [ACTIVITY] });
+      await replica.appendMutation(mutation);
+      await replica.appendMutation(mutation);
+      await replica.applyPull({ changes: [], cursor: "pull", acknowledgedUpTo: 1 });
+      const before = await replica.load();
+      const other = await open({ ...INPUT, schema: INPUT.schema + 1 });
+      await other.resetBase();
+      const loaded = await replica.load();
+      expect(loaded.meta).toEqual({
+        ...before.meta,
+        schema: INPUT.schema + 1,
+        serverSchema: 0,
+        cursor: null,
+      });
+      expect(loaded.outbox).toEqual(before.outbox);
+      expect(loaded.scopes).toEqual([]);
+      for (const entity of ENTITIES) expect(loaded.records[entity]).toEqual([]);
+      expect((await other.appendMutation(mutation)).id).toBe(before.meta.nextMutationId);
+      await replica.writeBootstrap(bootstrap());
+      expect((await replica.load()).meta.lastMutationId).toBe(1);
+      expect((await replica.load()).outbox).toHaveLength(2);
+    });
+
+    it("bootstrap replaces listed entities, empties omitted ones and clears scopes", async () => {
       await replica.writeBootstrap(
         bootstrap({
           issues: [{ id: "old" }],
@@ -105,27 +136,81 @@ for (const backend of ["memory", "idb"]) {
       await replica.writeScope({ scope: COMMENT_SCOPE, records: [COMMENT] });
       await replica.writeScope({ scope: ACTIVITY_SCOPE, records: [ACTIVITY] });
       const pending = await replica.appendMutation(mutation);
+      const unacknowledged = await replica.appendMutation(mutation);
       await replica.writeBootstrap({
         ...bootstrap({ issues: [{ id: "new" }] }, ["issues", "teams"]),
         cursor: "new-bootstrap",
-        lastMutationId: 9,
+        lastMutationId: pending.id,
         serverSchema: 4,
       });
       const loaded = await replica.load();
       expect(loaded.records.issues).toEqual([{ id: "new" }]);
       expect(loaded.records.teams).toEqual([]);
       expect(loaded.records.labels).toEqual([{ id: "label-1" }]);
-      expect(loaded.records.comments).toEqual([COMMENT]);
-      expect(loaded.records.activity).toEqual([ACTIVITY]);
-      expect(loaded.scopes).toEqual(expect.arrayContaining([COMMENT_SCOPE, ACTIVITY_SCOPE]));
-      expect(loaded.outbox).toEqual([pending]);
+      expect(loaded.records.comments).toEqual([]);
+      expect(loaded.records.activity).toEqual([]);
+      expect(loaded.scopes).toEqual([]);
+      expect(loaded.outbox).toEqual([unacknowledged]);
       expect(loaded.meta).toMatchObject({
         cursor: "new-bootstrap",
-        lastMutationId: 9,
+        lastMutationId: 1,
         serverSchema: 4,
-        nextMutationId: 2,
+        nextMutationId: 3,
       });
+      const store = new SyncStore(() => {});
+      store.replaceBase({ comments: [COMMENT], activity: [ACTIVITY] }, ["comments", "activity"]);
+      store.replaceBase(
+        { comments: loaded.records.comments, activity: loaded.records.activity },
+        BOOTSTRAP_REPLACED_ENTITIES,
+      );
+      expect(store.all("comments")).toEqual([]);
+      expect(store.all("activity")).toEqual([]);
+      await replica.applyPull({
+        cursor: "after-bootstrap",
+        acknowledgedUpTo: null,
+        changes: [
+          { entity: "comments", id: COMMENT.id, record: COMMENT },
+          { entity: "activity", id: ACTIVITY.id, record: ACTIVITY },
+        ],
+      });
+      expect((await replica.load()).records.comments).toEqual([]);
+      expect((await replica.load()).records.activity).toEqual([]);
+      await replica.writeScope({
+        scope: COMMENT_SCOPE,
+        records: [{ ...COMMENT, body: "Reloaded" }],
+      });
+      expect((await replica.load()).records.comments).toEqual([{ ...COMMENT, body: "Reloaded" }]);
     });
+
+    it.each(["pull", "bootstrap"])("%s acknowledgements never move backwards", async (source) => {
+      const pending = [];
+      for (let index = 0; index < 8; index += 1)
+        pending.push(await replica.appendMutation(mutation));
+      await replica.applyPull({ changes: [], cursor: "ack-7", acknowledgedUpTo: 7 });
+      if (source === "pull") {
+        await replica.applyPull({ changes: [], cursor: "ack-3", acknowledgedUpTo: 3 });
+      } else await replica.writeBootstrap({ ...bootstrap(), lastMutationId: 3 });
+      const loaded = await replica.load();
+      expect(loaded.meta.lastMutationId).toBe(7);
+      expect(loaded.meta.nextMutationId).toBe(9);
+      expect(loaded.outbox).toEqual([pending[7]]);
+    });
+
+    it.each(["pull", "bootstrap"])(
+      "a stale %s acknowledgement trims to the stored high-water mark",
+      async (source) => {
+        await replica.writeBootstrap({ ...bootstrap(), lastMutationId: 7 });
+        const pending = [];
+        for (let index = 0; index < 8; index += 1)
+          pending.push(await replica.appendMutation(mutation));
+        if (source === "pull") {
+          await replica.applyPull({ changes: [], cursor: "ack-3", acknowledgedUpTo: 3 });
+        } else await replica.writeBootstrap({ ...bootstrap(), lastMutationId: 3 });
+        const loaded = await replica.load();
+        expect(loaded.meta.lastMutationId).toBe(7);
+        expect(loaded.outbox).toEqual([pending[7]]);
+      },
+    );
 
     it("pull upserts and deletes, filters scopes and acknowledges only the specified outbox prefix", async () => {
       await replica.writeBootstrap(
@@ -240,13 +325,42 @@ for (const backend of ["memory", "idb"]) {
         other.appendMutation(mutation),
       ]);
       expect([a.id, b.id].sort()).toEqual([1, 2]);
-      expect(await other.allocateMutationId()).toBe(3);
+      expect(await other.allocateMutationIdIfOutboxEmpty()).toBeNull();
+      await replica.applyPull({ changes: [], cursor: "flushed", acknowledgedUpTo: 2 });
+      expect(await other.allocateMutationIdIfOutboxEmpty()).toBe(3);
       expect((await replica.appendMutation(mutation)).id).toBe(4);
       const loaded = await other.load();
-      expect(loaded.outbox.map((item) => item.id)).toEqual([1, 2, 4]);
+      expect(loaded.outbox.map((item) => item.id)).toEqual([4]);
       for (const item of loaded.outbox)
         expect(item.local).toEqual({ notificationIds: ["notification-1"] });
       expect(loaded.meta.nextMutationId).toBe(5);
+    });
+
+    it("online-only allocation checks emptiness after another handle appends", async () => {
+      const other = await open();
+      expect((await replica.load()).outbox).toEqual([]);
+      const append = other.appendMutation(mutation);
+      const allocate = replica.allocateMutationIdIfOutboxEmpty();
+      expect((await append).id).toBe(1);
+      expect(await allocate).toBeNull();
+      expect((await replica.load()).meta.nextMutationId).toBe(2);
+      await replica.applyPull({ changes: [], cursor: "flushed", acknowledgedUpTo: 1 });
+      const [a, b] = await Promise.all([
+        replica.allocateMutationIdIfOutboxEmpty(),
+        other.allocateMutationIdIfOutboxEmpty(),
+      ]);
+      expect([a, b].sort()).toEqual([2, 3]);
+      expect((await replica.load()).outbox).toEqual([]);
+      expect((await other.appendMutation(mutation)).id).toBe(4);
+    });
+
+    it("an append after online-only allocation receives a later id", async () => {
+      const other = await open();
+      const allocate = replica.allocateMutationIdIfOutboxEmpty();
+      const append = other.appendMutation(mutation);
+      expect(await allocate).toBe(1);
+      expect((await append).id).toBe(2);
+      expect((await replica.load()).outbox.map((item) => item.id)).toEqual([2]);
     });
 
     it("isolates persisted values from input and loaded or returned objects", async () => {
@@ -288,9 +402,15 @@ for (const backend of ["memory", "idb"]) {
 
     it("a bootstrap clone failure rolls back cleared tables and metadata", async () => {
       await replica.writeBootstrap(bootstrap({ issues: [{ id: "old" }] }));
+      await replica.writeScope({ scope: COMMENT_SCOPE, records: [COMMENT] });
+      await replica.writeScope({ scope: ACTIVITY_SCOPE, records: [ACTIVITY] });
+      await replica.appendMutation(mutation);
       const before = await replica.load();
       await expect(
-        replica.writeBootstrap(bootstrap({ issues: [{ id: "new" }, { id: "bad", fn: () => {} }] })),
+        replica.writeBootstrap({
+          ...bootstrap({ issues: [{ id: "new" }, { id: "bad", fn: () => {} }] }),
+          lastMutationId: 1,
+        }),
       ).rejects.toThrow();
       expect(await replica.load()).toEqual(before);
     });
@@ -357,7 +477,7 @@ for (const backend of ["memory", "idb"]) {
       replica.close();
       replica.close();
       await expect(replica.load()).rejects.toThrow("replica is closed");
-      await expect(replica.allocateMutationId()).rejects.toThrow("replica is closed");
+      await expect(replica.allocateMutationIdIfOutboxEmpty()).rejects.toThrow("replica is closed");
       expect((await other.appendMutation(mutation)).id).toBe(1);
       expect((await (await open()).load()).outbox).toHaveLength(1);
     });
@@ -400,7 +520,7 @@ describe("IndexedDB lifecycle", () => {
     }
   });
 
-  it("a layout upgrade closes old handles, reports it and recreates every store empty", async () => {
+  it("a layout upgrade closes old handles and preserves meta ids and the outbox", async () => {
     const factory = new IDBFactory();
     const events: Parameters<ReplicaCloseListener>[0][] = [];
     const storage = new IndexedDBReplicaStorage({
@@ -411,10 +531,17 @@ describe("IndexedDB lifecycle", () => {
     });
     const old = await storage.open(INPUT);
     const other = await storage.open(INPUT);
-    const oldClient = (await old.load()).meta.clientId;
-    await old.writeBootstrap(bootstrap({ issues: [{ id: "old" }] }));
+    await old.writeBootstrap(
+      bootstrap(
+        Object.fromEntries(ENTITIES.map((entity) => [entity, [{ id: entity, user_id: entity }]])),
+      ),
+    );
     await old.writeScope({ scope: COMMENT_SCOPE, records: [COMMENT] });
+    await old.writeScope({ scope: ACTIVITY_SCOPE, records: [ACTIVITY] });
     await old.appendMutation(mutation);
+    await old.appendMutation(mutation);
+    await old.applyPull({ changes: [], cursor: "old-pull", acknowledgedUpTo: 1 });
+    const before = await old.load();
     const upgraded = await new IndexedDBReplicaStorage({
       indexedDB: factory,
       version: IDB_VERSION + 1,
@@ -430,15 +557,13 @@ describe("IndexedDB lifecycle", () => {
       await expect(old.load()).rejects.toThrow("replica is closed");
       await expect(other.load()).rejects.toThrow("replica is closed");
       const loaded = await upgraded.load();
-      expect(loaded.meta).toMatchObject({
+      expect(loaded.meta).toEqual({
+        ...before.meta,
         schema: 8,
         serverSchema: 0,
         cursor: null,
-        lastMutationId: 0,
-        nextMutationId: 1,
       });
-      expect(loaded.meta.clientId).not.toBe(oldClient);
-      expect(loaded.outbox).toEqual([]);
+      expect(loaded.outbox).toEqual(before.outbox);
       expect(loaded.scopes).toEqual([]);
       for (const entity of ENTITIES) expect(loaded.records[entity]).toEqual([]);
       const db = await rawOpen(factory, replicaName(INPUT));
@@ -446,6 +571,18 @@ describe("IndexedDB lifecycle", () => {
         ["meta", ...ENTITIES, "outbox", "scopes"].sort(),
       );
       db.close();
+      expect((await upgraded.appendMutation(mutation)).id).toBe(before.meta.nextMutationId);
+      const after = await upgraded.load();
+      upgraded.close();
+      const reopened = await new IndexedDBReplicaStorage({
+        indexedDB: factory,
+        version: IDB_VERSION + 1,
+      }).open({ ...INPUT, schema: 8 });
+      try {
+        expect(await reopened.load()).toEqual(after);
+      } finally {
+        reopened.close();
+      }
     } finally {
       upgraded.close();
       old.close();

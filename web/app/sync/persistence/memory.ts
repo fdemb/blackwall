@@ -33,7 +33,10 @@ interface Entry {
 class MemoryReplica implements Replica {
   private closed = false;
 
-  constructor(private readonly entry: Entry) {}
+  constructor(
+    private readonly entry: Entry,
+    private readonly schema: number,
+  ) {}
 
   private transaction<T>(write: (state: State) => T): T {
     if (this.closed) throw new Error("replica is closed");
@@ -56,6 +59,16 @@ class MemoryReplica implements Replica {
     };
   }
 
+  async resetBase(): Promise<void> {
+    this.transaction((state) => {
+      for (const table of state.records.values()) table.clear();
+      state.scopes.clear();
+      state.meta.schema = this.schema;
+      state.meta.serverSchema = 0;
+      state.meta.cursor = null;
+    });
+  }
+
   async writeBootstrap(input: Parameters<Replica["writeBootstrap"]>[0]): Promise<void> {
     this.transaction((state) => {
       for (const entity of input.entities) {
@@ -65,8 +78,14 @@ class MemoryReplica implements Replica {
         }
         state.records.set(entity, table);
       }
+      state.records.get("comments")?.clear();
+      state.records.get("activity")?.clear();
+      state.scopes.clear();
       state.meta.cursor = input.cursor;
-      state.meta.lastMutationId = input.lastMutationId;
+      state.meta.lastMutationId = Math.max(state.meta.lastMutationId, input.lastMutationId);
+      for (const id of state.outbox.keys()) {
+        if (id <= state.meta.lastMutationId) state.outbox.delete(id);
+      }
       state.meta.serverSchema = input.serverSchema;
     });
   }
@@ -88,10 +107,10 @@ class MemoryReplica implements Replica {
       }
       state.meta.cursor = input.cursor;
       if (input.acknowledgedUpTo !== null) {
+        state.meta.lastMutationId = Math.max(state.meta.lastMutationId, input.acknowledgedUpTo);
         for (const id of state.outbox.keys()) {
-          if (id <= input.acknowledgedUpTo) state.outbox.delete(id);
+          if (id <= state.meta.lastMutationId) state.outbox.delete(id);
         }
-        state.meta.lastMutationId = input.acknowledgedUpTo;
       }
     });
   }
@@ -122,8 +141,11 @@ class MemoryReplica implements Replica {
     });
   }
 
-  async allocateMutationId(): Promise<number> {
-    return this.transaction((state) => state.meta.nextMutationId++);
+  async allocateMutationIdIfOutboxEmpty(): Promise<number | null> {
+    return this.transaction((state) => {
+      if (state.outbox.size !== 0) return null;
+      return state.meta.nextMutationId++;
+    });
   }
 
   close(): void {
@@ -150,7 +172,7 @@ export class MemoryReplicaStorage implements ReplicaStorage {
       };
       this.replicas.set(name, entry);
     }
-    const replica = new MemoryReplica(entry);
+    const replica = new MemoryReplica(entry, input.schema);
     entry.handles.add(replica);
     return replica;
   }

@@ -262,7 +262,9 @@ IndexedDB database `blackwall:{session_id}:{workspace_id}` with object stores:
 
 Opening a replica loads every store into memory, replays the outbox, and renders. The leader then pulls. A replica opened from disk shows data before the network answers.
 
-`SCHEMA` is a constant in the engine. Bump it whenever a record shape, an index or a store changes. On a mismatch, push the old outbox if online, then delete the database and bootstrap. Offline, keep the old replica read-only until the push succeeds.
+`SCHEMA` is a constant in the engine. Bump it whenever a record shape, an index or a store changes. On a mismatch, or when the IndexedDB layout version changes, keep the outbox and the meta ids (client id, acknowledged and next mutation ids), drop everything else, and bootstrap again. The outbox is pushed as usual afterwards: commands are the server's contract and don't depend on the client's layout.
+
+A bootstrap also drops loaded comment and activity scopes; the engine reloads the ones on screen.
 
 ### Session lifetime
 

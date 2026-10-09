@@ -60,8 +60,8 @@ export const ENTITIES: readonly Entity[] = [
 
 /**
  * Every always-loaded entity from the spec's table: everything except
- * `comments` and `activity`, which load per scope. The orchestrator passes
- * this to `replaceBase` on bootstrap so an empty scope clears stale rows.
+ * `comments` and `activity`, which load per scope. Persistence receives
+ * these entities in the bootstrap snapshot.
  */
 export const BOOTSTRAP_ENTITIES: readonly Entity[] = [
   "workspace",
@@ -78,6 +78,13 @@ export const BOOTSTRAP_ENTITIES: readonly Entity[] = [
   "integrations",
   "issues",
   "time_entries",
+];
+
+/** Pass to SyncStore.replaceBase on bootstrap, with comments and activity empty. */
+export const BOOTSTRAP_REPLACED_ENTITIES: readonly Entity[] = [
+  ...BOOTSTRAP_ENTITIES,
+  "comments",
+  "activity",
 ];
 
 /** Sync issue shape: the server shape without the derived counts. */

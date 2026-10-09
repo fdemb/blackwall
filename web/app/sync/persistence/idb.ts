@@ -37,6 +37,7 @@ class IndexedDBReplica implements Replica {
 
   constructor(
     private readonly db: IDBDatabase,
+    private readonly schema: number,
     identity: ReplicaIdentity,
     onClose: ReplicaCloseListener | undefined,
   ) {
@@ -119,8 +120,23 @@ class IndexedDBReplica implements Replica {
     });
   }
 
+  resetBase(): Promise<void> {
+    return this.transaction(["meta", ...ENTITIES, "scopes"], "readwrite", (tx, done, guard) => {
+      for (const entity of ENTITIES) tx.objectStore(entity).clear();
+      tx.objectStore("scopes").clear();
+      read<ReplicaMeta>(tx.objectStore("meta").get(META_KEY), guard, (meta) => {
+        tx.objectStore("meta").put(
+          { ...meta, schema: this.schema, serverSchema: 0, cursor: null },
+          META_KEY,
+        );
+        done(undefined);
+      });
+    });
+  }
+
   writeBootstrap(input: Parameters<Replica["writeBootstrap"]>[0]): Promise<void> {
-    return this.transaction(["meta", ...input.entities], "readwrite", (tx, done, guard) => {
+    const stores = ["meta", "outbox", "scopes", "comments", "activity", ...input.entities];
+    return this.transaction(stores, "readwrite", (tx, done, guard) => {
       for (const entity of input.entities) {
         const store = tx.objectStore(entity);
         store.clear();
@@ -129,16 +145,21 @@ class IndexedDBReplica implements Replica {
           store.put(record);
         }
       }
+      tx.objectStore("comments").clear();
+      tx.objectStore("activity").clear();
+      tx.objectStore("scopes").clear();
       read<ReplicaMeta>(tx.objectStore("meta").get(META_KEY), guard, (meta) => {
+        const lastMutationId = Math.max(meta.lastMutationId, input.lastMutationId);
         tx.objectStore("meta").put(
           {
             ...meta,
             cursor: input.cursor,
-            lastMutationId: input.lastMutationId,
+            lastMutationId,
             serverSchema: input.serverSchema,
           },
           META_KEY,
         );
+        tx.objectStore("outbox").delete(IDBKeyRange.upperBound(lastMutationId));
         done(undefined);
       });
     });
@@ -178,16 +199,20 @@ class IndexedDBReplica implements Replica {
         apply(0);
       });
       read<ReplicaMeta>(tx.objectStore("meta").get(META_KEY), guard, (meta) => {
+        const lastMutationId = Math.max(
+          meta.lastMutationId,
+          input.acknowledgedUpTo ?? meta.lastMutationId,
+        );
         tx.objectStore("meta").put(
           {
             ...meta,
             cursor: input.cursor,
-            lastMutationId: input.acknowledgedUpTo ?? meta.lastMutationId,
+            lastMutationId,
           },
           META_KEY,
         );
-        if (input.acknowledgedUpTo !== null && input.acknowledgedUpTo >= 0) {
-          tx.objectStore("outbox").delete(IDBKeyRange.upperBound(input.acknowledgedUpTo));
+        if (input.acknowledgedUpTo !== null) {
+          tx.objectStore("outbox").delete(IDBKeyRange.upperBound(lastMutationId));
         }
         done(undefined);
       });
@@ -226,11 +251,20 @@ class IndexedDBReplica implements Replica {
     });
   }
 
-  allocateMutationId(): Promise<number> {
-    return this.transaction(["meta"], "readwrite", (tx, done, guard) => {
-      read<ReplicaMeta>(tx.objectStore("meta").get(META_KEY), guard, (meta) => {
-        tx.objectStore("meta").put({ ...meta, nextMutationId: meta.nextMutationId + 1 }, META_KEY);
-        done(meta.nextMutationId);
+  allocateMutationIdIfOutboxEmpty(): Promise<number | null> {
+    return this.transaction(["meta", "outbox"], "readwrite", (tx, done, guard) => {
+      read<number>(tx.objectStore("outbox").count(), guard, (count) => {
+        if (count !== 0) {
+          done(null);
+          return;
+        }
+        read<ReplicaMeta>(tx.objectStore("meta").get(META_KEY), guard, (meta) => {
+          tx.objectStore("meta").put(
+            { ...meta, nextMutationId: meta.nextMutationId + 1 },
+            META_KEY,
+          );
+          done(meta.nextMutationId);
+        });
       });
     });
   }
@@ -243,7 +277,7 @@ class IndexedDBReplica implements Replica {
 
 export interface IndexedDBStorageOptions {
   indexedDB?: IDBFactory;
-  /** Bump when changing the object store layout. Upgrades discard the old replica. */
+  /** Bump when changing the object store layout. Upgrades keep meta ids and the outbox. */
   version?: number;
   onClose?: ReplicaCloseListener;
 }
@@ -274,10 +308,31 @@ export class IndexedDBReplicaStorage implements ReplicaStorage {
           return;
         }
         const db = request.result;
-        for (const name of [...db.objectStoreNames]) db.deleteObjectStore(name);
-        db.createObjectStore("meta").put(initialMeta(input), META_KEY);
+        const tx = request.transaction;
+        if (tx === null) throw new Error("replica upgrade transaction is missing");
+        // Changing the meta or outbox format requires an explicit migration.
+        for (const name of [...db.objectStoreNames]) {
+          if (name !== "meta" && name !== "outbox") db.deleteObjectStore(name);
+        }
+        if (db.objectStoreNames.contains("meta")) {
+          const guard: Guard = (fn) => {
+            try {
+              fn();
+            } catch (error) {
+              tx.abort();
+              reject(error);
+            }
+          };
+          read<ReplicaMeta>(tx.objectStore("meta").get(META_KEY), guard, (meta) => {
+            tx.objectStore("meta").put(
+              { ...meta, schema: input.schema, serverSchema: 0, cursor: null },
+              META_KEY,
+            );
+          });
+        } else db.createObjectStore("meta").put(initialMeta(input), META_KEY);
         for (const entity of ENTITIES) db.createObjectStore(entity, { keyPath: keyPath(entity) });
-        db.createObjectStore("outbox", { keyPath: "id" });
+        if (!db.objectStoreNames.contains("outbox"))
+          db.createObjectStore("outbox", { keyPath: "id" });
         db.createObjectStore("scopes");
       };
       request.onsuccess = () => {
@@ -287,6 +342,7 @@ export class IndexedDBReplicaStorage implements ReplicaStorage {
     });
     return new IndexedDBReplica(
       db,
+      input.schema,
       { sessionId: input.sessionId, workspaceId: input.workspaceId },
       this.onClose,
     );

@@ -26,6 +26,8 @@ export interface LoadedReplica {
 /** Each write is one atomic transaction, including its metadata and outbox changes. */
 export interface Replica {
   load(): Promise<LoadedReplica>;
+  /** Discard base and scopes, adopt the open schema, and keep meta ids and the outbox. */
+  resetBase(): Promise<void>;
   writeBootstrap(input: {
     cursor: string;
     lastMutationId: number;
@@ -40,7 +42,8 @@ export interface Replica {
   }): Promise<void>;
   writeScope(input: { scope: Scope; records: readonly object[] }): Promise<void>;
   appendMutation(build: (id: number) => Omit<PendingMutation, "id">): Promise<PendingMutation>;
-  allocateMutationId(): Promise<number>;
+  /** Return null without consuming an id when any mutation is pending. */
+  allocateMutationIdIfOutboxEmpty(): Promise<number | null>;
   close(): void;
 }
 
