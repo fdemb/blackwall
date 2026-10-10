@@ -70,6 +70,7 @@ type RemoteRequest = {
   cancelResend: () => void;
 };
 type TabReply = { ok: true; value: unknown } | { ok: false; error: TabError };
+type ServedReply = { reply: Promise<TabReply>; cancelExpiry: () => void };
 
 function tabError(error: unknown): TabError {
   const message = error instanceof Error ? error.message : String(error);
@@ -107,7 +108,7 @@ export class SyncEngine {
   /** Mutation ids another tab appended while this engine listened. */
   private readonly appendedIds = new Set<number>();
   /** The leader's replies, so a re-sent request runs once. */
-  private readonly served = new Map<string, Promise<TabReply>>();
+  private readonly served = new Map<string, ServedReply>();
   private readonly remote = new Map<string, RemoteRequest>();
   private requestCount = 0;
   private leaderId = "";
@@ -287,6 +288,8 @@ export class SyncEngine {
     for (const outcome of this.outcomes.values()) outcome.reject(error);
     this.outcomes.clear();
     this.cancelOnline(error);
+    for (const entry of this.served.values()) entry.cancelExpiry();
+    this.served.clear();
     for (const remote of this.remote.values()) {
       remote.cancelResend();
       remote.reject(error);
@@ -800,16 +803,19 @@ export class SyncEngine {
   private serve(request: Extract<TabBody, { type: "request" }>): void {
     let served = this.served.get(request.requestId);
     if (!served) {
-      served = this.perform(request);
+      served = { reply: this.performScope(request.scope), cancelExpiry: () => {} };
       this.served.set(request.requestId, served);
     }
-    void served.then((reply) =>
-      this.post({ type: "reply", requestId: request.requestId, ...reply }),
-    );
-  }
-
-  private perform(request: Extract<TabBody, { type: "request" }>): Promise<TabReply> {
-    return this.performScope(request.scope);
+    served.cancelExpiry();
+    const entry = served;
+    void entry.reply.then((reply) => {
+      if (this.served.get(request.requestId) !== entry) return;
+      this.post({ type: "reply", requestId: request.requestId, ...reply });
+      entry.cancelExpiry();
+      entry.cancelExpiry = this.deps.clock.schedule(2 * REQUEST_RESEND_MS, () => {
+        this.served.delete(request.requestId);
+      });
+    });
   }
 
   /** Holds the scope on the leader, then answers once it is loaded or has failed. */

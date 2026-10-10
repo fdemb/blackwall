@@ -3,7 +3,7 @@ import { IDBFactory } from "fake-indexeddb";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { setCsrf } from "../lib/api";
 import { createEngine, SCHEMA } from "./engine";
-import type { EngineEvent, EngineSignal, SyncEngine } from "./engine";
+import type { EngineEvent, EngineSignal, SyncEngine, TabMessage } from "./engine";
 import { IndexedDBReplicaStorage } from "./persistence/idb";
 import { recordKey } from "./persistence/shared";
 import { BOOTSTRAP_ENTITIES, normalize } from "./records";
@@ -313,6 +313,86 @@ describe("tab coordination", () => {
     await f.advance(500);
     expect(await online).toMatchObject({ status: "applied" });
     release();
+  });
+
+  it("retains a tab reply for two resend intervals and resets expiry on repeats", async () => {
+    const f = fixture(2);
+    await f.start();
+    const { leader } = f.roles();
+    const load = vi.spyOn(leader.engine, "useScope");
+    const channel = f.hub.channel(`blackwall-sync:${SESSION}:${f.workspaceId}`);
+    const request = {
+      type: "request",
+      requestId: "repeated-scope",
+      kind: "loadScope",
+      scope: { entity: "comments", issueId: ISSUE },
+      from: id(999),
+    } satisfies TabMessage;
+    channel.postMessage(request);
+    await until(() => f.hub.sent("reply") === 1);
+    expect(load).toHaveBeenCalledOnce();
+    await f.advance(1500);
+    channel.postMessage(request);
+    await until(() => f.hub.sent("reply") === 2);
+    await f.advance(1500);
+    channel.postMessage(request);
+    await until(() => f.hub.sent("reply") === 3);
+    expect(load).toHaveBeenCalledOnce();
+    channel.close();
+  });
+
+  it("expires a tab reply and harmlessly loads the scope again on a late repeat", async () => {
+    const f = fixture(2);
+    await f.start();
+    const { leader } = f.roles();
+    const load = vi.spyOn(leader.engine, "useScope");
+    const channel = f.hub.channel(`blackwall-sync:${SESSION}:${f.workspaceId}`);
+    const request = {
+      type: "request",
+      requestId: "late-scope",
+      kind: "loadScope",
+      scope: { entity: "comments", issueId: ISSUE },
+      from: id(999),
+    } satisfies TabMessage;
+    channel.postMessage(request);
+    await until(() => f.hub.sent("reply") === 1);
+    const before = leader.engine.store.baseAll("comments");
+    await f.advance(2000);
+    channel.postMessage(request);
+    await until(() => f.hub.sent("reply") === 2);
+    expect(load).toHaveBeenCalledTimes(2);
+    expect(leader.engine.store.baseAll("comments")).toEqual(before);
+    expect(leader.engine.scopeStatus(request.scope)).toBe("loaded");
+    f.converged(leader);
+    channel.close();
+  });
+
+  it("keeps an unanswered tab request until its first reply is sent", async () => {
+    const f = fixture(2);
+    await f.start();
+    const { leader } = f.roles();
+    const load = vi.spyOn(leader.engine, "useScope");
+    const channel = f.hub.channel(`blackwall-sync:${SESSION}:${f.workspaceId}`);
+    const request = {
+      type: "request",
+      requestId: "pending-scope",
+      kind: "loadScope",
+      scope: { entity: "comments", issueId: ISSUE },
+      from: id(999),
+    } satisfies TabMessage;
+    f.server.inject({ kind: "response_delay", route: "scope", milliseconds: 5000 });
+    channel.postMessage(request);
+    await until(() => leader.fetch.mock.calls.some(([url]) => String(url).includes("/scope?")));
+    await flush();
+    await f.advance(3000);
+    channel.postMessage(request);
+    await flush();
+    expect(f.hub.sent("reply")).toBe(0);
+    expect(load).toHaveBeenCalledOnce();
+    await f.advance(2000);
+    await until(() => f.hub.sent("reply") === 2);
+    expect(load).toHaveBeenCalledOnce();
+    channel.close();
   });
 
   it("loads a scope the leader already holds from the database for a follower", async () => {
