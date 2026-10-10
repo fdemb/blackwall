@@ -6,9 +6,11 @@ Blackwall's frontend keeps a local replica of each open workspace and syncs it w
 
 The sync layer is rewritten. The engine, the server protocol and the UI port are done, and the frontend typechecks. The previous frontend data layer was deleted on purpose. Don't reconstruct it, and don't look for it in history. Its idea of "optimistic updates" was a per-command patch rolled back on failure, and it read server records through a query cache. This design replaces both.
 
-Phases 1 to 4 are done. Phase 5 is partly done. Session cleanup and online-only gating are implemented in the engine and the UI. Schema migration is in the engine: `open()` resets base on a schema mismatch and keeps the outbox. The engine coordinates tabs. The leader takes an injected `navigator.locks` lock, and followers receive its messages over an injected `BroadcastChannel`. Only the leader does sync network work. Each tab sends its own online-only REST commands. Tests run two and three engines on one database, plus convergence runs in tab mode. Still missing:
+All five phases are done. Session cleanup, online-only gating, and schema recovery are wired into the engine and the UI. `web/app/lib/workspace-engine.ts` supplies browser locks and channels when both APIs exist. One leader per session/workspace replica owns sync network work, and followers receive its changes and connection status. Each tab sends its own online-only REST commands. Without either browser API, each tab runs as a lone leader.
 
-- **Tabs (app).** Not wired yet. `web/app/lib/workspace-engine.ts` still starts a network worker in every tab, and it must pass `locks` and `channel` to the engine. This is the next step.
+Leaving a workspace retires its engine until the shared outbox drains, then closes it and releases leadership. Returning before close reclaims the engine. Logout and session replacement close engines and delete the affected replicas. A newer IndexedDB layout stops older tabs and asks them to reload while preserving their readable view. Database deletion still ends workspace access. Bulk unarchive skips imported issues.
+
+Tests cover app lifecycle across tabs, shared-database engine coordination, schema upgrades and deletion, real-server prediction contracts, and convergence in both independent-replica and tab modes. No implementation work remains from these phases.
 
 ## Fixed decisions
 
@@ -268,7 +270,9 @@ IndexedDB database `blackwall:{session_id}:{workspace_id}` with object stores:
 
 Opening a replica loads every store into memory, replays the outbox, and renders. The leader then pulls. A replica opened from disk shows data before the network answers.
 
-`SCHEMA` is a constant in the engine. Bump it whenever a record shape, an index or a store changes. On a mismatch, or when the IndexedDB layout version changes, keep the outbox and the meta ids (client id, acknowledged and next mutation ids), drop everything else, and bootstrap again. The outbox is pushed as usual afterwards: commands are the server's contract and don't depend on the client's layout.
+`SCHEMA` is a constant in the engine. Bump it whenever a record shape, an index or a store changes. On a mismatch, keep the outbox and the meta ids (client id, acknowledged and next mutation ids), drop everything else, and bootstrap again. An IndexedDB layout upgrade preserves the same data and resets base in the newer tab. Commands are the server's contract and don't depend on the client's layout, so the newer engine pushes the surviving outbox as usual.
+
+The upgrade closes older tabs' database connections with `versionchange.newVersion` set to the newer version. Those engines emit `outdated`, stop network work, release leadership, and reject edits with a reload message. Their in-memory view stays readable, and the existing toast asks the user to reload. Deleting the database sets `newVersion` to null and still emits `accessLost`.
 
 A bootstrap also drops loaded comment and activity scopes; the engine reloads the ones on screen.
 
@@ -283,7 +287,10 @@ A bootstrap also drops loaded comment and activity scopes; the engine reloads th
 ### Tabs
 
 - Each tab keeps its own in-memory store, loaded from the shared database.
-- `navigator.locks.request("blackwall-sync:{replica}")` elects the leader. Only the leader holds the event stream, pulls, loads scopes and pushes. When the leader tab closes, the lock passes to another tab.
+- The app injects an adapter for `navigator.locks.request` and a `BroadcastChannel` factory when both browser APIs exist. If either is unavailable, each tab runs as a lone leader.
+- `navigator.locks.request("blackwall-sync:{session_id}:{workspace_id}")` elects the leader. Only the leader holds the event stream, pulls, loads scopes and pushes. When the leader stops or closes, the lock passes to another tab.
+- Unmounting a workspace retires its engine. It keeps syncing until the shared outbox drains, then closes. Returning before close reclaims it. A retired follower does not hold the leader's lock.
+- Followers mirror the leader's connection status. They report offline when their browser is offline, or when the leader is offline or disconnected. The existing offline banner and online-only controls read that status.
 - A tab allocates mutation ids inside an IndexedDB read-write transaction on `meta.next_mutation_id`. IndexedDB serializes those transactions, so two tabs never reuse an id.
 - Every write to the shared database is broadcast on a `BroadcastChannel` with the changed records or mutations. Other tabs apply the broadcast instead of re-reading the database.
 
