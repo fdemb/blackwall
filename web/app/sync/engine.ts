@@ -112,6 +112,7 @@ export class SyncEngine {
   private readonly remote = new Map<string, RemoteRequest>();
   private requestCount = 0;
   private leaderId = "";
+  private leaderOnline = false;
   private readonly onMessage = (event: { data: TabMessage }) => this.receive(event.data);
   private readonly statusListeners = new Set<() => void>();
   private readonly eventListeners = new Set<(event: EngineEvent) => void>();
@@ -234,13 +235,15 @@ export class SyncEngine {
             this.notifyChange();
             this.cancelNetwork();
           } else if (signal === "online") {
-            this.update({ online: true });
+            this.update({ online: this.role === "leader" || this.leaderOnline });
             this.notifyChange();
             this.beginNetwork();
             void this.pull();
           } else void this.pull();
         });
-        this.update({ online: this.deps.signals.getOnline() });
+        this.update({
+          online: this.deps.signals.getOnline() && (this.role === "leader" || this.leaderOnline),
+        });
       }
       this.ready = true;
       if (this.channel && !this.closed) this.post({ type: "hello" });
@@ -268,7 +271,9 @@ export class SyncEngine {
     if (this.started || this.closed || this.terminal || lifecycle !== this.lifecycle) return;
     this.started = true;
     this.notifyChange();
-    this.update({ online: this.deps.signals.getOnline() });
+    this.update({
+      online: this.deps.signals.getOnline() && (this.role === "leader" || this.leaderOnline),
+    });
     this.requestLeadership();
     this.beginNetwork();
     // A follower has no network work to begin, so its holds are requested here instead.
@@ -370,7 +375,10 @@ export class SyncEngine {
   private setRole(role: EngineRole): void {
     if (this.role === role) return;
     this.role = role;
-    this.update({ role });
+    this.update({
+      role,
+      online: this.deps.signals.getOnline() && (role === "leader" || this.leaderOnline),
+    });
   }
 
   /**
@@ -657,7 +665,12 @@ export class SyncEngine {
         return;
       case "status":
         if (this.role !== "follower") return;
-        this.update({ connected: message.connected, online: message.online });
+        this.leaderOnline = message.online && message.connected;
+        this.update({
+          connected: message.connected,
+          online: this.leaderOnline && this.deps.signals.getOnline(),
+        });
+        this.notifyChange();
         // A new leader announces itself with its status, so waiting scope requests go to it.
         if (message.from !== this.leaderId) {
           this.leaderId = message.from;

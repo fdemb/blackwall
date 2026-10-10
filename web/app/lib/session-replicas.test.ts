@@ -1,6 +1,7 @@
 import "fake-indexeddb/auto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { SCHEMA } from "../sync/engine";
+import { createTabHub } from "../sync/testing/tabs";
 import { createFakeServer } from "../sync/testing/fake-server";
 import { currentProfile } from "./auth-guard";
 import { auth, setCsrf } from "./api";
@@ -13,7 +14,11 @@ import {
   replicaStorage,
   sessionHasPending,
 } from "./session-replicas";
-import { attachWorkspaceEngine, openWorkspaceEngine } from "./workspace-engine";
+import {
+  browserTabDependencies,
+  attachWorkspaceEngine,
+  openWorkspaceEngine,
+} from "./workspace-engine";
 import { logoutSession } from "./session";
 import { runCommand, waitForUploadTarget } from "./workspace-commands";
 
@@ -327,5 +332,188 @@ describe("workspace loader lifecycle", () => {
     await expect(engine.mutate("mark_all_notifications_read", {})).resolves.toBeDefined();
     expect(activeWorkspaceEngine(workspace.id)?.engine).toBe(engine);
     detach();
+  });
+});
+
+function tabBrowser(hub: ReturnType<typeof createTabHub>) {
+  return {
+    locks: hub.locks,
+    BroadcastChannel: class {
+      private readonly endpoint;
+      constructor(name: string) {
+        this.endpoint = hub.channel(name);
+      }
+      postMessage: ReturnType<typeof hub.channel>["postMessage"] = (message) =>
+        this.endpoint.postMessage(message);
+      addEventListener: ReturnType<typeof hub.channel>["addEventListener"] = (type, listener) =>
+        this.endpoint.addEventListener(type, listener);
+      removeEventListener: ReturnType<typeof hub.channel>["removeEventListener"] = (
+        type,
+        listener,
+      ) => this.endpoint.removeEventListener(type, listener);
+      close = () => this.endpoint.close();
+    },
+  };
+}
+
+describe("app tab coordination", () => {
+  it("adapts browser locks and constructs named channels when both are available", async () => {
+    const hub = createTabHub();
+    const browser = tabBrowser(hub);
+    const request = vi.spyOn(browser.locks, "request");
+    const deps = browserTabDependencies(browser);
+    const callback = vi.fn(async () => {});
+    await deps.locks?.request("workspace", callback);
+    expect(request).toHaveBeenCalledWith("workspace", callback);
+    expect(callback).toHaveBeenCalledOnce();
+    const receive = vi.fn();
+    const channel = deps.channel?.("workspace");
+    channel?.addEventListener("message", receive);
+    const sender = hub.channel("workspace");
+    sender.postMessage({ type: "hello", from: "other" });
+    await settle();
+    expect(receive).toHaveBeenCalledWith({ data: { type: "hello", from: "other" } });
+    channel?.close();
+    sender.close();
+  });
+
+  it("passes neither dependency when either browser API is unavailable", () => {
+    const browser = tabBrowser(createTabHub());
+    expect(browserTabDependencies({})).toEqual({});
+    expect(browserTabDependencies({ locks: browser.locks })).toEqual({});
+    expect(browserTabDependencies({ BroadcastChannel: browser.BroadcastChannel })).toEqual({});
+  });
+
+  async function twoTabs() {
+    const hub = createTabHub();
+    const browser = tabBrowser(hub);
+    vi.stubGlobal("navigator", { onLine: true, locks: browser.locks });
+    vi.stubGlobal("BroadcastChannel", browser.BroadcastChannel);
+    const f = await fixture();
+    const first = await openWorkspaceEngine(f.workspace.id);
+    // A fresh module graph gives the second tab its own app session and engine registry.
+    vi.resetModules();
+    const secondSession = await import("./session-replicas");
+    const secondApp = await import("./workspace-engine");
+    await secondSession.acceptSession(f.profile);
+    const second = await secondApp.openWorkspaceEngine(f.workspace.id);
+    await until(() => first.status.get().connected && second.status.get().connected);
+    return { ...f, hub, first, second, secondSession, secondApp };
+  }
+
+  it("elects one app leader and hands leadership over when its workspace unmounts", async () => {
+    const f = await twoTabs();
+    try {
+      expect([f.first, f.second].map((engine) => engine.status.get().role)).toEqual([
+        "leader",
+        "follower",
+      ]);
+      const before = f.fetch.mock.calls.length;
+      await f.second.pull();
+      await settle();
+      expect(f.fetch.mock.calls.length).toBe(before);
+      attachWorkspaceEngine(f.first)();
+      await f.first.retire();
+      await until(() => f.second.status.get().role === "leader" && f.second.status.get().connected);
+      expect(activeWorkspaceEngine(f.workspace.id)).toBeNull();
+      expect(f.secondSession.activeWorkspaceEngine(f.workspace.id)?.engine).toBe(f.second);
+    } finally {
+      await f.secondSession.closeAllWorkspaceEngines();
+    }
+  });
+
+  it("closes a leaving follower without taking leadership when the leader later closes", async () => {
+    const f = await twoTabs();
+    try {
+      f.secondApp.attachWorkspaceEngine(f.second)();
+      await f.second.retire();
+      await closeAllWorkspaceEngines();
+      await settle();
+      expect(f.second.isClosed()).toBe(true);
+      expect(f.second.status.get().role).toBe("follower");
+      expect(f.first.isClosed()).toBe(true);
+      expect(f.secondSession.activeWorkspaceEngine(f.workspace.id)).toBeNull();
+    } finally {
+      await f.secondSession.closeAllWorkspaceEngines();
+    }
+  });
+
+  it.each(["unauthorized", "accessLost"] as const)(
+    "handles %s in the follower app as well as the leader",
+    async (ending) => {
+      const f = await twoTabs();
+      const events: string[] = [];
+      f.second.subscribe((event) => events.push(event.type));
+      try {
+        if (ending === "unauthorized") f.server.logout(f.token);
+        else f.server.removeMember(f.workspace.id, f.owner.id);
+        await f.first.pull();
+        await until(() => events.includes(ending));
+        await until(() => f.first.isClosed() && f.second.isClosed());
+        expect(assign).toHaveBeenCalledWith(ending === "unauthorized" ? "/login" : "/");
+        expect(f.secondSession.activeWorkspaceEngine(f.workspace.id)).toBeNull();
+        expect(await replicaStorage().list()).toEqual([]);
+        if (ending === "unauthorized") {
+          await until(() => f.secondSession.currentSession() === null);
+          expect(currentSession()).toBeNull();
+        }
+      } finally {
+        await f.secondSession.closeAllWorkspaceEngines();
+      }
+    },
+  );
+
+  it("logout closes both tabs and deletes the session replica", async () => {
+    const f = await twoTabs();
+    try {
+      vi.spyOn(auth, "logout").mockImplementation(async () => {
+        expect(await replicaStorage().list()).toEqual([]);
+        f.server.logout(f.token);
+        return null;
+      });
+      await logoutSession();
+      await until(() => f.second.isClosed());
+      expect(f.first.isClosed()).toBe(true);
+      expect(await replicaStorage().list()).toEqual([]);
+    } finally {
+      await f.secondSession.closeAllWorkspaceEngines();
+    }
+  });
+
+  it("accepting another session deletes the old replica and closes its follower", async () => {
+    const f = await twoTabs();
+    try {
+      await acceptSession({ ...f.profile, session_id: id(99) });
+      await until(() => f.second.isClosed());
+      expect(f.first.isClosed()).toBe(true);
+      expect(await replicaStorage().list()).toEqual([]);
+    } finally {
+      await f.secondSession.closeAllWorkspaceEngines();
+    }
+  });
+
+  it("marks a follower offline when its browser is offline or its leader disconnects", async () => {
+    const f = await twoTabs();
+    const sender = f.hub.channel(`blackwall-sync:${f.profile.session_id}:${f.workspace.id}`);
+    try {
+      expect(f.second.status.get().online).toBe(true);
+      sender.postMessage({ type: "status", connected: false, online: true, from: "leader" });
+      await until(() => !f.second.status.get().online);
+      window.dispatchEvent(new Event("online"));
+      expect(f.second.status.get().online).toBe(false);
+      sender.postMessage({ type: "status", connected: true, online: true, from: "leader" });
+      await until(() => f.second.status.get().online);
+      vi.stubGlobal("navigator", { onLine: false });
+      window.dispatchEvent(new Event("offline"));
+      sender.postMessage({ type: "status", connected: true, online: true, from: "leader" });
+      await settle();
+      expect(f.second.status.get().online).toBe(false);
+      await expect(runCommand(f.second, { type: "import_issues", issues: [] })).rejects.toThrow(
+        "online connection",
+      );
+    } finally {
+      sender.close();
+      await f.secondSession.closeAllWorkspaceEngines();
+    }
   });
 });

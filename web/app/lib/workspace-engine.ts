@@ -1,5 +1,5 @@
 import { createEngine, SCHEMA, type SyncEngine } from "../sync/engine";
-import type { EngineSignals } from "../sync/engine-types";
+import type { EngineDependencies, EngineSignals, TabChannel, TabLocks } from "../sync/engine-types";
 import { createTransport, AccessError, UnauthorizedError, ProtocolError } from "../sync/transport";
 import {
   activeWorkspaceEngine,
@@ -14,6 +14,18 @@ import {
 } from "./session-replicas";
 import { currentProfile, clearLastWs } from "./auth-guard";
 import { queryClient } from "./query-client";
+
+export function browserTabDependencies(browser: {
+  locks?: TabLocks;
+  BroadcastChannel?: new (name: string) => TabChannel;
+}): Pick<EngineDependencies, "locks" | "channel"> {
+  const { locks, BroadcastChannel: Channel } = browser;
+  if (!locks || !Channel) return {};
+  return {
+    locks: { request: (name, callback) => locks.request(name, callback) },
+    channel: (name) => new Channel(name),
+  };
+}
 
 const signals: EngineSignals = {
   getOnline: () => navigator.onLine,
@@ -95,6 +107,10 @@ export function openWorkspaceEngine(
     }
     if (signal?.aborted) throw new Error("Workspace navigation cancelled");
     const engine = createEngine({
+      ...browserTabDependencies({
+        locks: navigator.locks,
+        BroadcastChannel: globalThis.BroadcastChannel,
+      }),
       storage: replicaStorage(),
       transport: createTransport({ fetch: globalThis.fetch.bind(globalThis) }),
       sessionId: profile.session_id,
@@ -125,7 +141,6 @@ export function openWorkspaceEngine(
     });
     try {
       await engine.open();
-      // Tab leader election comes later; every tab starts its own network workers for now.
       await engine.start();
       await waitUntilReady(engine, signal);
       return engine;
