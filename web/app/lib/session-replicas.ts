@@ -50,7 +50,8 @@ export function retireWorkspaceEngine(engine: SyncEngine) {
 export function reclaimWorkspaceEngine(
   match: (entry: WorkspaceEngine) => boolean,
 ): WorkspaceEngine | null {
-  const entry = [...leaving].find(match);
+  // A closing engine is still in `leaving` until its close finishes.
+  const entry = [...leaving].find((candidate) => !candidate.engine.isClosed() && match(candidate));
   if (!entry) return null;
   leaving.delete(entry);
   active.set(entry.workspaceId, entry);

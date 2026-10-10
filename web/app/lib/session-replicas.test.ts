@@ -268,6 +268,16 @@ describe("workspace loader lifecycle", () => {
     expect(activeWorkspaceEngine(workspace.id)).toBeNull();
     await expect(engine.mutate("mark_all_notifications_read", {})).rejects.toThrow("closed");
   });
+  it("returning while the leaving engine closes opens a new engine", async () => {
+    const { workspace } = await fixture();
+    const engine = await openWorkspaceEngine(workspace.id);
+    attachWorkspaceEngine(engine)();
+    while (!engine.isClosed()) await Promise.resolve();
+    const next = await openWorkspaceEngine(workspace.id);
+    expect(next).not.toBe(engine);
+    expect(activeWorkspaceEngine(workspace.id)?.engine).toBe(next);
+    await expect(next.mutate("mark_all_notifications_read", {})).resolves.toBeDefined();
+  });
   it("leaving with pending edits keeps sending them and closes only after the outbox is empty", async () => {
     const { server, workspace, fetch } = await fixture();
     const engine = await openWorkspaceEngine(workspace.id);

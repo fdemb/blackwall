@@ -403,6 +403,7 @@ export class SyncEngine {
 
   /** Accepts mutations again after retire(), unless the engine has already closed. */
   reclaim(): void {
+    if (this.closed) return;
     this.sealed = false;
     this.notifyChange();
   }
