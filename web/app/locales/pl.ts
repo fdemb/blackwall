@@ -572,6 +572,7 @@ export const pl = {
   "error.network": "Nie udało się połączyć z serwerem. Sprawdź połączenie i spróbuj ponownie.",
   "error.onlineRequired":
     "Ta czynność wymaga połączenia z serwerem. Połącz się ponownie i spróbuj jeszcze raz.",
+  "error.outdated": "W innej karcie otwarto nowszą wersję. Odśwież stronę, aby kontynuować.",
   "error.createRejected": "Nie zapisano: {{name}}. {{message}}",
 
   "filter.status": "Status",

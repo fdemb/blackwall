@@ -1,4 +1,4 @@
-import type { SyncEngine, Rejection } from "../sync/engine";
+import { OutdatedError, type SyncEngine, type Rejection } from "../sync/engine";
 import { createdIds, MutationError, ONLINE_ONLY } from "../sync/mutators";
 import { ApiError, workspaces } from "./api";
 import type { Command } from "./types";
@@ -13,6 +13,8 @@ export class OnlineRequiredError extends ApiError {
 }
 
 export async function runCommand(engine: SyncEngine, command: Command): Promise<string | null> {
+  const error = engine.status.get().lastError;
+  if (error instanceof OutdatedError) throw error;
   if (command.type === "create_integration" && !command.id)
     command = { ...command, id: crypto.randomUUID() };
   const { type, ...args } = command;
@@ -61,7 +63,9 @@ export function whenConfirmed(engine: SyncEngine, ids: Iterable<string>): Promis
       else resolve();
     };
     const check = () => {
-      if (engine.isClosed()) finish(new Error("Workspace engine closed"));
+      const error = engine.status.get().lastError;
+      if (error instanceof OutdatedError) finish(error);
+      else if (engine.isClosed()) finish(new Error("Workspace engine closed"));
       else if (!waiting()) finish();
       else if (!engine.status.get().online) finish(new OnlineRequiredError());
     };
@@ -69,6 +73,7 @@ export function whenConfirmed(engine: SyncEngine, ids: Iterable<string>): Promis
     const unsubscribeStatus = engine.status.subscribe(check);
     const unsubscribeEvents = engine.subscribe((event) => {
       if (event.type === "closed") finish(new Error("Workspace engine closed"));
+      else if (event.type === "outdated") finish(new OutdatedError());
       else if (event.type === "unauthorized" || event.type === "accessLost")
         finish(new ApiError("Workspace access lost", 403));
     });
@@ -92,6 +97,8 @@ export async function uploadFile(
   file: File,
   commentId?: string,
 ): Promise<string | null> {
+  const error = engine.status.get().lastError;
+  if (error instanceof OutdatedError) throw error;
   if (!engine.status.get().online) throw new OnlineRequiredError();
   await waitForUploadTarget(engine, issueId, commentId);
   const result = await workspaces.upload(workspaceId, issueId, undefined, file, commentId);
@@ -120,5 +127,19 @@ export function watchRejections(
   });
   // Restored mutations can be rejected before the disk-first loader mounts the provider.
   engine.status.get().rejected.forEach(show);
+  return unsubscribe;
+}
+
+export function watchOutdated(engine: SyncEngine, notify: () => void): () => void {
+  let shown = false;
+  const show = () => {
+    if (shown) return;
+    shown = true;
+    notify();
+  };
+  const unsubscribe = engine.subscribe((event) => {
+    if (event.type === "outdated") show();
+  });
+  if (engine.status.get().lastError instanceof OutdatedError) show();
   return unsubscribe;
 }

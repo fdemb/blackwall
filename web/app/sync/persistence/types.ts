@@ -65,11 +65,12 @@ export type ReplicaCloseReason = "versionchange" | "terminated";
 
 /** External closure only. Explicit Replica.close() does not notify. */
 export type ReplicaCloseListener = (
-  event: ReplicaIdentity & { reason: ReplicaCloseReason },
+  event: ReplicaIdentity &
+    ({ reason: "versionchange"; newVersion: number | null } | { reason: "terminated" }),
 ) => void;
 
 export interface ReplicaOpenInput extends ReplicaIdentity {
   schema: number;
   /** Called when this handle's database closes from outside, such as a deletion elsewhere. */
-  onClose?: (reason: ReplicaCloseReason) => void;
+  onClose?: (reason: ReplicaCloseReason, newVersion?: number | null) => void;
 }

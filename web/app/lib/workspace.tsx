@@ -10,7 +10,7 @@ import {
 import { useQuery } from "@tanstack/react-query";
 import { useToast } from "~/components/ui/toast";
 import { EngineProvider, useEngine, useSyncStatus, useView } from "../sync/react";
-import type { SyncEngine } from "../sync/engine";
+import { OutdatedError, type SyncEngine } from "../sync/engine";
 import { createdLabel } from "../sync/mutators";
 import { reportQuery, watchReportChanges } from "./query-client";
 import { byDisplayName, byExpiryDesc, byName, byPosition, bySprintStart, byUserId } from "./order";
@@ -23,6 +23,7 @@ import {
   ServerRejection,
   uuidsIn,
   watchRejections,
+  watchOutdated,
   whenConfirmed,
 } from "./workspace-commands";
 import { useI18n } from "./i18n";
@@ -132,8 +133,13 @@ function useWorkspaceValue() {
       }),
     [engine, toast, t],
   );
+  useEffect(
+    () => watchOutdated(engine, () => toast.error(t("error.outdated"))),
+    [engine, toast, t],
+  );
   const describeError = useCallback(
     (error: unknown) => {
+      if (error instanceof OutdatedError) return t("error.outdated");
       if (error instanceof OnlineRequiredError) return t("error.onlineRequired");
       return error instanceof Error ? error.message : String(error);
     },
@@ -147,7 +153,7 @@ function useWorkspaceValue() {
       } catch (error) {
         // Server rejections already have an engine event; admission failures don't.
         if (!opts.quiet && !(error instanceof ServerRejection)) toast.error(describeError(error));
-        throw error;
+        throw error instanceof OutdatedError ? new OutdatedError(describeError(error)) : error;
       }
     },
     [engine, toast, describeError],
@@ -158,7 +164,7 @@ function useWorkspaceValue() {
         return await uploadFile(engine, ws.id, issueId, file, opts.commentId);
       } catch (error) {
         if (!opts.quiet) toast.error(describeError(error));
-        throw error;
+        throw error instanceof OutdatedError ? new OutdatedError(describeError(error)) : error;
       }
     },
     [engine, ws.id, toast, describeError],

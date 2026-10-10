@@ -1,6 +1,7 @@
 import "fake-indexeddb/auto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
-import { SCHEMA } from "../sync/engine";
+import { OutdatedError, SCHEMA } from "../sync/engine";
+import { IndexedDBReplicaStorage, IDB_VERSION } from "../sync/persistence/idb";
 import { createTabHub } from "../sync/testing/tabs";
 import { createFakeServer } from "../sync/testing/fake-server";
 import { currentProfile } from "./auth-guard";
@@ -20,7 +21,7 @@ import {
   openWorkspaceEngine,
 } from "./workspace-engine";
 import { logoutSession } from "./session";
-import { runCommand, waitForUploadTarget } from "./workspace-commands";
+import { runCommand, waitForUploadTarget, watchOutdated } from "./workspace-commands";
 
 const id = (n: number) => `22222222-2222-4222-8222-${String(n).padStart(12, "0")}`;
 const servers: ReturnType<typeof createFakeServer>[] = [];
@@ -166,6 +167,52 @@ describe("session replica lifetime", () => {
       (await replicaStorage().list()).some((replica) => replica.sessionId === profile.session_id),
     ).toBe(false);
     expect(await replicaStorage().list()).toEqual([{ sessionId: id(90), workspaceId: id(91) }]);
+  });
+  it("an upgraded replica asks for reload and preserves the workspace and session", async () => {
+    const { profile, workspace } = await fixture();
+    const engine = await openWorkspaceEngine(workspace.id);
+    const notify = vi.fn();
+    const unsubscribe = watchOutdated(engine, notify);
+    const upgraded = await new IndexedDBReplicaStorage({ version: IDB_VERSION + 1 }).open({
+      sessionId: profile.session_id,
+      workspaceId: workspace.id,
+      schema: SCHEMA,
+    });
+    try {
+      expect(notify).toHaveBeenCalledOnce();
+      expect(assign).not.toHaveBeenCalled();
+      expect(activeWorkspaceEngine(workspace.id)?.engine).toBe(engine);
+      expect(currentSession()?.session_id).toBe(profile.session_id);
+      expect(engine.store.get("issues", id(2))?.title).toBe("On disk");
+      await expect(
+        runCommand(engine, { type: "update_issue", id: id(2), patch: { title: "Blocked" } }),
+      ).rejects.toThrow("A newer version is open in another tab. Reload to continue.");
+      await expect(
+        runCommand(engine, { type: "import_issues", issues: [] }),
+      ).rejects.toBeInstanceOf(OutdatedError);
+      await expect(waitForUploadTarget(engine, id(2))).rejects.toBeInstanceOf(OutdatedError);
+      const lateNotify = vi.fn();
+      watchOutdated(engine, lateNotify)();
+      expect(lateNotify).toHaveBeenCalledOnce();
+      expect(await replicaStorage().list()).toEqual([
+        { sessionId: profile.session_id, workspaceId: workspace.id },
+      ]);
+    } finally {
+      unsubscribe();
+      upgraded.close();
+    }
+  });
+  it("deleting the replica still leaves the workspace for home", async () => {
+    const { profile, workspace } = await fixture();
+    const engine = await openWorkspaceEngine(workspace.id);
+    const notify = vi.fn();
+    const unsubscribe = watchOutdated(engine, notify);
+    await replicaStorage().delete({ sessionId: profile.session_id, workspaceId: workspace.id });
+    await until(() => assign.mock.calls.length > 0);
+    expect(assign).toHaveBeenCalledWith("/");
+    expect(notify).not.toHaveBeenCalled();
+    expect(engine.isClosed()).toBe(true);
+    unsubscribe();
   });
   it("access loss deletes only the workspace replica and leaves for home", async () => {
     const { server, owner, workspace, profile } = await fixture();

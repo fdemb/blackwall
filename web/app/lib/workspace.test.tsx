@@ -1,3 +1,5 @@
+import "fake-indexeddb/auto";
+import { IDBFactory } from "fake-indexeddb";
 import { useState } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import {
@@ -22,6 +24,8 @@ import { QueryStatus } from "../components/app/query-status";
 import { ToastProvider, useToast } from "../components/ui/toast";
 import { createEngine, SCHEMA, type SyncEngine } from "../sync/engine";
 import { makeIssue, makeTeam, NOW } from "../sync/fixtures";
+import { IDB_VERSION, IndexedDBReplicaStorage } from "../sync/persistence/idb";
+import type { ReplicaStorage } from "../sync/persistence/types";
 import { MemoryReplicaStorage } from "../sync/persistence/memory";
 import { createTransport } from "../sync/transport";
 import { useRecord, useSyncStatus, useView } from "../sync/react";
@@ -37,7 +41,7 @@ import {
 import { queryClient, keys } from "./query-client";
 import { SessionProvider } from "./session";
 import { WorkspaceProvider, useWorkspace } from "./workspace";
-import type { Profile, Report } from "./types";
+import type { Language, Profile, Report } from "./types";
 import type { ReactNode } from "react";
 
 const profile: Profile = {
@@ -67,8 +71,8 @@ const engines: SyncEngine[] = [];
 async function fixture({
   online = false,
   otherMember = false,
-}: { online?: boolean; otherMember?: boolean } = {}) {
-  const storage = new MemoryReplicaStorage();
+  storage = new MemoryReplicaStorage(),
+}: { online?: boolean; otherMember?: boolean; storage?: ReplicaStorage } = {}) {
   const replica = await storage.open({
     sessionId: "session",
     workspaceId: "workspace",
@@ -191,10 +195,10 @@ async function fixture({
   queryClient.setQueryData(keys.report("workspace"), report);
   return engine;
 }
-function render(engine: SyncEngine, children: ReactNode) {
+function render(engine: SyncEngine, children: ReactNode, language: Language = "en") {
   return renderToStaticMarkup(
     <QueryClientProvider client={queryClient}>
-      <I18nProvider initial="en">
+      <I18nProvider initial={language}>
         <ToastProvider>
           <SessionProvider initial={profile}>
             <WorkspaceProvider engine={engine}>{children}</WorkspaceProvider>
@@ -496,4 +500,54 @@ describe("upload failures", () => {
     );
     expect(error).not.toHaveBeenCalled();
   });
+});
+
+type Run = ReturnType<typeof useWorkspace>["run"];
+function RunProbeComponent({ observe }: { observe: (run: Run, toast: Toast) => void }) {
+  const { run } = useWorkspace();
+  observe(run, useToast());
+  return null;
+}
+
+describe("outdated workspace", () => {
+  it.each(["en", "pl"] satisfies Language[])(
+    "rejects edits and uses the existing toast in %s",
+    async (language) => {
+      const database = new IDBFactory();
+      const engine = await fixture({
+        storage: new IndexedDBReplicaStorage({ indexedDB: database }),
+      });
+      const upgraded = await new IndexedDBReplicaStorage({
+        indexedDB: database,
+        version: IDB_VERSION + 1,
+      }).open({
+        sessionId: "session",
+        workspaceId: "workspace",
+        schema: SCHEMA,
+      });
+      try {
+        let seen: { run: Run; toast: Toast } | undefined;
+        render(
+          engine,
+          <RunProbeComponent observe={(run, toast) => (seen = { run, toast })} />,
+          language,
+        );
+        if (!seen) throw new Error("Workspace callbacks missing");
+        const notify = vi.spyOn(seen.toast, "error");
+        const message =
+          language === "en"
+            ? "A newer version is open in another tab. Reload to continue."
+            : "W innej karcie otwarto nowszą wersję. Odśwież stronę, aby kontynuować.";
+        await expect(
+          seen.run({ type: "update_issue", id: "issue", patch: { title: "Blocked" } }),
+        ).rejects.toThrow(message);
+        expect(notify).toHaveBeenCalledOnce();
+        expect(notify).toHaveBeenCalledWith(message);
+        expect(engine.store.get("issues", "issue")?.title).toBe("Replica issue");
+        expect(engine.store.pending()).toHaveLength(0);
+      } finally {
+        upgraded.close();
+      }
+    },
+  );
 });

@@ -73,6 +73,7 @@ export type EngineEvent =
   | { type: "error"; error: Error }
   | { type: "unauthorized" }
   | { type: "accessLost" }
+  | { type: "outdated" }
   | { type: "closed" };
 
 export interface MutationReceipt {

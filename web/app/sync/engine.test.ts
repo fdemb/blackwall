@@ -1,10 +1,10 @@
 import "fake-indexeddb/auto";
-import { IDBFactory } from "fake-indexeddb";
+import { forceCloseDatabase, IDBFactory } from "fake-indexeddb";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { setCsrf } from "../lib/api";
-import { createEngine, SCHEMA } from "./engine";
+import { createEngine, OutdatedError, SCHEMA } from "./engine";
 import type { EngineEvent, EngineSignal, SyncEngine } from "./engine";
-import { IndexedDBReplicaStorage } from "./persistence/idb";
+import { IDB_VERSION, IndexedDBReplicaStorage } from "./persistence/idb";
 import { MemoryReplicaStorage } from "./persistence/memory";
 import type { ReplicaStorage, Scope } from "./persistence/types";
 import { BOOTSTRAP_ENTITIES, normalize } from "./records";
@@ -1629,5 +1629,94 @@ describe("record preparation", () => {
     await until(() => f.engine.store.all("activity").length > 0);
     expect((await f.disk()).scopes).toEqual([scope]);
     release();
+  });
+});
+
+describe("external replica closure", () => {
+  it("an upgrade stops work and rejects edits while preserving the old tab's readable view", async () => {
+    const database = new IDBFactory();
+    const f = fixture(new IndexedDBReplicaStorage({ indexedDB: database }));
+    await f.ready();
+    f.signals.send("offline");
+    const receipt = await f.engine.mutate("update_issue", {
+      id: ISSUE,
+      patch: { title: "Unsaved draft" },
+    });
+    const observed = receipt.settled.catch((error: unknown) => error);
+    const events: EngineEvent[] = [];
+    f.engine.subscribe((event) => events.push(event));
+    const view = f.engine.store.all("issues");
+    const upgraded = await new IndexedDBReplicaStorage({
+      indexedDB: database,
+      version: IDB_VERSION + 1,
+    }).open({
+      sessionId: SESSION,
+      workspaceId: f.workspace.id,
+      schema: SCHEMA,
+    });
+    try {
+      expect(events).toEqual([{ type: "outdated" }]);
+      expect(f.engine.isClosed()).toBe(false);
+      expect(f.engine.store.all("issues")).toEqual(view);
+      expect(f.engine.status.get()).toMatchObject({
+        phase: "ready",
+        online: false,
+        connected: false,
+        pending: 1,
+      });
+      expect(f.engine.status.get().lastError).toBeInstanceOf(OutdatedError);
+      expect(await observed).toBeInstanceOf(OutdatedError);
+      expect((await upgraded.load()).outbox).toHaveLength(1);
+      const requests = f.fetch.mock.calls.length;
+      f.signals.send("online");
+      await f.advance(60_000);
+      await expect(f.engine.start()).rejects.toBeInstanceOf(OutdatedError);
+      await expect(
+        f.engine.mutate("update_issue", { id: ISSUE, patch: { title: "Blocked" } }),
+      ).rejects.toThrow("Reload to continue");
+      await expect(
+        f.engine.runOnline("set_role", { user_id: f.peer.id, role: "admin" }),
+      ).rejects.toBeInstanceOf(OutdatedError);
+      expect(f.fetch.mock.calls.length).toBe(requests);
+      expect(f.engine.store.get("issues", ISSUE)?.title).toBe("Unsaved draft");
+      expect(() => f.engine.useScope({ entity: "comments", issueId: ISSUE })()).not.toThrow();
+    } finally {
+      upgraded.close();
+    }
+  });
+
+  it("unexpected termination still reports access loss", async () => {
+    const database = new IDBFactory();
+    const original = database.open.bind(database);
+    let connection: IDBDatabase | undefined;
+    database.open = (...args) => {
+      const request = original(...args);
+      request.addEventListener("success", () => {
+        connection = request.result;
+      });
+      return request;
+    };
+    const f = fixture(new IndexedDBReplicaStorage({ indexedDB: database }));
+    await f.ready();
+    const events: EngineEvent[] = [];
+    f.engine.subscribe((event) => events.push(event));
+    if (!connection) throw new Error("Replica connection missing");
+    Reflect.apply(forceCloseDatabase, undefined, [connection]);
+    await until(() => events.some((event) => event.type === "accessLost"));
+    expect(events).toEqual([{ type: "accessLost" }]);
+    expect(f.engine.store.all("issues")).toEqual([]);
+  });
+
+  it("deleting the replica reports access loss and clears its view", async () => {
+    const f = fixture(new IndexedDBReplicaStorage({ indexedDB: new IDBFactory() }));
+    await f.ready();
+    const events: EngineEvent[] = [];
+    f.engine.subscribe((event) => events.push(event));
+    await f.storage.delete({ sessionId: SESSION, workspaceId: f.workspace.id });
+    await until(() => events.some((event) => event.type === "accessLost"));
+    expect(events).toEqual([{ type: "accessLost" }]);
+    expect(f.engine.store.all("issues")).toEqual([]);
+    expect(await f.storage.list()).toEqual([]);
+    await expect(f.engine.mutate("mark_all_notifications_read", {})).rejects.toThrow("closed");
   });
 });

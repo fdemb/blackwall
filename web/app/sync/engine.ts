@@ -8,7 +8,7 @@ import {
 } from "./mutators";
 import { DEFAULT_STAGES } from "./mutators/planning";
 import { acceptsChange, recordKey, recordScope, scopeKey } from "./persistence/shared";
-import type { Replica, Scope } from "./persistence/types";
+import type { Replica, ReplicaCloseReason, Scope } from "./persistence/types";
 import { BOOTSTRAP_ENTITIES, BOOTSTRAP_REPLACED_ENTITIES } from "./records";
 import type { Change, Entity } from "./records";
 import { immutableCopy, ingest, SyncStore } from "./store";
@@ -52,6 +52,13 @@ export type {
 export type { TabMessage } from "./tabs";
 
 export const SCHEMA = 1;
+
+export class OutdatedError extends Error {
+  constructor(message = "A newer version is open in another tab. Reload to continue.") {
+    super(message);
+  }
+}
+
 /** A follower re-sends an unanswered request on this cadence, in case the leader went away. */
 const REQUEST_RESEND_MS = 1000;
 type RequestKind = "bootstrap" | "pull" | "scope" | "push" | "events";
@@ -146,6 +153,7 @@ export class SyncEngine {
   private opening: Promise<void> | null = null;
   private closed = false;
   private terminal = false;
+  private outdated: OutdatedError | null = null;
   private started = false;
   private lifecycle = 0;
   private controller: AbortController | null = null;
@@ -212,13 +220,14 @@ export class SyncEngine {
   }
 
   open(): Promise<void> {
-    if (this.closed || this.terminal) return Promise.reject(new Error("Engine is closed"));
+    if (this.closed || this.terminal)
+      return Promise.reject(this.outdated ?? new Error("Engine is closed"));
     this.opening ??= this.commits.run(async () => {
       const replica = await this.deps.storage.open({
         sessionId: this.deps.sessionId,
         workspaceId: this.deps.workspaceId,
         schema: this.deps.schema,
-        onClose: () => this.replicaClosed(),
+        onClose: (reason, newVersion) => this.replicaClosed(reason, newVersion),
       });
       this.replica = replica;
       let loaded = await replica.load();
@@ -333,7 +342,7 @@ export class SyncEngine {
     locks
       .request(this.lockName, () => {
         this.lockPending = false;
-        if (!this.started || this.closed) return Promise.resolve();
+        if (!this.started || this.closed || this.terminal) return Promise.resolve();
         this.lockHeld = true;
         const released = new Promise<void>((resolve) => {
           this.releaseLock = resolve;
@@ -453,6 +462,7 @@ export class SyncEngine {
   }
 
   async runOnline(name: string, args: unknown): Promise<MutationResult> {
+    if (this.outdated) throw this.outdated;
     if (!this.deps.signals.getOnline())
       throw new MutationError(400, "This command requires an online connection");
     await this.open();
@@ -592,7 +602,7 @@ export class SyncEngine {
   }
 
   useScope(scope: Scope): () => void {
-    if (this.closed || this.terminal) throw new Error("Engine is closed");
+    if (this.closed || (this.terminal && !this.outdated)) throw new Error("Engine is closed");
     const key = scopeKey(scope);
     const held = this.heldScopes.get(key) ?? { scope: { ...scope }, holders: 0 };
     held.holders += 1;
@@ -649,6 +659,7 @@ export class SyncEngine {
 
   private receive(message: TabMessage): void {
     if (this.closed || message.from === this.tabId) return;
+    if (this.terminal && message.type !== "unauthorized" && message.type !== "accessLost") return;
     if (!this.ready) {
       this.inbox.push(message);
       return;
@@ -747,15 +758,27 @@ export class SyncEngine {
     this.endLocal(ending, failure);
   }
 
-  /** The database closed under this replica, such as a deletion elsewhere. The session ends here. */
-  private replicaClosed(): void {
+  /** An upgrade keeps the readable view; deleting the database still ends workspace access. */
+  private replicaClosed(reason: ReplicaCloseReason, newVersion?: number | null): void {
     if (this.closed || this.terminal) return;
+    if (reason === "versionchange" && newVersion != null) {
+      const failure = new OutdatedError();
+      this.outdated = failure;
+      this.update({ lastError: failure });
+      this.endSession(failure);
+      this.replica?.close();
+      this.replica = null;
+      this.update({ online: false });
+      this.emit({ type: "outdated" });
+      return;
+    }
     if (this.role === "leader") this.post({ type: "accessLost" });
     this.endLocal("accessLost", new AccessError("Replica database was closed"));
   }
 
   private endLocal(ending: "unauthorized" | "accessLost", failure: Error): void {
-    if (this.terminal) return;
+    if (this.terminal && !this.outdated) return;
+    this.outdated = null;
     this.endSession(failure);
     this.commits
       .run(async () => {
@@ -905,7 +928,8 @@ export class SyncEngine {
   }
 
   private requireReplica(): Replica {
-    if (!this.replica || this.closed || this.terminal) throw new Error("Engine is closed");
+    if (!this.replica || this.closed || this.terminal)
+      throw this.outdated ?? new Error("Engine is closed");
     return this.replica;
   }
 
@@ -1484,7 +1508,7 @@ export class SyncEngine {
   }
 
   private finishError(error: unknown): void {
-    if (error instanceof Cancelled) return;
+    if (error instanceof Cancelled || this.terminal) return;
     const failure = error instanceof Error ? error : new Error(String(error));
     this.update({ lastError: failure });
     this.emit({ type: "error", error: failure });

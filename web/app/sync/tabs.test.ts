@@ -2,9 +2,9 @@ import "fake-indexeddb/auto";
 import { IDBFactory } from "fake-indexeddb";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { setCsrf } from "../lib/api";
-import { createEngine, SCHEMA } from "./engine";
+import { createEngine, OutdatedError, SCHEMA } from "./engine";
 import type { EngineEvent, EngineSignal, SyncEngine, TabMessage } from "./engine";
-import { IndexedDBReplicaStorage } from "./persistence/idb";
+import { IDB_VERSION, IndexedDBReplicaStorage } from "./persistence/idb";
 import { recordKey } from "./persistence/shared";
 import { BOOTSTRAP_ENTITIES, normalize } from "./records";
 import { createFakeServer } from "./testing/fake-server";
@@ -503,6 +503,48 @@ describe("tab coordination", () => {
     await until(() => follower.events.some((event) => event.type === "accessLost"));
     expect(follower.engine.store.all("issues")).toEqual([]);
     expect(leader.events.filter((event) => event.type === "unauthorized")).toEqual([]);
+  });
+
+  it("an upgrade makes both old tabs readable but unwritable and releases their leadership", async () => {
+    const f = fixture(2);
+    await f.start();
+    await until(() =>
+      f.tabs.every((tab) => tab.engine.store.get("issues", ISSUE)?.title === "Original"),
+    );
+    const views = f.tabs.map((tab) => tab.engine.store.all("issues"));
+    const upgraded = await new IndexedDBReplicaStorage({
+      indexedDB: f.database,
+      version: IDB_VERSION + 1,
+    }).open({
+      sessionId: SESSION,
+      workspaceId: f.workspaceId,
+      schema: SCHEMA,
+    });
+    try {
+      for (const [index, tab] of f.tabs.entries()) {
+        expect(tab.events).toEqual([{ type: "outdated" }]);
+        expect(tab.engine.store.all("issues")).toEqual(views[index]);
+        await expect(tab.engine.mutate("mark_all_notifications_read", {})).rejects.toBeInstanceOf(
+          OutdatedError,
+        );
+      }
+      const nextLeader = vi.fn(async () => {});
+      await f.hub.locks.request(`blackwall-sync:${SESSION}:${f.workspaceId}`, nextLeader);
+      expect(nextLeader).toHaveBeenCalledOnce();
+      const requests = f.tabs.map(f.requests);
+      await f.advance(60_000);
+      expect(f.tabs.map(f.requests)).toEqual(requests);
+      // The newer code can still end the session in the old tabs through the channel.
+      const channel = f.hub.channel(`blackwall-sync:${SESSION}:${f.workspaceId}`);
+      channel.postMessage({ type: "unauthorized", from: "newer-tab" });
+      await until(() =>
+        f.tabs.every((tab) => tab.events.some((event) => event.type === "unauthorized")),
+      );
+      expect(f.tabs.every((tab) => tab.engine.store.all("issues").length === 0)).toBe(true);
+      channel.close();
+    } finally {
+      upgraded.close();
+    }
   });
 
   it("stops a follower whose database is deleted under it and reports access loss", async () => {

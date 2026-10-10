@@ -565,6 +565,7 @@ export const en = {
 
   "error.network": "Couldn't reach the server. Check your connection and try again.",
   "error.onlineRequired": "This needs a connection to the server. Reconnect, then try again.",
+  "error.outdated": "A newer version is open in another tab. Reload to continue.",
   "error.createRejected": "Not saved: {{name}}. {{message}}",
 
   "filter.status": "Status",

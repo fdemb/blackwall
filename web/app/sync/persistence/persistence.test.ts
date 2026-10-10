@@ -559,6 +559,7 @@ describe("IndexedDB lifecycle", () => {
           sessionId: INPUT.sessionId,
           workspaceId: INPUT.workspaceId,
           reason: "versionchange",
+          newVersion: IDB_VERSION + 1,
         });
       await expect(old.load()).rejects.toThrow("replica is closed");
       await expect(other.load()).rejects.toThrow("replica is closed");
@@ -608,7 +609,7 @@ describe("IndexedDB lifecycle", () => {
     const replica = await storage.open(INPUT);
     await storage.delete(INPUT);
     expect(events).toHaveLength(1);
-    expect(events[0].reason).toBe("versionchange");
+    expect(events[0]).toMatchObject({ reason: "versionchange", newVersion: null });
     await expect(replica.load()).rejects.toThrow("replica is closed");
     expect(await storage.list()).toEqual([]);
   });

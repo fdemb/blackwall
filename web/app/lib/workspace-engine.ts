@@ -1,4 +1,4 @@
-import { createEngine, SCHEMA, type SyncEngine } from "../sync/engine";
+import { createEngine, OutdatedError, SCHEMA, type SyncEngine } from "../sync/engine";
 import type { EngineDependencies, EngineSignals, TabChannel, TabLocks } from "../sync/engine-types";
 import { createTransport, AccessError, UnauthorizedError, ProtocolError } from "../sync/transport";
 import {
@@ -61,13 +61,18 @@ export function waitUntilReady(engine: SyncEngine, signal?: AbortSignal): Promis
     const check = () => {
       const status = engine.status.get();
       if (status.phase === "ready") finish();
-      else if (status.lastError instanceof ProtocolError) finish(status.lastError);
+      else if (
+        status.lastError instanceof ProtocolError ||
+        status.lastError instanceof OutdatedError
+      )
+        finish(status.lastError);
     };
     const aborted = () => finish(new Error("Workspace navigation cancelled"));
     const unsubscribeStatus = engine.status.subscribe(check);
     const unsubscribeEvents = engine.subscribe((event) => {
       if (event.type === "unauthorized") finish(new UnauthorizedError("Session expired", 401));
       if (event.type === "accessLost") finish(new AccessError("Workspace access lost", 403));
+      if (event.type === "outdated") finish(new OutdatedError());
     });
     signal?.addEventListener("abort", aborted, { once: true });
     if (signal?.aborted) aborted();

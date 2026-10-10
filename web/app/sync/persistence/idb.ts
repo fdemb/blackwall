@@ -42,9 +42,9 @@ class IndexedDBReplica implements Replica {
     identity: ReplicaIdentity,
     onClose: ReplicaCloseListener | undefined,
   ) {
-    db.onversionchange = () => {
+    db.onversionchange = (event) => {
       this.close();
-      onClose?.({ ...identity, reason: "versionchange" });
+      onClose?.({ ...identity, reason: "versionchange", newVersion: event.newVersion });
     };
     db.onclose = () => {
       this.close();
@@ -361,7 +361,10 @@ export class IndexedDBReplicaStorage implements ReplicaStorage {
       input.schema,
       { sessionId: input.sessionId, workspaceId: input.workspaceId },
       (event) => {
-        input.onClose?.(event.reason);
+        input.onClose?.(
+          event.reason,
+          event.reason === "versionchange" ? event.newVersion : undefined,
+        );
         this.onClose?.(event);
       },
     );
