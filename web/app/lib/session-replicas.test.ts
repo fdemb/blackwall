@@ -539,12 +539,15 @@ describe("app tab coordination", () => {
     }
   });
 
-  it("marks a follower offline when its browser is offline or its leader disconnects", async () => {
+  it("marks a follower offline when its browser or its leader is offline", async () => {
     const f = await twoTabs();
     const sender = f.hub.channel(`blackwall-sync:${f.profile.session_id}:${f.workspace.id}`);
     try {
       expect(f.second.status.get().online).toBe(true);
       sender.postMessage({ type: "status", connected: false, online: true, from: "leader" });
+      await until(() => !f.second.status.get().connected);
+      expect(f.second.status.get().online).toBe(true);
+      sender.postMessage({ type: "status", connected: false, online: false, from: "leader" });
       await until(() => !f.second.status.get().online);
       window.dispatchEvent(new Event("online"));
       expect(f.second.status.get().online).toBe(false);

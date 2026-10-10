@@ -290,7 +290,7 @@ A bootstrap also drops loaded comment and activity scopes; the engine reloads th
 - The app injects an adapter for `navigator.locks.request` and a `BroadcastChannel` factory when both browser APIs exist. If either is unavailable, each tab runs as a lone leader.
 - `navigator.locks.request("blackwall-sync:{session_id}:{workspace_id}")` elects the leader. Only the leader holds the event stream, pulls, loads scopes and pushes. When the leader stops or closes, the lock passes to another tab.
 - Unmounting a workspace retires its engine. It keeps syncing until the shared outbox drains, then closes. Returning before close reclaims it. A retired follower does not hold the leader's lock.
-- Followers mirror the leader's connection status. They report offline when their browser is offline, or when the leader is offline or disconnected. The existing offline banner and online-only controls read that status.
+- Followers mirror the leader's connection status. They report offline when their browser is offline or the leader reports offline. A leader reconnecting its event stream is still online. The existing offline banner and online-only controls read that status.
 - A tab allocates mutation ids inside an IndexedDB read-write transaction on `meta.next_mutation_id`. IndexedDB serializes those transactions, so two tabs never reuse an id.
 - Every write to the shared database is broadcast on a `BroadcastChannel` with the changed records or mutations. Other tabs apply the broadcast instead of re-reading the database.
 

@@ -676,7 +676,8 @@ export class SyncEngine {
         return;
       case "status":
         if (this.role !== "follower") return;
-        this.leaderOnline = message.online && message.connected;
+        // Not `connected`: the leader's stream drops on every reconnect, and the leader stays online then.
+        this.leaderOnline = message.online;
         this.update({
           connected: message.connected,
           online: this.leaderOnline && this.deps.signals.getOnline(),
