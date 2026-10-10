@@ -10,7 +10,7 @@ import { DEFAULT_STAGES } from "./mutators/planning";
 import { acceptsChange, recordKey, recordScope, scopeKey } from "./persistence/shared";
 import type { Replica, Scope } from "./persistence/types";
 import { BOOTSTRAP_ENTITIES, BOOTSTRAP_REPLACED_ENTITIES } from "./records";
-import type { Entity } from "./records";
+import type { Change, Entity } from "./records";
 import { immutableCopy, ingest, SyncStore } from "./store";
 import type { PendingMutation } from "./store";
 import { AccessError, ProtocolError, UnauthorizedError, UnavailableError } from "./transport";
@@ -671,8 +671,6 @@ export class SyncEngine {
         (error: unknown): TabReply => ({ ok: false, error: tabError(error) }),
       );
     try {
-      // A scope the leader already loaded reaches the follower as a reload from the database.
-      if (this.loadedScopes.has(scopeKey(request.scope))) this.post({ type: "reset" });
       this.useScope(request.scope);
       return Promise.resolve({ ok: true, value: null });
     } catch (error) {
@@ -784,13 +782,38 @@ export class SyncEngine {
     for (const { scope } of this.heldScopes.values()) this.requestScope(scope);
   }
 
-  /** The leader loads the scope and sends its records as `pulled` messages with the scope set. */
+  /**
+   * The leader loads the scope and sends its records as `pulled` messages with the scope set. A
+   * leader that already holds the scope answers without a message, and the records come from the
+   * database.
+   */
   private askForScope(scope: Scope): void {
     const key = scopeKey(scope);
     if (!this.started || this.closed || this.loadedScopes.has(key)) return;
     for (const remote of this.remote.values())
       if (remote.call.kind === "loadScope" && scopeKey(remote.call.scope) === key) return;
-    this.ask({ kind: "loadScope", scope }, noop, noop);
+    this.ask(
+      { kind: "loadScope", scope },
+      () => {
+        this.adoptScope(scope).catch((error: unknown) => this.finishError(error));
+      },
+      noop,
+    );
+  }
+
+  /** Applies a scope the leader answered for, unless a `pulled` message already loaded it. */
+  private async adoptScope(scope: Scope): Promise<void> {
+    const key = scopeKey(scope);
+    await this.commits.run(async () => {
+      if (this.loadedScopes.has(key)) return;
+      const { loaded, records } = await this.requireReplica().loadScope(scope);
+      // Not loaded means the leader's load is still running, so its `pulled` message will bring it.
+      if (!loaded) return;
+      this.loadedScopes.set(key, scope);
+      this.scopeFailures.delete(key);
+      this.store.batch(() => this.store.applyBase(this.scopeChanges(scope, records)));
+      this.notifyScopes();
+    });
   }
 
   private beginNetwork(): void {
@@ -1018,38 +1041,41 @@ export class SyncEngine {
     await this.commits.run(async () => {
       this.check(controller);
       await this.requireReplica().writeScope({ scope, records });
-      const key = scopeKey(scope);
-      const changes = this.store
-        .baseAll(scope.entity)
-        .filter((record) => {
-          const current = recordScope(scope.entity, record);
-          return current !== null && scopeKey(current) === key;
-        })
-        .map((record) => ({
-          entity: scope.entity,
-          id: recordKey(scope.entity, record),
-          record: null,
-        }));
-      this.loadedScopes.set(key, scope);
-      this.scopeFailures.delete(key);
-      const upserts = records.map((record) => ({
-        entity: scope.entity,
-        id: recordKey(scope.entity, record),
-        record,
-      }));
-      this.store.batch(() => {
-        this.store.applyBase(changes);
-        this.store.applyBase(upserts);
-      });
+      const changes = this.scopeChanges(scope, records);
+      this.loadedScopes.set(scopeKey(scope), scope);
+      this.scopeFailures.delete(scopeKey(scope));
+      this.store.batch(() => this.store.applyBase(changes));
       this.post({
         type: "pulled",
-        changes: [...changes, ...upserts],
+        changes,
         cursor: this.cursor,
         acknowledgedUpTo: null,
         scope,
       });
       this.notifyScopes();
     });
+  }
+
+  /** Base changes that replace a scope's records with `records`: remove the old ones, then upsert. */
+  private scopeChanges(scope: Scope, records: readonly object[]): Change[] {
+    const key = scopeKey(scope);
+    const removed = this.store
+      .baseAll(scope.entity)
+      .filter((record) => {
+        const current = recordScope(scope.entity, record);
+        return current !== null && scopeKey(current) === key;
+      })
+      .map((record) => ({
+        entity: scope.entity,
+        id: recordKey(scope.entity, record),
+        record: null,
+      }));
+    const upserts = records.map((record) => ({
+      entity: scope.entity,
+      id: recordKey(scope.entity, record),
+      record,
+    }));
+    return [...removed, ...upserts];
   }
 
   private failScope(key: string, error: Error): void {

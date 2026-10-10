@@ -13,6 +13,8 @@ export interface TabHub {
   release(): void;
   /** Discards the next `count` messages of this type, whichever tab sends them. */
   drop(type: TabMessage["type"], count?: number): void;
+  /** Messages of this type posted so far, dropped or not. */
+  sent(type: TabMessage["type"]): number;
 }
 
 interface Endpoint {
@@ -31,6 +33,7 @@ export function createTabHub(): TabHub {
   const endpoints = new Set<Endpoint>();
   const queue: Array<{ to: Endpoint; message: TabMessage }> = [];
   const drops: Array<{ type: TabMessage["type"]; count: number }> = [];
+  const posted: TabMessage["type"][] = [];
   let held = false;
   let draining = false;
 
@@ -87,6 +90,7 @@ export function createTabHub(): TabHub {
       return {
         postMessage(message) {
           if (endpoint.closed) throw new Error("channel is closed");
+          posted.push(message.type);
           const drop = drops.find((entry) => entry.type === message.type && entry.count > 0);
           if (drop) {
             drop.count -= 1;
@@ -118,5 +122,6 @@ export function createTabHub(): TabHub {
     drop: (type, count = 1) => {
       drops.push({ type, count });
     },
+    sent: (type) => posted.filter((kind) => kind === type).length,
   };
 }

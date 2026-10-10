@@ -136,6 +136,18 @@ class MemoryReplica implements Replica {
     });
   }
 
+  async loadScope(scope: Scope): Promise<{ loaded: boolean; records: readonly object[] }> {
+    if (this.closed) throw new Error("replica is closed");
+    const key = scopeKey(scope);
+    const table = this.entry.state.records.get(scope.entity);
+    if (table === undefined) throw new Error(`unknown entity ${scope.entity}`);
+    const records = [...table.values()].filter((record) => {
+      const current = recordScope(scope.entity, record);
+      return current !== null && scopeKey(current) === key;
+    });
+    return structuredClone({ loaded: this.entry.state.scopes.has(key), records });
+  }
+
   async appendMutation(build: Parameters<Replica["appendMutation"]>[0]): Promise<PendingMutation> {
     return this.transaction((state) => {
       const id = state.meta.nextMutationId;

@@ -43,6 +43,8 @@ export interface Replica {
     acknowledgedUpTo: number | null;
   }): Promise<void>;
   writeScope(input: { scope: Scope; records: readonly object[] }): Promise<void>;
+  /** Whether the scope is loaded, and its records, read in one transaction. */
+  loadScope(scope: Scope): Promise<{ loaded: boolean; records: readonly object[] }>;
   appendMutation(build: (id: number) => Omit<PendingMutation, "id">): Promise<PendingMutation>;
   /** Return null without consuming an id when any mutation is pending. */
   allocateMutationIdIfOutboxEmpty(): Promise<number | null>;

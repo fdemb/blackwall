@@ -327,6 +327,33 @@ describe("tab coordination", () => {
     leaderRelease();
   });
 
+  it("gives a follower a scope the leader holds from the database, without a reset message", async () => {
+    const f = fixture(2);
+    await f.start();
+    const { leader, follower } = f.roles();
+    const scope = { entity: "comments", issueId: ISSUE } as const;
+    f.server.run(f.owner, {
+      type: "add_comment",
+      id: id(50),
+      issue_id: ISSUE,
+      body: "Loaded",
+      attachments: [],
+      mentions: [],
+    });
+    f.hub.drop("pulled", 1000);
+    const leaderRelease = leader.engine.useScope(scope);
+    await until(() => leader.engine.scopeStatus(scope) === "loaded");
+    const resets = f.hub.sent("reset");
+    const release = follower.engine.useScope(scope);
+    await until(() => follower.engine.scopeStatus(scope) === "loaded");
+    expect(f.hub.sent("reset")).toBe(resets);
+    expect(follower.engine.store.baseAll("comments").map((comment) => comment.id)).toEqual([
+      id(50),
+    ]);
+    release();
+    leaderRelease();
+  });
+
   it("asks the next leader again for a scope the old leader never loaded", async () => {
     // Tabs added after the first is ready get no bootstrap reset to replay later.
     const f = fixture(1);

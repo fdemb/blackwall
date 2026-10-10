@@ -287,6 +287,25 @@ for (const backend of ["memory", "idb"]) {
       expect((await replica.load()).scopes).toHaveLength(2);
     });
 
+    it("loadScope returns the marker and only the records of that scope", async () => {
+      const otherComment = { ...COMMENT, id: "comment-2", issue_id: "issue-2" };
+      expect(await replica.loadScope(COMMENT_SCOPE)).toEqual({ loaded: false, records: [] });
+      await replica.writeScope({ scope: COMMENT_SCOPE, records: [COMMENT] });
+      await replica.writeScope({
+        scope: { entity: "comments", issueId: "issue-2" },
+        records: [otherComment],
+      });
+      expect(await replica.loadScope(COMMENT_SCOPE)).toEqual({
+        loaded: true,
+        records: [COMMENT],
+      });
+      await replica.writeScope({ scope: ACTIVITY_SCOPE, records: [ACTIVITY] });
+      expect(await replica.loadScope(ACTIVITY_SCOPE)).toEqual({
+        loaded: true,
+        records: [ACTIVITY],
+      });
+    });
+
     it("uses user_id for alert preferences and id for members", async () => {
       await replica.writeBootstrap(
         bootstrap({

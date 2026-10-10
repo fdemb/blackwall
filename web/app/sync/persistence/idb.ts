@@ -249,6 +249,29 @@ class IndexedDBReplica implements Replica {
     });
   }
 
+  loadScope(scope: Scope): Promise<{ loaded: boolean; records: readonly object[] }> {
+    type Result = { loaded: boolean; records: readonly object[] };
+    return this.transaction<Result>(["scopes", scope.entity], "readonly", (tx, done, guard) => {
+      const key = scopeKey(scope);
+      let loaded: boolean | undefined;
+      let records: readonly object[] | undefined;
+      const finish = () => {
+        if (loaded !== undefined && records !== undefined) done({ loaded, records });
+      };
+      read<unknown>(tx.objectStore("scopes").get(key), guard, (value) => {
+        loaded = value !== undefined;
+        finish();
+      });
+      read<object[]>(tx.objectStore(scope.entity).getAll(), guard, (all) => {
+        records = all.filter((record) => {
+          const current = recordScope(scope.entity, record);
+          return current !== null && scopeKey(current) === key;
+        });
+        finish();
+      });
+    });
+  }
+
   appendMutation(build: Parameters<Replica["appendMutation"]>[0]): Promise<PendingMutation> {
     return this.transaction(["meta", "outbox"], "readwrite", (tx, done, guard) => {
       read<ReplicaMeta>(tx.objectStore("meta").get(META_KEY), guard, (meta) => {

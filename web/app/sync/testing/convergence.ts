@@ -275,6 +275,7 @@ export async function runConvergence(
         writeBootstrap: (value) => write(() => replica.writeBootstrap(value)),
         applyPull: (value) => write(() => replica.applyPull(value)),
         writeScope: (value) => write(() => replica.writeScope(value)),
+        loadScope: (scope) => replica.loadScope(scope),
         appendMutation: (value) => write(() => replica.appendMutation(value)),
         allocateMutationIdIfOutboxEmpty: () =>
           write(() => replica.allocateMutationIdIfOutboxEmpty()),
