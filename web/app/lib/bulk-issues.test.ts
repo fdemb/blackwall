@@ -51,6 +51,27 @@ describe("bulkIssueCommands", () => {
     );
   });
 
+  it("skips imported issues before batching unarchive commands", () => {
+    const archived = issues(1200);
+    const commands = bulkIssueCommands(
+      archived,
+      "unarchive",
+      (issue) => issueCapabilities(issue).edit,
+    );
+    expect(commands.map((command) => command.ids.length)).toEqual([500, 100]);
+    expect(commands.every((command) => command.action === "unarchive")).toBe(true);
+    expect(commands.flatMap((command) => command.ids)).toEqual(
+      archived.filter((issue) => issue.openproject === null).map((issue) => issue.id),
+    );
+    expect(
+      bulkIssueCommands(
+        archived.filter((issue) => issue.openproject !== null),
+        "unarchive",
+        (issue) => issueCapabilities(issue).edit,
+      ),
+    ).toEqual([]);
+  });
+
   it("returns no commands when nothing is included", () => {
     expect(bulkIssueCommands([], "restore")).toEqual([]);
     expect(bulkIssueCommands(issues(3), "restore", () => false)).toEqual([]);

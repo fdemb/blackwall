@@ -3,6 +3,7 @@ import { Archive, ArchiveRestore } from "lucide-react";
 import { Link } from "react-router";
 import { Button } from "~/components/ui/button";
 import { EmptyState, Page, PageHeader, Scroll } from "~/components/app/page";
+import { issueCapabilities } from "~/lib/ownership";
 import { bulkIssueCommands } from "~/lib/bulk-issues";
 import { useIssues } from "~/lib/queries";
 import { QueryStatus } from "~/components/app/query-status";
@@ -20,7 +21,11 @@ export default function ArchivePage() {
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
   const unarchiveAll = async () => {
     // Snapshot: built before the first await, so later view changes do not affect this run.
-    const commands = bulkIssueCommands(issues, "unarchive");
+    const commands = bulkIssueCommands(
+      issues,
+      "unarchive",
+      (issue) => issueCapabilities(issue).edit,
+    );
     const total = commands.reduce((sum, command) => sum + command.ids.length, 0);
     setProgress({ done: 0, total });
     try {
