@@ -1359,6 +1359,19 @@ describe("cookie sessions and pending callers", () => {
     expect(f.engine.status.get().pending).toBe(0);
   });
 
+  it("rejects an online call when a blocked push can never drain the outbox", async () => {
+    const f = fixture();
+    await f.ready();
+    f.transport.push = async () => {
+      throw new ProtocolError("Bad push body", 400);
+    };
+    await f.engine.mutate("update_issue", { id: ISSUE, patch: { title: "Stuck" } });
+    await until(() => f.engine.status.get().lastError instanceof ProtocolError);
+    const online = f.engine.runOnline("set_role", { user_id: f.peer.id, role: "viewer" });
+    await expect(online).rejects.toThrow("Reload");
+    expect(f.server.record("members", f.peer.id)?.role).not.toBe("viewer");
+  });
+
   it("rejects a missing online result instead of abandoning its caller", async () => {
     const f = fixture();
     await f.ready();

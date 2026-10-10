@@ -120,6 +120,7 @@ export class SyncEngine {
   private requestCount = 0;
   private leaderId = "";
   private leaderOnline = false;
+  private leaderBlocked = false;
   private readonly onMessage = (event: { data: TabMessage }) => this.receive(event.data);
   private readonly statusListeners = new Set<() => void>();
   private readonly eventListeners = new Set<(event: EngineEvent) => void>();
@@ -377,7 +378,7 @@ export class SyncEngine {
       remote.cancelResend();
       remote.resolve(null);
     }
-    this.post({ type: "status", connected: this.snapshot.connected, online: this.snapshot.online });
+    this.post(this.statusMessage());
     this.beginNetwork();
   }
 
@@ -490,12 +491,13 @@ export class SyncEngine {
         this.onlineRequests.run(async () => {
           for (let attempt = 0, csrfRefreshes = 0; ; attempt++) {
             controller.signal.throwIfAborted();
-            while (
-              !this.started ||
-              !this.snapshot.online ||
-              (await this.requireReplica().loadOutbox()).length > 0
-            ) {
+            for (;;) {
               controller.signal.throwIfAborted();
+              if (this.started && this.snapshot.online) {
+                if ((await this.requireReplica().loadOutbox()).length === 0) break;
+                if (this.role === "leader" ? this.outboxBlocked() : this.leaderBlocked)
+                  throw new Error("Pending changes can't be sent. Reload and try again.");
+              }
               this.requestPush();
               await this.waitForOutboxChange(controller.signal);
             }
@@ -640,17 +642,27 @@ export class SyncEngine {
     return work;
   }
 
+  /** Only a new engine clears these blocks, so the outbox would never drain. */
+  private outboxBlocked(): boolean {
+    return this.blocked.has("push") || this.blocked.has("pull") || this.blocked.has("bootstrap");
+  }
+
+  private statusMessage(): TabBody {
+    return {
+      type: "status",
+      connected: this.snapshot.connected,
+      online: this.snapshot.online,
+      blocked: this.outboxBlocked(),
+    };
+  }
+
   private update(patch: Partial<EngineStatus>): void {
     if (Object.entries(patch).every(([key, value]) => Reflect.get(this.snapshot, key) === value))
       return;
     this.snapshot = Object.freeze({ ...this.snapshot, ...patch });
     for (const listener of this.statusListeners) listener();
     if (this.role === "leader" && ("connected" in patch || "online" in patch))
-      this.post({
-        type: "status",
-        connected: this.snapshot.connected,
-        online: this.snapshot.online,
-      });
+      this.post(this.statusMessage());
   }
 
   private post(body: TabBody): void {
@@ -679,6 +691,7 @@ export class SyncEngine {
         if (this.role !== "follower") return;
         // Not `connected`: the leader's stream drops on every reconnect, and the leader stays online then.
         this.leaderOnline = message.online;
+        this.leaderBlocked = message.blocked;
         this.update({
           connected: message.connected,
           online: this.leaderOnline && this.deps.signals.getOnline(),
@@ -694,12 +707,7 @@ export class SyncEngine {
         this.receiveResult(message.mutationId, message.outcome);
         return;
       case "hello":
-        if (this.role === "leader")
-          this.post({
-            type: "status",
-            connected: this.snapshot.connected,
-            online: this.snapshot.online,
-          });
+        if (this.role === "leader") this.post(this.statusMessage());
         return;
       case "request":
         if (this.role === "leader") this.serve(message);
@@ -1503,6 +1511,7 @@ export class SyncEngine {
     }
     if (failure instanceof ProtocolError) {
       this.blocked.add(kind);
+      if (this.role === "leader") this.post(this.statusMessage());
       if (kind === "events") this.update({ connected: false });
       return true;
     }

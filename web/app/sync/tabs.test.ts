@@ -11,7 +11,7 @@ import { createFakeServer } from "./testing/fake-server";
 import type { FakeServerOptions } from "./testing/fake-server";
 import { createTabHub } from "./testing/tabs";
 import type { TabHub } from "./testing/tabs";
-import { createTransport } from "./transport";
+import { createTransport, ProtocolError } from "./transport";
 
 const id = (n: number) => `11111111-1111-4111-8111-${n.toString(16).padStart(12, "0")}`;
 const TEAM = id(1);
@@ -313,6 +313,24 @@ describe("tab coordination", () => {
     await f.advance(500);
     expect(await online).toMatchObject({ status: "applied" });
     release();
+  });
+
+  it("rejects a follower's online call when the leader's push is blocked", async () => {
+    const f = fixture(2);
+    await f.start();
+    const { leader, follower } = f.roles();
+    leader.fetch.mockImplementation(async (input, init) =>
+      String(input).includes("/push?")
+        ? Response.json({ results: null })
+        : f.server.fetch(input, init),
+    );
+    await follower.engine.mutate("update_issue", { id: ISSUE, patch: { title: "Stuck" } });
+    await until(() => leader.engine.status.get().lastError instanceof ProtocolError);
+    const online = follower.engine.runOnline("set_role", { user_id: f.peer.id, role: "admin" });
+    await expect(online).rejects.toThrow("Reload");
+    expect(follower.fetch.mock.calls.some(([url]) => String(url).endsWith("/commands"))).toBe(
+      false,
+    );
   });
 
   it("retains a tab reply for two resend intervals and resets expiry on repeats", async () => {

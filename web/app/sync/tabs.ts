@@ -25,7 +25,8 @@ export type TabBody =
   /** The session ended, so every tab stops. The leader sends this before it deletes anything. */
   | { type: "unauthorized" }
   | { type: "accessLost" }
-  | { type: "status"; connected: boolean; online: boolean }
+  /** `blocked`: a protocol error stopped the leader's push or reads, so the outbox can't drain. */
+  | { type: "status"; connected: boolean; online: boolean; blocked: boolean }
   | { type: "result"; mutationId: number; outcome: TabOutcome }
   /** A new tab asks the leader to repeat its status. */
   | { type: "hello" }

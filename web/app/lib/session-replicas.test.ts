@@ -552,20 +552,22 @@ describe("app tab coordination", () => {
   it("marks a follower offline when its browser or its leader is offline", async () => {
     const f = await twoTabs();
     const sender = f.hub.channel(`blackwall-sync:${f.profile.session_id}:${f.workspace.id}`);
+    const status = (connected: boolean, online: boolean) =>
+      sender.postMessage({ type: "status", connected, online, blocked: false, from: "leader" });
     try {
       expect(f.second.status.get().online).toBe(true);
-      sender.postMessage({ type: "status", connected: false, online: true, from: "leader" });
+      status(false, true);
       await until(() => !f.second.status.get().connected);
       expect(f.second.status.get().online).toBe(true);
-      sender.postMessage({ type: "status", connected: false, online: false, from: "leader" });
+      status(false, false);
       await until(() => !f.second.status.get().online);
       window.dispatchEvent(new Event("online"));
       expect(f.second.status.get().online).toBe(false);
-      sender.postMessage({ type: "status", connected: true, online: true, from: "leader" });
+      status(true, true);
       await until(() => f.second.status.get().online);
       vi.stubGlobal("navigator", { onLine: false });
       window.dispatchEvent(new Event("offline"));
-      sender.postMessage({ type: "status", connected: true, online: true, from: "leader" });
+      status(true, true);
       await settle();
       expect(f.second.status.get().online).toBe(false);
       await expect(runCommand(f.second, { type: "import_issues", issues: [] })).rejects.toThrow(

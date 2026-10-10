@@ -298,7 +298,7 @@ A bootstrap also drops loaded comment and activity scopes; the engine reloads th
 
 Some commands aren't queued offline: `invite`, `resend_invitation`, `create_integration` because of its secret, `set_role`, `remove_member`, `import_issues`, file uploads, import, export, workspace creation, and OpenProject settings.
 
-- `invite`, `resend_invitation`, `create_integration`, `set_role`, `remove_member`, and `import_issues` use `POST /api/workspaces/{id}/commands` with a per-call `idempotency_key`. The tab that issued the command sends it after its replica's outbox drains. Transient failures retry the same key and command body with backoff. These commands never allocate mutation ids or enter the outbox. Push carries only outbox mutations.
+- `invite`, `resend_invitation`, `create_integration`, `set_role`, `remove_member`, and `import_issues` use `POST /api/workspaces/{id}/commands` with a per-call `idempotency_key`. The tab that issued the command sends it after its replica's outbox drains. If a protocol error keeps the outbox from draining, the command fails and asks for a reload instead of waiting. Transient failures retry the same key and command body with backoff. These commands never allocate mutation ids or enter the outbox. Push carries only outbox mutations.
 - Their effects arrive through the next pull. The REST command pokes the leader's event stream even when a follower sends it.
 - Uploads, export, workspace creation, and OpenProject settings use their own REST endpoints.
 - The UI disables them while offline.
