@@ -354,6 +354,19 @@ describe("tab coordination", () => {
     leaderRelease();
   });
 
+  it("reports a scope the leader failed to load as an error in the follower", async () => {
+    const f = fixture(2);
+    await f.start();
+    const { leader, follower } = f.roles();
+    const scope = { entity: "comments", issueId: ISSUE } as const;
+    f.server.inject({ kind: "scope_error" });
+    const release = follower.engine.useScope(scope);
+    await until(() => follower.engine.scopeStatus(scope) === "error");
+    expect(follower.engine.scopeError(scope)?.message).toBe("scope rejected");
+    expect(leader.engine.scopeStatus(scope)).toBe("error");
+    release();
+  });
+
   it("asks the next leader again for a scope the old leader never loaded", async () => {
     // Tabs added after the first is ready get no bootstrap reset to replay later.
     const f = fixture(1);

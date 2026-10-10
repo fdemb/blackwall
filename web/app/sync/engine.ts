@@ -85,8 +85,6 @@ function errorFrom(error: TabError): Error {
     : new MutationError(error.status, error.message);
 }
 
-const noop = () => {};
-
 /** One replica. Only start/stop controls leadership and network ownership. */
 export function createEngine(deps: EngineDependencies): SyncEngine {
   return new SyncEngine(deps);
@@ -125,6 +123,8 @@ export class SyncEngine {
   private readonly scopeWork = new Map<string, Promise<void>>();
   private readonly scopeFailures = new Map<string, Error>();
   private readonly scopeListeners = new Set<() => void>();
+  /** Leader requests waiting for their scope to load or fail. */
+  private readonly scopeWaiters = new Set<() => void>();
   private readonly blocked = new Set<RequestKind>();
   private readonly outcomes = new Map<
     number,
@@ -670,12 +670,32 @@ export class SyncEngine {
         (value): TabReply => ({ ok: true, value }),
         (error: unknown): TabReply => ({ ok: false, error: tabError(error) }),
       );
+    return this.performScope(request.scope);
+  }
+
+  /** Holds the scope on the leader, then answers once it is loaded or has failed. */
+  private performScope(scope: Scope): Promise<TabReply> {
+    const key = scopeKey(scope);
     try {
-      this.useScope(request.scope);
-      return Promise.resolve({ ok: true, value: null });
+      this.useScope(scope);
     } catch (error) {
       return Promise.resolve({ ok: false, error: tabError(error) });
     }
+    return new Promise((resolve) => {
+      const settle = (): boolean => {
+        let reply: TabReply;
+        if (this.loadedScopes.has(key)) reply = { ok: true, value: null };
+        else {
+          const failure = this.scopeFailures.get(key);
+          if (failure === undefined) return false;
+          reply = { ok: false, error: tabError(failure) };
+        }
+        this.scopeWaiters.delete(settle);
+        resolve(reply);
+        return true;
+      };
+      if (!settle()) this.scopeWaiters.add(settle);
+    });
   }
 
   /**
@@ -797,7 +817,10 @@ export class SyncEngine {
       () => {
         this.adoptScope(scope).catch((error: unknown) => this.finishError(error));
       },
-      noop,
+      (error) => {
+        // A stopped or closed engine rejects its requests too, and that is not a scope failure.
+        if (this.started && !this.closed && !this.terminal) this.failScope(key, error);
+      },
     );
   }
 
@@ -1084,6 +1107,7 @@ export class SyncEngine {
   }
 
   private notifyScopes(): void {
+    for (const wake of [...this.scopeWaiters]) wake();
     for (const listener of this.scopeListeners) listener();
   }
 

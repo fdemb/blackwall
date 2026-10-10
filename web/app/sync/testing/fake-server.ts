@@ -32,7 +32,9 @@ export type Fault =
   | { kind: "truncate_bootstrap"; afterRecords?: number }
   | { kind: "cut_bootstrap"; byte: number }
   | { kind: "close_events"; afterMs: number }
-  | { kind: "reset_pull" };
+  | { kind: "reset_pull" }
+  /** The next scope request fails with a protocol error, like a rejected scope read. */
+  | { kind: "scope_error" };
 
 export interface FakeServerOptions {
   /** Return a number in [0, 1). Tests own and seed the generator. */
@@ -514,9 +516,11 @@ export class FakeServer {
             clientId,
             truncated?.kind === "truncate_bootstrap" ? (truncated.afterRecords ?? 0) : undefined,
           );
-        } else if (route === "scope")
+        } else if (route === "scope") {
+          if (faults.some((fault) => fault.kind === "scope_error"))
+            throw new MutationError(400, "scope rejected");
           response = json(this.scope(workspace, session.user, url.searchParams));
-        else {
+        } else {
           const stream = new EventConnection(this.clock, this.timing, request.signal, () =>
             this.streams.delete(stream),
           );
@@ -585,7 +589,9 @@ export class FakeServer {
               ? "events"
               : fault.kind === "reset_pull"
                 ? "pull"
-                : "push";
+                : fault.kind === "scope_error"
+                  ? "scope"
+                  : "push";
       if ((!target || target === route) && !kinds.has(fault.kind)) {
         taken.push(fault);
         kinds.add(fault.kind);
