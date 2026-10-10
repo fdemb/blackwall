@@ -285,24 +285,6 @@ class IndexedDBReplica implements Replica {
     });
   }
 
-  allocateMutationIdIfOutboxEmpty(): Promise<number | null> {
-    return this.transaction(["meta", "outbox"], "readwrite", (tx, done, guard) => {
-      read<number>(tx.objectStore("outbox").count(), guard, (count) => {
-        if (count !== 0) {
-          done(null);
-          return;
-        }
-        read<ReplicaMeta>(tx.objectStore("meta").get(META_KEY), guard, (meta) => {
-          tx.objectStore("meta").put(
-            { ...meta, nextMutationId: meta.nextMutationId + 1 },
-            META_KEY,
-          );
-          done(meta.nextMutationId);
-        });
-      });
-    });
-  }
-
   close(): void {
     this.closed = true;
     this.db.close();

@@ -163,7 +163,7 @@ function ndjson(values: unknown[]): Response {
     "application/x-ndjson",
   );
 }
-const methods = ["bootstrap", "pull", "push", "scope", "events", "me"] as const;
+const methods = ["bootstrap", "pull", "push", "command", "scope", "events", "me"] as const;
 function call(transport: Transport, method: (typeof methods)[number]): Promise<unknown> {
   switch (method) {
     case "bootstrap":
@@ -172,6 +172,11 @@ function call(transport: Transport, method: (typeof methods)[number]): Promise<u
       return transport.pull(id(50), CLIENT, null);
     case "push":
       return transport.push(id(50), CLIENT, [label(1)]);
+    case "command":
+      return transport.command(id(50), {
+        command: { type: "set_role", user_id: id(51), role: "member" },
+        idempotencyKey: "key",
+      });
     case "scope":
       return transport.scope(id(50), CLIENT, COMMENT_SCOPE);
     case "events":
@@ -952,5 +957,43 @@ describe("bootstrap EOF boundaries", () => {
     await expect(
       responseTransport(response).push(id(50), CLIENT, [label(1)]),
     ).rejects.toMatchObject({ name: "UnavailableError", status: 503, retryAfter: 5 });
+  });
+});
+
+describe("REST commands", () => {
+  it("posts a key and command with CSRF, omits expected versions, and validates the response", async () => {
+    setCsrf("command-csrf");
+    const fetch = vi.fn<typeof globalThis.fetch>(async () =>
+      Response.json({ result: { id: null }, versions: {}, changes: [] }),
+    );
+    const transport = createTransport({ fetch });
+    const command = { type: "set_role", user_id: id(51), role: "member" };
+    expect(await transport.command("workspace/one", { command, idempotencyKey: "key" })).toEqual({
+      result: { id: null },
+      versions: {},
+      changes: [],
+    });
+    const [url, init] = fetch.mock.calls[0] ?? [];
+    expect(url).toBe("/api/workspaces/workspace%2Fone/commands");
+    expect(init).toMatchObject({ method: "POST", credentials: "same-origin" });
+    expect(new Headers(init?.headers).get("X-CSRF-Token")).toBe("command-csrf");
+    expect(new Headers(init?.headers).get("Content-Type")).toBe("application/json");
+    expect(JSON.parse(String(init?.body))).toEqual({ command, idempotency_key: "key" });
+  });
+
+  it.each([
+    {},
+    { result: {}, versions: {}, changes: [] },
+    { result: { id: 3 }, versions: {}, changes: [] },
+    { result: { id: null }, versions: { entity: "1" }, changes: [] },
+    { result: { id: null }, versions: {}, changes: [{ entity: "bad", id: "x", record: null }] },
+    { result: { id: null }, versions: {}, changes: [{ entity: "members", id: "x", record: [] }] },
+  ])("rejects malformed responses %j", async (body) => {
+    await expect(
+      responseTransport(Response.json(body)).command(id(50), {
+        command: { type: "set_role" },
+        idempotencyKey: "key",
+      }),
+    ).rejects.toBeInstanceOf(ProtocolError);
   });
 });

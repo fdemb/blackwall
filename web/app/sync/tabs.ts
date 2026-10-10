@@ -35,8 +35,6 @@ export type TabBody =
       | { ok: false; error: TabError }
     ));
 
-export type TabCall =
-  | { kind: "runOnline"; name: string; args: unknown }
-  | { kind: "loadScope"; scope: Scope };
+export type TabCall = { kind: "loadScope"; scope: Scope };
 
 export type TabMessage = TabBody & { from: string };

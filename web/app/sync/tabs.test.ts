@@ -295,7 +295,7 @@ describe("tab coordination", () => {
     await f.settleAll();
   });
 
-  it("runs a follower's online command and scope load on the leader, and completes after a handover", async () => {
+  it("sends a follower's online command directly and completes across a leader handover", async () => {
     const f = fixture(2);
     await f.start();
     const { leader, follower } = f.roles();
@@ -303,12 +303,14 @@ describe("tab coordination", () => {
     const release = follower.engine.useScope(scope);
     await until(() => follower.engine.scopeStatus(scope) === "loaded");
     expect(f.requests(follower)).toBe(0);
-    // The leader's push commits on the server, but its response is delayed past the handover.
-    f.server.inject({ kind: "response_delay", route: "push", milliseconds: 500 });
+    f.server.inject({ kind: "response_delay", route: "commands", milliseconds: 500 });
     const online = follower.engine.runOnline("set_role", { user_id: f.peer.id, role: "admin" });
-    await until(() => f.pushes(leader).length === 1);
+    await until(() => follower.fetch.mock.calls.some(([url]) => String(url).endsWith("/commands")));
+    await until(() => f.server.record("members", f.peer.id)?.role === "admin");
+    expect(leader.fetch.mock.calls.some(([url]) => String(url).endsWith("/commands"))).toBe(false);
     await leader.engine.close();
     await until(() => follower.engine.status.get().role === "leader");
+    await f.advance(500);
     expect(await online).toMatchObject({ status: "applied" });
     release();
   });

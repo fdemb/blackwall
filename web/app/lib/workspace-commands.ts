@@ -1,5 +1,5 @@
 import type { SyncEngine, Rejection } from "../sync/engine";
-import { createdIds, ONLINE_ONLY } from "../sync/mutators";
+import { createdIds, MutationError, ONLINE_ONLY } from "../sync/mutators";
 import { ApiError, workspaces } from "./api";
 import type { Command } from "./types";
 
@@ -18,7 +18,10 @@ export async function runCommand(engine: SyncEngine, command: Command): Promise<
   const { type, ...args } = command;
   if (ONLINE_ONLY.some((name) => name === type)) {
     if (!engine.status.get().online) throw new OnlineRequiredError();
-    const result = await engine.runOnline(type, args);
+    const result = await engine.runOnline(type, args).catch((error: unknown) => {
+      if (error instanceof MutationError) throw new ServerRejection(error.message, error.status);
+      throw error;
+    });
     if (result.status === "rejected")
       throw new ServerRejection(result.error.message, result.error.status);
     // Online creates cannot predict their server result; create_integration supplies its id.

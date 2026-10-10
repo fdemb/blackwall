@@ -161,13 +161,6 @@ class MemoryReplica implements Replica {
     });
   }
 
-  async allocateMutationIdIfOutboxEmpty(): Promise<number | null> {
-    return this.transaction((state) => {
-      if (state.outbox.size !== 0) return null;
-      return state.meta.nextMutationId++;
-    });
-  }
-
   close(): void {
     this.closed = true;
     this.entry.handles.delete(this);

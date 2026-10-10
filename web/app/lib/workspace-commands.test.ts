@@ -8,6 +8,7 @@ import { setCsrf } from "./api";
 import {
   OnlineRequiredError,
   runCommand,
+  ServerRejection,
   uuidsIn,
   waitForUploadTarget,
   uploadFile,
@@ -127,7 +128,10 @@ describe("workspace commands", () => {
       .filter(([url]) => String(url).includes("/push?"))
       .map(([, init]) => JSON.parse(String(init?.body)));
     expect(pushed[0].mutations[0].name).toBe("update_issue");
-    expect(pushed.at(-1).mutations[0].name).toBe("set_role");
+    expect(
+      pushed.flatMap((batch) => batch.mutations.map((mutation: { name: string }) => mutation.name)),
+    ).not.toContain("set_role");
+    expect(fetch.mock.calls.some(([url]) => String(url).endsWith("/commands"))).toBe(true);
     expect(engine.store.pending().some((mutation) => mutation.name === "set_role")).toBe(false);
   });
 });
@@ -365,6 +369,17 @@ describe("offline and rejected commands", () => {
       uploadFile(offline, workspace.id, id(2), new File(["notes"], "notes.txt")),
     ).rejects.toBeInstanceOf(OnlineRequiredError);
     expect(sent).not.toHaveBeenCalled();
+  });
+
+  it("keeps ServerRejection for denied online commands", async () => {
+    const { engine, server, owner, peer, workspace } = await fixture();
+    server.setRole(workspace.id, owner.id, "member");
+    await expect(
+      runCommand(engine, { type: "set_role", user_id: peer.id, role: "admin" }),
+    ).rejects.toBeInstanceOf(ServerRejection);
+    await expect(
+      runCommand(engine, { type: "set_role", user_id: peer.id, role: "admin" }),
+    ).rejects.toMatchObject({ status: 403, message: "permission denied" });
   });
 
   it("names the title of a create the server rejects, after the form has closed", async () => {

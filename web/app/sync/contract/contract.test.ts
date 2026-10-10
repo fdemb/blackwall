@@ -19,6 +19,7 @@ import {
   Connection,
 } from "./environment";
 import type { Client, User } from "./environment";
+import { sql } from "./setup";
 import { DATE, fixture, scenario } from "./scenarios";
 
 const names = Object.keys(MUTATORS).filter((name): name is MutatorName =>
@@ -86,6 +87,39 @@ describe.skipIf(!enabled)(`${suiteName}: prediction contract`, () => {
     },
     30_000,
   );
+
+  it("applies an online invite once when its idempotency key is replayed", async () => {
+    const ws = await workspace(owner);
+    const transport = createTransport({
+      baseUrl: inject("syncContract").baseUrl,
+      fetch: new Connection(owner).fetch,
+    });
+    const input = {
+      command: {
+        type: "invite",
+        email: `replay-${crypto.randomUUID()}@example.test`,
+        role: "member",
+        token_hash: "server-generated",
+      },
+      idempotencyKey: crypto.randomUUID(),
+    };
+    const first = await transport.command(ws, input);
+    const replay = await transport.command(ws, input);
+    expect(first.result.id).not.toBeNull();
+    expect(replay.result).toEqual(first.result);
+    expect(
+      await sql(
+        inject("syncContract").databaseUrl,
+        `SELECT count(*) FROM jobs WHERE payload->>'invitation_id'='${first.result.id}'`,
+      ),
+    ).toBe("1");
+    await expect(
+      transport.command(ws, { ...input, command: { ...input.command, role: "admin" } }),
+    ).rejects.toMatchObject({
+      status: 409,
+      message: "idempotency key reused for a different request",
+    });
+  });
 
   it("matches admission and server rejection status/message in each command family", async () => {
     const ws = await workspace(owner);

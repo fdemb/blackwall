@@ -1670,3 +1670,61 @@ describe("cookie authentication", () => {
     expect(f.server.records("labels")).toHaveLength(2);
   });
 });
+
+describe("REST command idempotency", () => {
+  function commands() {
+    const f = fixture();
+    const send = (command: object, key: unknown, token = f.token) =>
+      f.server.fetch(`/api/workspaces/${f.workspace.id}/commands`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ command, idempotency_key: key }),
+      });
+    return { ...f, send };
+  }
+
+  it("replays once, renders current records, and refuses a changed body", async () => {
+    const f = commands();
+    const command = { type: "set_role", user_id: f.member.id, role: "admin" };
+    const first = await f.send(command, "key");
+    expect(first.status).toBe(200);
+    const applied = await first.json();
+    f.server.setRole(f.workspace.id, f.member.id, "viewer");
+    const replay = await f.send({ role: "admin", user_id: f.member.id, type: "set_role" }, "key");
+    expect(replay.status).toBe(200);
+    const repeated = await replay.json();
+    expect(repeated.result).toEqual(applied.result);
+    expect(repeated.changes.find((change: Change) => change.entity === "members").record.role).toBe(
+      "viewer",
+    );
+    expect(f.server.record("members", f.member.id)?.role).toBe("viewer");
+    const changed = await f.send({ ...command, role: "member" }, "key");
+    expect(changed.status).toBe(409);
+    expect(await changed.json()).toEqual({
+      error: "idempotency key reused for a different request",
+    });
+    expect((await f.send({ type: "remove_member", user_id: f.member.id }, "remove")).status).toBe(
+      200,
+    );
+    expect((await f.send({ type: "remove_member", user_id: f.member.id }, "remove")).status).toBe(
+      200,
+    );
+  });
+
+  it.each(["", "   ", "a".repeat(201), "ą".repeat(101)])("rejects invalid keys %j", async (key) => {
+    const f = commands();
+    const response = await f.send({ type: "set_role", user_id: f.member.id, role: "viewer" }, key);
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: "text must contain 1 to 200 bytes" });
+  });
+
+  it("scopes keys to the actor and records only successful commands", async () => {
+    const f = commands();
+    const denied = { type: "set_role", user_id: f.member.id, role: "viewer" };
+    expect((await f.send(denied, "same", f.memberToken)).status).toBe(403);
+    expect((await f.send(denied, "same")).status).toBe(200);
+    f.server.setRole(f.workspace.id, f.member.id, "admin");
+    const own = { type: "set_role", user_id: f.member.id, role: "member" };
+    expect((await f.send(own, "same", f.memberToken)).status).toBe(200);
+  });
+});

@@ -56,6 +56,12 @@ export interface PushResponse {
   retryAfter?: number | string | null;
 }
 
+export interface CommandResponse {
+  result: { id: string | null };
+  versions: Record<string, number>;
+  changes: Change[];
+}
+
 export interface ScopeResponse {
   records: object[];
 }
@@ -198,6 +204,44 @@ export function createTransport(options: TransportOptions) {
         if (retry !== null) result.retryAfter = retry;
       }
       return result;
+    },
+    async command(
+      ws: string,
+      input: { command: object; idempotencyKey: string },
+      requestOptions: StreamOptions = {},
+    ): Promise<CommandResponse> {
+      const response = await checked(`/api/workspaces/${encodeURIComponent(ws)}/commands`, {
+        method: "POST",
+        signal: signalFor(requestOptions.signal),
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ command: input.command, idempotency_key: input.idempotencyKey }),
+      });
+      const value = await json(response);
+      if (
+        !object(value) ||
+        !object(value.result) ||
+        (value.result.id !== null && typeof value.result.id !== "string") ||
+        !object(value.versions) ||
+        !Object.values(value.versions).every(integer) ||
+        !Array.isArray(value.changes)
+      )
+        throw new ProtocolError("Invalid command response", response.status);
+      const changes = value.changes.map((change: unknown): Change => {
+        if (
+          !object(change) ||
+          !entity(change.entity) ||
+          typeof change.id !== "string" ||
+          (change.record !== null && !object(change.record))
+        )
+          throw new ProtocolError("Invalid command change", response.status);
+        return { entity: change.entity, id: change.id, record: change.record };
+      });
+      const versions: Record<string, number> = {};
+      for (const [id, version] of Object.entries(value.versions)) {
+        if (!integer(version)) throw new ProtocolError("Invalid command version", response.status);
+        versions[id] = version;
+      }
+      return { result: { id: value.result.id }, versions, changes };
     },
     async scope(
       ws: string,

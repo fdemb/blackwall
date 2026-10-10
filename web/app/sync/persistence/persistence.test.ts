@@ -337,49 +337,20 @@ for (const backend of ["memory", "idb"]) {
       expect((await replica.load()).records.alert_preferences).toEqual([]);
     });
 
-    it("allocates increasing ids across concurrent handles, persists local and allows online-only gaps", async () => {
+    it("allocates increasing ids across concurrent handles and persists local", async () => {
       const other = await open();
       const [a, b] = await Promise.all([
         replica.appendMutation(mutation),
         other.appendMutation(mutation),
       ]);
       expect([a.id, b.id].sort()).toEqual([1, 2]);
-      expect(await other.allocateMutationIdIfOutboxEmpty()).toBeNull();
       await replica.applyPull({ changes: [], cursor: "flushed", acknowledgedUpTo: 2 });
-      expect(await other.allocateMutationIdIfOutboxEmpty()).toBe(3);
-      expect((await replica.appendMutation(mutation)).id).toBe(4);
+      expect((await replica.appendMutation(mutation)).id).toBe(3);
       const loaded = await other.load();
-      expect(loaded.outbox.map((item) => item.id)).toEqual([4]);
+      expect(loaded.outbox.map((item) => item.id)).toEqual([3]);
       for (const item of loaded.outbox)
         expect(item.local).toEqual({ notificationIds: ["notification-1"] });
-      expect(loaded.meta.nextMutationId).toBe(5);
-    });
-
-    it("online-only allocation checks emptiness after another handle appends", async () => {
-      const other = await open();
-      expect((await replica.load()).outbox).toEqual([]);
-      const append = other.appendMutation(mutation);
-      const allocate = replica.allocateMutationIdIfOutboxEmpty();
-      expect((await append).id).toBe(1);
-      expect(await allocate).toBeNull();
-      expect((await replica.load()).meta.nextMutationId).toBe(2);
-      await replica.applyPull({ changes: [], cursor: "flushed", acknowledgedUpTo: 1 });
-      const [a, b] = await Promise.all([
-        replica.allocateMutationIdIfOutboxEmpty(),
-        other.allocateMutationIdIfOutboxEmpty(),
-      ]);
-      expect([a, b].sort()).toEqual([2, 3]);
-      expect((await replica.load()).outbox).toEqual([]);
-      expect((await other.appendMutation(mutation)).id).toBe(4);
-    });
-
-    it("an append after online-only allocation receives a later id", async () => {
-      const other = await open();
-      const allocate = replica.allocateMutationIdIfOutboxEmpty();
-      const append = other.appendMutation(mutation);
-      expect(await allocate).toBe(1);
-      expect((await append).id).toBe(2);
-      expect((await replica.load()).outbox.map((item) => item.id)).toEqual([2]);
+      expect(loaded.meta.nextMutationId).toBe(4);
     });
 
     it("reports a deleted replica to its open handles, but not to a handle closed explicitly", async () => {
@@ -513,7 +484,6 @@ for (const backend of ["memory", "idb"]) {
       replica.close();
       replica.close();
       await expect(replica.load()).rejects.toThrow("replica is closed");
-      await expect(replica.allocateMutationIdIfOutboxEmpty()).rejects.toThrow("replica is closed");
       expect((await other.appendMutation(mutation)).id).toBe(1);
       expect((await (await open()).load()).outbox).toHaveLength(1);
     });

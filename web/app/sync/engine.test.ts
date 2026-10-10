@@ -116,6 +116,10 @@ function fixture(
     fetch.mock.calls
       .filter(([url]) => String(url).includes("/push?"))
       .map(([, init]) => JSON.parse(String(init?.body)).mutations);
+  const commands = () =>
+    fetch.mock.calls
+      .filter(([url]) => String(url).endsWith("/commands"))
+      .map(([, init]) => JSON.parse(String(init?.body)));
   const requests = (route: string) =>
     fetch.mock.calls.filter(([url]) =>
       route === "me" ? String(url).endsWith("/api/me") : String(url).includes(`/${route}?`),
@@ -140,6 +144,7 @@ function fixture(
     return normalize("issues", record);
   };
   return {
+    commands,
     authoritativeIssue,
     server,
     owner,
@@ -477,26 +482,114 @@ describe("sync engine", () => {
     expect(await newer.settled).toBe("applied");
   });
 
-  it("retries online-only id allocation when the outbox-empty check loses a race", async () => {
-    const storage = new MemoryReplicaStorage();
-    const open = storage.open.bind(storage);
-    let allocations = 0;
-    storage.open = async (input) => {
-      const replica = await open(input);
-      const allocate = replica.allocateMutationIdIfOutboxEmpty.bind(replica);
-      replica.allocateMutationIdIfOutboxEmpty = async () =>
-        ++allocations === 1 ? null : allocate();
-      return replica;
-    };
-    const f = fixture(storage);
+  it("retries a dropped command response with the same key and applies it once", async () => {
+    const f = fixture();
     await f.ready();
-    const online = f.engine.runOnline("set_role", { user_id: f.peer.id, role: "viewer" });
-    await until(() => allocations === 1);
-    expect(f.pushes()).toHaveLength(0);
+    const before = await f.disk();
+    f.server.inject({ kind: "drop_response", route: "commands" });
+    const online = f.engine.runOnline("remove_member", { user_id: f.peer.id });
+    await until(() => f.commands().length === 1);
+    await flush();
+    expect(f.server.record("members", f.peer.id)).toBeNull();
     await f.advance(1000);
-    expect(await online).toEqual({ id: 1, status: "applied" });
-    expect(allocations).toBe(2);
-    expect((await f.disk()).outbox).toHaveLength(0);
+    expect(await online).toEqual({ id: 0, status: "applied" });
+    expect(f.commands()).toHaveLength(2);
+    expect(f.commands()[1]).toEqual(f.commands()[0]);
+    expect(f.pushes()).toHaveLength(0);
+    expect((await f.disk()).meta.nextMutationId).toBe(before.meta.nextMutationId);
+  });
+
+  it("rejects an online business error with the server's status and message, preserving access", async () => {
+    const f = fixture();
+    await f.ready();
+    f.server.setRole(f.workspace.id, f.owner.id, "member");
+    await expect(
+      f.engine.runOnline("set_role", { user_id: f.peer.id, role: "admin" }),
+    ).rejects.toMatchObject({ name: "MutationError", status: 403, message: "permission denied" });
+    expect(await f.storage.list()).toHaveLength(1);
+    const receipt = await f.engine.mutate("update_issue", {
+      id: ISSUE,
+      patch: { title: "Still allowed" },
+    });
+    expect(await receipt.settled).toBe("applied");
+  });
+
+  it.each([500, 502, 503])("retries command HTTP %i with the same body and key", async (status) => {
+    const f = fixture();
+    await f.ready();
+    const fetch = f.server.fetch;
+    let failed = false;
+    f.fetch.mockImplementation(async (...args) => {
+      if (String(args[0]).endsWith("/commands") && !failed) {
+        failed = true;
+        return Response.json({ error: "try again" }, { status });
+      }
+      return fetch(...args);
+    });
+    const online = f.engine.runOnline("set_role", { user_id: f.peer.id, role: "viewer" });
+    await until(() => f.commands().length === 1);
+    await flush();
+    await f.advance(1000);
+    expect(await online).toMatchObject({ status: "applied" });
+    expect(f.commands()).toHaveLength(2);
+    expect(f.commands()[1]).toEqual(f.commands()[0]);
+  });
+
+  it("treats a missing command target as a business 404 while workspace access remains valid", async () => {
+    const f = fixture();
+    await f.ready();
+    const fetch = f.server.fetch;
+    f.fetch.mockImplementation(async (...args) =>
+      String(args[0]).endsWith("/commands")
+        ? Response.json({ error: "invitation not found" }, { status: 404 })
+        : fetch(...args),
+    );
+    await expect(f.engine.runOnline("resend_invitation", { id: id(900) })).rejects.toMatchObject({
+      name: "MutationError",
+      status: 404,
+      message: "invitation not found",
+    });
+    expect(await f.storage.list()).toHaveLength(1);
+    expect(f.engine.store.all("issues")).toHaveLength(2);
+  });
+
+  it("keeps an online retry pending through an offline interval with the same key", async () => {
+    const f = fixture();
+    await f.ready();
+    f.server.inject({ kind: "drop_response", route: "commands" });
+    const online = f.engine.runOnline("remove_member", { user_id: f.peer.id });
+    await until(() => f.commands().length === 1);
+    await flush();
+    f.signals.send("offline");
+    await f.advance(5000);
+    expect(f.commands()).toHaveLength(1);
+    f.signals.send("online");
+    expect(await online).toMatchObject({ status: "applied" });
+    expect(f.commands()).toHaveLength(2);
+    expect(f.commands()[1]).toEqual(f.commands()[0]);
+  });
+
+  it("refreshes CSRF for an online command and preserves its key", async () => {
+    const f = fixture();
+    await f.ready();
+    f.server.rotateCsrf(f.token);
+    const online = f.engine.runOnline("set_role", { user_id: f.peer.id, role: "viewer" });
+    expect(await online).toMatchObject({ status: "applied" });
+    expect(f.commands()).toHaveLength(2);
+    expect(f.commands()[1]).toEqual(f.commands()[0]);
+    expect(f.requests("me")).toBe(1);
+  });
+
+  it.each(["session", "membership"] as const)("handles online command loss of %s", async (kind) => {
+    const f = fixture();
+    await f.ready();
+    if (kind === "session") f.server.logout(f.token);
+    else f.server.removeMember(f.workspace.id, f.owner.id);
+    await expect(
+      f.engine.runOnline("set_role", { user_id: f.peer.id, role: "viewer" }),
+    ).rejects.toMatchObject({ status: kind === "session" ? 401 : 403 });
+    expect(await f.storage.list()).toEqual([]);
+    expect(f.engine.store.all("issues")).toEqual([]);
   });
 
   it("continues core syncing when a scope protocol error blocks only scope loads", async () => {
@@ -873,7 +966,7 @@ describe("sync engine", () => {
     expect((await f.disk()).scopes).toEqual([scope]);
   });
 
-  it("waits for the outbox before online-only allocation and never stores that command", async () => {
+  it("waits for a pending outbox mutation before sending a REST command", async () => {
     const f = fixture();
     await f.ready();
     f.engine.stop();
@@ -885,15 +978,20 @@ describe("sync engine", () => {
     await flush();
     expect(f.pushes()).toHaveLength(0);
     expect((await f.disk()).outbox).toHaveLength(1);
+    expect(f.commands()).toHaveLength(0);
     await f.engine.start();
-    expect(await online).toEqual({ id: 2, status: "applied" });
+    expect(await online).toEqual({ id: 0, status: "applied" });
     expect(await receipt.settled).toBe("applied");
     await until(() => f.engine.store.get("members", f.peer.id)?.role === "viewer");
     expect(f.pushes().map((batch) => batch.map((mutation) => mutation.name))).toEqual([
       ["update_issue"],
-      ["set_role"],
     ]);
     expect((await f.disk()).outbox).toHaveLength(0);
+    const routes = f.fetch.mock.calls.map(([url]) => String(url));
+    expect(routes.findIndex((url) => url.endsWith("/commands"))).toBeGreaterThan(
+      routes.findIndex((url) => url.includes("/push?")),
+    );
+    expect((await f.disk()).meta.nextMutationId).toBe(2);
   });
 
   it("reconnects dropped events and polls every 30 seconds while disconnected", async () => {
@@ -1059,19 +1157,22 @@ describe("review regressions", () => {
   it("keeps caller-owned arrays out of an online retry payload", async () => {
     const f = fixture();
     await f.ready();
-    f.server.inject({ kind: "unavailable", route: "push" });
+    f.server.inject({ kind: "unavailable", route: "commands" });
     const labels = [id(80)];
     const online = f.engine.runOnline("import_issues", {
       issues: [{ team_id: TEAM, title: "Import", labels }],
     });
     void online.catch(() => undefined);
-    await until(() => f.pushes().length === 1);
+    await until(() => f.commands().length === 1);
     await flush();
-    const first = f.pushes()[0];
+    const first = f.commands()[0];
     labels.push(id(81));
-    await f.advance(1000);
-    await online;
-    expect(f.pushes()[1]).toEqual(first);
+    await f.advance(5000);
+    await expect(online).rejects.toMatchObject({
+      status: 400,
+      message: "not supported by the fake",
+    });
+    expect(f.commands()[1]).toEqual(first);
   });
 
   it("gives a held scope and push turns during sustained pull pokes", async () => {
@@ -1264,8 +1365,8 @@ describe("cookie sessions and pending callers", () => {
     const original = f.server.fetch;
     f.fetch.mockImplementation(async (...args) => {
       const response = await original(...args);
-      return String(args[0]).includes("/push?")
-        ? Response.json({ last_mutation_id: 1, results: [] })
+      return String(args[0]).endsWith("/commands")
+        ? Response.json({ result: {}, versions: {}, changes: [] })
         : response;
     });
     const online = f.engine.runOnline("set_role", { user_id: f.peer.id, role: "viewer" });
@@ -1295,18 +1396,18 @@ describe("cookie sessions and pending callers", () => {
   );
 
   it.each(["stop", "close"] as const)(
-    "rejects both captured and queued online jobs on %s",
+    "rejects in-flight and waiting online calls on %s",
     async (action) => {
       const f = fixture();
       await f.ready();
-      f.server.inject({ kind: "delay", route: "push", milliseconds: 1000 });
+      f.server.inject({ kind: "delay", route: "commands", milliseconds: 1000 });
       const first = f.engine.runOnline("set_role", { user_id: f.peer.id, role: "viewer" });
       const second = f.engine.runOnline("set_role", { user_id: f.peer.id, role: "member" });
       const rejected = [
         expect(first).rejects.toThrow(/closed|stopped/),
         expect(second).rejects.toThrow(/closed|stopped/),
       ];
-      await until(() => f.pushes().length === 1);
+      await until(() => f.commands().length === 1);
       await f.engine[action]();
       await Promise.all(rejected);
       expect((await f.disk()).outbox).toEqual([]);

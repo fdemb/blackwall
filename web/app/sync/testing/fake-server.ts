@@ -14,19 +14,19 @@ import { Tables } from "./tables";
 import type { Pair } from "./tables";
 import type { DeepReadonly } from "../store";
 
-export type Route = "me" | "bootstrap" | "pull" | "push" | "scope" | "events";
+export type Route = "me" | "commands" | "bootstrap" | "pull" | "push" | "scope" | "events";
 export type Fault =
   | { kind: "delay"; route?: Route; milliseconds: number | readonly [number, number] }
   | {
       kind: "response_delay";
-      route?: "pull" | "bootstrap" | "scope" | "push";
+      route?: "pull" | "bootstrap" | "scope" | "push" | "commands";
       milliseconds: number | readonly [number, number];
     }
   | { kind: "drop_response"; route?: Route }
   | { kind: "duplicate_push" }
   | {
       kind: "unavailable";
-      route: "push" | "pull" | "bootstrap" | "scope" | "events";
+      route: "commands" | "push" | "pull" | "bootstrap" | "scope" | "events";
       after?: number;
     }
   | { kind: "truncate_bootstrap"; afterRecords?: number }
@@ -117,6 +117,17 @@ export class FakeServer {
   >();
   private readonly clients = new Map<string, ClientState>();
   private readonly history: Transaction[] = [];
+  private readonly operationKeys = new Map<
+    string,
+    {
+      request: string;
+      response: {
+        result: { id: string | null };
+        versions: Record<string, number>;
+        changes: Change[];
+      };
+    }
+  >();
   private readonly faults: Fault[] = [];
   private readonly streams = new Map<EventConnection, string>();
   private readonly pageSize: number;
@@ -394,11 +405,17 @@ export class FakeServer {
     );
     request.signal.throwIfAborted();
     const url = new URL(request.url);
-    const matched = /^\/api\/workspaces\/([^/]+)\/sync\/(bootstrap|pull|push|scope|events)$/.exec(
-      url.pathname,
-    );
-    const route = url.pathname === "/api/me" ? "me" : matched?.[2];
-    if (!route || (route === "push" ? request.method !== "POST" : request.method !== "GET"))
+    const matched =
+      /^\/api\/workspaces\/([^/]+)\/(?:sync\/(bootstrap|pull|push|scope|events)|(commands))$/.exec(
+        url.pathname,
+      );
+    const route = url.pathname === "/api/me" ? "me" : (matched?.[2] ?? matched?.[3]);
+    if (
+      !route ||
+      (route === "push" || route === "commands"
+        ? request.method !== "POST"
+        : request.method !== "GET")
+    )
       return json({ error: "not found" }, 404);
     const faults = this.takeFaults(route);
     for (const fault of faults) this.options.onFault?.(route, structuredClone(fault));
@@ -479,56 +496,64 @@ export class FakeServer {
         });
       else {
         const workspace = uuid(matched?.[1], "workspace_id");
-        const payload: unknown = route === "push" ? await extractPushJson(request) : null;
-        const clientId = uuid(
-          route === "push" && object(payload)
-            ? payload.client_id
-            : url.searchParams.get("client_id"),
-          "client_id",
-        );
-        const mutations = route === "push" ? parseMutations(payload) : [];
         this.authorize(workspace, session.user);
-        this.checkClient(clientId, workspace, session.user);
-        const unavailable = faults.find((fault) => fault.kind === "unavailable");
-        if (route === "push") {
-          const after = unavailable?.kind === "unavailable" ? (unavailable.after ?? 0) : undefined;
-          const pushed = this.push(workspace, session.user, clientId, mutations, after);
-          if (faults.some((fault) => fault.kind === "duplicate_push") && pushed.status === 200)
-            this.push(workspace, session.user, clientId, mutations);
-          response = json(pushed.body, pushed.status);
-        } else if (unavailable)
-          response = json({ error: "service unavailable" }, 503, { "retry-after": "5" });
-        else if (route === "pull")
-          response = json(
-            this.pull(
+        if (route === "commands") {
+          response = faults.some((fault) => fault.kind === "unavailable")
+            ? json({ error: "service unavailable" }, 503, { "retry-after": "5" })
+            : json(this.command(workspace, session.user, await request.json()));
+        } else {
+          const payload: unknown = route === "push" ? await extractPushJson(request) : null;
+          const clientId = uuid(
+            route === "push" && object(payload)
+              ? payload.client_id
+              : url.searchParams.get("client_id"),
+            "client_id",
+          );
+          const mutations = route === "push" ? parseMutations(payload) : [];
+          this.authorize(workspace, session.user);
+          this.checkClient(clientId, workspace, session.user);
+          const unavailable = faults.find((fault) => fault.kind === "unavailable");
+          if (route === "push") {
+            const after =
+              unavailable?.kind === "unavailable" ? (unavailable.after ?? 0) : undefined;
+            const pushed = this.push(workspace, session.user, clientId, mutations, after);
+            if (faults.some((fault) => fault.kind === "duplicate_push") && pushed.status === 200)
+              this.push(workspace, session.user, clientId, mutations);
+            response = json(pushed.body, pushed.status);
+          } else if (unavailable)
+            response = json({ error: "service unavailable" }, 503, { "retry-after": "5" });
+          else if (route === "pull")
+            response = json(
+              this.pull(
+                workspace,
+                session.user,
+                clientId,
+                url.searchParams.get("cursor"),
+                faults.some((fault) => fault.kind === "reset_pull"),
+              ),
+            );
+          else if (route === "bootstrap") {
+            const truncated = faults.find((fault) => fault.kind === "truncate_bootstrap");
+            response = this.bootstrap(
               workspace,
               session.user,
               clientId,
-              url.searchParams.get("cursor"),
-              faults.some((fault) => fault.kind === "reset_pull"),
-            ),
-          );
-        else if (route === "bootstrap") {
-          const truncated = faults.find((fault) => fault.kind === "truncate_bootstrap");
-          response = this.bootstrap(
-            workspace,
-            session.user,
-            clientId,
-            truncated?.kind === "truncate_bootstrap" ? (truncated.afterRecords ?? 0) : undefined,
-          );
-        } else if (route === "scope") {
-          if (faults.some((fault) => fault.kind === "scope_error"))
-            throw new MutationError(400, "scope rejected");
-          response = json(this.scope(workspace, session.user, url.searchParams));
-        } else {
-          const stream = new EventConnection(this.clock, this.timing, request.signal, () =>
-            this.streams.delete(stream),
-          );
-          this.streams.set(stream, workspace);
-          const early = faults.find((fault) => fault.kind === "close_events");
-          if (early?.kind === "close_events")
-            this.clock.schedule(early.afterMs, () => stream.close());
-          response = stream.response;
+              truncated?.kind === "truncate_bootstrap" ? (truncated.afterRecords ?? 0) : undefined,
+            );
+          } else if (route === "scope") {
+            if (faults.some((fault) => fault.kind === "scope_error"))
+              throw new MutationError(400, "scope rejected");
+            response = json(this.scope(workspace, session.user, url.searchParams));
+          } else {
+            const stream = new EventConnection(this.clock, this.timing, request.signal, () =>
+              this.streams.delete(stream),
+            );
+            this.streams.set(stream, workspace);
+            const early = faults.find((fault) => fault.kind === "close_events");
+            if (early?.kind === "close_events")
+              this.clock.schedule(early.afterMs, () => stream.close());
+            response = stream.response;
+          }
         }
       }
     } catch (error) {
@@ -572,7 +597,7 @@ export class FakeServer {
       const fault = this.faults[index];
       if (
         fault.kind === "response_delay" &&
-        !["pull", "bootstrap", "scope", "push"].includes(route)
+        !["pull", "bootstrap", "scope", "push", "commands"].includes(route)
       ) {
         index += 1;
         continue;
@@ -814,6 +839,57 @@ export class FakeServer {
           record: this.render(entity, key, actor, workspace),
         })),
     };
+  }
+
+  private command(workspace: string, actor: string, payload: unknown) {
+    if (!object(payload) || !object(payload.command) || typeof payload.command.type !== "string")
+      throw new MutationError(400, "invalid command");
+    const key = payload.idempotency_key;
+    if (
+      key !== undefined &&
+      key !== null &&
+      (typeof key !== "string" || key.trim() === "" || new TextEncoder().encode(key).length > 200)
+    )
+      throw new MutationError(400, "text must contain 1 to 200 bytes");
+    const request = canonicalJson({
+      command: payload.command,
+      expected_versions: payload.expected_versions ?? {},
+      attachment: null,
+    });
+    const identity = typeof key === "string" ? JSON.stringify([workspace, actor, key]) : null;
+    const stored = identity === null ? undefined : this.operationKeys.get(identity);
+    if (stored) {
+      if (stored.request !== request)
+        throw new MutationError(409, "idempotency key reused for a different request");
+      return {
+        ...structuredClone(stored.response),
+        changes: stored.response.changes.map(({ entity, id }) => ({
+          entity,
+          id,
+          record: this.render(entity, id, actor, workspace),
+        })),
+      };
+    }
+    let applied: ReturnType<FakeServer["execute"]>;
+    try {
+      applied = this.execute(
+        actor,
+        payload.command.type,
+        commandArgs(payload.command.type, payload.command),
+        workspace,
+      );
+    } catch (error) {
+      if (error instanceof TypeError) throw new MutationError(400, "invalid command arguments");
+      throw error;
+    }
+    const versions: Record<string, number> = {};
+    for (const change of applied.changes)
+      if (change.record && "version" in change.record && typeof change.record.version === "number")
+        versions[change.id] = change.record.version;
+    const response = { ...applied, versions };
+    if (identity !== null)
+      this.operationKeys.set(identity, { request, response: structuredClone(response) });
+    return response;
   }
 
   private allocateServerIds(name: string, args: Record<string, unknown>): Record<string, unknown> {
@@ -1090,4 +1166,12 @@ function parseCursor(
   )
     throw new MutationError(400, "cursor must be a cursor from this server");
   return { xmin, xmax, xip };
+}
+
+function canonicalJson(value: unknown): string {
+  return JSON.stringify(value, (_key, item: unknown) =>
+    object(item)
+      ? Object.fromEntries(Object.entries(item).sort(([a], [b]) => a.localeCompare(b)))
+      : item,
+  );
 }

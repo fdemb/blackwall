@@ -6,7 +6,7 @@ Blackwall's frontend keeps a local replica of each open workspace and syncs it w
 
 The sync layer is rewritten. The engine, the server protocol and the UI port are done, and the frontend typechecks. The previous frontend data layer was deleted on purpose. Don't reconstruct it, and don't look for it in history. Its idea of "optimistic updates" was a per-command patch rolled back on failure, and it read server records through a query cache. This design replaces both.
 
-Phases 1 to 4 are done. Phase 5 is partly done. Session cleanup and online-only gating are implemented in the engine and the UI. Schema migration is in the engine: `open()` resets base on a schema mismatch and keeps the outbox. The engine coordinates tabs. The leader takes an injected `navigator.locks` lock, and followers receive its messages over an injected `BroadcastChannel`. Only the leader does network work. Tests run two and three engines on one database, plus convergence runs in tab mode. Still missing:
+Phases 1 to 4 are done. Phase 5 is partly done. Session cleanup and online-only gating are implemented in the engine and the UI. Schema migration is in the engine: `open()` resets base on a schema mismatch and keeps the outbox. The engine coordinates tabs. The leader takes an injected `navigator.locks` lock, and followers receive its messages over an injected `BroadcastChannel`. Only the leader does sync network work. Each tab sends its own online-only REST commands. Tests run two and three engines on one database, plus convergence runs in tab mode. Still missing:
 
 - **Tabs (app).** Not wired yet. `web/app/lib/workspace-engine.ts` still starts a network worker in every tab, and it must pass `locks` and `channel` to the engine. This is the next step.
 
@@ -175,7 +175,7 @@ The server handles the mutations in order. For each one, it runs one transaction
 
 `sync_rejections(client_id uuid, mutation_id bigint, status smallint, message text)` has a primary key on `(client_id, mutation_id)`. All columns are non-null. Its foreign key to `sync_clients(client_id)` cascades deletes, so pruning a client also removes its rejections.
 
-The server treats `last_mutation_id` as a high-water mark, so a client must never let a later mutation reach the server before an earlier one. Only the leader pushes. It sends the outbox from its oldest entry, in id order, one request at a time, and retries a failed request with the same mutations before sending anything newer. Online-only commands allocate their id only when the outbox is empty, so they never overtake a pending mutation.
+The server treats `last_mutation_id` as a high-water mark, so a client must never let a later mutation reach the server before an earlier one. Only the leader pushes. It sends the outbox from its oldest entry, in id order, one request at a time, and retries a failed request with the same mutations before sending anything newer. Push carries only outbox mutations. Online-only commands use the REST command endpoint after the issuing tab sees its replica's outbox drain.
 
 - Business errors are `BadRequest`, `NotFound`, `Conflict` and `Forbidden` from the command, malformed `name`/`args`, and database errors with SQLSTATE class `22` (data exception) or `23` (integrity constraint, including the ownership conflict the REST mapper turns into 409).
 - A transient failure, such as a lost database connection, stops the batch and returns 503 with the results committed so far. Losing membership mid-batch stops it with 403 instead. The client retries the same batch with backoff. Because the server dedupes by id, retries are safe.
@@ -291,8 +291,9 @@ A bootstrap also drops loaded comment and activity scopes; the engine reloads th
 
 Some commands aren't queued offline: `invite`, `resend_invitation`, `create_integration` because of its secret, `set_role`, `remove_member`, `import_issues`, file uploads, import, export, workspace creation, and OpenProject settings.
 
-- They wait until the outbox is empty, then go to the server through the leader. Commands go through push with a freshly allocated id and are never written to the outbox store. Uploads and imports use their REST endpoints.
-- Their effects arrive through the next pull.
+- `invite`, `resend_invitation`, `create_integration`, `set_role`, `remove_member`, and `import_issues` use `POST /api/workspaces/{id}/commands` with a per-call `idempotency_key`. The tab that issued the command sends it after its replica's outbox drains. Transient failures retry the same key and command body with backoff. These commands never allocate mutation ids or enter the outbox. Push carries only outbox mutations.
+- Their effects arrive through the next pull. The REST command pokes the leader's event stream even when a follower sends it.
+- Uploads, export, workspace creation, and OpenProject settings use their own REST endpoints.
 - The UI disables them while offline.
 - An upload targets an issue or comment that must already be confirmed. It waits until no outbox mutation creates its target.
 

@@ -177,7 +177,6 @@ export async function runConvergence(
           if (before !== undefined) equal(payload, before, `changed retry payload ${key}`);
           payloads.set(key, payload);
           if (mutation.id > last) {
-            // An aborted, allocated online command may leave an id gap.
             check(
               !client.engine.store
                 .pending()
@@ -191,12 +190,10 @@ export async function runConvergence(
             );
             last = mutation.id;
           }
-          if (mutation.name === "set_role" || mutation.name === "remove_member") {
-            check(
-              !client.engine.store.pending().some((pending) => pending.id < mutation.id),
-              "online command overtook a concurrently admitted mutation",
-            );
-          }
+          check(
+            !["set_role", "remove_member"].includes(mutation.name),
+            "online command sent through push",
+          );
         }
         serverPushes.push({ client: client.index, mutations, previous });
       } catch (error) {
@@ -277,8 +274,6 @@ export async function runConvergence(
         writeScope: (value) => write(() => replica.writeScope(value)),
         loadScope: (scope) => replica.loadScope(scope),
         appendMutation: (value) => write(() => replica.appendMutation(value)),
-        allocateMutationIdIfOutboxEmpty: () =>
-          write(() => replica.allocateMutationIdIfOutboxEmpty()),
       };
     },
   });
@@ -977,7 +972,10 @@ export async function runConvergence(
     if (authRoute === "scope")
       authClient.engine.useScope({ entity: "activity", entityId: simulationId(9998) });
     if (authRoute === "me") server.rotateCsrf(authClient.token);
-    if (authRoute === "push" || authRoute === "me") online(authClient);
+    if (authRoute === "push" || authRoute === "me") {
+      const receipt = await authClient.engine.mutate("mark_all_notifications_read", {});
+      void receipt.settled.catch(() => undefined);
+    }
     await authClient.engine.start();
     for (let tick = 0; tick < 20; tick++) {
       await settleIO();

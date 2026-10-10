@@ -13,7 +13,13 @@ import { BOOTSTRAP_ENTITIES, BOOTSTRAP_REPLACED_ENTITIES } from "./records";
 import type { Change, Entity } from "./records";
 import { immutableCopy, ingest, SyncStore } from "./store";
 import type { PendingMutation } from "./store";
-import { AccessError, ProtocolError, UnauthorizedError, UnavailableError } from "./transport";
+import {
+  AccessError,
+  NetworkError,
+  ProtocolError,
+  UnauthorizedError,
+  UnavailableError,
+} from "./transport";
 import type { Mutation, MutationResult, PullResponse } from "./transport";
 import { backoff, Cancelled, cancellable, pause, SerialQueue } from "./engine-scheduling";
 import type {
@@ -49,16 +55,8 @@ export const SCHEMA = 1;
 /** A follower re-sends an unanswered request on this cadence, in case the leader went away. */
 const REQUEST_RESEND_MS = 1000;
 type RequestKind = "bootstrap" | "pull" | "scope" | "push" | "events";
-type OnlineJob = {
-  name: string;
-  args: unknown;
-  resolve: (result: MutationResult) => void;
-  reject: (error: Error) => void;
-  settled: boolean;
-};
 type PushBatch = {
   mutations: readonly Mutation[];
-  job: OnlineJob | null;
   processed: boolean;
   attempt: number;
   retryAt: number;
@@ -118,6 +116,7 @@ export class SyncEngine {
   private readonly eventListeners = new Set<(event: EngineEvent) => void>();
   private readonly reads = new SerialQueue();
   private readonly commits = new SerialQueue();
+  private readonly onlineRequests = new SerialQueue();
   private readonly loadedScopes = new Map<string, Scope>();
   private readonly heldScopes = new Map<string, { scope: Scope; holders: number }>();
   private readonly scopeWork = new Map<string, Promise<void>>();
@@ -139,7 +138,7 @@ export class SyncEngine {
   private retirement: Promise<void> | null = null;
   private sealed = false;
   private readonly reported = new Set<number>();
-  private readonly onlineJobs: OnlineJob[] = [];
+  private readonly onlineCalls = new Set<AbortController>();
   private readonly delay: ReturnType<typeof backoff>;
   private replica: Replica | null = null;
   private opening: Promise<void> | null = null;
@@ -182,7 +181,10 @@ export class SyncEngine {
       },
     };
     this.store.subscribe((event) => {
-      if (event.pendingChanged) this.update({ pending: this.store.pending().length });
+      if (event.pendingChanged) {
+        this.update({ pending: this.store.pending().length });
+        this.notifyChange();
+      }
     });
   }
 
@@ -228,9 +230,11 @@ export class SyncEngine {
         this.unsubscribeSignals = this.deps.signals.subscribe((signal) => {
           if (signal === "offline") {
             this.update({ online: false });
+            this.notifyChange();
             this.cancelNetwork();
           } else if (signal === "online") {
             this.update({ online: true });
+            this.notifyChange();
             this.beginNetwork();
             void this.pull();
           } else void this.pull();
@@ -262,6 +266,7 @@ export class SyncEngine {
     await this.open();
     if (this.started || this.closed || this.terminal || lifecycle !== this.lifecycle) return;
     this.started = true;
+    this.notifyChange();
     this.update({ online: this.deps.signals.getOnline() });
     this.requestLeadership();
     this.beginNetwork();
@@ -281,8 +286,7 @@ export class SyncEngine {
   private rejectCallers(error: Error): void {
     for (const outcome of this.outcomes.values()) outcome.reject(error);
     this.outcomes.clear();
-    for (const job of this.onlineJobs.splice(0)) job.reject(error);
-    this.batch?.job?.reject(error);
+    this.cancelOnline(error);
     for (const remote of this.remote.values()) {
       remote.cancelResend();
       remote.reject(error);
@@ -354,8 +358,7 @@ export class SyncEngine {
     for (const [requestId, remote] of [...this.remote]) {
       this.remote.delete(requestId);
       remote.cancelResend();
-      if (remote.call.kind !== "runOnline") continue;
-      this.queueOnline(remote.call.name, remote.call.args).then(remote.resolve, remote.reject);
+      remote.resolve(null);
     }
     this.post({ type: "status", connected: this.snapshot.connected, online: this.snapshot.online });
     this.beginNetwork();
@@ -439,6 +442,8 @@ export class SyncEngine {
   }
 
   async runOnline(name: string, args: unknown): Promise<MutationResult> {
+    if (!this.deps.signals.getOnline())
+      throw new MutationError(400, "This command requires an online connection");
     await this.open();
     if (this.sealed) throw new Error("Engine is retiring");
     if (!this.snapshot.online)
@@ -450,41 +455,129 @@ export class SyncEngine {
     )
       throw new MutationError(400, "Not an online sync command");
     const prepared = this.prepare(name, args);
-    this.requireReplica();
-    if (this.role === "follower") {
-      const call: TabCall = { kind: "runOnline", name, args: immutableCopy(prepared.args) };
-      return new Promise((resolve, reject) =>
-        this.ask(call, (value) => resolve(value as MutationResult), reject),
+    if (!prepared.args || typeof prepared.args !== "object" || Array.isArray(prepared.args))
+      throw new MutationError(400, "invalid command arguments");
+    const input = {
+      command: immutableCopy({ type: name, ...prepared.args }),
+      idempotencyKey: this.deps.randomId(),
+    };
+    const controller = new AbortController();
+    this.onlineCalls.add(controller);
+    try {
+      return await cancellable(
+        this.onlineRequests.run(async () => {
+          for (let attempt = 0, csrfRefreshes = 0; ; attempt++) {
+            controller.signal.throwIfAborted();
+            while (
+              !this.started ||
+              !this.snapshot.online ||
+              (await this.requireReplica().loadOutbox()).length > 0
+            ) {
+              controller.signal.throwIfAborted();
+              this.requestPush();
+              await this.waitForOutboxChange(controller.signal);
+            }
+            try {
+              await cancellable(
+                this.deps.transport.command(this.deps.workspaceId, input, {
+                  signal: controller.signal,
+                }),
+                controller.signal,
+              );
+              controller.signal.throwIfAborted();
+              // The server pokes the leader's event stream, including when a follower sends this call.
+              if (this.role === "leader") void this.pull();
+              // Keep the callers' mutation-result shape without allocating a sync mutation id.
+              return { id: 0, status: "applied" };
+            } catch (caught) {
+              controller.signal.throwIfAborted();
+              let error = caught;
+              if (error instanceof AccessError && (error.status === 403 || error.status === 404)) {
+                const rejection = error;
+                const status = error.status;
+                let verified = false;
+                try {
+                  await this.verifyCommandAccess(controller, status === 403 && csrfRefreshes === 0);
+                  verified = true;
+                } catch (cause) {
+                  controller.signal.throwIfAborted();
+                  error = cause;
+                }
+                if (verified) {
+                  if (status === 403 && csrfRefreshes++ === 0) continue;
+                  throw new MutationError(status, rejection.message);
+                }
+              }
+              if (error instanceof UnauthorizedError || error instanceof AccessError) {
+                await this.handleError(error, "push");
+                throw error;
+              }
+              if (
+                error instanceof ProtocolError &&
+                error.status !== null &&
+                error.status >= 400 &&
+                error.status < 500
+              )
+                throw new MutationError(error.status, error.message);
+              if (!(error instanceof NetworkError || error instanceof UnavailableError))
+                throw error;
+              await pause(
+                this.deps.clock,
+                this.delay(attempt, error instanceof UnavailableError ? error.retryAfter : null),
+                controller.signal,
+              );
+            }
+          }
+        }),
+        controller.signal,
       );
+    } catch (error) {
+      if (controller.signal.aborted) throw controller.signal.reason;
+      throw error;
+    } finally {
+      this.onlineCalls.delete(controller);
     }
-    if (this.blocked.has("push")) throw this.snapshot.lastError ?? new Error("Push is blocked");
-    return this.queueOnline(name, prepared.args);
   }
 
-  /** Queues a prepared online command for the leader's push lane. */
-  private queueOnline(name: string, args: unknown): Promise<MutationResult> {
-    return new Promise((resolve, reject) => {
-      const finish = () => {
-        if (job.settled) return false;
-        job.settled = true;
-        const index = this.onlineJobs.indexOf(job);
-        if (index !== -1) this.onlineJobs.splice(index, 1);
-        return true;
-      };
-      const job: OnlineJob = {
-        name,
-        args: immutableCopy(args),
-        settled: false,
-        resolve: (result) => {
-          if (finish()) resolve(result);
-        },
-        reject: (error) => {
-          if (finish()) reject(error);
-        },
-      };
-      this.onlineJobs.push(job);
-      this.requestPush();
+  private async verifyCommandAccess(
+    controller: AbortController,
+    refreshCsrf: boolean,
+  ): Promise<void> {
+    if (refreshCsrf)
+      await cancellable(
+        this.deps.transport.me().catch((cause: unknown) => {
+          if (cause instanceof AccessError)
+            throw new ProtocolError("CSRF refresh failed", cause.status, { cause });
+          throw cause;
+        }),
+        controller.signal,
+      );
+    // A command may forbid an action or miss its target while workspace access is still valid.
+    await cancellable(
+      this.deps.transport.pull(this.deps.workspaceId, this.clientId, this.cursor, {
+        signal: controller.signal,
+      }),
+      controller.signal,
+    );
+  }
+
+  private cancelOnline(error: Error): void {
+    for (const controller of this.onlineCalls) controller.abort(error);
+  }
+
+  private async waitForOutboxChange(signal: AbortSignal): Promise<void> {
+    let wake = () => {};
+    const work = new Promise<void>((resolve) => {
+      wake = resolve;
     });
+    this.changes.add(wake);
+    const cancel = this.deps.clock.schedule(1000, wake);
+    try {
+      await cancellable(work, signal);
+    } finally {
+      cancel();
+      this.changes.delete(wake);
+    }
   }
 
   useScope(scope: Scope): () => void {
@@ -716,11 +809,6 @@ export class SyncEngine {
   }
 
   private perform(request: Extract<TabBody, { type: "request" }>): Promise<TabReply> {
-    if (request.kind === "runOnline")
-      return this.runOnline(request.name, request.args).then(
-        (value): TabReply => ({ ok: true, value }),
-        (error: unknown): TabReply => ({ ok: false, error: tabError(error) }),
-      );
     return this.performScope(request.scope);
   }
 
@@ -1177,8 +1265,7 @@ export class SyncEngine {
       this.pushing = null;
       if (
         this.controller &&
-        (this.controller !== controller ||
-          (!this.batch && (this.pushCandidates().length > 0 || this.onlineJobs.length > 0)))
+        (this.controller !== controller || (!this.batch && this.pushCandidates().length > 0))
       )
         this.requestPush();
     });
@@ -1186,7 +1273,6 @@ export class SyncEngine {
 
   private async push(controller: AbortController): Promise<void> {
     while (this.active(controller)) {
-      let allocationRefused = false;
       if (!this.batch) {
         this.batch = await this.commits.run(async () => {
           this.check(controller);
@@ -1196,39 +1282,16 @@ export class SyncEngine {
           if (mutations.length)
             return {
               mutations,
-              job: null,
               processed: false,
               attempt: 0,
               retryAt: 0,
               csrfRefreshes: 0,
             };
-          const job = this.onlineJobs[0];
-          if (!job) return null;
-          const id = await this.requireReplica().allocateMutationIdIfOutboxEmpty();
-          if (id === null) {
-            allocationRefused = true;
-            this.store.setPending(await this.requireReplica().loadOutbox());
-            return null;
-          }
-          return {
-            mutations: [{ id, name: job.name, args: job.args, at: this.deps.clock.now() }],
-            job,
-            processed: false,
-            attempt: 0,
-            retryAt: 0,
-            csrfRefreshes: 0,
-          };
+          return null;
         });
       }
       const batch = this.batch;
-      if (!batch) {
-        if (!this.onlineJobs.length) return;
-        if (allocationRefused) {
-          await pause(this.deps.clock, 1000, controller.signal);
-          void this.pull();
-        }
-        continue;
-      }
+      if (!batch) return;
       this.check(controller);
       if (batch.retryAt > Date.parse(this.deps.clock.now()))
         await pause(
@@ -1245,9 +1308,7 @@ export class SyncEngine {
             controller.signal,
           );
           this.check(controller);
-          for (const result of response.results) this.recordResult(result, batch);
-          if (response.status === "ok" && batch.job && !batch.job.settled)
-            throw new ProtocolError("Push did not settle its online command", 200);
+          for (const result of response.results) this.recordResult(result);
           void this.pull();
           if (response.status === "partial") {
             batch.retryAt =
@@ -1318,7 +1379,7 @@ export class SyncEngine {
     }
   }
 
-  private recordResult(result: MutationResult, batch: PushBatch): void {
+  private recordResult(result: MutationResult): void {
     const outcome: TabOutcome =
       result.status === "rejected"
         ? { id: result.id, status: result.error.status, message: result.error.message }
@@ -1330,7 +1391,6 @@ export class SyncEngine {
     this.unconfirmed.delete(result.id);
     this.appendedIds.delete(result.id);
     this.post({ type: "result", mutationId: result.id, outcome });
-    batch.job?.resolve(result);
   }
 
   private async events(controller: AbortController): Promise<void> {
@@ -1399,7 +1459,6 @@ export class SyncEngine {
     if (failure instanceof ProtocolError) {
       this.blocked.add(kind);
       if (kind === "events") this.update({ connected: false });
-      if (kind === "push") for (const job of [...this.onlineJobs]) job.reject(failure);
       return true;
     }
     return false;
