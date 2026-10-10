@@ -120,6 +120,16 @@ class IndexedDBReplica implements Replica {
     });
   }
 
+  loadOutbox(): Promise<readonly PendingMutation[]> {
+    return this.transaction<readonly PendingMutation[]>(
+      ["outbox"],
+      "readonly",
+      (tx, done, guard) => {
+        read<PendingMutation[]>(tx.objectStore("outbox").getAll(), guard, done);
+      },
+    );
+  }
+
   resetBase(): Promise<void> {
     return this.transaction(["meta", ...ENTITIES, "scopes"], "readwrite", (tx, done, guard) => {
       for (const entity of ENTITIES) tx.objectStore(entity).clear();

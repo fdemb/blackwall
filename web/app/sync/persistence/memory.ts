@@ -59,6 +59,11 @@ class MemoryReplica implements Replica {
     };
   }
 
+  async loadOutbox(): Promise<readonly PendingMutation[]> {
+    if (this.closed) throw new Error("replica is closed");
+    return structuredClone([...this.entry.state.outbox.values()].sort((a, b) => a.id - b.id));
+  }
+
   async resetBase(): Promise<void> {
     this.transaction((state) => {
       for (const table of state.records.values()) table.clear();

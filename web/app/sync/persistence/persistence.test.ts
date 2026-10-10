@@ -363,6 +363,14 @@ for (const backend of ["memory", "idb"]) {
       expect((await replica.load()).outbox.map((item) => item.id)).toEqual([2]);
     });
 
+    it("loads only the outbox, ascending by id, and matches the outbox of a full load", async () => {
+      for (let index = 0; index < 3; index += 1) await replica.appendMutation(mutation);
+      await replica.applyPull({ changes: [], cursor: "flushed", acknowledgedUpTo: 1 });
+      const outbox = await replica.loadOutbox();
+      expect(outbox.map((item) => item.id)).toEqual([2, 3]);
+      expect(outbox).toEqual((await replica.load()).outbox);
+    });
+
     it("isolates persisted values from input and loaded or returned objects", async () => {
       const record = { id: "issue-1", nested: { title: "Original" } };
       await replica.writeBootstrap(bootstrap({ issues: [record] }));

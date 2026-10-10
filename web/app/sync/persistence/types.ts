@@ -26,6 +26,8 @@ export interface LoadedReplica {
 /** Each write is one atomic transaction, including its metadata and outbox changes. */
 export interface Replica {
   load(): Promise<LoadedReplica>;
+  /** The outbox alone, ascending by id, for a push that doesn't need the whole replica. */
+  loadOutbox(): Promise<readonly PendingMutation[]>;
   /** Discard base and scopes, adopt the open schema, and keep meta ids and the outbox. */
   resetBase(): Promise<void>;
   writeBootstrap(input: {

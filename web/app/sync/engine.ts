@@ -1090,7 +1090,7 @@ export class SyncEngine {
         this.batch = await this.commits.run(async () => {
           this.check(controller);
           // Another tab may have appended mutations whose messages were lost, so the database is the source.
-          if (this.channel) this.store.setPending((await this.requireReplica().load()).outbox);
+          if (this.channel) this.store.setPending(await this.requireReplica().loadOutbox());
           const mutations = this.pushCandidates().slice(0, 100);
           if (mutations.length)
             return {
@@ -1106,8 +1106,7 @@ export class SyncEngine {
           const id = await this.requireReplica().allocateMutationIdIfOutboxEmpty();
           if (id === null) {
             allocationRefused = true;
-            const loaded = await this.requireReplica().load();
-            this.store.setPending(loaded.outbox);
+            this.store.setPending(await this.requireReplica().loadOutbox());
             return null;
           }
           return {
