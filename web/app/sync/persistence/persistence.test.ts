@@ -382,6 +382,15 @@ for (const backend of ["memory", "idb"]) {
       expect((await replica.load()).outbox.map((item) => item.id)).toEqual([2]);
     });
 
+    it("reports a deleted replica to its open handles, but not to a handle closed explicitly", async () => {
+      const reports: string[] = [];
+      const closed = await storage.open({ ...INPUT, onClose: () => reports.push("closed") });
+      await storage.open({ ...INPUT, onClose: (reason) => reports.push(reason) });
+      closed.close();
+      await storage.delete(INPUT);
+      expect(reports).toEqual(["versionchange"]);
+    });
+
     it("loads only the outbox, ascending by id, and matches the outbox of a full load", async () => {
       for (let index = 0; index < 3; index += 1) await replica.appendMutation(mutation);
       await replica.applyPull({ changes: [], cursor: "flushed", acknowledgedUpTo: 1 });

@@ -149,6 +149,8 @@ function fixture(count = 2, options: FakeServerOptions = {}) {
     server,
     owner,
     peer,
+    workspaceId: workspace.id,
+    database,
     hub,
     tabs,
     addTab,
@@ -391,6 +393,47 @@ describe("tab coordination", () => {
     await until(() => next.engine.status.get().role === "leader");
     await until(() => holder.engine.scopeStatus(scope) === "loaded");
     release();
+  });
+
+  it("ends the session in every tab when the leader gets 401", async () => {
+    const f = fixture(2, { sessionLifetimeMs: 1000 });
+    await f.start();
+    const { leader, follower } = f.roles();
+    await f.advance(2000);
+    void leader.engine.pull();
+    await until(() => leader.events.some((event) => event.type === "unauthorized"));
+    await until(() => follower.events.some((event) => event.type === "unauthorized"));
+    expect(leader.engine.status.get().phase).toBe("loading");
+    expect(follower.engine.status.get().phase).toBe("loading");
+    expect(follower.engine.store.all("issues")).toEqual([]);
+    const requests = f.requests(leader);
+    await f.advance(60_000);
+    expect(f.requests(leader)).toBe(requests);
+  });
+
+  it("ends the session in every tab when the leader gets 403", async () => {
+    const f = fixture(2);
+    await f.start();
+    const { leader, follower } = f.roles();
+    f.server.removeMember(f.workspaceId, f.owner.id);
+    void leader.engine.pull();
+    await until(() => leader.events.some((event) => event.type === "accessLost"));
+    await until(() => follower.events.some((event) => event.type === "accessLost"));
+    expect(follower.engine.store.all("issues")).toEqual([]);
+    expect(leader.events.filter((event) => event.type === "unauthorized")).toEqual([]);
+  });
+
+  it("stops a follower whose database is deleted under it and reports access loss", async () => {
+    const f = fixture(2);
+    await f.start();
+    const { follower } = f.roles();
+    await new IndexedDBReplicaStorage({ indexedDB: f.database }).delete({
+      sessionId: SESSION,
+      workspaceId: f.workspaceId,
+    });
+    await until(() => follower.events.some((event) => event.type === "accessLost"));
+    expect(follower.engine.status.get().phase).toBe("loading");
+    expect(follower.engine.store.all("issues")).toEqual([]);
   });
 
   it("applies a leader's pulled changes and reset to a follower's view", async () => {

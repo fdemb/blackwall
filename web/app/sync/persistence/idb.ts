@@ -16,6 +16,7 @@ import type {
   ReplicaCloseListener,
   ReplicaIdentity,
   ReplicaMeta,
+  ReplicaOpenInput,
   ReplicaStorage,
   Scope,
 } from "./types";
@@ -326,7 +327,7 @@ export class IndexedDBReplicaStorage implements ReplicaStorage {
     this.onClose = options.onClose;
   }
 
-  async open(input: ReplicaIdentity & { schema: number }): Promise<Replica> {
+  async open(input: ReplicaOpenInput): Promise<Replica> {
     const db = await new Promise<IDBDatabase>((resolve, reject) => {
       const request = this.factory.open(replicaName(input), this.version);
       let failed = false;
@@ -377,7 +378,10 @@ export class IndexedDBReplicaStorage implements ReplicaStorage {
       db,
       input.schema,
       { sessionId: input.sessionId, workspaceId: input.workspaceId },
-      this.onClose,
+      (event) => {
+        input.onClose?.(event.reason);
+        this.onClose?.(event);
+      },
     );
   }
 

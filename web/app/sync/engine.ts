@@ -214,6 +214,7 @@ export class SyncEngine {
         sessionId: this.deps.sessionId,
         workspaceId: this.deps.workspaceId,
         schema: this.deps.schema,
+        onClose: () => this.replicaClosed(),
       });
       this.replica = replica;
       let loaded = await replica.load();
@@ -581,6 +582,10 @@ export class SyncEngine {
       case "request":
         if (this.role === "leader") this.serve(message);
         return;
+      case "unauthorized":
+      case "accessLost":
+        this.receiveSessionEnd(message.type);
+        return;
       case "reply":
         this.receiveReply(
           message.requestId,
@@ -622,6 +627,52 @@ export class SyncEngine {
     });
     this.update({ phase: this.cursor === null ? "bootstrapping" : "ready" });
     if (message.scope) this.notifyScopes();
+  }
+
+  /** Another tab's session ended. This tab stops, closes its handle and clears its view. */
+  private receiveSessionEnd(ending: "unauthorized" | "accessLost"): void {
+    const failure =
+      ending === "unauthorized"
+        ? new UnauthorizedError("Session ended in another tab", 401)
+        : new AccessError("Workspace access ended in another tab", 403);
+    this.endLocal(ending, failure);
+  }
+
+  /** The database closed under this replica, such as a deletion elsewhere. The session ends here. */
+  private replicaClosed(): void {
+    if (this.closed || this.terminal) return;
+    if (this.role === "leader") this.post({ type: "accessLost" });
+    this.endLocal("accessLost", new AccessError("Replica database was closed"));
+  }
+
+  private endLocal(ending: "unauthorized" | "accessLost", failure: Error): void {
+    if (this.terminal) return;
+    this.endSession(failure);
+    this.commits
+      .run(async () => {
+        this.replica?.close();
+        this.replica = null;
+        this.clearView();
+        this.update({ phase: "loading" });
+        this.emit({ type: ending });
+      })
+      .catch((error: unknown) => this.finishError(error));
+  }
+
+  /** Stops this engine for good. Callers fail, and network work ends. */
+  private endSession(failure: Error): void {
+    this.terminal = true;
+    this.rejectCallers(failure);
+    this.stop();
+    this.unsubscribeSignals?.();
+    this.unsubscribeSignals = null;
+  }
+
+  private clearView(): void {
+    this.store.batch(() => {
+      this.store.replaceBase({}, BOOTSTRAP_REPLACED_ENTITIES);
+      this.store.setPending([]);
+    });
   }
 
   private receiveReset(): void {
@@ -1323,11 +1374,10 @@ export class SyncEngine {
     this.update({ lastError: failure });
     this.emit({ type: "error", error: failure });
     if (failure instanceof UnauthorizedError || failure instanceof AccessError) {
-      this.terminal = true;
-      this.rejectCallers(failure);
-      this.stop();
-      this.unsubscribeSignals?.();
-      this.unsubscribeSignals = null;
+      const ending = failure instanceof UnauthorizedError ? "unauthorized" : "accessLost";
+      // Followers hear first, so they stop before the replica they read is deleted.
+      this.post({ type: ending });
+      this.endSession(failure);
       await this.commits.run(async () => {
         this.replica?.close();
         this.replica = null;
@@ -1340,12 +1390,9 @@ export class SyncEngine {
             sessionId: this.deps.sessionId,
             workspaceId: this.deps.workspaceId,
           });
-        this.store.batch(() => {
-          this.store.replaceBase({}, BOOTSTRAP_REPLACED_ENTITIES);
-          this.store.setPending([]);
-        });
+        this.clearView();
         this.update({ phase: "loading" });
-        this.emit({ type: failure instanceof UnauthorizedError ? "unauthorized" : "accessLost" });
+        this.emit({ type: ending });
       });
       return true;
     }

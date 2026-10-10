@@ -16,7 +16,9 @@ export function replicaIdentity(name: string): ReplicaIdentity | null {
 
 export function initialMeta(input: ReplicaIdentity & { schema: number }): ReplicaMeta {
   return {
-    ...input,
+    sessionId: input.sessionId,
+    workspaceId: input.workspaceId,
+    schema: input.schema,
     serverSchema: 0,
     clientId: crypto.randomUUID(),
     cursor: null,

@@ -22,6 +22,9 @@ export type TabBody =
       scope?: Scope;
     }
   | { type: "reset" }
+  /** The session ended, so every tab stops. The leader sends this before it deletes anything. */
+  | { type: "unauthorized" }
+  | { type: "accessLost" }
   | { type: "status"; connected: boolean; online: boolean }
   | { type: "result"; mutationId: number; outcome: TabOutcome }
   /** A new tab asks the leader to repeat its status. */

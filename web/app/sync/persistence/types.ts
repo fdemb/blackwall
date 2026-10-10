@@ -57,13 +57,21 @@ export interface ReplicaIdentity {
 }
 
 export interface ReplicaStorage {
-  open(input: ReplicaIdentity & { schema: number }): Promise<Replica>;
+  open(input: ReplicaOpenInput): Promise<Replica>;
   list(): Promise<readonly ReplicaIdentity[]>;
   delete(input: ReplicaIdentity): Promise<void>;
   deleteAllExcept(sessionId: string | null): Promise<void>;
 }
 
+export type ReplicaCloseReason = "versionchange" | "terminated";
+
 /** External closure only. Explicit Replica.close() does not notify. */
 export type ReplicaCloseListener = (
-  event: ReplicaIdentity & { reason: "versionchange" | "terminated" },
+  event: ReplicaIdentity & { reason: ReplicaCloseReason },
 ) => void;
+
+export interface ReplicaOpenInput extends ReplicaIdentity {
+  schema: number;
+  /** Called when this handle's database closes from outside, such as a deletion elsewhere. */
+  onClose?: (reason: ReplicaCloseReason) => void;
+}

@@ -12,8 +12,10 @@ import {
 import type {
   LoadedReplica,
   Replica,
+  ReplicaCloseReason,
   ReplicaIdentity,
   ReplicaMeta,
+  ReplicaOpenInput,
   ReplicaStorage,
   Scope,
 } from "./types";
@@ -36,6 +38,7 @@ class MemoryReplica implements Replica {
   constructor(
     private readonly entry: Entry,
     private readonly schema: number,
+    private readonly onClose: ((reason: ReplicaCloseReason) => void) | undefined,
   ) {}
 
   private transaction<T>(write: (state: State) => T): T {
@@ -169,12 +172,18 @@ class MemoryReplica implements Replica {
     this.closed = true;
     this.entry.handles.delete(this);
   }
+
+  /** The replica was deleted under this handle, which is reported like IndexedDB's versionchange. */
+  closeExternally(): void {
+    this.close();
+    this.onClose?.("versionchange");
+  }
 }
 
 export class MemoryReplicaStorage implements ReplicaStorage {
   private readonly replicas = new Map<string, Entry>();
 
-  async open(input: ReplicaIdentity & { schema: number }): Promise<Replica> {
+  async open(input: ReplicaOpenInput): Promise<Replica> {
     const name = replicaName(input);
     let entry = this.replicas.get(name);
     if (entry === undefined) {
@@ -189,7 +198,7 @@ export class MemoryReplicaStorage implements ReplicaStorage {
       };
       this.replicas.set(name, entry);
     }
-    const replica = new MemoryReplica(entry, input.schema);
+    const replica = new MemoryReplica(entry, input.schema, input.onClose);
     entry.handles.add(replica);
     return replica;
   }
@@ -205,7 +214,7 @@ export class MemoryReplicaStorage implements ReplicaStorage {
     const name = replicaName(input);
     const entry = this.replicas.get(name);
     if (entry === undefined) return;
-    for (const handle of entry.handles) handle.close();
+    for (const handle of entry.handles) handle.closeExternally();
     this.replicas.delete(name);
   }
 
