@@ -316,63 +316,9 @@ impl Operation<'_> {
         }
         let mut i = old.clone();
 
-        if let Some(v) = p.title {
-            i.title = v
-        }
-        if let Some(v) = p.description {
-            i.description = v
-        }
-        if let Some(v) = p.stage_id {
-            i.stage_id = v
-        }
-        if p.clear_assignee {
-            i.assignee = None
-        } else if let Some(v) = p.assignee {
-            i.assignee = Some(v)
-        }
-        if let Some(v) = p.priority {
-            i.priority = v
-        }
-        if let Some(v) = p.labels {
-            i.labels = v
-        }
-        if p.clear_estimate {
-            i.estimate = None
-        } else if let Some(v) = p.estimate {
-            i.estimate = Some(v)
-        }
-        if p.clear_deadline {
-            i.deadline = None
-        } else if let Some(v) = p.deadline {
-            i.deadline = Some(v)
-        }
-        if p.clear_project {
-            i.project_id = None;
-            i.milestone_id = None
-        } else if let Some(v) = p.project_id {
-            i.project_id = Some(v)
-        }
-        if p.clear_milestone {
-            i.milestone_id = None
-        } else if let Some(v) = p.milestone_id {
-            i.milestone_id = Some(v)
-        }
-        if p.clear_sprint {
-            i.sprint_id = None
-        } else if let Some(v) = p.sprint_id {
-            i.sprint_id = Some(v)
-        }
-        if p.clear_parent {
-            i.parent_id = None
-        } else if let Some(v) = p.parent_id {
-            i.parent_id = Some(v)
-        }
-        if let Some(v) = p.dependencies {
-            i.dependencies = v
-        }
+        i.apply_patch(p);
 
-        self.activity_fields
-            .extend(persistence::changed_fields(&old, &i));
+        self.activity_fields.extend(old.changed_fields(&i));
         self.validate_issue_sql(&i).await?;
         if i.stage_id != old.stage_id {
             let kind: String = sqlx::query_scalar("SELECT kind FROM stages WHERE id=$1")

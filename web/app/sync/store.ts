@@ -285,7 +285,7 @@ function replayErrorEqual(a: ReplayError, b: ReplayError): boolean {
 export class SyncStore {
   private readonly replay: ReplayFn;
   private readonly base = emptyTables<AnyRecord>();
-  private readonly baseIndexes = new Map<Entity, Map<string, Map<string, Set<string>>>>();
+  private readonly baseIndexes = new Map<IndexDef, Map<string, Set<string>>>();
   private overlay = emptyTables<OverlayValue>();
   private readonly dirtyBase = new Map<Entity, Map<string, AnyRecord | undefined>>();
   private pendingList: readonly DeepReadonly<PendingMutation>[] = Object.freeze([]);
@@ -295,7 +295,7 @@ export class SyncStore {
   private notifiedPending: readonly DeepReadonly<PendingMutation>[] = Object.freeze([]);
   private notifiedErrors = new Map<number, ReplayError>();
   private readonly allCache = {} as Record<Entity, AllEntry>;
-  private readonly viewIndexes = new Map<Entity, Map<string, Map<string, ViewBucket>>>();
+  private readonly viewIndexes = new Map<IndexDef, Map<string, ViewBucket>>();
   private readonly stageKinds = new Map<string, StageKind>();
   private readonly listeners = new Set<ChangeListener>();
   private readonly tx: Tx;
@@ -335,10 +335,7 @@ export class SyncStore {
       ): readonly DeepReadonly<RecordOf[E]>[] => {
         const def = requireDef(entity, index as string);
         const bucket = bucketOf(value);
-        const baseBucket = this.baseIndexes
-          .get(entity)
-          ?.get(index as string)
-          ?.get(bucket);
+        const baseBucket = this.baseIndexes.get(def)?.get(bucket);
         const out: AnyRecord[] = [];
         if (baseBucket !== undefined) {
           for (const key of baseBucket) {
@@ -356,18 +353,7 @@ export class SyncStore {
       },
       all: <E extends Entity>(entity: E): readonly DeepReadonly<RecordOf[E]>[] => {
         this.assertEntity(entity);
-        const out: AnyRecord[] = [];
-        const seen = new Set<string>();
-        for (const [key, record] of this.scanBase(entity)) {
-          const overlaid = this.overlay[entity].get(key);
-          seen.add(key);
-          if (overlaid === undefined) out.push(record);
-          else if (overlaid !== TOMBSTONE) out.push(overlaid);
-        }
-        for (const [key, overlaid] of this.overlay[entity]) {
-          if (!seen.has(key) && overlaid !== TOMBSTONE) out.push(overlaid);
-        }
-        return Object.freeze(out) as unknown as readonly DeepReadonly<RecordOf[E]>[];
+        return this.scanView(entity) as unknown as readonly DeepReadonly<RecordOf[E]>[];
       },
     };
   }
@@ -422,19 +408,13 @@ export class SyncStore {
   /** Pull pages and scope loads: upsert or delete by change id. */
   applyBase(changes: readonly Change[]): void {
     for (const change of changes) this.assertEntity(change.entity);
-    const cleans = new Map<number, AnyRecord | undefined>();
-    for (let i = 0; i < changes.length; i += 1) {
-      const change = changes[i] as Change;
-      if (change.record === null) {
-        cleans.set(i, undefined);
-        continue;
-      }
-      cleans.set(i, ingest(change.entity, change.record as unknown as RecordOf[Entity]));
-    }
+    const cleans = changes.map((change) =>
+      change.record === null ? undefined : ingest(change.entity, change.record),
+    );
     for (let i = 0; i < changes.length; i += 1) {
       const change = changes[i] as Change;
       const table = this.base[change.entity];
-      const clean = cleans.get(i);
+      const clean = cleans[i];
       if (clean === undefined) {
         if (table.has(change.id)) {
           this.stashBase(change.entity, change.id);
@@ -486,13 +466,7 @@ export class SyncStore {
     try {
       return fn(this.tx);
     } finally {
-      for (const [entity, table] of journal) {
-        const overlayTable = this.overlay[entity];
-        for (const [key, previous] of table) {
-          if (previous === undefined) overlayTable.delete(key);
-          else overlayTable.set(key, previous);
-        }
-      }
+      this.rollback(journal);
       this.activeJournal = previousJournal;
     }
   }
@@ -513,18 +487,7 @@ export class SyncStore {
     this.assertEntity(entity);
     const entry = this.allCache[entity];
     if (!entry.dirty) return entry.rows as unknown as readonly DeepReadonly<RecordOf[E]>[];
-    const out: AnyRecord[] = [];
-    const seen = new Set<string>();
-    for (const [key, record] of this.scanBase(entity)) {
-      const overlaid = this.overlay[entity].get(key);
-      seen.add(key);
-      if (overlaid === undefined) out.push(record);
-      else if (overlaid !== TOMBSTONE) out.push(overlaid);
-    }
-    for (const [key, overlaid] of this.overlay[entity]) {
-      if (!seen.has(key) && overlaid !== TOMBSTONE) out.push(overlaid);
-    }
-    entry.rows = Object.freeze(out);
+    entry.rows = this.scanView(entity);
     entry.dirty = false;
     this.debug.allRebuilds += 1;
     return entry.rows as unknown as readonly DeepReadonly<RecordOf[E]>[];
@@ -536,18 +499,7 @@ export class SyncStore {
     value: string | null,
   ): readonly DeepReadonly<RecordOf[E]>[] {
     const def = requireDef(entity, index as string);
-    void def;
-    let byName = this.viewIndexes.get(entity);
-    if (byName === undefined) {
-      byName = new Map();
-      this.viewIndexes.set(entity, byName);
-    }
-    let buckets = byName.get(index as string);
-    if (buckets === undefined) {
-      buckets = new Map();
-      byName.set(index as string, buckets);
-    }
-    const entry = buckets.get(bucketOf(value));
+    const entry = this.viewIndexes.get(def)?.get(bucketOf(value));
     if (entry === undefined) return EMPTY as unknown as readonly DeepReadonly<RecordOf[E]>[];
     if (!entry.dirty) return entry.rows as unknown as readonly DeepReadonly<RecordOf[E]>[];
     const rows: AnyRecord[] = [];
@@ -623,6 +575,28 @@ export class SyncStore {
     }
   }
 
+  private scanView(entity: Entity): readonly AnyRecord[] {
+    const out: AnyRecord[] = [];
+    const overlay = this.overlay[entity];
+    for (const [key, record] of this.scanBase(entity)) {
+      const visible = overlay.get(key) ?? record;
+      if (visible !== TOMBSTONE) out.push(visible);
+    }
+    for (const [key, record] of overlay) {
+      if (!this.base[entity].has(key) && record !== TOMBSTONE) out.push(record);
+    }
+    return Object.freeze(out);
+  }
+
+  private rollback(journal: Map<Entity, Map<string, OverlayValue | undefined>>): void {
+    for (const [entity, table] of journal) {
+      for (const [key, previous] of table) {
+        if (previous === undefined) this.overlay[entity].delete(key);
+        else this.overlay[entity].set(key, previous);
+      }
+    }
+  }
+
   private journalTouch(entity: Entity, key: string): void {
     const journal = this.activeJournal;
     if (journal === null) return;
@@ -652,15 +626,10 @@ export class SyncStore {
     for (const def of defsFor(entity)) {
       const from = new Set((before === undefined ? [] : def.values(before)).map(bucketOf));
       const to = new Set((after === undefined ? [] : def.values(after)).map(bucketOf));
-      let byName = this.baseIndexes.get(entity);
-      if (byName === undefined) {
-        byName = new Map();
-        this.baseIndexes.set(entity, byName);
-      }
-      let buckets = byName.get(def.name);
+      let buckets = this.baseIndexes.get(def);
       if (buckets === undefined) {
         buckets = new Map();
-        byName.set(def.name, buckets);
+        this.baseIndexes.set(def, buckets);
       }
       for (const bucket of from) {
         if (to.has(bucket)) continue;
@@ -725,13 +694,7 @@ export class SyncStore {
       try {
         this.replay(this.tx, mutation);
       } catch (error) {
-        for (const [entity, table] of journal) {
-          const freshTable = fresh[entity];
-          for (const [key, previous] of table) {
-            if (previous === undefined) freshTable.delete(key);
-            else freshTable.set(key, previous);
-          }
-        }
+        this.rollback(journal);
         nextErrors.set(mutation.id, toReplayError(error));
       } finally {
         this.activeJournal = null;
@@ -760,16 +723,11 @@ export class SyncStore {
       if (dirty !== undefined && dirty.has(key)) return dirty.get(key);
       return this.base[entity].get(key);
     };
-    const newView = (entity: Entity, key: string): AnyRecord | undefined => {
-      const overlaid = fresh[entity].get(key);
-      if (overlaid !== undefined) return overlaid === TOMBSTONE ? undefined : overlaid;
-      return this.base[entity].get(key);
-    };
     const changed = new Map<Entity, ChangedView>();
     for (const [entity, keys] of candidates) {
       for (const key of keys) {
         const old = oldView(entity, key);
-        const next = newView(entity, key);
+        const next = this.viewOf(entity, key);
         if (deepEqual(old, next)) {
           if (old !== next && old !== undefined && next !== undefined) {
             // Equal but not identical: keep the old object as the visible one
@@ -778,12 +736,8 @@ export class SyncStore {
             // base indexes unaffected.
             if (fresh[entity].has(key)) fresh[entity].set(key, old);
             else this.base[entity].set(key, old);
-          } else if (fresh[entity].has(key)) {
-            if (next === undefined) {
-              if (!this.base[entity].has(key)) fresh[entity].delete(key);
-            } else if (old !== undefined) {
-              fresh[entity].set(key, old);
-            }
+          } else if (next === undefined && !this.base[entity].has(key)) {
+            fresh[entity].delete(key);
           }
           continue;
         }
@@ -845,16 +799,11 @@ export class SyncStore {
   }
 
   private invalidateView(entity: Entity, changed: ChangedView): void {
-    let byName = this.viewIndexes.get(entity);
-    if (byName === undefined) {
-      byName = new Map();
-      this.viewIndexes.set(entity, byName);
-    }
     for (const def of defsFor(entity)) {
-      let buckets = byName.get(def.name);
+      let buckets = this.viewIndexes.get(def);
       if (buckets === undefined) {
         buckets = new Map();
-        byName.set(def.name, buckets);
+        this.viewIndexes.set(def, buckets);
       }
       for (const [key, { old, next }] of changed) {
         const from = new Set((old === undefined ? [] : def.values(old)).map(bucketOf));

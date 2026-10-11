@@ -152,92 +152,9 @@ class JsonParser {
     const start = this.offset;
     const token = this.source[this.offset];
     if (!token) this.fail("EOF while parsing a value");
-    if (token === "{" || token === "[") {
-      if (depth >= 127) this.fail("recursion limit exceeded", this.offset + 1);
-      this.offset++;
-      const fields = new Map<string, Node>();
-      const duplicates: { key: string; end: number }[] = [];
-      const items: Node[] = [];
-      const close = token === "{" ? "}" : "]";
-      const context = token === "{" ? "an object" : "a list";
-      this.whitespace();
-      if (this.source[this.offset] !== close) {
-        for (;;) {
-          if (this.offset >= this.source.length) this.fail(`EOF while parsing ${context}`);
-          if (token === "{") {
-            if (this.source[this.offset] !== '"')
-              this.fail("key must be a string", this.offset + 1);
-            const keyNode = this.node(depth + 1);
-            const key = keyNode.value;
-            this.whitespace();
-            if (this.source[this.offset] !== ":")
-              this.fail(
-                this.offset >= this.source.length ? "EOF while parsing an object" : "expected `:`",
-                this.offset + (this.offset < this.source.length ? 1 : 0),
-              );
-            this.offset++;
-            if (typeof key === "string") {
-              const value = this.node(depth + 1, path ? `${path}.${key}` : key);
-              if (fields.has(key)) duplicates.push({ key, end: keyNode.end });
-              fields.set(key, value);
-            }
-          } else items.push(this.node(depth + 1, `${path}[${items.length}]`));
-          this.whitespace();
-          if (this.source[this.offset] === close) break;
-          if (this.offset >= this.source.length) this.fail(`EOF while parsing ${context}`);
-          if (this.source[this.offset] !== ",")
-            this.fail(
-              token === "{" ? "expected `,` or `}`" : "expected `,` or `]`",
-              this.offset + 1,
-            );
-          this.offset++;
-          this.whitespace();
-          if (this.source[this.offset] === close) this.fail("trailing comma", this.offset + 1);
-        }
-      }
-      this.offset++;
-      return token === "{"
-        ? {
-            start,
-            end: this.offset,
-            fields,
-            duplicates,
-            value: Object.fromEntries([...fields].map(([key, node]) => [key, node.value])),
-          }
-        : { start, end: this.offset, items, value: items.map((node) => node.value) };
-    }
-    if (token === '"') {
-      this.offset++;
-      for (;;) {
-        const char = this.source[this.offset++];
-        if (char === undefined) this.fail("EOF while parsing a string", this.source.length);
-        if (char === '"') break;
-        if (char === "\\") {
-          const escaped = this.source[this.offset++];
-          if (escaped === undefined) this.fail("EOF while parsing a string", this.source.length);
-          if (escaped === "u") {
-            if (!/^[\da-f]{4}$/i.test(this.source.slice(this.offset, this.offset + 4)))
-              this.fail("invalid escape", Math.min(this.offset + 1, this.source.length));
-            this.offset += 4;
-          } else if (!'"\\/bfnrt'.includes(escaped)) this.fail("invalid escape");
-        } else if (char.charCodeAt(0) < 32)
-          this.fail("control character (\\u0000-\\u001F) found while parsing a string");
-      }
-    } else {
-      const scalar = /^(?:true|false|null|-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?)/.exec(
-        this.source.slice(this.offset),
-      );
-      if (!scalar) {
-        const remaining = this.source.slice(this.offset);
-        if (["true", "false", "null"].some((literal) => literal.startsWith(remaining)))
-          this.fail("EOF while parsing a value", this.source.length);
-        this.fail("expected value", this.offset + 1);
-      }
-      this.offset += scalar[0].length;
-      if (/[-0-9]/.test(token) && /[.eE0-9]/.test(this.source[this.offset] ?? "x")) {
-        this.fail("invalid number", Math.min(this.offset + 2, this.source.length));
-      }
-    }
+    if (token === "{" || token === "[") return this.container(token, start, depth, path);
+    if (token === '"') this.string();
+    else this.scalar(token);
     try {
       const value: unknown = JSON.parse(this.source.slice(start, this.offset));
       if (typeof value === "number" && !Number.isFinite(value)) this.fail("number out of range");
@@ -245,6 +162,92 @@ class JsonParser {
     } catch (error) {
       if (error instanceof MutationError) throw error;
       this.fail("invalid escape");
+    }
+  }
+
+  private container(token: "{" | "[", start: number, depth: number, path: string): Node {
+    if (depth >= 127) this.fail("recursion limit exceeded", this.offset + 1);
+    this.offset++;
+    const fields = new Map<string, Node>();
+    const duplicates: { key: string; end: number }[] = [];
+    const items: Node[] = [];
+    const close = token === "{" ? "}" : "]";
+    const context = token === "{" ? "an object" : "a list";
+    this.whitespace();
+    if (this.source[this.offset] !== close) {
+      for (;;) {
+        if (this.offset >= this.source.length) this.fail(`EOF while parsing ${context}`);
+        if (token === "{") {
+          if (this.source[this.offset] !== '"') this.fail("key must be a string", this.offset + 1);
+          const keyNode = this.node(depth + 1);
+          const key = keyNode.value;
+          this.whitespace();
+          if (this.source[this.offset] !== ":")
+            this.fail(
+              this.offset >= this.source.length ? "EOF while parsing an object" : "expected `:`",
+              this.offset + (this.offset < this.source.length ? 1 : 0),
+            );
+          this.offset++;
+          if (typeof key === "string") {
+            const value = this.node(depth + 1, path ? `${path}.${key}` : key);
+            if (fields.has(key)) duplicates.push({ key, end: keyNode.end });
+            fields.set(key, value);
+          }
+        } else items.push(this.node(depth + 1, `${path}[${items.length}]`));
+        this.whitespace();
+        if (this.source[this.offset] === close) break;
+        if (this.offset >= this.source.length) this.fail(`EOF while parsing ${context}`);
+        if (this.source[this.offset] !== ",")
+          this.fail(token === "{" ? "expected `,` or `}`" : "expected `,` or `]`", this.offset + 1);
+        this.offset++;
+        this.whitespace();
+        if (this.source[this.offset] === close) this.fail("trailing comma", this.offset + 1);
+      }
+    }
+    this.offset++;
+    return token === "{"
+      ? {
+          start,
+          end: this.offset,
+          fields,
+          duplicates,
+          value: Object.fromEntries([...fields].map(([key, node]) => [key, node.value])),
+        }
+      : { start, end: this.offset, items, value: items.map((node) => node.value) };
+  }
+
+  private string(): void {
+    this.offset++;
+    for (;;) {
+      const char = this.source[this.offset++];
+      if (char === undefined) this.fail("EOF while parsing a string", this.source.length);
+      if (char === '"') break;
+      if (char === "\\") {
+        const escaped = this.source[this.offset++];
+        if (escaped === undefined) this.fail("EOF while parsing a string", this.source.length);
+        if (escaped === "u") {
+          if (!/^[\da-f]{4}$/i.test(this.source.slice(this.offset, this.offset + 4)))
+            this.fail("invalid escape", Math.min(this.offset + 1, this.source.length));
+          this.offset += 4;
+        } else if (!'"\\/bfnrt'.includes(escaped)) this.fail("invalid escape");
+      } else if (char.charCodeAt(0) < 32)
+        this.fail("control character (\\u0000-\\u001F) found while parsing a string");
+    }
+  }
+
+  private scalar(token: string): void {
+    const scalar = /^(?:true|false|null|-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?)/.exec(
+      this.source.slice(this.offset),
+    );
+    if (!scalar) {
+      const remaining = this.source.slice(this.offset);
+      if (["true", "false", "null"].some((literal) => literal.startsWith(remaining)))
+        this.fail("EOF while parsing a value", this.source.length);
+      this.fail("expected value", this.offset + 1);
+    }
+    this.offset += scalar[0].length;
+    if (/[-0-9]/.test(token) && /[.eE0-9]/.test(this.source[this.offset] ?? "x")) {
+      this.fail("invalid number", Math.min(this.offset + 2, this.source.length));
     }
   }
 }

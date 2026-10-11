@@ -192,10 +192,10 @@ async fn configure(
     let row = sqlx::query("SELECT name,base_url,token,enabled,projects,people_mapping,generation FROM openproject_connections WHERE workspace_id=$1 AND id=$2 AND NOT deleted FOR UPDATE")
         .bind(workspace).bind(id).fetch_optional(&mut *tx).await?.ok_or(Error::NotFound)?;
     let previous_name: String = row.try_get("name")?;
-    let name = config.name.unwrap_or(previous_name.clone());
-    crate::domain::text(&name, 200)?;
+    let name = config.name.as_deref().unwrap_or(&previous_name);
+    crate::domain::text(name, 200)?;
     let previous_url: String = row.try_get("base_url")?;
-    let url = validate_url(&config.base_url.unwrap_or(previous_url.clone()))?;
+    let url = validate_url(config.base_url.as_deref().unwrap_or(&previous_url))?;
     if url != previous_url {
         let imported: bool = sqlx::query_scalar(
             "SELECT EXISTS(SELECT 1 FROM issues WHERE openproject->>'connection_id'=$1)",
@@ -208,19 +208,19 @@ async fn configure(
         }
     }
     let previous_token: String = row.try_get("token")?;
-    let token = config.token.unwrap_or(previous_token.clone());
+    let token = config.token.as_deref().unwrap_or(&previous_token);
     if token.is_empty() || token.len() > 4096 || token.chars().any(char::is_control) {
         return Err(Error::BadRequest("invalid token".into()));
     }
     let previous_projects: Vec<Mapping> = serde_json::from_value(row.try_get("projects")?)?;
-    let projects = config.projects.unwrap_or_else(|| previous_projects.clone());
-    let projects_changed = projects != previous_projects;
+    let projects = config.projects.as_ref().unwrap_or(&previous_projects);
+    let projects_changed = projects != &previous_projects;
     if projects_changed {
         if projects.len() > 100 {
             return Err(Error::BadRequest("at most 100 project mappings".into()));
         }
         let mut seen = BTreeSet::new();
-        for mapping in &projects {
+        for mapping in projects {
             if mapping.project_id <= 0
                 || !seen.insert(mapping.project_id)
                 || mapping.stage_mapping.len() > 100
@@ -259,7 +259,7 @@ async fn configure(
                 .await?
                 .into_iter()
                 .collect();
-        for mapping in &projects {
+        for mapping in projects {
             if !existing_teams.contains(&mapping.team_id) {
                 return Err(Error::BadRequest(
                     "team must belong to workspace and have stages".into(),
@@ -281,7 +281,7 @@ async fn configure(
     }
     let previous_people: BTreeMap<String, Uuid> =
         serde_json::from_value(row.try_get("people_mapping")?)?;
-    let normalized_people = if let Some(people_mapping) = config.people_mapping {
+    let (normalized_people, people_changed) = if let Some(people_mapping) = config.people_mapping {
         if people_mapping.len() > 5000 {
             return Err(Error::BadRequest("at most 5000 people mappings".into()));
         }
@@ -302,11 +302,11 @@ async fn configure(
                 ));
             }
         }
-        normalized_people
+        let changed = normalized_people != previous_people;
+        (normalized_people, changed)
     } else {
-        previous_people.clone()
+        (previous_people, false)
     };
-    let people_changed = normalized_people != previous_people;
     if people_changed {
         let users: Vec<Uuid> = normalized_people
             .values()

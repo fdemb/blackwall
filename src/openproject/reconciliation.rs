@@ -420,7 +420,7 @@ pub(super) async fn apply_page(
         after.parent_id = wanted_parents.get(&after.id).copied().flatten();
         let mut fields = before
             .as_ref()
-            .map(|old| persistence::changed_fields(old, &after))
+            .map(|old| old.changed_fields(&after))
             .unwrap_or_default();
         if let Some(old) = &before {
             if old.team_id != after.team_id {
@@ -486,7 +486,7 @@ pub(super) async fn apply_page(
             persistence::Ownership::Remote(&source),
         )
         .await?;
-        let fields = persistence::changed_fields(&old, &after);
+        let fields = old.changed_fields(&after);
         tracing::debug!(issue_id = %after.id, changed = true, fields = ?fields,
             "OpenProject child linked in page transaction");
         changes.push((Some(old), after, fields));

@@ -24,20 +24,23 @@ function words(text: string): string[] {
   return (text.match(WORD) ?? []).map((word) => lowercase(word));
 }
 
-export function matchesSearch(issue: DeepReadonly<SyncIssue>, search: string): boolean {
-  if (!search.trim()) return true;
-  const text = `${issue.title} ${issue.description}`;
-  if (lowercase(text).includes(lowercase(search))) return true;
+function searchPredicate(search: string): (issue: DeepReadonly<SyncIssue>) => boolean {
+  if (!search.trim()) return () => true;
+  const substring = lowercase(search);
   const query = words(search);
-  const document = new Set(words(text));
-  if (query.length > 0 && query.every((word) => document.has(word))) return true;
   const raw = search.replace(/^#+/, "");
-  return (
-    /^[1-9]\d*$/.test(raw) &&
-    BigInt(raw) <= 9223372036854775807n &&
-    issue.number !== null &&
-    String(issue.number) === raw
-  );
+  const number = /^[1-9]\d*$/.test(raw) && BigInt(raw) <= 9223372036854775807n ? raw : undefined;
+  return (issue) => {
+    const text = `${issue.title} ${issue.description}`;
+    if (lowercase(text).includes(substring)) return true;
+    const document = new Set(words(text));
+    if (query.length > 0 && query.every((word) => document.has(word))) return true;
+    return issue.number !== null && String(issue.number) === number;
+  };
+}
+
+export function matchesSearch(issue: DeepReadonly<SyncIssue>, search: string): boolean {
+  return searchPredicate(search)(issue);
 }
 
 type ReplicaIssueFilter = { [Key in keyof IssueFilter]: IssueFilter[Key] | null };
@@ -60,22 +63,15 @@ export function filterIssues(
     throw new ApiError("search query too long", 400);
   let ids: Set<string> | undefined;
   if (filter.ids != null) {
-    const values = filter.ids.split(",");
-    if (values.some((id) => uuid(id) === undefined))
+    const values = filter.ids.split(",").map(uuid);
+    if (values.some((id) => id === undefined))
       throw new ApiError("ids must be comma-separated UUIDs", 400);
     if (values.length > 200) throw new ApiError("ids may contain at most 200 UUIDs", 400);
-    ids = new Set(values.flatMap((id) => uuid(id) ?? []));
+    ids = new Set(values.filter((id) => id !== undefined));
   }
   const due = filter.due_before == null ? undefined : parseTimestamp(filter.due_before);
-  const rows = store.all("issues").filter((issue) => {
-    if (
-      filter.trash
-        ? issue.deleted_at === null
-        : issue.deleted_at !== null ||
-          (filter.archived ? issue.archived_at === null : issue.archived_at !== null)
-    )
-      return false;
-    for (const column of [
+  const equality = (
+    [
       "assignee",
       "created_by",
       "team_id",
@@ -84,24 +80,29 @@ export function filterIssues(
       "project_id",
       "parent_id",
       "priority",
-    ] as const) {
-      const value = filter[column];
+    ] as const
+  ).flatMap((column) => {
+    const value = filter[column];
+    return value == null ? [] : [[column, uuid(value) ?? value] as const];
+  });
+  const label = filter.label_id == null ? undefined : (uuid(filter.label_id) ?? filter.label_id);
+  const dependency =
+    filter.dependency_id == null ? undefined : (uuid(filter.dependency_id) ?? filter.dependency_id);
+  const matches = searchPredicate(filter.search ?? "");
+  const rows = store.all("issues").filter((issue) => {
+    if (
+      filter.trash
+        ? issue.deleted_at === null
+        : issue.deleted_at !== null ||
+          (filter.archived ? issue.archived_at === null : issue.archived_at !== null)
+    )
+      return false;
+    for (const [column, value] of equality) {
       const actual = issue[column];
-      if (value != null && (actual === null || (uuid(value) ?? value) !== (uuid(actual) ?? actual)))
-        return false;
+      if (actual === null || (uuid(actual) ?? actual) !== value) return false;
     }
-    if (
-      filter.label_id != null &&
-      !issue.labels.some((id) => id === (uuid(filter.label_id ?? "") ?? filter.label_id))
-    )
-      return false;
-    if (
-      filter.dependency_id != null &&
-      !issue.dependencies.some(
-        (id) => id === (uuid(filter.dependency_id ?? "") ?? filter.dependency_id),
-      )
-    )
-      return false;
+    if (label !== undefined && !issue.labels.includes(label)) return false;
+    if (dependency !== undefined && !issue.dependencies.includes(dependency)) return false;
     if (due !== undefined && (issue.deadline === null || issue.deadline > due)) return false;
     if (filter.unassigned && issue.assignee !== null) return false;
     if (filter.no_sprint && issue.sprint_id !== null) return false;
@@ -110,7 +111,7 @@ export function filterIssues(
       if (kind === undefined || kind === "done" || kind === "cancelled") return false;
     }
     if (ids && !ids.has(issue.id)) return false;
-    return filter.search == null || matchesSearch(issue, filter.search);
+    return matches(issue);
   });
   return rows.sort((a, b) => {
     let group = 0;

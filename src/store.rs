@@ -630,6 +630,21 @@ impl Operation<'_> {
             .ok_or(Error::NotFound)?
             .try_get("version")?;
 
+        self.touch_locked(table, id, version).await
+    }
+
+    /// Bump a row already locked FOR UPDATE, after the caller's authorization checks.
+    async fn touch_locked(&mut self, table: &str, id: Uuid, version: i64) -> Result<i64> {
+        let key = (table.to_owned(), id);
+        if let Some(version) = self.versions.get(&key) {
+            return Ok(*version);
+        }
+        let column = if matches!(table, "workspace_members" | "alert_preferences") {
+            "user_id"
+        } else {
+            "id"
+        };
+
         // Absent preconditions mean last-writer-wins. A present one still conflicts on mismatch.
         if let Some(expected) = self.expected.get(&id)
             && *expected != version

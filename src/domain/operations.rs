@@ -415,65 +415,7 @@ impl Workspace {
         }
         let old_assignee = i.assignee;
 
-        if let Some(v) = p.title {
-            i.title = v
-        }
-        if let Some(v) = p.description {
-            i.description = v
-        }
-
-        if let Some(v) = p.stage_id {
-            i.stage_id = v
-        }
-        if p.clear_assignee {
-            i.assignee = None
-        } else if let Some(v) = p.assignee {
-            i.assignee = Some(v)
-        }
-
-        if let Some(v) = p.priority {
-            i.priority = v
-        }
-        if let Some(v) = p.labels {
-            i.labels = v
-        }
-
-        if p.clear_estimate {
-            i.estimate = None;
-        } else if let Some(v) = p.estimate {
-            i.estimate = Some(v)
-        }
-        if p.clear_deadline {
-            i.deadline = None
-        } else if let Some(v) = p.deadline {
-            i.deadline = Some(v)
-        }
-
-        if p.clear_project {
-            i.project_id = None;
-            i.milestone_id = None;
-        } else if let Some(v) = p.project_id {
-            i.project_id = Some(v)
-        }
-        if p.clear_milestone {
-            i.milestone_id = None;
-        } else if let Some(v) = p.milestone_id {
-            i.milestone_id = Some(v)
-        }
-        if p.clear_sprint {
-            i.sprint_id = None
-        } else if let Some(v) = p.sprint_id {
-            i.sprint_id = Some(v)
-        }
-
-        if p.clear_parent {
-            i.parent_id = None
-        } else if let Some(v) = p.parent_id {
-            i.parent_id = Some(v)
-        }
-        if let Some(v) = p.dependencies {
-            i.dependencies = v
-        }
+        i.apply_patch(p);
 
         i.updated_at = now;
         self.validate_issue(&i)?;
@@ -1229,7 +1171,7 @@ impl Workspace {
             Command::UpdateIssue { id, patch } => {
                 let before = self.issue(id)?.clone();
                 self.patch_issue(id, patch, actor, now)?;
-                fields = changed_fields(&before, self.issue(id)?);
+                fields = before.changed_fields(self.issue(id)?);
                 result = Some(id)
             }
 
@@ -2107,33 +2049,9 @@ impl Workspace {
     }
 }
 
-fn validate_email(email: &str) -> Result<()> {
-    if email.len() > 254
-        || email.contains(char::is_whitespace)
-        || !email
-            .split_once('@')
-            .is_some_and(|(a, b)| !a.is_empty() && b.contains('.'))
-    {
-        Err(Error::BadRequest("invalid email".into()))
-    } else {
-        Ok(())
-    }
-}
-
 fn validate_hash(hash: &str) -> Result<()> {
     if hash.len() != 64 || !hash.bytes().all(|b| b.is_ascii_hexdigit()) {
         Err(Error::BadRequest("token hash must be SHA-256 hex".into()))
-    } else {
-        Ok(())
-    }
-}
-
-fn validate_url(url: &str) -> Result<()> {
-    if url.len() > 2000
-        || !(url.starts_with("https://") || url.starts_with("http://"))
-        || url.contains(char::is_whitespace)
-    {
-        Err(Error::BadRequest("HTTP or HTTPS URL required".into()))
     } else {
         Ok(())
     }
@@ -2156,26 +2074,4 @@ fn add_work(map: &mut BTreeMap<Uuid, Total>, id: Uuid, effort: Option<u32>) {
     let t = total(map, id);
     t.open_issues += 1;
     t.effort += effort.unwrap_or(0) as u64;
-}
-
-fn changed_fields(before: &Issue, after: &Issue) -> Vec<String> {
-    [
-        ("title", before.title != after.title),
-        ("description", before.description != after.description),
-        ("stage", before.stage_id != after.stage_id),
-        ("assignee", before.assignee != after.assignee),
-        ("priority", before.priority != after.priority),
-        ("labels", before.labels != after.labels),
-        ("estimate", before.estimate != after.estimate),
-        ("deadline", before.deadline != after.deadline),
-        ("project", before.project_id != after.project_id),
-        ("milestone", before.milestone_id != after.milestone_id),
-        ("sprint", before.sprint_id != after.sprint_id),
-        ("parent", before.parent_id != after.parent_id),
-        ("dependencies", before.dependencies != after.dependencies),
-    ]
-    .into_iter()
-    .filter(|(_, changed)| *changed)
-    .map(|(name, _)| name.to_string())
-    .collect()
 }

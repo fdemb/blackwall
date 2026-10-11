@@ -18,21 +18,13 @@ const EMAIL_TIMEOUT: Duration = Duration::from_secs(45);
 const WEBHOOK_TIMEOUT: Duration = Duration::from_secs(45);
 const DATABASE_TIMEOUT: Duration = Duration::from_secs(45);
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum DeliveryError {
+    #[error("{0}")]
     Permanent(&'static str),
+    #[error("{0}")]
     Transient(&'static str),
 }
-
-impl std::fmt::Display for DeliveryError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Permanent(message) | Self::Transient(message) => f.write_str(message),
-        }
-    }
-}
-
-impl std::error::Error for DeliveryError {}
 
 #[derive(Clone, Debug)]
 pub struct WorkerConfig {
@@ -84,7 +76,12 @@ impl WorkerConfig {
                 1,
                 16,
             )? as usize,
-            openproject_concurrency: setting("JOBS_OPENPROJECT_CONCURRENCY", 2, 1, 4)? as usize,
+            openproject_concurrency: setting(
+                "JOBS_OPENPROJECT_CONCURRENCY",
+                default.openproject_concurrency as u64,
+                1,
+                4,
+            )? as usize,
             poll_interval: Duration::from_millis(setting("JOBS_POLL_MS", 5000, 50, 5000)?),
             drain_timeout: Duration::from_secs(setting("JOBS_DRAIN_SECONDS", 50, 1, 120)?),
             retention_days: setting("JOBS_RETENTION_DAYS", 30, 1, 3650)? as i32,

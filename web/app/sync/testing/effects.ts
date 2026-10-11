@@ -17,8 +17,16 @@ interface ServerEffects {
 
 /** Audit corrections to client predictions here against Operation and persistence. */
 export function applyServerOnlyEffects(context: ServerEffects): number {
-  const { tx, actor, name, args, id } = context;
-  let nextNumber = context.nextIssueNumber;
+  correctPredictions(context);
+  const nextNumber = stampRecords(context);
+  finishCommand(context);
+  recordCompletions(context);
+  recordActivity(context);
+  return nextNumber;
+}
+
+function correctPredictions(context: ServerEffects): void {
+  const { tx, name, args, id } = context;
   if (name === "update_view" && id && !tx.get("views", id)) {
     const view = context.before.get("views", id);
     if (view && typeof args.name === "string" && object(args.filter))
@@ -68,6 +76,11 @@ export function applyServerOnlyEffects(context: ServerEffects): number {
       if (member) tx.put("members", member);
     }
   }
+}
+
+function stampRecords(context: ServerEffects): number {
+  const { tx, name } = context;
+  let nextNumber = context.nextIssueNumber;
   for (const { entity, id: key } of [...tx.touched.values()]) {
     const row = tx.get(entity, key);
     const before = context.before.get(entity, key);
@@ -81,59 +94,70 @@ export function applyServerOnlyEffects(context: ServerEffects): number {
       const version = before && "version" in before ? before.version + (childChanged ? 0 : 1) : 1;
       tx.put(entity, { ...row, version });
     }
-    if (entity === "issues") {
-      const issue = tx.get("issues", key);
-      if (!issue) continue;
-      const created = !context.before.get("issues", key);
-      tx.put("issues", {
-        ...issue,
-        number: issue.number ?? nextNumber++,
-        ...(created
-          ? {
-              created_at: context.now(),
-              followers: [...new Set([...issue.followers, actor])].sort(),
-            }
-          : {}),
-        updated_at:
-          (name === "move_issue" && key !== id) ||
-          ["follow", "add_source_link", "remove_attachment", "add_comment"].includes(name)
-            ? issue.updated_at
-            : context.now(),
-      });
-      const oldIssue = context.before.get("issues", key);
-      if (
-        (name === "create_issue" || name === "update_issue" || name === "bulk_issues") &&
-        issue.assignee &&
-        issue.assignee !== actor &&
-        issue.assignee !== oldIssue?.assignee
-      )
-        notify(context, tx, issue.assignee, issue.id, "assignment", issue.title);
-      if (name === "update_issue" || (name === "bulk_issues" && object(args.action)))
-        for (const follower of issue.followers)
-          if (follower !== actor) notify(context, tx, follower, issue.id, "change", issue.title);
-    }
-    if (entity === "teams") {
-      const team = tx.get("teams", key);
-      const old = context.before.get("teams", key);
-      if (team)
-        tx.put("teams", {
-          ...team,
-          stages: team.stages.map((stage) => {
-            const previous = old?.stages.find((s) => s.id === stage.id);
-            return {
-              ...stage,
-              version:
-                previous &&
-                ((name === "update_stage" && stage.id === args.id) ||
-                  JSON.stringify({ ...stage, version: previous.version }) !==
-                    JSON.stringify(previous))
-                  ? previous.version + 1
-                  : (previous?.version ?? 1),
-            };
-          }),
-        });
-    }
+    if (entity === "issues") nextNumber = stampIssue(context, key, nextNumber);
+    if (entity === "teams") stampTeam(context, key);
   }
+  return nextNumber;
+}
+
+function stampIssue(context: ServerEffects, key: string, nextNumber: number): number {
+  const { tx, actor, name, args, id } = context;
+  const issue = tx.get("issues", key);
+  if (!issue) return nextNumber;
+  const created = !context.before.get("issues", key);
+  tx.put("issues", {
+    ...issue,
+    number: issue.number ?? nextNumber++,
+    ...(created
+      ? {
+          created_at: context.now(),
+          followers: [...new Set([...issue.followers, actor])].sort(),
+        }
+      : {}),
+    updated_at:
+      (name === "move_issue" && key !== id) ||
+      ["follow", "add_source_link", "remove_attachment", "add_comment"].includes(name)
+        ? issue.updated_at
+        : context.now(),
+  });
+  const oldIssue = context.before.get("issues", key);
+  if (
+    (name === "create_issue" || name === "update_issue" || name === "bulk_issues") &&
+    issue.assignee &&
+    issue.assignee !== actor &&
+    issue.assignee !== oldIssue?.assignee
+  )
+    notify(context, tx, issue.assignee, issue.id, "assignment", issue.title);
+  if (name === "update_issue" || (name === "bulk_issues" && object(args.action)))
+    for (const follower of issue.followers)
+      if (follower !== actor) notify(context, tx, follower, issue.id, "change", issue.title);
+  return nextNumber;
+}
+
+function stampTeam(context: ServerEffects, key: string): void {
+  const { tx, name, args } = context;
+  const team = tx.get("teams", key);
+  const old = context.before.get("teams", key);
+  if (team)
+    tx.put("teams", {
+      ...team,
+      stages: team.stages.map((stage) => {
+        const previous = old?.stages.find((s) => s.id === stage.id);
+        return {
+          ...stage,
+          version:
+            previous &&
+            ((name === "update_stage" && stage.id === args.id) ||
+              JSON.stringify({ ...stage, version: previous.version }) !== JSON.stringify(previous))
+              ? previous.version + 1
+              : (previous?.version ?? 1),
+        };
+      }),
+    });
+}
+
+function finishCommand(context: ServerEffects): void {
+  const { tx, actor, name, args, id } = context;
   if (name === "move_issue" && !args.before_id && id) {
     const issue = tx.get("issues", id);
     if (issue) {
@@ -164,6 +188,10 @@ export function applyServerOnlyEffects(context: ServerEffects): number {
           );
     }
   }
+}
+
+function recordCompletions(context: ServerEffects): void {
+  const { tx, actor, name, args } = context;
   const terminal = (tables: Tables, stageId: string): boolean =>
     tables
       .all("teams")
@@ -202,6 +230,10 @@ export function applyServerOnlyEffects(context: ServerEffects): number {
         });
     }
   }
+}
+
+function recordActivity(context: ServerEffects): void {
+  const { tx, actor, name, args, id } = context;
   const fieldNames = [
     "title",
     "description",
@@ -244,7 +276,6 @@ export function applyServerOnlyEffects(context: ServerEffects): number {
     at: context.now(),
     fields: [...new Set(fields)],
   });
-  return nextNumber;
 }
 
 function notify(

@@ -104,6 +104,25 @@ describe("issue filter SQL predicates", () => {
     expect(() => ids(store, { ids: `${id(1)},bad` })).toThrow("comma-separated UUIDs");
     expect(() => ids(store, { ids: Array(201).fill(id(1)).join(",") })).toThrow("at most 200");
   });
+  it("normalizes UUID spellings across equality and collection filters", () => {
+    const target = "abcdefab-cdef-4abc-8def-abcdefabcdef";
+    const matching = makeIssue(id(20), {
+      assignee: target.toUpperCase(),
+      labels: [target],
+      dependencies: [target],
+    });
+    const store = storeOf([matching, makeIssue(id(21))]);
+    for (const value of [
+      target.toUpperCase(),
+      `{${target}}`,
+      `urn:uuid:${target}`,
+      target.replaceAll("-", ""),
+    ]) {
+      expect(ids(store, { assignee: value, label_id: value, dependency_id: value })).toEqual([
+        matching.id,
+      ]);
+    }
+  });
   it("treats serde null option fields as unset for server-saved view filters", () => {
     const store = storeOf([chosen, makeIssue(id(9))]);
     expect(

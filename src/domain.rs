@@ -340,6 +340,30 @@ pub(crate) fn validate_archive_days(value: Option<u32>) -> Result<()> {
     Ok(())
 }
 
+pub(crate) fn validate_email(email: &str) -> Result<()> {
+    if email.len() > 254
+        || email.contains(char::is_whitespace)
+        || !email
+            .split_once('@')
+            .is_some_and(|(a, b)| !a.is_empty() && b.contains('.'))
+    {
+        Err(Error::BadRequest("invalid email".into()))
+    } else {
+        Ok(())
+    }
+}
+
+pub(crate) fn validate_url(url: &str) -> Result<()> {
+    if url.len() > 2000
+        || !(url.starts_with("https://") || url.starts_with("http://"))
+        || url.contains(char::is_whitespace)
+    {
+        Err(Error::BadRequest("HTTP or HTTPS URL required".into()))
+    } else {
+        Ok(())
+    }
+}
+
 pub(crate) fn text(value: &str, max: usize) -> Result<()> {
     if value.trim().is_empty() || value.len() > max {
         Err(Error::BadRequest(format!(

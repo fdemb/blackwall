@@ -690,25 +690,17 @@ async fn pull_pages_cut_at_txid_boundaries() {
 
     let before = cursor_of(&pull_ok(&app, &owner.token, ws, client, None).await);
 
-    let first: Vec<Uuid> = bulk_issues(team, 0, 600)
+    let first_payload = bulk_issues(team, 0, 600);
+    let first: Vec<Uuid> = first_payload
         .iter()
         .map(|issue| Uuid::parse_str(issue["id"].as_str().unwrap()).unwrap())
-        .collect();
-    let first_payload: Vec<Value> = first
-        .iter()
-        .enumerate()
-        .map(|(n, id)| json!({"id": id, "team_id": team, "title": format!("Bulk {n}")}))
         .collect();
     import_issues(&app, &owner, ws, first_payload).await;
 
-    let second: Vec<Uuid> = bulk_issues(team, 600, 600)
+    let second_payload = bulk_issues(team, 600, 600);
+    let second: Vec<Uuid> = second_payload
         .iter()
         .map(|issue| Uuid::parse_str(issue["id"].as_str().unwrap()).unwrap())
-        .collect();
-    let second_payload: Vec<Value> = second
-        .iter()
-        .enumerate()
-        .map(|(n, id)| json!({"id": id, "team_id": team, "title": format!("Bulk {}", 600 + n)}))
         .collect();
     import_issues(&app, &owner, ws, second_payload).await;
 

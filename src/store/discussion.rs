@@ -1,4 +1,5 @@
 use super::*;
+use crate::domain::{validate_email, validate_url};
 use crate::jobs::{Email, Grant, Job};
 use std::collections::BTreeSet;
 
@@ -15,8 +16,7 @@ impl Operation<'_> {
                 attachment,
             } => {
                 self.touch("issues", issue_id).await?;
-                self.reject_archived_issue(issue_id).await?;
-                self.discussion_issue(issue_id).await?;
+                self.attachment_issue(issue_id).await?;
                 self.insert_attachment(issue_id, None, attachment, upload)
                     .await?;
                 Some(issue_id)
@@ -32,7 +32,8 @@ impl Operation<'_> {
                 self.author_or_admin(row.try_get("author")?)?;
                 let issue_id = row.try_get("issue_id")?;
                 self.discussion_issue(issue_id).await?;
-                self.touch("comments", comment_id).await?;
+                self.touch_locked("comments", comment_id, row.try_get("version")?)
+                    .await?;
                 self.insert_attachment(issue_id, Some(comment_id), attachment, upload)
                     .await?;
                 Some(comment_id)
@@ -43,8 +44,7 @@ impl Operation<'_> {
                 attachment_id,
             } => {
                 self.touch("issues", issue_id).await?;
-                self.reject_archived_issue(issue_id).await?;
-                self.discussion_issue(issue_id).await?;
+                self.attachment_issue(issue_id).await?;
 
                 let deleted = sqlx::query(
                     "DELETE FROM attachments WHERE workspace_id=$1 AND issue_id=$2 AND \
@@ -173,7 +173,8 @@ impl Operation<'_> {
                     self.member(*user).await?;
                 }
 
-                self.touch("comments", id).await?;
+                self.touch_locked("comments", id, row.try_get("version")?)
+                    .await?;
 
                 sqlx::query(
                     "UPDATE comments SET body=$3,edited_at=$4 WHERE workspace_id=$1 AND \
@@ -209,7 +210,8 @@ impl Operation<'_> {
             Command::DeleteComment { id } => {
                 let row = self.discussion_record("comments", "author", id).await?;
                 self.author_or_admin(row.try_get("author")?)?;
-                self.touch("comments", id).await?;
+                self.touch_locked("comments", id, row.try_get("version")?)
+                    .await?;
 
                 sqlx::query("DELETE FROM comments WHERE workspace_id=$1 AND id=$2")
                     .bind(self.workspace_id)
@@ -264,7 +266,8 @@ impl Operation<'_> {
                     .discussion_record("time_entries", "user_id", id)
                     .await?;
                 self.author_or_admin(row.try_get("user_id")?)?;
-                self.touch("time_entries", id).await?;
+                self.touch_locked("time_entries", id, row.try_get("version")?)
+                    .await?;
 
                 sqlx::query(
                     "UPDATE time_entries SET minutes=$3,note=$4,logged_at=$5 WHERE \
@@ -285,7 +288,8 @@ impl Operation<'_> {
                     .discussion_record("time_entries", "user_id", id)
                     .await?;
                 self.author_or_admin(row.try_get("user_id")?)?;
-                self.touch("time_entries", id).await?;
+                self.touch_locked("time_entries", id, row.try_get("version")?)
+                    .await?;
 
                 sqlx::query("DELETE FROM time_entries WHERE workspace_id=$1 AND id=$2")
                     .bind(self.workspace_id)
@@ -829,9 +833,10 @@ impl Operation<'_> {
         Ok(())
     }
 
-    async fn reject_archived_issue(&mut self, id: Uuid) -> Result<()> {
-        let archived: bool = sqlx::query_scalar(
-            "SELECT archived_at IS NOT NULL FROM issues WHERE workspace_id=$1 AND id=$2",
+    // Attachment callers have already locked and touched the issue.
+    async fn attachment_issue(&mut self, id: Uuid) -> Result<()> {
+        let (archived, deleted): (bool, bool) = sqlx::query_as(
+            "SELECT archived_at IS NOT NULL,deleted_at IS NOT NULL FROM issues WHERE workspace_id=$1 AND id=$2",
         )
         .bind(self.workspace_id)
         .bind(id)
@@ -840,6 +845,9 @@ impl Operation<'_> {
         .ok_or(Error::NotFound)?;
         if archived {
             return Err(Error::Conflict("issue is archived".into()));
+        }
+        if deleted {
+            return Err(Error::NotFound);
         }
         Ok(())
     }
@@ -856,7 +864,7 @@ impl Operation<'_> {
         ));
 
         sqlx::query(&format!(
-            "SELECT issue_id,{author} FROM {table} WHERE workspace_id=$1 AND id=$2 FOR UPDATE"
+            "SELECT issue_id,{author},version FROM {table} WHERE workspace_id=$1 AND id=$2 FOR UPDATE"
         ))
         .bind(self.workspace_id)
         .bind(id)
@@ -1050,28 +1058,6 @@ fn validate_time(minutes: u32, note: &str) -> Result<()> {
         return Err(Error::BadRequest(
             "time entry must contain 1 to 1440 minutes".into(),
         ));
-    }
-    Ok(())
-}
-
-fn validate_email(email: &str) -> Result<()> {
-    if email.len() > 254
-        || email.contains(char::is_whitespace)
-        || !email
-            .split_once('@')
-            .is_some_and(|(local, domain)| !local.is_empty() && domain.contains('.'))
-    {
-        return Err(Error::BadRequest("invalid email".into()));
-    }
-    Ok(())
-}
-
-fn validate_url(url: &str) -> Result<()> {
-    if url.len() > 2000
-        || !(url.starts_with("https://") || url.starts_with("http://"))
-        || url.contains(char::is_whitespace)
-    {
-        return Err(Error::BadRequest("HTTP or HTTPS URL required".into()));
     }
     Ok(())
 }
@@ -1315,6 +1301,49 @@ mod tests {
         )
         .await
         .unwrap();
+        // Authorization still precedes stale-version checks when reusing the locked row.
+        for (target, action) in [
+            (
+                comment,
+                json!({"type":"edit_comment","id":comment,"body":"Unauthorized"}),
+            ),
+            (comment, json!({"type":"delete_comment","id":comment})),
+            (
+                comment,
+                json!({"type":"attach_comment_file","comment_id":comment,"attachment":{
+                    "id":Uuid::new_v4(),"name":"file.txt","content_type":"text/plain","size":1
+                }}),
+            ),
+            (
+                time,
+                json!({"type":"update_time","id":time,"minutes":1,"note":"Unauthorized","logged_at":Utc::now()}),
+            ),
+            (time, json!({"type":"delete_time","id":time})),
+        ] {
+            assert!(matches!(
+                command(
+                    &store,
+                    workspace,
+                    member,
+                    action.clone(),
+                    BTreeMap::from([(target, 0)])
+                )
+                .await,
+                Err(Error::Forbidden)
+            ));
+            assert!(matches!(
+                command(
+                    &store,
+                    workspace,
+                    owner,
+                    action,
+                    BTreeMap::from([(target, 0)])
+                )
+                .await,
+                Err(Error::Conflict(_))
+            ));
+        }
+
         let member_comment = command(
             &store,
             workspace,

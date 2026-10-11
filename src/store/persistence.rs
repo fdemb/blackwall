@@ -308,28 +308,6 @@ async fn became_completed_with_stages(
     Ok(done && !was_done)
 }
 
-pub(crate) fn changed_fields(before: &Issue, after: &Issue) -> Vec<String> {
-    [
-        ("title", before.title != after.title),
-        ("description", before.description != after.description),
-        ("stage", before.stage_id != after.stage_id),
-        ("assignee", before.assignee != after.assignee),
-        ("priority", before.priority != after.priority),
-        ("labels", before.labels != after.labels),
-        ("estimate", before.estimate != after.estimate),
-        ("deadline", before.deadline != after.deadline),
-        ("project", before.project_id != after.project_id),
-        ("milestone", before.milestone_id != after.milestone_id),
-        ("sprint", before.sprint_id != after.sprint_id),
-        ("parent", before.parent_id != after.parent_id),
-        ("dependencies", before.dependencies != after.dependencies),
-    ]
-    .into_iter()
-    .filter(|(_, changed)| *changed)
-    .map(|(name, _)| name.to_owned())
-    .collect()
-}
-
 /// The action determines which effects a caller explicitly requests.
 pub(crate) enum IssueEffects {
     Create,

@@ -222,50 +222,63 @@ function normalizeObject(value: unknown, fields: Fields): unknown {
   if (!isObject(value)) return value;
   const result: Record<string, unknown> = {};
   for (const [key, field] of Object.entries(fields)) {
-    let item = Object.prototype.hasOwnProperty.call(value, key) ? value[key] : undefined;
-    if (item === null && field.kind !== "option" && !(field.kind === "default" && field.nullable)) {
-      throw new MutationError(400, `invalid command arguments: ${key} cannot be null`);
+    const item = Object.prototype.hasOwnProperty.call(value, key) ? value[key] : undefined;
+    validateField(item, field, key);
+    const normalized = normalizeField(item, field);
+    if (normalized !== undefined) result[key] = normalized;
+  }
+  return result;
+}
+
+function validateField(item: unknown, field: Field, key: string): void {
+  if (item === null && field.kind !== "option" && !(field.kind === "default" && field.nullable)) {
+    throw new MutationError(400, `invalid command arguments: ${key} cannot be null`);
+  }
+  if (item === null || item === undefined) return;
+  if (field.integer) checkInteger(item, field.integer);
+  if (!field.commandTimestamp) return;
+  try {
+    parseTimestamp(item, true);
+  } catch (error) {
+    if (error instanceof Error && error.message === "premature end of input") {
+      throw new MutationError(400, error.message);
     }
-    if (item !== null && item !== undefined && field.integer) checkInteger(item, field.integer);
-    if (item !== null && item !== undefined && field.commandTimestamp) {
-      try {
-        parseTimestamp(item, true);
-      } catch (error) {
-        if (error instanceof Error && error.message === "premature end of input") {
-          throw new MutationError(400, error.message);
-        }
-        // Domain checks report the server timestamp range error.
-      }
-    }
-    if (field.kind === "option") {
-      if (item === null || item === undefined) {
-        if (field.stored) result[key] = null;
-        continue;
-      }
+    // Domain checks report the server timestamp range error.
+  }
+}
+
+function normalizeField(item: unknown, field: Field): unknown {
+  switch (field.kind) {
+    case "option":
+      if (item === null || item === undefined) return field.stored ? null : undefined;
       if (field.timestamp && typeof item === "string") {
         try {
-          item = parseTimestamp(item, true, "chrono");
+          return parseTimestamp(item, true, "chrono");
         } catch {
           // The mutator reports invalid timestamps through its usual check.
         }
       }
-    } else if (field.kind === "default") {
-      if (item === undefined) item = structuredClone(field.value);
-      if (field.items && Array.isArray(item)) {
-        const items = field.items;
-        item = item.map((entry) => normalizeObject(entry, items));
-      }
+      return item;
+    case "default": {
       // A nullable default keeps null instead of replacing it with the default.
-    } else if (field.kind === "object") {
-      item = normalizeObject(item, field.fields);
-    } else if (field.kind === "array" && Array.isArray(item)) {
-      item = item.map((entry) => normalizeObject(entry, field.items));
-    } else if (field.kind === "bulk" && isObject(item) && "update" in item) {
-      item = normalizeObject(item, { update: { kind: "object", fields: ISSUE_PATCH } });
+      const value = item === undefined ? structuredClone(field.value) : item;
+      return field.items ? normalizeArray(value, field.items) : value;
     }
-    if (item !== undefined) result[key] = item;
+    case "object":
+      return normalizeObject(item, field.fields);
+    case "array":
+      return normalizeArray(item, field.items);
+    case "bulk":
+      return isObject(item) && "update" in item
+        ? normalizeObject(item, { update: { kind: "object", fields: ISSUE_PATCH } })
+        : item;
+    case "required":
+      return item;
   }
-  return result;
+}
+
+function normalizeArray(value: unknown, fields: Fields): unknown {
+  return Array.isArray(value) ? value.map((entry) => normalizeObject(entry, fields)) : value;
 }
 
 /** Apply Serde's absence/null rules before admission and every replay. */

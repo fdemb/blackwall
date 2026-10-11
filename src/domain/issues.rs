@@ -85,6 +85,94 @@ pub struct Issue {
     pub updated_at: DateTime<Utc>,
 }
 
+impl Issue {
+    /// Apply field values and clear flags; callers validate and persist the result.
+    pub(crate) fn apply_patch(&mut self, p: IssuePatch) {
+        if let Some(v) = p.title {
+            self.title = v
+        }
+        if let Some(v) = p.description {
+            self.description = v
+        }
+
+        if let Some(v) = p.stage_id {
+            self.stage_id = v
+        }
+        if p.clear_assignee {
+            self.assignee = None
+        } else if let Some(v) = p.assignee {
+            self.assignee = Some(v)
+        }
+
+        if let Some(v) = p.priority {
+            self.priority = v
+        }
+        if let Some(v) = p.labels {
+            self.labels = v
+        }
+
+        if p.clear_estimate {
+            self.estimate = None;
+        } else if let Some(v) = p.estimate {
+            self.estimate = Some(v)
+        }
+        if p.clear_deadline {
+            self.deadline = None
+        } else if let Some(v) = p.deadline {
+            self.deadline = Some(v)
+        }
+
+        if p.clear_project {
+            self.project_id = None;
+            self.milestone_id = None;
+        } else if let Some(v) = p.project_id {
+            self.project_id = Some(v)
+        }
+        if p.clear_milestone {
+            self.milestone_id = None;
+        } else if let Some(v) = p.milestone_id {
+            self.milestone_id = Some(v)
+        }
+        if p.clear_sprint {
+            self.sprint_id = None
+        } else if let Some(v) = p.sprint_id {
+            self.sprint_id = Some(v)
+        }
+
+        if p.clear_parent {
+            self.parent_id = None
+        } else if let Some(v) = p.parent_id {
+            self.parent_id = Some(v)
+        }
+        if let Some(v) = p.dependencies {
+            self.dependencies = v
+        }
+    }
+
+    /// Editable fields changed by the supplied replacement, in activity order.
+    pub(crate) fn changed_fields(&self, after: &Issue) -> Vec<String> {
+        [
+            ("title", self.title != after.title),
+            ("description", self.description != after.description),
+            ("stage", self.stage_id != after.stage_id),
+            ("assignee", self.assignee != after.assignee),
+            ("priority", self.priority != after.priority),
+            ("labels", self.labels != after.labels),
+            ("estimate", self.estimate != after.estimate),
+            ("deadline", self.deadline != after.deadline),
+            ("project", self.project_id != after.project_id),
+            ("milestone", self.milestone_id != after.milestone_id),
+            ("sprint", self.sprint_id != after.sprint_id),
+            ("parent", self.parent_id != after.parent_id),
+            ("dependencies", self.dependencies != after.dependencies),
+        ]
+        .into_iter()
+        .filter(|(_, changed)| *changed)
+        .map(|(name, _)| name.to_string())
+        .collect()
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct IssueInput {
     pub id: Option<Uuid>,
