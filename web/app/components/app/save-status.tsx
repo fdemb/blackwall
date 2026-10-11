@@ -19,7 +19,7 @@ export function SaveStatus() {
     return () => clearTimeout(timer);
   }, [saved]);
   return (
-    <span role="status" className="flex items-center gap-1 text-xs text-muted-foreground">
+    <span role="status" className="flex items-center gap-1  text-muted-foreground">
       {pending > 0 ? (
         <>
           <Loader2 className="size-3 animate-spin" />

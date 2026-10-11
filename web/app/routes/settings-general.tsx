@@ -26,13 +26,13 @@ export default function General() {
   return (
     <SettingsPage title={t("settings.general")} description={t("settings.generalSub")}>
       <SettingsSection>
-        <dl className="divide-y divide-border text-[13px]">
+        <dl className="divide-y divide-border ">
           <Row label={t("field.name")}>
             <span className="font-medium">{ws.name}</span>
           </Row>
           <Row label={t("workspace.id")}>
             <span className="flex min-w-0 items-center gap-1">
-              <code className="truncate font-mono text-xs text-muted-foreground">{ws.id}</code>
+              <code className="truncate font-mono  text-muted-foreground">{ws.id}</code>
               <Button
                 variant="ghost"
                 size="icon"
@@ -49,7 +49,7 @@ export default function General() {
         </dl>
       </SettingsSection>
       <SettingsSection title={t("settings.contents")}>
-        <dl className="divide-y divide-border text-[13px]">
+        <dl className="divide-y divide-border ">
           {counts.map(([label, n, to]) => (
             <Row key={label} label={label}>
               {to ? (

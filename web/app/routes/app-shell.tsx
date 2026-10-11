@@ -60,7 +60,7 @@ export default function AppShell() {
           >
             <MenuIcon />
           </Button>
-          <span className="ml-1 truncate text-sm font-semibold">{ws.name}</span>
+          <span className="ml-1 truncate  font-semibold">{ws.name}</span>
         </div>
         <OfflineBanner />
         <Outlet context={ctx} />

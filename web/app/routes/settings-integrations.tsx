@@ -67,10 +67,10 @@ export default function Integrations() {
         ) : (
           <SettingsList>
             {ws.integrations.map((i) => (
-              <li key={i.id} className="flex flex-wrap items-center gap-3 py-3 text-[13px]">
+              <li key={i.id} className="flex flex-wrap items-center gap-3 py-3 ">
                 <div className="min-w-0 flex-1 basis-60">
                   <p className="font-medium">{i.name}</p>
-                  <p className="truncate text-xs text-muted-foreground">{i.webhook_url}</p>
+                  <p className="truncate  text-muted-foreground">{i.webhook_url}</p>
                   <div className="mt-1 flex items-center gap-1">
                     <code
                       className="min-w-0 flex-1 truncate font-mono text-[11px] text-muted-foreground"
@@ -111,11 +111,11 @@ export default function Integrations() {
       </SettingsSection>
       <SettingsSection title={t("integrations.setup")}>
         <div className="px-4 py-4 sm:px-5 sm:py-5">
-          <div className="max-w-prose space-y-2 text-[13px] text-muted-foreground">
+          <div className="max-w-prose space-y-2  text-muted-foreground">
             <p>{t("integrations.setupOut")}</p>
             <p>{t("integrations.setupIn")}</p>
           </div>
-          <p className="mt-4 text-xs font-medium">{t("integrations.example")}</p>
+          <p className="mt-4  font-medium">{t("integrations.example")}</p>
           <pre className="mt-1.5 overflow-x-auto rounded-lg bg-muted p-3 font-mono text-[11px] leading-5">{`body='{"delivery_id":"<uuid>","issue_id":"<issue uuid>","url":"https://git.example/pr/7","title":"Fix login"}'
 sig=$(printf '%s' "$body" | openssl dgst -sha256 -hmac "$SECRET" | sed 's/^.* //')
 curl -X POST "${sample}" \\

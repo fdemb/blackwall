@@ -141,7 +141,7 @@ export function FilterBar({
       {active.map((k) => (
         <span
           key={k}
-          className="inline-flex h-7 items-center gap-1 rounded-md bg-accent pl-2.5 pr-1 text-xs font-medium text-accent-foreground"
+          className="inline-flex h-7 items-center gap-1 rounded-md bg-accent pl-2.5 pr-1  font-medium text-accent-foreground"
         >
           {chipLabel(k)}
           <button
@@ -461,7 +461,7 @@ function AddFilter({
                   />
                   <Input
                     placeholder={t(CATEGORY_LABEL[category])}
-                    className="h-8 w-full rounded bg-transparent pl-7 pr-2 text-[13px] outline-none placeholder:text-muted-foreground/70 focus-visible:ring-2 focus-visible:ring-ring/60 [&::-webkit-search-cancel-button]:hidden"
+                    className="h-8 w-full rounded bg-transparent pl-7 pr-2  outline-none placeholder:text-muted-foreground/70 focus-visible:ring-2 focus-visible:ring-ring/60 [&::-webkit-search-cancel-button]:hidden"
                   />
                 </RACSearch>
               </div>
@@ -471,9 +471,7 @@ function AddFilter({
                 onAction={(k) => pick(category, String(k))}
                 className="max-h-64 overflow-auto overscroll-contain"
                 renderEmptyState={() => (
-                  <p className="px-2 py-1.5 text-xs text-muted-foreground">
-                    {t("filter.noValues")}
-                  </p>
+                  <p className="px-2 py-1.5  text-muted-foreground">{t("filter.noValues")}</p>
                 )}
               >
                 {(o) => (
@@ -528,10 +526,10 @@ function SaveViewForm({
           {t("view.share")}
         </Switch>
       ) : (
-        <p className="text-xs text-muted-foreground">{t("view.personalOnly")}</p>
+        <p className=" text-muted-foreground">{t("view.personalOnly")}</p>
       )}
       {error && (
-        <p role="alert" className="text-xs text-destructive">
+        <p role="alert" className=" text-destructive">
           {error}
         </p>
       )}

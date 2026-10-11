@@ -146,7 +146,7 @@ function EditViewForm({ view, close }: { view: SavedView; close: () => void }) {
         </Switch>
       )}
       {error && (
-        <p role="alert" className="text-xs text-destructive">
+        <p role="alert" className=" text-destructive">
           {error}
         </p>
       )}

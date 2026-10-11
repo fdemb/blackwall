@@ -128,8 +128,8 @@ export function DndColumn({
     >
       <header className="flex items-center gap-2 px-3 pb-1 pt-2.5">
         {icon}
-        <h3 className="text-[13px] font-medium">{title}</h3>
-        <span className="text-xs tabular-nums text-muted-foreground">{count ?? issues.length}</span>
+        <h3 className=" font-medium">{title}</h3>
+        <span className=" tabular-nums text-muted-foreground">{count ?? issues.length}</span>
         <span className="ml-auto flex items-center gap-1">
           {aside}
           {onCreate && canWrite && (
@@ -148,7 +148,7 @@ export function DndColumn({
           dragAndDropHooks={dragAndDropHooks}
           className="min-h-16 flex-1 overflow-y-auto overscroll-contain rounded-b-xl outline-none transition-colors drop-target:bg-accent/60 drop-target:ring-2 drop-target:ring-primary/40"
           renderEmptyState={() => (
-            <p className="px-2 py-6 text-center text-xs text-muted-foreground">
+            <p className="px-2 py-6 text-center  text-muted-foreground">
               {emptyText ?? t("board.empty")}
             </p>
           )}
@@ -186,9 +186,9 @@ export function BoardCard({ issue, keyLength }: { issue: Issue; keyLength?: numb
       id={issue.id}
       textValue={issue.title}
       href={`/${ws.id}/issue/${issue.id}`}
-      className="group block cursor-default rounded-lg border border-border bg-card p-2.5 text-[13px] shadow-xs outline-none transition-[transform,opacity] hover:border-primary/40 hover:shadow-sm focus-visible:ring-2 focus-visible:ring-ring/60 dragging:opacity-40"
+      className="group block cursor-default rounded-lg border border-border bg-card p-2.5  shadow-xs outline-none transition-[transform,opacity] hover:border-primary/40 hover:shadow-sm focus-visible:ring-2 focus-visible:ring-ring/60 dragging:opacity-40"
     >
-      <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+      <div className="flex items-center gap-1.5  text-muted-foreground">
         <IssueKey number={issue.number} length={keyLength} />
         <OpenProjectBadge issue={issue} />
         <BlockedBadge issue={issue} />
@@ -203,7 +203,7 @@ export function BoardCard({ issue, keyLength }: { issue: Issue; keyLength?: numb
         <DeadlineChip issue={issue} />
         <SubtaskProgress issue={issue} />
         {issue.estimate ? (
-          <span className="text-xs tabular-nums text-muted-foreground">
+          <span className=" tabular-nums text-muted-foreground">
             {issue.estimate} {t("estimate.unit")}
           </span>
         ) : null}

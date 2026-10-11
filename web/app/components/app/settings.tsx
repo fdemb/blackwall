@@ -19,9 +19,7 @@ export function SettingsPage({
       <header className="mb-8 flex flex-wrap items-end gap-x-4 gap-y-3">
         <div className="min-w-0 flex-1">
           <h1 className="text-xl font-semibold tracking-tight text-balance">{title}</h1>
-          {description && (
-            <p className="mt-1 max-w-prose text-sm text-muted-foreground">{description}</p>
-          )}
+          {description && <p className="mt-1 max-w-prose  text-muted-foreground">{description}</p>}
         </div>
         {actions && <div className="flex shrink-0 items-center gap-2">{actions}</div>}
       </header>
@@ -50,7 +48,7 @@ export function SettingsSection({
           <div className="min-w-0 flex-1">
             {title && <h2 className="text-[15px] text-muted-foreground">{title}</h2>}
             {description && (
-              <p className="mt-0.5 max-w-prose text-[13px] text-muted-foreground">{description}</p>
+              <p className="mt-0.5 max-w-prose  text-muted-foreground">{description}</p>
             )}
           </div>
           {actions && <div className="flex shrink-0 items-center gap-2">{actions}</div>}
@@ -85,10 +83,8 @@ export function SettingsRow({
   return (
     <div className="flex flex-col gap-3 px-4 py-4 sm:flex-row sm:items-center sm:justify-between sm:gap-6 sm:px-5">
       <div className="min-w-0">
-        <p className="text-sm font-medium">{label}</p>
-        {description && (
-          <p className="mt-0.5 max-w-prose text-[13px] text-muted-foreground">{description}</p>
-        )}
+        <p className=" font-medium">{label}</p>
+        {description && <p className="mt-0.5 max-w-prose  text-muted-foreground">{description}</p>}
       </div>
       <div className="shrink-0">{children}</div>
     </div>

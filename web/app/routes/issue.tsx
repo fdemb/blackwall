@@ -205,7 +205,7 @@ function IssueView({ issue, detail }: { issue: Issue; detail: IssueDetail }) {
             </span>
           </>
         )}
-        <IssueKey number={issue.number} className="text-[13px] font-medium" />
+        <IssueKey number={issue.number} className=" font-medium" />
         <div className="ml-auto flex items-center gap-1">
           <SaveStatus />
           <Button
@@ -272,7 +272,7 @@ function IssueView({ issue, detail }: { issue: Issue; detail: IssueDetail }) {
             <OpenProjectNotice issue={issue} />
             <div className="space-y-3">
               {parent && (
-                <div className="group flex items-center gap-1 text-xs text-muted-foreground">
+                <div className="group flex items-center gap-1  text-muted-foreground">
                   <Link
                     to={`/${ws.id}/issue/${parent.id}`}
                     className="inline-flex min-w-0 items-center gap-1.5 hover:text-foreground"

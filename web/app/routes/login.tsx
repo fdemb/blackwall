@@ -59,7 +59,7 @@ export default function Login() {
           {busy ? t("auth.signingIn") : t("auth.login")}
         </Button>
       </Form>
-      <div className="mt-5 flex justify-between text-[13px] text-muted-foreground">
+      <div className="mt-5 flex justify-between  text-muted-foreground">
         <Link to="/recover" className="hover:text-foreground hover:underline">
           {t("auth.forgot")}
         </Link>

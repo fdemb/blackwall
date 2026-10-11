@@ -141,7 +141,7 @@ export function Properties({
                     href={l.url}
                     target="_blank"
                     rel="noreferrer noopener"
-                    className="flex items-center gap-1.5 text-[13px] text-primary hover:underline"
+                    className="flex items-center gap-1.5  text-primary hover:underline"
                   >
                     <ExternalLink className="size-3.5 shrink-0" />
                     <span className="truncate">{l.title || l.url}</span>
@@ -153,7 +153,7 @@ export function Properties({
         </>
       )}
       <div className="my-3 h-px bg-border" />
-      <dl className="space-y-1 px-2 text-xs text-muted-foreground">
+      <dl className="space-y-1 px-2  text-muted-foreground">
         <div className="flex justify-between">
           <dt>{t("issue.created")}</dt>
           <dd>{fullDate(issue.created_at, lang)}</dd>
@@ -195,7 +195,7 @@ export function Properties({
 function Prop({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="grid grid-cols-[84px_1fr] items-center gap-1">
-      <span className="px-2 text-xs text-muted-foreground">{label}</span>
+      <span className="px-2  text-muted-foreground">{label}</span>
       <div className="min-w-0">{children}</div>
     </div>
   );
@@ -242,7 +242,7 @@ function EstimateField({
         className="h-7 border-transparent bg-transparent pr-9 shadow-none hover:bg-muted focus:bg-card"
       />
       {v !== "" && (
-        <span className="pointer-events-none absolute inset-y-0 right-2.5 flex items-center text-xs text-muted-foreground">
+        <span className="pointer-events-none absolute inset-y-0 right-2.5 flex items-center  text-muted-foreground">
           {t("estimate.unit")}
         </span>
       )}
@@ -304,10 +304,7 @@ function TimeProp({ issue }: { issue: Issue }) {
               {entries.map((e) => {
                 const m = member(e.user_id);
                 return (
-                  <li
-                    key={e.id}
-                    className="group flex min-h-11 items-center gap-2.5 px-1 py-1.5 text-[13px]"
-                  >
+                  <li key={e.id} className="group flex min-h-11 items-center gap-2.5 px-1 py-1.5 ">
                     {deleting === e.id ? (
                       <>
                         <span className="flex-1">{t("time.deleteTitle")}</span>
@@ -335,7 +332,7 @@ function TimeProp({ issue }: { issue: Issue }) {
                         <span className="min-w-0 flex-1 truncate text-muted-foreground">
                           {e.note}
                         </span>
-                        <span className="text-xs tabular-nums text-muted-foreground">
+                        <span className=" tabular-nums text-muted-foreground">
                           {fullDate(e.logged_at, lang)}
                         </span>
                         {(e.user_id === me || canAdmin) && (

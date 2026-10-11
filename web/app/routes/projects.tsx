@@ -119,16 +119,16 @@ export default function Projects() {
                     <h2 className="font-semibold tracking-tight group-hover:text-primary">
                       {p.name}
                     </h2>
-                    <p className="mt-1 line-clamp-2 min-h-10 text-[13px] text-muted-foreground">
+                    <p className="mt-1 line-clamp-2 min-h-10  text-muted-foreground">
                       {p.description || t("project.noDescription")}
                     </p>
-                    <div className="mt-3 flex items-center gap-3 text-xs text-muted-foreground">
+                    <div className="mt-3 flex items-center gap-3  text-muted-foreground">
                       <ProgressBar value={done} total={total} className="flex-1" label={p.name} />
                       <span className="tabular-nums">
                         {done}/{total}
                       </span>
                     </div>
-                    <p className="mt-2 truncate text-xs text-muted-foreground">
+                    <p className="mt-2 truncate  text-muted-foreground">
                       {p.team_ids
                         .map((id) => ws.teams.find((x) => x.id === id)?.name)
                         .filter(Boolean)
@@ -189,9 +189,7 @@ export function ProjectForm({ project, close }: { project?: Project; close: () =
         rows={3}
       />
       <fieldset>
-        <legend className="mb-1.5 text-xs font-medium text-muted-foreground">
-          {t("project.teams")}
-        </legend>
+        <legend className="mb-1.5  font-medium text-muted-foreground">{t("project.teams")}</legend>
         <div className="flex flex-col gap-2">
           {ws.teams.map((tm) => (
             <Checkbox
@@ -203,12 +201,12 @@ export function ProjectForm({ project, close }: { project?: Project; close: () =
             </Checkbox>
           ))}
           {ws.teams.length === 0 && (
-            <p className="text-xs text-muted-foreground">{t("project.noTeams")}</p>
+            <p className=" text-muted-foreground">{t("project.noTeams")}</p>
           )}
         </div>
       </fieldset>
       {error && (
-        <p role="alert" className="text-xs text-destructive">
+        <p role="alert" className=" text-destructive">
           {error}
         </p>
       )}

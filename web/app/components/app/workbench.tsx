@@ -154,7 +154,6 @@ function WorkbenchHeader({
     <PageHeader
       title={title}
       icon={icon}
-      subtitle={subtitle ?? t("count.issues", { count: issueCount })}
       heading={heading}
       nav={nav}
       actions={

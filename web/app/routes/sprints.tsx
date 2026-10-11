@@ -172,7 +172,7 @@ export default function Sprints() {
                   </>
                 }
                 footer={
-                  <div className="space-y-1.5 border-t border-border/70 px-3 py-2 text-xs text-muted-foreground">
+                  <div className="space-y-1.5 border-t border-border/70 px-3 py-2  text-muted-foreground">
                     {s.goal && (
                       <p className="flex gap-1.5 text-foreground">
                         <Target className="mt-0.5 size-3.5 shrink-0 text-primary" />
@@ -198,12 +198,12 @@ export default function Sprints() {
 
         {past.length > 0 && (
           <section className="px-4 pb-8">
-            <h2 className="mb-2 text-[13px] font-semibold">{t("sprint.past")}</h2>
+            <h2 className="mb-2  font-semibold">{t("sprint.past")}</h2>
             <Card className="divide-y divide-border">
               {past.map((s) => (
                 <div
                   key={s.id}
-                  className="flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-2.5 text-[13px]"
+                  className="flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-2.5 "
                 >
                   <span className="font-medium">{s.name}</span>
                   <Badge>{t(`sprint.state.${s.state}`)}</Badge>
@@ -345,12 +345,12 @@ function SprintForm({
         />
       </div>
       {reversed && (
-        <p role="alert" className="-mt-2 text-xs text-destructive">
+        <p role="alert" className="-mt-2  text-destructive">
           {t("sprint.endBeforeStart")}
         </p>
       )}
       {error && (
-        <p role="alert" className="text-xs text-destructive">
+        <p role="alert" className=" text-destructive">
           {error}
         </p>
       )}
@@ -397,7 +397,7 @@ function CompleteForm({ sprint, close }: { sprint: Sprint; close: () => void }) 
       }}
     >
       <QueryStatus query={query} />
-      <p className="text-[13px] text-muted-foreground">
+      <p className=" text-muted-foreground">
         {unfinished ? t("sprint.unfinished", { n: unfinished }) : t("sprint.allDone")}
       </p>
       {unfinished > 0 && (
@@ -410,7 +410,7 @@ function CompleteForm({ sprint, close }: { sprint: Sprint; close: () => void }) 
         />
       )}
       {error && (
-        <p role="alert" className="text-xs text-destructive">
+        <p role="alert" className=" text-destructive">
           {error}
         </p>
       )}

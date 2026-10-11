@@ -13,7 +13,7 @@ export function Checkbox({ className, children, ...props }: CheckboxProps) {
     <RACCheckbox
       {...props}
       className={composeRenderProps(className, (c) =>
-        cn("group flex cursor-default items-center gap-2 text-[13px] disabled:opacity-50", c),
+        cn("group flex cursor-default items-center gap-2  disabled:opacity-50", c),
       )}
     >
       {composeRenderProps(children, (children, { isSelected, isIndeterminate }) => (
@@ -43,7 +43,7 @@ export function Switch({ className, children, ...props }: SwitchProps) {
     <RACSwitch
       {...props}
       className={composeRenderProps(className, (c) =>
-        cn("group flex cursor-default items-center gap-3 text-[13px] disabled:opacity-50", c),
+        cn("group flex cursor-default items-center gap-3  disabled:opacity-50", c),
       )}
     >
       {composeRenderProps(children, (children) => (

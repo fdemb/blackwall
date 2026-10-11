@@ -78,7 +78,6 @@ export default function Inbox() {
         <PageHeader
           title={t("nav.inbox")}
           icon={<InboxIcon className="size-4 text-muted-foreground" />}
-          subtitle={unread ? t("inbox.unread", { n: unread }) : undefined}
           actions={
             unread > 0 && (
               <Button
@@ -168,15 +167,10 @@ export default function Inbox() {
                         <Icon className="size-4" />
                       </span>
                       <span className="min-w-0 flex-1">
-                        <span
-                          className={cn(
-                            "line-clamp-2 block text-[13px]",
-                            !n.read_at && "font-semibold",
-                          )}
-                        >
+                        <span className={cn("line-clamp-2 block ", !n.read_at && "font-semibold")}>
                           {n.message}
                         </span>
-                        <span className="mt-0.5 flex flex-wrap items-center gap-x-2 text-xs text-muted-foreground">
+                        <span className="mt-0.5 flex flex-wrap items-center gap-x-2  text-muted-foreground">
                           <span>{t(`alert.${n.kind}`)}</span>
                           {issue && (
                             <span className="min-w-0 truncate">
@@ -187,10 +181,7 @@ export default function Inbox() {
                           {issue?.deleted_at && <Badge tone="warning">{t("inbox.inTrash")}</Badge>}
                         </span>
                       </span>
-                      <time
-                        dateTime={n.created_at}
-                        className="shrink-0 text-xs text-muted-foreground"
-                      >
+                      <time dateTime={n.created_at} className="shrink-0  text-muted-foreground">
                         {relativeTime(n.created_at, lang)}
                       </time>
                       {!n.read_at && (

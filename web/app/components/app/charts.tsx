@@ -13,10 +13,7 @@ export function BarList({
   return (
     <ul className="space-y-2.5">
       {rows.map((r) => (
-        <li
-          key={r.id}
-          className="grid grid-cols-[minmax(0,10rem)_1fr_auto] items-center gap-3 text-[13px]"
-        >
+        <li key={r.id} className="grid grid-cols-[minmax(0,10rem)_1fr_auto] items-center gap-3 ">
           <span className="truncate">{r.label}</span>
           <div className="h-2 overflow-hidden rounded-full bg-muted">
             <div
@@ -61,7 +58,7 @@ export function Columns({
         type="button"
         aria-expanded={table}
         onClick={() => setTable(!table)}
-        className="mt-2 rounded text-xs text-primary outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring/60"
+        className="mt-2 rounded  text-primary outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring/60"
       >
         {table ? t("reports.hideData") : t("reports.showData")}
       </button>
@@ -153,7 +150,7 @@ export function ChartColumns({
       </svg>
       {active !== null && data[active] && (
         <div
-          className="pointer-events-none absolute -top-2 rounded-md bg-foreground px-2 py-1 text-xs text-background shadow"
+          className="pointer-events-none absolute -top-2 rounded-md bg-foreground px-2 py-1  text-background shadow"
           style={{ left: `${Math.min(88, active * w)}%` }}
         >
           {label(data[active].date, data[active].value)}
@@ -173,7 +170,7 @@ export function ChartTable({
 }) {
   const { t } = useI18n();
   return (
-    <table className="mt-2 w-full text-xs">
+    <table className="mt-2 w-full ">
       <thead>
         <tr className="border-b border-border text-left text-muted-foreground">
           <th className="py-1 font-medium">{t("field.date")}</th>

@@ -237,7 +237,7 @@ function LabelsPickerBase({
           onSelectionChange={(keys) => onChange(selectedIds(keys, ws.labels))}
           items={ws.labels}
           renderEmptyState={() => (
-            <p className="px-3 py-2 text-xs text-muted-foreground">{t("labels.empty")}</p>
+            <p className="px-3 py-2  text-muted-foreground">{t("labels.empty")}</p>
           )}
           className="max-h-72 overflow-auto p-1 outline-none"
         >
@@ -247,7 +247,7 @@ function LabelsPickerBase({
               textValue={l.name}
               className={composeRenderProps("", (c) =>
                 cn(
-                  "flex cursor-default items-center gap-2 rounded-md px-2 py-1.5 text-[13px] outline-none focus:bg-accent",
+                  "flex cursor-default items-center gap-2 rounded-md px-2 py-1.5  outline-none focus:bg-accent",
                   c,
                 ),
               )}
@@ -324,7 +324,7 @@ export function MultiMemberPicker({
             <ListBoxItem
               id={m.id}
               textValue={m.display_name}
-              className="flex cursor-default items-center gap-2 rounded-md px-2 py-1.5 text-[13px] outline-none focus:bg-accent"
+              className="flex cursor-default items-center gap-2 rounded-md px-2 py-1.5  outline-none focus:bg-accent"
             >
               {({ isSelected }) => (
                 <>

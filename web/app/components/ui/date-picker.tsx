@@ -70,7 +70,7 @@ export function DatePicker({
       {label && <Label>{label}</Label>}
       <Group
         className={cn(
-          "flex items-center gap-1 rounded-md text-[13px]",
+          "flex items-center gap-1 rounded-md ",
           variant === "field"
             ? "h-8 border border-input bg-card pl-2.5 pr-0.5 shadow-xs focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/25"
             : "h-7 pl-2",
@@ -117,7 +117,7 @@ export function DatePicker({
               <Button slot="previous" variant="ghost" size="icon">
                 <ChevronLeft aria-hidden="true" />
               </Button>
-              <Heading className="text-[13px] font-semibold" />
+              <Heading className=" font-semibold" />
               <Button slot="next" variant="ghost" size="icon">
                 <ChevronRight aria-hidden="true" />
               </Button>
@@ -134,7 +134,7 @@ export function DatePicker({
                 {(date) => (
                   <CalendarCell
                     date={date}
-                    className="flex size-8 cursor-default items-center justify-center rounded-md text-[13px] outline-none hover:bg-muted selected:bg-primary-solid selected:text-primary-foreground focus-visible:ring-2 focus-visible:ring-ring/60 outside-month:text-muted-foreground/40 disabled:opacity-30 unavailable:text-destructive"
+                    className="flex size-8 cursor-default items-center justify-center rounded-md  outline-none hover:bg-muted selected:bg-primary-solid selected:text-primary-foreground focus-visible:ring-2 focus-visible:ring-ring/60 outside-month:text-muted-foreground/40 disabled:opacity-30 unavailable:text-destructive"
                   />
                 )}
               </CalendarGridBody>

@@ -249,7 +249,7 @@ function useIssueGrid({
                   type="button"
                   onClick={() => toggle(g.id)}
                   aria-expanded={!isCollapsed}
-                  className="flex h-9 w-full items-center gap-2 border-b border-border bg-muted/40 px-4 text-left text-[13px] font-medium outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/60"
+                  className="flex h-9 w-full items-center gap-2 border-b border-border bg-muted/40 px-4 text-left  font-medium outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/60"
                 >
                   <ChevronDown
                     aria-hidden
@@ -260,9 +260,7 @@ function useIssueGrid({
                   />
                   {g.icon}
                   {g.title}
-                  <span className="text-xs tabular-nums text-muted-foreground">
-                    {g.items.length}
-                  </span>
+                  <span className=" tabular-nums text-muted-foreground">{g.items.length}</span>
                 </button>
               </GridListHeader>
               <IssueRows
@@ -324,7 +322,7 @@ export function IssueRow({
       id={issue.id}
       textValue={issue.title}
       href={`/${ws.id}/issue/${issue.id}`}
-      className="group flex h-10 cursor-default items-center gap-2.5 border-b border-border/70 px-4 text-[13px] outline-none hover:bg-muted/60 focus-visible:bg-muted/60 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/60 selected:bg-accent/60"
+      className="group flex h-10 cursor-default items-center gap-2.5 border-b border-border/70 px-4  outline-none hover:bg-muted/60 focus-visible:bg-muted/60 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/60 selected:bg-accent/60"
     >
       {canSelect && issueCapabilities(issue).edit && <RowSelectBox />}
       <PriorityMenu
@@ -347,7 +345,7 @@ export function IssueRow({
       </span>
       {showTeam && <TeamCell issue={issue} />}
       {project && (
-        <span className="hidden max-w-32 truncate text-xs text-muted-foreground xl:block">
+        <span className="hidden max-w-32 truncate  text-muted-foreground xl:block">
           {project.name}
         </span>
       )}
@@ -376,7 +374,7 @@ export function TeamCell({ issue }: { issue: Issue }) {
   const { team } = useWorkspace();
   const name = team(issue.team_id)?.name;
   if (!name) return null;
-  return <span className="hidden text-xs text-muted-foreground lg:block">{name}</span>;
+  return <span className="hidden  text-muted-foreground lg:block">{name}</span>;
 }
 
 function PriorityMenu({
@@ -477,9 +475,7 @@ function BulkBar({
       aria-label={t("bulk.toolbar")}
       className="fixed bottom-4 left-1/2 z-40 flex max-w-[calc(100vw-1.5rem)] -translate-x-1/2 animate-in flex-wrap items-center justify-center gap-1 rounded-xl border border-border bg-popover p-1.5 shadow-xl slide-in-from-bottom-4 fade-in-0 sm:bottom-6"
     >
-      <span className="px-2.5 text-[13px] font-medium">
-        {t("bulk.selected", { n: ids.length })}
-      </span>
+      <span className="px-2.5  font-medium">{t("bulk.selected", { n: ids.length })}</span>
       <MenuTrigger>
         <Button variant="ghost" size="sm">
           {t("field.stage")}
@@ -489,7 +485,7 @@ function BulkBar({
             onAction={(k) => update({ stage_id: k as Id })}
             items={same ? (team?.stages ?? []) : []}
             renderEmptyState={() => (
-              <p className="px-2 py-1.5 text-xs text-muted-foreground">{t("bulk.sameTeam")}</p>
+              <p className="px-2 py-1.5  text-muted-foreground">{t("bulk.sameTeam")}</p>
             )}
           >
             {(s) => (

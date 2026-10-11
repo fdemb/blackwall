@@ -65,15 +65,15 @@ export default function Members() {
               <li key={wm.user_id} className="flex min-h-13 items-center gap-3 py-2">
                 <Avatar name={m?.display_name ?? "?"} src={m?.avatar_url} size={28} />
                 <div className="min-w-0 flex-1">
-                  <p className="truncate text-[13px] font-medium">
+                  <p className="truncate  font-medium">
                     {m?.display_name}
                     {wm.user_id === me && (
-                      <span className="ml-1.5 text-xs font-normal text-muted-foreground">
+                      <span className="ml-1.5  font-normal text-muted-foreground">
                         ({t("members.you")})
                       </span>
                     )}
                   </p>
-                  <p className="truncate text-xs text-muted-foreground">{m?.email}</p>
+                  <p className="truncate  text-muted-foreground">{m?.email}</p>
                 </div>
                 {canAdmin && !locked && (wm.role !== "owner" || role === "owner") ? (
                   <Select
@@ -111,19 +111,14 @@ export default function Members() {
       {canAdmin && (
         <SettingsSection title={t("invite.pending")}>
           {invitations.length === 0 ? (
-            <p className="px-4 py-4 text-[13px] text-muted-foreground sm:px-5">
-              {t("invite.none")}
-            </p>
+            <p className="px-4 py-4  text-muted-foreground sm:px-5">{t("invite.none")}</p>
           ) : (
             <SettingsList>
               {invitations.map((i) => (
-                <li
-                  key={i.id}
-                  className="flex flex-wrap items-center gap-x-3 gap-y-1 py-2.5 text-[13px]"
-                >
+                <li key={i.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 py-2.5 ">
                   <div className="min-w-0 flex-1">
                     <p className="truncate font-medium">{i.email}</p>
-                    <p className="text-xs text-muted-foreground">
+                    <p className=" text-muted-foreground">
                       {t("invite.expires", { date: fullDate(i.expires_at, lang) })}
                     </p>
                   </div>

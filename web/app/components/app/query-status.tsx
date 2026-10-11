@@ -7,7 +7,7 @@ export function QueryStatus({ query }: { query: PaginationState }) {
   const { t } = useI18n();
   if (query.error)
     return (
-      <div role="alert" className="flex flex-wrap items-center gap-3 px-4 py-3 text-sm">
+      <div role="alert" className="flex flex-wrap items-center gap-3 px-4 py-3 ">
         <span className="text-destructive">{query.error}</span>
         <Button size="sm" onPress={query.retry}>
           {t("action.retry")}
@@ -16,7 +16,7 @@ export function QueryStatus({ query }: { query: PaginationState }) {
     );
   if (query.loading)
     return (
-      <p role="status" className="px-4 py-3 text-sm text-muted-foreground">
+      <p role="status" className="px-4 py-3  text-muted-foreground">
         {/* Locales still carry "Loading..."; normalize until those files are touched. */}
         {ellipsis(t("action.loading"))}
       </p>

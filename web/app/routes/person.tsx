@@ -28,7 +28,7 @@ export default function Person() {
       : // "Unassigned" from the other tab would otherwise empty this one.
         { assignee: m.id, unassigned: undefined };
   const heading = (
-    <div className="mr-2 flex min-w-0 items-center gap-2 text-[13px]">
+    <div className="mr-2 flex min-w-0 items-center gap-2 ">
       <PageCrumb to={`/${ws.id}/people`}>{t("nav.people")}</PageCrumb>
       <span aria-hidden="true" className="text-muted-foreground/50">
         /

@@ -37,7 +37,7 @@ import { ThemeToggle } from "./preferences";
 
 export const linkClass = ({ isActive }: { isActive: boolean }) =>
   cn(
-    "flex h-7 items-center gap-2 rounded-md px-2 text-[13px] font-medium text-muted-foreground outline-none transition-colors hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/60 [&_svg]:size-4 [&_svg]:shrink-0",
+    "flex h-7 items-center gap-2 rounded-md px-2  font-medium text-muted-foreground outline-none transition-colors hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/60 [&_svg]:size-4 [&_svg]:shrink-0",
     isActive && "bg-accent text-accent-foreground hover:bg-accent",
   );
 
@@ -69,7 +69,7 @@ export function Sidebar({
         <MenuTrigger>
           <Button
             variant="ghost"
-            className="h-8 min-w-0 flex-1 justify-start gap-2 px-1.5 text-sm font-semibold"
+            className="h-8 min-w-0 flex-1 justify-start gap-2 px-1.5  font-semibold"
           >
             <Logo size={20} />
             <span className="truncate">{ws.name}</span>
@@ -90,7 +90,7 @@ export function Sidebar({
               }}
             >
               <MenuItem id="hdr" isDisabled textValue={profile.email}>
-                <span className="truncate text-xs text-muted-foreground">{profile.email}</span>
+                <span className="truncate text-muted-foreground">{profile.email}</span>
               </MenuItem>
               <MenuSeparator />
               {workspaces.map((w) => (
@@ -178,7 +178,7 @@ export function Sidebar({
           {ws.teams.length === 0 && (
             <Link
               to={`${base}/settings/teams`}
-              className="block px-2 py-1 text-xs text-muted-foreground hover:text-foreground"
+              className="block px-2 py-1  text-muted-foreground hover:text-foreground"
             >
               {t("team.createFirst")}
             </Link>
@@ -198,13 +198,6 @@ export function Sidebar({
       </div>
 
       <div className="flex items-center gap-0.5 border-t border-border p-2">
-        <NavLink
-          to={`${base}/settings/profile`}
-          className={(s) => cn(linkClass(s), "min-w-0 flex-1")}
-        >
-          <Avatar name={profile.display_name} src={profile.avatar_url} size={18} />
-          <span className="truncate">{profile.display_name}</span>
-        </NavLink>
         <NavLink
           to={`${base}/archive`}
           aria-label={t("nav.archive")}
@@ -240,7 +233,7 @@ function Section({ title, children }: { title: string; children: React.ReactNode
         <Button
           slot="trigger"
           variant="ghost"
-          className="mb-0.5 h-6 w-full justify-start gap-1 px-2 text-xs font-medium text-muted-foreground"
+          className="mb-0.5 h-6 w-full justify-start gap-1 px-2  font-medium text-muted-foreground"
         >
           {title}
           <ChevronRight
@@ -274,7 +267,7 @@ function TeamLinks({ id, name, base }: { id: string; name: string; base: string 
         type="button"
         aria-expanded={isOpen}
         onClick={() => setOpen(!isOpen)}
-        className="flex h-7 w-full items-center gap-2 rounded-md px-2 text-[13px] font-medium text-muted-foreground outline-none hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/60"
+        className="flex h-7 w-full items-center gap-2 rounded-md px-2  font-medium text-muted-foreground outline-none hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/60"
       >
         <span className="grid size-4 place-items-center rounded bg-accent text-[10px] font-bold text-accent-foreground">
           {name[0]?.toUpperCase()}

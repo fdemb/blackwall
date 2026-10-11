@@ -46,7 +46,6 @@ export default function ArchivePage() {
       <PageHeader
         title={t("nav.archive")}
         icon={<Archive className="size-4 text-muted-foreground" />}
-        subtitle={t("archive.sub")}
         actions={
           canWrite &&
           issues.length > 0 && (
@@ -75,7 +74,7 @@ export default function ArchivePage() {
             {issues.map((i) => (
               <li
                 key={i.id}
-                className="flex min-h-11 items-center gap-3 border-b border-border/70 px-4 py-1 text-[13px]"
+                className="flex min-h-11 items-center gap-3 border-b border-border/70 px-4 py-1 "
               >
                 <span className="w-14 tabular-nums text-muted-foreground">
                   {issueKey(i.number)}
@@ -86,7 +85,7 @@ export default function ArchivePage() {
                 >
                   {i.title}
                 </Link>
-                <span className="hidden text-xs text-muted-foreground sm:inline">
+                <span className="hidden  text-muted-foreground sm:inline">
                   {i.archived_at &&
                     t("archive.archived", { when: relativeTime(i.archived_at, lang) })}
                 </span>

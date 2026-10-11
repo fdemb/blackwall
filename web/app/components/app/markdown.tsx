@@ -219,7 +219,7 @@ export function MarkdownEditor({
           </Tip>
         ))}
         {mentions && <MentionMenu onInsert={insert} isDisabled={preview} />}
-        <div className="ml-auto flex rounded-md bg-muted p-0.5 text-xs">
+        <div className="ml-auto flex rounded-md bg-muted p-0.5 ">
           {[false, true].map((p) => (
             <button
               key={String(p)}

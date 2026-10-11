@@ -52,12 +52,12 @@ export function OpenProjectSettings() {
       }
     >
       {query.isPending ? (
-        <p role="status" className="px-4 py-5 text-[13px] text-muted-foreground">
+        <p role="status" className="px-4 py-5  text-muted-foreground">
           {t("action.loading")}
         </p>
       ) : null}
       {query.isError ? (
-        <div role="alert" className="px-4 py-4 text-[13px]">
+        <div role="alert" className="px-4 py-4 ">
           <p>{t("openproject.loadError")}</p>
           <Button size="sm" variant="ghost" onPress={() => void query.refetch()}>
             {t("openproject.retry")}
@@ -127,11 +127,11 @@ function ConnectionRow({
       await refresh();
     });
   return (
-    <li className="space-y-3 py-4 text-[13px]">
+    <li className="space-y-3 py-4 ">
       <div className="flex flex-wrap items-center gap-3">
         <div className="min-w-0 flex-1 basis-48">
           <p className="font-medium">{connection.name}</p>
-          <p className="break-all text-xs text-muted-foreground">{connection.base_url}</p>
+          <p className="break-all  text-muted-foreground">{connection.base_url}</p>
         </div>
         <Switch
           aria-label={`${t("openproject.enabled")}: ${connection.name}`}
@@ -163,7 +163,7 @@ function ConnectionRow({
           <Trash2 />
         </Button>
       </div>
-      <dl className="flex flex-wrap gap-x-6 gap-y-1 text-xs text-muted-foreground">
+      <dl className="flex flex-wrap gap-x-6 gap-y-1  text-muted-foreground">
         <div>
           <dt className="inline">{t("openproject.status")}: </dt>
           <dd className="inline">{t(`openproject.status.${connection.status}`)}</dd>
@@ -186,7 +186,7 @@ function ConnectionRow({
         </div>
       </dl>
       {connection.last_error ? (
-        <p className="break-words text-xs text-destructive">
+        <p className="break-words  text-destructive">
           {t("openproject.error")}: {connection.last_error}
         </p>
       ) : null}
@@ -361,8 +361,8 @@ function ConnectionForm({
       />
       {connection ? (
         <fieldset className="space-y-3" disabled={pending}>
-          <legend className="text-[13px] font-medium">{t("openproject.projects")}</legend>
-          <p className="text-xs text-muted-foreground">{t("openproject.projectsHint")}</p>
+          <legend className=" font-medium">{t("openproject.projects")}</legend>
+          <p className=" text-muted-foreground">{t("openproject.projectsHint")}</p>
           {available.size ? (
             [...available].map(([id, label]) => {
               const mapping = projects.find((project) => project.project_id === id);
@@ -400,19 +400,19 @@ function ConnectionForm({
               );
             })
           ) : (
-            <p className="text-xs text-muted-foreground">{t("openproject.noProjects")}</p>
+            <p className=" text-muted-foreground">{t("openproject.noProjects")}</p>
           )}
-          <p className="text-xs text-muted-foreground">{t("openproject.automaticStages")}</p>
+          <p className=" text-muted-foreground">{t("openproject.automaticStages")}</p>
         </fieldset>
       ) : null}
       {connection ? (
         <fieldset className="space-y-3" disabled={pending}>
-          <legend className="text-[13px] font-medium">{t("openproject.people")}</legend>
-          <p className="text-xs text-muted-foreground">{t("openproject.peopleHint")}</p>
+          <legend className=" font-medium">{t("openproject.people")}</legend>
+          <p className=" text-muted-foreground">{t("openproject.peopleHint")}</p>
           {connection.cached_people
             .filter((person) => !person.email)
             .map((person) => (
-              <p key={person.id} className="text-xs text-muted-foreground">
+              <p key={person.id} className=" text-muted-foreground">
                 {t("openproject.hiddenEmail", { name: person.name })}
               </p>
             ))}
@@ -455,7 +455,7 @@ function ConnectionForm({
             );
           })}
           {connection.cached_people.length === 0 ? (
-            <p className="text-xs text-muted-foreground">{t("openproject.noPeople")}</p>
+            <p className=" text-muted-foreground">{t("openproject.noPeople")}</p>
           ) : null}
         </fieldset>
       ) : null}
@@ -498,10 +498,10 @@ function ProjectStatuses({
     if (!available.has(id)) available.set(id, { id: Number(id), name: id, is_closed: false });
   }
   return (
-    <details className="text-[13px]">
+    <details className="">
       <summary className="cursor-pointer font-medium">{t("openproject.statusMappings")}</summary>
       <div className="space-y-3 pt-3">
-        <p className="text-xs text-muted-foreground">{t("openproject.migrationHint")}</p>
+        <p className=" text-muted-foreground">{t("openproject.migrationHint")}</p>
         {[...available].map(([id, status]) => {
           const automatic = automaticOpenProjectStage(status, team.stages);
           const value = mapping.stage_mapping?.[id];
@@ -530,7 +530,7 @@ function ProjectStatuses({
           );
         })}
         {available.size === 0 ? (
-          <p className="text-xs text-muted-foreground">{t("openproject.noStatuses")}</p>
+          <p className=" text-muted-foreground">{t("openproject.noStatuses")}</p>
         ) : null}
       </div>
     </details>

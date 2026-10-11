@@ -20,13 +20,13 @@ import { cn } from "~/lib/utils";
 import { Button } from "./button";
 
 export const fieldBase =
-  "w-full rounded-md border border-input bg-card px-2.5 text-[13px] text-foreground shadow-xs outline-none transition-[transform,opacity] duration-100 placeholder:text-muted-foreground/70 hover:border-muted-foreground/40 focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/25 disabled:opacity-50 invalid:border-destructive";
+  "w-full rounded-md border border-input bg-card px-2.5  text-foreground shadow-xs outline-none transition-[transform,opacity] duration-100 placeholder:text-muted-foreground/70 hover:border-muted-foreground/40 focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/25 disabled:opacity-50 invalid:border-destructive";
 
 export function Label({ className, ...props }: LabelProps) {
   return (
     <RACLabel
       {...props}
-      className={cn("mb-1 block text-xs font-medium text-muted-foreground", className)}
+      className={cn("mb-1 block  font-medium text-muted-foreground", className)}
     />
   );
 }
@@ -35,7 +35,7 @@ export function Description({ className, ...props }: React.ComponentProps<typeof
     <Text
       {...props}
       slot="description"
-      className={cn("mt-1 block text-xs text-muted-foreground", className)}
+      className={cn("mt-1 block  text-muted-foreground", className)}
     />
   );
 }
@@ -43,7 +43,7 @@ export function FieldError({ className, ...props }: FieldErrorProps) {
   return (
     <RACFieldError
       {...props}
-      className={composeRenderProps(className, (c) => cn("mt-1 text-xs text-destructive", c))}
+      className={composeRenderProps(className, (c) => cn("mt-1  text-destructive", c))}
     />
   );
 }
@@ -101,7 +101,7 @@ export function TextField({
       )}
       {description && <Description>{description}</Description>}
       {error ? (
-        <RACFieldError className="mt-1 text-xs text-destructive">{error}</RACFieldError>
+        <RACFieldError className="mt-1  text-destructive">{error}</RACFieldError>
       ) : (
         <FieldError />
       )}
@@ -113,7 +113,7 @@ export function TextField({
 export function FormError({ children }: { children?: React.ReactNode }) {
   if (!children) return null;
   return (
-    <p role="alert" className="text-[13px] text-destructive">
+    <p role="alert" className=" text-destructive">
       {children}
     </p>
   );

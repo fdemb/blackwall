@@ -97,17 +97,17 @@ export default function Labels() {
       )}
       <SettingsSection title={canWrite ? t("settings.labels") : undefined}>
         {ws.labels.length === 0 ? (
-          <p className="flex items-center gap-2 px-4 py-4 text-[13px] text-muted-foreground sm:px-5">
+          <p className="flex items-center gap-2 px-4 py-4  text-muted-foreground sm:px-5">
             <Tag className="size-4" />
             {t("labels.empty")}
           </p>
         ) : (
           <SettingsList>
             {ws.labels.map((l) => (
-              <li key={l.id} className="flex min-h-11 items-center gap-2.5 py-1.5 text-[13px]">
+              <li key={l.id} className="flex min-h-11 items-center gap-2.5 py-1.5 ">
                 <LabelDot color={l.color} className="size-2.5" />
                 <span className="min-w-0 flex-1 truncate">{l.name}</span>
-                <span className="text-xs tabular-nums text-muted-foreground">
+                <span className=" tabular-nums text-muted-foreground">
                   {t("labels.used", {
                     n: report.label_counts[l.id] ?? 0,
                   })}

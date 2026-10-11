@@ -122,7 +122,7 @@ export default function Data() {
               }}
             >
               <FileUp className="size-5 text-muted-foreground" />
-              <Text slot="label" className="text-[13px] text-muted-foreground">
+              <Text slot="label" className=" text-muted-foreground">
                 {t("data.drop")}
               </Text>
               <FileTrigger
@@ -189,10 +189,10 @@ function Review({
   return (
     <div className="space-y-4">
       <div>
-        <p className="text-[13px] font-medium">
+        <p className=" font-medium">
           {t(preview.kind === "transfer" ? "data.kindTransfer" : "data.kindIssues")}
         </p>
-        <dl className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1 text-[13px]">
+        <dl className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1 ">
           {preview.counts.map(([label, n]) => (
             <div key={label} className="flex justify-between border-b border-border/60 py-1">
               <dt className="text-muted-foreground">{t(label)}</dt>
@@ -202,7 +202,7 @@ function Review({
         </dl>
       </div>
       {!allowed && (
-        <p role="alert" className="text-[13px] text-destructive">
+        <p role="alert" className=" text-destructive">
           {t("data.adminOnly")}
         </p>
       )}
@@ -228,7 +228,7 @@ function Finished({ summary, onDone }: { summary: ImportSummary | null; onDone: 
   const fallback = summary?.identities.filter((i) => i.fallback).length ?? 0;
   const matched = (summary?.identities.length ?? 0) - fallback;
   return (
-    <div className="space-y-3 text-[13px]">
+    <div className="space-y-3 ">
       {summary ? (
         <>
           <p>

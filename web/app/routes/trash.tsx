@@ -48,7 +48,6 @@ export default function Trash() {
       <PageHeader
         title={t("nav.trash")}
         icon={<Trash2 className="size-4 text-muted-foreground" />}
-        subtitle={t("trash.sub")}
         actions={
           canWrite &&
           issues.some((issue) => issueCapabilities(issue).restore) && (
@@ -77,7 +76,7 @@ export default function Trash() {
             {issues.map((i) => (
               <li
                 key={i.id}
-                className="flex min-h-11 items-center gap-3 border-b border-border/70 px-4 py-1 text-[13px]"
+                className="flex min-h-11 items-center gap-3 border-b border-border/70 px-4 py-1 "
               >
                 <IssueKey number={i.number} length={keyLength} className="text-muted-foreground" />
                 <Link
@@ -86,7 +85,7 @@ export default function Trash() {
                 >
                   {i.title}
                 </Link>
-                <span className="hidden text-xs text-muted-foreground sm:inline">
+                <span className="hidden  text-muted-foreground sm:inline">
                   {i.deleted_at && t("trash.deleted", { when: relativeTime(i.deleted_at, lang) })}
                 </span>
                 {canWrite && issueCapabilities(i).restore && (

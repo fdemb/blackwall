@@ -81,11 +81,11 @@ function CreateIssueForm() {
   if (ws.teams.length === 0)
     return (
       <div className="py-6 text-center">
-        <p className="text-[13px] text-muted-foreground">{t("issue.needTeam")}</p>
+        <p className=" text-muted-foreground">{t("issue.needTeam")}</p>
         <Link
           to={`/${ws.id}/settings/teams`}
           onClick={create.hide}
-          className="mt-3 inline-block text-[13px] font-medium text-primary hover:underline"
+          className="mt-3 inline-block  font-medium text-primary hover:underline"
         >
           {t("team.create")}
         </Link>
@@ -166,7 +166,7 @@ function CreateIssueForm() {
         fallback={
           <div
             aria-busy
-            className="grid h-24 animate-pulse place-items-center rounded-lg border border-input bg-muted/40 text-xs text-muted-foreground"
+            className="grid h-24 animate-pulse place-items-center rounded-lg border border-input bg-muted/40  text-muted-foreground"
           >
             {ellipsis(t("action.loading"))}
           </div>
@@ -185,7 +185,7 @@ function CreateIssueForm() {
           {files.map((f, i) => (
             <li
               key={i}
-              className="inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-md border border-border bg-muted px-2 py-1 text-xs"
+              className="inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-md border border-border bg-muted px-2 py-1 "
             >
               <Paperclip aria-hidden className="size-3 shrink-0" />
               <span className="min-w-0 flex-1 truncate break-all">{f.name}</span>
@@ -258,7 +258,7 @@ function CreateIssueForm() {
         )}
       </div>
       {error && (
-        <p role="alert" className="text-xs text-destructive">
+        <p role="alert" className=" text-destructive">
           {error}
         </p>
       )}

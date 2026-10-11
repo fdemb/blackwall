@@ -28,11 +28,7 @@ export default function People() {
     .sort((a, b) => a.display_name.localeCompare(b.display_name, lang));
   return (
     <Page>
-      <PageHeader
-        title={t("nav.people")}
-        icon={<Users className="size-4 text-muted-foreground" />}
-        subtitle={t("count.members", { count: members.length })}
-      >
+      <PageHeader title={t("nav.people")} icon={<Users className="size-4 text-muted-foreground" />}>
         <div className="px-4 pb-2">
           <SearchField
             aria-label={t("action.search")}
@@ -56,7 +52,7 @@ export default function People() {
           <>
             <div
               aria-hidden
-              className="flex h-8 items-center gap-3 border-b border-border px-4 text-xs text-muted-foreground"
+              className="flex h-8 items-center gap-3 border-b border-border px-4  text-muted-foreground"
             >
               <span className="flex-1 pl-10">{t("field.name")}</span>
               <span className="hidden w-48 md:block">{t("nav.teams")}</span>
@@ -76,13 +72,13 @@ export default function People() {
                     >
                       <Avatar name={m.display_name} src={m.avatar_url} size={28} />
                       <div className="min-w-0 flex-1">
-                        <p className="truncate text-[13px] font-medium">{m.display_name}</p>
-                        <p className="truncate text-xs text-muted-foreground">{m.email}</p>
+                        <p className="truncate  font-medium">{m.display_name}</p>
+                        <p className="truncate  text-muted-foreground">{m.email}</p>
                       </div>
-                      <span className="hidden w-48 truncate text-[13px] text-muted-foreground md:block">
+                      <span className="hidden w-48 truncate  text-muted-foreground md:block">
                         {teams.join(", ") || "–"}
                       </span>
-                      <span className="hidden w-24 text-right text-[13px] tabular-nums text-muted-foreground sm:block">
+                      <span className="hidden w-24 text-right  tabular-nums text-muted-foreground sm:block">
                         {count}
                       </span>
                       <span className="flex w-20 justify-end">

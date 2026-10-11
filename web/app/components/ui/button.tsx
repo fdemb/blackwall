@@ -7,7 +7,7 @@ import { cva, type VariantProps } from "class-variance-authority";
 import { cn } from "~/lib/utils";
 
 export const buttonVariants = cva(
-  "inline-flex shrink-0 cursor-default touch-manipulation items-center justify-center gap-1.5 whitespace-nowrap rounded-md text-[13px] font-medium outline-none transition-[transform,opacity] duration-100 focus-visible:ring-2 focus-visible:ring-ring/60 focus-visible:ring-offset-1 focus-visible:ring-offset-background disabled:pointer-events-none disabled:opacity-50 pressed:scale-[0.98] [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
+  "inline-flex shrink-0 cursor-default touch-manipulation items-center justify-center gap-1.5 whitespace-nowrap rounded-md  font-medium outline-none transition-[transform,opacity] duration-100 focus-visible:ring-2 focus-visible:ring-ring/60 focus-visible:ring-offset-1 focus-visible:ring-offset-background disabled:pointer-events-none disabled:opacity-50 pressed:scale-[0.98] [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
   {
     variants: {
       variant: {
@@ -22,7 +22,7 @@ export const buttonVariants = cva(
       size: {
         sm: "h-7 px-2.5 pointer-coarse:h-9",
         md: "h-8 px-3 pointer-coarse:h-10",
-        lg: "h-9 px-4 text-sm pointer-coarse:h-11",
+        lg: "h-9 px-4  pointer-coarse:h-11",
         icon: "size-7 pointer-coarse:size-9",
         "icon-lg": "size-8 pointer-coarse:size-10",
       },

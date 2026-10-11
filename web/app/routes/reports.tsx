@@ -98,9 +98,9 @@ export default function Reports() {
                 </div>
                 <div className="grid gap-4 lg:grid-cols-2">
                   <Card className="p-4">
-                    <h2 className="mb-3 text-[13px] font-semibold">{t("reports.delivery")}</h2>
+                    <h2 className="mb-3  font-semibold">{t("reports.delivery")}</h2>
                     {report.delivery.length === 0 ? (
-                      <p className="text-[13px] text-muted-foreground">{t("reports.noDelivery")}</p>
+                      <p className=" text-muted-foreground">{t("reports.noDelivery")}</p>
                     ) : (
                       <Columns
                         title={t("reports.delivery")}
@@ -110,15 +110,15 @@ export default function Reports() {
                     )}
                   </Card>
                   <Card className="p-4">
-                    <h2 className="mb-3 text-[13px] font-semibold">{t("reports.workload")}</h2>
+                    <h2 className="mb-3  font-semibold">{t("reports.workload")}</h2>
                     {report.people.length === 0 ? (
-                      <p className="text-[13px] text-muted-foreground">{t("reports.none")}</p>
+                      <p className=" text-muted-foreground">{t("reports.none")}</p>
                     ) : (
                       <ul className="space-y-3">
                         {report.people.map((p) => {
                           const m = member(p.id);
                           return (
-                            <li key={p.id} className="flex items-center gap-3 text-[13px]">
+                            <li key={p.id} className="flex items-center gap-3 ">
                               <Avatar name={m?.display_name ?? "?"} src={m?.avatar_url} size={22} />
                               <span className="min-w-0 flex-1 truncate">
                                 {m?.display_name ?? "?"}
@@ -136,15 +136,15 @@ export default function Reports() {
                     )}
                   </Card>
                   <Card className="p-4">
-                    <h2 className="mb-3 text-[13px] font-semibold">{t("reports.sprints")}</h2>
+                    <h2 className="mb-3  font-semibold">{t("reports.sprints")}</h2>
                     {report.sprints.length === 0 ? (
-                      <p className="text-[13px] text-muted-foreground">{t("reports.none")}</p>
+                      <p className=" text-muted-foreground">{t("reports.none")}</p>
                     ) : (
                       <ul className="space-y-3">
                         {report.sprints.map((s) => {
                           const sp = ws.sprints.find((x) => x.id === s.id);
                           return (
-                            <li key={s.id} className="text-[13px]">
+                            <li key={s.id} className="">
                               <div className="mb-1 flex justify-between">
                                 <span className="font-medium">{sp?.name ?? "?"}</span>
                                 <span className="tabular-nums text-muted-foreground">
@@ -159,7 +159,7 @@ export default function Reports() {
                     )}
                   </Card>
                   <Card className="p-4">
-                    <h2 className="mb-3 text-[13px] font-semibold">{t("reports.timeBy")}</h2>
+                    <h2 className="mb-3  font-semibold">{t("reports.timeBy")}</h2>
                     <Tabs>
                       <TabList aria-label={t("reports.timeBy")}>
                         <Tab id="teams">{t("nav.teams")}</Tab>
@@ -170,9 +170,7 @@ export default function Reports() {
                       {(["teams", "projects", "people", "issues"] as const).map((k) => (
                         <TabPanel key={k} id={k}>
                           {report[k].filter((r) => r.minutes > 0).length === 0 ? (
-                            <p className="text-[13px] text-muted-foreground">
-                              {t("reports.noTime")}
-                            </p>
+                            <p className=" text-muted-foreground">{t("reports.noTime")}</p>
                           ) : (
                             <BarList
                               rows={[...report[k]]
@@ -207,9 +205,9 @@ export default function Reports() {
 function Stat({ label, value, hint }: { label: string; value: string; hint?: string }) {
   return (
     <Card className="p-4">
-      <p className="text-xs text-muted-foreground">{label}</p>
+      <p className=" text-muted-foreground">{label}</p>
       <p className="mt-1 text-2xl font-semibold tabular-nums tracking-tight">{value}</p>
-      {hint && <p className="text-xs text-muted-foreground">{hint}</p>}
+      {hint && <p className=" text-muted-foreground">{hint}</p>}
     </Card>
   );
 }
@@ -237,9 +235,9 @@ function TimeLog({ lang }: { lang: string }) {
     <Card>
       <QueryStatus query={query} />
       <div className="overflow-x-auto">
-        <table className="w-full min-w-[40rem] text-[13px]">
+        <table className="w-full min-w-[40rem] ">
           <thead>
-            <tr className="border-b border-border text-left text-xs text-muted-foreground">
+            <tr className="border-b border-border text-left  text-muted-foreground">
               <th className="px-4 py-2 font-medium">{t("field.date")}</th>
               <th className="px-2 py-2 font-medium">{t("nav.people")}</th>
               <th className="px-2 py-2 font-medium">{t("field.issue")}</th>

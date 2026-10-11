@@ -101,9 +101,7 @@ export function Dialog({
                     <Heading slot="title" className="text-[15px] font-semibold tracking-tight">
                       {title}
                     </Heading>
-                    {description && (
-                      <p className="mt-0.5 text-xs text-muted-foreground">{description}</p>
-                    )}
+                    {description && <p className="mt-0.5  text-muted-foreground">{description}</p>}
                   </div>
                   {!hideClose && <DialogClose />}
                 </div>

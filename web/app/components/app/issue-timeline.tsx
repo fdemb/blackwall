@@ -184,7 +184,7 @@ function EventItem({ event, entries }: { event: Activity; entries: Map<Id, TimeE
   // A single-field change shows that field's icon; several fields fall back to the generic edit icon.
   const Icon = (fields.length === 1 ? fields[0].icon : meta?.icon) ?? Pencil;
   return (
-    <li className="relative flex items-center gap-3 text-xs text-muted-foreground">
+    <li className="relative flex items-center gap-3  text-muted-foreground">
       <TimelineDot className={cn(event.action === "issue_completed" && "text-success")}>
         <Icon />
       </TimelineDot>
@@ -241,7 +241,7 @@ function CommentItem({ comment: c }: { comment: Comment }) {
         />
       </span>
       <div className="min-w-0 flex-1 rounded-lg border border-border bg-card shadow-xs">
-        <div className="flex h-9 items-center gap-1.5 pl-3.5 pr-1 text-[13px]">
+        <div className="flex h-9 items-center gap-1.5 pl-3.5 pr-1 ">
           <Link
             to={`/${ws.id}/people/${c.author}`}
             className="truncate font-semibold hover:underline"
@@ -251,12 +251,12 @@ function CommentItem({ comment: c }: { comment: Comment }) {
           <time
             dateTime={c.created_at}
             title={new Date(c.created_at).toLocaleString(lang)}
-            className="shrink-0 text-xs text-muted-foreground"
+            className="shrink-0  text-muted-foreground"
           >
             {relativeTime(c.created_at, lang)}
           </time>
           {c.edited_at && (
-            <span className="shrink-0 text-xs text-muted-foreground">· {t("comment.edited")}</span>
+            <span className="shrink-0  text-muted-foreground">· {t("comment.edited")}</span>
           )}
           {(mine || canAdmin) && editBody === null && (
             <span className={cn("ml-auto flex", revealOnHover)}>
@@ -418,7 +418,7 @@ function Composer({ issue, hasItems }: { issue: Issue; hasItems: boolean }) {
           {files.map((f, i) => (
             <li
               key={i}
-              className="inline-flex items-center gap-1.5 rounded-md border border-border bg-muted px-2 py-1 text-xs"
+              className="inline-flex items-center gap-1.5 rounded-md border border-border bg-muted px-2 py-1 "
             >
               <Paperclip className="size-3" />
               {f.name}
@@ -435,14 +435,14 @@ function Composer({ issue, hasItems }: { issue: Issue; hasItems: boolean }) {
         </ul>
       )}
       {error && (
-        <p role="alert" className="text-xs text-destructive">
+        <p role="alert" className=" text-destructive">
           {error}
         </p>
       )}
       {retry && (
         <div
           role="alert"
-          className="flex flex-wrap items-center gap-2 rounded-md border border-destructive/40 px-3 py-2 text-xs"
+          className="flex flex-wrap items-center gap-2 rounded-md border border-destructive/40 px-3 py-2 "
         >
           <span className="flex-1">
             {t("attachments.retryNote", { n: retry.files.length })}{" "}
@@ -464,7 +464,7 @@ function Composer({ issue, hasItems }: { issue: Issue; hasItems: boolean }) {
           </Button>
         </FileTrigger>
         <div className="flex items-center gap-2">
-          <span className="hidden text-xs text-muted-foreground sm:block">
+          <span className="hidden  text-muted-foreground sm:block">
             {t("comment.hint", { key: modKey })}
           </span>
           <Button variant="primary" isDisabled={!body.trim() || busy} onPress={post}>

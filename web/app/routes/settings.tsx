@@ -55,16 +55,6 @@ export default function SettingsLayout() {
 
   const groups: Group[] = [
     {
-      id: "account",
-      label: t("nav.account"),
-      items: [
-        { path: "profile", label: "account.profile", icon: UserRound },
-        { path: "preferences", label: "account.preferences", icon: SlidersHorizontal },
-        { path: "notifications", label: "account.alerts", icon: Bell },
-        { path: "security", label: "account.security", icon: KeyRound },
-      ],
-    },
-    {
       id: "workspace",
       label: ws.name,
       items: [
@@ -76,6 +66,16 @@ export default function SettingsLayout() {
           ? [{ path: "integrations", label: "settings.integrations", icon: Plug } as const]
           : []),
         { path: "data", label: "settings.data", icon: ArrowUpDown },
+      ],
+    },
+    {
+      id: "account",
+      label: t("nav.account"),
+      items: [
+        { path: "profile", label: "account.profile", icon: UserRound },
+        { path: "preferences", label: "account.preferences", icon: SlidersHorizontal },
+        { path: "notifications", label: "account.alerts", icon: Bell },
+        { path: "security", label: "account.security", icon: KeyRound },
       ],
     },
   ];
@@ -115,7 +115,7 @@ export default function SettingsLayout() {
         <div className="p-2">
           <Link
             to={back}
-            className="flex h-8 items-center gap-2 rounded-md px-2 text-[13px] font-medium text-muted-foreground outline-none transition-colors hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/60"
+            className="flex h-8 items-center gap-2 rounded-md px-2  font-medium text-muted-foreground outline-none transition-colors hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/60"
           >
             <ArrowLeft className="size-4 shrink-0" />
             <span className="flex-1 truncate">{t("settings.back")}</span>
@@ -127,7 +127,7 @@ export default function SettingsLayout() {
             <div key={g.id} role="group" aria-labelledby={`settings-${g.id}`}>
               <h2
                 id={`settings-${g.id}`}
-                className="mb-1 truncate px-2 text-xs font-medium text-muted-foreground"
+                className="mb-1 truncate px-2  font-medium text-muted-foreground"
               >
                 {g.label}
               </h2>
@@ -160,7 +160,7 @@ export default function SettingsLayout() {
             <Button
               variant="ghost"
               aria-label={t("settings.sections")}
-              className="h-8 min-w-0 gap-1.5 px-2 text-sm font-semibold"
+              className="h-8 min-w-0 gap-1.5 px-2  font-semibold"
             >
               {current && <current.icon className="text-muted-foreground" />}
               <span className="truncate">{current ? t(current.label) : t("nav.settings")}</span>
@@ -174,7 +174,7 @@ export default function SettingsLayout() {
               >
                 {groups.map((g) => (
                   <MenuSection key={g.id}>
-                    <Header className="truncate px-2 pb-1 pt-2 text-xs font-medium text-muted-foreground">
+                    <Header className="truncate px-2 pb-1 pt-2  font-medium text-muted-foreground">
                       {g.label}
                     </Header>
                     {g.items.map((i) => (

@@ -145,16 +145,14 @@ function Workspace() {
         isOpen={help}
         onOpenChange={setHelp}
       >
-        <dl className="space-y-1.5 text-[13px]">
+        <dl className="space-y-1.5 ">
           {SHORTCUTS.map(([keys, label]) => (
             <div key={label} className="flex items-center justify-between gap-4">
               <dt>{t(label)}</dt>
               <dd className="flex items-center gap-1">
                 {keys.map((k, i) => (
                   <span key={i} className="flex items-center gap-1">
-                    {i > 0 && (
-                      <span className="text-xs text-muted-foreground">{t("help.then")}</span>
-                    )}
+                    {i > 0 && <span className=" text-muted-foreground">{t("help.then")}</span>}
                     <Kbd>{k}</Kbd>
                   </span>
                 ))}

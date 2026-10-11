@@ -26,7 +26,7 @@ export function OpenProjectNotice({ issue }: { issue: Pick<Issue, "openproject">
   if (!isImportedIssue(issue)) return null;
   const url = openprojectIssueUrl(issue);
   return (
-    <div className="mb-5 space-y-2 rounded-lg border border-border bg-muted/40 p-3 text-[13px]">
+    <div className="mb-5 space-y-2 rounded-lg border border-border bg-muted/40 p-3 ">
       <p>{t("openproject.readonly")}</p>
       {issue.openproject?.unavailable ? (
         <p className="text-muted-foreground">{t("openproject.unavailable")}</p>
@@ -60,7 +60,7 @@ export function DeadlineChip({ issue, className }: { issue: Issue; className?: s
         : "text-muted-foreground";
   return (
     <span
-      className={cn("inline-flex items-center gap-1 text-xs tabular-nums", tone, className)}
+      className={cn("inline-flex items-center gap-1  tabular-nums", tone, className)}
       title={left < 0 && !done ? t("deadline.overdue") : undefined}
     >
       <CalendarDays className="size-3" />
@@ -121,7 +121,7 @@ export function BlockedBadge({ issue }: { issue: Issue }) {
 export function SubtaskProgress({ issue }: { issue: Issue }) {
   if (!issue.subtask_total) return null;
   return (
-    <span className="inline-flex items-center gap-1 text-xs tabular-nums text-muted-foreground">
+    <span className="inline-flex items-center gap-1  tabular-nums text-muted-foreground">
       <Link2 className="size-3" />
       {issue.subtask_completed}/{issue.subtask_total}
     </span>

@@ -49,7 +49,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
             key={i.id}
             role={i.kind === "error" ? "alert" : "status"}
             className={cn(
-              "pointer-events-auto flex animate-in items-start gap-2 rounded-lg border bg-popover px-3 py-2.5 text-[13px] shadow-lg slide-in-from-bottom-2 fade-in-0",
+              "pointer-events-auto flex animate-in items-start gap-2 rounded-lg border bg-popover px-3 py-2.5  shadow-lg slide-in-from-bottom-2 fade-in-0",
               i.kind === "error" ? "border-destructive/40" : "border-border",
             )}
           >

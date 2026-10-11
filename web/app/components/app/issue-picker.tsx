@@ -57,7 +57,7 @@ export function IssuePicker({
                 <Search aria-hidden className="size-3.5 text-muted-foreground" />
                 <Input
                   placeholder={t("issue.findPlaceholder")}
-                  className="h-9 flex-1 bg-transparent text-[13px] outline-none placeholder:text-muted-foreground/70 [&::-webkit-search-cancel-button]:hidden"
+                  className="h-9 flex-1 bg-transparent  outline-none placeholder:text-muted-foreground/70 [&::-webkit-search-cancel-button]:hidden"
                 />
               </SearchField>
               <Menu
@@ -70,7 +70,7 @@ export function IssuePicker({
                 }}
                 className="max-h-64 overflow-auto overscroll-contain p-1 outline-none"
                 renderEmptyState={() => (
-                  <p className="px-3 py-4 text-center text-xs text-muted-foreground">
+                  <p className="px-3 py-4 text-center  text-muted-foreground">
                     {t("search.empty")}
                   </p>
                 )}
@@ -81,7 +81,7 @@ export function IssuePicker({
                     <MenuItem
                       id={i.id}
                       textValue={`${issueKey(i.number)} ${i.title}`}
-                      className="flex cursor-default items-center gap-2 rounded-md px-2 py-1.5 text-[13px] outline-none focus:bg-accent"
+                      className="flex cursor-default items-center gap-2 rounded-md px-2 py-1.5  outline-none focus:bg-accent"
                     >
                       {s && <StageIcon kind={s.kind} />}
                       <IssueKey

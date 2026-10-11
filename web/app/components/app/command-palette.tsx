@@ -216,9 +216,7 @@ export function CommandPalette({
               aria-label={t("search.title")}
               className="max-h-[50vh] overflow-auto overscroll-contain p-1.5 outline-none"
               renderEmptyState={() => (
-                <p className="px-3 py-8 text-center text-[13px] text-muted-foreground">
-                  {t("search.empty")}
-                </p>
+                <p className="px-3 py-8 text-center  text-muted-foreground">{t("search.empty")}</p>
               )}
             >
               {issues.length > 0 && (
@@ -273,7 +271,7 @@ export function CommandPalette({
                     >
                       <Avatar name={m.display_name} src={m.avatar_url} size={18} />
                       <span className="flex-1 truncate">{m.display_name}</span>
-                      <span className="text-xs text-muted-foreground">{m.email}</span>
+                      <span className=" text-muted-foreground">{m.email}</span>
                     </Row>
                   ))}
                 </MenuSection>
@@ -318,7 +316,7 @@ function Row({
       id={id}
       textValue={text}
       onAction={onAction}
-      className="flex cursor-default items-center gap-2.5 rounded-md px-2.5 py-2 text-[13px] outline-none focus:bg-accent focus:text-accent-foreground"
+      className="flex cursor-default items-center gap-2.5 rounded-md px-2.5 py-2  outline-none focus:bg-accent focus:text-accent-foreground"
     >
       {children}
     </MenuItem>

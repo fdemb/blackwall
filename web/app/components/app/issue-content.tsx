@@ -268,7 +268,7 @@ function IssueRow({
   const st = stageOf(ws, issue);
   const assignee = member(issue.assignee);
   return (
-    <li className="group flex h-9 items-center gap-2.5 px-3 text-[13px] hover:bg-muted/60">
+    <li className="group flex h-9 items-center gap-2.5 px-3  hover:bg-muted/60">
       <Link
         to={`/${ws.id}/issue/${issue.id}`}
         className="flex min-w-0 flex-1 items-center gap-2.5 self-stretch"
@@ -330,7 +330,7 @@ export function Subtasks({
       title={t("issue.subtasks")}
       action={
         subs.length > 0 && (
-          <span className="text-xs tabular-nums text-muted-foreground">
+          <span className=" tabular-nums text-muted-foreground">
             {done}/{subs.length}
           </span>
         )
@@ -376,7 +376,7 @@ export function Subtasks({
               <button
                 type="button"
                 onClick={() => setAdding(true)}
-                className="flex h-9 w-full items-center gap-2 px-3 text-[13px] text-muted-foreground hover:bg-muted/60 hover:text-foreground"
+                className="flex h-9 w-full items-center gap-2 px-3  text-muted-foreground hover:bg-muted/60 hover:text-foreground"
               >
                 <Plus className="size-3.5" />
                 {t("issue.addSubtask")}
@@ -413,7 +413,7 @@ export function Dependencies({
   const group = (title: string, list: Issue[], removable: boolean) =>
     list.length > 0 && (
       <div>
-        <h3 className="mb-1 text-xs text-muted-foreground">{title}</h3>
+        <h3 className="mb-1  text-muted-foreground">{title}</h3>
         <ul className="divide-y divide-border/70 rounded-lg border border-border">
           {list.map((b) => (
             <IssueRow
@@ -517,7 +517,7 @@ export function AttachmentChip({
 }) {
   const { t } = useI18n();
   return (
-    <li className="group flex items-center gap-2 rounded-lg border border-border bg-card px-2.5 py-1.5 text-[13px]">
+    <li className="group flex items-center gap-2 rounded-lg border border-border bg-card px-2.5 py-1.5 ">
       <FileText className="size-4 shrink-0 text-muted-foreground" />
       <a
         href={attachmentUrl(wsId, a.id)}
@@ -526,7 +526,7 @@ export function AttachmentChip({
       >
         {a.name}
       </a>
-      <span className="text-xs text-muted-foreground">{bytes(a.size)}</span>
+      <span className=" text-muted-foreground">{bytes(a.size)}</span>
       <a
         href={attachmentUrl(wsId, a.id)}
         download={a.name}

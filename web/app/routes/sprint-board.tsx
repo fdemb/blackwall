@@ -17,7 +17,7 @@ export default function SprintBoard() {
   if (!sprint) return <Navigate to={sprints} replace />;
   const stats = report.sprints.find((s) => s.id === sprint.id);
   const heading = (
-    <h1 className="mr-2 flex min-w-0 items-center gap-2 text-[13px]">
+    <h1 className="mr-2 flex min-w-0 items-center gap-2 ">
       <TeamCrumb team={team} wsId={ws.id} />
       <span aria-hidden="true" className="text-muted-foreground/50">
         /
@@ -41,7 +41,7 @@ export default function SprintBoard() {
       heading={heading}
       nav={tabs}
       actions={
-        <span className="hidden text-xs text-muted-foreground tabular-nums md:inline">
+        <span className="hidden  text-muted-foreground tabular-nums md:inline">
           {shortDate(sprint.starts_at, lang)} – {shortDate(sprint.ends_at, lang)}
           {stats && ` · ${t("sprint.progress", { done: stats.completed, total: stats.total })}`}
         </span>

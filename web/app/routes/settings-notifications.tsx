@@ -73,10 +73,7 @@ export default function Notifications() {
         actions={
           <p
             role="status"
-            className={cn(
-              "text-xs",
-              status === "failed" ? "text-destructive" : "text-muted-foreground",
-            )}
+            className={cn("", status === "failed" ? "text-destructive" : "text-muted-foreground")}
           >
             {status === "saving"
               ? t("account.alertsSaving")
@@ -98,9 +95,7 @@ export default function Notifications() {
             >
               <span>
                 <span className="block font-medium">{t(`alert.${k}`)}</span>
-                <span className="mt-0.5 block text-xs text-muted-foreground">
-                  {t(`alert.${k}Sub`)}
-                </span>
+                <span className="mt-0.5 block  text-muted-foreground">{t(`alert.${k}Sub`)}</span>
               </span>
             </Switch>
           ))}

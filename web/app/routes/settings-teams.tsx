@@ -37,8 +37,8 @@ export default function Teams() {
         <SettingsBlock>
           <div className="flex flex-wrap items-center gap-3 rounded-lg bg-accent/50 px-4 py-3">
             <div className="min-w-0 flex-1">
-              <h2 className="text-[13px] font-semibold">{t("setup.issueTitle")}</h2>
-              <p className="text-xs text-muted-foreground">{t("setup.issueSub")}</p>
+              <h2 className=" font-semibold">{t("setup.issueTitle")}</h2>
+              <p className=" text-muted-foreground">{t("setup.issueSub")}</p>
             </div>
             <Button
               variant="primary"
@@ -103,9 +103,7 @@ function CreateTeam({ close }: { close: () => void }) {
         placeholder={t("team.namePlaceholder")}
       />
       <div>
-        <span className="mb-1 block text-xs font-medium text-muted-foreground">
-          {t("nav.people")}
-        </span>
+        <span className="mb-1 block  font-medium text-muted-foreground">{t("nav.people")}</span>
         <MultiMemberPicker value={members} onChange={setMembers} />
       </div>
       <FormError>{error}</FormError>
@@ -165,7 +163,7 @@ function TeamSection({ team }: { team: Team }) {
     >
       <div className="px-4 py-4 sm:px-5 sm:py-5">
         <div className="mb-2 flex items-center">
-          <h3 className="text-xs font-medium text-muted-foreground">{t("teams.workflow")}</h3>
+          <h3 className=" font-medium text-muted-foreground">{t("teams.workflow")}</h3>
           {canAdmin && (
             <Button variant="ghost" size="sm" className="ml-auto" onPress={() => setAdding(true)}>
               <Plus />
@@ -303,7 +301,7 @@ function StageRow({
       )}
       <span
         role="status"
-        className={`w-16 text-xs ${status === "failed" ? "text-destructive" : "text-muted-foreground"}`}
+        className={`w-16  ${status === "failed" ? "text-destructive" : "text-muted-foreground"}`}
       >
         {status === "saving"
           ? t("action.saving")
@@ -348,8 +346,8 @@ function TeamArchive({ team }: { team: Team }) {
   };
   return (
     <div className="mt-4 border-t border-border pt-3">
-      <h3 className="text-xs font-medium text-muted-foreground">{t("team.archive")}</h3>
-      <p className="mt-0.5 text-xs text-muted-foreground">{t("team.archiveSub")}</p>
+      <h3 className=" font-medium text-muted-foreground">{t("team.archive")}</h3>
+      <p className="mt-0.5  text-muted-foreground">{t("team.archiveSub")}</p>
       <div className="mt-2 flex flex-wrap items-center gap-3">
         <Checkbox
           isSelected={never}
@@ -362,7 +360,7 @@ function TeamArchive({ team }: { team: Team }) {
           {t("team.archiveNever")}
         </Checkbox>
         {!never && (
-          <label className="flex items-center gap-2 text-[13px]">
+          <label className="flex items-center gap-2 ">
             <Input
               aria-label={t("team.archiveDays")}
               type="number"
@@ -380,7 +378,7 @@ function TeamArchive({ team }: { team: Team }) {
         )}
         <span
           role="status"
-          className={`text-xs ${status === "failed" ? "text-destructive" : "text-muted-foreground"}`}
+          className={` ${status === "failed" ? "text-destructive" : "text-muted-foreground"}`}
         >
           {status === "saving"
             ? t("action.saving")
