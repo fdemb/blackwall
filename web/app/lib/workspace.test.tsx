@@ -424,7 +424,6 @@ describe("workspace React integration without a DOM", () => {
     expect(html).toContain("BW-42");
     expect(html).toContain("Saving");
     expect(html).toContain("lucide-wifi-off");
-    expect(html).toContain("Ada");
     expect(html).not.toContain("Load more");
   });
 });

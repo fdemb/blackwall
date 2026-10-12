@@ -28,7 +28,6 @@ export type QueueState = ReturnType<typeof useQueueState>;
 export function Workbench({
   title,
   icon,
-  subtitle,
   heading,
   nav,
   base = {},
@@ -43,7 +42,6 @@ export function Workbench({
 }: {
   title: React.ReactNode;
   icon?: React.ReactNode;
-  subtitle?: React.ReactNode;
   heading?: React.ReactNode;
   nav?: React.ReactNode;
   base?: IssueFilter;
@@ -79,12 +77,10 @@ export function Workbench({
       <WorkbenchHeader
         title={title}
         icon={icon}
-        subtitle={subtitle}
         heading={heading}
         nav={nav}
         actions={actions}
         headerExtra={headerExtra}
-        issueCount={issues.length}
         filter={filter}
         setFilter={setFilter}
         hide={hide}
@@ -116,12 +112,10 @@ export function Workbench({
 function WorkbenchHeader({
   title,
   icon,
-  subtitle,
   heading,
   nav,
   actions,
   headerExtra,
-  issueCount,
   filter,
   setFilter,
   hide,
@@ -133,12 +127,10 @@ function WorkbenchHeader({
 }: {
   title: React.ReactNode;
   icon?: React.ReactNode;
-  subtitle?: React.ReactNode;
   heading?: React.ReactNode;
   nav?: React.ReactNode;
   actions?: React.ReactNode;
   headerExtra?: React.ReactNode;
-  issueCount: number;
   filter: IssueFilter;
   setFilter: (f: IssueFilter) => void;
   hide: (keyof IssueFilter)[];

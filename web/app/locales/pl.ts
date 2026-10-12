@@ -583,7 +583,6 @@ export const pl = {
   "view.update": "Zaktualizuj widok",
   "view.updated": "Widok zaktualizowany",
   "view.rename": "Edytuj widok",
-  "view.unsaved": "Filtry zmieniono od zapisania widoku.",
   "view.deleteTitle": "Usunąć ten widok?",
   "view.personalOnly": "Widoki, które zapisujesz, widzisz tylko Ty.",
   "view.revert": "Przywróć",

@@ -425,7 +425,7 @@ async fn schedule_imported_reminder(
         let job = NewJob {
             id: format!("reminder:{}:{}:1", w.id, issue.id),
             job: crate::jobs::Job::Reminder(reminder),
-            due_at: (deadline - chrono::Duration::hours(24)).timestamp(),
+            due_at: Some((deadline - chrono::Duration::hours(24)).timestamp()),
             max_attempts: None,
         };
 

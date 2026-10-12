@@ -576,7 +576,6 @@ export const en = {
   "view.update": "Update view",
   "view.updated": "View updated",
   "view.rename": "Edit view",
-  "view.unsaved": "Filters changed since this view was saved.",
   "view.deleteTitle": "Delete this view?",
   "view.personalOnly": "Only you can see views you save.",
   "view.revert": "Reset",

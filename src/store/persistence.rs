@@ -263,7 +263,7 @@ async fn schedule_reminder_with_stage(
                     issue_id: id,
                     generation,
                 }),
-                due_at: (deadline - chrono::Duration::hours(24)).timestamp(),
+                due_at: Some((deadline - chrono::Duration::hours(24)).timestamp()),
                 max_attempts: None,
             },
         )

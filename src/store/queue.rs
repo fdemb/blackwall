@@ -2,7 +2,6 @@ use crate::{
     error::{Error, Result},
     jobs::{Job, PAYLOAD_VERSION},
 };
-use chrono::Utc;
 use sqlx::{PgConnection, PgPool, Row, postgres::PgListener};
 use std::sync::Arc;
 use tokio::sync::Notify;
@@ -15,7 +14,9 @@ pub struct NewJob {
     /// Compatibility key, independent of the queue's UUID identity.
     pub id: String,
     pub job: Job,
-    pub due_at: i64,
+    /// Unix seconds. `None` makes the job due at the database's current time,
+    /// so a skewed application clock can't delay it.
+    pub due_at: Option<i64>,
     pub max_attempts: Option<i32>,
 }
 
@@ -24,7 +25,7 @@ impl NewJob {
         Self {
             id: id.into(),
             job,
-            due_at: Utc::now().timestamp(),
+            due_at: None,
             max_attempts: None,
         }
     }
@@ -126,12 +127,12 @@ impl Outbox {
         let sql = match job.max_attempts {
             Some(_) => {
                 "INSERT INTO jobs(id,kind,payload_version,payload,queue,run_at,\
-                dedup_key,max_attempts) VALUES($1,$2,$3,$4,$5,to_timestamp($6),$7,$8) ON \
+                dedup_key,max_attempts) VALUES($1,$2,$3,$4,$5,COALESCE(to_timestamp($6),clock_timestamp()),$7,$8) ON \
                 CONFLICT(dedup_key) DO NOTHING"
             }
             None => {
                 "INSERT INTO jobs(id,kind,payload_version,payload,queue,run_at,\
-                dedup_key) VALUES($1,$2,$3,$4,$5,to_timestamp($6),$7) ON \
+                dedup_key) VALUES($1,$2,$3,$4,$5,COALESCE(to_timestamp($6),clock_timestamp()),$7) ON \
                 CONFLICT(dedup_key) DO NOTHING"
             }
         };
@@ -141,7 +142,7 @@ impl Outbox {
             .bind(PAYLOAD_VERSION)
             .bind(serde_json::from_str::<serde_json::Value>(&payload)?)
             .bind(job.job.queue())
-            .bind(job.due_at as f64)
+            .bind(job.due_at.map(|seconds| seconds as f64))
             .bind(&job.id);
         if let Some(max_attempts) = job.max_attempts {
             query = query.bind(max_attempts);

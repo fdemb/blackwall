@@ -200,7 +200,7 @@
   @apply border-l-2 border-primary/40 pl-3 text-muted-foreground;
 }
 .prose-bw table {
-  @apply w-full border-collapse ;
+  @apply w-full border-collapse;
 }
 .prose-bw th,
 .prose-bw td {

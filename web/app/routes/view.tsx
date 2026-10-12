@@ -43,7 +43,6 @@ function ViewPage({ view }: { view: SavedView }) {
       icon={<Eye className="size-4 text-muted-foreground" />}
       state={state}
       saveable={false}
-      subtitle={changed ? t("view.unsaved") : undefined}
       actions={
         <>
           {view.shared && (
