@@ -35,7 +35,7 @@ export default function ArchivePage() {
         done += command.ids.length;
         setProgress({ done, total });
       }
-      toast.show(t("archive.unarchivedN", { n: total }));
+      toast.show(t("archive.unarchivedN", { count: total }));
     } catch {
       /* the failed batch already showed its error; the rest stay archived */
     }

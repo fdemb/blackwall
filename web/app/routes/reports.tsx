@@ -90,7 +90,7 @@ function Overview({ report }: { report: Report }) {
         <Stat
           label={t("reports.delivered")}
           value={String(stats.completed)}
-          hint={t("reports.last30")}
+          hint={t("reports.allTime")}
         />
         <Stat label={t("reports.openIssues")} value={String(stats.open)} />
       </div>
@@ -229,9 +229,11 @@ function TimeBy({ report }: { report: Report }) {
 function Stat({ label, value, hint }: { label: string; value: string; hint?: string }) {
   return (
     <Card className="p-4">
-      <p className=" text-muted-foreground">{label}</p>
+      <p className="flex items-baseline justify-between gap-2 text-muted-foreground">
+        {label}
+        {hint && <span className="text-[12px] text-muted-foreground/80">{hint}</span>}
+      </p>
       <p className="mt-1 text-2xl font-semibold tabular-nums tracking-tight">{value}</p>
-      {hint && <p className=" text-muted-foreground">{hint}</p>}
     </Card>
   );
 }

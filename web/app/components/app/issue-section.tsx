@@ -17,8 +17,8 @@ export function Section({
     <section>
       <div className="mb-2 flex min-h-7 items-center gap-2">
         {icon}
-        <h2 className=" font-semibold">{title}</h2>
-        <div className="ml-auto">{action}</div>
+        <h2 className="text-base font-medium">{title}</h2>
+        <div className="ml-auto flex items-center gap-1">{action}</div>
       </div>
       {children}
     </section>

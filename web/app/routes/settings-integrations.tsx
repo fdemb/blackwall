@@ -41,25 +41,26 @@ export default function Integrations() {
     ? endpoint(ws.integrations[0])
     : `${origin}/api/workspaces/${ws.id}/integrations/<id>/webhook`;
   return (
-    <SettingsPage
-      title={t("settings.integrations")}
-      description={t("integrations.sub")}
-      actions={
-        <Button variant="primary" size="sm" isDisabled={offline} onPress={() => setOpen(true)}>
-          <Plus />
-          {t("integrations.add")}
-        </Button>
-      }
-    >
+    <SettingsPage title={t("settings.integrations")} description={t("integrations.sub")}>
       <OpenProjectSettings />
-      <SettingsSection title={t("openproject.webhooks")}>
+      <SettingsSection
+        title={t("openproject.webhooks")}
+        actions={
+          ws.integrations.length > 0 && (
+            <Button size="sm" isDisabled={offline} onPress={() => setOpen(true)}>
+              <Plus />
+              {t("integrations.add")}
+            </Button>
+          )
+        }
+      >
         {ws.integrations.length === 0 ? (
           <EmptyState
             icon={<Plug />}
             title={t("integrations.emptyTitle")}
             description={t("integrations.emptySub")}
             action={
-              <Button variant="primary" onPress={() => setOpen(true)}>
+              <Button variant="primary" isDisabled={offline} onPress={() => setOpen(true)}>
                 {t("integrations.add")}
               </Button>
             }

@@ -144,7 +144,7 @@ export default function Members() {
             <SettingsList>
               {invitations.map((i) => (
                 <li key={i.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 py-2.5 ">
-                  <div className="min-w-0 flex-1">
+                  <div className="min-w-0 flex-1 basis-48">
                     <p className="truncate font-medium">{i.email}</p>
                     <p className=" text-muted-foreground">
                       {t("invite.expires", { date: fullDate(i.expires_at, lang) })}

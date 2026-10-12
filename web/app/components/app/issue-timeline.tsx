@@ -115,7 +115,7 @@ export function Timeline({ issue }: { issue: Issue }) {
       )}
       {items.length > 0 && (
         // The line sits behind the list. Event dots ride on it and comment cards cover it.
-        <ol className="relative space-y-3 before:absolute before:inset-y-3 before:left-3.5 before:w-px before:-translate-x-1/2 before:bg-border">
+        <ol className="relative space-y-2 before:absolute before:inset-y-3 before:left-3.5 before:w-px before:-translate-x-1/2 before:bg-border">
           {hidden > 0 && (
             <li className="relative flex items-center gap-3">
               <TimelineDot>
@@ -184,7 +184,7 @@ function EventItem({ event, entries }: { event: Activity; entries: Map<Id, TimeE
   // A single-field change shows that field's icon; several fields fall back to the generic edit icon.
   const Icon = (fields.length === 1 ? fields[0].icon : meta?.icon) ?? Pencil;
   return (
-    <li className="relative flex items-center gap-3  text-muted-foreground">
+    <li className="relative flex min-h-7 items-center gap-3 text-sm text-muted-foreground">
       <TimelineDot className={cn(event.action === "issue_completed" && "text-success")}>
         <Icon />
       </TimelineDot>
@@ -192,8 +192,12 @@ function EventItem({ event, entries }: { event: Activity; entries: Map<Id, TimeE
         <span className="font-medium text-foreground">
           {member(event.actor)?.display_name ?? t("person.unknown")}
         </span>{" "}
-        {label} ·{" "}
-        <time dateTime={event.at} title={new Date(event.at).toLocaleString(lang)}>
+        {label}{" "}
+        <time
+          dateTime={event.at}
+          title={new Date(event.at).toLocaleString(lang)}
+          className="text-muted-foreground/70"
+        >
           {relativeTime(event.at, lang)}
         </time>
       </span>
@@ -231,7 +235,7 @@ function CommentItem({ comment: c }: { comment: Comment }) {
   };
   return (
     // The avatar takes the timeline dot's slot, so it sits on the line and the card lines up with event text.
-    <li className="group relative flex gap-3">
+    <li className="group relative flex gap-3 py-1">
       <span className="flex w-7 shrink-0 justify-center pt-[7px]">
         <Avatar
           name={m?.display_name ?? "?"}
@@ -241,22 +245,22 @@ function CommentItem({ comment: c }: { comment: Comment }) {
         />
       </span>
       <div className="min-w-0 flex-1 rounded-lg border border-border bg-card shadow-xs">
-        <div className="flex h-9 items-center gap-1.5 pl-3.5 pr-1 ">
+        <div className="flex h-9 items-center gap-1.5 pl-3.5 pr-1">
           <Link
             to={`/${ws.id}/people/${c.author}`}
-            className="truncate font-semibold hover:underline"
+            className="truncate font-medium hover:underline"
           >
             {m?.display_name ?? t("person.unknown")}
           </Link>
           <time
             dateTime={c.created_at}
             title={new Date(c.created_at).toLocaleString(lang)}
-            className="shrink-0  text-muted-foreground"
+            className="shrink-0 text-sm text-muted-foreground"
           >
             {relativeTime(c.created_at, lang)}
           </time>
           {c.edited_at && (
-            <span className="shrink-0  text-muted-foreground">· {t("comment.edited")}</span>
+            <span className="shrink-0 text-sm text-muted-foreground">· {t("comment.edited")}</span>
           )}
           {(mine || canAdmin) && editBody === null && (
             <span className={cn("ml-auto flex", revealOnHover)}>
@@ -445,7 +449,7 @@ function Composer({ issue, hasItems }: { issue: Issue; hasItems: boolean }) {
           className="flex flex-wrap items-center gap-2 rounded-md border border-destructive/40 px-3 py-2 "
         >
           <span className="flex-1">
-            {t("attachments.retryNote", { n: retry.files.length })}{" "}
+            {t("attachments.retryNote", { count: retry.files.length })}{" "}
             {retry.files.map((f) => f.name).join(", ")}
           </span>
           <Button size="sm" variant="secondary" isDisabled={busy || offline} onPress={retryUpload}>

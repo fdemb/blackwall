@@ -1,12 +1,17 @@
 import { useState } from "react";
 import {
+  Autocomplete,
   Button as RACButton,
+  Dialog,
   DialogTrigger,
+  Input,
   ListBox,
   ListBoxItem,
+  SearchField,
   composeRenderProps,
+  useFilter,
 } from "react-aria-components";
-import { Check, Tag, User } from "lucide-react";
+import { Check, Plus, Search, Tag, User } from "lucide-react";
 import { Select, type Option } from "~/components/ui/select";
 import { Popover } from "~/components/ui/popover";
 import { Button } from "~/components/ui/button";
@@ -19,6 +24,20 @@ import type { Id, Priority } from "~/lib/types";
 import { PriorityIcon, StageIcon } from "./icons";
 
 const NONE = "__none";
+const CREATE = "__create";
+/** Palette for new labels. Each new label takes the next color so neighbours differ. */
+export const LABEL_COLORS = [
+  "#7c3aed",
+  "#a78bfa",
+  "#ec4899",
+  "#ef4444",
+  "#f97316",
+  "#eab308",
+  "#22c55e",
+  "#14b8a6",
+  "#0ea5e9",
+  "#64748b",
+];
 
 interface PickProps {
   label?: string;
@@ -196,12 +215,39 @@ function LabelsPickerBase({
   isDisabled?: boolean;
 }) {
   const { t } = useI18n();
-  const { ws } = useWorkspace();
+  const { ws, run, canWrite } = useWorkspace();
+  const { contains } = useFilter({ sensitivity: "base" });
   const [open, setOpen] = useState(false);
+  const [q, setQ] = useState("");
   const wanted = new Set(value);
   const chosen = ws.labels.filter((l) => wanted.has(l.id));
+  const name = q.trim();
+  // Typing a name no label has yet offers to create it. The row matches the query, so filtering keeps it.
+  const canCreate =
+    canWrite &&
+    name !== "" &&
+    !ws.labels.some((l) => l.name.localeCompare(name, undefined, { sensitivity: "base" }) === 0);
+  const items = canCreate
+    ? [
+        ...ws.labels,
+        { id: CREATE, name, color: LABEL_COLORS[ws.labels.length % LABEL_COLORS.length] },
+      ]
+    : ws.labels;
+  const create = (color: string) =>
+    run({ type: "create_label", name, color })
+      .then((id) => {
+        if (id) onChange([...value, id]);
+        setQ("");
+      })
+      .catch(() => {});
   return (
-    <DialogTrigger isOpen={open} onOpenChange={setOpen}>
+    <DialogTrigger
+      isOpen={open}
+      onOpenChange={(o) => {
+        setOpen(o);
+        if (!o) setQ("");
+      }}
+    >
       <Button
         variant={variant === "ghost" ? "ghost" : "secondary"}
         isDisabled={isDisabled}
@@ -229,39 +275,75 @@ function LabelsPickerBase({
           ))
         )}
       </Button>
-      <Popover placement="bottom start" className="min-w-52">
-        <ListBox
-          aria-label={t("field.labels")}
-          selectionMode="multiple"
-          selectedKeys={new Set(value)}
-          onSelectionChange={(keys) => onChange(selectedIds(keys, ws.labels))}
-          items={ws.labels}
-          renderEmptyState={() => (
-            <p className="px-3 py-2  text-muted-foreground">{t("labels.empty")}</p>
-          )}
-          className="max-h-72 overflow-auto p-1 outline-none"
-        >
-          {(l) => (
-            <ListBoxItem
-              id={l.id}
-              textValue={l.name}
-              className={composeRenderProps("", (c) =>
-                cn(
-                  "flex cursor-default items-center gap-2 rounded-md px-2 py-1.5  outline-none focus:bg-accent",
-                  c,
-                ),
-              )}
+      <Popover placement="bottom start" className="w-64">
+        <Dialog aria-label={t("field.labels")} className="outline-none">
+          <Autocomplete inputValue={q} onInputChange={setQ} filter={contains}>
+            <SearchField
+              autoFocus
+              aria-label={t("field.labels")}
+              className="flex items-center gap-2 border-b border-border px-3"
             >
-              {({ isSelected }) => (
-                <>
-                  <LabelDot color={l.color} />
-                  <span className="flex-1 truncate">{l.name}</span>
-                  {isSelected && <Check className="size-3.5 text-primary" />}
-                </>
+              <Search aria-hidden className="size-3.5 text-muted-foreground" />
+              <Input
+                placeholder={canWrite ? t("labels.searchOrCreate") : t("labels.search")}
+                className="h-9 flex-1 bg-transparent outline-none placeholder:text-muted-foreground/70 [&::-webkit-search-cancel-button]:hidden"
+              />
+            </SearchField>
+            <ListBox
+              aria-label={t("field.labels")}
+              selectionMode="multiple"
+              selectedKeys={new Set(value)}
+              onSelectionChange={(keys) => {
+                // The create row toggles like any item; it never stays selected because the id is not a label.
+                if (keys !== "all" && keys.has(CREATE)) {
+                  const draft = items.find((l) => l.id === CREATE);
+                  if (draft) void create(draft.color);
+                  return;
+                }
+                onChange(selectedIds(keys, ws.labels));
+              }}
+              items={items}
+              dependencies={[name]}
+              renderEmptyState={() => (
+                <p className="px-3 py-2 text-muted-foreground">
+                  {ws.labels.length ? t("search.empty") : t("labels.empty")}
+                </p>
               )}
-            </ListBoxItem>
-          )}
-        </ListBox>
+              className="max-h-72 overflow-auto p-1 outline-none"
+            >
+              {(l) => (
+                <ListBoxItem
+                  id={l.id}
+                  textValue={l.name}
+                  className={composeRenderProps("", (c) =>
+                    cn(
+                      "flex cursor-default items-center gap-2 rounded-md px-2 py-1.5 outline-none focus:bg-accent",
+                      c,
+                    ),
+                  )}
+                >
+                  {({ isSelected }) =>
+                    l.id === CREATE ? (
+                      <>
+                        <Plus aria-hidden className="size-3.5 text-muted-foreground" />
+                        <span className="flex-1 truncate">
+                          {t("labels.create", { name: l.name })}
+                        </span>
+                        <LabelDot color={l.color} />
+                      </>
+                    ) : (
+                      <>
+                        <LabelDot color={l.color} />
+                        <span className="flex-1 truncate">{l.name}</span>
+                        {isSelected && <Check className="size-3.5 text-primary" />}
+                      </>
+                    )
+                  }
+                </ListBoxItem>
+              )}
+            </ListBox>
+          </Autocomplete>
+        </Dialog>
       </Popover>
     </DialogTrigger>
   );

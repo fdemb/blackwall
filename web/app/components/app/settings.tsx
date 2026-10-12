@@ -46,7 +46,7 @@ export function SettingsSection({
       {(title || actions) && (
         <div className="mb-3 flex flex-wrap items-center gap-x-4 gap-y-1 px-1">
           <div className="min-w-0 flex-1">
-            {title && <h2 className="text-[15px] text-muted-foreground">{title}</h2>}
+            {title && <h2 className="font-semibold">{title}</h2>}
             {description && (
               <p className="mt-0.5 max-w-prose  text-muted-foreground">{description}</p>
             )}

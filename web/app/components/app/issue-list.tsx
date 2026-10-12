@@ -235,7 +235,12 @@ function useIssueGrid({
       onSelectionChange={(s: Selection) =>
         setSelected(new Set(s === "all" ? visible : ([...s] as Id[])))
       }
-      className={cn("outline-none", fill ? "min-h-0 flex-1 overflow-y-auto" : "pb-24")}
+      className={cn(
+        "outline-none",
+        fill && "min-h-0 flex-1 overflow-y-auto",
+        // Room for the bulk bar, which floats over the end of the list.
+        !fill && visibleSelected.size > 0 && "pb-24",
+      )}
     >
       {groupBy === "none" ? (
         <IssueRows items={issues} showTeam={showTeam} canSelect={canSelect} keyLength={keyLength} />
@@ -339,7 +344,9 @@ export function IssueRow({
       <span className="min-w-0 flex-1 truncate font-medium">{issue.title}</span>
       <OpenProjectBadge issue={issue} />
       <BlockedBadge issue={issue} />
-      <SubtaskProgress issue={issue} />
+      <span className="hidden sm:block">
+        <SubtaskProgress issue={issue} />
+      </span>
       <span className="hidden md:block">
         <LabelChips issue={issue} />
       </span>
@@ -349,7 +356,7 @@ export function IssueRow({
           {project.name}
         </span>
       )}
-      <span className="w-20 text-right">
+      <span className="text-right sm:w-20">
         <DeadlineChip issue={issue} className="justify-end" />
       </span>
       <AssigneeAvatar issue={issue} />
@@ -445,11 +452,11 @@ function BulkBar({
   const remove = async () => {
     await run({ type: "bulk_issues", ids, action: "delete" }, { quiet: true });
     clear();
-    toast.show(t("bulk.deleted", { n: ids.length }), {
+    toast.show(t("bulk.deleted", { count: ids.length }), {
       label: t("action.undo"),
       run: () =>
         void run({ type: "bulk_issues", ids, action: "restore" })
-          .then(() => toast.show(t("bulk.restored", { n: ids.length })))
+          .then(() => toast.show(t("bulk.restored", { count: ids.length })))
           .catch(() => {}),
     });
   };
@@ -461,11 +468,11 @@ function BulkBar({
   const archive = async () => {
     await run({ type: "bulk_issues", ids, action: "archive" }, { quiet: true });
     clear();
-    toast.show(t("bulk.archived", { n: ids.length }), {
+    toast.show(t("bulk.archived", { count: ids.length }), {
       label: t("action.undo"),
       run: () =>
         void run({ type: "bulk_issues", ids, action: "unarchive" })
-          .then(() => toast.show(t("bulk.unarchived", { n: ids.length })))
+          .then(() => toast.show(t("bulk.unarchived", { count: ids.length })))
           .catch(() => {}),
     });
   };
@@ -552,7 +559,7 @@ function BulkBar({
         <X aria-hidden />
       </Button>
       <ConfirmDialog
-        title={t("bulk.deleteTitle", { n: ids.length })}
+        title={t("bulk.deleteTitle", { count: ids.length })}
         description={t("bulk.deleteSub")}
         isOpen={confirm}
         onOpenChange={setConfirm}

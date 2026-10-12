@@ -46,7 +46,8 @@ export interface DndColumnProps {
   className?: string;
   aside?: React.ReactNode;
   emptyText?: string;
-  footer?: React.ReactNode;
+  /** Sits between the header and the cards, for column-level context such as a sprint goal. */
+  summary?: React.ReactNode;
 }
 
 export function DndColumn({
@@ -61,7 +62,7 @@ export function DndColumn({
   className,
   aside,
   emptyText,
-  footer,
+  summary,
 }: DndColumnProps) {
   const { t } = useI18n();
   const { canWrite } = useWorkspace();
@@ -139,6 +140,7 @@ export function DndColumn({
           )}
         </span>
       </header>
+      {summary}
       <Virtualizer layout={ListLayout} layoutOptions={COLUMN_LAYOUT}>
         <ListBox
           aria-label={title}
@@ -156,7 +158,6 @@ export function DndColumn({
           {(issue) => <BoardCard issue={issue} keyLength={keyLength} />}
         </ListBox>
       </Virtualizer>
-      {footer}
     </section>
   );
 }

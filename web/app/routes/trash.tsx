@@ -37,7 +37,7 @@ export default function Trash() {
         done += command.ids.length;
         setProgress({ done, total });
       }
-      toast.show(t("trash.restoredN", { n: total }));
+      toast.show(t("trash.restoredN", { count: total }));
     } catch {
       /* the failed batch already showed its error; the rest stay in Trash */
     }

@@ -148,7 +148,7 @@ export default function Sprints() {
                     )}
                   </>
                 }
-                footer={<SprintFooter sprint={s} done={done} total={total} />}
+                summary={<SprintSummary sprint={s} done={done} total={total} />}
               />
             );
           })}
@@ -278,11 +278,11 @@ function SprintMenu({
   );
 }
 
-/** Goal, dates and progress under a sprint column. */
-function SprintFooter({ sprint, done, total }: { sprint: Sprint; done: number; total: number }) {
+/** Goal, dates and progress at the top of a sprint column. */
+function SprintSummary({ sprint, done, total }: { sprint: Sprint; done: number; total: number }) {
   const { t, lang } = useI18n();
   return (
-    <div className="space-y-1.5 border-t border-border/70 px-3 py-2  text-muted-foreground">
+    <div className="space-y-1.5 px-3 pb-2 pt-1 text-muted-foreground">
       {sprint.goal && (
         <p className="flex gap-1.5 text-foreground">
           <Target className="mt-0.5 size-3.5 shrink-0 text-primary" />
@@ -430,7 +430,7 @@ function CompleteForm({ sprint, close }: { sprint: Sprint; close: () => void }) 
     >
       <QueryStatus query={query} />
       <p className=" text-muted-foreground">
-        {unfinished ? t("sprint.unfinished", { n: unfinished }) : t("sprint.allDone")}
+        {unfinished ? t("sprint.unfinished", { count: unfinished }) : t("sprint.allDone")}
       </p>
       {unfinished > 0 && (
         <NullableSelect

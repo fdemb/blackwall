@@ -98,7 +98,7 @@ export default function Data() {
     setResult(undefined);
   };
   return (
-    <SettingsPage title={t("settings.data")}>
+    <SettingsPage title={t("settings.data")} description={t("settings.dataSub")}>
       <SettingsSection title={t("data.export")} description={t("data.exportSub")}>
         <div className="px-4 py-4 sm:px-5 sm:py-5">
           <Button variant="secondary" isDisabled={busy} onPress={exportAll}>

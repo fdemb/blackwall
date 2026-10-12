@@ -197,30 +197,40 @@ export function Sidebar({
       </div>
 
       <div className="flex items-center gap-0.5 border-t border-border p-2">
-        <NavLink
-          to={`${base}/archive`}
-          aria-label={t("nav.archive")}
-          className={(s) => cn(linkClass(s), "size-7 justify-center px-0")}
-        >
+        <FooterLink to={`${base}/archive`} label={t("nav.archive")}>
           <Archive aria-hidden />
-        </NavLink>
-        <NavLink
-          to={`${base}/trash`}
-          aria-label={t("nav.trash")}
-          className={(s) => cn(linkClass(s), "size-7 justify-center px-0")}
-        >
+        </FooterLink>
+        <FooterLink to={`${base}/trash`} label={t("nav.trash")}>
           <Trash2 aria-hidden />
-        </NavLink>
-        <NavLink
-          to={`${base}/settings/general`}
-          aria-label={t("nav.settings")}
-          className={(s) => cn(linkClass(s), "size-7 justify-center px-0")}
-        >
+        </FooterLink>
+        <FooterLink to={`${base}/settings/general`} label={t("nav.settings")}>
           <Settings aria-hidden />
-        </NavLink>
+        </FooterLink>
         <ThemeToggle />
       </div>
     </nav>
+  );
+}
+
+/** An icon-only footer link. `title` names it for pointer users, like the sprint board links. */
+function FooterLink({
+  to,
+  label,
+  children,
+}: {
+  to: string;
+  label: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <NavLink
+      to={to}
+      aria-label={label}
+      title={label}
+      className={(s) => cn(linkClass(s), "size-7 justify-center px-0")}
+    >
+      {children}
+    </NavLink>
   );
 }
 
