@@ -307,6 +307,17 @@ export function validateIssue(
   const kind = stageKindOf(tx, issue.team_id, issue.stage_id);
   if (kind === undefined) throw new MutationError(400, "stage belongs to another team");
 
+  checkIssueReferences(tx, issue);
+  checkIssueSprint(tx, issue, kind, retainedSprint);
+  checkIssueDependencies(tx, issue, kind);
+  checkIssueParent(tx, issue);
+}
+
+function isFinished(kind: StageKind | undefined): boolean {
+  return kind === "done" || kind === "cancelled";
+}
+
+function checkIssueReferences(tx: Tx, issue: DeepReadonly<SyncIssue>): void {
   if (issue.assignee !== null && tx.get("members", issue.assignee) === undefined) {
     throw new MutationError(403, "permission denied");
   }
@@ -329,24 +340,27 @@ export function validateIssue(
       throw new MutationError(400, "milestone belongs to another project");
     }
   }
+}
 
-  if (issue.sprint_id !== null) {
-    const sprint = tx.get("sprints", issue.sprint_id);
-    if (sprint === undefined) throw new MutationError(404, "not found");
-    const retained = retainedSprint !== null && retainedSprint === issue.sprint_id;
-    if (
-      sprint.team_id !== issue.team_id ||
-      ((sprint.state === "completed" || sprint.state === "archived") &&
-        !(retained && (kind === "done" || kind === "cancelled")))
-    ) {
-      throw new MutationError(400, "sprint is unavailable for this team");
-    }
+function checkIssueSprint(
+  tx: Tx,
+  issue: DeepReadonly<SyncIssue>,
+  kind: StageKind,
+  retainedSprint: string | null,
+): void {
+  if (issue.sprint_id === null) return;
+  const sprint = tx.get("sprints", issue.sprint_id);
+  if (sprint === undefined) throw new MutationError(404, "not found");
+  const finished = sprint.state === "completed" || sprint.state === "archived";
+  const mayStay = retainedSprint === issue.sprint_id && isFinished(kind);
+  if (sprint.team_id !== issue.team_id || (finished && !mayStay)) {
+    throw new MutationError(400, "sprint is unavailable for this team");
   }
+}
 
-  const seen = new Set<string>();
-  for (const dep of issue.dependencies) {
-    if (seen.has(dep)) continue;
-    seen.add(dep);
+function checkIssueDependencies(tx: Tx, issue: DeepReadonly<SyncIssue>, kind: StageKind): void {
+  const blocking = issue.deleted_at === null && (kind === "active" || kind === "done");
+  for (const dep of new Set(issue.dependencies)) {
     const other = tx.get("issues", dep);
     if (other === undefined) throw new MutationError(404, "not found");
     // Usually shadowed by the ownership check, which runs before validation
@@ -357,23 +371,24 @@ export function validateIssue(
     if (dep === issue.id || other.deleted_at !== null) {
       throw new MutationError(400, "invalid dependency");
     }
-    if (issue.deleted_at === null && (kind === "active" || kind === "done")) {
+    if (blocking) {
       const depKind = stageKindOf(tx, other.team_id, other.stage_id);
-      if (depKind !== undefined && depKind !== "done" && depKind !== "cancelled") {
+      if (depKind !== undefined && !isFinished(depKind)) {
         throw new MutationError(409, "issue has unfinished dependencies");
       }
     }
     if (reachable(tx, dep, issue.id)) throw new MutationError(400, "dependency cycle");
   }
+}
 
-  if (issue.parent_id !== null) {
-    const parent = tx.get("issues", issue.parent_id);
-    if (parent === undefined || parent.deleted_at !== null || parent.openproject != null) {
-      throw new MutationError(404, "not found");
-    }
-    if (issue.parent_id === issue.id || hasAncestor(tx, issue.parent_id, issue.id)) {
-      throw new MutationError(400, "parent cycle");
-    }
+function checkIssueParent(tx: Tx, issue: DeepReadonly<SyncIssue>): void {
+  if (issue.parent_id === null) return;
+  const parent = tx.get("issues", issue.parent_id);
+  if (parent === undefined || parent.deleted_at !== null || parent.openproject != null) {
+    throw new MutationError(404, "not found");
+  }
+  if (issue.parent_id === issue.id || hasAncestor(tx, issue.parent_id, issue.id)) {
+    throw new MutationError(400, "parent cycle");
   }
 }
 
@@ -430,15 +445,7 @@ export function checkImportedForSave(issue: DeepReadonly<SyncIssue>): void {
 export function checkWorkflow(tx: Tx, affected: readonly string[]): void {
   if (affected.length === 0) return;
   const affectedSet = new Set(affected);
-  const candidates = new Set<string>();
-  for (const id of affectedSet) {
-    candidates.add(id);
-    for (const issue of tx.byIndex("issues", "stage_id", id)) candidates.add(issue.id);
-    for (const dependent of tx.byIndex("issues", "dependency", id)) {
-      candidates.add(dependent.id);
-    }
-  }
-  for (const id of candidates) {
+  for (const id of workflowCandidates(tx, affectedSet)) {
     const issue = tx.get("issues", id);
     if (issue === undefined || issue.deleted_at !== null) continue;
     const kind = stageKindOf(tx, issue.team_id, issue.stage_id);
@@ -446,25 +453,57 @@ export function checkWorkflow(tx: Tx, affected: readonly string[]): void {
     // The server only checks issues the command touched directly, through
     // their stage, or through a dependency; untouched issues already
     // satisfied the invariant.
-    if (
-      !affectedSet.has(id) &&
-      !affectedSet.has(issue.stage_id) &&
-      !issue.dependencies.some((dep) => affectedSet.has(dep))
-    ) {
-      continue;
-    }
-    for (const dep of new Set(issue.dependencies)) {
-      const other = tx.get("issues", dep);
-      if (other === undefined) continue;
-      if (other.deleted_at !== null) {
-        throw new MutationError(409, "workflow would leave an issue with unfinished dependencies");
-      }
-      const depKind = stageKindOf(tx, other.team_id, other.stage_id);
-      if (depKind !== undefined && depKind !== "done" && depKind !== "cancelled") {
-        throw new MutationError(409, "workflow would leave an issue with unfinished dependencies");
-      }
+    if (isTouched(issue, affectedSet)) checkDependenciesFinished(tx, issue);
+  }
+}
+
+function workflowCandidates(tx: Tx, affected: ReadonlySet<string>): Set<string> {
+  const candidates = new Set<string>();
+  for (const id of affected) {
+    candidates.add(id);
+    for (const issue of tx.byIndex("issues", "stage_id", id)) candidates.add(issue.id);
+    for (const dependent of tx.byIndex("issues", "dependency", id)) {
+      candidates.add(dependent.id);
     }
   }
+  return candidates;
+}
+
+function isTouched(issue: DeepReadonly<SyncIssue>, affected: ReadonlySet<string>): boolean {
+  return (
+    affected.has(issue.id) ||
+    affected.has(issue.stage_id) ||
+    issue.dependencies.some((dep) => affected.has(dep))
+  );
+}
+
+function checkDependenciesFinished(tx: Tx, issue: DeepReadonly<SyncIssue>): void {
+  for (const dep of new Set(issue.dependencies)) {
+    const other = tx.get("issues", dep);
+    if (other === undefined) continue;
+    const depKind = stageKindOf(tx, other.team_id, other.stage_id);
+    if (other.deleted_at !== null || (depKind !== undefined && !isFinished(depKind))) {
+      throw new MutationError(409, "workflow would leave an issue with unfinished dependencies");
+    }
+  }
+}
+
+/** A client-chosen id must be present and not nil (`domain::client_id`). */
+export function requireClientId(id: string | null | undefined): string {
+  if (id === null || id === undefined) throw new MutationError(400, "id is required");
+  if (id === NIL_UUID) throw new MutationError(400, "id must not be nil");
+  return id;
+}
+
+/** `requireClientId` plus the collision check at the server's reservation point. */
+export function reserveClientId(
+  tx: Tx,
+  id: string | null | undefined,
+  ctx: MutatorContext,
+): string {
+  const checked = requireClientId(id);
+  checkCreateId(tx, checked, ctx);
+  return checked;
 }
 
 /** Reject visible collisions at the server's id reservation point. Replay remains an upsert. */

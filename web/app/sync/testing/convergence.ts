@@ -116,6 +116,98 @@ async function flush(turns = 24): Promise<void> {
  * With `tabs`, every client is a tab of one browser: one session, one database, one lock and
  * one channel. The leader tab may close at random.
  */
+/**
+ * Every pushed mutation keeps its first payload, new ids only grow, a push
+ * never skips older pending work, and online-only commands never go through push.
+ */
+function checkPushOrder(
+  client: Client,
+  mutations: readonly { id: number; name: string }[],
+  previous: number,
+  payloads: Map<string, string>,
+  newestObserved: Map<string, number>,
+): void {
+  let last = previous;
+  for (const mutation of mutations) {
+    const key = `${client.clientId}:${mutation.id}`;
+    const payload = JSON.stringify(mutation);
+    const before = payloads.get(key);
+    if (before === undefined) {
+      check(
+        mutation.id > (newestObserved.get(client.clientId) ?? 0),
+        "new mutation arrived out of order",
+      );
+      newestObserved.set(client.clientId, mutation.id);
+    } else {
+      equal(payload, before, `changed retry payload ${key}`);
+    }
+    payloads.set(key, payload);
+    if (mutation.id > last) {
+      const skipped = client.engine.store
+        .pending()
+        .some(
+          (pending) =>
+            pending.id < mutation.id &&
+            pending.id > previous &&
+            !mutations.some((item) => item.id === pending.id),
+        );
+      check(!skipped, `push ${mutation.id} overtook older pending work`);
+      last = mutation.id;
+    }
+    check(
+      !["set_role", "remove_member"].includes(mutation.name),
+      "online command sent through push",
+    );
+  }
+}
+
+/** A response with the auth failure status whose body errors while reading. */
+function unreadableBody(status: number): Response {
+  return new Response(
+    new ReadableStream({
+      start(controller) {
+        controller.error(new Error("failed error body"));
+      },
+    }),
+    { status },
+  );
+}
+
+/** Corrupts a successful response so the client must reject it as a protocol error. */
+async function malformed(
+  route: string | undefined,
+  response: Response,
+  issue: string,
+  issueRecord: () => unknown,
+): Promise<Response> {
+  if (route === "bootstrap") {
+    const text = await response.text();
+    const lines = text.trimEnd().split("\n");
+    const index = lines.findIndex((line) => line.includes('"entity":"issues"'));
+    check(index > 0, "missing bootstrap issue for corruption");
+    const row: unknown = JSON.parse(lines[index]);
+    check(object(row) && object(row.record), "invalid bootstrap fixture");
+    row.record.updated_at = "bad timestamp";
+    lines[index] = JSON.stringify(row);
+    return new Response(lines.join("\n") + "\n", { headers: response.headers });
+  }
+  if (route === "push")
+    return Response.json({
+      last_mutation_id: 999999,
+      results: [{ id: 999999, status: "applied" }],
+    });
+  if (route === "scope")
+    return Response.json({ records: [{ id: issue, created_at: "bad timestamp" }] });
+  const page: unknown = await response.json();
+  check(object(page) && Array.isArray(page.changes), "invalid pull fixture");
+  page.changes.push({
+    entity: "issues",
+    id: issue,
+    record: { ...(issueRecord() as object), updated_at: "bad timestamp" },
+  });
+  return Response.json(page);
+}
+
 export async function runConvergence(
   seed: number,
   steps = 90,
@@ -162,39 +254,7 @@ export async function runConvergence(
             (entry) => entry.clientId === clientId && entry.engine.status.get().role === "leader",
           ) ?? clients.find((entry) => entry.clientId === clientId);
         check(client !== undefined, "unrecognized server push client");
-        let last = previous;
-        for (const mutation of mutations) {
-          const key = `${clientId}:${mutation.id}`;
-          const payload = JSON.stringify(mutation);
-          const before = payloads.get(key);
-          if (before === undefined) {
-            check(
-              mutation.id > (newestObserved.get(clientId) ?? 0),
-              "new mutation arrived out of order",
-            );
-            newestObserved.set(clientId, mutation.id);
-          }
-          if (before !== undefined) equal(payload, before, `changed retry payload ${key}`);
-          payloads.set(key, payload);
-          if (mutation.id > last) {
-            check(
-              !client.engine.store
-                .pending()
-                .some(
-                  (pending) =>
-                    pending.id < mutation.id &&
-                    pending.id > previous &&
-                    !mutations.some((item) => item.id === pending.id),
-                ),
-              `push ${mutation.id} overtook older pending work`,
-            );
-            last = mutation.id;
-          }
-          check(
-            !["set_role", "remove_member"].includes(mutation.name),
-            "online command sent through push",
-          );
-        }
+        checkPushOrder(client, mutations, previous, payloads, newestObserved);
         serverPushes.push({ client: client.index, mutations, previous });
       } catch (error) {
         failure ??= error;
@@ -313,45 +373,14 @@ export async function runConvergence(
           if (csrf) client.csrf = csrf;
           if (route === "push" && response.ok) client.retryPayload = null;
           if (fault?.kind === "failed_auth_body" && response.status === fault.status) {
-            response = new Response(
-              new ReadableStream({
-                start(controller) {
-                  controller.error(new Error("failed error body"));
-                },
-              }),
-              { status: fault.status },
-            );
+            response = unreadableBody(fault.status);
             coverage.add(`auth-${route}-${fault.status}`);
           }
           if (fault?.kind === "malformed" && response.ok) {
             coverage.add(`malformed-${route}`);
-            if (route === "bootstrap") {
-              const text = await response.text();
-              const lines = text.trimEnd().split("\n");
-              const index = lines.findIndex((line) => line.includes('"entity":"issues"'));
-              check(index > 0, "missing bootstrap issue for corruption");
-              const row: unknown = JSON.parse(lines[index]);
-              check(object(row) && object(row.record), "invalid bootstrap fixture");
-              row.record.updated_at = "bad timestamp";
-              lines[index] = JSON.stringify(row);
-              response = new Response(lines.join("\n") + "\n", { headers: response.headers });
-            } else if (route === "push") {
-              response = Response.json({
-                last_mutation_id: 999999,
-                results: [{ id: 999999, status: "applied" }],
-              });
-            } else if (route === "scope") {
-              response = Response.json({ records: [{ id: issue, created_at: "bad timestamp" }] });
-            } else {
-              const page: unknown = await response.json();
-              check(object(page) && Array.isArray(page.changes), "invalid pull fixture");
-              page.changes.push({
-                entity: "issues",
-                id: issue,
-                record: { ...server.record("issues", issue), updated_at: "bad timestamp" },
-              });
-              response = Response.json(page);
-            }
+            response = await malformed(route, response, issue, () =>
+              server.record("issues", issue),
+            );
           }
           return response;
         } finally {

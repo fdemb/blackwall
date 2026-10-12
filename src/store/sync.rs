@@ -88,6 +88,25 @@ async fn abort(
     }
 }
 
+/// Turns a fatal push failure into the request error. A transient failure
+/// is logged and returns Ok, so the caller truncates the batch instead.
+fn fatal(failure: PushFailure, workspace_id: Uuid, client_id: Uuid) -> Result<()> {
+    match failure {
+        PushFailure::Forbidden => Err(Error::Forbidden),
+        PushFailure::ClientTaken => Err(Error::BadRequest(
+            "client_id belongs to another user or workspace".into(),
+        )),
+        PushFailure::Transient {
+            error,
+            phase,
+            mutation_id,
+        } => {
+            log_transient(workspace_id, client_id, mutation_id, phase, &error);
+            Ok(())
+        }
+    }
+}
+
 /// One log line per truncated batch. Ids only: never mutation args,
 /// tokens or session ids.
 fn log_transient(
@@ -161,6 +180,183 @@ fn rejection(error: &Error) -> MutationError {
     MutationError { status, message }
 }
 
+/// What a pushed mutation did inside its transaction.
+enum PushStep {
+    /// The client row belongs to another user or workspace.
+    ClientTaken,
+    /// Already processed: the stored high-water mark and the remembered result.
+    Seen(i64, MutationResult),
+    /// Applied or rejected now; the transaction should commit.
+    Applied(MutationResult),
+}
+
+/// Tags a failure with the push phase it happened in, for the transient log line.
+trait Phase<T> {
+    fn phase(self, phase: &'static str) -> std::result::Result<T, (Error, &'static str)>;
+}
+
+impl<T, E: Into<Error>> Phase<T> for std::result::Result<T, E> {
+    fn phase(self, phase: &'static str) -> std::result::Result<T, (Error, &'static str)> {
+        self.map_err(|error| (error.into(), phase))
+    }
+}
+
+/// Claims the client row, then replays a remembered result or runs the
+/// command in a savepoint and advances the client's high-water mark.
+async fn apply_mutation(
+    op: &mut Operation<'_>,
+    client_id: Uuid,
+    mutation: &SyncMutation,
+    built: Result<Command>,
+) -> std::result::Result<PushStep, (Error, &'static str)> {
+    sqlx::query(
+        "INSERT INTO sync_clients (client_id, workspace_id, user_id) VALUES ($1, $2, $3) \
+         ON CONFLICT (client_id) DO NOTHING",
+    )
+    .bind(client_id)
+    .bind(op.workspace_id)
+    .bind(op.actor)
+    .execute(&mut *op.tx)
+    .await
+    .phase("client row")?;
+
+    let row = sqlx::query(
+        "SELECT workspace_id, user_id, last_mutation_id FROM sync_clients \
+         WHERE client_id = $1 FOR UPDATE",
+    )
+    .bind(client_id)
+    .fetch_one(&mut *op.tx)
+    .await
+    .phase("client row")?;
+    let owner_ws: Uuid = row.try_get("workspace_id").phase("client row")?;
+    let owner: Uuid = row.try_get("user_id").phase("client row")?;
+    let stored: i64 = row.try_get("last_mutation_id").phase("client row")?;
+    if owner_ws != op.workspace_id || owner != op.actor {
+        return Ok(PushStep::ClientTaken);
+    }
+    if mutation.id <= stored {
+        let result = remembered_result(op, client_id, mutation.id).await?;
+        return Ok(PushStep::Seen(stored, result));
+    }
+
+    sqlx::query("SAVEPOINT sync_mutation")
+        .execute(&mut *op.tx)
+        .await
+        .phase("savepoint")?;
+    let result = match run_in_savepoint(op, built).await {
+        Ok(()) => MutationResult {
+            id: mutation.id,
+            status: MutationStatus::Applied,
+            error: None,
+        },
+        Err(error) if is_business(&error) => MutationResult {
+            id: mutation.id,
+            status: MutationStatus::Rejected,
+            error: Some(rejection(&error)),
+        },
+        Err(error) => return Err((error, "command")),
+    };
+    if let Some(error) = &result.error {
+        remember_rejection(op, client_id, mutation.id, error).await?;
+    }
+
+    sqlx::query(
+        "UPDATE sync_clients SET last_mutation_id = $1, updated_at = now() \
+         WHERE client_id = $2",
+    )
+    .bind(mutation.id)
+    .bind(client_id)
+    .execute(&mut *op.tx)
+    .await
+    .phase("advance")?;
+    Ok(PushStep::Applied(result))
+}
+
+/// A mutation at or below the high-water mark was a duplicate, or a
+/// rejection the server remembers.
+async fn remembered_result(
+    op: &mut Operation<'_>,
+    client_id: Uuid,
+    mutation_id: i64,
+) -> std::result::Result<MutationResult, (Error, &'static str)> {
+    let remembered = sqlx::query_as::<_, (i16, String)>(
+        "SELECT status, message FROM sync_rejections WHERE client_id = $1 AND mutation_id = $2",
+    )
+    .bind(client_id)
+    .bind(mutation_id)
+    .fetch_optional(&mut *op.tx)
+    .await
+    .phase("rejection lookup")?;
+    let error = remembered.map(|(status, message)| MutationError {
+        status: status as u16,
+        message,
+    });
+    Ok(MutationResult {
+        id: mutation_id,
+        status: if error.is_some() {
+            MutationStatus::Rejected
+        } else {
+            MutationStatus::Duplicate
+        },
+        error,
+    })
+}
+
+/// Runs the command, rolling back to the savepoint on a business rejection
+/// so the client row still advances.
+async fn run_in_savepoint(op: &mut Operation<'_>, built: Result<Command>) -> Result<()> {
+    let command = built?;
+    // Uploads need their bytes; the client must use the upload endpoint.
+    if matches!(
+        command,
+        Command::AddAttachment { .. } | Command::AttachCommentFile { .. }
+    ) {
+        return Err(Error::BadRequest(
+            "use the attachment upload endpoint".into(),
+        ));
+    }
+    match op.run_command(command, None).await {
+        Ok(_) => Ok(()),
+        Err(error) if is_business(&error) => {
+            sqlx::query("ROLLBACK TO SAVEPOINT sync_mutation")
+                .execute(&mut *op.tx)
+                .await?;
+            Err(error)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+/// Keeps the newest 1000 rejections per client for replay.
+async fn remember_rejection(
+    op: &mut Operation<'_>,
+    client_id: Uuid,
+    mutation_id: i64,
+    error: &MutationError,
+) -> std::result::Result<(), (Error, &'static str)> {
+    sqlx::query(
+        "INSERT INTO sync_rejections (client_id, mutation_id, status, message) \
+         VALUES ($1, $2, $3, $4)",
+    )
+    .bind(client_id)
+    .bind(mutation_id)
+    .bind(error.status as i16)
+    .bind(&error.message)
+    .execute(&mut *op.tx)
+    .await
+    .phase("remember rejection")?;
+    sqlx::query(
+        "DELETE FROM sync_rejections WHERE client_id = $1 AND mutation_id IN (\
+         SELECT mutation_id FROM sync_rejections WHERE client_id = $1 \
+         ORDER BY mutation_id DESC OFFSET 1000)",
+    )
+    .bind(client_id)
+    .execute(&mut *op.tx)
+    .await
+    .phase("prune rejections")?;
+    Ok(())
+}
+
 impl Store {
     pub async fn sync_push(
         &self,
@@ -182,105 +378,91 @@ impl Store {
             previous = mutation.id;
         }
 
+        let truncated = |last_mutation_id, results| PushOutcome {
+            response: PushResponse {
+                last_mutation_id,
+                results,
+            },
+            truncated: true,
+        };
         // Preflight failures carry no transaction, so they truncate the
         // batch with the high-water mark as known (0 here: nothing has
         // been read yet). Membership and ownership rejections stay 400/403.
-        let preflight = |error: Error| {
-            log_transient(workspace_id, client_id, None, "preflight", &error);
-            PushOutcome {
-                response: PushResponse {
-                    last_mutation_id: 0,
-                    results: Vec::new(),
-                },
-                truncated: true,
+        let last = match self.push_preflight(workspace_id, actor, client_id).await {
+            Ok(last) => last,
+            Err(failure) => {
+                fatal(failure, workspace_id, client_id)?;
+                return Ok(truncated(0, Vec::new()));
             }
         };
 
-        {
-            let mut conn = match self.pool.acquire().await {
-                Ok(conn) => conn,
-                Err(error) => return Ok(preflight(error.into())),
-            };
-            if let Err(error) = super::reads::authorize(&mut conn, workspace_id, actor).await {
-                if matches!(error, Error::Forbidden) {
-                    return Err(error);
-                }
-                return Ok(preflight(error));
-            }
-        }
-
-        if let Some(row) =
-            match sqlx::query("SELECT workspace_id, user_id FROM sync_clients WHERE client_id = $1")
-                .bind(client_id)
-                .fetch_optional(&self.pool)
-                .await
-            {
-                Ok(row) => row,
-                Err(error) => return Ok(preflight(error.into())),
-            }
-        {
-            let owner_ws: Uuid = match row.try_get("workspace_id") {
-                Ok(value) => value,
-                Err(error) => return Ok(preflight(error.into())),
-            };
-            let owner: Uuid = match row.try_get("user_id") {
-                Ok(value) => value,
-                Err(error) => return Ok(preflight(error.into())),
-            };
-            if owner_ws != workspace_id || owner != actor {
-                return Err(Error::BadRequest(
-                    "client_id belongs to another user or workspace".into(),
-                ));
-            }
-        }
-
-        let last: i64 = match sqlx::query_scalar(
-            "SELECT last_mutation_id FROM sync_clients WHERE client_id = $1",
-        )
-        .bind(client_id)
-        .fetch_optional(&self.pool)
-        .await
-        {
-            Ok(row) => row.unwrap_or(0),
-            Err(error) => return Ok(preflight(error.into())),
-        };
-
-        let mut outcome = PushOutcome {
-            response: PushResponse {
-                last_mutation_id: last,
-                results: Vec::with_capacity(mutations.len()),
-            },
-            truncated: false,
-        };
-
+        let mut last_mutation_id = last;
+        let mut results = Vec::with_capacity(mutations.len());
         for mutation in &mutations {
             match self
                 .push_mutation(workspace_id, actor, client_id, mutation)
                 .await
             {
                 Ok((current, result)) => {
-                    outcome.response.last_mutation_id = current;
-                    outcome.response.results.push(result);
+                    last_mutation_id = current;
+                    results.push(result);
                 }
-                Err(PushFailure::Forbidden) => return Err(Error::Forbidden),
-                Err(PushFailure::ClientTaken) => {
-                    return Err(Error::BadRequest(
-                        "client_id belongs to another user or workspace".into(),
-                    ));
-                }
-                Err(PushFailure::Transient {
-                    error,
-                    phase,
-                    mutation_id,
-                }) => {
-                    log_transient(workspace_id, client_id, mutation_id, phase, &error);
-                    outcome.truncated = true;
-                    break;
+                Err(failure) => {
+                    fatal(failure, workspace_id, client_id)?;
+                    return Ok(truncated(last_mutation_id, results));
                 }
             }
         }
 
-        Ok(outcome)
+        Ok(PushOutcome {
+            response: PushResponse {
+                last_mutation_id,
+                results,
+            },
+            truncated: false,
+        })
+    }
+
+    /// Checks membership and client ownership outside any transaction and
+    /// reads the client's high-water mark, 0 for a new client.
+    async fn push_preflight(
+        &self,
+        workspace_id: Uuid,
+        actor: Uuid,
+        client_id: Uuid,
+    ) -> std::result::Result<i64, PushFailure> {
+        let transient = |error: Error| PushFailure::Transient {
+            error,
+            phase: "preflight",
+            mutation_id: None,
+        };
+        {
+            let mut conn = self.pool.acquire().await.map_err(|e| transient(e.into()))?;
+            match super::reads::authorize(&mut conn, workspace_id, actor).await {
+                Ok(_) => {}
+                Err(Error::Forbidden) => return Err(PushFailure::Forbidden),
+                Err(error) => return Err(transient(error)),
+            }
+        }
+
+        let row = sqlx::query(
+            "SELECT workspace_id, user_id, last_mutation_id FROM sync_clients WHERE client_id = $1",
+        )
+        .bind(client_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| transient(e.into()))?;
+        let Some(row) = row else {
+            return Ok(0);
+        };
+        let read = |column: &str| -> std::result::Result<Uuid, PushFailure> {
+            row.try_get(column).map_err(|e| transient(e.into()))
+        };
+        if read("workspace_id")? != workspace_id || read("user_id")? != actor {
+            return Err(PushFailure::ClientTaken);
+        }
+        row.try_get("last_mutation_id")
+            .map_err(|e| transient(e.into()))
     }
 
     async fn push_mutation(
@@ -312,188 +494,27 @@ impl Store {
             }
         };
 
-        if let Err(error) = sqlx::query(
-            "INSERT INTO sync_clients (client_id, workspace_id, user_id) VALUES ($1, $2, $3) \
-             ON CONFLICT (client_id) DO NOTHING",
-        )
-        .bind(client_id)
-        .bind(workspace_id)
-        .bind(actor)
-        .execute(&mut *op.tx)
-        .await
-        {
-            return Err(abort(op, error.into(), "client row", mutation.id).await);
-        }
-
-        let row = match sqlx::query(
-            "SELECT workspace_id, user_id, last_mutation_id FROM sync_clients \
-             WHERE client_id = $1 FOR UPDATE",
-        )
-        .bind(client_id)
-        .fetch_one(&mut *op.tx)
-        .await
-        {
-            Ok(row) => row,
-            Err(error) => {
-                return Err(abort(op, error.into(), "client row", mutation.id).await);
-            }
+        let step = match apply_mutation(&mut op, client_id, mutation, built).await {
+            Ok(step) => step,
+            Err((error, phase)) => return Err(abort(op, error, phase, mutation.id).await),
         };
-
-        let owner_ws: Uuid = match row.try_get("workspace_id") {
-            Ok(value) => value,
-            Err(error) => {
-                return Err(abort(op, error.into(), "client row", mutation.id).await);
+        let (finish, phase, outcome) = match step {
+            PushStep::ClientTaken => {
+                let _ = op.tx.rollback().await;
+                return Err(PushFailure::ClientTaken);
             }
+            PushStep::Seen(stored, result) => {
+                (op.tx.rollback().await, "client row", (stored, result))
+            }
+            PushStep::Applied(result) => (op.tx.commit().await, "commit", (mutation.id, result)),
         };
-        let owner: Uuid = match row.try_get("user_id") {
-            Ok(value) => value,
-            Err(error) => {
-                return Err(abort(op, error.into(), "client row", mutation.id).await);
-            }
-        };
-        let stored: i64 = match row.try_get("last_mutation_id") {
-            Ok(value) => value,
-            Err(error) => {
-                return Err(abort(op, error.into(), "client row", mutation.id).await);
-            }
-        };
-        if owner_ws != workspace_id || owner != actor {
-            let tx = op.tx;
-            let _ = tx.rollback().await;
-            return Err(PushFailure::ClientTaken);
-        }
-
-        if mutation.id <= stored {
-            let remembered = match sqlx::query_as::<_, (i16, String)>(
-                "SELECT status, message FROM sync_rejections WHERE client_id = $1 AND mutation_id = $2",
-            )
-            .bind(client_id)
-            .bind(mutation.id)
-            .fetch_optional(&mut *op.tx)
-            .await
-            {
-                Ok(row) => row,
-                Err(error) => {
-                    return Err(abort(op, error.into(), "rejection lookup", mutation.id).await);
-                }
-            };
-            let error = remembered.map(|(status, message)| MutationError {
-                status: status as u16,
-                message,
-            });
-            let tx = op.tx;
-            return match tx.rollback().await {
-                Ok(()) => Ok((
-                    stored,
-                    MutationResult {
-                        id: mutation.id,
-                        status: if error.is_some() {
-                            MutationStatus::Rejected
-                        } else {
-                            MutationStatus::Duplicate
-                        },
-                        error,
-                    },
-                )),
-                Err(error) => Err(PushFailure::Transient {
-                    error: error.into(),
-                    phase: "client row",
-                    mutation_id: Some(mutation.id),
-                }),
-            };
-        }
-
-        if let Err(error) = sqlx::query("SAVEPOINT sync_mutation")
-            .execute(&mut *op.tx)
-            .await
-        {
-            return Err(abort(op, error.into(), "savepoint", mutation.id).await);
-        }
-
-        let run: Result<()> = async {
-            let command = built?;
-            // Uploads need their bytes; the client must use the upload endpoint.
-            if matches!(
-                command,
-                Command::AddAttachment { .. } | Command::AttachCommentFile { .. }
-            ) {
-                return Err(Error::BadRequest(
-                    "use the attachment upload endpoint".into(),
-                ));
-            }
-            match op.run_command(command, None).await {
-                Ok(_) => Ok(()),
-                Err(error) if is_business(&error) => {
-                    sqlx::query("ROLLBACK TO SAVEPOINT sync_mutation")
-                        .execute(&mut *op.tx)
-                        .await?;
-                    Err(error)
-                }
-                Err(error) => Err(error),
-            }
-        }
-        .await;
-
-        let result = match run {
-            Ok(()) => MutationResult {
-                id: mutation.id,
-                status: MutationStatus::Applied,
-                error: None,
-            },
-            Err(error) if is_business(&error) => MutationResult {
-                id: mutation.id,
-                status: MutationStatus::Rejected,
-                error: Some(rejection(&error)),
-            },
-            Err(error) => return Err(abort(op, error, "command", mutation.id).await),
-        };
-
-        if let Some(error) = &result.error {
-            if let Err(error) = sqlx::query(
-                "INSERT INTO sync_rejections (client_id, mutation_id, status, message) \
-                 VALUES ($1, $2, $3, $4)",
-            )
-            .bind(client_id)
-            .bind(mutation.id)
-            .bind(error.status as i16)
-            .bind(&error.message)
-            .execute(&mut *op.tx)
-            .await
-            {
-                return Err(abort(op, error.into(), "remember rejection", mutation.id).await);
-            }
-            if let Err(error) = sqlx::query(
-                "DELETE FROM sync_rejections WHERE client_id = $1 AND mutation_id IN (\
-                 SELECT mutation_id FROM sync_rejections WHERE client_id = $1 \
-                 ORDER BY mutation_id DESC OFFSET 1000)",
-            )
-            .bind(client_id)
-            .execute(&mut *op.tx)
-            .await
-            {
-                return Err(abort(op, error.into(), "prune rejections", mutation.id).await);
-            }
-        }
-
-        match sqlx::query(
-            "UPDATE sync_clients SET last_mutation_id = $1, updated_at = now() \
-             WHERE client_id = $2",
-        )
-        .bind(mutation.id)
-        .bind(client_id)
-        .execute(&mut *op.tx)
-        .await
-        {
-            Ok(_) => match op.tx.commit().await {
-                Ok(()) => Ok((mutation.id, result)),
-                Err(error) => Err(PushFailure::Transient {
-                    error: error.into(),
-                    phase: "commit",
-                    mutation_id: Some(mutation.id),
-                }),
-            },
-            Err(error) => Err(abort(op, error.into(), "advance", mutation.id).await),
-        }
+        finish
+            .map(|()| outcome)
+            .map_err(|error| PushFailure::Transient {
+                error: error.into(),
+                phase,
+                mutation_id: Some(mutation.id),
+            })
     }
 
     /// Deletes sync clients idle longer than the session lifetime. A pruned
@@ -602,6 +623,121 @@ fn parse_cursor(cursor: &str, snapshot_xmax: i64) -> Result<Snapshot> {
     Ok(Snapshot { xmin, xmax, xip })
 }
 
+/// The pull's own snapshot, as cursor text and parsed, plus the change
+/// horizon. Rows committed after it are invisible to the pull's queries, so
+/// the window is exactly "visible here but not in the request cursor". A
+/// transaction open elsewhere only sits in xip lists; it never holds the
+/// cursor back.
+async fn pull_snapshot(tx: &mut PgConnection) -> Result<(String, Snapshot, i64)> {
+    let (text, xmin, xmax, mut xip, horizon): (String, i64, i64, Vec<i64>, i64) = sqlx::query_as(
+        "SELECT pg_current_snapshot()::text, \
+              pg_snapshot_xmin(pg_current_snapshot())::text::bigint, \
+              pg_snapshot_xmax(pg_current_snapshot())::text::bigint, \
+              COALESCE((SELECT array_agg(x::text::bigint) \
+                        FROM pg_snapshot_xip(pg_current_snapshot()) AS t(x)), '{}'::bigint[]), \
+              (SELECT txid FROM change_horizon)",
+    )
+    .fetch_one(&mut *tx)
+    .await?;
+    xip.sort_unstable();
+    xip.dedup();
+    Ok((text, Snapshot { xmin, xmax, xip }, horizon))
+}
+
+/// Distinct changed records from whole transactions, and the first
+/// transaction left for the next page, if any.
+#[derive(Default)]
+struct PullPage {
+    pairs: std::collections::BTreeSet<(String, Uuid)>,
+    /// Records of the transaction being read; joins `pairs` once it fits.
+    group: std::collections::BTreeSet<(String, Uuid)>,
+    group_txid: Option<i64>,
+    included_txids: usize,
+    scanned: usize,
+    excluded: Option<i64>,
+}
+
+impl PullPage {
+    /// Adds one change row. Returns false once its transaction has to wait
+    /// for the next page.
+    fn add(&mut self, txid: i64, entity: String, entity_id: Uuid) -> bool {
+        if self.group_txid != Some(txid) {
+            if self.group_txid.is_some() {
+                self.pairs.append(&mut self.group);
+                self.included_txids += 1;
+            }
+            if self.scanned > PULL_ROWS {
+                self.excluded = Some(txid);
+                return false;
+            }
+            self.group_txid = Some(txid);
+        }
+        self.scanned += 1;
+        if entity == "roles" {
+            return true;
+        }
+        let pair = (entity, entity_id);
+        if !self.pairs.contains(&pair) {
+            self.group.insert(pair);
+        }
+        // Exclude the entire transaction as soon as it cannot fit.
+        // Its remaining rows need not be read or retained.
+        if self.pairs.len() + self.group.len() > PULL_PAIRS {
+            self.excluded = Some(txid);
+            return false;
+        }
+        true
+    }
+}
+
+/// Reads the window's change rows in (txid, id) order until the page is full.
+async fn scan_window(
+    tx: &mut PgConnection,
+    workspace_id: Uuid,
+    actor: Uuid,
+    requested: &Snapshot,
+) -> Result<PullPage> {
+    // Every xip txid is below xmax, so scanning xip first preserves
+    // (txid, id) order without merging or sorting the two index ranges.
+    let mut scanning_xip = !requested.xip.is_empty();
+    let mut last = (-1i64, -1i64);
+    let mut page = PullPage::default();
+    loop {
+        let query = if scanning_xip {
+            sqlx::query_as(PULL_BATCH_XIP_SQL)
+                .bind(workspace_id)
+                .bind(&requested.xip)
+        } else {
+            sqlx::query_as(PULL_BATCH_RANGE_SQL)
+                .bind(workspace_id)
+                .bind(requested.xmax)
+        };
+        let rows: Vec<(i64, i64, String, Uuid)> = query
+            .bind(last.0)
+            .bind(last.1)
+            .bind(actor)
+            .bind(PULL_BATCH)
+            .fetch_all(&mut *tx)
+            .await?;
+        let batch_full = rows.len() as i64 == PULL_BATCH;
+        for (txid, id, entity, entity_id) in rows {
+            last = (txid, id);
+            if !page.add(txid, entity, entity_id) {
+                return Ok(page);
+            }
+        }
+        if !batch_full {
+            if scanning_xip {
+                scanning_xip = false;
+                continue;
+            }
+            let mut group = std::mem::take(&mut page.group);
+            page.pairs.append(&mut group);
+            return Ok(page);
+        }
+    }
+}
+
 /// The cursor after a page that stopped before txid `T`: everything below `T`
 /// visible in the pull's snapshot joins what the request cursor promised.
 /// `xmax'` moves at least to `T`, and in-flight txids stay listed, so every
@@ -642,6 +778,20 @@ pub struct PullResponse {
     pub changes: Vec<super::changes::Change>,
 }
 
+impl PullResponse {
+    /// An empty page that hands the client a fresh cursor. With `reset`,
+    /// the client must bootstrap again from it.
+    fn restart(cursor: String, reset: bool) -> Self {
+        Self {
+            cursor,
+            more: false,
+            reset,
+            last_mutation_id: None,
+            changes: Vec::new(),
+        }
+    }
+}
+
 impl Store {
     /// Changed records since `cursor` from one `REPEATABLE READ READ ONLY`
     /// snapshot, so the cursor, the changed rows, the rendered records and
@@ -656,58 +806,16 @@ impl Store {
         cursor: Option<&str>,
     ) -> Result<PullResponse> {
         let (mut tx, last_mutation_id) = self.sync_read(workspace_id, actor, client_id).await?;
-
-        // The pull's own snapshot. Rows committed after it are invisible to
-        // the queries below, so the window is exactly "visible here but not
-        // in the request cursor". A transaction open elsewhere only sits in
-        // xip lists; it never holds the cursor back.
-        let (snap_text, snapshot_xmin, snapshot_xmax, snapshot_xip, horizon): (
-            String,
-            i64,
-            i64,
-            Vec<i64>,
-            i64,
-        ) = sqlx::query_as(
-            "SELECT pg_current_snapshot()::text, \
-              pg_snapshot_xmin(pg_current_snapshot())::text::bigint, \
-              pg_snapshot_xmax(pg_current_snapshot())::text::bigint, \
-              COALESCE((SELECT array_agg(x::text::bigint) \
-                        FROM pg_snapshot_xip(pg_current_snapshot()) AS t(x)), '{}'::bigint[]), \
-              (SELECT txid FROM change_horizon)",
-        )
-        .fetch_one(&mut *tx)
-        .await?;
-        let mut snapshot_xip = snapshot_xip;
-        snapshot_xip.sort_unstable();
-        snapshot_xip.dedup();
-        let snapshot = Snapshot {
-            xmin: snapshot_xmin,
-            xmax: snapshot_xmax,
-            xip: snapshot_xip,
-        };
+        let (snap_text, snapshot, horizon) = pull_snapshot(&mut tx).await?;
 
         let Some(cursor) = cursor else {
-            let response = PullResponse {
-                cursor: snap_text,
-                more: false,
-                reset: false,
-                last_mutation_id: None,
-                changes: Vec::new(),
-            };
             tx.commit().await?;
-            return Ok(response);
+            return Ok(PullResponse::restart(snap_text, false));
         };
         let requested = parse_cursor(cursor, snapshot.xmax)?;
         if requested.xmin < horizon {
-            let response = PullResponse {
-                cursor: snap_text,
-                more: false,
-                reset: true,
-                last_mutation_id: None,
-                changes: Vec::new(),
-            };
             tx.commit().await?;
-            return Ok(response);
+            return Ok(PullResponse::restart(snap_text, true));
         }
 
         // Check the full window, even when a role change sits beyond this page.
@@ -720,93 +828,17 @@ impl Store {
             .await?;
         if role_changed {
             tx.commit().await?;
-            return Ok(PullResponse {
-                cursor: snap_text,
-                more: false,
-                reset: true,
-                last_mutation_id: None,
-                changes: Vec::new(),
-            });
+            return Ok(PullResponse::restart(snap_text, true));
         }
 
-        // Every xip txid is below xmax, so scanning xip first preserves
-        // (txid, id) order without merging or sorting the two index ranges.
-        let mut scanning_xip = !requested.xip.is_empty();
-        let mut last = (-1i64, -1i64);
-        let mut pairs = std::collections::BTreeSet::new();
-        let mut group = std::collections::BTreeSet::new();
-        let mut group_txid = None;
-        let mut included_txids = 0;
-        let mut scanned = 0;
-        let mut excluded = None;
-
-        'scan: loop {
-            let query = if scanning_xip {
-                sqlx::query_as(PULL_BATCH_XIP_SQL)
-                    .bind(workspace_id)
-                    .bind(&requested.xip)
-            } else {
-                sqlx::query_as(PULL_BATCH_RANGE_SQL)
-                    .bind(workspace_id)
-                    .bind(requested.xmax)
-            };
-            let rows: Vec<(i64, i64, String, Uuid)> = query
-                .bind(last.0)
-                .bind(last.1)
-                .bind(actor)
-                .bind(PULL_BATCH)
-                .fetch_all(&mut *tx)
-                .await?;
-            let batch_full = rows.len() as i64 == PULL_BATCH;
-            for (txid, id, entity, entity_id) in rows {
-                last = (txid, id);
-                if group_txid != Some(txid) {
-                    if group_txid.is_some() {
-                        pairs.append(&mut group);
-                        included_txids += 1;
-                    }
-                    if scanned > PULL_ROWS {
-                        excluded = Some(txid);
-                        break 'scan;
-                    }
-                    group_txid = Some(txid);
-                }
-                scanned += 1;
-                if entity != "roles" {
-                    let pair = (entity, entity_id);
-                    if !pairs.contains(&pair) {
-                        group.insert(pair);
-                    }
-                    // Exclude the entire transaction as soon as it cannot fit.
-                    // Its remaining rows need not be read or retained.
-                    if pairs.len() + group.len() > PULL_PAIRS {
-                        excluded = Some(txid);
-                        break 'scan;
-                    }
-                }
-            }
-            if !batch_full {
-                if scanning_xip {
-                    scanning_xip = false;
-                    continue;
-                }
-                pairs.append(&mut group);
-                break;
-            }
-        }
-
-        if excluded.is_some() && included_txids == 0 {
+        let page = scan_window(&mut tx, workspace_id, actor, &requested).await?;
+        if page.excluded.is_some() && page.included_txids == 0 {
             tx.commit().await?;
-            return Ok(PullResponse {
-                cursor: snap_text,
-                more: false,
-                reset: true,
-                last_mutation_id: None,
-                changes: Vec::new(),
-            });
+            return Ok(PullResponse::restart(snap_text, true));
         }
 
-        let mut changes: Vec<super::changes::Change> = pairs
+        let mut changes: Vec<super::changes::Change> = page
+            .pairs
             .into_iter()
             .map(|(entity, id)| super::changes::Change {
                 entity,
@@ -822,8 +854,9 @@ impl Store {
             super::changes::RecordShape::Sync,
         )
         .await?;
-        let more = excluded.is_some();
-        let next = excluded
+        let more = page.excluded.is_some();
+        let next = page
+            .excluded
             .map(|txid| snapshot_text(&advance_cursor(&requested, &snapshot, txid)))
             .unwrap_or(snap_text);
         let response = PullResponse {

@@ -96,28 +96,31 @@ function deepEqual(a: unknown, b: unknown): boolean {
   if (a instanceof Date || b instanceof Date) {
     return a instanceof Date && b instanceof Date && a.getTime() === b.getTime();
   }
-  const aArray = Array.isArray(a);
-  const bArray = Array.isArray(b);
-  if (aArray || bArray) {
-    if (!aArray || !bArray) return false;
-    const aa = a as readonly unknown[];
-    const bb = b as readonly unknown[];
-    if (aa.length !== bb.length) return false;
-    for (let i = 0; i < aa.length; i += 1) {
-      if (!deepEqual(aa[i], bb[i])) return false;
-    }
-    return true;
+  if (Array.isArray(a) || Array.isArray(b)) {
+    return Array.isArray(a) && Array.isArray(b) && arraysEqual(a, b);
   }
-  const aObj = a as Record<string, unknown>;
-  const bObj = b as Record<string, unknown>;
-  const aKeys = Object.keys(aObj);
-  const bKeys = Object.keys(bObj);
-  if (aKeys.length !== bKeys.length) return false;
-  for (const key of aKeys) {
-    if (!Object.prototype.hasOwnProperty.call(bObj, key)) return false;
-    if (!deepEqual(aObj[key], bObj[key])) return false;
+  return objectsEqual(a as Record<string, unknown>, b as Record<string, unknown>);
+}
+
+function arraysEqual(a: readonly unknown[], b: readonly unknown[]): boolean {
+  return a.length === b.length && a.every((item, i) => deepEqual(item, b[i]));
+}
+
+function objectsEqual(a: Record<string, unknown>, b: Record<string, unknown>): boolean {
+  const keys = Object.keys(a);
+  return (
+    keys.length === Object.keys(b).length &&
+    keys.every((key) => Object.prototype.hasOwnProperty.call(b, key) && deepEqual(a[key], b[key]))
+  );
+}
+
+function ingestTable(entity: Entity, list: readonly object[]): Map<string, AnyRecord> {
+  const table = new Map<string, AnyRecord>();
+  for (const raw of list) {
+    const clean = ingest(entity, raw as unknown as RecordOf[Entity]);
+    table.set(keyOf(entity, clean as unknown as RecordOf[Entity]), clean);
   }
-  return true;
+  return table;
 }
 
 function deepClone<T>(value: T): T {
@@ -249,29 +252,26 @@ export interface ReplayError {
 
 /** Convert anything a replay throws into a frozen ReplayError. */
 function toReplayError(value: unknown): ReplayError {
-  let name: string | undefined;
-  let message: string | undefined;
-  let status: number | undefined;
-  let code: string | undefined;
-  if (typeof value === "object" && value !== null) {
-    const record = value as Record<string, unknown>;
-    if (typeof record["name"] === "string") name = record["name"];
-    if (typeof record["message"] === "string") message = record["message"];
-    else if (record["message"] !== undefined) message = String(record["message"]);
-    if (typeof record["status"] === "number") status = record["status"];
-    if (typeof record["code"] === "string") code = record["code"];
-  }
-  if (value instanceof Error) {
-    if (name === undefined) name = value.name;
-    if (message === undefined) message = value.message;
-  }
+  const record =
+    typeof value === "object" && value !== null ? (value as Record<string, unknown>) : {};
+  // An Error's own name and message fill in when the object lacks usable ones.
+  const fallback = value instanceof Error ? value : undefined;
+  const rawMessage = record["message"];
+  const message = rawMessage === undefined ? fallback?.message : String(rawMessage);
   const error: ReplayError = {
-    name: name ?? "Error",
+    name: stringField(record, "name") ?? fallback?.name ?? "Error",
     message: message ?? String(value),
   };
-  if (status !== undefined) error.status = status;
+  const status = record["status"];
+  if (typeof status === "number") error.status = status;
+  const code = stringField(record, "code");
   if (code !== undefined) error.code = code;
   return deepFreeze(error);
+}
+
+function stringField(record: Record<string, unknown>, key: string): string | undefined {
+  const value = record[key];
+  return typeof value === "string" ? value : undefined;
 }
 
 function replayErrorEqual(a: ReplayError, b: ReplayError): boolean {
@@ -370,39 +370,30 @@ export class SyncStore {
   ): void {
     const covered = entities.slice();
     for (const entity of covered) this.assertEntity(entity);
-    const incoming = new Map<Entity, Map<string, AnyRecord>>();
-    for (const entity of covered) {
-      const list = records[entity] ?? [];
-      const table = new Map<string, AnyRecord>();
-      for (const raw of list) {
-        const clean = ingest(entity, raw as unknown as RecordOf[Entity]);
-        table.set(keyOf(entity, clean as unknown as RecordOf[Entity]), clean);
-      }
-      incoming.set(entity, table);
-    }
-    for (const entity of covered) {
-      const table = incoming.get(entity) as Map<string, AnyRecord>;
-      const baseTable = this.base[entity];
-      for (const [key, clean] of table) {
-        const current = baseTable.get(key);
-        if (current !== undefined && deepEqual(current, clean)) continue;
-        this.stashBase(entity, key);
-        const before = baseTable.get(key);
-        baseTable.set(key, clean);
-        this.maintainBaseIndex(entity, key, before, clean);
-      }
-      const doomed: string[] = [];
-      for (const [key] of this.scanBase(entity)) {
-        if (!table.has(key)) doomed.push(key);
-      }
-      for (const key of doomed) {
-        this.stashBase(entity, key);
-        const before = baseTable.get(key);
-        baseTable.delete(key);
-        this.maintainBaseIndex(entity, key, before, undefined);
-      }
-    }
+    // Ingest everything first so a bad record leaves the base untouched.
+    const incoming = new Map(
+      covered.map((entity) => [entity, ingestTable(entity, records[entity] ?? [])] as const),
+    );
+    for (const [entity, table] of incoming) this.replaceBaseTable(entity, table);
     this.scheduleRebase();
+  }
+
+  private replaceBaseTable(entity: Entity, table: Map<string, AnyRecord>): void {
+    const baseTable = this.base[entity];
+    for (const [key, clean] of table) {
+      const current = baseTable.get(key);
+      if (current !== undefined && deepEqual(current, clean)) continue;
+      this.stashBase(entity, key);
+      baseTable.set(key, clean);
+      this.maintainBaseIndex(entity, key, current, clean);
+    }
+    const doomed = [...this.scanBase(entity)].map(([key]) => key).filter((key) => !table.has(key));
+    for (const key of doomed) {
+      this.stashBase(entity, key);
+      const before = baseTable.get(key);
+      baseTable.delete(key);
+      this.maintainBaseIndex(entity, key, before, undefined);
+    }
   }
 
   /** Pull pages and scope loads: upsert or delete by change id. */

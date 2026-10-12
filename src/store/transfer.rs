@@ -108,53 +108,13 @@ impl Store {
 
         op.admin()?;
         op.lock_graph().await?;
-        if let Some(key) = &key {
-            text(key, 200)?;
-            sqlx::query("INSERT INTO operation_keys(workspace_id,actor,key,request) VALUES($1,$2,$3,$4) ON CONFLICT DO NOTHING")
-                .bind(workspace)
-                .bind(actor)
-                .bind(key)
-                .bind(&request)
-                .execute(&mut *op.tx)
-                .await?;
-
-            let row = sqlx::query("SELECT request,result FROM operation_keys WHERE workspace_id=$1 AND actor=$2 AND key=$3 FOR UPDATE")
-                .bind(workspace)
-                .bind(actor)
-                .bind(key)
-                .fetch_one(&mut *op.tx)
-                .await?;
-
-            if row.try_get::<Value, _>("request")? != request {
-                return Err(Error::Conflict(
-                    "idempotency key reused for a different request".into(),
-                ));
-            }
-
-            if let Some(result) = row.try_get::<Option<Value>, _>("result")? {
-                return Ok(serde_json::from_value(result)?);
-            }
+        if let Some(key) = &key
+            && let Some(result) = op.claim_key(key, &request).await?
+        {
+            return Ok(serde_json::from_value(result)?);
         }
 
-        let member_rows = sqlx::query("SELECT m.user_id,m.role,m.version,u.email FROM workspace_members m JOIN users u ON u.id=m.user_id WHERE m.workspace_id=$1 ORDER BY m.user_id FOR SHARE OF m")
-            .bind(workspace)
-            .fetch_all(&mut *op.tx)
-            .await?;
-
-        let mut candidate = Workspace::new("Import".into(), actor)?;
-        candidate.id = workspace;
-        candidate.members.clear();
-        let mut by_email = BTreeMap::<String, Uuid>::new();
-        for row in member_rows {
-            let user_id = row.try_get("user_id")?;
-            by_email.insert(row.try_get::<String, _>("email")?.to_lowercase(), user_id);
-            candidate.members.push(Member {
-                user_id,
-                role: serde_json::from_value(Value::String(row.try_get("role")?))?,
-                version: row.try_get("version")?,
-            });
-        }
-
+        let (mut candidate, by_email) = member_candidate(&mut op).await?;
         let mapping: BTreeMap<Uuid, Uuid> = transfer
             .members
             .iter()
@@ -162,50 +122,13 @@ impl Store {
             .collect();
 
         let summary = transfer.import(&mut candidate, actor, &mapping, Utc::now())?;
-        let capacities = [
-            ("activity", candidate.activity.len(), 50000),
-            ("comments", candidate.comments.len(), 20000),
-            ("issues", candidate.issues.len(), 5000),
-            ("labels", candidate.labels.len(), 1000),
-            ("milestones", candidate.milestones.len(), 5000),
-            ("projects", candidate.projects.len(), 1000),
-            ("saved_views", candidate.views.len(), 5000),
-            ("sprints", candidate.sprints.len(), 2000),
-            ("teams", candidate.teams.len(), 200),
-            ("time_entries", candidate.time_entries.len(), 20000),
-        ];
-
-        for (table, incoming, maximum) in capacities {
-            if incoming > 0 {
-                op.capacity(table, maximum - incoming as i64 + 1).await?;
-            }
-        }
-
-        let count = i64::try_from(candidate.issues.len())
-            .map_err(|_| Error::BadRequest("too many issues".into()))?;
-
-        let first: i64 = sqlx::query_scalar("UPDATE workspaces SET next_issue_number=next_issue_number+$2 WHERE id=$1 RETURNING next_issue_number-$2")
-            .bind(workspace)
-            .bind(count)
-            .fetch_one(&mut *op.tx)
-            .await?;
-
-        for (index, issue) in candidate.issues.iter_mut().enumerate() {
-            issue.number = (first + index as i64) as u64;
-        }
-
+        check_import_capacity(&mut op, &candidate).await?;
+        number_issues(&mut op, &mut candidate).await?;
         insert_import(&mut op, &candidate).await?;
         let result = (summary, op.response_versions());
-        if let Some(key) = key {
-            sqlx::query(
-                "UPDATE operation_keys SET result=$4 WHERE workspace_id=$1 AND actor=$2 AND key=$3",
-            )
-            .bind(workspace)
-            .bind(actor)
-            .bind(key)
-            .bind(serde_json::to_value(&result)?)
-            .execute(&mut *op.tx)
-            .await?;
+        if let Some(key) = &key {
+            op.save_key_result(key, serde_json::to_value(&result)?)
+                .await?;
         }
 
         op.tx.commit().await?;
@@ -214,7 +137,80 @@ impl Store {
     }
 }
 
+/// An empty workspace holding only the current members, which the transfer
+/// is imported into and validated against, plus member ids by lowercase email.
+async fn member_candidate(op: &mut Operation<'_>) -> Result<(Workspace, BTreeMap<String, Uuid>)> {
+    let rows = sqlx::query("SELECT m.user_id,m.role,m.version,u.email FROM workspace_members m JOIN users u ON u.id=m.user_id WHERE m.workspace_id=$1 ORDER BY m.user_id FOR SHARE OF m")
+        .bind(op.workspace_id)
+        .fetch_all(&mut *op.tx)
+        .await?;
+
+    let mut candidate = Workspace::new("Import".into(), op.actor)?;
+    candidate.id = op.workspace_id;
+    candidate.members.clear();
+    let mut by_email = BTreeMap::new();
+    for row in rows {
+        let user_id = row.try_get("user_id")?;
+        by_email.insert(row.try_get::<String, _>("email")?.to_lowercase(), user_id);
+        candidate.members.push(Member {
+            user_id,
+            role: serde_json::from_value(Value::String(row.try_get("role")?))?,
+            version: row.try_get("version")?,
+        });
+    }
+    Ok((candidate, by_email))
+}
+
+/// Each table must fit what it already holds plus the incoming rows.
+async fn check_import_capacity(op: &mut Operation<'_>, candidate: &Workspace) -> Result<()> {
+    let capacities = [
+        ("activity", candidate.activity.len(), 50000),
+        ("comments", candidate.comments.len(), 20000),
+        ("issues", candidate.issues.len(), 5000),
+        ("labels", candidate.labels.len(), 1000),
+        ("milestones", candidate.milestones.len(), 5000),
+        ("projects", candidate.projects.len(), 1000),
+        ("saved_views", candidate.views.len(), 5000),
+        ("sprints", candidate.sprints.len(), 2000),
+        ("teams", candidate.teams.len(), 200),
+        ("time_entries", candidate.time_entries.len(), 20000),
+    ];
+    for (table, incoming, maximum) in capacities {
+        if incoming > 0 {
+            op.capacity(table, maximum - incoming as i64 + 1).await?;
+        }
+    }
+    Ok(())
+}
+
+/// Reserves a block of issue numbers and assigns them in transfer order.
+async fn number_issues(op: &mut Operation<'_>, candidate: &mut Workspace) -> Result<()> {
+    let count = i64::try_from(candidate.issues.len())
+        .map_err(|_| Error::BadRequest("too many issues".into()))?;
+    let first: i64 = sqlx::query_scalar("UPDATE workspaces SET next_issue_number=next_issue_number+$2 WHERE id=$1 RETURNING next_issue_number-$2")
+        .bind(op.workspace_id)
+        .bind(count)
+        .fetch_one(&mut *op.tx)
+        .await?;
+    for (index, issue) in candidate.issues.iter_mut().enumerate() {
+        issue.number = (first + index as i64) as u64;
+    }
+    Ok(())
+}
+
 async fn insert_import(op: &mut Operation<'_>, w: &Workspace) -> Result<()> {
+    insert_planning(op, w).await?;
+    insert_issues(op, w).await?;
+    for issue in &w.issues {
+        insert_issue_relations(op, w.id, issue).await?;
+        schedule_imported_reminder(op, w, issue).await?;
+    }
+    insert_records(op, w).await?;
+    op.activity("workspace_imported", None, vec![]).await?;
+    Ok(())
+}
+
+async fn insert_planning(op: &mut Operation<'_>, w: &Workspace) -> Result<()> {
     for team in &w.teams {
         sqlx::query(
             "INSERT INTO teams(id,workspace_id,name,archive_after_days) VALUES($1,$2,$3,$4)",
@@ -318,6 +314,10 @@ async fn insert_import(op: &mut Operation<'_>, w: &Workspace) -> Result<()> {
         }
     }
 
+    Ok(())
+}
+
+async fn insert_issues(op: &mut Operation<'_>, w: &Workspace) -> Result<()> {
     for issue in &w.issues {
         sqlx::query("INSERT INTO issues(id,workspace_id,number,title,description,team_id,stage_id,assignee,priority,estimate,deadline,project_id,milestone_id,sprint_id,parent_id,position,deleted_at,archived_at,done_at,created_at,updated_at,created_by) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,(SELECT id FROM users WHERE id=$22))")
             .bind(issue.id)
@@ -348,69 +348,95 @@ async fn insert_import(op: &mut Operation<'_>, w: &Workspace) -> Result<()> {
         op.created("issues", issue.id);
     }
 
-    for issue in &w.issues {
-        for label in &issue.labels {
-            sqlx::query(
-                "INSERT INTO issue_labels(workspace_id,issue_id,label_id) VALUES($1,$2,$3)",
-            )
-            .bind(w.id)
+    Ok(())
+}
+
+/// Labels, dependencies, followers and source links of one imported issue.
+async fn insert_issue_relations(
+    op: &mut Operation<'_>,
+    workspace: Uuid,
+    issue: &Issue,
+) -> Result<()> {
+    for label in &issue.labels {
+        sqlx::query("INSERT INTO issue_labels(workspace_id,issue_id,label_id) VALUES($1,$2,$3)")
+            .bind(workspace)
             .bind(issue.id)
             .bind(label)
             .execute(&mut *op.tx)
             .await?;
-        }
+    }
 
-        for dependency in &issue.dependencies {
-            sqlx::query("INSERT INTO issue_dependencies(workspace_id,issue_id,dependency_id) VALUES($1,$2,$3)").bind(w.id).bind(issue.id).bind(dependency).execute(&mut *op.tx).await?;
-        }
+    for dependency in &issue.dependencies {
+        sqlx::query(
+            "INSERT INTO issue_dependencies(workspace_id,issue_id,dependency_id) VALUES($1,$2,$3)",
+        )
+        .bind(workspace)
+        .bind(issue.id)
+        .bind(dependency)
+        .execute(&mut *op.tx)
+        .await?;
+    }
 
-        for user in &issue.followers {
-            sqlx::query(
-                "INSERT INTO issue_followers(workspace_id,issue_id,user_id) VALUES($1,$2,$3)",
-            )
-            .bind(w.id)
+    for user in &issue.followers {
+        sqlx::query("INSERT INTO issue_followers(workspace_id,issue_id,user_id) VALUES($1,$2,$3)")
+            .bind(workspace)
             .bind(issue.id)
             .bind(user)
             .execute(&mut *op.tx)
             .await?;
-        }
-
-        for link in &issue.source_links {
-            sqlx::query("INSERT INTO source_links(id,workspace_id,issue_id,url,title) VALUES($1,$2,$3,$4,$5)")
-                .bind(Uuid::new_v4())
-                .bind(w.id)
-                .bind(issue.id)
-                .bind(&link.url)
-                .bind(&link.title)
-                .execute(&mut *op.tx)
-                .await?;
-        }
-
-        let done = w.teams.iter().flat_map(|t| &t.stages).any(|s| {
-            s.id == issue.stage_id && matches!(s.kind, StageKind::Done | StageKind::Cancelled)
-        });
-
-        if issue.deleted_at.is_none()
-            && !done
-            && let Some(deadline) = issue.deadline
-        {
-            let reminder = crate::jobs::Reminder {
-                workspace_id: w.id,
-                issue_id: issue.id,
-                generation: 1,
-            };
-
-            let job = NewJob {
-                id: format!("reminder:{}:{}:1", w.id, issue.id),
-                job: crate::jobs::Job::Reminder(reminder),
-                due_at: (deadline - chrono::Duration::hours(24)).timestamp(),
-                max_attempts: None,
-            };
-
-            Outbox::insert(&mut op.tx, &job).await?;
-        }
     }
 
+    for link in &issue.source_links {
+        sqlx::query(
+            "INSERT INTO source_links(id,workspace_id,issue_id,url,title) VALUES($1,$2,$3,$4,$5)",
+        )
+        .bind(Uuid::new_v4())
+        .bind(workspace)
+        .bind(issue.id)
+        .bind(&link.url)
+        .bind(&link.title)
+        .execute(&mut *op.tx)
+        .await?;
+    }
+
+    Ok(())
+}
+
+/// Queues the first deadline reminder for an open imported issue with a deadline.
+async fn schedule_imported_reminder(
+    op: &mut Operation<'_>,
+    w: &Workspace,
+    issue: &Issue,
+) -> Result<()> {
+    let done = w.teams.iter().flat_map(|t| &t.stages).any(|s| {
+        s.id == issue.stage_id && matches!(s.kind, StageKind::Done | StageKind::Cancelled)
+    });
+
+    if issue.deleted_at.is_none()
+        && !done
+        && let Some(deadline) = issue.deadline
+    {
+        let reminder = crate::jobs::Reminder {
+            workspace_id: w.id,
+            issue_id: issue.id,
+            generation: 1,
+        };
+
+        let job = NewJob {
+            id: format!("reminder:{}:{}:1", w.id, issue.id),
+            job: crate::jobs::Job::Reminder(reminder),
+            due_at: (deadline - chrono::Duration::hours(24)).timestamp(),
+            max_attempts: None,
+        };
+
+        Outbox::insert(&mut op.tx, &job).await?;
+    }
+
+    Ok(())
+}
+
+/// Comments, time entries, views and activity, minus the trailing import event.
+async fn insert_records(op: &mut Operation<'_>, w: &Workspace) -> Result<()> {
     for comment in &w.comments {
         sqlx::query("INSERT INTO comments(id,workspace_id,issue_id,author,body,created_at,edited_at) VALUES($1,$2,$3,$4,$5,$6,$7)")
             .bind(comment.id)
@@ -474,8 +500,6 @@ async fn insert_import(op: &mut Operation<'_>, w: &Workspace) -> Result<()> {
             .execute(&mut *op.tx)
             .await?;
     }
-
-    op.activity("workspace_imported", None, vec![]).await?;
 
     Ok(())
 }

@@ -53,6 +53,16 @@ export function Markdown({
   className?: string;
   empty?: string;
 }) {
+  const html = useRenderedMarkdown(text);
+  if (!text.trim()) return empty ? <p className="text-muted-foreground">{empty}</p> : null;
+  if (html === null)
+    return <p className={cn("whitespace-pre-wrap text-[14px]", className)}>{text}</p>;
+  // The backend sanitizes with ammonia before returning HTML.
+  return <div className={cn("prose-bw", className)} dangerouslySetInnerHTML={{ __html: html }} />;
+}
+
+/** Server-rendered HTML for `text`, or null until it arrives or when rendering fails. */
+function useRenderedMarkdown(text: string): string | null {
   // Derived during render: the cached HTML (or "" for blank text), if we have it.
   const key = text.trim() ? text : "";
   const cached = key ? (cache.get(key) ?? null) : "";
@@ -73,12 +83,7 @@ export function Markdown({
       live = false;
     };
   }, [key, cached]);
-  const html = cached ?? (fetched.key === key ? fetched.html : null);
-  if (!text.trim()) return empty ? <p className="text-muted-foreground">{empty}</p> : null;
-  if (html === null)
-    return <p className={cn("whitespace-pre-wrap text-[14px]", className)}>{text}</p>;
-  // The backend sanitizes with ammonia before returning HTML.
-  return <div className={cn("prose-bw", className)} dangerouslySetInnerHTML={{ __html: html }} />;
+  return cached ?? (fetched.key === key ? fetched.html : null);
 }
 
 export function mentionsIn(text: string, members: { id: Id; display_name: string }[]) {
@@ -250,18 +255,13 @@ export function MarkdownEditor({
           placeholder={placeholder}
           onChange={(e) => onChange(e.target.value)}
           onKeyDown={(e) => {
-            if (onSubmit && e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-              e.preventDefault();
-              onSubmit();
-            }
-            if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "b") {
-              e.preventDefault();
-              wrap("**", "**", "bold");
-            }
-            if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "i") {
-              e.preventDefault();
-              wrap("_", "_", "italic");
-            }
+            if (!(e.metaKey || e.ctrlKey)) return;
+            const key = e.key.toLowerCase();
+            if (key === "enter" && onSubmit) onSubmit();
+            else if (key === "b") wrap("**", "**", "bold");
+            else if (key === "i") wrap("_", "_", "italic");
+            else return;
+            e.preventDefault();
           }}
           className="block w-full resize-y touch-manipulation bg-transparent px-3 py-2.5 text-[14px] leading-6 outline-none placeholder:text-muted-foreground/70"
         />

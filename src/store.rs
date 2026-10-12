@@ -348,49 +348,20 @@ impl Store {
             .begin_operation(workspace_id, actor, expected, membership)
             .await?;
 
-        if let Some(key) = &key {
-            crate::domain::text(key, 200)?;
-
-            sqlx::query(
-                "INSERT INTO operation_keys(workspace_id,actor,key,request) \
-                 VALUES($1,$2,$3,$4) ON CONFLICT DO NOTHING",
+        if let Some(key) = &key
+            && let Some(value) = op.claim_key(key, &request).await?
+        {
+            // Replays report the records as they are now, not as the first attempt saw them.
+            let mut result: OperationResult = serde_json::from_value(value)?;
+            changes::render(
+                &mut op.tx,
+                workspace_id,
+                actor,
+                &mut result.changes,
+                changes::RecordShape::Rest,
             )
-            .bind(workspace_id)
-            .bind(actor)
-            .bind(key)
-            .bind(&request)
-            .execute(&mut *op.tx)
             .await?;
-
-            let row = sqlx::query(
-                "SELECT request,result FROM operation_keys \
-                 WHERE workspace_id=$1 AND actor=$2 AND key=$3 FOR UPDATE",
-            )
-            .bind(workspace_id)
-            .bind(actor)
-            .bind(key)
-            .fetch_one(&mut *op.tx)
-            .await?;
-
-            if row.try_get::<serde_json::Value, _>("request")? != request {
-                return Err(Error::Conflict(
-                    "idempotency key reused for a different request".into(),
-                ));
-            }
-
-            if let Some(value) = row.try_get::<Option<serde_json::Value>, _>("result")? {
-                // Replays report the records as they are now, not as the first attempt saw them.
-                let mut result: OperationResult = serde_json::from_value(value)?;
-                changes::render(
-                    &mut op.tx,
-                    workspace_id,
-                    actor,
-                    &mut result.changes,
-                    changes::RecordShape::Rest,
-                )
-                .await?;
-                return Ok(result);
-            }
+            return Ok(result);
         }
 
         let id = op.run_command(command, attachment).await?;
@@ -402,16 +373,9 @@ impl Store {
         };
 
         // Store only which records changed; rendering them again on replay keeps keys small.
-        if let Some(key) = key {
-            sqlx::query(
-                "UPDATE operation_keys SET result=$4 WHERE workspace_id=$1 AND actor=$2 AND key=$3",
-            )
-            .bind(workspace_id)
-            .bind(actor)
-            .bind(key)
-            .bind(serde_json::to_value(&result)?)
-            .execute(&mut *op.tx)
-            .await?;
+        if let Some(key) = &key {
+            op.save_key_result(key, serde_json::to_value(&result)?)
+                .await?;
         }
 
         changes::render(
@@ -504,6 +468,60 @@ fn database_setting(name: &str, default: u32, min: u32, max: u32) -> Result<u32>
 }
 
 impl Operation<'_> {
+    /// Records `request` under the idempotency key. Returns the stored result
+    /// when the key already completed, and rejects a key reused for another request.
+    pub(super) async fn claim_key(
+        &mut self,
+        key: &str,
+        request: &serde_json::Value,
+    ) -> Result<Option<serde_json::Value>> {
+        crate::domain::text(key, 200)?;
+        sqlx::query(
+            "INSERT INTO operation_keys(workspace_id,actor,key,request) \
+             VALUES($1,$2,$3,$4) ON CONFLICT DO NOTHING",
+        )
+        .bind(self.workspace_id)
+        .bind(self.actor)
+        .bind(key)
+        .bind(request)
+        .execute(&mut *self.tx)
+        .await?;
+
+        let row = sqlx::query(
+            "SELECT request,result FROM operation_keys \
+             WHERE workspace_id=$1 AND actor=$2 AND key=$3 FOR UPDATE",
+        )
+        .bind(self.workspace_id)
+        .bind(self.actor)
+        .bind(key)
+        .fetch_one(&mut *self.tx)
+        .await?;
+
+        if row.try_get::<serde_json::Value, _>("request")? != *request {
+            return Err(Error::Conflict(
+                "idempotency key reused for a different request".into(),
+            ));
+        }
+        Ok(row.try_get("result")?)
+    }
+
+    pub(super) async fn save_key_result(
+        &mut self,
+        key: &str,
+        result: serde_json::Value,
+    ) -> Result<()> {
+        sqlx::query(
+            "UPDATE operation_keys SET result=$4 WHERE workspace_id=$1 AND actor=$2 AND key=$3",
+        )
+        .bind(self.workspace_id)
+        .bind(self.actor)
+        .bind(key)
+        .bind(result)
+        .execute(&mut *self.tx)
+        .await?;
+        Ok(())
+    }
+
     /// Runs one command inside this already-open operation: the viewer rule,
     /// ownership check, dispatch and activity row. Shared by the REST command
     /// endpoint and sync push, so both enforce identical semantics.
@@ -512,54 +530,17 @@ impl Operation<'_> {
         command: Command,
         attachment: Option<NewAttachment>,
     ) -> Result<Option<Uuid>> {
-        let personal = matches!(
-            &command,
-            Command::MarkNotificationRead { .. }
-                | Command::MarkNotificationUnread { .. }
-                | Command::MarkAllNotificationsRead
-                | Command::ConfigureAlerts { .. }
-                | Command::SaveView { shared: false, .. }
-                | Command::UpdateView { shared: false, .. }
-                | Command::DeleteView { .. }
-                | Command::Follow { .. }
-        );
-
-        if self.role == Role::Viewer && !personal {
+        if self.role == Role::Viewer && !command.is_personal() {
             return Err(Error::Forbidden);
         }
 
         self.authorize_issue_ownership(&command).await?;
 
         let action = command.kind();
-        let id = match &command {
-            Command::CreateTeam { .. }
-            | Command::SetTeamMembers { .. }
-            | Command::CreateStage { .. }
-            | Command::UpdateStage { .. }
-            | Command::DeleteStage { .. }
-            | Command::CreateLabel { .. }
-            | Command::UpdateLabel { .. }
-            | Command::CreateProject { .. }
-            | Command::UpdateProject { .. }
-            | Command::CreateMilestone { .. }
-            | Command::UpdateMilestone { .. }
-            | Command::CreateSprint { .. }
-            | Command::UpdateSprint { .. }
-            | Command::CompleteSprint { .. }
-            | Command::ArchiveSprint { .. }
-            | Command::SetTeamArchive { .. } => self.planning(command).await?,
-            Command::CreateIssue { .. }
-            | Command::UpdateIssue { .. }
-            | Command::MoveIssue { .. }
-            | Command::BulkIssues { .. }
-            | Command::DeleteIssue { .. }
-            | Command::RestoreIssue { .. }
-            | Command::ArchiveIssue { .. }
-            | Command::UnarchiveIssue { .. }
-            | Command::Follow { .. }
-            | Command::AddSourceLink { .. }
-            | Command::ImportIssues { .. } => self.issues(command).await?,
-            _ => self.discussion(command, attachment).await?,
+        let id = match command.family() {
+            CommandFamily::Planning => self.planning(command).await?,
+            CommandFamily::Issues => self.issues(command).await?,
+            CommandFamily::Discussion => self.discussion(command, attachment).await?,
         };
 
         let fields = std::mem::take(&mut self.activity_fields);

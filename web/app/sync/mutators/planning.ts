@@ -1,6 +1,6 @@
-import type { Stage, StageKind, Team } from "../../lib/types";
+import type { Sprint, Stage, StageKind, Team } from "../../lib/types";
 import type { DeepReadonly, Tx } from "../store";
-import type { ArgsOf, Mutator } from "./common";
+import type { ArgsOf, Mutator, MutatorContext } from "./common";
 import {
   NIL_UUID,
   checkCreateId,
@@ -17,6 +17,7 @@ import {
   requireTimestamp,
   stageKindOf,
   utf8Length,
+  reserveClientId,
 } from "./common";
 import { MutationError } from "./errors";
 
@@ -63,23 +64,9 @@ export const createTeam: Mutator<ArgsOf<"create_team">> = (tx, args, ctx) => {
   checkCapacity(tx, "teams", 200, ctx, args.id);
   const members = dedupeSortUuids(args.members);
   for (const user of members) requireMember(tx, user);
-  const stageIds = args.default_stage_ids ?? null;
-  if (stageIds === null) throw new MutationError(400, "default_stage_ids is required");
-  if (stageIds.length !== DEFAULT_STAGES.length) {
-    throw new MutationError(400, "default_stage_ids must contain exactly 4 ids");
-  }
-  const seen = new Set<string>();
-  for (const stage of stageIds) {
-    if (stage === NIL_UUID) throw new MutationError(400, "id must not be nil");
-    checkCreateId(tx, stage, ctx);
-    if (seen.has(stage)) throw new MutationError(409, "id already exists");
-    seen.add(stage);
-  }
-  const id = args.id ?? null;
-  if (id === null) throw new MutationError(400, "id is required");
-  if (id === NIL_UUID) throw new MutationError(400, "id must not be nil");
-  checkCreateId(tx, id, ctx);
-  if (seen.has(id)) throw new MutationError(409, "id already exists");
+  const stageIds = reserveStageIds(tx, args.default_stage_ids, ctx);
+  const id = reserveClientId(tx, args.id, ctx);
+  if (stageIds.includes(id)) throw new MutationError(409, "id already exists");
   // Replay upserts preserve pulled stages and archive settings,
   // including changes made after the server created this team.
   const previous = tx.get("teams", id);
@@ -90,23 +77,39 @@ export const createTeam: Mutator<ArgsOf<"create_team">> = (tx, args, ctx) => {
     members,
     stages: previous
       ? previous.stages.map((stage) => ({ ...stage }))
-      : DEFAULT_STAGES.map((stage, position) => {
-          const stageId = stageIds[position];
-          if (stageId === undefined)
-            throw new MutationError(400, "default_stage_ids must contain exactly 4 ids");
-          return {
-            id: stageId,
-            version: 1,
-            name: stage.name,
-            kind: stage.kind,
-            position: stage.position,
-          };
-        }),
+      : DEFAULT_STAGES.map((stage, position) => ({
+          id: stageIds[position] as string,
+          version: 1,
+          name: stage.name,
+          kind: stage.kind,
+          position: stage.position,
+        })),
     // The server inserts `archive_after_days = 30` for a new team.
     archive_after_days: previous ? previous.archive_after_days : 30,
   });
   for (const user of members) joinTeam(tx, user, id);
 };
+
+/** One distinct, unused id per default stage. */
+function reserveStageIds(
+  tx: Tx,
+  stageIds: readonly string[] | null | undefined,
+  ctx: MutatorContext,
+): readonly string[] {
+  if (stageIds === null || stageIds === undefined)
+    throw new MutationError(400, "default_stage_ids is required");
+  if (stageIds.length !== DEFAULT_STAGES.length) {
+    throw new MutationError(400, "default_stage_ids must contain exactly 4 ids");
+  }
+  const seen = new Set<string>();
+  for (const stage of stageIds) {
+    if (stage === NIL_UUID) throw new MutationError(400, "id must not be nil");
+    checkCreateId(tx, stage, ctx);
+    if (seen.has(stage)) throw new MutationError(409, "id already exists");
+    seen.add(stage);
+  }
+  return stageIds;
+}
 
 export const setTeamMembers: Mutator<ArgsOf<"set_team_members">> = (tx, args, ctx) => {
   requireAdmin(requireRole(tx, ctx.actor, "set_team_members", args));
@@ -152,10 +155,7 @@ export const createStage: Mutator<ArgsOf<"create_stage">> = (tx, args, ctx) => {
   ) {
     throw new MutationError(400, "team must contain 1 to 100 stages");
   }
-  const id = args.id ?? null;
-  if (id === null) throw new MutationError(400, "id is required");
-  if (id === NIL_UUID) throw new MutationError(400, "id must not be nil");
-  checkCreateId(tx, id, ctx);
+  const id = reserveClientId(tx, args.id, ctx);
   const next = copyTeam(team);
   const existing = next.stages.findIndex((stage) => stage.id === id);
   const record: Stage = {
@@ -251,10 +251,7 @@ export const createLabel: Mutator<ArgsOf<"create_label">> = (tx, args, ctx) => {
   checkText(args.name, 100);
   if (utf8Length(args.color) > 40) throw new MutationError(400, "invalid color");
   checkCapacity(tx, "labels", 1000, ctx, args.id);
-  const id = args.id ?? null;
-  if (id === null) throw new MutationError(400, "id is required");
-  if (id === NIL_UUID) throw new MutationError(400, "id must not be nil");
-  checkCreateId(tx, id, ctx);
+  const id = reserveClientId(tx, args.id, ctx);
   const previous = tx.get("labels", id);
   tx.put("labels", { id, version: previous?.version ?? 1, name: args.name, color: args.color });
 };
@@ -277,10 +274,7 @@ export const createProject: Mutator<ArgsOf<"create_project">> = (tx, args, ctx) 
   checkCapacity(tx, "projects", 1000, ctx, args.id);
   const teamIds = dedupeSortUuids(args.team_ids);
   for (const team of teamIds) requireRecord(tx, "teams", team);
-  const id = args.id ?? null;
-  if (id === null) throw new MutationError(400, "id is required");
-  if (id === NIL_UUID) throw new MutationError(400, "id must not be nil");
-  checkCreateId(tx, id, ctx);
+  const id = reserveClientId(tx, args.id, ctx);
   const previous = tx.get("projects", id);
   tx.put("projects", {
     id,
@@ -321,10 +315,7 @@ export const createMilestone: Mutator<ArgsOf<"create_milestone">> = (tx, args, c
   checkTimestamp(args.deadline);
   checkCapacity(tx, "milestones", 5000, ctx, args.id);
   requireRecord(tx, "projects", args.project_id);
-  const id = args.id ?? null;
-  if (id === null) throw new MutationError(400, "id is required");
-  if (id === NIL_UUID) throw new MutationError(400, "id must not be nil");
-  checkCreateId(tx, id, ctx);
+  const id = reserveClientId(tx, args.id, ctx);
   const previous = tx.get("milestones", id);
   tx.put("milestones", {
     id,
@@ -363,10 +354,7 @@ export const createSprint: Mutator<ArgsOf<"create_sprint">> = (tx, args, ctx) =>
   const { starts, ends } = checkSprint(args.name, args.goal, args.starts_at, args.ends_at);
   checkCapacity(tx, "sprints", 2000, ctx, args.id);
   requireRecord(tx, "teams", args.team_id);
-  const id = args.id ?? null;
-  if (id === null) throw new MutationError(400, "id is required");
-  if (id === NIL_UUID) throw new MutationError(400, "id must not be nil");
-  checkCreateId(tx, id, ctx);
+  const id = reserveClientId(tx, args.id, ctx);
   const previous = tx.get("sprints", id);
   tx.put("sprints", {
     id,
@@ -411,18 +399,7 @@ export const completeSprint: Mutator<ArgsOf<"complete_sprint">> = (tx, args, ctx
   if (sprint.state === "archived") throw new MutationError(409, "sprint archived");
   if (sprint.state === "completed") return;
   const carryover = args.carryover_sprint_id ?? null;
-  if (carryover !== null) {
-    const target = tx.get("sprints", carryover);
-    if (target === undefined) throw new MutationError(404, "not found");
-    if (
-      carryover === args.id ||
-      target.team_id !== sprint.team_id ||
-      target.state === "completed" ||
-      target.state === "archived"
-    ) {
-      throw new MutationError(400, "invalid carryover sprint");
-    }
-  }
+  if (carryover !== null) checkCarryover(tx, sprint, carryover);
   // Deleted issues are neither counted nor carried over; terminal kinds come
   // from the issue's own team, as the server's join does.
   let completed = 0;
@@ -434,11 +411,7 @@ export const completeSprint: Mutator<ArgsOf<"complete_sprint">> = (tx, args, ctx
     effort += issue.estimate ?? 0;
     const kind = stageKindOf(tx, issue.team_id, issue.stage_id);
     if (kind === "done" || kind === "cancelled") completed += 1;
-  }
-  for (const issue of rows) {
-    const kind = stageKindOf(tx, issue.team_id, issue.stage_id);
-    if (kind === "done" || kind === "cancelled") continue;
-    tx.put("issues", { ...issue, sprint_id: carryover, updated_at: ctx.at });
+    else tx.put("issues", { ...issue, sprint_id: carryover, updated_at: ctx.at });
   }
   tx.put("sprints", {
     ...sprint,
@@ -446,6 +419,20 @@ export const completeSprint: Mutator<ArgsOf<"complete_sprint">> = (tx, args, ctx
     outcome: { total: rows.length, completed, effort },
   });
 };
+
+/** The carryover sprint must be another open sprint of the same team. */
+function checkCarryover(tx: Tx, sprint: DeepReadonly<Sprint>, carryover: string): void {
+  const target = tx.get("sprints", carryover);
+  if (target === undefined) throw new MutationError(404, "not found");
+  if (
+    carryover === sprint.id ||
+    target.team_id !== sprint.team_id ||
+    target.state === "completed" ||
+    target.state === "archived"
+  ) {
+    throw new MutationError(400, "invalid carryover sprint");
+  }
+}
 
 export const archiveSprint: Mutator<ArgsOf<"archive_sprint">> = (tx, args, ctx) => {
   requireRole(tx, ctx.actor, "archive_sprint", args);

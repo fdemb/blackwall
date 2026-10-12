@@ -83,11 +83,50 @@ impl Transfer {
         if !matches!(workspace.member(actor)?.role, Role::Owner | Role::Admin) {
             return Err(Error::Forbidden);
         }
-
         if self.version != 1 {
             return Err(Error::BadRequest("unsupported transfer version".into()));
         }
+        self.check_limits()?;
+        for user in mapping.values() {
+            workspace.member(*user)?;
+        }
 
+        let mut remap = Remap {
+            ids: self.fresh_ids()?,
+            mapping,
+            actor,
+            identities: BTreeMap::new(),
+        };
+        self.remap_planning(&remap)?;
+        let last_number = workspace.issues.iter().map(|i| i.number).max().unwrap_or(0);
+        self.remap_issues(&remap, last_number)?;
+        self.remap_records(&mut remap)?;
+
+        let summary = ImportSummary {
+            issues: self.issues.len(),
+            comments: self.comments.len(),
+            time_entries: self.time_entries.len(),
+            identities: remap.identities.into_values().collect(),
+        };
+
+        let mut candidate = workspace.clone();
+        self.merge_into(&mut candidate);
+        candidate.activity.push(Activity {
+            id: Uuid::new_v4(),
+            actor,
+            action: "workspace_imported".into(),
+            entity_id: None,
+            at: now,
+            fields: vec![],
+        });
+
+        candidate.validate_imported()?;
+        *workspace = candidate;
+
+        Ok(summary)
+    }
+
+    fn check_limits(&self) -> Result<()> {
         if self.issues.len() > 5000
             || self.comments.len() > 20000
             || self.time_entries.len() > 20000
@@ -102,14 +141,13 @@ impl Transfer {
         {
             return Err(Error::BadRequest("transfer exceeds import limits".into()));
         }
+        Ok(())
+    }
 
-        for user in mapping.values() {
-            workspace.member(*user)?;
-        }
-
-        let mut identities = BTreeMap::new();
+    /// A fresh id for every entity in the transfer, so imports never collide.
+    fn fresh_ids(&self) -> Result<BTreeMap<Uuid, Uuid>> {
         let mut ids = BTreeMap::new();
-        for id in self
+        let all = self
             .teams
             .iter()
             .map(|v| v.id)
@@ -126,206 +164,195 @@ impl Transfer {
                 self.teams
                     .iter()
                     .flat_map(|v| v.stages.iter().map(|s| s.id)),
-            )
-        {
+            );
+        for id in all {
             if ids.insert(id, Uuid::new_v4()).is_some() {
                 return Err(Error::BadRequest(
                     "transfer contains duplicate entity IDs".into(),
                 ));
             }
         }
+        Ok(ids)
+    }
 
+    fn remap_planning(&mut self, remap: &Remap) -> Result<()> {
         for team in &mut self.teams {
-            team.id = entity(&ids, team.id)?;
-            team.members = team
-                .members
-                .iter()
-                .filter_map(|u| mapping.get(u).copied())
-                .collect::<BTreeSet<_>>()
-                .into_iter()
-                .collect();
+            team.id = remap.entity(team.id)?;
+            team.members = remap.users(&team.members);
             for stage in &mut team.stages {
-                stage.id = entity(&ids, stage.id)?;
+                stage.id = remap.entity(stage.id)?;
             }
         }
-
         for label in &mut self.labels {
-            label.id = entity(&ids, label.id)?;
+            label.id = remap.entity(label.id)?;
         }
-
         for project in &mut self.projects {
-            project.id = entity(&ids, project.id)?;
+            project.id = remap.entity(project.id)?;
             for id in &mut project.team_ids {
-                *id = entity(&ids, *id)?;
+                *id = remap.entity(*id)?;
             }
         }
-
         for milestone in &mut self.milestones {
-            milestone.id = entity(&ids, milestone.id)?;
-            milestone.project_id = entity(&ids, milestone.project_id)?;
+            milestone.id = remap.entity(milestone.id)?;
+            milestone.project_id = remap.entity(milestone.project_id)?;
         }
-
         for sprint in &mut self.sprints {
-            sprint.id = entity(&ids, sprint.id)?;
-            sprint.team_id = entity(&ids, sprint.team_id)?;
+            sprint.id = remap.entity(sprint.id)?;
+            sprint.team_id = remap.entity(sprint.team_id)?;
         }
+        Ok(())
+    }
 
-        let mut number = workspace.issues.iter().map(|i| i.number).max().unwrap_or(0);
+    /// Remaps issue references and numbers the issues after `last_number`.
+    fn remap_issues(&mut self, remap: &Remap, mut last_number: u64) -> Result<()> {
         for issue in &mut self.issues {
-            number = number
+            last_number = last_number
                 .checked_add(1)
                 .ok_or(Error::BadRequest("issue number overflow".into()))?;
-            issue.number = number;
+            issue.number = last_number;
 
-            issue.id = entity(&ids, issue.id)?;
-            issue.team_id = entity(&ids, issue.team_id)?;
-            issue.stage_id = entity(&ids, issue.stage_id)?;
-            issue.assignee = issue.assignee.and_then(|u| mapping.get(&u).copied());
-            issue.created_by = issue.created_by.and_then(|u| mapping.get(&u).copied());
-
+            issue.id = remap.entity(issue.id)?;
+            issue.team_id = remap.entity(issue.team_id)?;
+            issue.stage_id = remap.entity(issue.stage_id)?;
+            issue.assignee = remap.user(issue.assignee);
+            issue.created_by = remap.user(issue.created_by);
             for id in &mut issue.labels {
-                *id = entity(&ids, *id)?;
+                *id = remap.entity(*id)?;
             }
-
-            issue.project_id = optional(&ids, issue.project_id)?;
-            issue.milestone_id = optional(&ids, issue.milestone_id)?;
-            issue.sprint_id = optional(&ids, issue.sprint_id)?;
-            issue.parent_id = optional(&ids, issue.parent_id)?;
-
+            issue.project_id = remap.optional(issue.project_id)?;
+            issue.milestone_id = remap.optional(issue.milestone_id)?;
+            issue.sprint_id = remap.optional(issue.sprint_id)?;
+            issue.parent_id = remap.optional(issue.parent_id)?;
             for id in &mut issue.dependencies {
-                *id = entity(&ids, *id)?;
+                *id = remap.entity(*id)?;
             }
-
-            issue.followers = issue
-                .followers
-                .iter()
-                .filter_map(|u| mapping.get(u).copied())
-                .collect::<BTreeSet<_>>()
-                .into_iter()
-                .collect();
-
+            issue.followers = remap.users(&issue.followers);
             issue.attachments.clear();
         }
+        Ok(())
+    }
 
+    /// Comments, time entries, views and activity. Their authors fall back to
+    /// the importing actor when unmapped.
+    fn remap_records(&mut self, remap: &mut Remap) -> Result<()> {
         for comment in &mut self.comments {
-            comment.id = entity(&ids, comment.id)?;
-            comment.issue_id = entity(&ids, comment.issue_id)?;
-            comment.author = identity(comment.author, actor, mapping, &mut identities);
-
+            comment.id = remap.entity(comment.id)?;
+            comment.issue_id = remap.entity(comment.issue_id)?;
+            comment.author = remap.identity(comment.author);
             comment.mentions = comment
                 .mentions
                 .iter()
-                .filter_map(|u| mapping.get(u).copied())
+                .filter_map(|u| remap.mapping.get(u).copied())
                 .collect();
-
             comment.attachments.clear();
         }
-
         for entry in &mut self.time_entries {
-            entry.id = entity(&ids, entry.id)?;
-            entry.issue_id = entity(&ids, entry.issue_id)?;
-            entry.user_id = identity(entry.user_id, actor, mapping, &mut identities);
+            entry.id = remap.entity(entry.id)?;
+            entry.issue_id = remap.entity(entry.issue_id)?;
+            entry.user_id = remap.identity(entry.user_id);
         }
-
         for view in &mut self.views {
-            view.id = entity(&ids, view.id)?;
-            view.owner = identity(view.owner, actor, mapping, &mut identities);
-            view.filter.assignee = view.filter.assignee.and_then(|u| mapping.get(&u).copied());
-            view.filter.created_by = view
-                .filter
-                .created_by
-                .and_then(|u| mapping.get(&u).copied());
-
-            view.filter.team_id = optional(&ids, view.filter.team_id)?;
-            view.filter.stage_id = optional(&ids, view.filter.stage_id)?;
-            view.filter.label_id = optional(&ids, view.filter.label_id)?;
-            view.filter.sprint_id = optional(&ids, view.filter.sprint_id)?;
-            view.filter.project_id = optional(&ids, view.filter.project_id)?;
-            view.filter.parent_id = optional(&ids, view.filter.parent_id)?;
-            view.filter.dependency_id = optional(&ids, view.filter.dependency_id)?;
-
-            if let Some(filter_ids) = &view.filter.ids {
-                let remapped = filter_ids
-                    .split(',')
-                    .map(|value| {
-                        let id = value
-                            .parse()
-                            .map_err(|_| Error::BadRequest("filter ids must be UUIDs".into()))?;
-                        entity(&ids, id).map(|id| id.to_string())
-                    })
-                    .collect::<Result<Vec<_>>>()?;
-                view.filter.ids = Some(remapped.join(","));
-            }
+            view.id = remap.entity(view.id)?;
+            view.owner = remap.identity(view.owner);
+            remap.filter(&mut view.filter)?;
         }
-
         for activity in &mut self.activity {
-            activity.id = entity(&ids, activity.id)?;
-            activity.actor = identity(activity.actor, actor, mapping, &mut identities);
-            activity.entity_id = activity
-                .entity_id
-                .and_then(|id| ids.get(&id).copied().or_else(|| mapping.get(&id).copied()));
+            activity.id = remap.entity(activity.id)?;
+            activity.actor = remap.identity(activity.actor);
+            activity.entity_id = activity.entity_id.and_then(|id| {
+                remap
+                    .ids
+                    .get(&id)
+                    .copied()
+                    .or_else(|| remap.mapping.get(&id).copied())
+            });
         }
+        Ok(())
+    }
 
-        let summary = ImportSummary {
-            issues: self.issues.len(),
-            comments: self.comments.len(),
-            time_entries: self.time_entries.len(),
-            identities: identities.into_values().collect(),
-        };
-
-        let mut candidate = workspace.clone();
-        candidate.teams.extend(self.teams);
-        candidate.labels.extend(self.labels);
-        candidate.projects.extend(self.projects);
-        candidate.milestones.extend(self.milestones);
-        candidate.sprints.extend(self.sprints);
-        candidate.issues.extend(self.issues);
-        candidate.comments.extend(self.comments);
-        candidate.time_entries.extend(self.time_entries);
-        candidate.views.extend(self.views);
-        candidate.activity.extend(self.activity);
-
-        candidate.activity.push(Activity {
-            id: Uuid::new_v4(),
-            actor,
-            action: "workspace_imported".into(),
-            entity_id: None,
-            at: now,
-            fields: vec![],
-        });
-
-        candidate.validate_imported()?;
-        *workspace = candidate;
-
-        Ok(summary)
+    fn merge_into(self, workspace: &mut Workspace) {
+        workspace.teams.extend(self.teams);
+        workspace.labels.extend(self.labels);
+        workspace.projects.extend(self.projects);
+        workspace.milestones.extend(self.milestones);
+        workspace.sprints.extend(self.sprints);
+        workspace.issues.extend(self.issues);
+        workspace.comments.extend(self.comments);
+        workspace.time_entries.extend(self.time_entries);
+        workspace.views.extend(self.views);
+        workspace.activity.extend(self.activity);
     }
 }
 
-fn entity(ids: &BTreeMap<Uuid, Uuid>, id: Uuid) -> Result<Uuid> {
-    ids.get(&id).copied().ok_or(Error::BadRequest(
-        "transfer references an entity it does not contain".into(),
-    ))
-}
-
-fn optional(ids: &BTreeMap<Uuid, Uuid>, id: Option<Uuid>) -> Result<Option<Uuid>> {
-    id.map(|id| entity(ids, id)).transpose()
-}
-
-fn identity(
-    source: Uuid,
+/// Translates transfer ids to fresh ids and source users to workspace members.
+struct Remap<'a> {
+    ids: BTreeMap<Uuid, Uuid>,
+    mapping: &'a BTreeMap<Uuid, Uuid>,
     actor: Uuid,
-    mapping: &BTreeMap<Uuid, Uuid>,
-    identities: &mut BTreeMap<Uuid, IdentityRemap>,
-) -> Uuid {
-    let target = mapping.get(&source).copied().unwrap_or(actor);
+    identities: BTreeMap<Uuid, IdentityRemap>,
+}
 
-    identities.entry(source).or_insert(IdentityRemap {
-        source,
-        target,
-        fallback: !mapping.contains_key(&source),
-    });
+impl Remap<'_> {
+    fn entity(&self, id: Uuid) -> Result<Uuid> {
+        self.ids.get(&id).copied().ok_or(Error::BadRequest(
+            "transfer references an entity it does not contain".into(),
+        ))
+    }
 
-    target
+    fn optional(&self, id: Option<Uuid>) -> Result<Option<Uuid>> {
+        id.map(|id| self.entity(id)).transpose()
+    }
+
+    /// The mapped member, or none when the source user has no mapping.
+    fn user(&self, user: Option<Uuid>) -> Option<Uuid> {
+        user.and_then(|u| self.mapping.get(&u).copied())
+    }
+
+    /// Mapped members, sorted and deduplicated; unmapped users drop out.
+    fn users(&self, users: &[Uuid]) -> Vec<Uuid> {
+        users
+            .iter()
+            .filter_map(|u| self.mapping.get(u).copied())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect()
+    }
+
+    /// The mapped member, or the importing actor; records each decision once.
+    fn identity(&mut self, source: Uuid) -> Uuid {
+        let target = self.mapping.get(&source).copied().unwrap_or(self.actor);
+        self.identities.entry(source).or_insert(IdentityRemap {
+            source,
+            target,
+            fallback: !self.mapping.contains_key(&source),
+        });
+        target
+    }
+
+    fn filter(&self, filter: &mut IssueFilter) -> Result<()> {
+        filter.assignee = self.user(filter.assignee);
+        filter.created_by = self.user(filter.created_by);
+        filter.team_id = self.optional(filter.team_id)?;
+        filter.stage_id = self.optional(filter.stage_id)?;
+        filter.label_id = self.optional(filter.label_id)?;
+        filter.sprint_id = self.optional(filter.sprint_id)?;
+        filter.project_id = self.optional(filter.project_id)?;
+        filter.parent_id = self.optional(filter.parent_id)?;
+        filter.dependency_id = self.optional(filter.dependency_id)?;
+        if let Some(ids) = &filter.ids {
+            let remapped = ids
+                .split(',')
+                .map(|value| {
+                    let id = value
+                        .parse()
+                        .map_err(|_| Error::BadRequest("filter ids must be UUIDs".into()))?;
+                    self.entity(id).map(|id| id.to_string())
+                })
+                .collect::<Result<Vec<_>>>()?;
+            filter.ids = Some(remapped.join(","));
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]

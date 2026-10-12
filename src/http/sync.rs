@@ -173,7 +173,7 @@ pub(super) async fn events(
         .sync_events_check(id, actor.profile.id, client_id)
         .await?;
     let workspace = id;
-    let mut subscriber = store.sync_broadcast.subscribe();
+    let subscriber = store.sync_broadcast.subscribe();
     let config = store.sync_events.clone();
     let keepalive = config.keepalive;
     // Capacity 1: at most one poke waits for the reader. `try_send` never
@@ -181,60 +181,69 @@ pub(super) async fn events(
     // `Full` failure means a poke is already queued and loses nothing.
     let (sender, receiver) =
         tokio::sync::mpsc::channel::<std::result::Result<Event, std::convert::Infallible>>(1);
-    tokio::spawn(async move {
-        if sender.try_send(Ok(poke_event())).is_err() {
-            return;
-        }
-        let mut last_send = tokio::time::Instant::now();
-        let mut pending = false;
-        let deadline = tokio::time::Instant::now() + config.lifetime;
-        loop {
-            let window_end = last_send + config.coalesce;
-            tokio::select! {
-                biased;
-                _ = tokio::time::sleep_until(deadline) => break,
-                _ = sender.closed() => break,
-                _ = tokio::time::sleep_until(window_end), if pending => {
-                    match sender.try_send(Ok(poke_event())) {
-                        Ok(()) => {
-                            last_send = tokio::time::Instant::now();
-                            pending = false;
-                        }
-                        Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-                            // The queued poke covers the burst; start fresh.
-                            last_send = tokio::time::Instant::now();
-                            pending = false;
-                        }
-                        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => break,
-                    }
-                },
-                received = subscriber.recv() => {
-                    let poke = match received {
-                        Ok(changed) => changed == workspace || changed.is_nil(),
-                        // A gap means something was missed: pull.
-                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => true,
-                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-                    };
-                    if !poke {
-                        continue;
-                    }
-                    if !pending && tokio::time::Instant::now().duration_since(last_send) >= config.coalesce
-                    {
-                        match sender.try_send(Ok(poke_event())) {
-                            Ok(()) => {
-                                last_send = tokio::time::Instant::now();
-                            }
-                            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-                                // A poke is already queued for delivery.
-                            }
-                            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => break,
-                        }
-                    } else {
-                        pending = true;
-                    }
-                },
-            }
-        }
-    });
+    tokio::spawn(forward_pokes(sender, subscriber, workspace, config));
     Ok(Sse::new(ReceiverStream::new(receiver)).keep_alive(KeepAlive::new().interval(keepalive)))
+}
+
+type PokeSender = tokio::sync::mpsc::Sender<std::result::Result<Event, std::convert::Infallible>>;
+
+/// Sends one poke at once, then one per commit to `workspace`, at most one
+/// per coalesce window, until the stream's lifetime ends or the client leaves.
+async fn forward_pokes(
+    sender: PokeSender,
+    mut subscriber: tokio::sync::broadcast::Receiver<Uuid>,
+    workspace: Uuid,
+    config: crate::store::SyncEventsConfig,
+) {
+    if sender.try_send(Ok(poke_event())).is_err() {
+        return;
+    }
+    let mut last_send = tokio::time::Instant::now();
+    let mut pending = false;
+    let deadline = tokio::time::Instant::now() + config.lifetime;
+    loop {
+        let window_end = last_send + config.coalesce;
+        tokio::select! {
+            biased;
+            _ = tokio::time::sleep_until(deadline) => break,
+            _ = sender.closed() => break,
+            _ = tokio::time::sleep_until(window_end), if pending => {
+                // A full channel already holds a poke that covers the burst.
+                if !try_poke(&sender) {
+                    break;
+                }
+                last_send = tokio::time::Instant::now();
+                pending = false;
+            },
+            received = subscriber.recv() => {
+                let poke = match received {
+                    Ok(changed) => changed == workspace || changed.is_nil(),
+                    // A gap means something was missed: pull.
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => true,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                };
+                if !poke {
+                    continue;
+                }
+                if pending || last_send.elapsed() < config.coalesce {
+                    pending = true;
+                    continue;
+                }
+                match sender.try_send(Ok(poke_event())) {
+                    Ok(()) => last_send = tokio::time::Instant::now(),
+                    // A poke is already queued for delivery.
+                    Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {}
+                    Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => break,
+                }
+            },
+        }
+    }
+}
+
+/// Queues a poke unless one is already waiting. False once the client is gone.
+fn try_poke(sender: &PokeSender) -> bool {
+    !matches!(
+        sender.try_send(Ok(poke_event())),
+        Err(tokio::sync::mpsc::error::TrySendError::Closed(_))
+    )
 }

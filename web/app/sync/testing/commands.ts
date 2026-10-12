@@ -130,39 +130,55 @@ export function commandArgs(name: string, raw: unknown): Record<string, unknown>
   return args;
 }
 
+const integers = new Set(["minutes", "estimate", "position", "archive_after_days"]);
+const nested = new Set(["input", "patch", "filter"]);
+const bulkActions = ["delete", "restore", "archive", "unarchive"];
+
 function validate(args: Record<string, unknown>, alertPreferences = false): void {
   for (const [key, value] of Object.entries(args)) {
     if (value === null) continue;
-    let valid = true;
-    if (enums.has(key))
-      valid = typeof value === "string" && (enums.get(key)?.includes(value) ?? false);
-    else if (
-      key === "id" ||
-      key.endsWith("_id") ||
-      key === "assignee" ||
-      key === "created_by" ||
-      key === "replacement"
-    )
-      args[key] = uuid(value, key);
-    else if (arrays.has(key)) {
-      valid = Array.isArray(value);
-      if (Array.isArray(value)) args[key] = value.map((id) => uuid(id, key));
-    } else if (
-      key.startsWith("clear_") ||
-      (booleans.has(key) && !(key === "deadline" && !alertPreferences && typeof value === "string"))
-    )
-      valid = typeof value === "boolean";
-    else if (strings.has(key)) valid = typeof value === "string";
-    else if (["minutes", "estimate", "position", "archive_after_days"].includes(key))
-      valid = typeof value === "number" && Number.isSafeInteger(value);
-    else if (["input", "patch", "filter"].includes(key)) valid = object(value);
-    if (!valid) throw new MutationError(400, `invalid command arguments: ${key}`);
+    if (!checkField(args, key, value, alertPreferences))
+      throw new MutationError(400, `invalid command arguments: ${key}`);
     if (object(value)) validate(value);
-    if (
-      key === "action" &&
-      typeof value === "string" &&
-      !["delete", "restore", "archive", "unarchive"].includes(value)
-    )
+    if (key === "action" && typeof value === "string" && !bulkActions.includes(value))
       throw new MutationError(400, "invalid bulk action");
   }
+}
+
+/** Checks one field's Serde type, normalizing UUIDs in place. Unknown keys pass. */
+function checkField(
+  args: Record<string, unknown>,
+  key: string,
+  value: unknown,
+  alertPreferences: boolean,
+): boolean {
+  const allowed = enums.get(key);
+  if (allowed) return typeof value === "string" && allowed.includes(value);
+  if (isUuidField(key)) {
+    args[key] = uuid(value, key);
+    return true;
+  }
+  if (arrays.has(key)) {
+    if (!Array.isArray(value)) return false;
+    args[key] = value.map((id) => uuid(id, key));
+    return true;
+  }
+  // `deadline` is an alert switch in `configure_alerts` and a timestamp elsewhere.
+  const issueDeadline = key === "deadline" && !alertPreferences && typeof value === "string";
+  if (key.startsWith("clear_") || (booleans.has(key) && !issueDeadline))
+    return typeof value === "boolean";
+  if (strings.has(key)) return typeof value === "string";
+  if (integers.has(key)) return typeof value === "number" && Number.isSafeInteger(value);
+  if (nested.has(key)) return object(value);
+  return true;
+}
+
+function isUuidField(key: string): boolean {
+  return (
+    key === "id" ||
+    key.endsWith("_id") ||
+    key === "assignee" ||
+    key === "created_by" ||
+    key === "replacement"
+  );
 }

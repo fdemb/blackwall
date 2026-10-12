@@ -114,18 +114,9 @@ async fn remote(
                         Json(json!({"error":"date filter unsupported"})),
                     );
                 }
-                if let Some(items) = data.incremental_items.clone() {
-                    let parents = data.parents.clone();
+                if let Some(mut items) = data.incremental_items.clone() {
+                    link_parents(&mut items, &data.parents);
                     let page_size = data.page_size.unwrap_or(1);
-                    let mut items = items;
-                    for package in &mut items {
-                        if let Some(id) = package.get("id").and_then(Value::as_i64)
-                            && let Some(parent) = parents.get(&id)
-                        {
-                            package["_links"]["parent"] =
-                                json!({"href": format!("/api/v3/work_packages/{parent}")});
-                        }
-                    }
                     return (
                         StatusCode::OK,
                         Json(collection_with_size(items, page, page_size)),
@@ -137,63 +128,13 @@ async fn remote(
                 .unwrap()
                 .parse()
                 .unwrap();
-            let assignee_id = data.assignee_id;
-            let author_id = data.author_id;
-            let moved = data.moved;
-            let missing = data.missing;
-            let stall = data.stall;
-            let same_stage = data.same_stage;
-            let extra = data.extra;
-            let deadline = data.deadline.clone().unwrap_or_else(|| "2026-05-10".into());
-            let closed_first = data.closed_first;
-            let malformed_last = data.malformed_last;
+            let packages = scripted_packages(&data, project);
             let page_size = data.page_size.unwrap_or(1);
-            let bulk_count = data.bulk_count;
-            let parents = data.parents.clone();
+            let stall = data.stall;
             drop(data);
             if stall {
                 mock.entered.notify_one();
                 mock.release.notified().await;
-            }
-            let mut packages = vec![];
-            if !missing && project == if moved { 43 } else { 42 } {
-                packages.push(json!({
-                    "id":7,"subject":if moved {"Moved package"}else{"First package"},
-                    "description":{"raw":"Imported **description**"},"dueDate":deadline,
-                    "_links":{"project":{"href":format!("/api/v3/projects/{project}")},
-                        "status":{"href":if closed_first {"/api/v3/statuses/2"}else{"/api/v3/statuses/1"},"title":"In progress"},
-                        "assignee":{"href":assignee_id.map(|id| format!("/api/v3/users/{id}"))},
-                        "author":{"href":author_id.map(|id| format!("/api/v3/users/{id}"))},
-                        "priority":{"title":"High"}}
-                }));
-            }
-            if !missing && project == 42 {
-                packages.push(
-                    json!({"id":8,"subject":"Closed package","description":{"raw":""},
-                    "_links":{"project":{"href":"/api/v3/projects/42"},
-                        "status":{"href":if same_stage {"/api/v3/statuses/1"}else{"/api/v3/statuses/2"},"title":"Closed"}}}),
-                );
-            }
-            if extra && project == 42 {
-                packages.push(json!({"id":9,"subject":"Beyond capacity","description":{"raw":""},
-                    "_links":{"project":{"href":"/api/v3/projects/42"},"status":{"href":"/api/v3/statuses/1"}}}));
-            }
-            for index in 0..bulk_count {
-                packages.push(json!({"id":100+index,"subject":format!("Bulk package {index}"),
-                    "description":{"raw":"A repeated description for the performance test.".repeat(20)},
-                    "_links":{"project":{"href":format!("/api/v3/projects/{project}")},
-                    "status":{"href":"/api/v3/statuses/1"}}}));
-            }
-            if malformed_last && let Some(last) = packages.last_mut() {
-                last["dueDate"] = json!("invalid-date");
-            }
-            for package in &mut packages {
-                if let Some(id) = package.get("id").and_then(Value::as_i64)
-                    && let Some(parent) = parents.get(&id)
-                {
-                    package["_links"]["parent"] =
-                        json!({"href": format!("/api/v3/work_packages/{parent}")});
-                }
             }
             return (
                 StatusCode::OK,
@@ -203,6 +144,60 @@ async fn remote(
         _ => panic!("unexpected remote endpoint: {resource}"),
     };
     (StatusCode::OK, Json(collection(items, page)))
+}
+
+/// The work packages the scenario flags describe for one project.
+fn scripted_packages(data: &Remote, project: i64) -> Vec<Value> {
+    let deadline = data.deadline.clone().unwrap_or_else(|| "2026-05-10".into());
+    let mut packages = vec![];
+    if !data.missing && project == if data.moved { 43 } else { 42 } {
+        packages.push(json!({
+            "id":7,"subject":if data.moved {"Moved package"}else{"First package"},
+            "description":{"raw":"Imported **description**"},"dueDate":deadline,
+            "_links":{"project":{"href":format!("/api/v3/projects/{project}")},
+                "status":{"href":if data.closed_first {"/api/v3/statuses/2"}else{"/api/v3/statuses/1"},"title":"In progress"},
+                "assignee":{"href":data.assignee_id.map(|id| format!("/api/v3/users/{id}"))},
+                "author":{"href":data.author_id.map(|id| format!("/api/v3/users/{id}"))},
+                "priority":{"title":"High"}}
+        }));
+    }
+    if !data.missing && project == 42 {
+        packages.push(
+            json!({"id":8,"subject":"Closed package","description":{"raw":""},
+            "_links":{"project":{"href":"/api/v3/projects/42"},
+                "status":{"href":if data.same_stage {"/api/v3/statuses/1"}else{"/api/v3/statuses/2"},"title":"Closed"}}}),
+        );
+    }
+    if data.extra && project == 42 {
+        packages.push(json!({"id":9,"subject":"Beyond capacity","description":{"raw":""},
+            "_links":{"project":{"href":"/api/v3/projects/42"},"status":{"href":"/api/v3/statuses/1"}}}));
+    }
+    for index in 0..data.bulk_count {
+        packages.push(
+            json!({"id":100+index,"subject":format!("Bulk package {index}"),
+            "description":{"raw":"A repeated description for the performance test.".repeat(20)},
+            "_links":{"project":{"href":format!("/api/v3/projects/{project}")},
+            "status":{"href":"/api/v3/statuses/1"}}}),
+        );
+    }
+    if data.malformed_last
+        && let Some(last) = packages.last_mut()
+    {
+        last["dueDate"] = json!("invalid-date");
+    }
+    link_parents(&mut packages, &data.parents);
+    packages
+}
+
+fn link_parents(packages: &mut [Value], parents: &BTreeMap<i64, i64>) {
+    for package in packages {
+        if let Some(id) = package.get("id").and_then(Value::as_i64)
+            && let Some(parent) = parents.get(&id)
+        {
+            package["_links"]["parent"] =
+                json!({"href": format!("/api/v3/work_packages/{parent}")});
+        }
+    }
 }
 
 fn collection(items: Vec<Value>, page: usize) -> Value {

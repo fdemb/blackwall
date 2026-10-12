@@ -61,14 +61,7 @@ export function filterIssues(
 ): DeepReadonly<SyncIssue>[] {
   if (filter.search && new TextEncoder().encode(filter.search).length > 200)
     throw new ApiError("search query too long", 400);
-  let ids: Set<string> | undefined;
-  if (filter.ids != null) {
-    const values = filter.ids.split(",").map(uuid);
-    if (values.some((id) => id === undefined))
-      throw new ApiError("ids must be comma-separated UUIDs", 400);
-    if (values.length > 200) throw new ApiError("ids may contain at most 200 UUIDs", 400);
-    ids = new Set(values.filter((id) => id !== undefined));
-  }
+  const ids = filter.ids == null ? undefined : parseIds(filter.ids);
   const due = filter.due_before == null ? undefined : parseTimestamp(filter.due_before);
   const equality = (
     [
@@ -89,14 +82,12 @@ export function filterIssues(
   const dependency =
     filter.dependency_id == null ? undefined : (uuid(filter.dependency_id) ?? filter.dependency_id);
   const matches = searchPredicate(filter.search ?? "");
+  const isOpen = (issue: DeepReadonly<SyncIssue>) => {
+    const kind = store.stageKind(issue.stage_id);
+    return kind !== undefined && kind !== "done" && kind !== "cancelled";
+  };
   const rows = store.all("issues").filter((issue) => {
-    if (
-      filter.trash
-        ? issue.deleted_at === null
-        : issue.deleted_at !== null ||
-          (filter.archived ? issue.archived_at === null : issue.archived_at !== null)
-    )
-      return false;
+    if (!inLifecycle(filter, issue)) return false;
     for (const [column, value] of equality) {
       const actual = issue[column];
       if (actual === null || (uuid(actual) ?? actual) !== value) return false;
@@ -106,40 +97,63 @@ export function filterIssues(
     if (due !== undefined && (issue.deadline === null || issue.deadline > due)) return false;
     if (filter.unassigned && issue.assignee !== null) return false;
     if (filter.no_sprint && issue.sprint_id !== null) return false;
-    if (filter.open) {
-      const kind = store.stageKind(issue.stage_id);
-      if (kind === undefined || kind === "done" || kind === "cancelled") return false;
-    }
+    if (filter.open && !isOpen(issue)) return false;
     if (ids && !ids.has(issue.id)) return false;
     return matches(issue);
   });
-  return rows.sort((a, b) => {
-    let group = 0;
-    if (filter.group_by === "stage") group = compareCodePoints(a.stage_id, b.stage_id);
-    if (filter.group_by === "priority") group = rank[b.priority] - rank[a.priority];
-    if (filter.group_by === "assignee") group = nullable(a.assignee, b.assignee, compareCodePoints);
-    if (group) return group;
-    switch (filter.sort ?? "position") {
-      case "deadline":
-        return (
-          nullable(a.deadline, b.deadline, compareCodePoints) ||
-          a.position - b.position ||
-          compareCodePoints(a.id, b.id)
-        );
-      case "updated":
-        return compareCodePoints(b.updated_at, a.updated_at) || compareCodePoints(a.id, b.id);
-      case "priority":
-        return (
-          rank[b.priority] - rank[a.priority] ||
-          a.position - b.position ||
-          compareCodePoints(a.id, b.id)
-        );
-      case "position":
-        return (
-          a.position - b.position ||
-          nullable(a.number, b.number, (x, y) => x - y) ||
-          compareCodePoints(a.id, b.id)
-        );
-    }
-  });
+  return rows.sort((a, b) => compareGroup(filter, a, b) || compareSort(filter, a, b));
+}
+
+function parseIds(list: string): Set<string> {
+  const values = list.split(",").map(uuid);
+  if (values.some((id) => id === undefined))
+    throw new ApiError("ids must be comma-separated UUIDs", 400);
+  if (values.length > 200) throw new ApiError("ids may contain at most 200 UUIDs", 400);
+  return new Set(values.filter((id) => id !== undefined));
+}
+
+/** Trash shows only deleted issues; otherwise live issues, archived or not per the filter. */
+function inLifecycle(filter: ReplicaIssueFilter, issue: DeepReadonly<SyncIssue>): boolean {
+  if (filter.trash) return issue.deleted_at !== null;
+  return issue.deleted_at === null && (issue.archived_at !== null) === Boolean(filter.archived);
+}
+
+type Row = DeepReadonly<SyncIssue>;
+
+function compareGroup(filter: ReplicaIssueFilter, a: Row, b: Row): number {
+  switch (filter.group_by) {
+    case "stage":
+      return compareCodePoints(a.stage_id, b.stage_id);
+    case "priority":
+      return rank[b.priority] - rank[a.priority];
+    case "assignee":
+      return nullable(a.assignee, b.assignee, compareCodePoints);
+    default:
+      return 0;
+  }
+}
+
+function compareSort(filter: ReplicaIssueFilter, a: Row, b: Row): number {
+  switch (filter.sort ?? "position") {
+    case "deadline":
+      return (
+        nullable(a.deadline, b.deadline, compareCodePoints) ||
+        a.position - b.position ||
+        compareCodePoints(a.id, b.id)
+      );
+    case "updated":
+      return compareCodePoints(b.updated_at, a.updated_at) || compareCodePoints(a.id, b.id);
+    case "priority":
+      return (
+        rank[b.priority] - rank[a.priority] ||
+        a.position - b.position ||
+        compareCodePoints(a.id, b.id)
+      );
+    case "position":
+      return (
+        a.position - b.position ||
+        nullable(a.number, b.number, (x, y) => x - y) ||
+        compareCodePoints(a.id, b.id)
+      );
+  }
 }

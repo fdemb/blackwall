@@ -116,17 +116,20 @@ export function FilterBar({
       case "unassigned":
         return t("assignee.none");
       case "stage_id":
-        return ws.teams.flatMap((x) => x.stages).find((s) => s.id === filter.stage_id)?.name ?? "?";
+        return nameOf(
+          ws.teams.flatMap((x) => x.stages),
+          filter.stage_id,
+        );
       case "priority":
         return t(`priority.${filter.priority!}`);
       case "label_id":
-        return ws.labels.find((l) => l.id === filter.label_id)?.name ?? "?";
+        return nameOf(ws.labels, filter.label_id);
       case "project_id":
-        return ws.projects.find((p) => p.id === filter.project_id)?.name ?? "?";
+        return nameOf(ws.projects, filter.project_id);
       case "sprint_id":
-        return ws.sprints.find((s) => s.id === filter.sprint_id)?.name ?? "?";
+        return nameOf(ws.sprints, filter.sprint_id);
       case "team_id":
-        return ws.teams.find((x) => x.id === filter.team_id)?.name ?? "?";
+        return nameOf(ws.teams, filter.team_id);
       case "due_before":
         return t("filter.dueTo", { date: fullDate(filter.due_before!, lang) });
       case "archived":
@@ -549,4 +552,9 @@ function SaveViewForm({
       </div>
     </Form>
   );
+}
+
+/** The record's name, or "?" when the filter points at something deleted. */
+function nameOf(items: readonly { id: string; name: string }[], id: string | null | undefined) {
+  return items.find((item) => item.id === id)?.name ?? "?";
 }

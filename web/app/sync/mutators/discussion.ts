@@ -1,7 +1,6 @@
 import type { DeepReadonly, Tx } from "../store";
 import type { ArgsOf, Mutator } from "./common";
 import {
-  NIL_UUID,
   checkCreateId,
   checkCapacity,
   checkText,
@@ -12,6 +11,8 @@ import {
   requireRole,
   requireTimestamp,
   utf8Length,
+  reserveClientId,
+  requireClientId,
 } from "./common";
 import { MutationError } from "./errors";
 import type { Attachment, Comment } from "../../lib/types";
@@ -44,6 +45,33 @@ function requireComment(tx: Tx, id: string): DeepReadonly<Comment> {
   return comment;
 }
 
+/**
+ * Splits the issue's attachments into the ones the comment claims, sorted by
+ * id, and the ones the issue keeps. `carried` are the comment's own
+ * attachments on replay.
+ */
+function claimAttachments(
+  onIssue: readonly DeepReadonly<Attachment>[],
+  carried: readonly DeepReadonly<Attachment>[],
+  claimed: readonly { id: string }[],
+): { moved: Attachment[]; remaining: Attachment[] } {
+  const remaining = new Map(onIssue.map((attachment) => [attachment.id, attachment]));
+  const replayed = new Map(carried.map((attachment) => [attachment.id, attachment]));
+  const seen = new Set<string>();
+  const moved: Attachment[] = [];
+  for (const { id } of claimed) {
+    const stored = seen.has(id) ? undefined : (remaining.get(id) ?? replayed.get(id));
+    if (stored === undefined) {
+      throw new MutationError(400, "attachment must be uploaded to this issue first");
+    }
+    seen.add(id);
+    remaining.delete(id);
+    moved.push({ ...stored });
+  }
+  moved.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  return { moved, remaining: [...remaining.values()].map((attachment) => ({ ...attachment })) };
+}
+
 export const addComment: Mutator<ArgsOf<"add_comment">> = (tx, args, ctx) => {
   requireRole(tx, ctx.actor, "add_comment", args);
   // Order mirrors `discussion::AddComment`: the issue, the body, the
@@ -52,37 +80,20 @@ export const addComment: Mutator<ArgsOf<"add_comment">> = (tx, args, ctx) => {
   checkText(args.body, 100_000);
   const mentions = dedupeSortUuids(args.mentions);
   for (const user of mentions) requireMember(tx, user);
-  const id = args.id ?? null;
-  if (id === null) throw new MutationError(400, "id is required");
-  if (id === NIL_UUID) throw new MutationError(400, "id must not be nil");
-  checkCreateId(tx, id, ctx);
+  const id = reserveClientId(tx, args.id, ctx);
   // The server moves the attachments from the issue to the comment, keeping
   // the stored upload metadata ordered by attachment id. An id that is not on
   // the issue fails as on the server. A replay over a base that already holds
   // the comment reads the metadata back from the comment itself, so running
   // twice gives the same view as running once.
   const previous = tx.get("comments", id);
-  const remaining = new Map(issue.attachments.map((attachment) => [attachment.id, attachment]));
-  const carried = new Map(
-    (previous?.attachments ?? []).map((attachment) => [attachment.id, attachment]),
+  const { moved, remaining } = claimAttachments(
+    issue.attachments,
+    previous?.attachments ?? [],
+    args.attachments,
   );
-  const seen = new Set<string>();
-  const moved: Attachment[] = [];
-  for (const attachment of args.attachments) {
-    if (seen.has(attachment.id)) {
-      throw new MutationError(400, "attachment must be uploaded to this issue first");
-    }
-    seen.add(attachment.id);
-    const stored = remaining.get(attachment.id) ?? carried.get(attachment.id);
-    if (stored === undefined) {
-      throw new MutationError(400, "attachment must be uploaded to this issue first");
-    }
-    remaining.delete(attachment.id);
-    moved.push({ ...stored });
-  }
-  moved.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
   if (moved.length > 0) {
-    tx.put("issues", { ...issue, attachments: [...remaining.values()] });
+    tx.put("issues", { ...issue, attachments: remaining });
   }
   // Replay over a base that already holds the id keeps its version and creation time.
   tx.put("comments", {
@@ -131,9 +142,7 @@ export const logTime: Mutator<ArgsOf<"log_time">> = (tx, args, ctx) => {
   requireDiscussionIssue(tx, args.issue_id);
   checkTime(args.minutes, args.note);
   checkTimestamp(args.logged_at);
-  const id = args.id ?? null;
-  if (id === null) throw new MutationError(400, "id is required");
-  if (id === NIL_UUID) throw new MutationError(400, "id must not be nil");
+  const id = requireClientId(args.id);
   checkCapacity(tx, "time_entries", 20_000, ctx, id);
   checkCreateId(tx, id, ctx);
   const previous = tx.get("time_entries", id);

@@ -101,6 +101,17 @@ pub(super) enum PageData {
         items: Vec<WorkPackage>,
     },
 }
+impl PageData {
+    pub fn len(&self) -> usize {
+        match self {
+            Self::Projects(items) => items.len(),
+            Self::Statuses(items) => items.len(),
+            Self::People(items) => items.len(),
+            Self::WorkPackages { items, .. } => items.len(),
+        }
+    }
+}
+
 pub(super) struct Page {
     pub data: PageData,
     pub more: bool,
@@ -245,27 +256,8 @@ impl Checkpoint {
                     .collect::<Result<_>>()?,
             ),
             Self::WorkPackages { .. } => {
-                if items.len() > 50 {
-                    return Err(Error::Internal(
-                        "OpenProject work package page exceeds 50 items".into(),
-                    ));
-                }
                 let mapping = self.mapping(mappings)?.clone();
-                let items: Vec<WorkPackage> = items
-                    .iter()
-                    .map(|item| work_package(item, mapping.project_id))
-                    .collect::<Result<_>>()?;
-                if items
-                    .iter()
-                    .map(|item| item.id)
-                    .collect::<BTreeSet<_>>()
-                    .len()
-                    != items.len()
-                {
-                    return Err(Error::Internal(
-                        "duplicate OpenProject work package in page".into(),
-                    ));
-                }
+                let items = work_packages(items, mapping.project_id)?;
                 PageData::WorkPackages { mapping, items }
             }
         };
@@ -350,6 +342,26 @@ fn link_id(item: &Value, kind: &str) -> Result<i64> {
         .filter(|id| *id > 0)
         .ok_or_else(|| Error::Internal(format!("missing work package {kind}")))
 }
+/// At most 50 distinct work packages, all from the expected project.
+fn work_packages(items: &[Value], expected_project: i64) -> Result<Vec<WorkPackage>> {
+    if items.len() > 50 {
+        return Err(Error::Internal(
+            "OpenProject work package page exceeds 50 items".into(),
+        ));
+    }
+    let packages: Vec<WorkPackage> = items
+        .iter()
+        .map(|item| work_package(item, expected_project))
+        .collect::<Result<_>>()?;
+    let distinct: BTreeSet<_> = packages.iter().map(|item| item.id).collect();
+    if distinct.len() != packages.len() {
+        return Err(Error::Internal(
+            "duplicate OpenProject work package in page".into(),
+        ));
+    }
+    Ok(packages)
+}
+
 fn work_package(item: &Value, expected_project: i64) -> Result<WorkPackage> {
     let id = positive_id(item)?;
     let project_id = link_id(item, "project")?;
@@ -377,54 +389,68 @@ fn work_package(item: &Value, expected_project: i64) -> Result<WorkPackage> {
         .pointer("/_links/status/title")
         .and_then(Value::as_str)
         .map(str::to_owned);
-    let priority = match item
+    Ok(WorkPackage {
+        id,
+        project_id,
+        title,
+        description,
+        status_id,
+        status_name,
+        priority: priority(item),
+        deadline: due_date(item)?,
+        assignee_id: optional_link(item, "assignee")?,
+        // Only the creator column depends on it, so an odd author link must not fail the page.
+        author_id: link_id(item, "author").ok(),
+        parent_id: parent_link(item)?,
+    })
+}
+
+/// A link that may be absent or null.
+fn optional_link(item: &Value, kind: &str) -> Result<Option<i64>> {
+    match item.pointer(&format!("/_links/{kind}/href")) {
+        None | Some(Value::Null) => Ok(None),
+        Some(_) => link_id(item, kind).map(Some),
+    }
+}
+
+/// A parent hidden from the API user reads as no parent.
+fn parent_link(item: &Value) -> Result<Option<i64>> {
+    match item.pointer("/_links/parent/href") {
+        Some(Value::String(href)) if href == "urn:openproject-org:api:v3:undisclosed" => Ok(None),
+        _ => optional_link(item, "parent"),
+    }
+}
+
+/// OpenProject priority names; "immediate" maps to urgent and anything unknown to none.
+fn priority(item: &Value) -> Priority {
+    let title = item
         .pointer("/_links/priority/title")
         .and_then(Value::as_str)
         .unwrap_or("")
-        .to_ascii_lowercase()
-        .as_str()
-    {
+        .to_ascii_lowercase();
+    match title.as_str() {
         "low" => Priority::Low,
         "normal" => Priority::Normal,
         "high" => Priority::High,
         "urgent" | "immediate" => Priority::Urgent,
         _ => Priority::None,
-    };
-    let deadline = match item.get("dueDate") {
-        None | Some(Value::Null) => None,
-        Some(Value::String(date)) => Some(
+    }
+}
+
+/// The `YYYY-MM-DD` due date as midnight UTC.
+fn due_date(item: &Value) -> Result<Option<DateTime<Utc>>> {
+    let invalid = || Error::Internal("invalid work package due date".into());
+    match item.get("dueDate") {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(date)) => Ok(Some(
             chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d")
-                .map_err(|_| Error::Internal("invalid work package due date".into()))?
+                .map_err(|_| invalid())?
                 .and_hms_opt(0, 0, 0)
                 .unwrap()
                 .and_utc(),
-        ),
-        Some(_) => return Err(Error::Internal("invalid work package due date".into())),
-    };
-    let assignee_id = match item.pointer("/_links/assignee/href") {
-        None | Some(Value::Null) => None,
-        Some(_) => Some(link_id(item, "assignee")?),
-    };
-    // Only the creator column depends on it, so an odd author link must not fail the page.
-    let author_id = link_id(item, "author").ok();
-    let parent_id = match item.pointer("/_links/parent/href") {
-        None | Some(Value::Null) => None,
-        Some(Value::String(href)) if href == "urn:openproject-org:api:v3:undisclosed" => None,
-        Some(_) => Some(link_id(item, "parent")?),
-    };
-    Ok(WorkPackage {
-        id,
-        project_id,
-        parent_id,
-        title,
-        description,
-        assignee_id,
-        author_id,
-        status_id,
-        status_name,
-        priority,
-        deadline,
-    })
+        )),
+        Some(_) => Err(invalid()),
+    }
 }
 
 pub(super) fn elements(value: &Value, page: i64) -> Result<(&[Value], bool)> {

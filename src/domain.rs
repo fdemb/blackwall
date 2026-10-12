@@ -99,6 +99,13 @@ pub enum SprintState {
     Archived,
 }
 
+impl SprintState {
+    /// Completed and archived sprints no longer accept planning changes.
+    pub fn is_finished(&self) -> bool {
+        matches!(self, Self::Completed | Self::Archived)
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct Sprint {
     #[serde(default = "initial_version")]

@@ -253,8 +253,8 @@ function EstimateField({
 type TimeView = { kind: "closed" } | { kind: "list" } | { kind: "form"; entry: TimeEntry | null };
 
 function TimeProp({ issue }: { issue: Issue }) {
-  const { t, lang } = useI18n();
-  const { me, run, member, canWrite, canAdmin, report } = useWorkspace();
+  const { t } = useI18n();
+  const { canWrite, report } = useWorkspace();
   const entries = useTimeEntries(issue.id).items;
   const total = report.issues.find((total) => total.id === issue.id)?.minutes ?? 0;
   const [view, setView] = useState<TimeView>({ kind: "closed" });
@@ -301,65 +301,15 @@ function TimeProp({ issue }: { issue: Issue }) {
         ) : (
           <div className="space-y-3">
             <ul className="-mx-1 max-h-80 divide-y divide-border/70 overflow-y-auto">
-              {entries.map((e) => {
-                const m = member(e.user_id);
-                return (
-                  <li key={e.id} className="group flex min-h-11 items-center gap-2.5 px-1 py-1.5 ">
-                    {deleting === e.id ? (
-                      <>
-                        <span className="flex-1">{t("time.deleteTitle")}</span>
-                        <Button variant="ghost" size="sm" onPress={() => setDeleting(null)}>
-                          {t("action.cancel")}
-                        </Button>
-                        <Button
-                          variant="destructive"
-                          size="sm"
-                          onPress={() =>
-                            run({ type: "delete_time", id: e.id })
-                              .then(() => setDeleting(null))
-                              .catch(() => {})
-                          }
-                        >
-                          {t("action.delete")}
-                        </Button>
-                      </>
-                    ) : (
-                      <>
-                        <Avatar name={m?.display_name ?? "?"} src={m?.avatar_url} size={18} />
-                        <span className="w-16 font-medium tabular-nums">
-                          {formatMinutes(e.minutes)}
-                        </span>
-                        <span className="min-w-0 flex-1 truncate text-muted-foreground">
-                          {e.note}
-                        </span>
-                        <span className=" tabular-nums text-muted-foreground">
-                          {fullDate(e.logged_at, lang)}
-                        </span>
-                        {(e.user_id === me || canAdmin) && (
-                          <span className={cn("flex", revealOnHover)}>
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              aria-label={t("action.edit")}
-                              onPress={() => setView({ kind: "form", entry: e })}
-                            >
-                              <Pencil />
-                            </Button>
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              aria-label={t("action.delete")}
-                              onPress={() => setDeleting(e.id)}
-                            >
-                              <Trash2 />
-                            </Button>
-                          </span>
-                        )}
-                      </>
-                    )}
-                  </li>
-                );
-              })}
+              {entries.map((e) => (
+                <TimeEntryRow
+                  key={e.id}
+                  entry={e}
+                  confirming={deleting === e.id}
+                  onConfirm={setDeleting}
+                  onEdit={(entry) => setView({ kind: "form", entry })}
+                />
+              ))}
             </ul>
             {canWrite && (
               <div className="flex justify-end">
@@ -373,5 +323,70 @@ function TimeProp({ issue }: { issue: Issue }) {
         )}
       </Dialog>
     </Prop>
+  );
+}
+
+/** One logged entry, or its inline delete confirmation while `confirming`. */
+function TimeEntryRow({
+  entry,
+  confirming,
+  onConfirm,
+  onEdit,
+}: {
+  entry: TimeEntry;
+  confirming: boolean;
+  onConfirm: (id: Id | null) => void;
+  onEdit: (entry: TimeEntry) => void;
+}) {
+  const { t, lang } = useI18n();
+  const { me, run, member, canAdmin } = useWorkspace();
+  const author = member(entry.user_id);
+  if (confirming)
+    return (
+      <li className="group flex min-h-11 items-center gap-2.5 px-1 py-1.5 ">
+        <span className="flex-1">{t("time.deleteTitle")}</span>
+        <Button variant="ghost" size="sm" onPress={() => onConfirm(null)}>
+          {t("action.cancel")}
+        </Button>
+        <Button
+          variant="destructive"
+          size="sm"
+          onPress={() =>
+            run({ type: "delete_time", id: entry.id })
+              .then(() => onConfirm(null))
+              .catch(() => {})
+          }
+        >
+          {t("action.delete")}
+        </Button>
+      </li>
+    );
+  return (
+    <li className="group flex min-h-11 items-center gap-2.5 px-1 py-1.5 ">
+      <Avatar name={author?.display_name ?? "?"} src={author?.avatar_url} size={18} />
+      <span className="w-16 font-medium tabular-nums">{formatMinutes(entry.minutes)}</span>
+      <span className="min-w-0 flex-1 truncate text-muted-foreground">{entry.note}</span>
+      <span className=" tabular-nums text-muted-foreground">{fullDate(entry.logged_at, lang)}</span>
+      {(entry.user_id === me || canAdmin) && (
+        <span className={cn("flex", revealOnHover)}>
+          <Button
+            variant="ghost"
+            size="icon"
+            aria-label={t("action.edit")}
+            onPress={() => onEdit(entry)}
+          >
+            <Pencil />
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon"
+            aria-label={t("action.delete")}
+            onPress={() => onConfirm(entry.id)}
+          >
+            <Trash2 />
+          </Button>
+        </span>
+      )}
+    </li>
   );
 }

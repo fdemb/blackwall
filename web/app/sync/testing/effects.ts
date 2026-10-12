@@ -26,55 +26,61 @@ export function applyServerOnlyEffects(context: ServerEffects): number {
 }
 
 function correctPredictions(context: ServerEffects): void {
-  const { tx, name, args, id } = context;
-  if (name === "update_view" && id && !tx.get("views", id)) {
-    const view = context.before.get("views", id);
-    if (view && typeof args.name === "string" && object(args.filter))
-      tx.put("views", { ...view, name: args.name, shared: false, filter: args.filter });
+  restorePrivateViewUpdate(context);
+  rebalanceMoveTarget(context);
+  touchFollowedIssue(context);
+  touchTeamMembers(context);
+}
+
+/** Restores a view `update_view` hid from the actor, with the update applied and sharing off. */
+function restorePrivateViewUpdate({ tx, before, name, args, id }: ServerEffects): void {
+  if (name !== "update_view" || !id || tx.get("views", id)) return;
+  const view = before.get("views", id);
+  if (view && typeof args.name === "string" && object(args.filter))
+    tx.put("views", { ...view, name: args.name, shared: false, filter: args.filter });
+}
+
+/** `move_issue` before a neighbor with no gap rebalances the whole stage, as the server does. */
+function rebalanceMoveTarget({ tx, name, args, id }: ServerEffects): void {
+  if (name !== "move_issue" || !id || typeof args.before_id !== "string") return;
+  const issue = tx.get("issues", id);
+  const neighbor = tx.get("issues", args.before_id);
+  if (!issue || !neighbor) return;
+  const peers = tx
+    .byIndex("issues", "stage_id", issue.stage_id)
+    .filter((peer) => peer.id !== id && peer.team_id === issue.team_id && peer.deleted_at === null);
+  const preceding = peers.filter(
+    (peer) =>
+      peer.position < neighbor.position ||
+      (peer.position === neighbor.position && peer.id < neighbor.id),
+  );
+  const lower = preceding.length
+    ? Math.max(...preceding.map((peer) => peer.position))
+    : neighbor.position - 2048;
+  if (neighbor.position - lower > 1) return;
+  const ordered = [...peers].sort((a, b) => a.position - b.position || (a.id < b.id ? -1 : 1));
+  for (const [rank, peer] of ordered.entries()) {
+    tx.put("issues", { ...peer, position: rank * 1024 });
+    if (peer.id === neighbor.id) tx.put("issues", { ...issue, position: rank * 1024 - 512 });
   }
-  if (name === "move_issue" && id && typeof args.before_id === "string") {
-    const issue = tx.get("issues", id);
-    const neighbor = tx.get("issues", args.before_id);
-    if (issue && neighbor) {
-      const peers = tx
-        .byIndex("issues", "stage_id", issue.stage_id)
-        .filter(
-          (peer) => peer.id !== id && peer.team_id === issue.team_id && peer.deleted_at === null,
-        );
-      const preceding = peers.filter(
-        (peer) =>
-          peer.position < neighbor.position ||
-          (peer.position === neighbor.position && peer.id < neighbor.id),
-      );
-      const lower = preceding.length
-        ? Math.max(...preceding.map((peer) => peer.position))
-        : neighbor.position - 2048;
-      if (neighbor.position - lower <= 1) {
-        const ordered = [...peers].sort(
-          (a, b) => a.position - b.position || (a.id < b.id ? -1 : 1),
-        );
-        for (const [rank, peer] of ordered.entries()) {
-          tx.put("issues", { ...peer, position: rank * 1024 });
-          if (peer.id === neighbor.id) tx.put("issues", { ...issue, position: rank * 1024 - 512 });
-        }
-      }
-    }
-  }
-  if (
-    ["follow", "add_source_link"].includes(name) &&
-    typeof args.issue_id === "string" &&
-    !tx.touched.has(`issues:${args.issue_id}`)
-  ) {
-    const issue = tx.get("issues", args.issue_id);
-    if (issue) tx.put("issues", issue);
-  }
-  if (name === "set_team_members" && id) {
-    const old = context.before.get("teams", id);
-    const team = tx.get("teams", id);
-    for (const user of new Set([...(old?.members ?? []), ...(team?.members ?? [])])) {
-      const member = tx.get("members", user);
-      if (member) tx.put("members", member);
-    }
+}
+
+/** Follows and source links change child tables, which re-render the issue. */
+function touchFollowedIssue({ tx, name, args }: ServerEffects): void {
+  if (!["follow", "add_source_link"].includes(name) || typeof args.issue_id !== "string") return;
+  if (tx.touched.has(`issues:${args.issue_id}`)) return;
+  const issue = tx.get("issues", args.issue_id);
+  if (issue) tx.put("issues", issue);
+}
+
+/** Team membership changes re-render every member who joined or left. */
+function touchTeamMembers({ tx, before, name, id }: ServerEffects): void {
+  if (name !== "set_team_members" || !id) return;
+  const old = before.get("teams", id);
+  const team = tx.get("teams", id);
+  for (const user of new Set([...(old?.members ?? []), ...(team?.members ?? [])])) {
+    const member = tx.get("members", user);
+    if (member) tx.put("members", member);
   }
 }
 
@@ -157,37 +163,34 @@ function stampTeam(context: ServerEffects, key: string): void {
 }
 
 function finishCommand(context: ServerEffects): void {
-  const { tx, actor, name, args, id } = context;
-  if (name === "move_issue" && !args.before_id && id) {
-    const issue = tx.get("issues", id);
-    if (issue) {
-      const positions = tx
-        .byIndex("issues", "stage_id", issue.stage_id)
-        .filter((i) => i.id !== id && i.team_id === issue.team_id && i.deleted_at === null)
-        .map((i) => i.position);
-      tx.put("issues", { ...issue, position: Math.max(-1024, ...positions) + 1024 });
-    }
-  }
-  if (name === "add_comment" && id) {
-    const comment = tx.get("comments", id);
-    const issue = comment ? tx.get("issues", comment.issue_id) : undefined;
-    if (comment && issue) {
-      for (const follower of issue.followers)
-        if (follower !== actor)
-          notify(context, tx, follower, issue.id, "reply", comment.body, `reply:${id}:${follower}`);
-      for (const mention of comment.mentions)
-        if (mention !== actor)
-          notify(
-            context,
-            tx,
-            mention,
-            issue.id,
-            "mention",
-            comment.body,
-            `mention:${id}:${mention}`,
-          );
-    }
-  }
+  placeMovedIssueLast(context);
+  notifyCommentReaders(context);
+}
+
+/** `move_issue` without `before_id` lands one slot past the stage's last issue. */
+function placeMovedIssueLast({ tx, name, args, id }: ServerEffects): void {
+  if (name !== "move_issue" || args.before_id || !id) return;
+  const issue = tx.get("issues", id);
+  if (!issue) return;
+  const positions = tx
+    .byIndex("issues", "stage_id", issue.stage_id)
+    .filter((i) => i.id !== id && i.team_id === issue.team_id && i.deleted_at === null)
+    .map((i) => i.position);
+  tx.put("issues", { ...issue, position: Math.max(-1024, ...positions) + 1024 });
+}
+
+function notifyCommentReaders(context: ServerEffects): void {
+  const { tx, actor, name, id } = context;
+  if (name !== "add_comment" || !id) return;
+  const comment = tx.get("comments", id);
+  const issue = comment ? tx.get("issues", comment.issue_id) : undefined;
+  if (!comment || !issue) return;
+  for (const follower of issue.followers)
+    if (follower !== actor)
+      notify(context, tx, follower, issue.id, "reply", comment.body, `reply:${id}:${follower}`);
+  for (const mention of comment.mentions)
+    if (mention !== actor)
+      notify(context, tx, mention, issue.id, "mention", comment.body, `mention:${id}:${mention}`);
 }
 
 function recordCompletions(context: ServerEffects): void {
@@ -232,23 +235,24 @@ function recordCompletions(context: ServerEffects): void {
   }
 }
 
+const ACTIVITY_FIELDS = [
+  "title",
+  "description",
+  "stage_id",
+  "assignee",
+  "priority",
+  "labels",
+  "estimate",
+  "deadline",
+  "project_id",
+  "milestone_id",
+  "sprint_id",
+  "parent_id",
+  "dependencies",
+] as const;
+
 function recordActivity(context: ServerEffects): void {
   const { tx, actor, name, args, id } = context;
-  const fieldNames = [
-    "title",
-    "description",
-    "stage_id",
-    "assignee",
-    "priority",
-    "labels",
-    "estimate",
-    "deadline",
-    "project_id",
-    "milestone_id",
-    "sprint_id",
-    "parent_id",
-    "dependencies",
-  ] as const;
   const fields: string[] = [];
   if (
     name === "move_issue" &&
@@ -257,17 +261,8 @@ function recordActivity(context: ServerEffects): void {
   )
     fields.push("stage");
   if (["archive_issue", "unarchive_issue"].includes(name)) fields.push("archived");
-  if (name === "update_issue" || (name === "bulk_issues" && object(args.action))) {
-    for (const { entity, id: key } of tx.touched.values()) {
-      if (entity !== "issues") continue;
-      const before = context.before.get("issues", key);
-      const after = tx.get("issues", key);
-      if (!before || !after) continue;
-      for (const field of fieldNames)
-        if (JSON.stringify(before[field]) !== JSON.stringify(after[field]))
-          fields.push(field.replace(/_id$/, ""));
-    }
-  }
+  if (name === "update_issue" || (name === "bulk_issues" && object(args.action)))
+    fields.push(...changedIssueFields(context));
   tx.put("activity", {
     id: context.generateId(),
     actor,
@@ -277,6 +272,30 @@ function recordActivity(context: ServerEffects): void {
     fields: [...new Set(fields)],
   });
 }
+
+/** Activity field names for every touched issue, `_id` suffixes dropped. */
+function changedIssueFields({ tx, before }: ServerEffects): string[] {
+  const fields: string[] = [];
+  for (const { entity, id: key } of tx.touched.values()) {
+    if (entity !== "issues") continue;
+    const old = before.get("issues", key);
+    const current = tx.get("issues", key);
+    if (!old || !current) continue;
+    for (const field of ACTIVITY_FIELDS)
+      if (JSON.stringify(old[field]) !== JSON.stringify(current[field]))
+        fields.push(field.replace(/_id$/, ""));
+  }
+  return fields;
+}
+
+/** The profile switch that silences each alert kind; mentions follow replies. */
+const GLOBAL_ALERT = {
+  assignment: "assignments",
+  change: "changes",
+  deadline: "deadlines",
+  reply: "replies",
+  mention: "replies",
+} as const;
 
 function notify(
   context: ServerEffects,
@@ -288,14 +307,7 @@ function notify(
   key?: string,
 ): void {
   const profile = context.users.get(user);
-  const global =
-    kind === "assignment"
-      ? profile?.alerts.assignments
-      : kind === "change"
-        ? profile?.alerts.changes
-        : kind === "deadline"
-          ? profile?.alerts.deadlines
-          : profile?.alerts.replies;
+  const global = profile?.alerts[GLOBAL_ALERT[kind]];
   if (
     !tx.get("members", user) ||
     tx.get("alert_preferences", user)?.[kind] === false ||

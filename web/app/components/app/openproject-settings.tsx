@@ -208,6 +208,59 @@ function ConnectionRow({
   );
 }
 
+/**
+ * Replaces every status mapped to MIGRATE with a stage of the same name,
+ * reusing an existing one or creating it after the team's last stage.
+ * `onMapped` reports each resolved id as soon as it exists.
+ */
+async function migrateStages({
+  projects,
+  teams,
+  statuses,
+  createStage,
+  onMapped,
+  missing,
+}: {
+  projects: OpenProjectMapping[];
+  teams: readonly Team[];
+  statuses: readonly OpenProjectStatus[];
+  createStage: (
+    teamId: string,
+    name: string,
+    kind: ReturnType<typeof migratedOpenProjectStageKind>,
+    position: number,
+  ) => Promise<string | null | undefined>;
+  onMapped: (projectId: number, statusId: string, stageId: string) => void;
+  missing: () => Error;
+}): Promise<OpenProjectMapping[]> {
+  const resolved: OpenProjectMapping[] = [];
+  const created = new Map<string, string>();
+  for (const project of projects) {
+    const mapping = { ...project, stage_mapping: { ...project.stage_mapping } };
+    const team = teams.find((team) => team.id === project.team_id);
+    for (const [statusId, stageId] of Object.entries(mapping.stage_mapping)) {
+      if (stageId !== MIGRATE) continue;
+      const status = statuses.find((status) => String(status.id) === statusId);
+      if (!status || !team) throw missing();
+      const name = status.name.toLowerCase();
+      const key = `${team.id}:${name}`;
+      const existing = team.stages.find((stage) => stage.name.toLowerCase() === name);
+      const position =
+        Math.max(0, ...team.stages.map((stage) => stage.position)) + created.size + 1;
+      const id =
+        existing?.id ??
+        created.get(key) ??
+        (await createStage(team.id, status.name, migratedOpenProjectStageKind(status), position));
+      if (!id) throw missing();
+      created.set(key, id);
+      mapping.stage_mapping[statusId] = id;
+      onMapped(mapping.project_id, statusId, id);
+    }
+    resolved.push(mapping);
+  }
+  return resolved;
+}
+
 function ConnectionForm({
   editor,
   close,
@@ -260,48 +313,25 @@ function ConnectionForm({
       onSubmit={(event) => {
         event.preventDefault();
         void guard(async () => {
-          const resolvedProjects: OpenProjectMapping[] = [];
-          const created = new Map<string, string>();
-          for (const project of projects) {
-            const mapping = { ...project, stage_mapping: { ...project.stage_mapping } };
-            const team = ws.teams.find((team) => team.id === project.team_id);
-            for (const [statusId, stageId] of Object.entries(mapping.stage_mapping)) {
-              if (stageId !== MIGRATE) continue;
-              const status = connection?.cached_statuses.find(
-                (status) => String(status.id) === statusId,
-              );
-              if (!status || !team) throw new Error(t("openproject.migrationMissing"));
-              const key = `${team.id}:${status.name.toLowerCase()}`;
-              const existing = team.stages.find(
-                (stage) => stage.name.toLowerCase() === status.name.toLowerCase(),
-              );
-              const id =
-                existing?.id ??
-                created.get(key) ??
-                (await run(
-                  {
-                    type: "create_stage",
-                    team_id: team.id,
-                    name: status.name,
-                    kind: migratedOpenProjectStageKind(status),
-                    position:
-                      Math.max(0, ...team.stages.map((stage) => stage.position)) + created.size + 1,
-                  },
-                  { quiet: true },
-                ));
-              if (!id) throw new Error(t("openproject.migrationMissing"));
-              created.set(key, id);
-              mapping.stage_mapping[statusId] = id;
+          const resolvedProjects = await migrateStages({
+            projects,
+            teams: ws.teams,
+            statuses: connection?.cached_statuses ?? [],
+            createStage: (team_id, name, kind, position) =>
+              run({ type: "create_stage", team_id, name, kind, position }, { quiet: true }),
+            onMapped: (projectId, statusId, stageId) =>
               setProjects((old) =>
                 old.map((project) =>
-                  project.project_id === mapping.project_id
-                    ? { ...project, stage_mapping: { ...project.stage_mapping, [statusId]: id } }
+                  project.project_id === projectId
+                    ? {
+                        ...project,
+                        stage_mapping: { ...project.stage_mapping, [statusId]: stageId },
+                      }
                     : project,
                 ),
-              );
-            }
-            resolvedProjects.push(mapping);
-          }
+              ),
+            missing: () => new Error(t("openproject.migrationMissing")),
+          });
           await confirmed(resolvedProjects);
           if (connection) {
             const body = {

@@ -199,69 +199,70 @@ export function parseTimestamp(
   if (strict && (match[8] === undefined || /^[+\-−]\d{2}$/.test(match[8]))) {
     throw new Error("premature end of input");
   }
-  const year = Number(match[1]);
-  const month = Number(match[2]);
-  const day = Number(match[3]);
-  const hour = Number(match[4]);
-  const minute = Number(match[5]);
-  const second = Number(match[6]);
+  const [year, month, day, hour, minute, second] = match.slice(1, 7).map(Number) as [
+    number,
+    number,
+    number,
+    number,
+    number,
+    number,
+  ];
   const fractionRaw = match[7] ?? "";
-  const zoneRaw = match[8];
+  const outOfRange = () =>
+    new Error(strict ? "input is out of range" : `unparseable timestamp ${value}`);
 
-  if (month < 1 || month > 12)
-    throw new Error(strict ? "input is out of range" : `unparseable timestamp ${value}`);
-  if (hour > 23 || minute > 59 || second > 60)
-    throw new Error(strict ? "input is out of range" : `unparseable timestamp ${value}`);
+  if (month < 1 || month > 12) throw outOfRange();
+  if (hour > 23 || minute > 59 || second > 60) throw outOfRange();
   const leap = second === 60;
-  const dim = daysInMonth(year, month);
-  if (day < 1 || day > dim)
-    throw new Error(strict ? "input is out of range" : `unparseable timestamp ${value}`);
+  if (day < 1 || day > daysInMonth(year, month)) throw outOfRange();
+  const zone = probeZone(match[8], value, outOfRange);
 
-  let zoneForProbe = "Z";
-  if (zoneRaw !== undefined) {
-    if (/^(?:[Zz]|UTC)$/i.test(zoneRaw)) {
-      zoneForProbe = "Z";
-    } else {
-      const sign = zoneRaw[0] === "-" || zoneRaw[0] === "−" ? "-" : "+";
-      const digits = zoneRaw.slice(1).replace(/[:\p{White_Space}]/gu, "");
-      let zh: number;
-      let zm: number;
-      if (digits.length === 2) {
-        zh = Number(digits);
-        zm = 0;
-      } else if (digits.length === 4) {
-        zh = Number(digits.slice(0, 2));
-        zm = Number(digits.slice(2, 4));
-      } else {
-        throw new Error(`unparseable timestamp ${value}`);
-      }
-      if (!Number.isInteger(zh) || !Number.isInteger(zm) || zh > 23 || zm > 59) {
-        throw new Error(strict ? "input is out of range" : `unparseable timestamp ${value}`);
-      }
-      const pad2 = (n: number): string => String(n).padStart(2, "0");
-      zoneForProbe = `${sign}${pad2(zh)}:${pad2(zm)}`;
-    }
-  }
-
-  const pad = (n: number, width: number): string => String(n).padStart(width, "0");
   const datePart =
-    `${year < 0 ? `-${pad(-year, 6)}` : year > 9999 ? `+${pad(year, 6)}` : pad(year, 4)}-${pad(month, 2)}-${pad(day, 2)}` +
+    `${probeYear(year)}-${pad(month, 2)}-${pad(day, 2)}` +
     `T${pad(hour, 2)}:${pad(minute, 2)}:${pad(leap ? 59 : second, 2)}`;
-  const probe = new Date(`${datePart}${zoneForProbe}`);
+  const probe = new Date(`${datePart}${zone}`);
   if (Number.isNaN(probe.getTime())) throw new Error(`unparseable timestamp ${value}`);
   const utcMillis = probe.getTime() + (leap && format === "microseconds" ? 1000 : 0);
   const utc = new Date(utcMillis);
   const out =
     `${pad(utc.getUTCFullYear(), 4)}-${pad(utc.getUTCMonth() + 1, 2)}-${pad(utc.getUTCDate(), 2)}` +
     `T${pad(utc.getUTCHours(), 2)}:${pad(utc.getUTCMinutes(), 2)}:${pad(leap && format === "chrono" ? 60 : utc.getUTCSeconds(), 2)}`;
-  if (format === "chrono") {
-    const nanos = fractionRaw.slice(0, 9).padEnd(9, "0");
-    const width =
-      Number(nanos) === 0 ? 0 : nanos.endsWith("000000") ? 3 : nanos.endsWith("000") ? 6 : 9;
-    return width === 0 ? `${out}Z` : `${out}.${nanos.slice(0, width)}Z`;
+  return format === "chrono"
+    ? `${out}${chronoFraction(fractionRaw)}Z`
+    : `${out}.${fractionRaw.slice(0, 6).padEnd(6, "0")}Z`;
+}
+
+function pad(n: number, width: number): string {
+  return String(n).padStart(width, "0");
+}
+
+/** ISO year form `Date` parses: four digits, or six with a sign outside 0-9999. */
+function probeYear(year: number): string {
+  if (year < 0) return `-${pad(-year, 6)}`;
+  if (year > 9999) return `+${pad(year, 6)}`;
+  return pad(year, 4);
+}
+
+/** The zone as a `Date`-parsable suffix; a missing zone reads as UTC. */
+function probeZone(zone: string | undefined, value: string, outOfRange: () => Error): string {
+  if (zone === undefined || /^(?:[Zz]|UTC)$/i.test(zone)) return "Z";
+  const sign = zone[0] === "-" || zone[0] === "−" ? "-" : "+";
+  const digits = zone.slice(1).replace(/[:\p{White_Space}]/gu, "");
+  if (digits.length !== 2 && digits.length !== 4) throw new Error(`unparseable timestamp ${value}`);
+  const hours = Number(digits.slice(0, 2));
+  const minutes = digits.length === 4 ? Number(digits.slice(2, 4)) : 0;
+  if (!Number.isInteger(hours) || !Number.isInteger(minutes) || hours > 23 || minutes > 59) {
+    throw outOfRange();
   }
-  const fraction = fractionRaw.slice(0, 6).padEnd(6, "0");
-  return `${out}.${fraction}Z`;
+  return `${sign}${pad(hours, 2)}:${pad(minutes, 2)}`;
+}
+
+/** chrono's fraction: trimmed to 0, 3, 6 or 9 digits, empty when zero. */
+function chronoFraction(fraction: string): string {
+  const nanos = fraction.slice(0, 9).padEnd(9, "0");
+  if (Number(nanos) === 0) return "";
+  const width = nanos.endsWith("000000") ? 3 : nanos.endsWith("000") ? 6 : 9;
+  return `.${nanos.slice(0, width)}`;
 }
 
 function daysInMonth(year: number, month: number): number {

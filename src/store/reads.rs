@@ -145,21 +145,56 @@ fn push_issue_filters(
         q.push(" AND EXISTS(SELECT 1 FROM stages s WHERE s.id=i.stage_id AND s.kind NOT IN ('done','cancelled'))");
     }
     if let Some(ids) = &filter.ids {
-        let values: Vec<Uuid> = ids
-            .split(',')
-            .map(|s| {
-                s.parse()
-                    .map_err(|_| Error::BadRequest("ids must be comma-separated UUIDs".into()))
-            })
-            .collect::<Result<_>>()?;
-        if values.len() > 200 {
-            return Err(Error::BadRequest(
-                "ids may contain at most 200 UUIDs".into(),
-            ));
-        }
-        q.push(" AND i.id=ANY(").push_bind(values).push(")");
+        q.push(" AND i.id=ANY(")
+            .push_bind(parse_ids(ids)?)
+            .push(")");
     }
     Ok(())
+}
+
+fn parse_ids(ids: &str) -> Result<Vec<Uuid>> {
+    let values: Vec<Uuid> = ids
+        .split(',')
+        .map(|s| {
+            s.parse()
+                .map_err(|_| Error::BadRequest("ids must be comma-separated UUIDs".into()))
+        })
+        .collect::<Result<_>>()?;
+    if values.len() > 200 {
+        return Err(Error::BadRequest(
+            "ids may contain at most 200 UUIDs".into(),
+        ));
+    }
+    Ok(values)
+}
+
+/// Updated uses descending timestamps and ascending UUIDs, including at ties.
+/// The explicit upper bound lets the index start at the cursor timestamp
+/// instead of scanning all newer rows before applying the tie predicate.
+fn push_after_cursor(q: &mut QueryBuilder<'_, Postgres>, cursor: &IssueCursor) {
+    q.push(" AND i.updated_at<=")
+        .push_bind(cursor.updated_at)
+        .push(" AND (i.updated_at<")
+        .push_bind(cursor.updated_at)
+        .push(" OR (i.updated_at=")
+        .push_bind(cursor.updated_at)
+        .push(" AND i.id>")
+        .push_bind(cursor.id)
+        .push("))");
+}
+
+/// The cursor that resumes after the last issue on this page.
+fn encode_issue_cursor(filter: &IssueFilter, workspace: Uuid, items: &[Value]) -> Result<String> {
+    let last = items
+        .last()
+        .ok_or_else(|| Error::Internal("missing last issue".into()))?;
+    Ok(URL_SAFE_NO_PAD.encode(serde_json::to_vec(&IssueCursor {
+        version: 1,
+        workspace,
+        scope: cursor_scope(filter)?,
+        updated_at: serde_json::from_value(last["updated_at"].clone())?,
+        id: serde_json::from_value(last["id"].clone())?,
+    })?))
 }
 
 fn push_issue_order(q: &mut QueryBuilder<'_, Postgres>, filter: &IssueFilter) {
@@ -528,18 +563,7 @@ impl Store {
             q.push(" AND i.id IN (SELECT id FROM search_matches)");
         }
         if let Some(cursor) = cursor {
-            // Updated uses descending timestamps and ascending UUIDs, including at ties.
-            // The explicit upper bound lets the index start at the cursor timestamp
-            // instead of scanning all newer rows before applying the tie predicate.
-            q.push(" AND i.updated_at<=")
-                .push_bind(cursor.updated_at)
-                .push(" AND (i.updated_at<")
-                .push_bind(cursor.updated_at)
-                .push(" OR (i.updated_at=")
-                .push_bind(cursor.updated_at)
-                .push(" AND i.id>")
-                .push_bind(cursor.id)
-                .push("))");
+            push_after_cursor(&mut q, &cursor);
         }
         push_issue_order(&mut q, &filter);
         q.push(" LIMIT ")
@@ -561,16 +585,7 @@ impl Store {
         let has_more = items.len() > limit as usize;
         items.truncate(limit as usize);
         let next_cursor = if has_more && updated_cursor_sort(&filter) {
-            let last = items
-                .last()
-                .ok_or_else(|| Error::Internal("missing last issue".into()))?;
-            Some(URL_SAFE_NO_PAD.encode(serde_json::to_vec(&IssueCursor {
-                version: 1,
-                workspace,
-                scope: cursor_scope(&filter)?,
-                updated_at: serde_json::from_value(last["updated_at"].clone())?,
-                id: serde_json::from_value(last["id"].clone())?,
-            })?))
+            Some(encode_issue_cursor(&filter, workspace, &items)?)
         } else {
             None
         };

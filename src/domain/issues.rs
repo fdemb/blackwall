@@ -88,65 +88,23 @@ pub struct Issue {
 impl Issue {
     /// Apply field values and clear flags; callers validate and persist the result.
     pub(crate) fn apply_patch(&mut self, p: IssuePatch) {
-        if let Some(v) = p.title {
-            self.title = v
-        }
-        if let Some(v) = p.description {
-            self.description = v
-        }
-
-        if let Some(v) = p.stage_id {
-            self.stage_id = v
-        }
-        if p.clear_assignee {
-            self.assignee = None
-        } else if let Some(v) = p.assignee {
-            self.assignee = Some(v)
-        }
-
-        if let Some(v) = p.priority {
-            self.priority = v
-        }
-        if let Some(v) = p.labels {
-            self.labels = v
-        }
-
-        if p.clear_estimate {
-            self.estimate = None;
-        } else if let Some(v) = p.estimate {
-            self.estimate = Some(v)
-        }
-        if p.clear_deadline {
-            self.deadline = None
-        } else if let Some(v) = p.deadline {
-            self.deadline = Some(v)
-        }
-
+        set(&mut self.title, p.title);
+        set(&mut self.description, p.description);
+        set(&mut self.stage_id, p.stage_id);
+        set_or_clear(&mut self.assignee, p.assignee, p.clear_assignee);
+        set(&mut self.priority, p.priority);
+        set(&mut self.labels, p.labels);
+        set_or_clear(&mut self.estimate, p.estimate, p.clear_estimate);
+        set_or_clear(&mut self.deadline, p.deadline, p.clear_deadline);
+        set_or_clear(&mut self.project_id, p.project_id, p.clear_project);
+        // Leaving the project also leaves its milestone, unless the patch names one.
         if p.clear_project {
-            self.project_id = None;
             self.milestone_id = None;
-        } else if let Some(v) = p.project_id {
-            self.project_id = Some(v)
         }
-        if p.clear_milestone {
-            self.milestone_id = None;
-        } else if let Some(v) = p.milestone_id {
-            self.milestone_id = Some(v)
-        }
-        if p.clear_sprint {
-            self.sprint_id = None
-        } else if let Some(v) = p.sprint_id {
-            self.sprint_id = Some(v)
-        }
-
-        if p.clear_parent {
-            self.parent_id = None
-        } else if let Some(v) = p.parent_id {
-            self.parent_id = Some(v)
-        }
-        if let Some(v) = p.dependencies {
-            self.dependencies = v
-        }
+        set_or_clear(&mut self.milestone_id, p.milestone_id, p.clear_milestone);
+        set_or_clear(&mut self.sprint_id, p.sprint_id, p.clear_sprint);
+        set_or_clear(&mut self.parent_id, p.parent_id, p.clear_parent);
+        set(&mut self.dependencies, p.dependencies);
     }
 
     /// Editable fields changed by the supplied replacement, in activity order.
@@ -298,4 +256,19 @@ pub enum IssueSort {
     Deadline,
     Updated,
     Priority,
+}
+
+fn set<T>(field: &mut T, value: Option<T>) {
+    if let Some(value) = value {
+        *field = value;
+    }
+}
+
+/// `clear` wins over a supplied value.
+fn set_or_clear<T>(field: &mut Option<T>, value: Option<T>, clear: bool) {
+    if clear {
+        *field = None;
+    } else if value.is_some() {
+        *field = value;
+    }
 }

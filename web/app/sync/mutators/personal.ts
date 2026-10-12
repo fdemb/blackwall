@@ -40,37 +40,35 @@ export const markAllNotificationsRead: Mutator<ArgsOf<"mark_all_notifications_re
   requireRole(tx, ctx.actor, "mark_all_notifications_read", args);
   // Admission fixes the set of unread ids. Replay must never expand it to
   // notifications created after the server applied this command.
-  if (ctx.mode === "replay") {
-    const local = ctx.local;
-    if (
-      typeof local !== "object" ||
-      local === null ||
-      !("ids" in local) ||
-      !Array.isArray(local.ids)
-    ) {
-      throw new MutationError(400, "mark all read requires local.ids");
-    }
-    for (const id of local.ids) {
-      if (typeof id !== "string") continue;
-      const notification = tx.get("notifications", id);
-      if (
-        notification === undefined ||
-        notification.user_id !== ctx.actor ||
-        notification.read_at !== null
-      )
-        continue;
-      tx.put("notifications", { ...notification, read_at: ctx.at });
-    }
-    return;
-  }
+  const targets =
+    ctx.mode === "replay"
+      ? admittedIds(ctx.local).map((id) => tx.get("notifications", id))
+      : tx.all("notifications");
+  type Target = (typeof targets)[number];
+  const isUnread = (notification: Target): notification is NonNullable<Target> =>
+    notification !== undefined &&
+    notification.user_id === ctx.actor &&
+    notification.read_at === null;
   const ids: string[] = [];
-  for (const notification of tx.all("notifications")) {
-    if (notification.user_id !== ctx.actor || notification.read_at !== null) continue;
+  for (const notification of targets.filter(isUnread)) {
     tx.put("notifications", { ...notification, read_at: ctx.at });
     ids.push(notification.id);
   }
-  return { ids };
+  return ctx.mode === "replay" ? undefined : { ids };
 };
+
+/** The unread ids captured at admission, from the pending mutation's local data. */
+function admittedIds(local: unknown): string[] {
+  if (
+    typeof local !== "object" ||
+    local === null ||
+    !("ids" in local) ||
+    !Array.isArray(local.ids)
+  ) {
+    throw new MutationError(400, "mark all read requires local.ids");
+  }
+  return local.ids.filter((id): id is string => typeof id === "string");
+}
 
 export const configureAlerts: Mutator<ArgsOf<"configure_alerts">> = (tx, args, ctx) => {
   requireRole(tx, ctx.actor, "configure_alerts", args);

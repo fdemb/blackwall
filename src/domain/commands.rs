@@ -250,7 +250,62 @@ pub enum Command {
     },
 }
 
+/// Commands grouped the way the store and the in-memory model split their handlers.
+pub(crate) enum CommandFamily {
+    Planning,
+    Issues,
+    Discussion,
+}
+
 impl Command {
+    /// Personal commands only touch the actor's own state, so viewers may run them.
+    pub(crate) fn is_personal(&self) -> bool {
+        matches!(
+            self,
+            Self::MarkNotificationRead { .. }
+                | Self::MarkNotificationUnread { .. }
+                | Self::MarkAllNotificationsRead
+                | Self::ConfigureAlerts { .. }
+                | Self::SaveView { shared: false, .. }
+                | Self::UpdateView { shared: false, .. }
+                | Self::DeleteView { .. }
+                | Self::Follow { .. }
+        )
+    }
+
+    pub(crate) fn family(&self) -> CommandFamily {
+        match self {
+            Self::CreateTeam { .. }
+            | Self::SetTeamMembers { .. }
+            | Self::SetTeamArchive { .. }
+            | Self::CreateStage { .. }
+            | Self::UpdateStage { .. }
+            | Self::DeleteStage { .. }
+            | Self::CreateLabel { .. }
+            | Self::UpdateLabel { .. }
+            | Self::CreateProject { .. }
+            | Self::UpdateProject { .. }
+            | Self::CreateMilestone { .. }
+            | Self::UpdateMilestone { .. }
+            | Self::CreateSprint { .. }
+            | Self::UpdateSprint { .. }
+            | Self::CompleteSprint { .. }
+            | Self::ArchiveSprint { .. } => CommandFamily::Planning,
+            Self::CreateIssue { .. }
+            | Self::UpdateIssue { .. }
+            | Self::MoveIssue { .. }
+            | Self::BulkIssues { .. }
+            | Self::DeleteIssue { .. }
+            | Self::RestoreIssue { .. }
+            | Self::ArchiveIssue { .. }
+            | Self::UnarchiveIssue { .. }
+            | Self::Follow { .. }
+            | Self::AddSourceLink { .. }
+            | Self::ImportIssues { .. } => CommandFamily::Issues,
+            _ => CommandFamily::Discussion,
+        }
+    }
+
     pub(crate) fn kind(&self) -> &'static str {
         match self {
             Self::CreateTeam { .. } => "create_team",

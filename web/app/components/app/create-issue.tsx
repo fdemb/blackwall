@@ -53,10 +53,6 @@ function CreateIssueForm() {
   const d = create.defaults;
   const [teamId, setTeamId] = useState<Id | undefined>(d.team_id ?? myTeam?.id);
   const team = ws.teams.find((x) => x.id === teamId);
-  const firstStage =
-    [...(team?.stages ?? [])]
-      .sort((a, b) => a.position - b.position)
-      .find((s) => s.kind === "planned" || s.kind === "backlog") ?? team?.stages[0];
   const [stageId, setStageId] = useState<Id | null>(d.stage_id ?? null);
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
@@ -76,21 +72,9 @@ function CreateIssueForm() {
   // The picker always shows a stage from the current team. A stale choice, from the defaults or a
   // previous team, falls back to the team's first stage.
   const effectiveStageId =
-    stageId && team?.stages.some((s) => s.id === stageId) ? stageId : (firstStage?.id ?? null);
+    stageId && team?.stages.some((s) => s.id === stageId) ? stageId : defaultStageId(team);
 
-  if (ws.teams.length === 0)
-    return (
-      <div className="py-6 text-center">
-        <p className=" text-muted-foreground">{t("issue.needTeam")}</p>
-        <Link
-          to={`/${ws.id}/settings/teams`}
-          onClick={create.hide}
-          className="mt-3 inline-block  font-medium text-primary hover:underline"
-        >
-          {t("team.create")}
-        </Link>
-      </div>
-    );
+  if (ws.teams.length === 0) return <NeedTeam workspaceId={ws.id} onNavigate={create.hide} />;
 
   const sprints = ws.sprints.filter(
     (s) => s.team_id === teamId && (s.state === "planned" || s.state === "active"),
@@ -180,27 +164,10 @@ function CreateIssueForm() {
           onSubmit={submit}
         />
       </Suspense>
-      {files.length > 0 && (
-        <ul className="flex flex-wrap gap-1.5">
-          {files.map((f, i) => (
-            <li
-              key={i}
-              className="inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-md border border-border bg-muted px-2 py-1 "
-            >
-              <Paperclip aria-hidden className="size-3 shrink-0" />
-              <span className="min-w-0 flex-1 truncate break-all">{f.name}</span>
-              <span className="shrink-0 text-muted-foreground">{bytes(f.size)}</span>
-              <button
-                type="button"
-                aria-label={t("action.remove")}
-                onClick={() => setFiles((l) => l.filter((_, j) => j !== i))}
-              >
-                <X aria-hidden className="size-3" />
-              </button>
-            </li>
-          ))}
-        </ul>
-      )}
+      <PendingFiles
+        files={files}
+        onRemove={(index) => setFiles((l) => l.filter((_, j) => j !== index))}
+      />
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
         <Select
           label={t("field.team")}
@@ -285,6 +252,56 @@ function CreateIssueForm() {
         </div>
       </div>
     </Form>
+  );
+}
+
+/** The team's first planned or backlog stage by position, else its first stage. */
+function defaultStageId(
+  team: { stages: { id: Id; kind: string; position: number }[] } | undefined,
+) {
+  const stages = team?.stages ?? [];
+  const open = [...stages]
+    .sort((a, b) => a.position - b.position)
+    .find((s) => s.kind === "planned" || s.kind === "backlog");
+  return (open ?? stages[0])?.id ?? null;
+}
+
+function NeedTeam({ workspaceId, onNavigate }: { workspaceId: Id; onNavigate: () => void }) {
+  const { t } = useI18n();
+  return (
+    <div className="py-6 text-center">
+      <p className=" text-muted-foreground">{t("issue.needTeam")}</p>
+      <Link
+        to={`/${workspaceId}/settings/teams`}
+        onClick={onNavigate}
+        className="mt-3 inline-block  font-medium text-primary hover:underline"
+      >
+        {t("team.create")}
+      </Link>
+    </div>
+  );
+}
+
+/** Files picked for upload once the issue exists. */
+function PendingFiles({ files, onRemove }: { files: File[]; onRemove: (index: number) => void }) {
+  const { t } = useI18n();
+  if (files.length === 0) return null;
+  return (
+    <ul className="flex flex-wrap gap-1.5">
+      {files.map((f, i) => (
+        <li
+          key={i}
+          className="inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-md border border-border bg-muted px-2 py-1 "
+        >
+          <Paperclip aria-hidden className="size-3 shrink-0" />
+          <span className="min-w-0 flex-1 truncate break-all">{f.name}</span>
+          <span className="shrink-0 text-muted-foreground">{bytes(f.size)}</span>
+          <button type="button" aria-label={t("action.remove")} onClick={() => onRemove(i)}>
+            <X aria-hidden className="size-3" />
+          </button>
+        </li>
+      ))}
+    </ul>
   );
 }
 

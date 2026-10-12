@@ -45,19 +45,20 @@ export function OpenProjectNotice({ issue }: { issue: Pick<Issue, "openproject">
   );
 }
 
+/** Overdue reads as an error and the last two days as a warning. */
+function deadlineTone(daysLeft: number): string {
+  if (daysLeft < 0) return "text-destructive";
+  if (daysLeft <= 2) return "text-warning";
+  return "text-muted-foreground";
+}
+
 export function DeadlineChip({ issue, className }: { issue: Issue; className?: string }) {
   const { lang, t } = useI18n();
   const { ws } = useWorkspace();
   if (!issue.deadline) return null;
   const left = daysUntil(issue.deadline);
   const done = isDone(ws, issue);
-  const tone = done
-    ? "text-muted-foreground"
-    : left < 0
-      ? "text-destructive"
-      : left <= 2
-        ? "text-warning"
-        : "text-muted-foreground";
+  const tone = done ? "text-muted-foreground" : deadlineTone(left);
   return (
     <span
       className={cn("inline-flex items-center gap-1  tabular-nums", tone, className)}

@@ -398,26 +398,7 @@ function parsePull(value: unknown, status: number): PullResponse {
 function parsePush(value: unknown, status: number, mutations: readonly Mutation[]): PushResponse {
   if (!object(value) || !integer(value.last_mutation_id) || !Array.isArray(value.results))
     throw new ProtocolError("Invalid push response", status);
-  const results = value.results.map((result: unknown): MutationResult => {
-    if (!object(result) || !integer(result.id) || result.id === 0)
-      throw new ProtocolError("Invalid mutation result", status);
-    if (result.status === "applied" || result.status === "duplicate")
-      return { id: result.id, status: result.status };
-    if (
-      result.status === "rejected" &&
-      object(result.error) &&
-      integer(result.error.status) &&
-      result.error.status >= 400 &&
-      result.error.status < 600 &&
-      typeof result.error.message === "string"
-    )
-      return {
-        id: result.id,
-        status: "rejected",
-        error: { status: result.error.status, message: result.error.message },
-      };
-    throw new ProtocolError("Invalid mutation result", status);
-  });
+  const results = value.results.map((result: unknown) => parseMutationResult(result, status));
   if (
     results.length > mutations.length ||
     (status !== 503 && results.length !== mutations.length) ||
@@ -430,24 +411,30 @@ function parsePush(value: unknown, status: number, mutations: readonly Mutation[
     results,
   };
 }
-function parseProfile(value: unknown, status: number): SessionProfile {
+function parseMutationResult(result: unknown, status: number): MutationResult {
+  if (!object(result) || !integer(result.id) || result.id === 0)
+    throw new ProtocolError("Invalid mutation result", status);
+  if (result.status === "applied" || result.status === "duplicate")
+    return { id: result.id, status: result.status };
+  const error = result.error;
   if (
-    !object(value) ||
-    typeof value.id !== "string" ||
-    typeof value.email !== "string" ||
-    typeof value.display_name !== "string" ||
-    (value.avatar_url !== null && typeof value.avatar_url !== "string") ||
-    typeof value.contact !== "string" ||
-    (value.language !== "en" && value.language !== "pl") ||
-    (value.theme !== "light" && value.theme !== "dark" && value.theme !== "system") ||
-    typeof value.session_id !== "string" ||
-    !object(value.alerts) ||
-    typeof value.alerts.assignments !== "boolean" ||
-    typeof value.alerts.replies !== "boolean" ||
-    typeof value.alerts.changes !== "boolean" ||
-    typeof value.alerts.deadlines !== "boolean"
+    result.status === "rejected" &&
+    object(error) &&
+    integer(error.status) &&
+    error.status >= 400 &&
+    error.status < 600 &&
+    typeof error.message === "string"
   )
-    throw new ProtocolError("Invalid session profile", status);
+    return {
+      id: result.id,
+      status: "rejected",
+      error: { status: error.status, message: error.message },
+    };
+  throw new ProtocolError("Invalid mutation result", status);
+}
+
+function parseProfile(value: unknown, status: number): SessionProfile {
+  if (!isProfile(value)) throw new ProtocolError("Invalid session profile", status);
   return {
     id: value.id,
     email: value.email,
@@ -466,6 +453,22 @@ function parseProfile(value: unknown, status: number): SessionProfile {
   };
 }
 
+function isProfile(value: unknown): value is SessionProfile {
+  return (
+    object(value) &&
+    ["id", "email", "display_name", "contact", "session_id"].every(
+      (key) => typeof value[key] === "string",
+    ) &&
+    (value.avatar_url === null || typeof value.avatar_url === "string") &&
+    (value.language === "en" || value.language === "pl") &&
+    (value.theme === "light" || value.theme === "dark" || value.theme === "system") &&
+    object(value.alerts) &&
+    ["assignments", "replies", "changes", "deadlines"].every(
+      (key) => typeof (value.alerts as Record<string, unknown>)[key] === "boolean",
+    )
+  );
+}
+
 interface Line {
   text: string;
   terminated: boolean;
@@ -481,6 +484,69 @@ function parseLine(line: Line, status: number): unknown {
   }
 }
 
+/** Splits text on LF, CR or CRLF, keeping a partial line and a CRLF split across chunks. */
+class LineSplitter {
+  private pending = "";
+  private skipLf = false;
+
+  *feed(text: string): Generator<string> {
+    for (const char of text) {
+      if (this.skipLf && char === "\n") {
+        this.skipLf = false;
+        continue;
+      }
+      this.skipLf = char === "\r";
+      if (char === "\r" || char === "\n") {
+        yield this.pending;
+        this.pending = "";
+      } else this.pending += char;
+    }
+  }
+
+  get rest(): string {
+    return this.pending;
+  }
+}
+
+/**
+ * Reads the next chunk. Returns null when an aborted event stream should end
+ * quietly; an aborted bootstrap is truncated.
+ */
+async function readChunk(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  status: number,
+  signal: AbortSignal | undefined,
+  kind: "bootstrap" | "events",
+): Promise<ReadableStreamReadResult<Uint8Array> | null> {
+  let chunk: ReadableStreamReadResult<Uint8Array>;
+  try {
+    chunk = await reader.read();
+  } catch (cause) {
+    if (kind === "events" && signal?.aborted) return null;
+    const ErrorType = kind === "bootstrap" ? TruncatedError : NetworkError;
+    throw new ErrorType("Response stream failed", status, { cause });
+  }
+  if (signal?.aborted) {
+    if (kind === "events") return null;
+    throw new TruncatedError("Bootstrap aborted before completion", status);
+  }
+  return chunk;
+}
+
+function decodeChunk(
+  decoder: TextDecoder,
+  chunk: ReadableStreamReadResult<Uint8Array>,
+  status: number,
+  kind: "bootstrap" | "events",
+): string {
+  try {
+    return chunk.done ? decoder.decode() : decoder.decode(chunk.value, { stream: true });
+  } catch (cause) {
+    const ErrorType = kind === "bootstrap" && chunk.done ? TruncatedError : ProtocolError;
+    throw new ErrorType("Invalid UTF-8 response", status, { cause });
+  }
+}
+
 /** Decode UTF-8 incrementally and split LF, CRLF or CR, including split CRLF. */
 async function* lines(
   response: Response,
@@ -490,9 +556,8 @@ async function* lines(
   if (!response.body) throw new ProtocolError("Missing response body", response.status);
   const reader = response.body.getReader();
   const decoder = new TextDecoder("utf-8", { fatal: true });
+  const splitter = new LineSplitter();
   let done = false;
-  let pending = "";
-  let skipLf = false;
   const cancel = () => {
     void reader.cancel().catch(() => undefined);
   };
@@ -500,40 +565,15 @@ async function* lines(
   if (signal?.aborted) cancel();
   try {
     for (;;) {
-      let chunk: ReadableStreamReadResult<Uint8Array>;
-      try {
-        chunk = await reader.read();
-      } catch (cause) {
+      const chunk = await readChunk(reader, response.status, signal, kind);
+      if (chunk === null) return;
+      for (const text of splitter.feed(decodeChunk(decoder, chunk, response.status, kind))) {
         if (kind === "events" && signal?.aborted) return;
-        const ErrorType = kind === "bootstrap" ? TruncatedError : NetworkError;
-        throw new ErrorType("Response stream failed", response.status, { cause });
-      }
-      if (signal?.aborted) {
-        if (kind === "events") return;
-        throw new TruncatedError("Bootstrap aborted before completion", response.status);
-      }
-      let text: string;
-      try {
-        text = chunk.done ? decoder.decode() : decoder.decode(chunk.value, { stream: true });
-      } catch (cause) {
-        const ErrorType = kind === "bootstrap" && chunk.done ? TruncatedError : ProtocolError;
-        throw new ErrorType("Invalid UTF-8 response", response.status, { cause });
-      }
-      for (const char of text) {
-        if (skipLf && char === "\n") {
-          skipLf = false;
-          continue;
-        }
-        skipLf = char === "\r";
-        if (char === "\r" || char === "\n") {
-          if (kind === "events" && signal?.aborted) return;
-          yield { text: pending, terminated: true };
-          pending = "";
-        } else pending += char;
+        yield { text, terminated: true };
       }
       if (chunk.done) {
         done = true;
-        if (pending) yield { text: pending, terminated: false };
+        if (splitter.rest) yield { text: splitter.rest, terminated: false };
         return;
       }
     }

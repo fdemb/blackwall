@@ -20,68 +20,27 @@ pub(super) async fn upload(
     let mut comment_id = None;
     let mut key = None;
 
-    while let Some(field) = multipart
-        .next_field()
-        .await
-        .map_err(|e| Error::BadRequest(e.to_string()))?
-    {
+    let bad = |e: axum::extract::multipart::MultipartError| Error::BadRequest(e.to_string());
+    while let Some(field) = multipart.next_field().await.map_err(bad)? {
         match field.name() {
             Some("expected_versions") => {
-                let value = field
-                    .text()
-                    .await
-                    .map_err(|e| Error::BadRequest(e.to_string()))?;
+                let value = field.text().await.map_err(bad)?;
                 expected = serde_json::from_str(&value)
                     .map_err(|_| Error::BadRequest("invalid expected_versions JSON".into()))?;
             }
-            Some("idempotency_key") => {
-                key = Some(
-                    field
-                        .text()
-                        .await
-                        .map_err(|e| Error::BadRequest(e.to_string()))?,
-                );
-            }
+            Some("idempotency_key") => key = Some(field.text().await.map_err(bad)?),
             Some("comment_id") => {
                 comment_id = Some(
                     field
                         .text()
                         .await
-                        .map_err(|e| Error::BadRequest(e.to_string()))?
+                        .map_err(bad)?
                         .parse::<Uuid>()
                         .map_err(|_| Error::BadRequest("invalid comment_id".into()))?,
                 );
             }
             Some("file") if uploaded.is_none() => {
-                let filename = field
-                    .file_name()
-                    .unwrap_or("attachment")
-                    .rsplit(['/', '\\'])
-                    .next()
-                    .unwrap_or("attachment")
-                    .chars()
-                    .filter(|c| !c.is_control())
-                    .take(200)
-                    .collect::<String>();
-                let content_type = field
-                    .content_type()
-                    .unwrap_or("application/octet-stream")
-                    .to_owned();
-                let bytes = field
-                    .bytes()
-                    .await
-                    .map_err(|e| Error::BadRequest(e.to_string()))?;
-                if bytes.len() > 5 * 1024 * 1024 {
-                    return Err(Error::BadRequest("attachment limit is 5 MiB".into()));
-                }
-                uploaded = Some(NewAttachment {
-                    id: Uuid::new_v4(),
-                    issue_id: issue,
-                    uploader_id: actor.profile.id,
-                    filename,
-                    content_type,
-                    bytes: bytes.to_vec(),
-                });
+                uploaded = Some(read_file(field, issue, actor.profile.id).await?);
             }
             _ => {
                 return Err(Error::BadRequest(
@@ -116,6 +75,43 @@ pub(super) async fn upload(
             .operation(id, actor.profile.id, command, expected, key, Some(file))
             .await?,
     ))
+}
+
+/// Reads the file part, keeping the base filename without control characters.
+async fn read_file(
+    field: axum::extract::multipart::Field<'_>,
+    issue: Uuid,
+    uploader: Uuid,
+) -> Result<NewAttachment> {
+    let filename = field
+        .file_name()
+        .unwrap_or("attachment")
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or("attachment")
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(200)
+        .collect::<String>();
+    let content_type = field
+        .content_type()
+        .unwrap_or("application/octet-stream")
+        .to_owned();
+    let bytes = field
+        .bytes()
+        .await
+        .map_err(|e| Error::BadRequest(e.to_string()))?;
+    if bytes.len() > 5 * 1024 * 1024 {
+        return Err(Error::BadRequest("attachment limit is 5 MiB".into()));
+    }
+    Ok(NewAttachment {
+        id: Uuid::new_v4(),
+        issue_id: issue,
+        uploader_id: uploader,
+        filename,
+        content_type,
+        bytes: bytes.to_vec(),
+    })
 }
 
 #[utoipa::path(

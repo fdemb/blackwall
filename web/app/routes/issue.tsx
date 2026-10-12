@@ -68,78 +68,52 @@ export default function IssuePage() {
         <QueryStatus query={{ ...detail, hasMore: false, loadMore: detail.retry }} />
       </Page>
     );
-  if (issue.deleted_at) return <DeletedIssue issue={issue} wsId={wsId!} />;
-  if (issue.archived_at) return <ArchivedBanner issue={issue} wsId={wsId!} />;
+  if (issue.deleted_at) return <RecoverableIssue issue={issue} wsId={wsId!} state="deleted" />;
+  if (issue.archived_at) return <RecoverableIssue issue={issue} wsId={wsId!} state="archived" />;
   return <IssueView key={issue.id} issue={issue} detail={detail} />;
 }
 
-/** A link to an archived issue says which issue it was and offers the way back. */
-function ArchivedBanner({ issue, wsId }: { issue: Issue; wsId: string }) {
-  const { t } = useI18n();
-  const { run, canWrite } = useWorkspace();
-  const toast = useToast();
-  useDocumentTitle(`${issueKey(issue.number)} ${issue.title}`);
-  return (
-    <Page>
-      <EmptyState
-        icon={<Archive />}
-        title={`${issueKey(issue.number)} ${issue.title}`}
-        description={`${t("issue.archived")}. ${canWrite ? t("issue.archivedSub") : ""}`.trim()}
-        action={
-          <div className="flex items-center gap-3">
-            {canWrite && (
-              <Button
-                variant="primary"
-                onPress={() =>
-                  run({ type: "unarchive_issue", id: issue.id })
-                    .then(() => toast.show(t("issue.unarchived")))
-                    .catch(() => {})
-                }
-              >
-                <ArchiveRestore />
-                {t("issue.unarchive")}
-              </Button>
-            )}
-            <Link className="text-primary hover:underline" to={`/${wsId}/archive`}>
-              {t("nav.archive")}
-            </Link>
-          </div>
-        }
-      />
-    </Page>
-  );
-}
-
-/** A link to a trashed issue still says which issue it was and offers the way back. */
-function DeletedIssue({ issue, wsId }: { issue: Issue; wsId: string }) {
+/** A link to an archived or trashed issue says which issue it was and offers the way back. */
+function RecoverableIssue({
+  issue,
+  wsId,
+  state,
+}: {
+  issue: Issue;
+  wsId: string;
+  state: "archived" | "deleted";
+}) {
   const { t } = useI18n();
   const { run, canWrite: workspaceCanWrite } = useWorkspace();
-  const canWrite = workspaceCanWrite && issueCapabilities(issue).edit;
   const toast = useToast();
   useDocumentTitle(`${issueKey(issue.number)} ${issue.title}`);
+  const archived = state === "archived";
+  // Imported issues can be unarchived but not restored from the trash.
+  const canWrite = workspaceCanWrite && (archived || issueCapabilities(issue).edit);
+  const subtitle = canWrite ? t(archived ? "issue.archivedSub" : "issue.deletedSub") : "";
+  const recover = () =>
+    run({ type: archived ? "unarchive_issue" : "restore_issue", id: issue.id })
+      .then(() => toast.show(t(archived ? "issue.unarchived" : "issue.restored")))
+      .catch(() => {});
   return (
     <Page>
       <EmptyState
-        icon={<Trash2 />}
+        icon={archived ? <Archive /> : <Trash2 />}
         title={`${issueKey(issue.number)} ${issue.title}`}
-        description={`${t("issue.deleted")}. ${canWrite ? t("issue.deletedSub") : ""}`.trim()}
+        description={`${t(archived ? "issue.archived" : "issue.deleted")}. ${subtitle}`.trim()}
         action={
           <div className="flex items-center gap-3">
             {canWrite && (
-              <Button
-                variant="primary"
-                onPress={() =>
-                  run({ type: "restore_issue", id: issue.id })
-                    .then(() => toast.show(t("issue.restored")))
-                    .catch(() => {})
-                }
-              >
+              <Button variant="primary" onPress={recover}>
                 <ArchiveRestore />
-                {t("issue.restore")}
+                {t(archived ? "issue.unarchive" : "issue.restore")}
               </Button>
             )}
-            <Link className="text-primary hover:underline" to={`/${wsId}/trash`}>
-              {t("nav.trash")}
+            <Link
+              className="text-primary hover:underline"
+              to={`/${wsId}/${archived ? "archive" : "trash"}`}
+            >
+              {t(archived ? "nav.archive" : "nav.trash")}
             </Link>
           </div>
         }
@@ -218,48 +192,12 @@ function IssueView({ issue, detail }: { issue: Issue; detail: IssueDetail }) {
             {following ? <BellOff /> : <Bell />}
             {following ? t("issue.unfollow") : t("issue.follow")}
           </Button>
-          <MenuTrigger>
-            <Button variant="ghost" size="icon-lg" aria-label={t("action.more")}>
-              <MoreHorizontal />
-            </Button>
-            <MenuPopover placement="bottom end">
-              <Menu
-                onAction={(k) => {
-                  if (k === "copy")
-                    void navigator.clipboard
-                      .writeText(window.location.href)
-                      .then(() => toast.show(t("issue.linkCopied")));
-                  if (k === "delete") setConfirm(true);
-                  if (k === "archive")
-                    void run({ type: "archive_issue", id: issue.id }, { quiet: true }).then(() => {
-                      toast.show(t("bulk.archived", { n: 1 }), {
-                        label: t("action.undo"),
-                        run: () =>
-                          void run({ type: "unarchive_issue", id: issue.id }).catch(() => {}),
-                      });
-                      void goBack();
-                    });
-                }}
-              >
-                <MenuItem id="copy">
-                  <Link2 />
-                  {t("issue.copyLink")}
-                </MenuItem>
-                {canWrite && isDoneOnly(ws, issue) && (
-                  <MenuItem id="archive">
-                    <Archive />
-                    {t("action.archive")}
-                  </MenuItem>
-                )}
-                {canWrite && (
-                  <MenuItem id="delete">
-                    <Trash2 />
-                    {t("action.delete")}
-                  </MenuItem>
-                )}
-              </Menu>
-            </MenuPopover>
-          </MenuTrigger>
+          <IssueMenu
+            issue={issue}
+            canWrite={canWrite}
+            onDelete={() => setConfirm(true)}
+            onArchived={goBack}
+          />
         </div>
       </header>
 
@@ -272,26 +210,11 @@ function IssueView({ issue, detail }: { issue: Issue; detail: IssueDetail }) {
             <OpenProjectNotice issue={issue} />
             <div className="space-y-3">
               {parent && (
-                <div className="group flex items-center gap-1  text-muted-foreground">
-                  <Link
-                    to={`/${ws.id}/issue/${parent.id}`}
-                    className="inline-flex min-w-0 items-center gap-1.5 hover:text-foreground"
-                  >
-                    <IssueKey number={parent.number} />
-                    <span className="truncate">{parent.title}</span>
-                  </Link>
-                  {canWrite && (
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className={cn("size-5", revealOnHover)}
-                      aria-label={t("issue.removeParent")}
-                      onPress={() => patch({ clear_parent: true })}
-                    >
-                      <X className="size-3" />
-                    </Button>
-                  )}
-                </div>
+                <ParentLink
+                  parent={parent}
+                  canWrite={canWrite}
+                  onRemove={() => patch({ clear_parent: true })}
+                />
               )}
               <TitleField issue={issue} onSave={(title, version) => patch({ title }, version)} />
               <div className="flex flex-wrap items-center gap-1.5">
@@ -323,36 +246,7 @@ function IssueView({ issue, detail }: { issue: Issue; detail: IssueDetail }) {
                 />
               </div>
             </div>
-            <Disclosure className="mt-4 rounded-lg border border-border @min-[64rem]/issue:hidden">
-              {({ isExpanded }) => (
-                <>
-                  <Heading>
-                    <Button
-                      slot="trigger"
-                      variant="ghost"
-                      className="h-9 w-full justify-start px-3"
-                    >
-                      {t("issue.allProperties")}
-                      <ChevronRight
-                        className={cn(
-                          "ml-auto size-3.5 transition-transform",
-                          isExpanded && "rotate-90",
-                        )}
-                      />
-                    </Button>
-                  </Heading>
-                  <DisclosurePanel>
-                    <div className="space-y-1 border-t border-border p-2">
-                      <Properties
-                        issue={issue}
-                        hasParent={Boolean(parent)}
-                        excludeIds={subs.map((s) => s.id)}
-                      />
-                    </div>
-                  </DisclosurePanel>
-                </>
-              )}
-            </Disclosure>
+            <CollapsedProperties issue={issue} hasParent={Boolean(parent)} subs={subs} />
 
             <div className="mt-6 space-y-8">
               <div className="space-y-2">
@@ -361,27 +255,14 @@ function IssueView({ issue, detail }: { issue: Issue; detail: IssueDetail }) {
                   onSave={(description, version) => patch({ description }, version)}
                 />
                 {canWrite && (
-                  <div className="flex flex-wrap gap-1">
-                    {!subs.length && !addingSubtask && (
-                      <Button variant="ghost" size="sm" onPress={() => setAddingSubtask(true)}>
-                        <Plus />
-                        {t("issue.addSubtask")}
-                      </Button>
-                    )}
-                    {!blockers.length && !blocking.length && (
-                      <IssuePicker
-                        exclude={[issue.id, ...issue.dependencies]}
-                        onPick={addBlocker}
-                        trigger={
-                          <Button variant="ghost" size="sm">
-                            <Lock />
-                            {t("issue.addBlocker")}
-                          </Button>
-                        }
-                      />
-                    )}
-                    {!issue.attachments.length && <AttachButton uploader={uploader} />}
-                  </div>
+                  <QuickActions
+                    issue={issue}
+                    canAddSubtask={!subs.length && !addingSubtask}
+                    canAddBlocker={!blockers.length && !blocking.length}
+                    onAddSubtask={() => setAddingSubtask(true)}
+                    onAddBlocker={addBlocker}
+                    uploader={uploader}
+                  />
                 )}
               </div>
               {!canWrite &&
@@ -437,5 +318,176 @@ function IssueView({ issue, detail }: { issue: Issue; detail: IssueDetail }) {
         }}
       />
     </Page>
+  );
+}
+
+function IssueMenu({
+  issue,
+  canWrite,
+  onDelete,
+  onArchived,
+}: {
+  issue: Issue;
+  canWrite: boolean;
+  onDelete: () => void;
+  onArchived: () => unknown;
+}) {
+  const { t } = useI18n();
+  const toast = useToast();
+  const { ws, run } = useWorkspace();
+  const archive = () =>
+    run({ type: "archive_issue", id: issue.id }, { quiet: true }).then(() => {
+      toast.show(t("bulk.archived", { n: 1 }), {
+        label: t("action.undo"),
+        run: () => void run({ type: "unarchive_issue", id: issue.id }).catch(() => {}),
+      });
+      void onArchived();
+    });
+  return (
+    <MenuTrigger>
+      <Button variant="ghost" size="icon-lg" aria-label={t("action.more")}>
+        <MoreHorizontal />
+      </Button>
+      <MenuPopover placement="bottom end">
+        <Menu
+          onAction={(k) => {
+            if (k === "copy")
+              void navigator.clipboard
+                .writeText(window.location.href)
+                .then(() => toast.show(t("issue.linkCopied")));
+            if (k === "delete") onDelete();
+            if (k === "archive") void archive();
+          }}
+        >
+          <MenuItem id="copy">
+            <Link2 />
+            {t("issue.copyLink")}
+          </MenuItem>
+          {canWrite && isDoneOnly(ws, issue) && (
+            <MenuItem id="archive">
+              <Archive />
+              {t("action.archive")}
+            </MenuItem>
+          )}
+          {canWrite && (
+            <MenuItem id="delete">
+              <Trash2 />
+              {t("action.delete")}
+            </MenuItem>
+          )}
+        </Menu>
+      </MenuPopover>
+    </MenuTrigger>
+  );
+}
+
+function ParentLink({
+  parent,
+  canWrite,
+  onRemove,
+}: {
+  parent: Issue;
+  canWrite: boolean;
+  onRemove: () => void;
+}) {
+  const { t } = useI18n();
+  const { ws } = useWorkspace();
+  return (
+    <div className="group flex items-center gap-1  text-muted-foreground">
+      <Link
+        to={`/${ws.id}/issue/${parent.id}`}
+        className="inline-flex min-w-0 items-center gap-1.5 hover:text-foreground"
+      >
+        <IssueKey number={parent.number} />
+        <span className="truncate">{parent.title}</span>
+      </Link>
+      {canWrite && (
+        <Button
+          variant="ghost"
+          size="icon"
+          className={cn("size-5", revealOnHover)}
+          aria-label={t("issue.removeParent")}
+          onPress={onRemove}
+        >
+          <X className="size-3" />
+        </Button>
+      )}
+    </div>
+  );
+}
+
+/** The property list behind a disclosure, for widths without the side panel. */
+function CollapsedProperties({
+  issue,
+  hasParent,
+  subs,
+}: {
+  issue: Issue;
+  hasParent: boolean;
+  subs: Issue[];
+}) {
+  const { t } = useI18n();
+  return (
+    <Disclosure className="mt-4 rounded-lg border border-border @min-[64rem]/issue:hidden">
+      {({ isExpanded }) => (
+        <>
+          <Heading>
+            <Button slot="trigger" variant="ghost" className="h-9 w-full justify-start px-3">
+              {t("issue.allProperties")}
+              <ChevronRight
+                className={cn("ml-auto size-3.5 transition-transform", isExpanded && "rotate-90")}
+              />
+            </Button>
+          </Heading>
+          <DisclosurePanel>
+            <div className="space-y-1 border-t border-border p-2">
+              <Properties issue={issue} hasParent={hasParent} excludeIds={subs.map((s) => s.id)} />
+            </div>
+          </DisclosurePanel>
+        </>
+      )}
+    </Disclosure>
+  );
+}
+
+/** Shortcuts for sections that are empty, so they don't take space until used. */
+function QuickActions({
+  issue,
+  canAddSubtask,
+  canAddBlocker,
+  onAddSubtask,
+  onAddBlocker,
+  uploader,
+}: {
+  issue: Issue;
+  canAddSubtask: boolean;
+  canAddBlocker: boolean;
+  onAddSubtask: () => void;
+  onAddBlocker: (id: Id) => unknown;
+  uploader: ReturnType<typeof useUploader>;
+}) {
+  const { t } = useI18n();
+  return (
+    <div className="flex flex-wrap gap-1">
+      {canAddSubtask && (
+        <Button variant="ghost" size="sm" onPress={onAddSubtask}>
+          <Plus />
+          {t("issue.addSubtask")}
+        </Button>
+      )}
+      {canAddBlocker && (
+        <IssuePicker
+          exclude={[issue.id, ...issue.dependencies]}
+          onPick={onAddBlocker}
+          trigger={
+            <Button variant="ghost" size="sm">
+              <Lock />
+              {t("issue.addBlocker")}
+            </Button>
+          }
+        />
+      )}
+      {!issue.attachments.length && <AttachButton uploader={uploader} />}
+    </div>
   );
 }

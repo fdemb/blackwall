@@ -488,71 +488,7 @@ export class SyncEngine {
     this.onlineCalls.add(controller);
     try {
       return await cancellable(
-        this.onlineRequests.run(async () => {
-          for (let attempt = 0, csrfRefreshes = 0; ; attempt++) {
-            controller.signal.throwIfAborted();
-            for (;;) {
-              controller.signal.throwIfAborted();
-              if (this.started && this.snapshot.online) {
-                if ((await this.requireReplica().loadOutbox()).length === 0) break;
-                if (this.role === "leader" ? this.outboxBlocked() : this.leaderBlocked)
-                  throw new Error("Pending changes can't be sent. Reload and try again.");
-              }
-              this.requestPush();
-              await this.waitForOutboxChange(controller.signal);
-            }
-            try {
-              await cancellable(
-                this.deps.transport.command(this.deps.workspaceId, input, {
-                  signal: controller.signal,
-                }),
-                controller.signal,
-              );
-              controller.signal.throwIfAborted();
-              // The server pokes the leader's event stream, including when a follower sends this call.
-              if (this.role === "leader") void this.pull();
-              // Keep the callers' mutation-result shape without allocating a sync mutation id.
-              return { id: 0, status: "applied" };
-            } catch (caught) {
-              controller.signal.throwIfAborted();
-              let error = caught;
-              if (error instanceof AccessError && (error.status === 403 || error.status === 404)) {
-                const rejection = error;
-                const status = error.status;
-                let verified = false;
-                try {
-                  await this.verifyCommandAccess(controller, status === 403 && csrfRefreshes === 0);
-                  verified = true;
-                } catch (cause) {
-                  controller.signal.throwIfAborted();
-                  error = cause;
-                }
-                if (verified) {
-                  if (status === 403 && csrfRefreshes++ === 0) continue;
-                  throw new MutationError(status, rejection.message);
-                }
-              }
-              if (error instanceof UnauthorizedError || error instanceof AccessError) {
-                await this.handleError(error, "push");
-                throw error;
-              }
-              if (
-                error instanceof ProtocolError &&
-                error.status !== null &&
-                error.status >= 400 &&
-                error.status < 500
-              )
-                throw new MutationError(error.status, error.message);
-              if (!(error instanceof NetworkError || error instanceof UnavailableError))
-                throw error;
-              await pause(
-                this.deps.clock,
-                this.delay(attempt, error instanceof UnavailableError ? error.retryAfter : null),
-                controller.signal,
-              );
-            }
-          }
-        }),
+        this.onlineRequests.run(() => this.sendOnline(input, controller)),
         controller.signal,
       );
     } catch (error) {
@@ -561,6 +497,93 @@ export class SyncEngine {
     } finally {
       this.onlineCalls.delete(controller);
     }
+  }
+
+  private async sendOnline(
+    input: { command: object; idempotencyKey: string },
+    controller: AbortController,
+  ): Promise<MutationResult> {
+    for (let attempt = 0, csrfRefreshes = 0; ; attempt++) {
+      controller.signal.throwIfAborted();
+      await this.drainOutbox(controller.signal);
+      try {
+        await cancellable(
+          this.deps.transport.command(this.deps.workspaceId, input, {
+            signal: controller.signal,
+          }),
+          controller.signal,
+        );
+        controller.signal.throwIfAborted();
+        // The server pokes the leader's event stream, including when a follower sends this call.
+        if (this.role === "leader") void this.pull();
+        // Keep the callers' mutation-result shape without allocating a sync mutation id.
+        return { id: 0, status: "applied" };
+      } catch (caught) {
+        controller.signal.throwIfAborted();
+        const next = await this.onlineFailure(caught, controller, csrfRefreshes === 0);
+        if (next === "refreshed") {
+          csrfRefreshes++;
+          continue;
+        }
+        await pause(this.deps.clock, this.delay(attempt, next.retryAfter), controller.signal);
+      }
+    }
+  }
+
+  /** Online commands wait until earlier offline edits have been pushed. */
+  private async drainOutbox(signal: AbortSignal): Promise<void> {
+    for (;;) {
+      signal.throwIfAborted();
+      if (this.started && this.snapshot.online) {
+        if ((await this.requireReplica().loadOutbox()).length === 0) return;
+        if (this.role === "leader" ? this.outboxBlocked() : this.leaderBlocked)
+          throw new Error("Pending changes can't be sent. Reload and try again.");
+      }
+      this.requestPush();
+      await this.waitForOutboxChange(signal);
+    }
+  }
+
+  /**
+   * Rethrows a terminal online-command failure. Returns "refreshed" when a
+   * first 403 was a stale CSRF token worth one immediate retry, otherwise
+   * the server's retry hint for a backoff.
+   */
+  private async onlineFailure(
+    caught: unknown,
+    controller: AbortController,
+    canRefreshCsrf: boolean,
+  ): Promise<"refreshed" | { retryAfter: number | string | null }> {
+    let error = caught;
+    if (error instanceof AccessError && (error.status === 403 || error.status === 404)) {
+      const { status, message } = error;
+      const refresh = status === 403 && canRefreshCsrf;
+      let verified = false;
+      try {
+        await this.verifyCommandAccess(controller, refresh);
+        verified = true;
+      } catch (cause) {
+        controller.signal.throwIfAborted();
+        error = cause;
+      }
+      if (verified) {
+        if (refresh) return "refreshed";
+        throw new MutationError(status, message);
+      }
+    }
+    if (error instanceof UnauthorizedError || error instanceof AccessError) {
+      await this.handleError(error, "push");
+      throw error;
+    }
+    if (
+      error instanceof ProtocolError &&
+      error.status !== null &&
+      error.status >= 400 &&
+      error.status < 500
+    )
+      throw new MutationError(error.status, error.message);
+    if (!(error instanceof NetworkError || error instanceof UnavailableError)) throw error;
+    return { retryAfter: error instanceof UnavailableError ? error.retryAfter : null };
   }
 
   private async verifyCommandAccess(

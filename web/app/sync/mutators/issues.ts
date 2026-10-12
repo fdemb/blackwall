@@ -9,8 +9,6 @@ import {
   checkText,
   checkWorkflow,
   dedupeSortUuids,
-  NIL_UUID,
-  checkCreateId,
   checkCapacity,
   requireIssue,
   requireLiveIssue,
@@ -18,6 +16,7 @@ import {
   stageKindOf,
   update,
   validateIssue,
+  reserveClientId,
 } from "./common";
 import { MutationError } from "./errors";
 
@@ -90,6 +89,24 @@ function orderPosition(
     for (const peer of others) max = Math.max(max, peer.position);
     return max + 1024;
   }
+  const neighbor = requireNeighbor(tx, current, stageId, beforeId);
+  let lower: number | null = null;
+  for (const peer of others) {
+    if (peer.id !== beforeId && sortsBefore(peer, neighbor)) {
+      lower = lower === null ? peer.position : Math.max(lower, peer.position);
+    }
+  }
+  const low = lower ?? neighbor.position - 2048;
+  const gap = neighbor.position - low;
+  return gap <= 1 ? neighbor.position - 1 : low + Math.floor(gap / 2);
+}
+
+function requireNeighbor(
+  tx: Tx,
+  current: DeepReadonly<SyncIssue>,
+  stageId: string,
+  beforeId: string,
+): DeepReadonly<SyncIssue> {
   const neighbor = tx.get("issues", beforeId);
   if (neighbor === undefined || neighbor.deleted_at !== null) {
     throw new MutationError(404, "not found");
@@ -101,19 +118,12 @@ function orderPosition(
   ) {
     throw new MutationError(400, "invalid ordering neighbor");
   }
-  let lower: number | null = null;
-  for (const peer of others) {
-    if (peer.id === beforeId) continue;
-    if (
-      peer.position < neighbor.position ||
-      (peer.position === neighbor.position && peer.id < beforeId)
-    ) {
-      lower = lower === null ? peer.position : Math.max(lower, peer.position);
-    }
-  }
-  const low = lower ?? neighbor.position - 2048;
-  const gap = neighbor.position - low;
-  return gap <= 1 ? neighbor.position - 1 : low + Math.floor(gap / 2);
+  return neighbor;
+}
+
+/** `(position, id)` order, as the server compares rows. */
+function sortsBefore(a: DeepReadonly<SyncIssue>, b: DeepReadonly<SyncIssue>): boolean {
+  return a.position < b.position || (a.position === b.position && a.id < b.id);
 }
 
 /** `done_at` follows the stage: set on entering done, cleared on leaving it. */
@@ -131,18 +141,39 @@ export const createIssue: Mutator<ArgsOf<"create_issue">> = (tx, args, ctx) => {
   requireRole(tx, ctx.actor, "create_issue", args);
   checkCapacity(tx, "issues", 5000, ctx, args.input.id);
   const input = args.input;
-  const id = input.id ?? null;
-  if (id === null) throw new MutationError(400, "id is required");
-  if (id === NIL_UUID) throw new MutationError(400, "id must not be nil");
-  checkCreateId(tx, id, ctx);
+  const id = reserveClientId(tx, input.id, ctx);
   checkOwnership(tx, { type: "create_issue", input });
   const stageId = resolveStage(tx, input.team_id, input.stage_id);
+  const next = issueFromInput(input, id, stageId, ctx);
+  // The server stamps done_at when creating into a done stage; the issue
+  // number stays null until the pull confirms the create.
+  next.done_at = doneAt(tx, input.team_id, stageId, null, ctx.at);
+  // A replay over a base that already holds this id keeps the stored number,
+  // version and timestamps; `createPosition` excludes the id itself so the
+  // second run lands on the same position.
   const previous = tx.get("issues", id);
-  const next: SyncIssue = {
+  if (previous !== undefined) {
+    next.number = previous.number;
+    next.version = previous.version;
+    next.created_at = previous.created_at;
+  }
+  next.position = createPosition(tx, next.team_id, next.stage_id, id);
+  validateIssue(tx, next, null);
+  tx.put("issues", next);
+  checkWorkflow(tx, [id]);
+};
+
+function issueFromInput(
+  input: DeepReadonly<ArgsOf<"create_issue">["input"]>,
+  id: string,
+  stageId: string,
+  ctx: MutatorContext,
+): SyncIssue {
+  return {
     openproject: null,
     id,
-    version: previous?.version ?? 1,
-    number: previous?.number ?? null,
+    version: 1,
+    number: null,
     title: input.title,
     description: input.description ?? "",
     team_id: input.team_id,
@@ -150,39 +181,25 @@ export const createIssue: Mutator<ArgsOf<"create_issue">> = (tx, args, ctx) => {
     assignee: input.assignee ?? null,
     created_by: ctx.actor,
     priority: input.priority ?? "none",
-    labels: input.labels ? dedupeSortUuids(input.labels) : [],
+    labels: dedupeSortUuids(input.labels ?? []),
     estimate: input.estimate ?? null,
     deadline: input.deadline ?? null,
     project_id: input.project_id ?? null,
     milestone_id: input.milestone_id ?? null,
     sprint_id: input.sprint_id ?? null,
     parent_id: input.parent_id ?? null,
-    dependencies: input.dependencies ? dedupeSortUuids(input.dependencies) : [],
+    dependencies: dedupeSortUuids(input.dependencies ?? []),
     position: 0,
     followers: [ctx.actor],
     attachments: [],
     source_links: [],
     deleted_at: null,
     archived_at: null,
-    // The server stamps done_at when creating into a done stage; the issue
-    // number stays null until the pull confirms the create.
-    done_at: doneAt(tx, input.team_id, stageId, null, ctx.at),
-    created_at: previous?.created_at ?? ctx.at,
+    done_at: null,
+    created_at: ctx.at,
     updated_at: ctx.at,
   };
-  next.position = createPosition(tx, next.team_id, next.stage_id, id);
-  // A replay over a base that already holds this id keeps the stored number,
-  // version and timestamps; `createPosition` excludes the id itself so the
-  // second run lands on the same position.
-  if (previous !== undefined) {
-    next.number = previous.number;
-    next.version = previous.version;
-    next.created_at = previous.created_at;
-  }
-  validateIssue(tx, next, null);
-  tx.put("issues", next);
-  checkWorkflow(tx, [id]);
-};
+}
 
 /** Shared by `update_issue` and the bulk update action. */
 function patchIssue(
@@ -193,29 +210,42 @@ function patchIssue(
 ): void {
   const current = requireLiveIssue(tx, id);
   if (current.archived_at !== null) throw new MutationError(409, "issue is archived");
-  const next = copyIssue(current);
-  if (patch.title !== undefined) next.title = patch.title;
-  if (patch.description !== undefined) next.description = patch.description;
-  if (patch.stage_id !== undefined) next.stage_id = patch.stage_id;
-  next.assignee = patch.clear_assignee ? null : (patch.assignee ?? current.assignee);
-  if (patch.priority !== undefined) next.priority = patch.priority;
-  if (patch.labels !== undefined) next.labels = dedupeSortUuids(patch.labels);
-  next.estimate = patch.clear_estimate ? null : (patch.estimate ?? current.estimate);
-  next.deadline = patch.clear_deadline ? null : (patch.deadline ?? current.deadline);
-  // clear_project also clears the milestone, unless the patch names one.
-  next.project_id = patch.clear_project ? null : (patch.project_id ?? current.project_id);
-  next.milestone_id = patch.clear_project ? null : current.milestone_id;
-  if (patch.clear_milestone) next.milestone_id = null;
-  else if (patch.milestone_id !== undefined) next.milestone_id = patch.milestone_id;
-  next.sprint_id = patch.clear_sprint ? null : (patch.sprint_id ?? current.sprint_id);
-  next.parent_id = patch.clear_parent ? null : (patch.parent_id ?? current.parent_id);
-  if (patch.dependencies !== undefined) next.dependencies = dedupeSortUuids(patch.dependencies);
+  const next = patchedIssue(current, patch);
   validateIssue(tx, next, current.sprint_id);
   if (next.stage_id !== current.stage_id) {
     next.done_at = doneAt(tx, next.team_id, next.stage_id, current.done_at, ctx.at);
   }
   next.updated_at = ctx.at;
   tx.put("issues", next);
+}
+
+function patchedIssue(
+  current: DeepReadonly<SyncIssue>,
+  patch: DeepReadonly<IssuePatch>,
+): SyncIssue {
+  const next = copyIssue(current);
+  next.title = patch.title ?? current.title;
+  next.description = patch.description ?? current.description;
+  next.stage_id = patch.stage_id ?? current.stage_id;
+  next.assignee = setOrClear(current.assignee, patch.assignee, patch.clear_assignee);
+  next.priority = patch.priority ?? current.priority;
+  if (patch.labels !== undefined) next.labels = dedupeSortUuids(patch.labels);
+  next.estimate = setOrClear(current.estimate, patch.estimate, patch.clear_estimate);
+  next.deadline = setOrClear(current.deadline, patch.deadline, patch.clear_deadline);
+  next.project_id = setOrClear(current.project_id, patch.project_id, patch.clear_project);
+  // Leaving the project also leaves its milestone, unless the patch names one.
+  const milestone = patch.clear_project ? null : current.milestone_id;
+  next.milestone_id = setOrClear(milestone, patch.milestone_id, patch.clear_milestone);
+  next.sprint_id = setOrClear(current.sprint_id, patch.sprint_id, patch.clear_sprint);
+  next.parent_id = setOrClear(current.parent_id, patch.parent_id, patch.clear_parent);
+  if (patch.dependencies !== undefined) next.dependencies = dedupeSortUuids(patch.dependencies);
+  return next;
+}
+
+/** `clear` wins over a supplied value; an absent value keeps the current one. */
+function setOrClear<T>(current: T | null, value: T | null | undefined, clear?: boolean): T | null {
+  if (clear) return null;
+  return value ?? current;
 }
 
 export const updateIssue: Mutator<ArgsOf<"update_issue">> = (tx, args, ctx) => {

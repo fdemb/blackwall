@@ -126,71 +126,29 @@ export default function Sprints() {
                       <KanbanSquare />
                     </Link>
                     {canWrite && (
-                      <MenuTrigger>
-                        <Button variant="ghost" size="icon" aria-label={t("action.more")}>
-                          <MoreHorizontal />
-                        </Button>
-                        <MenuPopover placement="bottom end">
-                          <Menu
-                            onAction={(k) => {
-                              if (k === "edit") setEditing(s);
-                              if (k === "start")
-                                void guard(() =>
-                                  run({
-                                    type: "update_sprint",
-                                    id: s.id,
-                                    name: s.name,
-                                    goal: s.goal,
-                                    starts_at: s.starts_at,
-                                    ends_at: s.ends_at,
-                                    state: "active",
-                                  }),
-                                );
-                              if (k === "complete") setCompleting(s);
-                            }}
-                          >
-                            <MenuItem id="edit">
-                              <Pencil />
-                              {t("action.edit")}
-                            </MenuItem>
-                            {s.state === "planned" && (
-                              <MenuItem id="start" isDisabled={changing}>
-                                <Play />
-                                {changing ? t("sprint.starting") : t("sprint.start")}
-                              </MenuItem>
-                            )}
-                            {s.state === "active" && (
-                              <MenuItem id="complete">
-                                <CheckCheck />
-                                {t("sprint.complete")}
-                              </MenuItem>
-                            )}
-                          </Menu>
-                        </MenuPopover>
-                      </MenuTrigger>
+                      <SprintMenu
+                        sprint={s}
+                        starting={changing}
+                        onEdit={() => setEditing(s)}
+                        onStart={() =>
+                          void guard(() =>
+                            run({
+                              type: "update_sprint",
+                              id: s.id,
+                              name: s.name,
+                              goal: s.goal,
+                              starts_at: s.starts_at,
+                              ends_at: s.ends_at,
+                              state: "active",
+                            }),
+                          )
+                        }
+                        onComplete={() => setCompleting(s)}
+                      />
                     )}
                   </>
                 }
-                footer={
-                  <div className="space-y-1.5 border-t border-border/70 px-3 py-2  text-muted-foreground">
-                    {s.goal && (
-                      <p className="flex gap-1.5 text-foreground">
-                        <Target className="mt-0.5 size-3.5 shrink-0 text-primary" />
-                        {s.goal}
-                      </p>
-                    )}
-                    <p className="tabular-nums">
-                      {shortDate(s.starts_at, lang)} – {shortDate(s.ends_at, lang)} ·{" "}
-                      {t("sprint.progress", { done, total })}
-                    </p>
-                    <div className="h-1 overflow-hidden rounded-full bg-border">
-                      <div
-                        className="h-full rounded-full bg-primary transition-[width]"
-                        style={{ width: `${total ? (done / total) * 100 : 0}%` }}
-                      />
-                    </div>
-                  </div>
-                }
+                footer={<SprintFooter sprint={s} done={done} total={total} />}
               />
             );
           })}
@@ -268,6 +226,80 @@ export default function Sprints() {
         {(close) => completing && <CompleteForm sprint={completing} close={close} />}
       </Dialog>
     </Page>
+  );
+}
+
+function SprintMenu({
+  sprint,
+  starting,
+  onEdit,
+  onStart,
+  onComplete,
+}: {
+  sprint: Sprint;
+  starting: boolean;
+  onEdit: () => void;
+  onStart: () => void;
+  onComplete: () => void;
+}) {
+  const { t } = useI18n();
+  return (
+    <MenuTrigger>
+      <Button variant="ghost" size="icon" aria-label={t("action.more")}>
+        <MoreHorizontal />
+      </Button>
+      <MenuPopover placement="bottom end">
+        <Menu
+          onAction={(k) => {
+            if (k === "edit") onEdit();
+            if (k === "start") onStart();
+            if (k === "complete") onComplete();
+          }}
+        >
+          <MenuItem id="edit">
+            <Pencil />
+            {t("action.edit")}
+          </MenuItem>
+          {sprint.state === "planned" && (
+            <MenuItem id="start" isDisabled={starting}>
+              <Play />
+              {starting ? t("sprint.starting") : t("sprint.start")}
+            </MenuItem>
+          )}
+          {sprint.state === "active" && (
+            <MenuItem id="complete">
+              <CheckCheck />
+              {t("sprint.complete")}
+            </MenuItem>
+          )}
+        </Menu>
+      </MenuPopover>
+    </MenuTrigger>
+  );
+}
+
+/** Goal, dates and progress under a sprint column. */
+function SprintFooter({ sprint, done, total }: { sprint: Sprint; done: number; total: number }) {
+  const { t, lang } = useI18n();
+  return (
+    <div className="space-y-1.5 border-t border-border/70 px-3 py-2  text-muted-foreground">
+      {sprint.goal && (
+        <p className="flex gap-1.5 text-foreground">
+          <Target className="mt-0.5 size-3.5 shrink-0 text-primary" />
+          {sprint.goal}
+        </p>
+      )}
+      <p className="tabular-nums">
+        {shortDate(sprint.starts_at, lang)} – {shortDate(sprint.ends_at, lang)} ·{" "}
+        {t("sprint.progress", { done, total })}
+      </p>
+      <div className="h-1 overflow-hidden rounded-full bg-border">
+        <div
+          className="h-full rounded-full bg-primary transition-[width]"
+          style={{ width: `${total ? (done / total) * 100 : 0}%` }}
+        />
+      </div>
+    </div>
   );
 }
 

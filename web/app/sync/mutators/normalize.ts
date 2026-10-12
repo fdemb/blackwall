@@ -250,15 +250,7 @@ function validateField(item: unknown, field: Field, key: string): void {
 function normalizeField(item: unknown, field: Field): unknown {
   switch (field.kind) {
     case "option":
-      if (item === null || item === undefined) return field.stored ? null : undefined;
-      if (field.timestamp && typeof item === "string") {
-        try {
-          return parseTimestamp(item, true, "chrono");
-        } catch {
-          // The mutator reports invalid timestamps through its usual check.
-        }
-      }
-      return item;
+      return normalizeOption(item, field);
     case "default": {
       // A nullable default keeps null instead of replacing it with the default.
       const value = item === undefined ? structuredClone(field.value) : item;
@@ -277,6 +269,17 @@ function normalizeField(item: unknown, field: Field): unknown {
   }
 }
 
+function normalizeOption(item: unknown, field: Extract<Field, { kind: "option" }>): unknown {
+  if (item === null || item === undefined) return field.stored ? null : undefined;
+  if (!field.timestamp || typeof item !== "string") return item;
+  try {
+    return parseTimestamp(item, true, "chrono");
+  } catch {
+    // The mutator reports invalid timestamps through its usual check.
+    return item;
+  }
+}
+
 function normalizeArray(value: unknown, fields: Fields): unknown {
   return Array.isArray(value) ? value.map((entry) => normalizeObject(entry, fields)) : value;
 }
@@ -287,27 +290,27 @@ export function normalizeArgs(name: string, args: unknown): unknown {
   return fields === undefined ? args : normalizeObject(args, fields);
 }
 
+/** Inclusive lower and exclusive upper bounds; `2 ** 64 - 1` is not representable. */
+const INTEGER_RANGE = {
+  u32: [0, 2 ** 32],
+  u64: [0, 2 ** 64],
+  i64: [-(2 ** 63), 2 ** 63],
+} as const;
+
 /** Serde integer errors, shared by command admission and the fake. */
 function checkInteger(value: unknown, type: "u32" | "u64" | "i64"): void {
   if (typeof value === "number" && Number.isInteger(value)) {
-    const valid =
-      type === "u32"
-        ? value >= 0 && value <= 0xffff_ffff
-        : type === "u64"
-          ? value >= 0 && value < 2 ** 64
-          : value >= -(2 ** 63) && value < 2 ** 63;
-    if (valid) return;
+    const [min, end] = INTEGER_RANGE[type];
+    if (value >= min && value < end) return;
     throw new MutationError(400, `invalid value: integer \`${value}\`, expected ${type}`);
   }
-  const actual =
-    typeof value === "number"
-      ? `floating point \`${value}\``
-      : typeof value === "string"
-        ? `string ${JSON.stringify(value)}`
-        : typeof value === "boolean"
-          ? `boolean \`${value}\``
-          : Array.isArray(value)
-            ? "sequence"
-            : "map";
-  throw new MutationError(400, `invalid type: ${actual}, expected ${type}`);
+  throw new MutationError(400, `invalid type: ${serdeType(value)}, expected ${type}`);
+}
+
+/** How Serde names a non-integer JSON value in type errors. */
+function serdeType(value: unknown): string {
+  if (typeof value === "number") return `floating point \`${value}\``;
+  if (typeof value === "string") return `string ${JSON.stringify(value)}`;
+  if (typeof value === "boolean") return `boolean \`${value}\``;
+  return Array.isArray(value) ? "sequence" : "map";
 }

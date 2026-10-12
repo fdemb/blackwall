@@ -384,12 +384,7 @@ async fn issue_effects_with_context(
     effects: IssueEffects,
     context: Option<&PageEffects>,
 ) -> Result<()> {
-    if before.is_none_or(|old| {
-        old.deadline != after.deadline
-            || old.stage_id != after.stage_id
-            || old.assignee != after.assignee
-            || old.deleted_at != after.deleted_at
-    }) {
+    if affects_reminder(before, after) {
         let completed = match context {
             Some(context) => {
                 Some(stage_completed(conn, after.stage_id, Some(&context.stages)).await?)
@@ -417,21 +412,8 @@ async fn issue_effects_with_context(
         .await?;
     }
 
-    if matches!(effects, IssueEffects::Create | IssueEffects::Update)
-        && before.is_none_or(|old| old.assignee != after.assignee)
-        && let Some(user) = after.assignee
-        && user != actor
-    {
-        notify(
-            conn,
-            workspace,
-            user,
-            Some(after.id),
-            AlertKind::Assignment,
-            after.title.clone(),
-            format!("assignment:{}:{}", after.id, Uuid::new_v4()),
-        )
-        .await?;
+    if matches!(effects, IssueEffects::Create | IssueEffects::Update) {
+        notify_new_assignee(conn, workspace, actor, before, after).await?;
     }
 
     if matches!(effects, IssueEffects::Update) || (remote && before.is_some()) {
@@ -454,6 +436,42 @@ async fn issue_effects_with_context(
         .await?;
     }
     Ok(())
+}
+
+/// The deadline reminder depends on the deadline, stage, assignee and trash state.
+fn affects_reminder(before: Option<&Issue>, after: &Issue) -> bool {
+    before.is_none_or(|old| {
+        old.deadline != after.deadline
+            || old.stage_id != after.stage_id
+            || old.assignee != after.assignee
+            || old.deleted_at != after.deleted_at
+    })
+}
+
+/// Alerts a newly assigned user, unless they assigned themselves.
+async fn notify_new_assignee(
+    conn: &mut PgConnection,
+    workspace: Uuid,
+    actor: Uuid,
+    before: Option<&Issue>,
+    after: &Issue,
+) -> Result<()> {
+    if before.is_some_and(|old| old.assignee == after.assignee) {
+        return Ok(());
+    }
+    let Some(user) = after.assignee.filter(|user| *user != actor) else {
+        return Ok(());
+    };
+    notify(
+        conn,
+        workspace,
+        user,
+        Some(after.id),
+        AlertKind::Assignment,
+        after.title.clone(),
+        format!("assignment:{}:{}", after.id, Uuid::new_v4()),
+    )
+    .await
 }
 
 pub(crate) async fn activity(

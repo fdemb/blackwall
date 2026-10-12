@@ -22,7 +22,6 @@ import {
   UserCog,
   Building2,
 } from "lucide-react";
-import { Avatar } from "~/components/ui/avatar";
 import { Button } from "~/components/ui/button";
 import { Kbd } from "~/components/ui/tooltip";
 import { Menu, MenuItem, MenuPopover, MenuSeparator, MenuTrigger } from "~/components/ui/menu";
