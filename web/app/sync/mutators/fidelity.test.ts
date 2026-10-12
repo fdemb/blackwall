@@ -53,7 +53,6 @@ describe("server argument fidelity", () => {
     ["create_sprint", { starts_at: "2026-10-08T12:00:00" }],
     ["update_sprint", { ends_at: "2026-10-08T12:00:00" }],
     ["log_time", { logged_at: "2026-10-08T12:00:00" }],
-    ["save_view", { filter: { due_before: "2026-10-08T12:00:00" } }],
   ])("requires explicit command timezone in %s", (name, args) => {
     rejection(() => normalizeArgs(String(name), args), 400, "premature end of input");
   });

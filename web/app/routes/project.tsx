@@ -19,7 +19,8 @@ import { useIssues } from "~/lib/queries";
 import { QueryStatus } from "~/components/app/query-status";
 import { useWorkspace } from "~/lib/workspace";
 import { ProjectForm } from "./projects";
-import type { Milestone } from "~/lib/types";
+import { effectiveFilter, isNarrowed, whereIs } from "~/lib/filters";
+import type { IssueFilter, Milestone } from "~/lib/types";
 
 export default function ProjectPage() {
   const { t, lang } = useI18n();
@@ -28,15 +29,14 @@ export default function ProjectPage() {
   const [editing, setEditing] = useState(false);
   const [milestoneForm, setMilestoneForm] = useState<Milestone | "new" | null>(null);
   const { filter, setFilter } = useQueueState();
-  const query = useIssues({ ...filter, project_id: projectId });
+  const base: IssueFilter = { where: [whereIs("project_id", projectId ?? "")] };
+  const query = useIssues(effectiveFilter(filter, base), Boolean(projectId));
   const project = ws.projects.find((p) => p.id === projectId);
   if (!project) return <Navigate to={`/${wsId}/projects`} replace />;
   const stats = report.project_stats.find((stats) => stats.id === project.id);
   const total = stats?.total ?? 0;
   const shown = query.items;
-  const narrowed = Object.keys(filter).some(
-    (k) => k !== "sort" && filter[k as keyof typeof filter],
-  );
+  const narrowed = isNarrowed(filter);
   const done = stats?.completed ?? 0;
   const milestones = ws.milestones
     .filter((m) => m.project_id === project.id)
@@ -91,6 +91,7 @@ export default function ProjectPage() {
                   filter={filter}
                   onChange={setFilter}
                   hide={["project_id", "team_id", "sprint_id"]}
+                  scope={base}
                   saveable={false}
                 />
               </div>

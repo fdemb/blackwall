@@ -177,26 +177,38 @@ export interface Invitation {
   expires_at: string;
   state: InvitationState;
 }
+export type FilterField =
+  | "assignee"
+  | "created_by"
+  | "team_id"
+  | "stage_id"
+  | "stage_kind"
+  | "priority"
+  | "labels"
+  | "project_id"
+  | "sprint_id"
+  | "parent_id"
+  | "dependencies"
+  | "estimate"
+  | "deadline"
+  | "created_at"
+  | "updated_at";
+export type FilterOp = "is" | "is_not" | "lt" | "lte" | "gt" | "gte";
+/** Strings or null; null is an empty field. See docs/filters.md for each field's values. */
+export type FilterValue = string | null;
+export interface FilterClause {
+  field: FilterField;
+  op: FilterOp;
+  values: readonly FilterValue[];
+}
 export interface IssueFilter {
-  assignee?: Id;
-  created_by?: Id;
-  team_id?: Id;
-  stage_id?: Id;
-  priority?: Priority;
-  label_id?: Id;
-  sprint_id?: Id;
-  project_id?: Id;
-  due_before?: string;
+  /** Clauses ANDed together. */
+  where?: readonly FilterClause[];
   search?: string;
   trash?: boolean;
   archived?: boolean;
-  parent_id?: Id;
-  dependency_id?: Id;
   ids?: string;
-  no_sprint?: boolean;
-  open?: boolean;
   sort?: IssueSort;
-  unassigned?: boolean;
   group_by?: IssueGroup;
   /** Paging cursor for ungrouped Updated pages. Stored as given. */
   after?: string;

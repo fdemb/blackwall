@@ -606,11 +606,19 @@ impl Workspace {
 
     pub fn query(&self, actor: Uuid, f: IssueFilter) -> Result<Vec<Issue>> {
         self.member(actor)?;
+        let clauses = f.compile(Utc::now())?;
+        let kind_of = |stage: Uuid| {
+            self.teams
+                .iter()
+                .flat_map(|t| &t.stages)
+                .find(|s| s.id == stage)
+                .map(|s| s.kind.clone())
+        };
 
         let mut issues: Vec<_> = self
             .issues
             .iter()
-            .filter(|i| matches_filter(&f, i))
+            .filter(|i| matches_filter(&f, i) && clauses.iter().all(|c| c.matches(i, kind_of)))
             .cloned()
             .collect();
 
@@ -724,19 +732,7 @@ fn matches_filter(f: &IssueFilter, i: &Issue) -> bool {
             .to_lowercase()
             .contains(&v.to_lowercase())
     };
-    lifecycle
-        && f.assignee.is_none_or(|v| i.assignee == Some(v))
-        && (!f.unassigned || i.assignee.is_none())
-        && f.created_by.is_none_or(|v| i.created_by == Some(v))
-        && f.team_id.is_none_or(|v| i.team_id == v)
-        && f.stage_id.is_none_or(|v| i.stage_id == v)
-        && f.priority.as_ref().is_none_or(|v| i.priority == *v)
-        && f.label_id.is_none_or(|v| i.labels.contains(&v))
-        && f.sprint_id.is_none_or(|v| i.sprint_id == Some(v))
-        && f.project_id.is_none_or(|v| i.project_id == Some(v))
-        && f.due_before
-            .is_none_or(|v| i.deadline.is_some_and(|d| d <= v))
-        && f.search.as_ref().is_none_or(search)
+    lifecycle && f.search.as_ref().is_none_or(search)
 }
 
 fn total(map: &mut BTreeMap<Uuid, Total>, id: Uuid) -> &mut Total {

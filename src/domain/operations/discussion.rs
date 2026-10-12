@@ -118,7 +118,7 @@ impl Workspace {
                 filter,
             } => {
                 text(&name, 200)?;
-                optional_timestamp(filter.due_before)?;
+                filter.validate()?;
                 let id = self.take_client_id(id)?;
                 self.views.push(SavedView {
                     version: 1,
@@ -137,7 +137,7 @@ impl Workspace {
                 filter,
             } => {
                 text(&name, 200)?;
-                optional_timestamp(filter.due_before)?;
+                filter.validate()?;
                 let owner = find(&self.views, |v| v.id == id)?.owner;
                 self.author_or_admin(actor, owner)?;
                 if shared && self.member(actor)?.role == Role::Viewer {

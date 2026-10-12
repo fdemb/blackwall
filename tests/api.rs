@@ -404,8 +404,17 @@ async fn complete_contract_on_postgres() {
         &app,
         "GET",
         &format!(
-            "/api/workspaces/{id}/issues?assignee={}&priority=high&label_id={label}",
-            owner.profile.id
+            "/api/workspaces/{id}/issues?{}",
+            serde_urlencoded::to_string([(
+                "where",
+                serde_json::json!([
+                    {"field": "assignee", "op": "is", "values": [owner.profile.id]},
+                    {"field": "priority", "op": "is", "values": ["high"]},
+                    {"field": "labels", "op": "is", "values": [label]},
+                ])
+                .to_string()
+            )])
+            .unwrap()
         ),
         Some(&owner.token),
         None,

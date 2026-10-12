@@ -8,7 +8,6 @@ import {
   GHOST,
   MEMBER,
   OWNER,
-  TEAM,
   VIEWER,
   VIEW_OTHER_PRIVATE,
   VIEW_PRIVATE,
@@ -46,27 +45,17 @@ function expectSame(
 }
 
 /**
- * The filter as the server stores it: every default filled, `due_before`
- * normalized to UTC. Expected fields come from Rust `IssueFilter`.
+ * The filter as the server stores it: every default filled. Expected fields
+ * come from Rust `IssueFilter`.
  */
+// Fixture ids are not UUIDs, and clause values must be.
+const TEAM_UUID = "11111111-1111-4111-8111-000000000001";
+
 function canonical(filter: Record<string, unknown> = {}): Record<string, unknown> {
   return {
-    parent_id: null,
-    dependency_id: null,
+    where: [],
     ids: null,
-    no_sprint: false,
-    open: false,
-    assignee: null,
-    created_by: null,
-    team_id: null,
-    stage_id: null,
-    priority: null,
-    label_id: null,
-    sprint_id: null,
-    project_id: null,
-    due_before: null,
     search: null,
-    unassigned: false,
     trash: false,
     archived: false,
     sort: "position",
@@ -137,36 +126,9 @@ function twice(name: string, args: unknown, actor: Id = MEMBER): void {
 }
 
 describe("save_view", () => {
-  it.each([
-    ["2026-10-09T15:30:00.000+02:00", "2026-10-09T13:30:00Z"],
-    ["2026-10-09T15:30:00.120000+02:00", "2026-10-09T13:30:00.120Z"],
-    ["2026-10-09T15:30:00.123456+02:00", "2026-10-09T13:30:00.123456Z"],
-    ["2026-10-09T15:30:00.123456789+02:00", "2026-10-09T13:30:00.123456789Z"],
-    ["2016-12-31T23:59:60Z", "2016-12-31T23:59:60Z"],
-  ])("matches chrono JSON for saved and updated filter date %s", (input, expected) => {
-    const store = seedStore();
-    mutate(store, "save_view", {
-      id: "chrono-view",
-      name: "Due",
-      shared: false,
-      filter: { due_before: input },
-    });
-    expect(store.get("views", "chrono-view")?.filter.due_before).toBe(expected);
-    mutate(store, "update_view", {
-      id: VIEW_PRIVATE,
-      name: "Due",
-      shared: false,
-      filter: { due_before: input },
-    });
-    expect(store.get("views", VIEW_PRIVATE)?.filter.due_before).toBe(expected);
-  });
-  it("stores filter defaults and UTC due_before", () => {
-    const args = {
-      id: "view-defaults",
-      name: "Due",
-      shared: false,
-      filter: { due_before: "2026-10-09T15:30:00.123456+02:00" },
-    };
+  it("stores filter defaults and clause values as sent", () => {
+    const where = [{ field: "deadline", op: "lte", values: ["2026-10-09T15:30:00.123456+02:00"] }];
+    const args = { id: "view-defaults", name: "Due", shared: false, filter: { where } };
     const store = seedStore();
     admit(store, MEMBER, { name: "save_view", args, at: AT });
     mutate(store, "save_view", args);
@@ -174,7 +136,7 @@ describe("save_view", () => {
       ...args,
       version: 1,
       owner: MEMBER,
-      filter: canonical({ due_before: "2026-10-09T13:30:00.123456Z" }),
+      filter: canonical({ where }),
     });
     twice("save_view", args);
   });
@@ -219,9 +181,15 @@ describe("save_view", () => {
     rejects("save_view", { ...base, name: " " }, 400, "text must contain 1 to 200 bytes");
     rejects(
       "save_view",
-      { ...base, filter: { due_before: "soon" } },
+      { ...base, filter: { where: [{ field: "deadline", op: "lte", values: ["soon"] }] } },
       400,
-      "timestamp year must be between 1 and 9999",
+      'filter value "soon" is not valid for deadline',
+    );
+    rejects(
+      "save_view",
+      { ...base, filter: { where: [{ field: "assignee", op: "gt", values: [MEMBER] }] } },
+      400,
+      "filter op gt does not apply to assignee",
     );
     rejects("save_view", { name: "N", shared: false, filter: {} }, 400, "id is required");
     rejects(
@@ -239,17 +207,13 @@ describe("update_view", () => {
     const store = seedStore();
     const before = store.get("views", VIEW_PRIVATE);
     if (before === undefined) throw new Error("missing view");
-    const args = {
-      id: VIEW_PRIVATE,
-      name: "Due",
-      shared: false,
-      filter: { due_before: "2026-10-09T15:30:00.123456+02:00" },
-    };
+    const where = [{ field: "deadline", op: "lte", values: ["+7d"] }];
+    const args = { id: VIEW_PRIVATE, name: "Due", shared: false, filter: { where } };
     mutate(store, "update_view", args);
     expect(store.get("views", args.id)).toEqual({
       ...before,
       ...args,
-      filter: canonical({ due_before: "2026-10-09T13:30:00.123456Z" }),
+      filter: canonical({ where }),
     });
     twice("update_view", args);
   });
@@ -261,13 +225,13 @@ describe("update_view", () => {
       id: VIEW_PRIVATE,
       name: "Renamed",
       shared: true,
-      filter: { team_id: TEAM },
+      filter: { where: [{ field: "team_id", op: "is", values: [TEAM_UUID] }] },
     });
     expectView(store, VIEW_PRIVATE, {
       ...(before as RecordOf["views"]),
       name: "Renamed",
       shared: true,
-      filter: canonical({ team_id: TEAM }),
+      filter: canonical({ where: [{ field: "team_id", op: "is", values: [TEAM_UUID] }] }),
     });
   });
 
@@ -325,9 +289,18 @@ describe("update_view", () => {
     rejects("update_view", { ...base, name: "" }, 400, "text must contain 1 to 200 bytes");
     rejects(
       "update_view",
-      { ...base, filter: { due_before: "soon" } },
+      {
+        ...base,
+        filter: { where: [{ field: "deadline", op: "lte", values: ["2026-10-08T12:00:00"] }] },
+      },
       400,
-      "timestamp year must be between 1 and 9999",
+      'filter value "2026-10-08T12:00:00" is not valid for deadline',
+    );
+    rejects(
+      "update_view",
+      { ...base, filter: { where: [{ field: "team_id", op: "is", values: [null] }] } },
+      400,
+      "filter value null does not apply to team_id",
     );
     admitsRejects("update_view", { ...base, id: "view-ghost" }, 404, "not found");
   });

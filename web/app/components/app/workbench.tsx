@@ -5,8 +5,9 @@ import { useIssues } from "~/lib/queries";
 import { QueryStatus } from "./query-status";
 import { useI18n } from "~/lib/i18n";
 import { useWorkspace } from "~/lib/workspace";
+import { effectiveFilter, isNarrowed, pinnedValue } from "~/lib/filters";
 import type { IssueFilter } from "~/lib/types";
-import { FilterBar } from "./filter-bar";
+import { FilterBar, type HiddenFilter } from "./filter-bar";
 import { IssueList, type GroupBy } from "./issue-list";
 import { EmptyState, Page, PageHeader } from "./page";
 
@@ -46,7 +47,7 @@ export function Workbench({
   nav?: React.ReactNode;
   base?: IssueFilter;
   initial?: IssueFilter;
-  hide?: (keyof IssueFilter)[];
+  hide?: HiddenFilter[];
   actions?: React.ReactNode;
   headerExtra?: React.ReactNode;
   empty?: React.ReactNode;
@@ -58,19 +59,17 @@ export function Workbench({
   const { create } = useWorkspace();
   const own = useQueueState(initial);
   const { filter, setFilter, groupBy, setGroupBy } = state ?? own;
-  const query = useIssues({ ...filter, ...base });
+  const scope = effectiveFilter(filter, base);
+  const query = useIssues(scope);
   const issues = extraFilter ? query.items.filter(extraFilter) : query.items;
-  const filtered = Object.keys(filter).some(
-    (k) => k !== "sort" && !hide.includes(k as keyof IssueFilter) && filter[k as keyof IssueFilter],
-  );
+  const filtered = isNarrowed(filter, hide);
   // A new issue starts in the context the list is scoped to: the team, project or assignee on screen.
-  const scope = { ...filter, ...base };
   const createDefaults = () =>
     create.show({
-      team_id: scope.team_id,
-      project_id: scope.project_id,
-      sprint_id: scope.sprint_id,
-      assignee: scope.assignee,
+      team_id: pinnedValue(scope, "team_id"),
+      project_id: pinnedValue(scope, "project_id"),
+      sprint_id: pinnedValue(scope, "sprint_id"),
+      assignee: pinnedValue(scope, "assignee"),
     });
   return (
     <Page>
@@ -133,7 +132,7 @@ function WorkbenchHeader({
   headerExtra?: React.ReactNode;
   filter: IssueFilter;
   setFilter: (f: IssueFilter) => void;
-  hide: (keyof IssueFilter)[];
+  hide: HiddenFilter[];
   groupBy: GroupBy;
   setGroupBy: (g: GroupBy) => void;
   saveable: boolean;

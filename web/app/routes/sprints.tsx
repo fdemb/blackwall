@@ -20,7 +20,7 @@ import { Menu, MenuItem, MenuPopover, MenuTrigger } from "~/components/ui/menu";
 import { DndColumn } from "~/components/app/board";
 import { NullableSelect } from "~/components/app/pickers";
 import { Page, PageHeader, Card } from "~/components/app/page";
-import { isDone } from "~/lib/filters";
+import { isDone, OPEN, whereIs } from "~/lib/filters";
 import { fullDate, shortDate } from "~/lib/format";
 import { useI18n } from "~/lib/i18n";
 import { usePending } from "~/lib/use-pending";
@@ -34,7 +34,7 @@ export default function Sprints() {
   const { t, lang } = useI18n();
   const { team: tm, heading, tabs } = useTeamContext();
   const { ws, run, canWrite, create, report } = useWorkspace();
-  const query = useIssues({ team_id: tm.id });
+  const query = useIssues({ where: [whereIs("team_id", tm.id)] });
   const [editing, setEditing] = useState<Sprint | "new" | null>(null);
   const [completing, setCompleting] = useState<Sprint | null>(null);
   const { pending: changing, guard } = usePending();
@@ -403,7 +403,7 @@ function CompleteForm({ sprint, close }: { sprint: Sprint; close: () => void }) 
   const { ws, run } = useWorkspace();
   const [target, setTarget] = useState<Id | null>(null);
   const { pending, error, guard } = usePending();
-  const query = useIssues({ sprint_id: sprint.id, open: true });
+  const query = useIssues({ where: [whereIs("sprint_id", sprint.id), OPEN] });
   const stats = useWorkspace().report.sprints.find((stats) => stats.id === sprint.id);
   const unfinished = (stats?.total ?? 0) - (stats?.completed ?? 0);
   const options = ws.sprints

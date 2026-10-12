@@ -344,7 +344,7 @@ function views(): SavedView[] {
       owner: OWNER,
       name: "Shared",
       shared: true,
-      filter: { team_id: TEAM },
+      filter: { where: [{ field: "team_id", op: "is", values: [TEAM] }] },
     },
     { id: VIEW_OTHER_PRIVATE, version: 1, owner: OWNER, name: "Theirs", shared: false, filter: {} },
   ];

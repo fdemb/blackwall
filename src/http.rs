@@ -864,6 +864,7 @@ async fn markdown(
         WorkspaceResponse,
         Workspace,
         IssueFilter,
+        crate::domain::FilterClause,
         MeResponse,
         crate::store::PushRequest,
         crate::store::PushResponse,

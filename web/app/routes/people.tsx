@@ -9,13 +9,14 @@ import { EmptyState, Page, PageHeader, Scroll } from "~/components/app/page";
 import { useI18n } from "~/lib/i18n";
 import { useIssues } from "~/lib/queries";
 import { useWorkspace } from "~/lib/workspace";
+import { OPEN } from "~/lib/filters";
 import type { Id } from "~/lib/types";
 
 export default function People() {
   const { t, lang } = useI18n();
   const { ws, members } = useWorkspace();
   const [q, setQ] = useState("");
-  const open = useIssues({ open: true });
+  const open = useIssues({ where: [OPEN] });
   const openCount = useMemo(() => {
     const counts = new Map<Id, number>();
     for (const i of open.items)

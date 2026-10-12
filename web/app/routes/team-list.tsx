@@ -1,4 +1,5 @@
 import { Workbench } from "~/components/app/workbench";
+import { whereIs } from "~/lib/filters";
 import { useTeamContext } from "./team";
 
 export default function TeamList() {
@@ -9,7 +10,7 @@ export default function TeamList() {
       title={team.name}
       heading={heading}
       nav={tabs}
-      base={{ team_id: team.id }}
+      base={{ where: [whereIs("team_id", team.id)] }}
       hide={["team_id"]}
     />
   );

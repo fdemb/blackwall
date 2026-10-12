@@ -93,10 +93,13 @@ fn decode_issue_cursor(
     Ok(Some(cursor))
 }
 
+const PRIORITY_RANK: &str = "CASE i.priority WHEN 'urgent' THEN 4 WHEN 'high' THEN 3 WHEN 'normal' THEN 2 WHEN 'low' THEN 1 ELSE 0 END";
+
 fn push_issue_filters(
     q: &mut QueryBuilder<'_, Postgres>,
     workspace: Uuid,
     filter: &IssueFilter,
+    clauses: &[Compiled],
 ) -> Result<()> {
     q.push("i.workspace_id=").push_bind(workspace);
     q.push(if filter.trash {
@@ -106,43 +109,8 @@ fn push_issue_filters(
     } else {
         " AND i.deleted_at IS NULL AND i.archived_at IS NULL"
     });
-    for (column, value) in [
-        ("assignee", filter.assignee),
-        ("created_by", filter.created_by),
-        ("team_id", filter.team_id),
-        ("stage_id", filter.stage_id),
-        ("sprint_id", filter.sprint_id),
-        ("project_id", filter.project_id),
-        ("parent_id", filter.parent_id),
-    ] {
-        if let Some(value) = value {
-            q.push(format!(" AND i.{column}=")).push_bind(value);
-        }
-    }
-    if let Some(id) = filter.label_id {
-        q.push(" AND EXISTS(SELECT 1 FROM issue_labels l WHERE l.issue_id=i.id AND l.label_id=")
-            .push_bind(id)
-            .push(")");
-    }
-    if let Some(id) = filter.dependency_id {
-        q.push(" AND EXISTS(SELECT 1 FROM issue_dependencies d WHERE d.issue_id=i.id AND d.dependency_id=")
-            .push_bind(id)
-            .push(")");
-    }
-    if let Some(priority) = &filter.priority {
-        q.push(" AND i.priority=").push_bind(enum_text(priority));
-    }
-    if let Some(due) = filter.due_before {
-        q.push(" AND i.deadline<=").push_bind(due);
-    }
-    if filter.unassigned {
-        q.push(" AND i.assignee IS NULL");
-    }
-    if filter.no_sprint {
-        q.push(" AND i.sprint_id IS NULL");
-    }
-    if filter.open {
-        q.push(" AND EXISTS(SELECT 1 FROM stages s WHERE s.id=i.stage_id AND s.kind NOT IN ('done','cancelled'))");
+    for clause in clauses {
+        push_clause(q, clause);
     }
     if let Some(ids) = &filter.ids {
         q.push(" AND i.id=ANY(")
@@ -150,6 +118,94 @@ fn push_issue_filters(
             .push(")");
     }
     Ok(())
+}
+
+/// One clause as a two-valued predicate, so `NOT` gives the exact complement for `is_not`.
+fn push_clause(q: &mut QueryBuilder<'_, Postgres>, clause: &Compiled) {
+    use FilterField as F;
+    q.push(if clause.op == FilterOp::IsNot {
+        " AND NOT ("
+    } else {
+        " AND ("
+    });
+    match (&clause.values, clause.field) {
+        (Values::Ids(ids), F::Labels | F::Dependencies) => {
+            let (table, column) = if clause.field == F::Labels {
+                ("issue_labels", "label_id")
+            } else {
+                ("issue_dependencies", "dependency_id")
+            };
+            q.push(format!(
+                "EXISTS(SELECT 1 FROM {table} r WHERE r.issue_id=i.id AND r.{column}=ANY("
+            ))
+            .push_bind(ids.clone())
+            .push("))");
+            if clause.null {
+                q.push(format!(
+                    " OR NOT EXISTS(SELECT 1 FROM {table} r WHERE r.issue_id=i.id)"
+                ));
+            }
+        }
+        (Values::Ids(ids), field) => {
+            let column = field.name();
+            q.push(format!("COALESCE(i.{column}=ANY("))
+                .push_bind(ids.clone())
+                .push("),false)");
+            if clause.null {
+                q.push(format!(" OR i.{column} IS NULL"));
+            }
+        }
+        (Values::Kinds(kinds), _) => {
+            q.push("EXISTS(SELECT 1 FROM stages s WHERE s.id=i.stage_id AND s.kind=ANY(")
+                .push_bind(kinds.iter().map(enum_text).collect::<Vec<_>>())
+                .push("))");
+        }
+        (Values::Priorities(priorities), _) if clause.op.is_comparison() => {
+            q.push(format!("{PRIORITY_RANK}{}", clause.op.symbol()))
+                .push_bind(priority_rank(&priorities[0]));
+        }
+        (Values::Priorities(priorities), _) => {
+            q.push("i.priority=ANY(")
+                .push_bind(priorities.iter().map(enum_text).collect::<Vec<_>>())
+                .push(")");
+        }
+        (Values::Numbers(numbers), _) if clause.op.is_comparison() => {
+            q.push(format!("i.estimate{}", clause.op.symbol()))
+                .push_bind(numbers[0]);
+        }
+        (Values::Numbers(numbers), _) => {
+            q.push("COALESCE(i.estimate=ANY(")
+                .push_bind(numbers.clone())
+                .push("),false)");
+            if clause.null {
+                q.push(" OR i.estimate IS NULL");
+            }
+        }
+        (Values::Times(times), field) if clause.op.is_comparison() => {
+            q.push(format!("i.{}{}", field.name(), clause.op.symbol()))
+                .push_bind(times[0]);
+        }
+        (Values::Times(times), field) => {
+            let column = field.name();
+            q.push(format!("COALESCE(i.{column}=ANY("))
+                .push_bind(times.clone())
+                .push("),false)");
+            if clause.null {
+                q.push(format!(" OR i.{column} IS NULL"));
+            }
+        }
+    }
+    q.push(")");
+}
+
+fn priority_rank(priority: &Priority) -> i32 {
+    match priority {
+        Priority::None => 0,
+        Priority::Low => 1,
+        Priority::Normal => 2,
+        Priority::High => 3,
+        Priority::Urgent => 4,
+    }
 }
 
 fn parse_ids(ids: &str) -> Result<Vec<Uuid>> {
@@ -204,7 +260,7 @@ fn push_issue_order(q: &mut QueryBuilder<'_, Postgres>, filter: &IssueFilter) {
             q.push("i.stage_id,");
         }
         Some(IssueGroup::Priority) => {
-            q.push("CASE i.priority WHEN 'urgent' THEN 4 WHEN 'high' THEN 3 WHEN 'normal' THEN 2 WHEN 'low' THEN 1 ELSE 0 END DESC,");
+            q.push(format!("{PRIORITY_RANK} DESC,"));
         }
         Some(IssueGroup::Assignee) => {
             q.push("i.assignee NULLS LAST,");
@@ -215,7 +271,10 @@ fn push_issue_order(q: &mut QueryBuilder<'_, Postgres>, filter: &IssueFilter) {
         IssueSort::Position => "i.position,i.number,i.id",
         IssueSort::Deadline => "i.deadline ASC NULLS LAST,i.position,i.id",
         IssueSort::Updated => "i.updated_at DESC,i.id",
-        IssueSort::Priority => "CASE i.priority WHEN 'urgent' THEN 4 WHEN 'high' THEN 3 WHEN 'normal' THEN 2 WHEN 'low' THEN 1 ELSE 0 END DESC,i.position,i.id",
+        IssueSort::Priority => {
+            q.push(format!("{PRIORITY_RANK} DESC,i.position,i.id"));
+            return;
+        }
     });
 }
 
@@ -229,16 +288,17 @@ fn push_issue_search(
     q: &mut QueryBuilder<'_, Postgres>,
     workspace: Uuid,
     filter: &IssueFilter,
+    clauses: &[Compiled],
     search: &str,
 ) -> Result<()> {
     q.push("search_matches AS (SELECT i.id FROM issues i WHERE ");
-    push_issue_filters(q, workspace, filter)?;
+    push_issue_filters(q, workspace, filter, clauses)?;
     q.push(
         " AND to_tsvector('simple',i.title || ' ' || i.description) @@ plainto_tsquery('simple',",
     )
     .push_bind(search.to_owned())
     .push(") UNION SELECT i.id FROM issues i WHERE ");
-    push_issue_filters(q, workspace, filter)?;
+    push_issue_filters(q, workspace, filter, clauses)?;
     let pattern = format!(
         "%{}%",
         search
@@ -251,7 +311,7 @@ fn push_issue_search(
         .push(" ESCAPE E'\\\\'");
     if let Some(number) = issue_number_search(search) {
         q.push(" UNION SELECT i.id FROM issues i WHERE ");
-        push_issue_filters(q, workspace, filter)?;
+        push_issue_filters(q, workspace, filter, clauses)?;
         q.push(" AND i.number=").push_bind(number);
     }
     q.push("), ");
@@ -550,15 +610,17 @@ impl Store {
             return Err(Error::BadRequest("search query too long".into()));
         }
 
+        let clauses = filter.compile(Utc::now())?;
+
         let mut conn = self.pool.acquire().await?;
         authorize(&mut conn, workspace, actor).await?;
 
         let mut q = QueryBuilder::<Postgres>::new("WITH ");
         if let Some(search) = search {
-            push_issue_search(&mut q, workspace, &filter, search)?;
+            push_issue_search(&mut q, workspace, &filter, &clauses, search)?;
         }
         q.push("issue_page AS MATERIALIZED (SELECT i.id,i.updated_at,i.position,i.number,i.deadline,i.priority,i.stage_id,i.assignee FROM issues i WHERE ");
-        push_issue_filters(&mut q, workspace, &filter)?;
+        push_issue_filters(&mut q, workspace, &filter, &clauses)?;
         if search.is_some() {
             q.push(" AND i.id IN (SELECT id FROM search_matches)");
         }

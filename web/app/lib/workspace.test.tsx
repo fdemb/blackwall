@@ -72,13 +72,14 @@ async function fixture({
   online = false,
   otherMember = false,
   storage = new MemoryReplicaStorage(),
-}: { online?: boolean; otherMember?: boolean; storage?: ReplicaStorage } = {}) {
+  teamId = "team-1",
+}: { online?: boolean; otherMember?: boolean; storage?: ReplicaStorage; teamId?: string } = {}) {
   const replica = await storage.open({
     sessionId: "session",
     workspaceId: "workspace",
     schema: SCHEMA,
   });
-  const team = { ...makeTeam(), members: [profile.id] };
+  const team = { ...makeTeam(teamId), members: [profile.id] };
   team.stages[0].kind = "planned";
   await replica.writeBootstrap({
     cursor: "1:1:",
@@ -116,15 +117,16 @@ async function fixture({
       teams: [team],
       issues: [
         makeIssue("issue", {
+          team_id: teamId,
           title: "Replica issue",
           number: 42,
           parent_id: "parent",
           dependencies: ["blocker"],
         }),
-        makeIssue("parent"),
-        makeIssue("child", { parent_id: "issue", stage_id: "stage-done" }),
-        makeIssue("blocker"),
-        makeIssue("dependent", { dependencies: ["issue"] }),
+        makeIssue("parent", { team_id: teamId }),
+        makeIssue("child", { team_id: teamId, parent_id: "issue", stage_id: "stage-done" }),
+        makeIssue("blocker", { team_id: teamId }),
+        makeIssue("dependent", { team_id: teamId, dependencies: ["issue"] }),
       ],
       notifications: [
         {
@@ -386,10 +388,12 @@ describe("workspace React integration without a DOM", () => {
     expect(render(engine, <ChangingDependencies />)).toContain("Replica issue");
   });
   it("renders the existing issue board columns and replica counts", async () => {
-    const engine = await fixture();
+    // The board scopes its query with a team clause, and clause values must be UUIDs.
+    const teamId = "11111111-1111-4111-8111-000000000001";
+    const engine = await fixture({ teamId });
     const html = render(
       engine,
-      <MemoryRouter initialEntries={["/workspace/team/team-1"]}>
+      <MemoryRouter initialEntries={[`/workspace/team/${teamId}`]}>
         <ReplicaBoard />
       </MemoryRouter>,
     );

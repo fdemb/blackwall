@@ -459,7 +459,7 @@ impl Operation<'_> {
         filter: IssueFilter,
     ) -> Result<Uuid> {
         crate::domain::text(&name, 200)?;
-        crate::domain::optional_timestamp(filter.due_before)?;
+        filter.validate()?;
         self.capacity("saved_views", 5_000).await?;
         let id = self.reserve_client_id(id).await?;
 
@@ -501,7 +501,7 @@ impl Operation<'_> {
         filter: IssueFilter,
     ) -> Result<()> {
         crate::domain::text(&name, 200)?;
-        crate::domain::optional_timestamp(filter.due_before)?;
+        filter.validate()?;
         self.lock_own_view(id).await?;
         if shared && self.role == Role::Viewer {
             return Err(Error::Forbidden);

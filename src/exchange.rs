@@ -329,16 +329,49 @@ impl Remap<'_> {
         target
     }
 
+    /// Remaps the ids a view filter names. Unmapped users drop out of their clause, and a clause
+    /// left without values drops out of the filter.
     fn filter(&self, filter: &mut IssueFilter) -> Result<()> {
-        filter.assignee = self.user(filter.assignee);
-        filter.created_by = self.user(filter.created_by);
-        filter.team_id = self.optional(filter.team_id)?;
-        filter.stage_id = self.optional(filter.stage_id)?;
-        filter.label_id = self.optional(filter.label_id)?;
-        filter.sprint_id = self.optional(filter.sprint_id)?;
-        filter.project_id = self.optional(filter.project_id)?;
-        filter.parent_id = self.optional(filter.parent_id)?;
-        filter.dependency_id = self.optional(filter.dependency_id)?;
+        let mut clauses = Vec::with_capacity(filter.clauses.len());
+        for mut clause in filter.clauses.drain(..) {
+            let users = matches!(clause.field, FilterField::Assignee | FilterField::CreatedBy);
+            let entities = matches!(
+                clause.field,
+                FilterField::TeamId
+                    | FilterField::StageId
+                    | FilterField::Labels
+                    | FilterField::ProjectId
+                    | FilterField::SprintId
+                    | FilterField::ParentId
+                    | FilterField::Dependencies
+            );
+            if users || entities {
+                let mut values = Vec::with_capacity(clause.values.len());
+                for value in &clause.values {
+                    let Some(text) = value else {
+                        values.push(None);
+                        continue;
+                    };
+                    let id: Uuid = text
+                        .parse()
+                        .map_err(|_| Error::BadRequest("filter values must be UUIDs".into()))?;
+                    let mapped = if users {
+                        self.user(Some(id))
+                    } else {
+                        Some(self.entity(id)?)
+                    };
+                    if let Some(mapped) = mapped {
+                        values.push(Some(mapped.to_string()));
+                    }
+                }
+                if values.is_empty() {
+                    continue;
+                }
+                clause.values = values;
+            }
+            clauses.push(clause);
+        }
+        filter.clauses = clauses;
         if let Some(ids) = &filter.ids {
             let remapped = ids
                 .split(',')

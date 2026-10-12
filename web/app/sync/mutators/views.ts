@@ -1,20 +1,26 @@
 import type { ArgsOf, Mutator } from "./common";
-import {
-  checkText,
-  checkTimestamp,
-  requireAuthorOrAdmin,
-  requireRole,
-  reserveClientId,
-} from "./common";
+import { checkText, requireAuthorOrAdmin, requireRole, reserveClientId } from "./common";
 import { MutationError } from "./errors";
+import { ApiError } from "../../lib/api";
+import { compileFilter } from "../../lib/issue-filter";
+import type { IssueFilter } from "../../lib/types";
+
+/** `IssueFilter::validate`: the clause checks of src/domain/filter.rs with its messages. */
+function checkFilter(filter: IssueFilter): void {
+  try {
+    compileFilter(filter.where);
+  } catch (error) {
+    if (error instanceof ApiError) throw new MutationError(error.status, error.message);
+    throw error;
+  }
+}
 
 export const saveView: Mutator<ArgsOf<"save_view">> = (tx, args, ctx) => {
   requireRole(tx, ctx.actor, "save_view", args);
-  // Order mirrors `discussion::SaveView`: name, filter timestamp, id. The
-  // filter is already canonical (`normalizeArgs`): defaults filled and
-  // `due_before` in UTC, as the server stores it.
+  // Order mirrors `discussion::SaveView`: name, filter, id. The filter is
+  // already canonical (`normalizeArgs`): defaults filled, as the server stores it.
   checkText(args.name, 200);
-  checkTimestamp(args.filter.due_before);
+  checkFilter(args.filter);
   const id = reserveClientId(tx, args.id, ctx);
   // Replay over a base that already holds the id keeps its version.
   const previous = tx.get("views", id);
@@ -35,7 +41,7 @@ export const updateView: Mutator<ArgsOf<"update_view">> = (tx, args, ctx) => {
   // `requireRole` already rejected sharing one, as the server's viewer rule
   // would, with the same 403. The filter is already canonical (`normalizeArgs`).
   checkText(args.name, 200);
-  checkTimestamp(args.filter.due_before);
+  checkFilter(args.filter);
   const view = tx.get("views", args.id);
   // A replay over a base that already dropped the view is a no-op, as for
   // deleted views; admission against that view fails as on the server.

@@ -1,10 +1,14 @@
+use super::filter::{Compiled, FilterClause, compile, deserialize_where};
 use super::initial_version;
+use crate::error::Result;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use uuid::Uuid;
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize, ToSchema, PartialEq, Eq)]
+#[derive(
+    Clone, Debug, Default, Serialize, Deserialize, ToSchema, PartialEq, Eq, PartialOrd, Ord,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum Priority {
     #[default]
@@ -198,25 +202,12 @@ pub enum BulkAction {
 #[derive(Clone, Debug, Default, Serialize, Deserialize, ToSchema, utoipa::IntoParams)]
 #[into_params(parameter_in = Query)]
 pub struct IssueFilter {
-    pub parent_id: Option<Uuid>,
-    pub dependency_id: Option<Uuid>,
+    /// Clauses ANDed together; see docs/filters.md. In a query string, the JSON array as text.
+    #[serde(default, rename = "where", deserialize_with = "deserialize_where")]
+    #[param(value_type = Option<String>)]
+    pub clauses: Vec<FilterClause>,
     pub ids: Option<String>,
-    #[serde(default)]
-    pub no_sprint: bool,
-    #[serde(default)]
-    pub open: bool,
-    pub assignee: Option<Uuid>,
-    pub created_by: Option<Uuid>,
-    pub team_id: Option<Uuid>,
-    pub stage_id: Option<Uuid>,
-    pub priority: Option<Priority>,
-    pub label_id: Option<Uuid>,
-    pub sprint_id: Option<Uuid>,
-    pub project_id: Option<Uuid>,
-    pub due_before: Option<DateTime<Utc>>,
     pub search: Option<String>,
-    #[serde(default)]
-    pub unassigned: bool,
     #[serde(default)]
     pub trash: bool,
     #[serde(default)]
@@ -229,6 +220,18 @@ pub struct IssueFilter {
     /// Summary omits description and detail-only relations. Full is the offline sync shape.
     #[serde(default)]
     pub projection: IssueProjection,
+}
+
+impl IssueFilter {
+    /// Parses the clauses, resolving relative days against `now`.
+    pub fn compile(&self, now: DateTime<Utc>) -> Result<Vec<Compiled>> {
+        compile(&self.clauses, now)
+    }
+
+    /// Rejects a filter the list query could not run.
+    pub fn validate(&self) -> Result<()> {
+        self.compile(Utc::now()).map(drop)
+    }
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, ToSchema)]

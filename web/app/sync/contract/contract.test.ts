@@ -61,7 +61,10 @@ describe.skipIf(!enabled)(`${suiteName}: prediction contract`, () => {
       await selected.prepare?.(f);
       const value = await selected.command(f);
       if (date && (value.type === "save_view" || value.type === "update_view"))
-        value.filter = { ...value.filter, due_before: date };
+        value.filter = {
+          ...value.filter,
+          where: [...(value.filter.where ?? []), { field: "deadline", op: "lte", values: [date] }],
+        };
       const { type, ...args } = value;
       const preparedArgs =
         type === "create_team" && "members" in args && "name" in args

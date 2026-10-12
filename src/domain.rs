@@ -5,10 +5,12 @@ use utoipa::ToSchema;
 use uuid::Uuid;
 
 mod commands;
+mod filter;
 mod issues;
 mod operations;
 
 pub use commands::*;
+pub use filter::*;
 pub use issues::*;
 
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema, PartialEq, Eq)]
@@ -749,7 +751,11 @@ mod tests {
                     name: "Late".into(),
                     shared: false,
                     filter: IssueFilter {
-                        due_before: Some(after_range),
+                        clauses: vec![FilterClause {
+                            field: FilterField::Deadline,
+                            op: FilterOp::Lte,
+                            values: vec![Some(after_range.to_rfc3339())],
+                        }],
                         ..Default::default()
                     },
                 },
@@ -894,7 +900,11 @@ mod tests {
             .query(
                 owner,
                 IssueFilter {
-                    unassigned: true,
+                    clauses: vec![FilterClause {
+                        field: FilterField::Assignee,
+                        op: FilterOp::Is,
+                        values: vec![None],
+                    }],
                     ..Default::default()
                 },
             )
@@ -911,7 +921,11 @@ mod tests {
                     name: "Mine".into(),
                     shared: false,
                     filter: IssueFilter {
-                        assignee: Some(owner),
+                        clauses: vec![FilterClause {
+                            field: FilterField::Assignee,
+                            op: FilterOp::Is,
+                            values: vec![Some(owner.to_string())],
+                        }],
                         ..Default::default()
                     },
                 },
@@ -1234,8 +1248,18 @@ mod tests {
             .query(
                 owner,
                 IssueFilter {
-                    assignee: Some(owner),
-                    priority: Some(Priority::High),
+                    clauses: vec![
+                        FilterClause {
+                            field: FilterField::Assignee,
+                            op: FilterOp::Is,
+                            values: vec![Some(owner.to_string())],
+                        },
+                        FilterClause {
+                            field: FilterField::Priority,
+                            op: FilterOp::Gte,
+                            values: vec![Some("high".into())],
+                        },
+                    ],
                     search: Some("certificates".into()),
                     ..Default::default()
                 },

@@ -2,8 +2,8 @@ import { describe, expect, it } from "vite-plus/test";
 import { makeIssue, makeTeam, NOW } from "../sync/fixtures";
 import type { SyncIssue } from "../sync/records";
 import { SyncStore } from "../sync/store";
-import type { IssueFilter } from "./types";
-import { filterIssues, matchesSearch } from "./issue-filter";
+import type { FilterClause, FilterField, FilterOp, FilterValue, IssueFilter } from "./types";
+import { filterIssues, matchesSearch, relativeDays } from "./issue-filter";
 import { countedIssue } from "./queries";
 
 const id = (n: number) => `11111111-1111-4111-8111-${String(n).padStart(12, "0")}`;
@@ -12,7 +12,10 @@ function storeOf(issues: SyncIssue[]) {
   store.replaceBase({ issues, teams: [makeTeam()] }, ["issues", "teams"]);
   return store;
 }
+// Clause values must be UUIDs, so the chosen issue uses UUID team and stage ids too.
 const chosen = makeIssue(id(1), {
+  team_id: id(11),
+  stage_id: id(12),
   assignee: id(2),
   created_by: id(3),
   sprint_id: id(4),
@@ -26,41 +29,135 @@ const chosen = makeIssue(id(1), {
 const ids = (store: SyncStore, filter: IssueFilter = {}) =>
   filterIssues(store, filter).map((issue) => issue.id);
 
-describe("issue filter SQL predicates", () => {
-  const equality: [keyof IssueFilter, string][] = [
+const where = (field: FilterField, op: FilterOp, ...values: FilterValue[]): IssueFilter => ({
+  where: [{ field, op, values }],
+});
+
+describe("issue filter clauses", () => {
+  const other = makeIssue(id(9), { team_id: "other", stage_id: "other", priority: "none" });
+  const idFields: [FilterField, string][] = [
     ["assignee", id(2)],
     ["created_by", id(3)],
-    ["team_id", "team-1"],
-    ["stage_id", "stage-todo"],
+    ["team_id", id(11)],
+    ["stage_id", id(12)],
     ["sprint_id", id(4)],
     ["project_id", id(5)],
     ["parent_id", id(6)],
-    ["priority", "urgent"],
-    ["label_id", id(7)],
-    ["dependency_id", id(8)],
+    ["labels", id(7)],
+    ["dependencies", id(8)],
   ];
-  it.each(equality)("matches %s and excludes a different value", (field, value) => {
-    const other = makeIssue(id(9), { team_id: "other", stage_id: "other", priority: "none" });
+  it.each(idFields)("%s is / is_not select the right rows", (field, value) => {
     const store = storeOf([chosen, other]);
-    expect(ids(store, { [field]: value })).toEqual([chosen.id]);
-    expect(ids(store, { [field]: "missing" })).toEqual([]);
+    expect(ids(store, where(field, "is", value))).toEqual([chosen.id]);
+    expect(ids(store, where(field, "is", value, id(42)))).toEqual([chosen.id]);
+    expect(ids(store, where(field, "is", id(42)))).toEqual([]);
+    expect(ids(store, where(field, "is_not", value))).toEqual([other.id]);
+    expect(ids(store, where(field, "is_not", id(42)))).toEqual([chosen.id, other.id]);
   });
-  it("ANDs filters, including contradictory assignee and sprint null checks", () => {
+  it("treats null as an empty field or empty set, and is_not as the exact complement", () => {
     const store = storeOf([chosen, makeIssue(id(9))]);
-    expect(ids(store, { assignee: id(2), label_id: id(7), priority: "urgent" })).toEqual([
-      chosen.id,
-    ]);
-    expect(ids(store, { assignee: id(2), unassigned: true })).toEqual([]);
-    expect(ids(store, { sprint_id: id(4), no_sprint: true })).toEqual([]);
-    expect(ids(store, { unassigned: true, no_sprint: true })).toEqual([id(9)]);
+    for (const field of [
+      "assignee",
+      "created_by",
+      "sprint_id",
+      "project_id",
+      "parent_id",
+      "labels",
+      "dependencies",
+      "deadline",
+    ] as const) {
+      expect(ids(store, where(field, "is", null))).toEqual([id(9)]);
+      expect(ids(store, where(field, "is_not", null))).toEqual([chosen.id]);
+    }
+    expect(ids(store, where("assignee", "is", id(2), null))).toEqual([chosen.id, id(9)]);
+    expect(ids(store, where("assignee", "is_not", id(2), null))).toEqual([]);
+    expect(ids(store, where("assignee", "is_not", id(42)))).toEqual([chosen.id, id(9)]);
   });
-  it("uses an inclusive due_before with normalized offsets and excludes null deadlines", () => {
+  it("ANDs clauses, including contradictory ones", () => {
+    const store = storeOf([chosen, makeIssue(id(9))]);
+    expect(
+      ids(store, {
+        where: [
+          { field: "assignee", op: "is", values: [id(2)] },
+          { field: "labels", op: "is", values: [id(7)] },
+          { field: "priority", op: "is", values: ["urgent"] },
+        ],
+      }),
+    ).toEqual([chosen.id]);
+    expect(
+      ids(store, {
+        where: [
+          { field: "assignee", op: "is", values: [id(2)] },
+          { field: "assignee", op: "is", values: [null] },
+        ],
+      }),
+    ).toEqual([]);
+  });
+  it("compares priority by rank", () => {
+    const store = storeOf([
+      chosen,
+      makeIssue(id(9), { priority: "high" }),
+      makeIssue(id(10), { priority: "none" }),
+    ]);
+    expect(ids(store, where("priority", "gte", "high"))).toEqual([chosen.id, id(9)]);
+    expect(ids(store, where("priority", "gt", "high"))).toEqual([chosen.id]);
+    expect(ids(store, where("priority", "lt", "high"))).toEqual([id(10)]);
+    expect(ids(store, where("priority", "lte", "high"))).toEqual([id(9), id(10)]);
+    expect(ids(store, where("priority", "is", "high", "none"))).toEqual([id(9), id(10)]);
+    expect(ids(store, where("priority", "is_not", "none"))).toEqual([chosen.id, id(9)]);
+  });
+  it("compares estimates and never matches a missing one", () => {
+    const store = storeOf([
+      makeIssue(id(1), { estimate: 8 }),
+      makeIssue(id(2), { estimate: 3 }),
+      makeIssue(id(3), { estimate: null }),
+    ]);
+    expect(ids(store, where("estimate", "gte", "5"))).toEqual([id(1)]);
+    expect(ids(store, where("estimate", "lt", "5"))).toEqual([id(2)]);
+    expect(ids(store, where("estimate", "is", "3", "8"))).toEqual([id(1), id(2)]);
+    expect(ids(store, where("estimate", "is", null))).toEqual([id(3)]);
+    expect(ids(store, where("estimate", "is_not", "3"))).toEqual([id(1), id(3)]);
+  });
+  it("compares timestamps with normalized offsets and precision", () => {
     const store = storeOf([
       chosen,
       makeIssue(id(9)),
       makeIssue(id(10), { deadline: "2026-10-08T12:00:00.000001Z" }),
     ]);
-    expect(ids(store, { due_before: "2026-10-08T14:00:00+02:00" })).toEqual([chosen.id]);
+    expect(ids(store, where("deadline", "lte", "2026-10-08T14:00:00+02:00"))).toEqual([chosen.id]);
+    expect(ids(store, where("deadline", "gt", "2026-10-08T14:00:00+02:00"))).toEqual([id(10)]);
+    expect(ids(store, where("deadline", "lt", "2026-10-08T14:00:00+02:00"))).toEqual([]);
+    expect(ids(store, where("deadline", "is", "2026-10-08T14:00:00+02:00"))).toEqual([chosen.id]);
+    expect(ids(store, where("created_at", "lte", "2026-10-08T14:00:00+02:00"))).toEqual([
+      chosen.id,
+      id(9),
+      id(10),
+    ]);
+    expect(ids(store, where("updated_at", "gt", "2026-10-08T12:00:00Z"))).toEqual([]);
+  });
+  it("resolves relative days to the end of the local day", () => {
+    const now = new Date();
+    const at = (days: number, hour: number) => {
+      const d = new Date(now);
+      d.setDate(d.getDate() + days);
+      d.setHours(hour, 0, 0, 0);
+      return d.toISOString();
+    };
+    const store = storeOf([
+      makeIssue(id(1), { deadline: at(0, 23) }),
+      makeIssue(id(2), { deadline: at(1, 1) }),
+      makeIssue(id(3), { deadline: at(7, 12) }),
+      makeIssue(id(4), { deadline: at(-1, 12) }),
+      makeIssue(id(5)),
+    ]);
+    expect(ids(store, where("deadline", "lte", "+0d"))).toEqual([id(1), id(4)]);
+    expect(ids(store, where("deadline", "lte", "+7d"))).toEqual([id(1), id(2), id(3), id(4)]);
+    expect(ids(store, where("deadline", "gt", "+0d"))).toEqual([id(2), id(3)]);
+    expect(ids(store, where("deadline", "lt", "-1d"))).toEqual([id(4)]);
+    expect(relativeDays("+7d")).toBe(7);
+    expect(relativeDays("-30d")).toBe(-30);
+    expect(relativeDays("0d")).toBe(0);
+    expect(relativeDays("7")).toBeUndefined();
   });
   it("defaults to live unarchived issues and gives trash precedence over archive", () => {
     const store = storeOf([
@@ -75,7 +172,7 @@ describe("issue filter SQL predicates", () => {
     expect(ids(store, { trash: true, archived: true })).toEqual([id(10), id(11)]);
     expect(ids(store, { trash: false, archived: false })).toEqual([chosen.id]);
   });
-  it("open uses stage kind and excludes missing, done, and cancelled stages", () => {
+  it("stage_kind reads the stage and never matches a missing stage", () => {
     const team = makeTeam();
     team.stages.push({
       id: "cancelled",
@@ -89,10 +186,14 @@ describe("issue filter SQL predicates", () => {
       makeIssue(id(9), { stage_id: "stage-done" }),
       makeIssue(id(10), { stage_id: "cancelled" }),
       makeIssue(id(11), { stage_id: "missing" }),
-      makeIssue(id(12), { done_at: NOW }),
     ]);
     store.applyBase([{ entity: "teams", id: team.id, record: team }]);
-    expect(ids(store, { open: true })).toEqual([chosen.id, id(12)]);
+    expect(ids(store, where("stage_kind", "is_not", "done", "cancelled"))).toEqual([
+      chosen.id,
+      id(11),
+    ]);
+    expect(ids(store, where("stage_kind", "is", "done"))).toEqual([id(9)]);
+    expect(ids(store, where("stage_kind", "is", "done", "cancelled"))).toEqual([id(9), id(10)]);
   });
   it("ids matches the supplied UUID set, including duplicate and uppercase values", () => {
     const store = storeOf([chosen, makeIssue(id(9)), makeIssue(id(10))]);
@@ -104,11 +205,11 @@ describe("issue filter SQL predicates", () => {
     expect(() => ids(store, { ids: `${id(1)},bad` })).toThrow("comma-separated UUIDs");
     expect(() => ids(store, { ids: Array(201).fill(id(1)).join(",") })).toThrow("at most 200");
   });
-  it("normalizes UUID spellings across equality and collection filters", () => {
+  it("normalizes UUID spellings on both sides", () => {
     const target = "abcdefab-cdef-4abc-8def-abcdefabcdef";
     const matching = makeIssue(id(20), {
       assignee: target.toUpperCase(),
-      labels: [target],
+      labels: [target.toUpperCase()],
       dependencies: [target],
     });
     const store = storeOf([matching, makeIssue(id(21))]);
@@ -118,30 +219,66 @@ describe("issue filter SQL predicates", () => {
       `urn:uuid:${target}`,
       target.replaceAll("-", ""),
     ]) {
-      expect(ids(store, { assignee: value, label_id: value, dependency_id: value })).toEqual([
-        matching.id,
-      ]);
+      expect(
+        ids(store, {
+          where: [
+            { field: "assignee", op: "is", values: [value] },
+            { field: "labels", op: "is", values: [value] },
+            { field: "dependencies", op: "is", values: [value] },
+          ],
+        }),
+      ).toEqual([matching.id]);
+    }
+  });
+  it("rejects malformed clauses with the server's messages", () => {
+    const store = storeOf([chosen]);
+    const cases: [IssueFilter, string][] = [
+      [where("assignee", "lt", id(2)), "filter op lt does not apply to assignee"],
+      [where("priority", "gte", "high", "low"), "filter comparison takes one non-null value"],
+      [where("deadline", "lt", null), "filter comparison takes one non-null value"],
+      [where("team_id", "is", null), "filter value null does not apply to team_id"],
+      [where("priority", "is", "Urgent"), 'filter value "Urgent" is not valid for priority'],
+      [where("stage_kind", "is", "open"), 'filter value "open" is not valid for stage_kind'],
+      [where("estimate", "is", "-1"), 'filter value "-1" is not valid for estimate'],
+      [
+        where("estimate", "is", "4294967296"),
+        'filter value "4294967296" is not valid for estimate',
+      ],
+      [where("deadline", "lte", "tomorrow"), 'filter value "tomorrow" is not valid for deadline'],
+      [
+        where("deadline", "lte", "2026-10-08T12:00:00"),
+        'filter value "2026-10-08T12:00:00" is not valid for deadline',
+      ],
+      [
+        where("deadline", "lte", "+99999-01-01T00:00:00Z"),
+        'filter value "+99999-01-01T00:00:00Z" is not valid for deadline',
+      ],
+      [where("assignee", "is", "nope"), 'filter value "nope" is not valid for assignee'],
+      [where("assignee", "is"), "filter clause needs 1 to 200 values"],
+      [
+        where("assignee", "is", ...Array<string>(201).fill(id(1))),
+        "filter clause needs 1 to 200 values",
+      ],
+      [
+        { where: Array<FilterClause>(33).fill({ field: "priority", op: "is", values: ["high"] }) },
+        "filter has at most 32 clauses",
+      ],
+    ];
+    for (const [filter, message] of cases) {
+      expect(() => ids(store, filter), JSON.stringify(filter)).toThrow(message);
     }
   });
   it("treats serde null option fields as unset for server-saved view filters", () => {
     const store = storeOf([chosen, makeIssue(id(9))]);
     expect(
       filterIssues(store, {
-        assignee: null,
-        created_by: null,
-        team_id: null,
-        stage_id: null,
-        priority: null,
-        label_id: null,
-        sprint_id: null,
-        project_id: null,
-        parent_id: null,
-        dependency_id: null,
+        where: [],
         ids: null,
-        due_before: null,
         search: null,
         sort: null,
         group_by: null,
+        after: null,
+        projection: null,
       }).map((issue) => issue.id),
     ).toEqual([chosen.id, id(9)]);
   });
@@ -295,7 +432,9 @@ describe("issue SQL search", () => {
   });
   it("limits UTF-8 query bytes and keeps search conjunctive with visibility and other filters", () => {
     const store = storeOf([issue, makeIssue(id(2), { title: issue.title, deleted_at: NOW })]);
-    expect(ids(store, { search: "Widget", priority: "urgent" })).toEqual([]);
+    expect(
+      ids(store, { search: "Widget", where: [{ field: "priority", op: "is", values: ["none"] }] }),
+    ).toEqual([]);
     expect(ids(store, { search: "Widget", trash: true })).toEqual([id(2)]);
     expect(() => ids(store, { search: "é".repeat(101) })).toThrow("search query too long");
     expect(ids(store, { search: "x".repeat(200) })).toEqual([]);

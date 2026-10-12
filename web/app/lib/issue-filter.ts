@@ -1,5 +1,12 @@
 import { ApiError } from "./api";
-import type { IssueFilter, Priority } from "./types";
+import type {
+  FilterClause,
+  FilterField,
+  FilterOp,
+  IssueFilter,
+  Priority,
+  StageKind,
+} from "./types";
 import type { SyncStore, DeepReadonly } from "../sync/store";
 import type { SyncIssue } from "../sync/records";
 import { parseTimestamp } from "../sync/records";
@@ -55,6 +62,263 @@ function uuid(value: string): string | undefined {
     : undefined;
 }
 
+// Clause rules from src/domain/filter.rs, with its error messages. docs/filters.md explains them.
+
+export const MAX_CLAUSES = 32;
+export const MAX_VALUES = 200;
+
+type Kind = "id" | "stage_kind" | "priority" | "number" | "time";
+export const FIELD_KIND: Record<FilterField, Kind> = {
+  assignee: "id",
+  created_by: "id",
+  team_id: "id",
+  stage_id: "id",
+  stage_kind: "stage_kind",
+  priority: "priority",
+  labels: "id",
+  project_id: "id",
+  sprint_id: "id",
+  parent_id: "id",
+  dependencies: "id",
+  estimate: "number",
+  deadline: "time",
+  created_at: "time",
+  updated_at: "time",
+};
+/** Fields that can be empty, so null is a meaningful value. */
+export const NULLABLE_FIELDS: ReadonlySet<FilterField> = new Set<FilterField>([
+  "assignee",
+  "created_by",
+  "labels",
+  "project_id",
+  "sprint_id",
+  "parent_id",
+  "dependencies",
+  "estimate",
+  "deadline",
+]);
+const PRIORITIES = new Set<string>(Object.keys(rank));
+const STAGE_KINDS = new Set<string>(["backlog", "planned", "active", "done", "cancelled"]);
+const COMPARISONS: ReadonlySet<FilterOp> = new Set<FilterOp>(["lt", "lte", "gt", "gte"]);
+
+export const isComparison = (op: FilterOp) => COMPARISONS.has(op);
+export const isOrdered = (field: FilterField) =>
+  FIELD_KIND[field] === "priority" ||
+  FIELD_KIND[field] === "number" ||
+  FIELD_KIND[field] === "time";
+
+/** Ops a field accepts, in menu order. */
+export function opsFor(field: FilterField): FilterOp[] {
+  return isOrdered(field) ? ["is", "is_not", "lt", "lte", "gt", "gte"] : ["is", "is_not"];
+}
+
+const RELATIVE_DAY = /^([+-]?)(\d{1,5})d$/;
+
+/** The signed day count of a relative date value such as "+7d", or undefined for a timestamp. */
+export function relativeDays(value: string): number | undefined {
+  const match = RELATIVE_DAY.exec(value);
+  if (!match) return undefined;
+  const days = Number(match[2]);
+  return match[1] === "-" ? -days : days;
+}
+
+/** End of the local day `days` from today, as the replica stores timestamps. */
+export function endOfDay(days: number, now = new Date()): string {
+  const d = new Date(now);
+  d.setDate(d.getDate() + days);
+  d.setHours(23, 59, 59, 999);
+  return parseTimestamp(d.toISOString());
+}
+
+function parseTime(value: string, now: Date): string | undefined {
+  const days = relativeDays(value);
+  if (days !== undefined) return endOfDay(days, now);
+  let normalized: string;
+  try {
+    normalized = parseTimestamp(value, true);
+  } catch {
+    return undefined;
+  }
+  const year = Number(/^([+-]?\d+)-/.exec(normalized)?.[1]);
+  return year >= 1 && year <= 9999 ? normalized : undefined;
+}
+
+function parseEstimate(value: string): number | undefined {
+  if (!/^\d{1,10}$/.test(value)) return undefined;
+  const number = Number(value);
+  return number <= 4294967295 ? number : undefined;
+}
+
+function bad(message: string): ApiError {
+  return new ApiError(message, 400);
+}
+
+/** One clause with its values parsed. A comparison holds one value and no null. */
+export interface CompiledClause {
+  field: FilterField;
+  op: FilterOp;
+  kind: Kind;
+  /** Parsed values: lowercased UUIDs, priority ranks, estimates or canonical timestamps. */
+  values: readonly (string | number)[];
+  null: boolean;
+}
+
+export function compileClause(clause: FilterClause, now = new Date()): CompiledClause {
+  const { field, op } = clause;
+  const kind = FIELD_KIND[field];
+  if (kind === undefined) throw bad(`unknown filter field ${JSON.stringify(field)}`);
+  if (!opsFor(field).includes(op)) {
+    if (!COMPARISONS.has(op) && op !== "is" && op !== "is_not")
+      throw bad(`unknown filter op ${JSON.stringify(op)}`);
+    throw bad(`filter op ${op} does not apply to ${field}`);
+  }
+  const raw = clause.values;
+  if (!Array.isArray(raw) || raw.length === 0 || raw.length > MAX_VALUES)
+    throw bad(`filter clause needs 1 to ${MAX_VALUES} values`);
+  const hasNull = raw.some((value) => value === null);
+  if (isComparison(op) && (hasNull || raw.length !== 1))
+    throw bad("filter comparison takes one non-null value");
+  if (hasNull && !NULLABLE_FIELDS.has(field))
+    throw bad(`filter value null does not apply to ${field}`);
+  const values = raw.flatMap((value) => {
+    if (value === null) return [];
+    if (typeof value !== "string")
+      throw bad(`filter value ${JSON.stringify(value)} is not valid for ${field}`);
+    const parsed = parseValue(kind, value, now);
+    if (parsed === undefined)
+      throw bad(`filter value ${JSON.stringify(value)} is not valid for ${field}`);
+    return [parsed];
+  });
+  return { field, op, kind, values, null: hasNull };
+}
+
+function parseValue(kind: Kind, value: string, now: Date): string | number | undefined {
+  switch (kind) {
+    case "id":
+      return uuid(value);
+    case "stage_kind":
+      return STAGE_KINDS.has(value) ? value : undefined;
+    case "priority":
+      return PRIORITIES.has(value) ? rank[value as Priority] : undefined;
+    case "number":
+      return parseEstimate(value);
+    case "time":
+      return parseTime(value, now);
+  }
+}
+
+/** Validates and parses a `where` list. Throws the server's 400 message on a bad clause. */
+export function compileFilter(
+  where: readonly FilterClause[] | null | undefined,
+  now = new Date(),
+): CompiledClause[] {
+  const clauses = where ?? [];
+  if (clauses.length > MAX_CLAUSES) throw bad(`filter has at most ${MAX_CLAUSES} clauses`);
+  return clauses.map((clause) => compileClause(clause, now));
+}
+
+type Row = DeepReadonly<SyncIssue>;
+
+function member<T>(actual: T | null, wanted: readonly T[], hasNull: boolean): boolean {
+  return actual === null ? hasNull : wanted.includes(actual);
+}
+
+function overlaps(
+  actual: readonly string[],
+  wanted: readonly (string | number)[],
+  hasNull: boolean,
+) {
+  if (actual.length === 0) return hasNull;
+  return actual.some((item) => wanted.includes(uuid(item) ?? item));
+}
+
+function ordered<T extends string | number>(actual: T | null, bound: T, op: FilterOp): boolean {
+  if (actual === null) return false;
+  switch (op) {
+    case "lt":
+      return actual < bound;
+    case "lte":
+      return actual <= bound;
+    case "gt":
+      return actual > bound;
+    case "gte":
+      return actual >= bound;
+    case "is":
+      return actual === bound;
+    case "is_not":
+      return actual !== bound;
+  }
+}
+
+function test<T extends string | number>(
+  clause: CompiledClause,
+  actual: T | null,
+  wanted: readonly T[],
+): boolean {
+  return isComparison(clause.op)
+    ? ordered(actual, wanted[0]!, clause.op)
+    : member(actual, wanted, clause.null);
+}
+
+const id = (value: string | null) => (value === null ? null : (uuid(value) ?? value));
+
+export function matchesClause(
+  clause: CompiledClause,
+  issue: Row,
+  kindOf: (stageId: string) => StageKind | undefined,
+): boolean {
+  let hit: boolean;
+  const values = clause.values;
+  switch (clause.field) {
+    case "assignee":
+      hit = member(id(issue.assignee), values, clause.null);
+      break;
+    case "created_by":
+      hit = member(id(issue.created_by), values, clause.null);
+      break;
+    case "team_id":
+      hit = member(id(issue.team_id), values, clause.null);
+      break;
+    case "stage_id":
+      hit = member(id(issue.stage_id), values, clause.null);
+      break;
+    case "project_id":
+      hit = member(id(issue.project_id), values, clause.null);
+      break;
+    case "sprint_id":
+      hit = member(id(issue.sprint_id), values, clause.null);
+      break;
+    case "parent_id":
+      hit = member(id(issue.parent_id), values, clause.null);
+      break;
+    case "labels":
+      hit = overlaps(issue.labels, values, clause.null);
+      break;
+    case "dependencies":
+      hit = overlaps(issue.dependencies, values, clause.null);
+      break;
+    case "stage_kind":
+      hit = member(kindOf(issue.stage_id) ?? null, values, false);
+      break;
+    case "priority":
+      hit = test(clause, rank[issue.priority], values as number[]);
+      break;
+    case "estimate":
+      hit = test(clause, issue.estimate, values as number[]);
+      break;
+    case "deadline":
+      hit = test(clause, issue.deadline, values as string[]);
+      break;
+    case "created_at":
+      hit = test(clause, issue.created_at, values as string[]);
+      break;
+    case "updated_at":
+      hit = test(clause, issue.updated_at, values as string[]);
+      break;
+  }
+  return clause.op === "is_not" ? !hit : hit;
+}
+
 export function filterIssues(
   store: SyncStore,
   filter: ReplicaIssueFilter = {},
@@ -62,42 +326,12 @@ export function filterIssues(
   if (filter.search && new TextEncoder().encode(filter.search).length > 200)
     throw new ApiError("search query too long", 400);
   const ids = filter.ids == null ? undefined : parseIds(filter.ids);
-  const due = filter.due_before == null ? undefined : parseTimestamp(filter.due_before);
-  const equality = (
-    [
-      "assignee",
-      "created_by",
-      "team_id",
-      "stage_id",
-      "sprint_id",
-      "project_id",
-      "parent_id",
-      "priority",
-    ] as const
-  ).flatMap((column) => {
-    const value = filter[column];
-    return value == null ? [] : [[column, uuid(value) ?? value] as const];
-  });
-  const label = filter.label_id == null ? undefined : (uuid(filter.label_id) ?? filter.label_id);
-  const dependency =
-    filter.dependency_id == null ? undefined : (uuid(filter.dependency_id) ?? filter.dependency_id);
+  const clauses = compileFilter(filter.where);
   const matches = searchPredicate(filter.search ?? "");
-  const isOpen = (issue: DeepReadonly<SyncIssue>) => {
-    const kind = store.stageKind(issue.stage_id);
-    return kind !== undefined && kind !== "done" && kind !== "cancelled";
-  };
+  const kindOf = (stageId: string) => store.stageKind(stageId);
   const rows = store.all("issues").filter((issue) => {
     if (!inLifecycle(filter, issue)) return false;
-    for (const [column, value] of equality) {
-      const actual = issue[column];
-      if (actual === null || (uuid(actual) ?? actual) !== value) return false;
-    }
-    if (label !== undefined && !issue.labels.includes(label)) return false;
-    if (dependency !== undefined && !issue.dependencies.includes(dependency)) return false;
-    if (due !== undefined && (issue.deadline === null || issue.deadline > due)) return false;
-    if (filter.unassigned && issue.assignee !== null) return false;
-    if (filter.no_sprint && issue.sprint_id !== null) return false;
-    if (filter.open && !isOpen(issue)) return false;
+    for (const clause of clauses) if (!matchesClause(clause, issue, kindOf)) return false;
     if (ids && !ids.has(issue.id)) return false;
     return matches(issue);
   });
@@ -117,8 +351,6 @@ function inLifecycle(filter: ReplicaIssueFilter, issue: DeepReadonly<SyncIssue>)
   if (filter.trash) return issue.deleted_at !== null;
   return issue.deleted_at === null && (issue.archived_at !== null) === Boolean(filter.archived);
 }
-
-type Row = DeepReadonly<SyncIssue>;
 
 function compareGroup(filter: ReplicaIssueFilter, a: Row, b: Row): number {
   switch (filter.group_by) {

@@ -5,6 +5,7 @@ import { useI18n } from "~/lib/i18n";
 import { useIssues } from "~/lib/queries";
 import { useWorkspace } from "~/lib/workspace";
 import type { Id, Issue, IssueFilter, Team } from "~/lib/types";
+import { effectiveFilter, isNarrowed, whereIs, withoutFields } from "~/lib/filters";
 import { DndColumn } from "./board";
 import { FilterBar } from "./filter-bar";
 import { StageIcon } from "./icons";
@@ -27,7 +28,7 @@ export function IssueBoard({
 }: {
   team: Team;
   state: QueueState;
-  scope?: Pick<IssueFilter, "sprint_id">;
+  scope?: { sprint_id?: Id };
   title: string;
   heading: React.ReactNode;
   nav?: React.ReactNode;
@@ -38,15 +39,19 @@ export function IssueBoard({
   const { filter, setFilter } = state;
   const stages = [...team.stages].sort((a, b) => a.position - b.position);
   // The sprint is the page's scope, never the person's filter, so a list filter can't narrow it.
-  const own = { ...filter, sprint_id: undefined, no_sprint: undefined, sort: undefined };
-  const narrowed = Object.entries(own).some(([k, v]) => k !== "team_id" && v);
-  const query = useIssues({ ...own, ...scope, team_id: team.id, sort: "position" });
+  const base: IssueFilter = {
+    where: [
+      whereIs("team_id", team.id),
+      ...(scope.sprint_id ? [whereIs("sprint_id", scope.sprint_id)] : []),
+    ],
+    sort: "position",
+  };
+  const own = withoutFields(filter, ["sprint_id"]);
+  const narrowed = isNarrowed(own, ["team_id"]);
+  const query = useIssues(effectiveFilter(own, base));
   const issues = query.items;
   // Only asked when filters hide everything, to tell "no match" from "no issues yet".
-  const unfiltered = useIssues(
-    { ...scope, team_id: team.id },
-    narrowed && !query.loading && issues.length === 0,
-  );
+  const unfiltered = useIssues(base, narrowed && !query.loading && issues.length === 0);
   const defaults = { team_id: team.id, sprint_id: scope.sprint_id };
 
   const onDrop = (stageId: Id) => (ids: Id[], beforeId: Id | null) => {
@@ -91,6 +96,7 @@ export function IssueBoard({
           filter={filter}
           onChange={setFilter}
           hide={["team_id", "sprint_id"]}
+          scope={base}
           saveable={false}
           sortable={false}
         />

@@ -14,22 +14,9 @@ const patchDefaults = {
   clear_parent: false,
 };
 const filterDefaults = {
-  parent_id: null,
-  dependency_id: null,
+  where: [],
   ids: null,
-  no_sprint: false,
-  open: false,
-  assignee: null,
-  created_by: null,
-  team_id: null,
-  stage_id: null,
-  priority: null,
-  label_id: null,
-  sprint_id: null,
-  project_id: null,
-  due_before: null,
   search: null,
-  unassigned: false,
   trash: false,
   archived: false,
   sort: "position",
@@ -265,22 +252,35 @@ describe("command argument normalization", () => {
     });
   });
 
-  it("canonicalizes filter defaults and due_before to UTC at microsecond precision", () => {
+  it("canonicalizes filter defaults and keeps clause values as sent", () => {
+    const where = [
+      { field: "deadline", op: "lte", values: ["2026-10-09T15:30:00.123456+02:00"], extra: 1 },
+      { field: "assignee", op: "is", values: [ID, null] },
+    ];
     for (const name of ["save_view", "update_view"]) {
       expect(
         normalizeArgs(name, {
           id: ID,
           name: "View",
           shared: false,
-          filter: { due_before: "2026-10-09T15:30:00.123456+02:00", unknown: true },
+          filter: { where, unknown: true },
         }),
       ).toEqual({
         id: ID,
         name: "View",
         shared: false,
-        filter: { ...filterDefaults, due_before: "2026-10-09T13:30:00.123456Z" },
+        filter: {
+          ...filterDefaults,
+          where: [
+            { field: "deadline", op: "lte", values: ["2026-10-09T15:30:00.123456+02:00"] },
+            { field: "assignee", op: "is", values: [ID, null] },
+          ],
+        },
       });
     }
+    expect(() =>
+      normalizeArgs("save_view", { name: "V", shared: false, filter: { where: null } }),
+    ).toThrow("where cannot be null");
   });
 
   it("does not default required objects and does not share mutable defaults", () => {

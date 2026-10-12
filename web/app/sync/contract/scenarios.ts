@@ -121,7 +121,7 @@ export async function fixture(ws: string, owner: User, member: User) {
       id: ids.view,
       name: "Original",
       shared: true,
-      filter: { team_id: ids.team },
+      filter: { where: [{ field: "team_id", op: "is", values: [ids.team] }] },
     },
     {
       type: "create_integration",
@@ -404,7 +404,14 @@ export const scenarios = {
       type: "save_view",
       name: "Private",
       shared: false,
-      filter: { team_id: f.team, label_id: f.label, due_before: DATE },
+      filter: {
+        where: [
+          { field: "team_id", op: "is", values: [f.team] },
+          { field: "labels", op: "is", values: [f.label, null] },
+          { field: "deadline", op: "lte", values: ["+7d"] },
+          { field: "created_at", op: "gte", values: [DATE] },
+        ],
+      },
     }),
   },
   update_view: {
@@ -413,7 +420,10 @@ export const scenarios = {
       id: f.view,
       name: "Private now",
       shared: false,
-      filter: { priority: "high", archived: true },
+      filter: {
+        where: [{ field: "priority", op: "gte", values: ["high"] }],
+        archived: true,
+      },
     }),
   },
   delete_view: { command: (f) => ({ type: "delete_view", id: f.view }) },

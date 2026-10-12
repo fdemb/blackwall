@@ -21,7 +21,7 @@ Unmounting a workspace retires its engine until pending edits drain, then closes
 ## Modules
 
 - `auth` owns credentials, hashed sessions, recovery tokens, profiles, and account preferences.
-- `domain` defines commands, DTOs, permissions, and pure business rules. Its `issues` module groups issue records, source identities, inputs, patches, and filters.
+- `domain` defines commands, DTOs, permissions, and pure business rules. Its `issues` module groups issue records, source identities, inputs, patches, and filters; `filter` holds the clause model that docs/filters.md specifies.
 - `store` owns PostgreSQL feature transactions, queries, version checks, and migrations. Its ownership policy authorizes commands before dispatch and generates frontend capabilities. Imported-field guards report the `blackwall_issue_ownership` constraint identifier; administrative stage migration grants only a specific workspace and stage replacement.
 - `http` authenticates requests and exposes JSON contracts and OpenAPI.
 - `jobs` claims persisted work, handles delivery and maintenance, and coordinates shutdown.
