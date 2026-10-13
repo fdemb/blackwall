@@ -56,6 +56,7 @@ async fn run_worker(store: &Store) -> MainResult {
     tokio::select! {
         result = &mut worker => result?,
         _ = shutdown_signal() => {
+            force_on_second_signal();
             let _ = shutdown_tx.send(true);
             worker.await?;
         }
@@ -69,12 +70,18 @@ async fn serve(store: &Store) -> MainResult {
 
     // One change listener per HTTP process; the worker never starts one.
     let _sync_events = store.spawn_sync_events();
+    let events = store.clone();
     tracing::info!(address = %listener.local_addr()?, "Blackwall listening");
     axum::serve(
         listener,
         http::router(store.clone()).into_make_service_with_connect_info::<std::net::SocketAddr>(),
     )
-    .with_graceful_shutdown(shutdown_signal())
+    .with_graceful_shutdown(async move {
+        shutdown_signal().await;
+        force_on_second_signal();
+        // Event streams otherwise hold graceful shutdown for their lifetime.
+        events.close_sync_events();
+    })
     .await?;
     Ok(())
 }
@@ -186,4 +193,15 @@ async fn shutdown_signal() {
     }
 
     let _ = tokio::signal::ctrl_c().await;
+}
+
+/// Exits immediately on another Ctrl+C while graceful shutdown drains.
+fn force_on_second_signal() {
+    tracing::info!("shutting down; press Ctrl+C again to force");
+    tokio::spawn(async {
+        if tokio::signal::ctrl_c().await.is_ok() {
+            tracing::warn!("forced shutdown");
+            std::process::exit(130);
+        }
+    });
 }

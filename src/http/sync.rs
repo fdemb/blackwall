@@ -174,6 +174,7 @@ pub(super) async fn events(
         .await?;
     let workspace = id;
     let subscriber = store.sync_broadcast.subscribe();
+    let shutdown = store.sync_shutdown.subscribe();
     let config = store.sync_events.clone();
     let keepalive = config.keepalive;
     // Capacity 1: at most one poke waits for the reader. `try_send` never
@@ -181,17 +182,21 @@ pub(super) async fn events(
     // `Full` failure means a poke is already queued and loses nothing.
     let (sender, receiver) =
         tokio::sync::mpsc::channel::<std::result::Result<Event, std::convert::Infallible>>(1);
-    tokio::spawn(forward_pokes(sender, subscriber, workspace, config));
+    tokio::spawn(forward_pokes(
+        sender, subscriber, shutdown, workspace, config,
+    ));
     Ok(Sse::new(ReceiverStream::new(receiver)).keep_alive(KeepAlive::new().interval(keepalive)))
 }
 
 type PokeSender = tokio::sync::mpsc::Sender<std::result::Result<Event, std::convert::Infallible>>;
 
 /// Sends one poke at once, then one per commit to `workspace`, at most one
-/// per coalesce window, until the stream's lifetime ends or the client leaves.
+/// per coalesce window, until the stream's lifetime ends, the client leaves,
+/// or the server shuts down.
 async fn forward_pokes(
     sender: PokeSender,
     mut subscriber: tokio::sync::broadcast::Receiver<Uuid>,
+    mut shutdown: tokio::sync::watch::Receiver<bool>,
     workspace: Uuid,
     config: crate::store::SyncEventsConfig,
 ) {
@@ -207,6 +212,7 @@ async fn forward_pokes(
             biased;
             _ = tokio::time::sleep_until(deadline) => break,
             _ = sender.closed() => break,
+            _ = shutdown.wait_for(|stop| *stop) => break,
             _ = tokio::time::sleep_until(window_end), if pending => {
                 // A full channel already holds a poke that covers the burst.
                 if !try_poke(&sender) {

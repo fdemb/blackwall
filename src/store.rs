@@ -83,6 +83,9 @@ pub struct Store {
     pub(crate) bootstrap_overall_timeout: Duration,
     pub(crate) sync_broadcast: tokio::sync::broadcast::Sender<Uuid>,
     pub(crate) sync_events: SyncEventsConfig,
+    /// Set once the HTTP server begins shutting down; ends `/sync/events`
+    /// streams so graceful shutdown does not wait out their lifetime.
+    pub(crate) sync_shutdown: Arc<tokio::sync::watch::Sender<bool>>,
     pub(crate) database_url: String,
 }
 
@@ -277,6 +280,7 @@ impl Store {
             )
             .0,
             sync_events: config.sync_events,
+            sync_shutdown: Arc::new(tokio::sync::watch::channel(false).0),
             database_url: url.to_owned(),
             pool,
         })
@@ -291,6 +295,12 @@ impl Store {
     /// it to flood subscribers without touching the database.
     pub fn sync_broadcast_poke(&self, workspace: Uuid) {
         let _ = self.sync_broadcast.send(workspace);
+    }
+
+    /// Ends open `/sync/events` streams and refuses to hold new ones open.
+    /// Call when the HTTP server starts graceful shutdown.
+    pub fn close_sync_events(&self) {
+        self.sync_shutdown.send_replace(true);
     }
 
     /// Starts the workspace-change listener that fans `blackwall_changes`

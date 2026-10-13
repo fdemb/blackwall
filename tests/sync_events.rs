@@ -609,6 +609,48 @@ async fn events_lifetime_cap_ends_stream() {
 }
 
 #[tokio::test]
+async fn events_close_ends_open_streams() {
+    let database = support::TestDatabase::new().await;
+    let store = connect_store(
+        &database.url,
+        events_config(
+            Duration::from_millis(250),
+            Duration::from_secs(60),
+            Duration::from_secs(60),
+            Duration::from_secs(1),
+        ),
+    )
+    .await;
+    let app = router(store.clone());
+    let owner = account(&store, "owner").await;
+    let (ws, _) = setup(&app, &owner).await;
+    let client = Uuid::new_v4();
+
+    let mut body = sse_response(
+        &app,
+        Some(&owner.token),
+        ws,
+        &format!("?client_id={client}"),
+    )
+    .await
+    .into_body();
+    drain_poke(&mut body).await;
+
+    // Server shutdown ends the stream long before its lifetime cap.
+    let start = std::time::Instant::now();
+    store.close_sync_events();
+    expect_no_data(&mut body, Duration::from_secs(5)).await;
+    assert!(
+        start.elapsed() < Duration::from_secs(2),
+        "stream outlived shutdown"
+    );
+
+    drop(app);
+    store.pool.close().await;
+    database.cleanup().await;
+}
+
+#[tokio::test]
 async fn events_keepalive_comments() {
     let database = support::TestDatabase::new().await;
     let store = connect_store(
