@@ -37,12 +37,16 @@ export function countedIssue(store: SyncStore, id: string): CountedIssue | undef
   return next;
 }
 
-/** The issue a URL names: a key such as `ENG-42` in any case, or an id. */
+/**
+ * The issue a URL names: an id, or a key such as `ENG-42` in any case. Keys resolve only among
+ * numbers the server confirmed, never against a local prediction.
+ */
 export function resolveIssue(store: SyncStore, ref: string): string | undefined {
   const key = parseIssueKey(ref);
   if (!key) return store.get("issues", ref)?.id;
   const team = store.all("teams").find((t) => t.key === key.team);
-  return team && store.byIndex("issues", "team_number", teamNumber(team.id, key.number))[0]?.id;
+  const number = team && teamNumber(team.id, key.number);
+  return number && store.baseByIndex("issues", "team_number", number)[0]?.id;
 }
 
 export function useIssueRef(ref: string): string | undefined {

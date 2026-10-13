@@ -11,7 +11,7 @@ import {
 import { Plus } from "lucide-react";
 import { Button } from "~/components/ui/button";
 import { cn } from "~/lib/utils";
-import { issueKeyWidth } from "./issue-key";
+import { useIssueKeyWidth } from "./issue-key";
 import { issueCapabilities } from "~/lib/ownership";
 import { useI18n } from "~/lib/i18n";
 import { useWorkspace } from "~/lib/workspace";
@@ -93,7 +93,7 @@ export function DndColumn({
 }: DndColumnProps) {
   const { t } = useI18n();
   const { canWrite } = useWorkspace();
-  const keyWidth = issueKeyWidth(issues);
+  const keyWidth = useIssueKeyWidth(issues);
   const beforeFor = useCallback(
     (target: DropTarget): Id | null => {
       if (target.type !== "item") return null;
@@ -199,7 +199,7 @@ export function BoardCard({ issue, keyWidth }: { issue: Issue; keyWidth?: string
     <GridListItem
       id={issue.id}
       textValue={issue.title}
-      href={`/${ws.slug}/issue/${issue.key}`}
+      href={`/${ws.slug}/issue/${issue.ref}`}
       className="group flex cursor-default flex-col gap-2 rounded-lg border border-border/70 bg-board-card px-3 pb-2 pt-2.5 shadow-xs outline-none transition-[border-color,box-shadow,opacity] hover:border-foreground/15 hover:shadow-sm focus-visible:ring-2 focus-visible:ring-ring/60 dragging:opacity-40 dark:shadow-black/30"
     >
       <div className="flex h-5 items-center gap-1.5 text-muted-foreground">

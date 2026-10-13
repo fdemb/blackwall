@@ -49,27 +49,20 @@ import {
 import { Timeline } from "~/components/app/issue-timeline";
 import { revealOnHover } from "~/components/app/issue-section";
 
-export default function IssuePage() {
-  const { issueKey = "" } = useParams();
-  return <IssueRoute key={issueKey} issueRef={issueKey} />;
-}
-
 /**
- * Follows the issue the URL first named. A locally created issue carries a predicted key; when a
- * pull brings a different number, the key changes and the URL is replaced with the new one.
+ * The URL names the issue by its id until the server confirms its number, then by its key. Once
+ * the issue is confirmed, an id URL, or a key typed in another case, is replaced with the key.
  */
-function IssueRoute({ issueRef }: { issueRef: string }) {
+export default function IssuePage() {
+  const { issueKey: issueRef = "" } = useParams();
   const { ws } = useWorkspace();
   const location = useLocation();
   const inInbox = location.pathname.startsWith(`/${ws.slug}/inbox/`);
-  const resolved = useIssueRef(issueRef);
-  const [opened, setOpened] = useState(resolved);
-  if (opened === undefined && resolved !== undefined) setOpened(resolved);
-  const detail = useIssueDetail(opened ?? resolved ?? "");
+  const detail = useIssueDetail(useIssueRef(issueRef) ?? "");
   const issue = detail.issue;
-  if (issue && issue.key !== issueRef)
+  if (issue && issue.ref !== issueRef)
     return (
-      <Navigate to={location.pathname.replace(/[^/]+$/, issue.key) + location.search} replace />
+      <Navigate to={location.pathname.replace(/[^/]+$/, issue.ref) + location.search} replace />
     );
   if (detail.missing)
     return (
@@ -417,7 +410,7 @@ function ParentLink({
   return (
     <div className="group mb-2 flex items-center gap-1 text-sm text-muted-foreground">
       <Link
-        to={`/${ws.slug}/issue/${parent.key}`}
+        to={`/${ws.slug}/issue/${parent.ref}`}
         className="inline-flex min-w-0 items-center gap-1.5 rounded-md hover:text-foreground"
       >
         <IssueKey value={parent.key} />

@@ -78,7 +78,7 @@ export default function ArchivePage() {
               >
                 <span className="w-14 tabular-nums text-muted-foreground">{i.key}</span>
                 <Link
-                  to={`/${ws.slug}/issue/${i.key}`}
+                  to={`/${ws.slug}/issue/${i.ref}`}
                   className="min-w-0 flex-1 truncate hover:text-foreground"
                 >
                   {i.title}

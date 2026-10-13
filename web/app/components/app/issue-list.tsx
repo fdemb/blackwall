@@ -22,7 +22,7 @@ import { ConfirmDialog } from "./confirm";
 import { AssigneeMenu, DeadlineMenu, KeyButton, LabelLinks, PriorityMenu } from "./issue-menus";
 import { cn } from "~/lib/utils";
 import { PRIORITIES } from "~/lib/format";
-import { issueKeyWidth } from "./issue-key";
+import { useIssueKeyWidth } from "./issue-key";
 import { stageOf, isDoneOnly } from "~/lib/filters";
 import { issueCapabilities } from "~/lib/ownership";
 import { useI18n } from "~/lib/i18n";
@@ -218,7 +218,7 @@ function useIssueGrid({
   }) {
   const { t } = useI18n();
   const groups = useGroups(issues, groupBy);
-  const keyWidth = issueKeyWidth(issues);
+  const keyWidth = useIssueKeyWidth(issues);
   const [selected, setSelected] = useState<Set<Id>>(() => new Set());
   const { canWrite } = useWorkspace();
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
@@ -340,7 +340,7 @@ function IssueRows({
   items: Issue[];
   showTeam?: boolean;
   canSelect?: boolean;
-  keyWidth: string;
+  keyWidth: string | undefined;
 }) {
   return (
     <Collection items={items} dependencies={[keyWidth, showTeam, canSelect]}>
@@ -370,7 +370,7 @@ export function IssueRow({
     <GridListItem
       id={issue.id}
       textValue={issue.title}
-      href={`/${ws.slug}/issue/${issue.key}`}
+      href={`/${ws.slug}/issue/${issue.ref}`}
       className="group flex h-10 cursor-default items-center gap-2.5 border-b border-border/70 px-4  outline-none hover:bg-muted/60 focus-visible:bg-muted/60 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/60 selected:bg-accent/60"
     >
       {canSelect && issueCapabilities(issue).edit && <RowSelectBox />}

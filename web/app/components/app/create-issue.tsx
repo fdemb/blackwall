@@ -50,7 +50,7 @@ function CreateIssueForm() {
   const { t } = useI18n();
   const nav = useNavigate();
   const toast = useToast();
-  const { ws, me, create, run, upload, offline, issuePath } = useWorkspace();
+  const { ws, me, create, run, upload, offline, issueRef } = useWorkspace();
   const d = create.defaults;
   const [teamId, setTeamId] = useState<Id | undefined>(() => defaultTeamId(ws.teams, me, d));
   const team = ws.teams.find((x) => x.id === teamId);
@@ -127,7 +127,7 @@ function CreateIssueForm() {
             names: failed.map((f) => f.name).join(", "),
           }),
         );
-      if (id) void nav(issuePath(id));
+      if (id) void nav(`/${ws.slug}/issue/${issueRef(id)}`);
     });
   const addFiles = (list: FileList | null) => {
     if (!list) return;

@@ -296,7 +296,7 @@ function TimeLog({ lang }: { lang: string }) {
                   </td>
                   <td className="max-w-56 truncate px-2 py-2">
                     {issue ? (
-                      <Link to={`/${ws.slug}/issue/${issue.key}`} className="hover:underline">
+                      <Link to={`/${ws.slug}/issue/${issue.ref}`} className="hover:underline">
                         <span className="tabular-nums text-muted-foreground">{issue.key}</span>{" "}
                         {issue.title}
                       </Link>

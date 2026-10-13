@@ -42,11 +42,22 @@ export function subtaskCompleted(store: SyncStore, issueId: string): number {
 }
 
 /**
- * The UI issue shape: the sync record with derived counts and its key attached.
+ * What URLs name an issue by: the key the server confirmed, or the id while the issue is
+ * unconfirmed. A predicted key can still go to another client's issue, so it stays out of URLs.
+ */
+export function issueRef(store: SyncStore, id: string): string {
+  const confirmed = store.baseGet("issues", id);
+  const team = confirmed && store.get("teams", confirmed.team_id);
+  return confirmed && team ? issueKey(team.key, confirmed.number) : id;
+}
+
+/**
+ * The UI issue shape: the sync record with derived counts, its key and its URL ref attached.
  * Read-only: records are frozen.
  */
 export type CountedIssue = DeepReadonly<SyncIssue> & {
   key: string;
+  ref: string;
   blocked_count: number;
   subtask_total: number;
   subtask_completed: number;
@@ -57,6 +68,7 @@ export function withCounts(store: SyncStore, issue: DeepReadonly<SyncIssue>): Co
   return {
     ...src,
     key: issueKey(store.get("teams", issue.team_id)?.key, issue.number),
+    ref: issueRef(store, issue.id),
     blocked_count: blockedCount(store, issue.id),
     subtask_total: subtaskTotal(store, issue.id),
     subtask_completed: subtaskCompleted(store, issue.id),

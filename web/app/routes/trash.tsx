@@ -8,7 +8,7 @@ import { useIssues } from "~/lib/queries";
 import { issueCapabilities } from "~/lib/ownership";
 import { QueryStatus } from "~/components/app/query-status";
 import { relativeTime } from "~/lib/format";
-import { IssueKey, issueKeyWidth } from "~/components/app/issue-key";
+import { IssueKey, useIssueKeyWidth } from "~/components/app/issue-key";
 import { useI18n } from "~/lib/i18n";
 import { useWorkspace } from "~/lib/workspace";
 import { useToast } from "~/components/ui/toast";
@@ -19,7 +19,7 @@ export default function Trash() {
   const toast = useToast();
   const query = useIssues({ trash: true, sort: "updated" });
   const issues = query.items;
-  const keyWidth = issueKeyWidth(issues);
+  const keyWidth = useIssueKeyWidth(issues);
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
   const restoreAll = async () => {
     // Snapshot: built before the first await, so later view changes do not affect this run.
@@ -80,7 +80,7 @@ export default function Trash() {
               >
                 <IssueKey value={i.key} width={keyWidth} className="text-muted-foreground" />
                 <Link
-                  to={`/${ws.slug}/issue/${i.key}`}
+                  to={`/${ws.slug}/issue/${i.ref}`}
                   className="min-w-0 flex-1 truncate text-muted-foreground line-through hover:text-foreground"
                 >
                   {i.title}

@@ -28,7 +28,7 @@ import {
 } from "lucide-react";
 import { Avatar } from "~/components/ui/avatar";
 import { Kbd } from "~/components/ui/tooltip";
-import { IssueKey, issueKeyWidth } from "./issue-key";
+import { IssueKey, useIssueKeyWidth } from "./issue-key";
 import { useI18n } from "~/lib/i18n";
 import { useShortcutsEnabled } from "~/lib/shortcuts";
 import { useIssues } from "~/lib/queries";
@@ -203,7 +203,7 @@ function PaletteSearch({
     return [...liveQuery.items, ...archivedQuery.items.filter((i) => !seen.has(i.id))].slice(0, 8);
   }, [issueSearch, liveQuery.items, archivedQuery.items]);
   const issueQuery = liveQuery;
-  const keyWidth = issueKeyWidth(issues);
+  const keyWidth = useIssueKeyWidth(issues);
   const people = query
     ? members
         .filter(
@@ -252,7 +252,7 @@ function PaletteSearch({
                   text={`${i.key} ${i.title}`}
                   onAction={() => {
                     onOpenChange(false);
-                    void nav(`/${ws.slug}/issue/${i.key}`);
+                    void nav(`/${ws.slug}/issue/${i.ref}`);
                   }}
                 >
                   <PriorityIcon priority={i.priority} />

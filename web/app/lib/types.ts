@@ -140,6 +140,8 @@ export interface Issue {
   number: number;
   /** The team key and number, as in `ENG-42`. Derived on the client. */
   key: string;
+  /** What URLs name the issue by: its confirmed key, or its id until the server confirms it. */
+  ref: string;
   title: string;
   description: string;
   team_id: Id;

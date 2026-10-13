@@ -94,6 +94,7 @@ export type SyncIssue = Omit<
   | "subtask_total"
   | "subtask_completed"
   | "key"
+  | "ref"
   | "labels"
   | "dependencies"
   | "followers"

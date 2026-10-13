@@ -42,11 +42,11 @@ interface MenuProps {
 /** The issue key. Pressing it copies a link to the issue. */
 export function KeyButton({ issue, width }: { issue: Issue; width?: string }) {
   const { t } = useI18n();
-  const { ws, issueRef } = useWorkspace();
+  const { ws } = useWorkspace();
   const toast = useToast();
   const copy = () =>
     void navigator.clipboard
-      .writeText(`${window.location.origin}/${ws.slug}/issue/${issueRef(issue.id, true)}`)
+      .writeText(`${window.location.origin}/${ws.slug}/issue/${issue.ref}`)
       .then(() => toast.show(t("issue.linkCopied")));
   return (
     <Tip label={t("issue.copyLink")}>

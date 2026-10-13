@@ -11,7 +11,7 @@ import {
 import { Search } from "lucide-react";
 import { Popover } from "~/components/ui/popover";
 import { stageOf } from "~/lib/filters";
-import { IssueKey, issueKeyWidth } from "./issue-key";
+import { IssueKey, useIssueKeyWidth } from "./issue-key";
 import { useI18n } from "~/lib/i18n";
 import { useIssues } from "~/lib/queries";
 import { QueryStatus } from "./query-status";
@@ -35,7 +35,7 @@ export function IssuePicker({
   const query = useIssues({ search: q, sort: "updated" }, open);
   const excluded = new Set(exclude);
   const results = query.items.filter((i) => !excluded.has(i.id)).slice(0, 30);
-  const keyWidth = issueKeyWidth(results);
+  const keyWidth = useIssueKeyWidth(results);
   return (
     <DialogTrigger
       onOpenChange={(o) => {
