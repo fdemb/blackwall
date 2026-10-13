@@ -1,6 +1,7 @@
 import { useEffect, useEffectEvent, useRef, useState } from "react";
 import {
   Autocomplete,
+  Button as RACButton,
   DialogTrigger,
   Dialog as RACDialog,
   Form,
@@ -313,6 +314,8 @@ function ClauseChip({
   const summary =
     names.length > 2 ? t("filter.nValues", { count: names.length }) : names.join(", ");
   const [editing, setEditing] = useState(false);
+  // Comparisons take one value, so a clause with several offers only the set ops.
+  const ops = opsFor(c.field).filter((op) => c.values.length === 1 || !isComparison(op));
   return (
     <Chip>
       <span className="flex items-center gap-1.5 pl-2 pr-0.5 text-muted-foreground [&_svg]:size-3.5">
@@ -320,13 +323,12 @@ function ClauseChip({
         {t(FIELD_LABEL[c.field])}
       </span>
       <MenuTrigger>
-        <button
-          type="button"
+        <RACButton
           className={cn(segment, "text-muted-foreground")}
           aria-label={`${t(FIELD_LABEL[c.field])}: ${t(opLabel(c.field, c.op, c.values.length))}`}
         >
           {t(opLabel(c.field, c.op, c.values.length))}
-        </button>
+        </RACButton>
         <MenuPopover placement="bottom start">
           <Menu
             aria-label={t(FIELD_LABEL[c.field])}
@@ -334,22 +336,21 @@ function ClauseChip({
             selectedKeys={[c.op]}
             onAction={(k) => onChange(withOp(c, k as FilterOp))}
           >
-            {opsFor(c.field).map((op) => (
+            {ops.map((op) => (
               <MenuItem key={op} id={op}>
-                {t(opLabel(c.field, op, 1))}
+                {t(opLabel(c.field, op, c.values.length))}
               </MenuItem>
             ))}
           </Menu>
         </MenuPopover>
       </MenuTrigger>
       <DialogTrigger isOpen={editing} onOpenChange={setEditing}>
-        <button
-          type="button"
+        <RACButton
           className={cn(segment, "max-w-56 pr-2")}
           aria-label={`${t(FIELD_LABEL[c.field])}: ${summary}`}
         >
           <span className="truncate">{summary}</span>
-        </button>
+        </RACButton>
         <Popover placement="bottom start" className="w-64 overscroll-contain">
           <RACDialog aria-label={t(FIELD_LABEL[c.field])} className="outline-none">
             <ValuePicker

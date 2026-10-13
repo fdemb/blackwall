@@ -593,7 +593,7 @@ export const en = {
   "filter.nValues_other": "{{count}} values",
   "filter.customDate": "Pick a date",
   "filter.op.is": "is",
-  "filter.op.isAny": "is any of",
+  "filter.op.isAny": "is one of",
   "filter.op.isNot": "is not",
   "filter.op.isNotAny": "is none of",
   "filter.op.includes": "includes",
