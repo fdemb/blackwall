@@ -5,6 +5,7 @@ import type { Entity, RecordOf, SyncIssue } from "../records";
 import { ENTITIES, parseTimestamp } from "../records";
 import type { DeepReadonly, Tx } from "../store";
 import { MutationError } from "./errors";
+import { isTeamColor, isTeamIcon } from "../../lib/teams";
 
 /** The actor running the mutation and the client timestamp to use as "now". */
 export interface MutatorContext {
@@ -138,6 +139,12 @@ export function requireRecord<E extends Entity>(
  * `domain::validate_archive_days`: null means never, otherwise an integer of
  * 1 to 3650 days.
  */
+/** Mirrors `validate_team_appearance` in `src/domain.rs`. */
+export function checkTeamAppearance(icon: unknown, color: unknown): void {
+  if (!isTeamIcon(icon)) throw new MutationError(400, "unknown team icon");
+  if (!isTeamColor(color)) throw new MutationError(400, "unknown team color");
+}
+
 export function checkArchiveDays(value: number | null | undefined): void {
   if (value === null || value === undefined) return;
   if (!Number.isInteger(value) || (value as number) < 1 || (value as number) > 3650) {

@@ -1,3 +1,5 @@
+import type { TEAM_COLORS, TEAM_ICONS } from "./teams";
+
 export type Id = string;
 export type Role = "owner" | "admin" | "member" | "viewer";
 export type StageKind = "backlog" | "planned" | "active" | "done" | "cancelled";
@@ -9,6 +11,9 @@ export type IssueSort = "position" | "deadline" | "updated" | "priority";
 export type IssueGroup = "stage" | "priority" | "assignee" | "none";
 export type Language = "en" | "pl";
 export type Theme = "light" | "dark" | "system";
+
+export type TeamIcon = (typeof TEAM_ICONS)[number];
+export type TeamColor = (typeof TEAM_COLORS)[number];
 
 export interface Stage {
   id: Id;
@@ -25,6 +30,8 @@ export interface Team {
   stages: Stage[];
   /** Days after Done before auto-archive. Null means never. */
   archive_after_days: number | null;
+  icon: TeamIcon;
+  color: TeamColor;
 }
 export interface Label {
   id: Id;
@@ -374,6 +381,7 @@ export type Command =
   | { type: "create_team"; id?: Id; name: string; members: Id[]; default_stage_ids?: Id[] }
   | { type: "set_team_members"; id: Id; members: Id[] }
   | { type: "set_team_archive"; id: Id; archive_after_days: number | null }
+  | { type: "set_team_appearance"; id: Id; icon: TeamIcon; color: TeamColor }
   | { type: "create_stage"; id?: Id; team_id: Id; name: string; kind: StageKind; position: number }
   | { type: "update_stage"; team_id: Id; id: Id; name: string; kind: StageKind; position: number }
   | { type: "delete_stage"; team_id: Id; id: Id; replacement: Id }

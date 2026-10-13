@@ -437,6 +437,7 @@ impl Workspace {
         for team in &self.teams {
             text(&team.name, 200)?;
             super::validate_archive_days(team.archive_after_days)?;
+            super::validate_team_appearance(&team.icon, &team.color)?;
             if team.stages.is_empty() || team.stages.len() > 100 {
                 return Err(Error::BadRequest(
                     "team must contain 1 to 100 stages".into(),

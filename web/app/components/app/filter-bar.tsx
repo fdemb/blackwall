@@ -71,6 +71,7 @@ import type {
   StageKind,
 } from "~/lib/types";
 import { PriorityIcon, StageIcon } from "./icons";
+import { TeamIcon } from "./team-icon";
 import { LabelDot } from "./pickers";
 import type { GroupBy } from "./issue-list";
 
@@ -578,7 +579,7 @@ function useChoices(team: string | undefined): (field: FilterField) => Choice[] 
             .map((s) => ({ id: s.id, label: s.name })),
         ];
       case "team_id":
-        return ws.teams.map((x) => ({ id: x.id, label: x.name }));
+        return ws.teams.map((x) => ({ id: x.id, label: x.name, icon: <TeamIcon team={x} /> }));
       default:
         return [];
     }

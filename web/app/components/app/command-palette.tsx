@@ -36,6 +36,7 @@ import { useIssues } from "~/lib/queries";
 import { QueryStatus } from "./query-status";
 import { useWorkspace } from "~/lib/workspace";
 import { PriorityIcon, StageIcon } from "./icons";
+import { TeamIcon } from "./team-icon";
 import { stageOf } from "~/lib/filters";
 
 interface Entry {
@@ -153,7 +154,7 @@ export function CommandPalette({
       ...ws.teams.map((tm) => ({
         id: `t-${tm.id}`,
         label: `${tm.name} · ${t("team.board")}`,
-        icon: <Layers className="size-4" />,
+        icon: <TeamIcon team={tm} />,
         run: go(`team/${tm.id}/board`),
       })),
     ],

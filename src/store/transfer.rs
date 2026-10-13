@@ -213,12 +213,14 @@ async fn insert_import(op: &mut Operation<'_>, w: &Workspace) -> Result<()> {
 async fn insert_planning(op: &mut Operation<'_>, w: &Workspace) -> Result<()> {
     for team in &w.teams {
         sqlx::query(
-            "INSERT INTO teams(id,workspace_id,name,archive_after_days) VALUES($1,$2,$3,$4)",
+            "INSERT INTO teams(id,workspace_id,name,archive_after_days,icon,color) VALUES($1,$2,$3,$4,$5,$6)",
         )
         .bind(team.id)
         .bind(w.id)
         .bind(&team.name)
         .bind(team.archive_after_days.map(i64::from))
+        .bind(&team.icon)
+        .bind(&team.color)
         .execute(&mut *op.tx)
         .await?;
         op.created("teams", team.id);

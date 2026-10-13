@@ -30,7 +30,8 @@ import { useI18n } from "~/lib/i18n";
 import { useSession } from "~/lib/session";
 import { useWorkspace } from "~/lib/workspace";
 import { cn } from "~/lib/utils";
-import type { WorkspaceSummary } from "~/lib/types";
+import type { Team, WorkspaceSummary } from "~/lib/types";
+import { TeamIcon } from "./team-icon";
 import { Logo } from "./logo";
 import { ThemeToggle } from "./preferences";
 
@@ -172,7 +173,7 @@ export function Sidebar({
 
         <Section title={t("nav.teams")}>
           {[...myTeams, ...otherTeams].map((tm) => (
-            <TeamLinks key={tm.id} id={tm.id} name={tm.name} base={base} />
+            <TeamLinks key={tm.id} team={tm} base={base} />
           ))}
           {ws.teams.length === 0 && (
             <Link
@@ -258,7 +259,8 @@ function Section({ title, children }: { title: string; children: React.ReactNode
   );
 }
 
-function TeamLinks({ id, name, base }: { id: string; name: string; base: string }) {
+function TeamLinks({ team, base }: { team: Team; base: string }) {
+  const { id, name } = team;
   const { t } = useI18n();
   const { pathname } = useLocation();
   const { ws } = useWorkspace();
@@ -278,9 +280,7 @@ function TeamLinks({ id, name, base }: { id: string; name: string; base: string 
         onClick={() => setOpen(!isOpen)}
         className="flex h-7 w-full items-center gap-2 rounded-md px-2  font-medium text-muted-foreground outline-none hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/60"
       >
-        <span className="grid size-4 place-items-center rounded bg-accent text-[10px] font-bold text-accent-foreground">
-          {name[0]?.toUpperCase()}
-        </span>
+        <TeamIcon team={team} />
         <span className="truncate">{name}</span>
         <ChevronRight
           aria-hidden

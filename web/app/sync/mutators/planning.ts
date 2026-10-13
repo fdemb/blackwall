@@ -6,6 +6,7 @@ import {
   checkCreateId,
   checkCapacity,
   checkArchiveDays,
+  checkTeamAppearance,
   checkText,
   checkTimestamp,
   checkWorkflow,
@@ -20,6 +21,7 @@ import {
   reserveClientId,
 } from "./common";
 import { MutationError } from "./errors";
+import { TEAM_ICONS, leastUsedTeamColor } from "../../lib/teams";
 
 /** Mutable working copy: the store freezes records, so every write builds a new object. */
 function copyTeam(team: DeepReadonly<Team>): Team {
@@ -86,6 +88,11 @@ export const createTeam: Mutator<ArgsOf<"create_team">> = (tx, args, ctx) => {
         })),
     // The server inserts `archive_after_days = 30` for a new team.
     archive_after_days: previous ? previous.archive_after_days : 30,
+    // The server gives a new team the default icon and the least-used color.
+    icon: previous ? previous.icon : TEAM_ICONS[0],
+    color: previous
+      ? previous.color
+      : leastUsedTeamColor(tx.all("teams").map((team) => team.color)),
   });
   for (const user of members) joinTeam(tx, user, id);
 };
@@ -141,6 +148,16 @@ export const setTeamArchive: Mutator<ArgsOf<"set_team_archive">> = (tx, args, ct
   const team = requireRecord(tx, "teams", args.id);
   const next = copyTeam(team);
   next.archive_after_days = args.archive_after_days ?? null;
+  tx.put("teams", next);
+};
+
+export const setTeamAppearance: Mutator<ArgsOf<"set_team_appearance">> = (tx, args, ctx) => {
+  requireAdmin(requireRole(tx, ctx.actor, "set_team_appearance", args));
+  checkTeamAppearance(args.icon, args.color);
+  const team = requireRecord(tx, "teams", args.id);
+  const next = copyTeam(team);
+  next.icon = args.icon;
+  next.color = args.color;
   tx.put("teams", next);
 };
 

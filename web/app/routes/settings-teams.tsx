@@ -10,6 +10,7 @@ import { EmptyState } from "~/components/app/page";
 import { SettingsBlock, SettingsPage, SettingsSection } from "~/components/app/settings";
 import { MultiMemberPicker } from "~/components/app/pickers";
 import { StageIcon } from "~/components/app/icons";
+import { TeamAppearancePicker, TeamIcon } from "~/components/app/team-icon";
 import { STAGE_KINDS } from "~/lib/format";
 import { useI18n } from "~/lib/i18n";
 import { usePending } from "~/lib/use-pending";
@@ -147,7 +148,21 @@ function TeamSection({ team }: { team: Team }) {
     });
   return (
     <SettingsSection
-      title={team.name}
+      title={
+        <span className="flex items-center gap-2">
+          {canAdmin ? (
+            <TeamAppearancePicker
+              team={team}
+              onChange={(appearance) =>
+                run({ type: "set_team_appearance", id: team.id, ...appearance }).catch(() => {})
+              }
+            />
+          ) : (
+            <TeamIcon team={team} className="size-6" />
+          )}
+          <span className="truncate">{team.name}</span>
+        </span>
+      }
       actions={
         canAdmin && (
           <div className="w-56">

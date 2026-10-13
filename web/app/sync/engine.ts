@@ -51,7 +51,7 @@ export type {
 } from "./engine-types";
 export type { TabMessage } from "./tabs";
 
-export const SCHEMA = 1;
+export const SCHEMA = 2;
 
 export class OutdatedError extends Error {
   constructor(message = "A newer version is open in another tab. Reload to continue.") {

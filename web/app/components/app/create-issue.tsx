@@ -14,6 +14,7 @@ import { cn } from "~/lib/utils";
 import { useI18n } from "~/lib/i18n";
 import { useWorkspace } from "~/lib/workspace";
 import type { Id, IssueInput, Priority } from "~/lib/types";
+import { TeamIcon } from "./team-icon";
 // Loaded on demand: the editor (and the markdown renderer it pulls in) is the heaviest part of
 // this dialog, and most opens never touch the description.
 const MarkdownEditor = lazy(() =>
@@ -171,7 +172,7 @@ function CreateIssueForm() {
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
         <Select
           label={t("field.team")}
-          options={ws.teams.map((x) => ({ id: x.id, label: x.name }))}
+          options={ws.teams.map((x) => ({ id: x.id, label: x.name, icon: <TeamIcon team={x} /> }))}
           selectedKey={teamId}
           onSelectionChange={(k) => {
             setTeamId(k as Id);

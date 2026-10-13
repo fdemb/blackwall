@@ -1060,12 +1060,12 @@ describe("sync engine", () => {
       await f.engine.mutate("update_issue", { id: ISSUE, patch: { title: "New schema" } });
       const before = await f.disk();
       await f.engine.close();
-      const upgraded = f.build(2);
+      const upgraded = f.build(SCHEMA + 1);
       await upgraded.open();
       expect(upgraded.store.all("members")).toHaveLength(0);
       const reset = await f.disk();
       expect(reset.meta).toMatchObject({
-        schema: 2,
+        schema: SCHEMA + 1,
         cursor: null,
         clientId: before.meta.clientId,
         nextMutationId: before.meta.nextMutationId,

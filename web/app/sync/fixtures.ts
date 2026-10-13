@@ -15,6 +15,8 @@ export function makeTeam(id = "team-1"): Team {
       { id: "stage-done", version: 1, name: "Done", kind: "done", position: 1 },
     ],
     archive_after_days: 30,
+    icon: "users",
+    color: "violet",
   };
 }
 

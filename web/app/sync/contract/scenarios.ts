@@ -264,6 +264,9 @@ export const scenarios = {
   set_team_archive: {
     command: (f) => ({ type: "set_team_archive", id: f.team, archive_after_days: null }),
   },
+  set_team_appearance: {
+    command: (f) => ({ type: "set_team_appearance", id: f.team, icon: "rocket", color: "teal" }),
+  },
   create_stage: {
     command: (f) => ({
       type: "create_stage",

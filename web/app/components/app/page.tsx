@@ -2,6 +2,7 @@ import { Link } from "react-router";
 import { Separator } from "~/components/ui/separator";
 import { useDocumentTitle } from "~/lib/title";
 import type { Team } from "~/lib/types";
+import { TeamIcon } from "./team-icon";
 import { cn } from "~/lib/utils";
 
 export function Page({ children, className }: { children: React.ReactNode; className?: string }) {
@@ -80,8 +81,21 @@ export function PageCrumb({ to, children }: { to: string; children: React.ReactN
 }
 
 /** The team a page belongs to, as shown at the start of the header. */
-export function TeamCrumb({ team, wsId }: { team: Pick<Team, "id" | "name">; wsId: string }) {
-  return <PageCrumb to={`/${wsId}/team/${team.id}`}>{team.name}</PageCrumb>;
+export function TeamCrumb({
+  team,
+  wsId,
+}: {
+  team: Pick<Team, "id" | "name" | "icon" | "color">;
+  wsId: string;
+}) {
+  return (
+    <PageCrumb to={`/${wsId}/team/${team.id}`}>
+      <span className="inline-flex items-center gap-1.5">
+        <TeamIcon team={team} />
+        {team.name}
+      </span>
+    </PageCrumb>
+  );
 }
 
 export function EmptyState({

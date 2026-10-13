@@ -33,6 +33,14 @@ impl Workspace {
                 self.team_mut(id)?.archive_after_days = archive_after_days;
                 Ok(id)
             }
+            Command::SetTeamAppearance { id, icon, color } => {
+                self.admin(actor)?;
+                super::super::validate_team_appearance(&icon, &color)?;
+                let team = self.team_mut(id)?;
+                team.icon = icon;
+                team.color = color;
+                Ok(id)
+            }
             Command::CreateStage {
                 id,
                 team_id,
@@ -250,6 +258,8 @@ impl Workspace {
                 position: p as i64,
             })
             .collect();
+        let color =
+            super::super::least_used_team_color(self.teams.iter().map(|t| t.color.as_str()));
         self.teams.push(Team {
             version: 1,
             id,
@@ -257,6 +267,8 @@ impl Workspace {
             members,
             stages,
             archive_after_days: super::super::default_archive_days(),
+            icon: super::super::default_team_icon(),
+            color: color.into(),
         });
         Ok(id)
     }

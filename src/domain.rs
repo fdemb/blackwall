@@ -61,6 +61,10 @@ pub struct Team {
     /// Days after entering Done before auto-archive. Null means never.
     #[serde(default = "default_archive_days")]
     pub archive_after_days: Option<u32>,
+    #[serde(default = "default_team_icon")]
+    pub icon: String,
+    #[serde(default = "default_team_color")]
+    pub color: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
@@ -325,6 +329,71 @@ pub fn initial_version() -> i64 {
 
 pub fn default_archive_days() -> Option<u32> {
     Some(30)
+}
+
+/// Icons a team can show, as lucide names. The web client renders the same list.
+pub const TEAM_ICONS: [&str; 24] = [
+    "users",
+    "rocket",
+    "code",
+    "palette",
+    "megaphone",
+    "shield",
+    "server",
+    "database",
+    "bug",
+    "flask",
+    "briefcase",
+    "headset",
+    "globe",
+    "zap",
+    "book",
+    "wrench",
+    "chart",
+    "heart",
+    "cpu",
+    "smartphone",
+    "layers",
+    "target",
+    "compass",
+    "leaf",
+];
+
+/// Team colors in assignment order. A new team takes the first least-used one.
+pub const TEAM_COLORS: [&str; 12] = [
+    "violet", "blue", "sky", "teal", "green", "lime", "amber", "orange", "red", "pink", "fuchsia",
+    "slate",
+];
+
+pub fn default_team_icon() -> String {
+    TEAM_ICONS[0].into()
+}
+
+pub fn default_team_color() -> String {
+    TEAM_COLORS[0].into()
+}
+
+/// The first palette color used by the fewest of `taken`.
+pub(crate) fn least_used_team_color<'a>(taken: impl IntoIterator<Item = &'a str>) -> &'static str {
+    let mut counts = [0usize; TEAM_COLORS.len()];
+    for color in taken {
+        if let Some(i) = TEAM_COLORS.iter().position(|c| *c == color) {
+            counts[i] += 1;
+        }
+    }
+    let min = counts.iter().min().copied().unwrap_or(0);
+    let index = counts.iter().position(|n| *n == min).unwrap_or(0);
+    TEAM_COLORS[index]
+}
+
+pub(crate) fn validate_team_appearance(icon: &str, color: &str) -> Result<()> {
+    if !TEAM_ICONS.contains(&icon) {
+        return Err(Error::BadRequest("unknown team icon".into()));
+    }
+    if !TEAM_COLORS.contains(&color) {
+        return Err(Error::BadRequest("unknown team color".into()));
+    }
+    Ok(())
 }
 
 /// Default stages for a new team, in order. Positions are the index. The sync

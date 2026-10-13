@@ -23,6 +23,10 @@ impl Operation<'_> {
                 self.set_team_archive(id, archive_after_days).await?;
                 id
             }
+            Command::SetTeamAppearance { id, icon, color } => {
+                self.set_team_appearance(id, icon, color).await?;
+                id
+            }
             Command::CreateStage {
                 id,
                 team_id,
@@ -159,12 +163,20 @@ impl Operation<'_> {
         }
         let team_id = resolved[0];
 
+        let taken: Vec<String> =
+            sqlx::query_scalar("SELECT color FROM teams WHERE workspace_id=$1")
+                .bind(self.workspace_id)
+                .fetch_all(&mut *self.tx)
+                .await?;
+        let color = crate::domain::least_used_team_color(taken.iter().map(String::as_str));
         sqlx::query(
-            "INSERT INTO teams(id,workspace_id,name,archive_after_days) VALUES($1,$2,$3,30)",
+            "INSERT INTO teams(id,workspace_id,name,archive_after_days,icon,color) VALUES($1,$2,$3,30,$4,$5)",
         )
         .bind(team_id)
         .bind(self.workspace_id)
         .bind(name)
+        .bind(crate::domain::TEAM_ICONS[0])
+        .bind(color)
         .execute(&mut *self.tx)
         .await
         .map_err(id_conflict)?;
@@ -242,6 +254,20 @@ impl Operation<'_> {
             .bind(self.workspace_id)
             .bind(id)
             .bind(archive_after_days.map(i64::from))
+            .execute(&mut *self.tx)
+            .await?;
+        Ok(())
+    }
+
+    async fn set_team_appearance(&mut self, id: Uuid, icon: String, color: String) -> Result<()> {
+        self.admin()?;
+        crate::domain::validate_team_appearance(&icon, &color)?;
+        self.touch("teams", id).await?;
+        sqlx::query("UPDATE teams SET icon=$3,color=$4 WHERE workspace_id=$1 AND id=$2")
+            .bind(self.workspace_id)
+            .bind(id)
+            .bind(icon)
+            .bind(color)
             .execute(&mut *self.tx)
             .await?;
         Ok(())
@@ -915,6 +941,64 @@ mod tests {
         )
         .unwrap();
         (database, store, workspace, owner)
+    }
+
+    #[tokio::test]
+    async fn teams_get_distinct_colors_and_editable_appearance() {
+        let (database, store, workspace, owner) = setup().await;
+        let run = |command: serde_json::Value| {
+            let store = &store;
+            async move {
+                store
+                    .operation(
+                        workspace,
+                        owner,
+                        serde_json::from_value(command).unwrap(),
+                        BTreeMap::new(),
+                        None,
+                        None,
+                    )
+                    .await
+            }
+        };
+        let (first, second) = (Uuid::new_v4(), Uuid::new_v4());
+        run(json!({"type": "create_team", "id": first, "name": "A"}))
+            .await
+            .unwrap();
+        run(json!({"type": "create_team", "id": second, "name": "B"}))
+            .await
+            .unwrap();
+        let appearance = |id: Uuid| {
+            sqlx::query_as::<_, (String, String)>("SELECT icon,color FROM teams WHERE id=$1")
+                .bind(id)
+                .fetch_one(&store.pool)
+        };
+        assert_eq!(
+            appearance(first).await.unwrap(),
+            ("users".into(), "violet".into())
+        );
+        assert_eq!(
+            appearance(second).await.unwrap(),
+            ("users".into(), "blue".into())
+        );
+
+        run(json!({"type": "set_team_appearance", "id": first, "icon": "rocket", "color": "teal"}))
+            .await
+            .unwrap();
+        assert_eq!(
+            appearance(first).await.unwrap(),
+            ("rocket".into(), "teal".into())
+        );
+        for (icon, color) in [("nope", "teal"), ("rocket", "nope")] {
+            let rejected = run(
+                json!({"type": "set_team_appearance", "id": first, "icon": icon, "color": color}),
+            )
+            .await;
+            assert!(matches!(rejected, Err(Error::BadRequest(_))));
+        }
+
+        store.pool.close().await;
+        database.cleanup().await;
     }
 
     #[tokio::test]

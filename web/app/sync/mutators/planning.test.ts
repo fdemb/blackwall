@@ -156,6 +156,9 @@ describe("create_team", () => {
         { id: STAGES_NEW[3]!, version: 1, name: "Done", kind: "done", position: 3 },
       ],
       archive_after_days: 30,
+      // The seeded teams are violet and blue, so the next color is sky.
+      icon: "users",
+      color: "sky",
     });
     expect(store.get("members", ADMIN)?.team_ids).toEqual([TEAM, "team-new"]);
     expect(store.get("members", MEMBER)?.team_ids).toEqual([TEAM, "team-new"]);
@@ -391,6 +394,37 @@ describe("set_team_members", () => {
     rejects("set_team_members", args, 403, "permission denied", MEMBER);
     rejects("set_team_members", args, 403, "permission denied", VIEWER);
     rejects("set_team_members", args, 403, "permission denied", GHOST);
+  });
+});
+
+describe("set_team_appearance", () => {
+  it("sets the icon and color", () => {
+    const store = seedStore(OWNER);
+    const before = liveTeam(store, TEAM);
+    mutate(store, "set_team_appearance", { id: TEAM, icon: "rocket", color: "teal" });
+    expectRecord(store, "teams", TEAM, { ...before, icon: "rocket", color: "teal" });
+    twice("set_team_appearance", { id: TEAM, icon: "rocket", color: "teal" });
+  });
+
+  it("validates the icon, color and team", () => {
+    rejects(
+      "set_team_appearance",
+      { id: TEAM, icon: "nope", color: "teal" },
+      400,
+      "unknown team icon",
+    );
+    rejects(
+      "set_team_appearance",
+      { id: TEAM, icon: "rocket", color: "nope" },
+      400,
+      "unknown team color",
+    );
+    rejects(
+      "set_team_appearance",
+      { id: "team-ghost", icon: "rocket", color: "teal" },
+      404,
+      "not found",
+    );
   });
 });
 

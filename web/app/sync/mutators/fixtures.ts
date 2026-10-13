@@ -88,6 +88,8 @@ function team(): Team {
       { id: STAGE_CANCELLED, version: 1, name: "Cancelled", kind: "cancelled", position: 3 },
     ],
     archive_after_days: 30,
+    icon: "users",
+    color: "violet",
   };
 }
 
@@ -99,6 +101,8 @@ function otherTeam(): Team {
     members: [],
     stages: [{ id: STAGE_OTHER, version: 1, name: "Todo", kind: "active", position: 0 }],
     archive_after_days: null,
+    icon: "rocket",
+    color: "blue",
   };
 }
 

@@ -24,6 +24,11 @@ pub enum Command {
         #[serde(default = "super::default_archive_days")]
         archive_after_days: Option<u32>,
     },
+    SetTeamAppearance {
+        id: Uuid,
+        icon: String,
+        color: String,
+    },
     CreateStage {
         id: Option<Uuid>,
         team_id: Uuid,
@@ -278,6 +283,7 @@ impl Command {
             Self::CreateTeam { .. }
             | Self::SetTeamMembers { .. }
             | Self::SetTeamArchive { .. }
+            | Self::SetTeamAppearance { .. }
             | Self::CreateStage { .. }
             | Self::UpdateStage { .. }
             | Self::DeleteStage { .. }
@@ -311,6 +317,7 @@ impl Command {
             Self::CreateTeam { .. } => "create_team",
             Self::SetTeamMembers { .. } => "set_team_members",
             Self::SetTeamArchive { .. } => "set_team_archive",
+            Self::SetTeamAppearance { .. } => "set_team_appearance",
             Self::CreateStage { .. } => "create_stage",
             Self::UpdateStage { .. } => "update_stage",
             Self::DeleteStage { .. } => "delete_stage",
