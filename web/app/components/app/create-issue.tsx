@@ -12,8 +12,9 @@ import { bytes, ellipsis, MAX_UPLOAD } from "~/lib/format";
 import { usePending } from "~/lib/use-pending";
 import { cn } from "~/lib/utils";
 import { useI18n } from "~/lib/i18n";
+import { sprintStageId } from "~/lib/teams";
 import { useWorkspace } from "~/lib/workspace";
-import type { Id, IssueInput, Priority } from "~/lib/types";
+import type { Id, IssueInput, Priority, Stage } from "~/lib/types";
 import { TeamIcon } from "./team-icon";
 // Loaded on demand: the editor (and the markdown renderer it pulls in) is the heaviest part of
 // this dialog, and most opens never touch the description.
@@ -71,9 +72,21 @@ function CreateIssueForm() {
   useDialogDirty(title.trim() !== "" || description !== "" || files.length > 0);
 
   // The picker always shows a stage from the current team. A stale choice, from the defaults or a
-  // previous team, falls back to the team's first stage.
+  // previous team, falls back to the team's default stage.
   const effectiveStageId =
-    stageId && team?.stages.some((s) => s.id === stageId) ? stageId : defaultStageId(team);
+    stageId && team?.stages.some((s) => s.id === stageId)
+      ? stageId
+      : defaultStageId(team?.stages ?? [], sprintId);
+  // Backlog issues have no sprint. Picking one side gives way on the other, as the server would.
+  const inBacklog = (id: Id | null) => team?.stages.find((s) => s.id === id)?.kind === "backlog";
+  const pickStage = (id: Id | null) => {
+    setStageId(id);
+    if (inBacklog(id)) setSprintId(null);
+  };
+  const pickSprint = (id: Id | null) => {
+    setSprintId(id);
+    if (id && inBacklog(effectiveStageId)) setStageId(null);
+  };
 
   if (ws.teams.length === 0) return <NeedTeam workspaceId={ws.id} onNavigate={create.hide} />;
 
@@ -186,7 +199,7 @@ function CreateIssueForm() {
             label={t("field.stage")}
             teamId={teamId}
             value={effectiveStageId}
-            onChange={setStageId}
+            onChange={pickStage}
           />
         )}
         <PriorityPicker label={t("field.priority")} value={priority} onChange={setPriority} />
@@ -215,7 +228,7 @@ function CreateIssueForm() {
             projectId={projectId}
             setProjectId={setProjectId}
             sprintId={sprintId}
-            setSprintId={setSprintId}
+            setSprintId={pickSprint}
             deadline={deadline}
             setDeadline={setDeadline}
             estimate={estimate}
@@ -256,11 +269,12 @@ function CreateIssueForm() {
   );
 }
 
-/** The team's first planned or backlog stage by position, else its first stage. */
-function defaultStageId(
-  team: { stages: { id: Id; kind: string; position: number }[] } | undefined,
-) {
-  const stages = team?.stages ?? [];
+/**
+ * The team's sprint stage for sprint work, else its first planned or backlog stage by position,
+ * else its first stage.
+ */
+function defaultStageId(stages: readonly Stage[], sprintId: Id | null) {
+  if (sprintId) return sprintStageId(stages) ?? stages[0]?.id ?? null;
   const open = [...stages]
     .sort((a, b) => a.position - b.position)
     .find((s) => s.kind === "planned" || s.kind === "backlog");

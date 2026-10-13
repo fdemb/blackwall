@@ -1113,3 +1113,94 @@ async fn idempotent_finish_child_replay_reports_current_records() {
     store.pool.close().await;
     database.cleanup().await;
 }
+
+#[tokio::test]
+async fn backlog_issues_stay_out_of_sprints() {
+    let database = support::TestDatabase::new().await;
+    let store = Store::connect(&database.url).await.unwrap();
+    let app = router(store.clone());
+    let owner = account(&store, "owner").await;
+    let ws = workspace(&app, &owner, "Backlog and sprints").await;
+    let team = created(
+        &app,
+        &owner,
+        ws,
+        json!({"type": "create_team", "name": "Team", "members": [owner.profile.id]}),
+    )
+    .await;
+    let stage = |kind: &'static str| {
+        sqlx::query_scalar::<_, Uuid>("SELECT id FROM stages WHERE team_id=$1 AND kind=$2")
+            .bind(team)
+            .bind(kind)
+            .fetch_one(&store.pool)
+    };
+    let (backlog, todo) = (
+        stage("backlog").await.unwrap(),
+        stage("planned").await.unwrap(),
+    );
+    let sprint = created(
+        &app,
+        &owner,
+        ws,
+        json!({"type": "create_sprint", "team_id": team, "name": "One", "goal": "", "starts_at": "2030-01-01T00:00:00Z", "ends_at": "2030-01-15T00:00:00Z"}),
+    )
+    .await;
+    let placement = |issue: Uuid| {
+        let pool = store.pool.clone();
+        async move {
+            let row = sqlx::query("SELECT stage_id,sprint_id FROM issues WHERE id=$1")
+                .bind(issue)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+            (
+                row.get::<Uuid, _>("stage_id"),
+                row.get::<Option<Uuid>, _>("sprint_id"),
+            )
+        }
+    };
+    let ok = async |cmd: Value| {
+        let (status, result) = command(&app, &owner, ws, cmd, json!({}), None).await;
+        assert_eq!(status, StatusCode::OK, "{result}");
+    };
+
+    // The team's first stage is Backlog, so sprint work defaults to Todo instead.
+    let issue = created(
+        &app,
+        &owner,
+        ws,
+        json!({"type": "create_issue", "input": {"team_id": team, "title": "Planned", "sprint_id": sprint}}),
+    )
+    .await;
+    assert_eq!(placement(issue).await, (todo, Some(sprint)));
+
+    // A named backlog stage wins over the sprint.
+    let named = created(
+        &app,
+        &owner,
+        ws,
+        json!({"type": "create_issue", "input": {"team_id": team, "title": "Later", "stage_id": backlog, "sprint_id": sprint}}),
+    )
+    .await;
+    assert_eq!(placement(named).await, (backlog, None));
+
+    ok(json!({"type": "update_issue", "id": issue, "patch": {"stage_id": backlog}})).await;
+    assert_eq!(placement(issue).await, (backlog, None));
+
+    ok(json!({"type": "update_issue", "id": issue, "patch": {"sprint_id": sprint}})).await;
+    assert_eq!(placement(issue).await, (todo, Some(sprint)));
+
+    ok(json!({"type": "move_issue", "id": issue, "stage_id": backlog, "before_id": null})).await;
+    assert_eq!(placement(issue).await, (backlog, None));
+
+    // Turning a stage into a backlog stage takes its issues out of their sprints.
+    ok(json!({"type": "update_issue", "id": issue, "patch": {"sprint_id": sprint}})).await;
+    let before = version(&store, issue).await;
+    ok(json!({"type": "update_stage", "team_id": team, "id": todo, "name": "Todo", "kind": "backlog", "position": 1})).await;
+    assert_eq!(placement(issue).await, (todo, None));
+    assert_eq!(version(&store, issue).await, before + 1);
+
+    drop(app);
+    store.pool.close().await;
+    database.cleanup().await;
+}

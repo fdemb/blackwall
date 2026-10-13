@@ -98,6 +98,6 @@ the server would.
 ## Scope filters in the UI
 
 Pages add their own clauses on top of the person's filter: the team page adds `team_id is <team>`,
-the backlog adds `sprint_id is null` and `stage_kind is_not done, cancelled`. The filter bar hides
+its Active view adds `stage_kind is_not backlog`, and the backlog adds `stage_kind is backlog`. The filter bar hides
 those fields, and a person's clause on a scoped field is dropped before the scope's clause is
 appended. Saving a view stores the merged filter.

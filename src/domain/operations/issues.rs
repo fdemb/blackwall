@@ -22,8 +22,12 @@ impl Workspace {
                 stage_id,
                 before_id,
             } => {
+                let sprint = self.issue(id)?.sprint_id;
                 if self.move_issue(id, stage_id, before_id, now)? {
                     fields.push("stage".into());
+                }
+                if self.issue(id)?.sprint_id != sprint {
+                    fields.push("sprint".into());
                 }
                 id
             }
@@ -107,6 +111,7 @@ impl Workspace {
             .find(|s| s.id == stage_id)
             .ok_or(Error::BadRequest("stage belongs to another team".into()))?;
         let target_is_done = matches!(target.kind, StageKind::Done);
+        let target_is_backlog = matches!(target.kind, StageKind::Backlog);
 
         let mut ids: Vec<_> = self
             .issues
@@ -139,6 +144,9 @@ impl Workspace {
             } else {
                 issue.done_at = None;
             }
+        }
+        if target_is_backlog {
+            self.issue_mut(id)?.sprint_id = None;
         }
 
         Ok(original_stage != stage_id)
@@ -203,11 +211,7 @@ impl Workspace {
             sprint_id: input.sprint_id,
             parent_id: input.parent_id,
             dependencies: input.dependencies,
-            position: self
-                .issues
-                .iter()
-                .filter(|i| i.team_id == input.team_id && i.stage_id == stage_id)
-                .count() as i64,
+            position: 0,
             followers: vec![actor],
             attachments: vec![],
             source_links: vec![],
@@ -218,6 +222,12 @@ impl Workspace {
             updated_at: now,
         };
 
+        self.fit_sprint(&mut issue, input.stage_id.is_some())?;
+        issue.position = self
+            .issues
+            .iter()
+            .filter(|i| i.team_id == issue.team_id && i.stage_id == issue.stage_id)
+            .count() as i64;
         self.validate_issue(&issue)?;
         self.refresh_done_at(&mut issue, now);
 
@@ -251,9 +261,11 @@ impl Workspace {
         if i.archived_at.is_some() {
             return Err(Error::Conflict("issue is archived".into()));
         }
-        let old_assignee = i.assignee;
+        let (old_assignee, old_stage) = (i.assignee, i.stage_id);
 
         i.apply_patch(p);
+        let entered_stage = i.stage_id != old_stage;
+        self.fit_sprint(&mut i, entered_stage)?;
 
         i.updated_at = now;
         self.validate_issue(&i)?;
@@ -288,6 +300,21 @@ impl Workspace {
 
         *self.issue_mut(id)? = i;
 
+        Ok(())
+    }
+
+    /// Keeps backlog work out of sprints; see [`Issue::sprint_fit`].
+    fn fit_sprint(&self, issue: &mut Issue, entered_stage: bool) -> Result<()> {
+        let team = self.team(issue.team_id)?;
+        let in_backlog = team
+            .stages
+            .iter()
+            .any(|s| s.id == issue.stage_id && s.kind == StageKind::Backlog);
+        match issue.sprint_fit(in_backlog, entered_stage) {
+            SprintFit::Keep => {}
+            SprintFit::LeaveSprint => issue.sprint_id = None,
+            SprintFit::Plan => issue.stage_id = team.sprint_stage()?,
+        }
         Ok(())
     }
 

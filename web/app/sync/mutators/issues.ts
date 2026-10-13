@@ -1,3 +1,4 @@
+import { sprintStageId } from "../../lib/teams";
 import type { Id, IssuePatch } from "../../lib/types";
 import type { SyncIssue } from "../records";
 import type { DeepReadonly, Tx } from "../store";
@@ -47,6 +48,22 @@ function resolveStage(tx: Tx, teamId: string, stageId: string | null | undefined
   )[0];
   if (first === undefined) throw new MutationError(404, "not found");
   return first.id;
+}
+
+/**
+ * Backlog work has no sprint, mirroring `fit_sprint` in `src/store/issues.rs`. When the command
+ * chose the stage, the issue leaves its sprint; otherwise it joined a sprint from the backlog and
+ * moves to the team's sprint stage. A stage from another team is left for `validateIssue`.
+ */
+function fitSprint(tx: Tx, next: SyncIssue, enteredStage: boolean): void {
+  if (next.sprint_id === null || stageKindOf(tx, next.team_id, next.stage_id) !== "backlog") return;
+  if (enteredStage) {
+    next.sprint_id = null;
+    return;
+  }
+  const stageId = sprintStageId(tx.get("teams", next.team_id)?.stages ?? []);
+  if (stageId === undefined) throw new MutationError(400, "team has no stage for sprint work");
+  next.stage_id = stageId;
 }
 
 /**
@@ -145,9 +162,10 @@ export const createIssue: Mutator<ArgsOf<"create_issue">> = (tx, args, ctx) => {
   checkOwnership(tx, { type: "create_issue", input });
   const stageId = resolveStage(tx, input.team_id, input.stage_id);
   const next = issueFromInput(input, id, stageId, ctx);
+  fitSprint(tx, next, input.stage_id !== null && input.stage_id !== undefined);
   // The server stamps done_at when creating into a done stage; the issue
   // number stays null until the pull confirms the create.
-  next.done_at = doneAt(tx, input.team_id, stageId, null, ctx.at);
+  next.done_at = doneAt(tx, input.team_id, next.stage_id, null, ctx.at);
   // A replay over a base that already holds this id keeps the stored number,
   // version and timestamps; `createPosition` excludes the id itself so the
   // second run lands on the same position.
@@ -211,6 +229,7 @@ function patchIssue(
   const current = requireLiveIssue(tx, id);
   if (current.archived_at !== null) throw new MutationError(409, "issue is archived");
   const next = patchedIssue(current, patch);
+  fitSprint(tx, next, next.stage_id !== current.stage_id);
   validateIssue(tx, next, current.sprint_id);
   if (next.stage_id !== current.stage_id) {
     next.done_at = doneAt(tx, next.team_id, next.stage_id, current.done_at, ctx.at);
@@ -271,6 +290,7 @@ export const moveIssue: Mutator<ArgsOf<"move_issue">> = (tx, args, ctx) => {
   }
   const next = copyIssue(current);
   next.stage_id = args.stage_id;
+  fitSprint(tx, next, true);
   validateIssue(tx, next, current.sprint_id);
   next.position = orderPosition(tx, current, args.stage_id, args.before_id ?? null);
   if (next.stage_id !== current.stage_id) {

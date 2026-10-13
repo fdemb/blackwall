@@ -216,6 +216,36 @@ impl Operation<'_> {
         Ok(())
     }
 
+    /// Keeps backlog work out of sprints; see [`Issue::sprint_fit`]. A stage
+    /// from another team is left for `validate_issue_sql` to reject.
+    async fn fit_sprint(&mut self, i: &mut Issue, entered_stage: bool) -> Result<()> {
+        if i.sprint_id.is_none() {
+            return Ok(());
+        }
+        let kind: Option<String> = sqlx::query_scalar(
+            "SELECT kind FROM stages WHERE workspace_id=$1 AND team_id=$2 AND id=$3",
+        )
+        .bind(self.workspace_id)
+        .bind(i.team_id)
+        .bind(i.stage_id)
+        .fetch_optional(&mut *self.tx)
+        .await?;
+        match i.sprint_fit(kind.as_deref() == Some("backlog"), entered_stage) {
+            SprintFit::Keep => {}
+            SprintFit::LeaveSprint => i.sprint_id = None,
+            SprintFit::Plan => {
+                // Mirrors `Team::sprint_stage`: the first planned stage, else the first active one.
+                i.stage_id = sqlx::query_scalar("SELECT id FROM stages WHERE workspace_id=$1 AND team_id=$2 AND kind IN ('planned','active') ORDER BY kind='active',position,id LIMIT 1")
+                    .bind(self.workspace_id)
+                    .bind(i.team_id)
+                    .fetch_optional(&mut *self.tx)
+                    .await?
+                    .ok_or_else(|| Error::BadRequest("team has no stage for sprint work".into()))?;
+            }
+        }
+        Ok(())
+    }
+
     async fn stage_kind(&mut self, stage_id: Uuid) -> Result<String> {
         Ok(sqlx::query_scalar("SELECT kind FROM stages WHERE id=$1")
             .bind(stage_id)
@@ -292,8 +322,9 @@ impl Operation<'_> {
             updated_at: now,
         };
 
+        self.fit_sprint(&mut i, input.stage_id.is_some()).await?;
         self.validate_issue_sql(&i).await?;
-        if self.stage_kind(stage_id).await? == "done" {
+        if self.stage_kind(i.stage_id).await? == "done" {
             i.done_at = Some(now);
         }
         persistence::create(
@@ -351,6 +382,8 @@ impl Operation<'_> {
         let mut i = old.clone();
 
         i.apply_patch(p);
+        let entered_stage = i.stage_id != old.stage_id;
+        self.fit_sprint(&mut i, entered_stage).await?;
 
         self.activity_fields.extend(old.changed_fields(&i));
         self.validate_issue_sql(&i).await?;
@@ -533,10 +566,14 @@ impl Operation<'_> {
         }
         let mut i = old.clone();
         i.stage_id = stage_id;
+        self.fit_sprint(&mut i, true).await?;
         self.validate_issue_sql(&i).await?;
         if old.stage_id != stage_id {
             self.restamp_done(&mut i).await?;
             self.activity_fields.push("stage".into());
+        }
+        if old.sprint_id != i.sprint_id {
+            self.activity_fields.push("sprint".into());
         }
         i.position = match before_id {
             Some(before) => self.position_before(&i, before).await?,
