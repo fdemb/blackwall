@@ -69,6 +69,25 @@ pub struct Team {
     pub color: String,
 }
 
+impl Team {
+    /// Where backlog work lands when it joins a sprint: the first planned stage,
+    /// else the first active one.
+    pub(crate) fn sprint_stage(&self) -> Result<Uuid> {
+        [StageKind::Planned, StageKind::Active]
+            .iter()
+            .find_map(|kind| {
+                self.stages
+                    .iter()
+                    .filter(|s| s.kind == *kind)
+                    .min_by_key(|s| (s.position, s.id))
+            })
+            .map(|s| s.id)
+            .ok_or(Error::BadRequest(
+                "team has no stage for sprint work".into(),
+            ))
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct Label {
     #[serde(default = "initial_version")]

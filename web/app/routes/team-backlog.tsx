@@ -6,8 +6,9 @@ import { EmptyState, Page, PageHeader } from "~/components/app/page";
 import { QueryStatus } from "~/components/app/query-status";
 import { useI18n } from "~/lib/i18n";
 import { useIssues } from "~/lib/queries";
+import { backlogStageId } from "~/lib/teams";
 import { useWorkspace } from "~/lib/workspace";
-import { OPEN, effectiveFilter, isNarrowed, whereIs } from "~/lib/filters";
+import { effectiveFilter, isNarrowed, whereIs } from "~/lib/filters";
 import type { IssueFilter } from "~/lib/types";
 import { useTeamContext } from "./team";
 
@@ -17,9 +18,9 @@ export default function TeamBacklog() {
   const teamId = team.id;
   const { create, canWrite } = useWorkspace();
   const { filter, setFilter } = state;
-  // Open issues of this team that no sprint has claimed yet.
+  // Issues in a backlog stage. Those never belong to a sprint.
   const base: IssueFilter = {
-    where: [whereIs("team_id", teamId), whereIs("sprint_id", null), OPEN],
+    where: [whereIs("team_id", teamId), whereIs("stage_kind", "backlog")],
     sort: filter.sort ?? "priority",
   };
   const narrowed = isNarrowed(filter, ["team_id", "sprint_id", "stage_kind"]);
@@ -34,7 +35,13 @@ export default function TeamBacklog() {
         nav={tabs}
         actions={
           canWrite && (
-            <Button variant="primary" size="sm" onPress={() => create.show({ team_id: teamId })}>
+            <Button
+              variant="primary"
+              size="sm"
+              onPress={() =>
+                create.show({ team_id: teamId, stage_id: backlogStageId(team.stages) })
+              }
+            >
               <Plus aria-hidden />
               {t("issue.new")}
             </Button>

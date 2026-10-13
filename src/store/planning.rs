@@ -419,7 +419,8 @@ impl Operation<'_> {
 
     /// Issues in `stage` moved from kind `previous` to `next`: check the
     /// workflow, keep the Done-entry clock for auto-archive (Done only, not
-    /// cancelled), reschedule reminders and record newly completed issues.
+    /// cancelled), take backlog work out of sprints, reschedule reminders and
+    /// record newly completed issues.
     async fn after_stage_kind_change(
         &mut self,
         stage: Uuid,
@@ -440,6 +441,9 @@ impl Operation<'_> {
                 .bind(stage)
                 .execute(&mut *self.tx)
                 .await?;
+        }
+        if next == "backlog" {
+            self.leave_sprints(stage).await?;
         }
 
         let completes = !terminal(previous) && terminal(next);
@@ -743,6 +747,24 @@ impl Operation<'_> {
             sqlx::query("UPDATE jobs SET state='cancelled',finished_at=clock_timestamp(),updated_at=clock_timestamp() WHERE queue='openproject' AND state='pending' AND payload->>'connection_id'=$1")
                 .bind(connection.to_string()).execute(&mut *self.tx).await?;
         }
+        Ok(())
+    }
+
+    /// Clears the sprint of every issue in a backlog stage.
+    async fn leave_sprints(&mut self, stage: Uuid) -> Result<()> {
+        let ids: Vec<Uuid> = sqlx::query_scalar("SELECT id FROM issues WHERE workspace_id=$1 AND stage_id=$2 AND sprint_id IS NOT NULL ORDER BY id")
+            .bind(self.workspace_id)
+            .bind(stage)
+            .fetch_all(&mut *self.tx)
+            .await?;
+        for id in &ids {
+            self.touch("issues", *id).await?;
+        }
+        sqlx::query("UPDATE issues SET sprint_id=NULL,updated_at=now() WHERE workspace_id=$1 AND id=ANY($2)")
+            .bind(self.workspace_id)
+            .bind(&ids)
+            .execute(&mut *self.tx)
+            .await?;
         Ok(())
     }
 

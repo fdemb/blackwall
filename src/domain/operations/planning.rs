@@ -299,6 +299,7 @@ impl Workspace {
         now: DateTime<Utc>,
     ) -> Result<()> {
         let became_done = matches!(kind, StageKind::Done);
+        let became_backlog = matches!(kind, StageKind::Backlog);
         let stage = find_mut(&mut self.team_mut(team_id)?.stages, |s| s.id == id)?;
         stage.name = name;
         stage.kind = kind;
@@ -306,6 +307,9 @@ impl Workspace {
 
         for issue in self.issues.iter_mut().filter(|i| i.stage_id == id) {
             issue.updated_at = now;
+            if became_backlog {
+                issue.sprint_id = None;
+            }
             if became_done {
                 issue.done_at.get_or_insert(now);
             } else if issue.archived_at.is_none() {
@@ -329,11 +333,16 @@ impl Workspace {
         }
         let replacement_is_done =
             replacement_stage.is_some_and(|s| matches!(s.kind, StageKind::Done));
+        let replacement_is_backlog =
+            replacement_stage.is_some_and(|s| matches!(s.kind, StageKind::Backlog));
 
         for issue in &mut self.issues {
             if issue.stage_id == id {
                 issue.stage_id = replacement;
                 issue.updated_at = now;
+                if replacement_is_backlog {
+                    issue.sprint_id = None;
+                }
             }
             if issue.stage_id != replacement || issue.archived_at.is_some() {
                 continue;

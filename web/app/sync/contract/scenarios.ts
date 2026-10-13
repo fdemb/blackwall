@@ -211,7 +211,8 @@ export const scenarios = {
     }),
   },
   move_issue: {
-    command: (f) => ({ type: "move_issue", id: f.peer, stage_id: f.stages[0], before_id: f.issue }),
+    // Sprint issues start in Todo; moving one to Backlog also takes it out of the sprint.
+    command: (f) => ({ type: "move_issue", id: f.peer, stage_id: f.stages[0], before_id: null }),
   },
   bulk_issues: {
     command: (f) => ({
@@ -280,7 +281,7 @@ export const scenarios = {
     command: (f) => ({
       type: "update_stage",
       team_id: f.team,
-      id: f.stages[0],
+      id: f.stages[1],
       name: "Delivered",
       kind: "done",
       position: 6,
@@ -290,8 +291,8 @@ export const scenarios = {
     command: (f) => ({
       type: "delete_stage",
       team_id: f.team,
-      id: f.stages[0],
-      replacement: f.stages[1],
+      id: f.stages[1],
+      replacement: f.stages[0],
     }),
   },
   create_label: {

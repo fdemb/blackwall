@@ -675,6 +675,54 @@ describe("move_issue", () => {
   });
 });
 
+describe("backlog and sprints", () => {
+  const placement = (store: SyncStore, id: string) => {
+    const { stage_id, sprint_id } = live(store, id);
+    return { stage_id, sprint_id };
+  };
+
+  it("takes an issue out of its sprint when it enters a backlog stage", () => {
+    const patched = seedStore();
+    mutate(patched, "update_issue", { id: "issue-1", patch: { stage_id: STAGE_BACKLOG } });
+    expect(placement(patched, "issue-1")).toEqual({ stage_id: STAGE_BACKLOG, sprint_id: null });
+
+    const moved = seedStore();
+    mutate(moved, "move_issue", { id: "issue-1", stage_id: STAGE_BACKLOG, before_id: null });
+    expect(placement(moved, "issue-1")).toEqual({ stage_id: STAGE_BACKLOG, sprint_id: null });
+  });
+
+  it("moves a backlog issue that joins a sprint to the sprint stage", () => {
+    // The fixture team has no planned stage, so its first active stage takes sprint work.
+    const store = seedStore();
+    mutate(store, "update_issue", { id: "issue-y", patch: { sprint_id: SPRINT } });
+    expect(placement(store, "issue-y")).toEqual({ stage_id: STAGE_ACTIVE, sprint_id: SPRINT });
+  });
+
+  it("lets a named backlog stage win over the sprint", () => {
+    const store = seedStore();
+    mutate(store, "update_issue", {
+      id: "issue-2",
+      patch: { stage_id: STAGE_BACKLOG, sprint_id: SPRINT },
+    });
+    expect(placement(store, "issue-2")).toEqual({ stage_id: STAGE_BACKLOG, sprint_id: null });
+  });
+
+  it("creates sprint work outside the default backlog stage", () => {
+    const store = seedStore();
+    const input = { title: "Sprint work", team_id: TEAM, sprint_id: SPRINT };
+    mutate(store, "create_issue", { input: { ...input, id: "issue-default" } });
+    expect(placement(store, "issue-default")).toEqual({
+      stage_id: STAGE_ACTIVE,
+      sprint_id: SPRINT,
+    });
+
+    mutate(store, "create_issue", {
+      input: { ...input, id: "issue-named", stage_id: STAGE_BACKLOG },
+    });
+    expect(placement(store, "issue-named")).toEqual({ stage_id: STAGE_BACKLOG, sprint_id: null });
+  });
+});
+
 describe("delete_issue / restore_issue", () => {
   it("deletes and restores with timestamps", () => {
     const store = seedStore();

@@ -592,6 +592,21 @@ describe("update_stage", () => {
     expect(cancelled?.updated_at).toBe(AT);
   });
 
+  it("takes issues out of their sprints when the stage becomes a backlog", () => {
+    const store = seedStore(OWNER);
+    expect(store.get("issues", "issue-1")?.sprint_id).toBe(SPRINT);
+    mutate(store, "update_stage", {
+      team_id: TEAM,
+      id: STAGE_ACTIVE,
+      name: "Later",
+      kind: "backlog",
+      position: 1,
+    });
+    const issue = store.get("issues", "issue-1");
+    expect(issue?.sprint_id).toBeNull();
+    expect(issue?.updated_at).toBe(AT);
+  });
+
   it("clears done_at when leaving done and skips archived issues", () => {
     const store = seedStore(OWNER);
     mutate(store, "update_stage", {

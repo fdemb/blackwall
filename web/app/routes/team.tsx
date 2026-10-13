@@ -6,7 +6,7 @@ import {
   useOutletContext,
   useParams,
 } from "react-router";
-import { CalendarRange, KanbanSquare, List, ListTodo } from "lucide-react";
+import { KanbanSquare, List, ListTodo } from "lucide-react";
 import { Tab, TabList, Tabs } from "~/components/ui/tabs";
 import { useQueueState, type QueueState } from "~/components/app/workbench";
 import { TeamCrumb } from "~/components/app/page";
@@ -19,6 +19,7 @@ interface TeamContext {
   team: TeamT;
   state: QueueState;
   heading: React.ReactNode;
+  /** The issue views. Sprints sit beside them in the sidebar, not in these tabs. */
   tabs: React.ReactNode;
 }
 
@@ -52,7 +53,7 @@ function TeamLayout() {
       <TabList aria-label={tm.name}>
         <Tab id="list" size="compact">
           <List />
-          {t("team.list")}
+          {t("team.active")}
         </Tab>
         <Tab id="board" size="compact">
           <KanbanSquare />
@@ -61,10 +62,6 @@ function TeamLayout() {
         <Tab id="backlog" size="compact">
           <ListTodo />
           {t("team.backlog")}
-        </Tab>
-        <Tab id="sprints" size="compact">
-          <CalendarRange />
-          {t("team.sprints")}
         </Tab>
       </TabList>
     </Tabs>

@@ -6,6 +6,7 @@ import {
   GridListItem,
   GridListSection,
   ListLayout,
+  useDragAndDrop,
   Virtualizer,
   type Selection,
 } from "react-aria-components";
@@ -15,6 +16,7 @@ import { Checkbox } from "~/components/ui/toggles";
 import { Menu, MenuItem, MenuPopover, MenuTrigger, MenuSeparator } from "~/components/ui/menu";
 import { Avatar } from "~/components/ui/avatar";
 import { useToast } from "~/components/ui/toast";
+import { ISSUE_DRAG_TYPE, issueDragItem, readDraggedIssues } from "./board";
 import { ConfirmDialog } from "./confirm";
 import { cn } from "~/lib/utils";
 import { PRIORITIES } from "~/lib/format";
@@ -109,31 +111,19 @@ export function IssueList({
   emptyState,
   selectable = true,
   fill = false,
-}: {
-  issues: Issue[];
-  groupBy?: GroupBy;
-  showTeam?: boolean;
-  emptyState?: React.ReactNode;
-  selectable?: boolean;
-  fill?: boolean;
-}) {
-  if (fill)
-    return (
-      <FillIssueList
-        issues={issues}
-        groupBy={groupBy}
-        showTeam={showTeam}
-        emptyState={emptyState}
-        selectable={selectable}
-      />
-    );
+  selectionBar,
+  onDropIssues,
+}: IssueListProps & { fill?: boolean }) {
+  const List = fill ? FillIssueList : PlainIssueList;
   return (
-    <PlainIssueList
+    <List
       issues={issues}
       groupBy={groupBy}
       showTeam={showTeam}
       emptyState={emptyState}
       selectable={selectable}
+      selectionBar={selectionBar}
+      onDropIssues={onDropIssues}
     />
   );
 }
@@ -144,6 +134,13 @@ interface IssueListProps {
   showTeam?: boolean;
   emptyState?: React.ReactNode;
   selectable?: boolean;
+  /** Replaces the floating bulk bar, for pages with more than one list. Gets the selected ids. */
+  selectionBar?: (ids: Id[], clear: () => void) => React.ReactNode;
+  /**
+   * Makes rows draggable and the list a drop target for issues dragged from another list. The
+   * list keeps no order of its own, so a drop lands on the list, not between rows.
+   */
+  onDropIssues?: (ids: Id[]) => void;
 }
 
 /** Grows with its content. For dialogs, drawers and short lists. */
@@ -153,9 +150,21 @@ export function PlainIssueList({
   showTeam,
   emptyState,
   selectable = true,
+  selectionBar,
+  onDropIssues,
 }: IssueListProps) {
-  const { grid, bar } = useIssueGrid({ issues, groupBy, showTeam, selectable, fill: false });
-  if (issues.length === 0) return <>{emptyState}</>;
+  const { grid, bar } = useIssueGrid({
+    issues,
+    groupBy,
+    showTeam,
+    emptyState,
+    selectable,
+    selectionBar,
+    onDropIssues,
+    fill: false,
+  });
+  // A drop target stays on screen when empty, with the empty state inside it.
+  if (issues.length === 0 && !onDropIssues) return <>{emptyState}</>;
   return (
     <>
       {grid}
@@ -171,14 +180,29 @@ export function FillIssueList({
   showTeam,
   emptyState,
   selectable = true,
+  selectionBar,
+  onDropIssues,
 }: IssueListProps) {
-  const { grid, bar } = useIssueGrid({ issues, groupBy, showTeam, selectable, fill: true });
-  if (issues.length === 0) return <>{emptyState}</>;
+  const { grid, bar } = useIssueGrid({
+    issues,
+    groupBy,
+    showTeam,
+    emptyState,
+    selectable,
+    selectionBar,
+    onDropIssues,
+    fill: true,
+  });
+  if (issues.length === 0 && !onDropIssues) return <>{emptyState}</>;
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <Virtualizer layout={ListLayout} layoutOptions={LAYOUT_OPTIONS}>
-        {grid}
-      </Virtualizer>
+      {issues.length === 0 ? (
+        grid
+      ) : (
+        <Virtualizer layout={ListLayout} layoutOptions={LAYOUT_OPTIONS}>
+          {grid}
+        </Virtualizer>
+      )}
       {bar}
     </div>
   );
@@ -188,10 +212,15 @@ function useIssueGrid({
   issues,
   groupBy,
   showTeam,
+  emptyState,
   selectable,
+  selectionBar,
+  onDropIssues,
   fill,
 }: Required<Pick<IssueListProps, "issues" | "groupBy" | "selectable">> &
-  Pick<IssueListProps, "showTeam"> & { fill: boolean }) {
+  Pick<IssueListProps, "showTeam" | "emptyState" | "selectionBar" | "onDropIssues"> & {
+    fill: boolean;
+  }) {
   const { t } = useI18n();
   const groups = useGroups(issues, groupBy);
   const keyLength = issueKeyLength(issues);
@@ -216,6 +245,20 @@ function useIssueGrid({
     [selected, visible],
   );
 
+  const { dragAndDropHooks } = useDragAndDrop({
+    isDisabled: !canSelect,
+    // Dragging a selected row carries the whole selection.
+    getItems: (keys) =>
+      [...keys].filter((k) => visible.has(String(k))).map((k) => issueDragItem(String(k), "list")),
+    acceptedDragTypes: [ISSUE_DRAG_TYPE],
+    // Rows refuse, so the drop falls through to the list. Drops from this list itself never count.
+    getDropOperation: (target) => (target.type === "root" ? "move" : "cancel"),
+    onRootDrop: async (e) => {
+      const { ids } = await readDraggedIssues(e.items);
+      if (ids.length) onDropIssues?.(ids);
+    },
+  });
+
   const toggle = (id: string) =>
     setCollapsed((c) => {
       const n = new Set(c);
@@ -235,11 +278,13 @@ function useIssueGrid({
       onSelectionChange={(s: Selection) =>
         setSelected(new Set(s === "all" ? visible : ([...s] as Id[])))
       }
+      dragAndDropHooks={onDropIssues ? dragAndDropHooks : undefined}
+      renderEmptyState={() => emptyState}
       className={cn(
-        "outline-none",
+        "outline-none transition-colors drop-target:bg-accent/40 drop-target:ring-2 drop-target:ring-inset drop-target:ring-primary/40",
         fill && "min-h-0 flex-1 overflow-y-auto",
         // Room for the bulk bar, which floats over the end of the list.
-        !fill && visibleSelected.size > 0 && "pb-24",
+        !fill && !selectionBar && visibleSelected.size > 0 && "pb-24",
       )}
     >
       {groupBy === "none" ? (
@@ -281,8 +326,11 @@ function useIssueGrid({
     </GridList>
   );
 
-  const bar = (
-    <BulkBar issues={issues} selected={visibleSelected} clear={() => setSelected(new Set())} />
+  const clear = () => setSelected(new Set());
+  const bar = selectionBar ? (
+    selectionBar([...visibleSelected], clear)
+  ) : (
+    <BulkBar issues={issues} selected={visibleSelected} clear={clear} />
   );
   return { grid, bar };
 }

@@ -89,7 +89,29 @@ pub struct Issue {
     pub updated_at: DateTime<Utc>,
 }
 
+/// What an edit does to keep backlog work out of sprints.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum SprintFit {
+    Keep,
+    /// The issue entered a backlog stage, so it leaves its sprint.
+    LeaveSprint,
+    /// The issue joined a sprint from the backlog, so it moves to the team's sprint stage.
+    Plan,
+}
+
 impl Issue {
+    /// Backlog issues have no sprint. `entered_stage` says whether the edit chose
+    /// the stage, which then wins over the sprint.
+    pub(crate) fn sprint_fit(&self, in_backlog: bool, entered_stage: bool) -> SprintFit {
+        if self.sprint_id.is_none() || !in_backlog {
+            SprintFit::Keep
+        } else if entered_stage {
+            SprintFit::LeaveSprint
+        } else {
+            SprintFit::Plan
+        }
+    }
+
     /// Apply field values and clear flags; callers validate and persist the result.
     pub(crate) fn apply_patch(&mut self, p: IssuePatch) {
         set(&mut self.title, p.title);

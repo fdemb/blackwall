@@ -37,7 +37,10 @@ export function IssueBoard({
   const { t } = useI18n();
   const { run, create, canWrite } = useWorkspace();
   const { filter, setFilter } = state;
-  const stages = [...team.stages].sort((a, b) => a.position - b.position);
+  // Backlog issues have no sprint, so a sprint board has no backlog column.
+  const stages = team.stages
+    .filter((s) => !scope.sprint_id || s.kind !== "backlog")
+    .sort((a, b) => a.position - b.position);
   // The sprint is the page's scope, never the person's filter, so a list filter can't narrow it.
   const base: IssueFilter = {
     where: [

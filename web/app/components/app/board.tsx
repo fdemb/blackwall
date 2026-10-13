@@ -26,7 +26,33 @@ import {
   OpenProjectBadge,
 } from "./issue-parts";
 
-const TYPE = "application/x-blackwall-issue";
+/** Drag payload type for issues, shared by board columns and issue lists. */
+export const ISSUE_DRAG_TYPE = "application/x-blackwall-issue";
+
+/** Drag item for one issue. `column` names where the drag started. */
+export const issueDragItem = (id: Id, column: string) => ({
+  [ISSUE_DRAG_TYPE]: JSON.stringify({ id, column }),
+  "text/plain": id,
+});
+
+/** Issue ids in a drop, and the column the drag started from. Items from elsewhere are skipped. */
+export async function readDraggedIssues(
+  items: readonly { kind: string; getText?: (type: string) => Promise<string> }[],
+) {
+  const ids: Id[] = [];
+  let source: Id | null = null;
+  for (const item of items) {
+    if (item.kind !== "text" || !item.getText) continue;
+    try {
+      const data = JSON.parse(await item.getText(ISSUE_DRAG_TYPE)) as { id: Id; column: string };
+      ids.push(data.id);
+      source = data.column;
+    } catch {
+      /* not ours */
+    }
+  }
+  return { ids, source };
+}
 
 /**
  * Columns render only the cards in view. Cards vary in height, so the layout starts from an
@@ -76,37 +102,16 @@ export function DndColumn({
     },
     [issues],
   );
-  const read = useCallback(
-    async (items: { kind: string; getText?: (t: string) => Promise<string> }[]) => {
-      const ids: Id[] = [];
-      let source: Id | null = null;
-      for (const item of items) {
-        if (item.kind !== "text" || !item.getText) continue;
-        try {
-          const data = JSON.parse(await item.getText(TYPE)) as { id: Id; column: string };
-          ids.push(data.id);
-          source = data.column;
-        } catch {
-          /* not ours */
-        }
-      }
-      return { ids, source };
-    },
-    [],
-  );
   const { dragAndDropHooks } = useDragAndDrop({
     isDisabled: !canWrite || !canDrop,
     getItems: (keys) =>
       [...keys]
         .filter((k) => issues.some((issue) => issue.id === k && issueCapabilities(issue).move))
-        .map((k) => ({
-          [TYPE]: JSON.stringify({ id: k, column: id }),
-          "text/plain": String(k),
-        })),
-    acceptedDragTypes: [TYPE],
+        .map((k) => issueDragItem(String(k), id)),
+    acceptedDragTypes: [ISSUE_DRAG_TYPE],
     getDropOperation: () => "move",
     onInsert: async (e) => {
-      const { ids, source } = await read(e.items as never);
+      const { ids, source } = await readDraggedIssues(e.items);
       onDrop(ids, beforeFor(e.target), source);
     },
     onReorder: (e) =>
@@ -118,7 +123,7 @@ export function DndColumn({
         id,
       ),
     onRootDrop: async (e) => {
-      const { ids, source } = await read(e.items as never);
+      const { ids, source } = await readDraggedIssues(e.items);
       onDrop(ids, null, source);
     },
     renderDropIndicator: (target) => <DropLine target={target} />,

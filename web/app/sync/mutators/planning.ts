@@ -193,7 +193,8 @@ export const createStage: Mutator<ArgsOf<"create_stage">> = (tx, args, ctx) => {
  * stamps every unstamped, unarchived issue in the stage; leaving done clears
  * every unarchived one. Archived rows are untouched either way, and deleted
  * rows move with the rest because the server's `UPDATE` filters only on
- * `archived_at`. Workflow candidates are collected separately.
+ * `archived_at`. Entering backlog also clears every sprint in the stage.
+ * Workflow candidates are collected separately.
  */
 function restampStage(tx: Tx, stageId: string, previous: string, next: string, at: string): void {
   if (next === "done") {
@@ -205,6 +206,11 @@ function restampStage(tx: Tx, stageId: string, previous: string, next: string, a
     for (const issue of tx.byIndex("issues", "stage_id", stageId)) {
       if (issue.archived_at !== null) continue;
       tx.put("issues", { ...issue, done_at: null, updated_at: at });
+    }
+  }
+  if (next === "backlog") {
+    for (const issue of tx.byIndex("issues", "stage_id", stageId)) {
+      if (issue.sprint_id !== null) tx.put("issues", { ...issue, sprint_id: null, updated_at: at });
     }
   }
 }

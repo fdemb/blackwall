@@ -271,7 +271,10 @@ function TeamLinks({ team, base }: { team: Team; base: string }) {
   const sprints = `${base}/team/${id}/sprints`;
   const onSprints = pathname.startsWith(sprints);
   const active = ws.sprints.find((s) => s.team_id === id && s.state === "active");
-  const onActive = !!active && pathname === `${sprints}/${active.id}`;
+  // The active sprint's board and its plan both count as the sprint.
+  const onActive =
+    !!active &&
+    (pathname === `${sprints}/${active.id}` || pathname.startsWith(`${sprints}/${active.id}/`));
   return (
     <div>
       <button
