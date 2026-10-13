@@ -5,7 +5,6 @@ import {
   initialMeta,
   keyPath,
   recordKey,
-  recordScope,
   replicaIdentity,
   replicaName,
   scopeKey,
@@ -22,9 +21,32 @@ import type {
 } from "./types";
 
 /** Store layout version, independent of the client record/index schema in meta. */
-export const IDB_VERSION = 1;
+export const IDB_VERSION = 2;
 const META_KEY = "replica";
 const STORES = ["meta", ...ENTITIES, "outbox", "scopes"];
+/** The index on each scoped entity, named after the field that holds its scope id. */
+const SCOPE_INDEX = { comments: "issue_id", activity: "entity_id" } as const;
+
+/** An outbox row. `confirmed` marks a mutation whose push result arrived. */
+type StoredMutation = PendingMutation & { confirmed?: true };
+
+function pendingOf({ confirmed: _, ...mutation }: StoredMutation): PendingMutation {
+  return mutation;
+}
+
+function scopeValue(scope: Scope): string {
+  return scope.entity === "comments" ? scope.issueId : scope.entityId;
+}
+
+/** Acknowledged rows leave the outbox once confirmed. The rest wait for a confirmation push. */
+function dropConfirmed(tx: IDBTransaction, lastMutationId: number, guard: Guard): void {
+  const request = tx.objectStore("outbox").openCursor(IDBKeyRange.upperBound(lastMutationId));
+  read<IDBCursorWithValue | null>(request, guard, (cursor) => {
+    if (cursor === null) return;
+    if ((cursor.value as StoredMutation).confirmed) cursor.delete();
+    cursor.continue();
+  });
+}
 
 type Guard = (fn: () => void) => void;
 
@@ -92,12 +114,21 @@ class IndexedDBReplica implements Replica {
     return this.transaction(STORES, "readonly", (tx, done, guard) => {
       const records: LoadedReplica["records"] = {};
       let meta: ReplicaMeta;
-      let outbox: PendingMutation[] = [];
+      let stored: StoredMutation[] = [];
       let scopes: Scope[] = [];
       let remaining = ENTITIES.length + 3;
       const received = () => {
         remaining -= 1;
-        if (remaining === 0) done({ meta, records, outbox, scopes });
+        if (remaining > 0) return;
+        const acknowledged = (mutation: PendingMutation) => mutation.id <= meta.lastMutationId;
+        const rows = stored.map(pendingOf);
+        done({
+          meta,
+          records,
+          outbox: rows.filter((mutation) => !acknowledged(mutation)),
+          unconfirmed: rows.filter(acknowledged),
+          scopes,
+        });
       };
       read<ReplicaMeta | undefined>(tx.objectStore("meta").get(META_KEY), guard, (value) => {
         if (value === undefined) throw new Error("replica metadata is missing");
@@ -110,8 +141,8 @@ class IndexedDBReplica implements Replica {
           received();
         });
       }
-      read<PendingMutation[]>(tx.objectStore("outbox").getAll(), guard, (value) => {
-        outbox = value;
+      read<StoredMutation[]>(tx.objectStore("outbox").getAll(), guard, (value) => {
+        stored = value;
         received();
       });
       read<Scope[]>(tx.objectStore("scopes").getAll(), guard, (value) => {
@@ -123,10 +154,15 @@ class IndexedDBReplica implements Replica {
 
   loadOutbox(): Promise<readonly PendingMutation[]> {
     return this.transaction<readonly PendingMutation[]>(
-      ["outbox"],
+      ["meta", "outbox"],
       "readonly",
       (tx, done, guard) => {
-        read<PendingMutation[]>(tx.objectStore("outbox").getAll(), guard, done);
+        read<ReplicaMeta>(tx.objectStore("meta").get(META_KEY), guard, (meta) => {
+          const unacknowledged = IDBKeyRange.lowerBound(meta.lastMutationId, true);
+          read<StoredMutation[]>(tx.objectStore("outbox").getAll(unacknowledged), guard, (rows) =>
+            done(rows.map(pendingOf)),
+          );
+        });
       },
     );
   }
@@ -170,7 +206,7 @@ class IndexedDBReplica implements Replica {
           },
           META_KEY,
         );
-        tx.objectStore("outbox").delete(IDBKeyRange.upperBound(lastMutationId));
+        dropConfirmed(tx, lastMutationId, guard);
         done(undefined);
       });
     });
@@ -222,9 +258,7 @@ class IndexedDBReplica implements Replica {
           },
           META_KEY,
         );
-        if (input.acknowledgedUpTo !== null) {
-          tx.objectStore("outbox").delete(IDBKeyRange.upperBound(lastMutationId));
-        }
+        if (input.acknowledgedUpTo !== null) dropConfirmed(tx, lastMutationId, guard);
         done(undefined);
       });
     });
@@ -234,12 +268,9 @@ class IndexedDBReplica implements Replica {
     return this.transaction(["scopes", input.scope.entity], "readwrite", (tx, done, guard) => {
       const key = scopeKey(input.scope);
       const store = tx.objectStore(input.scope.entity);
-      read<object[]>(store.getAll(), guard, (previous) => {
-        for (const record of previous) {
-          const scope = recordScope(input.scope.entity, record);
-          if (scope !== null && scopeKey(scope) === key)
-            store.delete(recordKey(input.scope.entity, record));
-        }
+      const index = store.index(SCOPE_INDEX[input.scope.entity]);
+      read<IDBValidKey[]>(index.getAllKeys(scopeValue(input.scope)), guard, (previous) => {
+        for (const id of previous) store.delete(id);
         for (const record of input.records) {
           recordKey(input.scope.entity, record);
           store.put(record);
@@ -263,11 +294,9 @@ class IndexedDBReplica implements Replica {
         loaded = value !== undefined;
         finish();
       });
-      read<object[]>(tx.objectStore(scope.entity).getAll(), guard, (all) => {
-        records = all.filter((record) => {
-          const current = recordScope(scope.entity, record);
-          return current !== null && scopeKey(current) === key;
-        });
+      const index = tx.objectStore(scope.entity).index(SCOPE_INDEX[scope.entity]);
+      read<object[]>(index.getAll(scopeValue(scope)), guard, (value) => {
+        records = value;
         finish();
       });
     });
@@ -281,6 +310,24 @@ class IndexedDBReplica implements Replica {
         tx.objectStore("outbox").add(mutation);
         tx.objectStore("meta").put({ ...meta, nextMutationId: id + 1 }, META_KEY);
         done(mutation);
+      });
+    });
+  }
+
+  confirm(ids: readonly number[]): Promise<void> {
+    return this.transaction(["meta", "outbox"], "readwrite", (tx, done, guard) => {
+      read<ReplicaMeta>(tx.objectStore("meta").get(META_KEY), guard, (meta) => {
+        const outbox = tx.objectStore("outbox");
+        for (const id of ids) {
+          if (id <= meta.lastMutationId) {
+            outbox.delete(id);
+            continue;
+          }
+          read<StoredMutation | undefined>(outbox.get(id), guard, (row) => {
+            if (row !== undefined) outbox.put({ ...row, confirmed: true });
+          });
+        }
+        done(undefined);
       });
     });
   }
@@ -346,7 +393,11 @@ export class IndexedDBReplicaStorage implements ReplicaStorage {
             );
           });
         } else db.createObjectStore("meta").put(initialMeta(input), META_KEY);
-        for (const entity of ENTITIES) db.createObjectStore(entity, { keyPath: keyPath(entity) });
+        for (const entity of ENTITIES) {
+          const store = db.createObjectStore(entity, { keyPath: keyPath(entity) });
+          if (entity === "comments" || entity === "activity")
+            store.createIndex(SCOPE_INDEX[entity], SCOPE_INDEX[entity]);
+        }
         if (!db.objectStoreNames.contains("outbox"))
           db.createObjectStore("outbox", { keyPath: "id" });
         db.createObjectStore("scopes");

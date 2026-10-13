@@ -58,20 +58,25 @@ function useListState<T>(items: T[], error: string | null = null): ListState<T> 
   };
 }
 
-export function useIssues(filter: IssueFilter = {}, enabled = true): ListState<CountedIssue> {
+/** `limit` keeps the first matches before counting them. */
+export function useIssues(
+  filter: IssueFilter = {},
+  enabled = true,
+  limit?: number,
+): ListState<CountedIssue> {
   const selection = useView(
     (store) => {
       try {
-        const items = enabled
-          ? filterIssues(store, filter).flatMap((issue) => countedIssue(store, issue.id) ?? [])
-          : [];
-        return items;
+        if (!enabled) return [];
+        return filterIssues(store, filter)
+          .slice(0, limit)
+          .flatMap((issue) => countedIssue(store, issue.id) ?? []);
       } catch (error) {
         return error instanceof Error ? error.message : String(error);
       }
     },
     ["issues", "teams"],
-    [JSON.stringify(filter), enabled],
+    [JSON.stringify(filter), enabled, limit],
   );
   return useListState(
     typeof selection === "string" ? [] : selection,

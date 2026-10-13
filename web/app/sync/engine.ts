@@ -61,8 +61,15 @@ export class OutdatedError extends Error {
 
 /** A follower re-sends an unanswered request on this cadence, in case the leader went away. */
 const REQUEST_RESEND_MS = 1000;
+/** A pull or scope read that takes longer fails and retries, so it can't hold the read queue. */
+const READ_DEADLINE_MS = 30_000;
+/** The server caps mutations per push at 100 and request bodies at 6 MiB. */
+const PUSH_MUTATIONS = 100;
+const PUSH_BYTES = 4 * 1024 * 1024;
+const encoder = new TextEncoder();
 type RequestKind = "bootstrap" | "pull" | "scope" | "push" | "events";
 type PushBatch = {
+  /** Halved after a 413, so a body the server refuses never blocks the outbox. */
   mutations: readonly Mutation[];
   processed: boolean;
   attempt: number;
@@ -78,6 +85,23 @@ type RemoteRequest = {
 };
 type TabReply = { ok: true; value: unknown } | { ok: false; error: TabError };
 type ServedReply = { reply: Promise<TabReply>; cancelExpiry: () => void };
+
+/** Its share of a push body, as the transport encodes it. */
+function encodedSize({ id, name, args, at }: Mutation): number {
+  return encoder.encode(JSON.stringify({ id, name, args, at })).length + 1;
+}
+
+/** The oldest mutations that fit one push. The first always goes, so a large one isn't skipped. */
+function pushBatch(candidates: readonly Mutation[]): Mutation[] {
+  const batch: Mutation[] = [];
+  let bytes = 0;
+  for (const mutation of candidates.slice(0, PUSH_MUTATIONS)) {
+    bytes += encodedSize(mutation);
+    if (batch.length > 0 && bytes > PUSH_BYTES) break;
+    batch.push(mutation);
+  }
+  return batch;
+}
 
 function tabError(error: unknown): TabError {
   const message = error instanceof Error ? error.message : String(error);
@@ -112,6 +136,8 @@ export class SyncEngine {
   private readonly inbox: TabMessage[] = [];
   /** Acknowledged mutations whose push result is still unknown, retained for a confirmation push. */
   private readonly unconfirmed = new Map<number, Mutation>();
+  /** Pushed mutations whose result this engine has seen, until a pull acknowledges them. */
+  private readonly resulted = new Set<number>();
   /** Mutation ids another tab appended while this engine listened. */
   private readonly appendedIds = new Set<number>();
   /** The leader's replies, so a re-sent request runs once. */
@@ -181,6 +207,7 @@ export class SyncEngine {
       online: deps.signals.getOnline(),
       connected: false,
       pending: 0,
+      blocked: false,
       lastError: null,
       rejected: Object.freeze([]),
     });
@@ -267,6 +294,7 @@ export class SyncEngine {
     this.clientId = loaded.meta.clientId;
     this.cursor = loaded.meta.cursor;
     this.acknowledged = loaded.meta.lastMutationId;
+    for (const mutation of loaded.unconfirmed) this.unconfirmed.set(mutation.id, mutation);
     this.loadedScopes.clear();
     for (const scope of loaded.scopes) this.loadedScopes.set(scopeKey(scope), scope);
     this.store.batch(() => {
@@ -388,6 +416,7 @@ export class SyncEngine {
     this.update({
       role,
       online: this.deps.signals.getOnline() && (role === "leader" || this.leaderOnline),
+      blocked: role === "leader" ? this.outboxBlocked() : this.leaderBlocked,
     });
   }
 
@@ -590,15 +619,7 @@ export class SyncEngine {
     controller: AbortController,
     refreshCsrf: boolean,
   ): Promise<void> {
-    if (refreshCsrf)
-      await cancellable(
-        this.deps.transport.me().catch((cause: unknown) => {
-          if (cause instanceof AccessError)
-            throw new ProtocolError("CSRF refresh failed", cause.status, { cause });
-          throw cause;
-        }),
-        controller.signal,
-      );
+    if (refreshCsrf) await cancellable(this.refreshCsrf(), controller.signal);
     // A command may forbid an action or miss its target while workspace access is still valid.
     await cancellable(
       this.deps.transport.pull(this.deps.workspaceId, this.clientId, this.cursor, {
@@ -665,7 +686,26 @@ export class SyncEngine {
     return work;
   }
 
-  /** Only a new engine clears these blocks, so the outbox would never drain. */
+  /**
+   * Clears protocol blocks and scope failures and restarts network work, for a user's retry after
+   * a fix on the server. A follower asks the leader, which holds the blocks.
+   */
+  unblock(): void {
+    if (this.role === "follower") {
+      this.post({ type: "retry" });
+      return;
+    }
+    this.blocked.clear();
+    this.scopeFailures.clear();
+    this.batch = null;
+    this.update({ blocked: false, lastError: null });
+    this.post(this.statusMessage());
+    this.notifyScopes();
+    this.cancelNetwork();
+    this.beginNetwork();
+  }
+
+  /** Only unblock() or a new engine clears these blocks; until then the outbox can't drain. */
   private outboxBlocked(): boolean {
     return this.blocked.has("push") || this.blocked.has("pull") || this.blocked.has("bootstrap");
   }
@@ -718,6 +758,7 @@ export class SyncEngine {
         this.update({
           connected: message.connected,
           online: this.leaderOnline && this.deps.signals.getOnline(),
+          blocked: message.blocked,
         });
         this.notifyChange();
         // A new leader announces itself with its status, so waiting scope requests go to it.
@@ -731,6 +772,9 @@ export class SyncEngine {
         return;
       case "hello":
         if (this.role === "leader") this.post(this.statusMessage());
+        return;
+      case "retry":
+        if (this.role === "leader") this.unblock();
         return;
       case "request":
         if (this.role === "leader") this.serve(message);
@@ -854,6 +898,7 @@ export class SyncEngine {
 
   /** The leader's verdict for a mutation. Only the tab that created it settles its receipt. */
   private receiveResult(mutationId: number, outcome: TabOutcome): void {
+    if (mutationId > this.acknowledged) this.resulted.add(mutationId);
     this.unconfirmed.delete(mutationId);
     this.appendedIds.delete(mutationId);
     this.settle(mutationId, outcome, false);
@@ -945,7 +990,10 @@ export class SyncEngine {
       owned?.resolve("applied");
       return;
     }
-    const source = owned?.mutation ?? this.store.pending().find((mutation) => mutation.id === id);
+    const source =
+      owned?.mutation ??
+      this.unconfirmed.get(id) ??
+      this.store.pending().find((mutation) => mutation.id === id);
     const command = source ? { name: source.name, args: immutableCopy(source.args) } : null;
     const rejection: Rejection = Object.freeze({ ...outcome, command });
     if ((owned !== undefined || reportOrphan) && !this.reported.has(id)) {
@@ -1164,13 +1212,32 @@ export class SyncEngine {
     return response.more;
   }
 
+  /** Aborts a read that outlives its deadline with a NetworkError, which `retry` backs off from. */
+  private async withDeadline<T>(
+    controller: AbortController,
+    read: (signal: AbortSignal) => Promise<T>,
+  ): Promise<T> {
+    const request = new AbortController();
+    const timeout = new NetworkError("Request timed out");
+    const abort = () => request.abort(controller.signal.reason);
+    controller.signal.addEventListener("abort", abort, { once: true });
+    if (controller.signal.aborted) abort();
+    const cancel = this.deps.clock.schedule(READ_DEADLINE_MS, () => request.abort(timeout));
+    try {
+      return await cancellable(read(request.signal), request.signal);
+    } catch (error) {
+      throw request.signal.reason === timeout ? timeout : error;
+    } finally {
+      cancel();
+      controller.signal.removeEventListener("abort", abort);
+    }
+  }
+
   private async readPull(controller: AbortController): Promise<PullResponse> {
     this.check(controller);
-    const response = await cancellable(
-      this.deps.transport.pull(this.deps.workspaceId, this.clientId, this.cursor, {
-        signal: controller.signal,
-      }),
-      controller.signal,
+    const cursor = this.cursor;
+    const response = await this.withDeadline(controller, (signal) =>
+      this.deps.transport.pull(this.deps.workspaceId, this.clientId, cursor, { signal }),
     );
     this.check(controller);
     const changes = response.changes.map((change) => {
@@ -1200,6 +1267,7 @@ export class SyncEngine {
         this.store.applyBase(accepted);
         if (response.last_mutation_id !== null) this.acknowledge(response.last_mutation_id);
       });
+      this.recovered();
       this.post({
         type: "pulled",
         changes,
@@ -1212,16 +1280,34 @@ export class SyncEngine {
 
   private acknowledge(id: number): void {
     this.acknowledged = Math.max(this.acknowledged, id);
-    // With tabs, another tab may be waiting on this payload's result, so keep it for a confirmation.
-    if (this.channel)
-      for (const mutation of this.store.pending())
-        if (mutation.id <= this.acknowledged && !this.outcomes.has(mutation.id))
-          this.unconfirmed.set(mutation.id, mutation);
+    // An acknowledged mutation with no result seen may have been rejected, so keep it for a
+    // confirmation push. The replica keeps it too, until `confirm`.
+    for (const mutation of this.store.pending())
+      if (
+        mutation.id <= this.acknowledged &&
+        !this.outcomes.has(mutation.id) &&
+        !this.resulted.has(mutation.id)
+      )
+        this.unconfirmed.set(mutation.id, mutation);
+    for (const resulted of this.resulted)
+      if (resulted <= this.acknowledged) this.resulted.delete(resulted);
     this.store.setPending(
       this.store.pending().filter((mutation) => mutation.id > this.acknowledged),
     );
     for (const wake of this.ackWaiters) wake();
     this.notifyChange();
+  }
+
+  /**
+   * Batches come from the database's outbox. Another tab may have appended mutations whose
+   * messages were lost, and tabs without locks or a channel all push the same outbox. Each batch
+   * then starts at the oldest unacknowledged id, and the server's per-client ordering turns any
+   * overlap between tabs into duplicates instead of skipping a mutation.
+   */
+  private async reloadOutbox(): Promise<void> {
+    const current = new Map(this.store.pending().map((mutation) => [mutation.id, mutation]));
+    const stored = await this.requireReplica().loadOutbox();
+    this.store.setPending(stored.map((mutation) => current.get(mutation.id) ?? mutation));
   }
 
   private pushCandidates(): Mutation[] {
@@ -1264,11 +1350,8 @@ export class SyncEngine {
   }
 
   private async loadScope(scope: Scope, controller: AbortController): Promise<void> {
-    const response = await cancellable(
-      this.deps.transport.scope(this.deps.workspaceId, this.clientId, scope, {
-        signal: controller.signal,
-      }),
-      controller.signal,
+    const response = await this.withDeadline(controller, (signal) =>
+      this.deps.transport.scope(this.deps.workspaceId, this.clientId, scope, { signal }),
     );
     const records = response.records.map((record) => this.prepareRecord(scope.entity, record));
     for (const record of records) {
@@ -1296,18 +1379,15 @@ export class SyncEngine {
 
   /** Base changes that replace a scope's records with `records`: remove the old ones, then upsert. */
   private scopeChanges(scope: Scope, records: readonly object[]): Change[] {
-    const key = scopeKey(scope);
-    const removed = this.store
-      .baseAll(scope.entity)
-      .filter((record) => {
-        const current = recordScope(scope.entity, record);
-        return current !== null && scopeKey(current) === key;
-      })
-      .map((record) => ({
-        entity: scope.entity,
-        id: recordKey(scope.entity, record),
-        record: null,
-      }));
+    const scoped =
+      scope.entity === "comments"
+        ? this.store.baseByIndex("comments", "issue_id", scope.issueId)
+        : this.store.baseByIndex("activity", "entity_id", scope.entityId);
+    const removed = scoped.map((record) => ({
+      entity: scope.entity,
+      id: recordKey(scope.entity, record),
+      record: null,
+    }));
     const upserts = records.map((record) => ({
       entity: scope.entity,
       id: recordKey(scope.entity, record),
@@ -1349,82 +1429,16 @@ export class SyncEngine {
 
   private async push(controller: AbortController): Promise<void> {
     while (this.active(controller)) {
-      if (!this.batch) {
-        this.batch = await this.commits.run(async () => {
-          this.check(controller);
-          // Another tab may have appended mutations whose messages were lost, so the database is the source.
-          if (this.channel) this.store.setPending(await this.requireReplica().loadOutbox());
-          const mutations = this.pushCandidates().slice(0, 100);
-          if (mutations.length)
-            return {
-              mutations,
-              processed: false,
-              attempt: 0,
-              retryAt: 0,
-              csrfRefreshes: 0,
-            };
-          return null;
-        });
-      }
+      this.batch ??= await this.nextBatch(controller);
       const batch = this.batch;
       if (!batch) return;
       this.check(controller);
-      if (batch.retryAt > Date.parse(this.deps.clock.now()))
-        await pause(
-          this.deps.clock,
-          batch.retryAt - Date.parse(this.deps.clock.now()),
-          controller.signal,
-        );
+      const wait = batch.retryAt - Date.parse(this.deps.clock.now());
+      if (wait > 0) await pause(this.deps.clock, wait, controller.signal);
       if (!batch.processed) {
-        try {
-          const response = await cancellable(
-            this.deps.transport.push(this.deps.workspaceId, this.clientId, batch.mutations, {
-              signal: controller.signal,
-            }),
-            controller.signal,
-          );
-          this.check(controller);
-          for (const result of response.results) this.recordResult(result);
-          void this.pull();
-          if (response.status === "partial") {
-            batch.retryAt =
-              Date.parse(this.deps.clock.now()) + this.delay(batch.attempt++, response.retryAfter);
-            continue;
-          }
-          batch.processed = true;
-        } catch (error) {
-          this.check(controller);
-          if (error instanceof AccessError && error.status === 403) {
-            if (batch.csrfRefreshes === 0)
-              await this.retry("push", controller, async () => {
-                try {
-                  return await this.deps.transport.me();
-                } catch (cause) {
-                  if (cause instanceof AccessError)
-                    throw new ProtocolError("CSRF refresh failed", cause.status, { cause });
-                  throw cause;
-                }
-              });
-            const read = await this.retry("pull", controller, () =>
-              this.reads.run(() => this.readPull(controller)),
-            );
-            if (read.reset || read.more) void this.pull();
-            if (batch.csrfRefreshes++ === 0) continue;
-            await this.handleError(
-              new ProtocolError("Push forbidden after CSRF refresh", 403, { cause: error }),
-              "push",
-            );
-            return;
-          }
-          if (await this.handleError(error, "push")) return;
-          batch.retryAt =
-            Date.parse(this.deps.clock.now()) +
-            this.delay(
-              batch.attempt++,
-              error instanceof UnavailableError ? error.retryAfter : null,
-            );
-          continue;
-        }
+        const step = await this.sendBatch(batch, controller);
+        if (step === "stop") return;
+        if (step === "again") continue;
       }
       this.check(controller);
       if (this.blocked.has("pull") || this.blocked.has("bootstrap")) return;
@@ -1434,6 +1448,98 @@ export class SyncEngine {
         continue;
       }
       this.batch = null;
+    }
+  }
+
+  private nextBatch(controller: AbortController): Promise<PushBatch | null> {
+    return this.commits.run(async () => {
+      this.check(controller);
+      await this.reloadOutbox();
+      const mutations = pushBatch(this.pushCandidates());
+      if (mutations.length === 0) return null;
+      return { mutations, processed: false, attempt: 0, retryAt: 0, csrfRefreshes: 0 };
+    });
+  }
+
+  /** Sends one batch. "again" means send it again once `retryAt` passes; "stop" ends pushing. */
+  private async sendBatch(
+    batch: PushBatch,
+    controller: AbortController,
+  ): Promise<"sent" | "again" | "stop"> {
+    try {
+      const response = await cancellable(
+        this.deps.transport.push(this.deps.workspaceId, this.clientId, batch.mutations, {
+          signal: controller.signal,
+        }),
+        controller.signal,
+      );
+      this.check(controller);
+      for (const result of response.results) this.recordResult(result);
+      this.confirm(response.results.map((result) => result.id));
+      this.recovered();
+      void this.pull();
+      if (response.status === "partial") {
+        this.scheduleRetry(batch, response.retryAfter);
+        return "again";
+      }
+      batch.processed = true;
+      return "sent";
+    } catch (error) {
+      this.check(controller);
+      return this.pushFailed(error, batch, controller);
+    }
+  }
+
+  private async pushFailed(
+    error: unknown,
+    batch: PushBatch,
+    controller: AbortController,
+  ): Promise<"again" | "stop"> {
+    if (error instanceof ProtocolError && error.status === 413 && batch.mutations.length > 1) {
+      batch.mutations = batch.mutations.slice(0, Math.ceil(batch.mutations.length / 2));
+      return "again";
+    }
+    if (error instanceof AccessError && error.status === 403)
+      return this.pushForbidden(error, batch, controller);
+    if (await this.handleError(error, "push")) return "stop";
+    this.scheduleRetry(batch, error instanceof UnavailableError ? error.retryAfter : null);
+    return "again";
+  }
+
+  /**
+   * A first 403 may be a stale CSRF token: refresh it once and retry. A read confirms workspace
+   * access either way; a second 403 with access intact blocks pushing.
+   */
+  private async pushForbidden(
+    error: AccessError,
+    batch: PushBatch,
+    controller: AbortController,
+  ): Promise<"again" | "stop"> {
+    if (batch.csrfRefreshes === 0) await this.retry("push", controller, () => this.refreshCsrf());
+    const read = await this.retry("pull", controller, () =>
+      this.reads.run(() => this.readPull(controller)),
+    );
+    if (read.reset || read.more) void this.pull();
+    if (batch.csrfRefreshes++ === 0) return "again";
+    await this.handleError(
+      new ProtocolError("Push forbidden after CSRF refresh", 403, { cause: error }),
+      "push",
+    );
+    return "stop";
+  }
+
+  private scheduleRetry(batch: PushBatch, retryAfter?: number | string | null): void {
+    batch.retryAt = Date.parse(this.deps.clock.now()) + this.delay(batch.attempt++, retryAfter);
+  }
+
+  /** A forbidden /api/me means the refresh itself failed, which no retry fixes. */
+  private async refreshCsrf(): Promise<void> {
+    try {
+      await this.deps.transport.me();
+    } catch (cause) {
+      if (cause instanceof AccessError)
+        throw new ProtocolError("CSRF refresh failed", cause.status, { cause });
+      throw cause;
     }
   }
 
@@ -1455,6 +1561,17 @@ export class SyncEngine {
     }
   }
 
+  /**
+   * The replica drops these from its outbox once acknowledged, since their results are known.
+   * Queued before the pull that follows, so that pull's acknowledgement sees them confirmed.
+   */
+  private confirm(ids: readonly number[]): void {
+    if (ids.length === 0) return;
+    this.commits
+      .run(() => this.requireReplica().confirm(ids))
+      .catch((error: unknown) => this.finishError(error));
+  }
+
   private recordResult(result: MutationResult): void {
     const outcome: TabOutcome =
       result.status === "rejected"
@@ -1464,6 +1581,7 @@ export class SyncEngine {
     // appended while it listened, since their creator may have closed.
     const reportOrphan = this.role === "leader" && !this.appendedIds.has(result.id);
     this.settle(result.id, outcome, reportOrphan);
+    if (result.id > this.acknowledged) this.resulted.add(result.id);
     this.unconfirmed.delete(result.id);
     this.appendedIds.delete(result.id);
     this.post({ type: "result", mutationId: result.id, outcome });
@@ -1482,6 +1600,7 @@ export class SyncEngine {
         );
         this.check(controller);
         this.update({ connected: true });
+        this.recovered();
         for await (const _poke of stream) {
           this.check(controller);
           attempt = 0;
@@ -1534,11 +1653,19 @@ export class SyncEngine {
     }
     if (failure instanceof ProtocolError) {
       this.blocked.add(kind);
+      this.update({ blocked: this.outboxBlocked() });
       if (this.role === "leader") this.post(this.statusMessage());
       if (kind === "events") this.update({ connected: false });
       return true;
     }
     return false;
+  }
+
+  /** A request succeeded, so an earlier error no longer describes the connection. Blocks stay. */
+  private recovered(): void {
+    const error = this.snapshot.lastError;
+    if (error && !(error instanceof ProtocolError || error instanceof OutdatedError))
+      this.update({ lastError: null });
   }
 
   private finishError(error: unknown): void {

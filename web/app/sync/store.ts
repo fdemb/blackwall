@@ -87,6 +87,17 @@ type OverlayValue = AnyRecord | typeof TOMBSTONE;
 
 type ChangedView = Map<string, { old: AnyRecord | undefined; next: AnyRecord | undefined }>;
 
+/** Overlay values as they were before a change, by entity and key. undefined means absent. */
+type Journal = Map<Entity, Map<string, OverlayValue | undefined>>;
+
+function mergeJournal(into: Journal, from: Journal): void {
+  for (const [entity, table] of from) {
+    const target = into.get(entity);
+    if (target === undefined) into.set(entity, table);
+    else for (const [key, value] of table) if (!target.has(key)) target.set(key, value);
+  }
+}
+
 /** Structural comparison: same keys with the same values, arrays element-wise. */
 function deepEqual(a: unknown, b: unknown): boolean {
   if (a === b) return true;
@@ -112,6 +123,11 @@ function objectsEqual(a: Record<string, unknown>, b: Record<string, unknown>): b
     keys.length === Object.keys(b).length &&
     keys.every((key) => Object.prototype.hasOwnProperty.call(b, key) && deepEqual(a[key], b[key]))
   );
+}
+
+/** Whether `list` begins with the elements of `prefix`, by identity. */
+function startsWith<T>(list: readonly T[], prefix: readonly T[]): boolean {
+  return list.length >= prefix.length && prefix.every((item, i) => item === list[i]);
 }
 
 function ingestTable(entity: Entity, list: readonly object[]): Map<string, AnyRecord> {
@@ -280,7 +296,8 @@ function replayErrorEqual(a: ReplayError, b: ReplayError): boolean {
 
 /**
  * Base plus an overlay of replayed outbox mutations. Base changes only through
- * replaceBase and applyBase; the overlay is rebuilt from scratch on every rebase.
+ * replaceBase and applyBase. A base change or an outbox change other than an
+ * append rebuilds the overlay from scratch; an append replays only the new tail.
  */
 export class SyncStore {
   private readonly replay: ReplayFn;
@@ -289,6 +306,8 @@ export class SyncStore {
   private overlay = emptyTables<OverlayValue>();
   private readonly dirtyBase = new Map<Entity, Map<string, AnyRecord | undefined>>();
   private pendingList: readonly DeepReadonly<PendingMutation>[] = Object.freeze([]);
+  /** The pending list the overlay reflects. */
+  private replayed: readonly DeepReadonly<PendingMutation>[] = Object.freeze([]);
   private errors = new Map<number, ReplayError>();
   private readonly versions = new Map<Entity, number>();
   private pendingVer = 0;
@@ -302,10 +321,10 @@ export class SyncStore {
   private batchDepth = 0;
   private isInRebase = false;
   private needsRebase = false;
-  private activeJournal: Map<Entity, Map<string, OverlayValue | undefined>> | null = null;
+  private activeJournal: Journal | null = null;
 
-  /** Test-only counters: lazy rebuilds and base rows visited by table scans. Never reset by the store. */
-  readonly debug = { allRebuilds: 0, indexRebuilds: 0, baseScans: 0 };
+  /** Test-only counters: lazy rebuilds, base rows visited by table scans, and replayed mutations. Never reset by the store. */
+  readonly debug = { allRebuilds: 0, indexRebuilds: 0, baseScans: 0, replays: 0 };
 
   constructor(replay: ReplayFn) {
     this.replay = replay;
@@ -424,11 +443,14 @@ export class SyncStore {
     this.scheduleRebase();
   }
 
+  /** Mutations already in the outbox are kept by identity; new ones are detached and frozen. */
   setPending(mutations: readonly PendingMutation[]): void {
-    const clean = Object.freeze(
-      mutations.map((mutation) => immutableCopy(mutation)),
-    ) as readonly PendingMutation[];
-    this.pendingList = clean;
+    const known = new Set<unknown>(this.pendingList);
+    const clean = mutations.map((mutation) =>
+      known.has(mutation) ? mutation : immutableCopy(mutation),
+    );
+    if (clean.length === this.pendingList.length && startsWith(clean, this.pendingList)) return;
+    this.pendingList = Object.freeze(clean);
     this.scheduleRebase();
   }
 
@@ -451,7 +473,7 @@ export class SyncStore {
    * the returned client-only data for the pending mutation.
    */
   dryRun<T>(fn: (tx: Tx) => T): T {
-    const journal = new Map<Entity, Map<string, OverlayValue | undefined>>();
+    const journal: Journal = new Map();
     const previousJournal = this.activeJournal;
     this.activeJournal = journal;
     try {
@@ -509,6 +531,21 @@ export class SyncStore {
     this.assertEntity(entity);
     const out: AnyRecord[] = [];
     for (const [, record] of this.scanBase(entity)) out.push(record);
+    return Object.freeze(out) as unknown as readonly DeepReadonly<RecordOf[E]>[];
+  }
+
+  /** Base records in one index bucket, without the overlay. Point lookups, no table scan. */
+  baseByIndex<E extends Entity>(
+    entity: E,
+    index: IndexName<E>,
+    value: string | null,
+  ): readonly DeepReadonly<RecordOf[E]>[] {
+    const def = requireDef(entity, index as string);
+    const out: AnyRecord[] = [];
+    for (const key of this.baseIndexes.get(def)?.get(bucketOf(value)) ?? []) {
+      const record = this.base[entity].get(key);
+      if (record !== undefined) out.push(record);
+    }
     return Object.freeze(out) as unknown as readonly DeepReadonly<RecordOf[E]>[];
   }
 
@@ -579,7 +616,7 @@ export class SyncStore {
     return Object.freeze(out);
   }
 
-  private rollback(journal: Map<Entity, Map<string, OverlayValue | undefined>>): void {
+  private rollback(journal: Journal): void {
     for (const [entity, table] of journal) {
       for (const [key, previous] of table) {
         if (previous === undefined) this.overlay[entity].delete(key);
@@ -675,71 +712,10 @@ export class SyncStore {
   }
 
   private rebaseOnce(): void {
-    const oldOverlay = this.overlay;
-    this.overlay = emptyTables<OverlayValue>();
-    const fresh = this.overlay;
-    const nextErrors = new Map<number, ReplayError>();
-    for (const mutation of this.pendingList) {
-      const journal = new Map<Entity, Map<string, OverlayValue | undefined>>();
-      this.activeJournal = journal;
-      try {
-        this.replay(this.tx, mutation);
-      } catch (error) {
-        this.rollback(journal);
-        nextErrors.set(mutation.id, toReplayError(error));
-      } finally {
-        this.activeJournal = null;
-      }
-    }
-    this.errors = nextErrors;
-
-    const candidates = new Map<Entity, Set<string>>();
-    const add = (entity: Entity, key: string): void => {
-      let keys = candidates.get(entity);
-      if (keys === undefined) {
-        keys = new Set();
-        candidates.set(entity, keys);
-      }
-      keys.add(key);
-    };
-    for (const [entity, table] of this.dirtyBase) for (const key of table.keys()) add(entity, key);
-    for (const entity of ENTITIES) {
-      for (const key of oldOverlay[entity].keys()) add(entity, key);
-      for (const key of fresh[entity].keys()) add(entity, key);
-    }
-    const oldView = (entity: Entity, key: string): AnyRecord | undefined => {
-      const overlaid = oldOverlay[entity].get(key);
-      if (overlaid !== undefined) return overlaid === TOMBSTONE ? undefined : overlaid;
-      const dirty = this.dirtyBase.get(entity);
-      if (dirty !== undefined && dirty.has(key)) return dirty.get(key);
-      return this.base[entity].get(key);
-    };
-    const changed = new Map<Entity, ChangedView>();
-    for (const [entity, keys] of candidates) {
-      for (const key of keys) {
-        const old = oldView(entity, key);
-        const next = this.viewOf(entity, key);
-        if (deepEqual(old, next)) {
-          if (old !== next && old !== undefined && next !== undefined) {
-            // Equal but not identical: keep the old object as the visible one
-            // wherever the new value lives, so get and the cached all/byIndex
-            // arrays agree. Both are frozen, so swapping base entries leaves
-            // base indexes unaffected.
-            if (fresh[entity].has(key)) fresh[entity].set(key, old);
-            else this.base[entity].set(key, old);
-          } else if (next === undefined && !this.base[entity].has(key)) {
-            fresh[entity].delete(key);
-          }
-          continue;
-        }
-        let table = changed.get(entity);
-        if (table === undefined) {
-          table = new Map();
-          changed.set(entity, table);
-        }
-        table.set(key, { old, next });
-      }
-    }
+    const append = this.dirtyBase.size === 0 && startsWith(this.pendingList, this.replayed);
+    const prior = append ? this.replayFrom(this.replayed.length) : this.replayAll();
+    this.replayed = this.pendingList;
+    const changed = this.diffView(prior);
     this.dirtyBase.clear();
 
     const pendingChanged = !deepEqual(this.pendingList, this.notifiedPending);
@@ -775,6 +751,82 @@ export class SyncStore {
     }
     const snapshot: StoreEvent = { entities, keys, pendingChanged, errorsChanged };
     for (const listener of [...this.listeners]) listener(snapshot);
+  }
+
+  /** Replays the whole outbox into a fresh overlay. Returns every key in the old or new overlay or changed in base. */
+  private replayAll(): Journal {
+    const prior: Journal = new Map();
+    for (const entity of ENTITIES) {
+      const table = new Map<string, OverlayValue | undefined>(this.overlay[entity]);
+      for (const key of this.dirtyBase.get(entity)?.keys() ?? []) {
+        if (!table.has(key)) table.set(key, undefined);
+      }
+      prior.set(entity, table);
+    }
+    this.overlay = emptyTables<OverlayValue>();
+    this.errors = new Map();
+    mergeJournal(prior, this.replayFrom(0));
+    return prior;
+  }
+
+  /** Replays pending mutations from `start` on top of the overlay. Returns the keys they touched. */
+  private replayFrom(start: number): Journal {
+    const touched: Journal = new Map();
+    if (start > 0) this.errors = new Map(this.errors);
+    for (const mutation of this.pendingList.slice(start)) {
+      const journal: Journal = new Map();
+      this.activeJournal = journal;
+      this.debug.replays += 1;
+      try {
+        this.replay(this.tx, mutation);
+      } catch (error) {
+        this.rollback(journal);
+        this.errors.set(mutation.id, toReplayError(error));
+      } finally {
+        this.activeJournal = null;
+      }
+      mergeJournal(touched, journal);
+    }
+    return touched;
+  }
+
+  /** Compares the view before and after a rebase at every key in `prior`. */
+  private diffView(prior: Journal): Map<Entity, ChangedView> {
+    const oldView = (entity: Entity, key: string): AnyRecord | undefined => {
+      const overlaid = prior.get(entity)?.get(key);
+      if (overlaid !== undefined) return overlaid === TOMBSTONE ? undefined : overlaid;
+      const dirty = this.dirtyBase.get(entity);
+      if (dirty !== undefined && dirty.has(key)) return dirty.get(key);
+      return this.base[entity].get(key);
+    };
+    const changed = new Map<Entity, ChangedView>();
+    for (const [entity, keys] of prior) {
+      const fresh = this.overlay[entity];
+      for (const key of keys.keys()) {
+        const old = oldView(entity, key);
+        const next = this.viewOf(entity, key);
+        if (deepEqual(old, next)) {
+          if (old !== next && old !== undefined && next !== undefined) {
+            // Equal but not identical: keep the old object as the visible one
+            // wherever the new value lives, so get and the cached all/byIndex
+            // arrays agree. Both are frozen, so swapping base entries leaves
+            // base indexes unaffected.
+            if (fresh.has(key)) fresh.set(key, old);
+            else this.base[entity].set(key, old);
+          } else if (next === undefined && !this.base[entity].has(key)) {
+            fresh.delete(key);
+          }
+          continue;
+        }
+        let table = changed.get(entity);
+        if (table === undefined) {
+          table = new Map();
+          changed.set(entity, table);
+        }
+        table.set(key, { old, next });
+      }
+    }
+    return changed;
   }
 
   private updateStageKinds(changed: ChangedView): void {

@@ -10,7 +10,8 @@ import {
 import { useQuery } from "@tanstack/react-query";
 import { useToast } from "~/components/ui/toast";
 import { EngineProvider, useEngine, useSyncStatus, useView } from "../sync/react";
-import { OutdatedError, type SyncEngine } from "../sync/engine";
+import { OutdatedError, type EngineStatus, type SyncEngine } from "../sync/engine";
+import { NetworkError, UnavailableError } from "../sync/transport";
 import { createdLabel } from "../sync/mutators";
 import { reportQuery, watchReportChanges } from "./query-client";
 import { byDisplayName, byExpiryDesc, byName, byPosition, bySprintStart, byUserId } from "./order";
@@ -51,6 +52,17 @@ const emptyReport: Report = {
   sprints: [],
   delivery: [],
 };
+
+/** Why edits can't reach the server right now, or null when sync is healthy. */
+export type SyncProblem = "offline" | "unreachable" | "blocked" | "error" | null;
+
+function syncProblem(status: EngineStatus): SyncProblem {
+  const error = status.lastError;
+  if (!status.online) return "offline";
+  if (status.blocked) return "blocked";
+  if (error instanceof NetworkError || error instanceof UnavailableError) return "unreachable";
+  return error && !(error instanceof OutdatedError) ? "error" : null;
+}
 
 function useWorkspaceValue() {
   const engine = useEngine();
@@ -183,6 +195,7 @@ function useWorkspaceValue() {
   const create = useMemo(() => ({ ...createState, show, hide }), [createState, show, hide]);
   const retrySync = useCallback(async () => {
     await engine.start();
+    engine.unblock();
     await engine.pull();
   }, [engine]);
   return {
@@ -198,7 +211,10 @@ function useWorkspaceValue() {
     report,
     unread,
     pending: status.pending,
+    rejected: status.rejected.length,
     offline: !status.online,
+    syncProblem: syncProblem(status),
+    syncError: status.lastError,
     retrySync,
     reload: retrySync,
     run,

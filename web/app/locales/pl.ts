@@ -604,6 +604,8 @@ export const pl = {
   "action.saving": "Zapisywanie…",
   "action.saved": "Zapisano",
   "action.saveFailed": "Nie zapisano",
+  "action.queued": "Czeka na synchronizację",
+  "action.notSent": "Nie można wysłać",
   "action.openCalendar": "Otwórz kalendarz",
   "action.reload": "Odśwież stronę",
   "action.copy": "Kopiuj",
@@ -615,6 +617,9 @@ export const pl = {
   "error.refresh": "Zmiana została zapisana, ale nie udało się wczytać najnowszych danych.",
   "error.offline": "Brak połączenia z serwerem. Widzisz ostatnio wczytane dane.",
   "error.offlineRetry": "Spróbuj teraz",
+  "error.syncBlocked":
+    "Serwer odrzucił część zmian, więc nie można ich wysłać. Spróbuj ponownie lub odśwież stronę, jeśli problem się powtarza.",
+  "error.syncFailed": "Synchronizacja zatrzymana: {{message}}",
 
   "error.network": "Nie udało się połączyć z serwerem. Sprawdź połączenie i spróbuj ponownie.",
   "error.onlineRequired":
