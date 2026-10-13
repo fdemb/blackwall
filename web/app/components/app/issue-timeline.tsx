@@ -192,6 +192,7 @@ function EventItem({ event, entries }: { event: Activity; entries: Map<Id, TimeE
         <span className="font-medium text-foreground">
           {member(event.actor)?.display_name ?? t("person.unknown")}
         </span>{" "}
+        {event.via && <>{t("timeline.via", { name: event.via.name })} </>}
         {label}{" "}
         <time
           dateTime={event.at}
@@ -259,6 +260,11 @@ function CommentItem({ comment: c }: { comment: Comment }) {
           >
             {relativeTime(c.created_at, lang)}
           </time>
+          {c.via && (
+            <span className="truncate text-sm text-muted-foreground">
+              {t("timeline.via", { name: c.via.name })}
+            </span>
+          )}
           {c.edited_at && (
             <span className="shrink-0 text-sm text-muted-foreground">· {t("comment.edited")}</span>
           )}

@@ -118,6 +118,7 @@ impl Transfer {
             entity_id: None,
             at: now,
             fields: vec![],
+            via: None,
         });
 
         candidate.validate_imported()?;

@@ -243,6 +243,7 @@ export const pl = {
   "attachments.uploading": "Przesyłanie…",
   "estimate.unit": "pkt",
   "time.deleteTitle": "Usunąć ten wpis czasu?",
+  "timeline.via": "przez {{name}}",
   "timeline.create_issue": "utworzono zadanie",
   "timeline.update_issue": "zaktualizowano zadanie",
   "timeline.changed": "zmieniono: {{fields}}",
@@ -862,7 +863,7 @@ export const pl = {
     "Przychodzące: wyślij odnośnik źródłowy metodą POST na powyższy adres. Podpisz surową treść tym samym sekretem.",
   "account.tokens": "Tokeny API",
   "tokens.sub":
-    "Osobiste tokeny dostępu do API Blackwall i serwera MCP. Token działa w Twoim imieniu, tylko do odczytu albo do odczytu i zapisu, i może tylko to, na co pozwala Twoja rola.",
+    "Osobiste tokeny dostępu do API Blackwall i serwera MCP. Token działa w Twoim imieniu i może tylko to, na co pozwala Twoja rola. Przy wszystkim, co zapisze, widać jego nazwę obok Twojej.",
   "tokens.add": "Utwórz token",
   "tokens.create": "Utwórz token",
   "tokens.emptyTitle": "Brak tokenów API",
@@ -870,7 +871,10 @@ export const pl = {
   "tokens.namePlaceholder": "Potok CI…",
   "tokens.access": "Dostęp",
   "tokens.read": "Tylko odczyt",
+  "tokens.comment": "Odczyt i komentarze",
   "tokens.write": "Odczyt i zapis",
+  "tokens.nameHint":
+    "Widoczna obok Twojego imienia przy wszystkim, co token zapisze, np. Claude Code.",
   "tokens.scope": "Przestrzenie robocze",
   "tokens.scopeOnly": "Tylko {{name}}",
   "tokens.scopeThis": "Jedna przestrzeń",

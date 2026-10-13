@@ -25,7 +25,11 @@ const MAX_LIFETIME_DAYS: u32 = 366;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Access {
+    /// Reads only.
     Read,
+    /// Reads, and writes comments.
+    Comment,
+    /// Reads and writes.
     Write,
 }
 
@@ -75,6 +79,7 @@ pub struct TokenGrant {
 fn access_text(access: Access) -> &'static str {
     match access {
         Access::Read => "read",
+        Access::Comment => "comment",
         Access::Write => "write",
     }
 }
@@ -82,6 +87,7 @@ fn access_text(access: Access) -> &'static str {
 fn parse_access(text: &str) -> Result<Access> {
     match text {
         "read" => Ok(Access::Read),
+        "comment" => Ok(Access::Comment),
         "write" => Ok(Access::Write),
         _ => Err(Error::Internal(format!("unknown token access {text}"))),
     }

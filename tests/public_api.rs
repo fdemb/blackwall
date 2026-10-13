@@ -104,6 +104,12 @@ async fn token(app: &axum::Router, user: &Session, body: Value) -> String {
     secret
 }
 
+/// An issue list path filtered by `clauses`.
+fn filtered_path(base: &str, clauses: Value) -> String {
+    let query = serde_urlencoded::to_string([("where", clauses.to_string())]).unwrap();
+    format!("{base}/issues?{query}")
+}
+
 fn etag(reply: &Reply) -> String {
     reply.headers["etag"].to_str().unwrap().to_owned()
 }
@@ -275,16 +281,47 @@ async fn public_api_on_postgres() {
         &format!("{base}/issues"),
         &write,
         Some(json!({
-            "team_id": team_id,
+            "team": "PLA",
             "title": "Rotate certificates",
-            "assignee": member.profile.id,
-            "labels": [label_id],
-            "project_id": project_id,
+            "assignee": member.profile.email,
+            "labels": ["Bug"],
+            "project": project_id,
             "priority": "high"
         })),
     )
     .await;
     assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    // Responses name what the issue points at, and say which token created it.
+    assert_eq!(created.body["team"]["name"], "Platform");
+    assert_eq!(created.body["stage"]["id"], json!(first_stage));
+    assert_eq!(created.body["assignee"]["display_name"], "member");
+    assert_eq!(created.body["labels"][0]["name"], "bug");
+    assert_eq!(created.body["project"]["name"], "Launch");
+    assert_eq!(created.body["created_by"]["id"], json!(owner.profile.id));
+    assert_eq!(created.body["created_via"]["kind"], "api");
+    assert_eq!(created.body["created_via"]["name"], "CI");
+    let nameless = call(
+        &app,
+        "POST",
+        &format!("{base}/issues"),
+        &write,
+        Some(json!({"team": "Platform", "title": "x", "stage": "Doing"})),
+    )
+    .await;
+    assert_eq!(
+        nameless.status,
+        StatusCode::BAD_REQUEST,
+        "{}",
+        nameless.body
+    );
+    assert!(
+        nameless.body["error"]
+            .as_str()
+            .unwrap()
+            .contains("Code review"),
+        "{}",
+        nameless.body
+    );
     let issue_id = created.body["id"].as_str().unwrap().to_owned();
     let key = created.body["key"].as_str().unwrap().to_owned();
     assert_eq!(key, "PLA-1");
@@ -314,15 +351,39 @@ async fn public_api_on_postgres() {
         "PATCH",
         &format!("{base}/issues/{key}"),
         Some(&write),
-        Some(json!({"assignee": null, "title": "Rotate TLS certificates", "stage_id": stage_id})),
+        Some(json!({"assignee": null, "title": "Rotate TLS certificates", "stage": "code review"})),
         &[("If-Match", &version)],
     )
     .await;
     assert_eq!(patched.status, StatusCode::OK, "{}", patched.body);
     assert_eq!(patched.body["assignee"], Value::Null);
     assert_eq!(patched.body["title"], "Rotate TLS certificates");
-    assert_eq!(patched.body["labels"], json!([label_id]));
+    assert_eq!(patched.body["stage"]["id"], json!(stage_id));
+    assert_eq!(patched.body["labels"][0]["id"], json!(label_id));
     assert_ne!(etag(&patched), version);
+    let unlabeled = call(
+        &app,
+        "PATCH",
+        &format!("{base}/issues/{key}"),
+        &write,
+        Some(json!({"remove_labels": ["bug"], "assignee": "me"})),
+    )
+    .await;
+    assert_eq!(unlabeled.body["labels"], json!([]), "{}", unlabeled.body);
+    assert_eq!(unlabeled.body["assignee"]["id"], json!(owner.profile.id));
+    let relabeled = call(
+        &app,
+        "PATCH",
+        &format!("{base}/issues/{key}"),
+        &write,
+        Some(json!({"add_labels": [label_id]})),
+    )
+    .await;
+    assert_eq!(
+        relabeled.body["labels"][0]["name"], "bug",
+        "{}",
+        relabeled.body
+    );
 
     let stale = send(
         &app,
@@ -357,7 +418,7 @@ async fn public_api_on_postgres() {
             "POST",
             &format!("{base}/issues"),
             Some(&write),
-            Some(json!({"team_id": team_id, "title": "Once"})),
+            Some(json!({"team": team_id, "title": "Once"})),
             &[("Idempotency-Key", "create-once")],
         )
         .await;
@@ -373,7 +434,7 @@ async fn public_api_on_postgres() {
             "POST",
             &format!("{base}/issues"),
             &write,
-            Some(json!({"team_id": team_id, "title": title})),
+            Some(json!({"team": team_id, "title": title})),
         )
         .await;
     }
@@ -387,6 +448,7 @@ async fn public_api_on_postgres() {
             }
             let page = call(&app, "GET", &path, &read, None).await;
             assert_eq!(page.status, StatusCode::OK, "{}", page.body);
+            assert_eq!(page.body["total"], 4);
             seen.extend(
                 page.body["data"]
                     .as_array()
@@ -415,6 +477,38 @@ async fn public_api_on_postgres() {
     .await;
     assert_eq!(filtered.status, StatusCode::OK, "{}", filtered.body);
     assert_eq!(filtered.body["data"].as_array().unwrap().len(), 1);
+    // Filters take names, keys and emails as well as ids.
+    let by_name = call(
+        &app,
+        "GET",
+        &filtered_path(
+            &base,
+            json!([
+                {"field": "stage", "op": "is", "values": ["Code Review"]},
+                {"field": "assignee", "op": "is", "values": ["me"]},
+                {"field": "label", "op": "is", "values": ["bug"]},
+                {"field": "team", "op": "is", "values": ["pla"]}
+            ]),
+        ),
+        &read,
+        None,
+    )
+    .await;
+    assert_eq!(by_name.status, StatusCode::OK, "{}", by_name.body);
+    assert_eq!(by_name.body["total"], 1, "{}", by_name.body);
+    assert_eq!(by_name.body["data"][0]["key"], json!(key));
+    let unknown_label = call(
+        &app,
+        "GET",
+        &filtered_path(
+            &base,
+            json!([{"field": "label", "op": "is", "values": ["nope"]}]),
+        ),
+        &read,
+        None,
+    )
+    .await;
+    assert_eq!(unknown_label.status, StatusCode::BAD_REQUEST);
     let bad_cursor = call(
         &app,
         "GET",
@@ -435,6 +529,8 @@ async fn public_api_on_postgres() {
     )
     .await;
     assert_eq!(comment.status, StatusCode::CREATED, "{}", comment.body);
+    assert_eq!(comment.body["author"]["display_name"], "owner");
+    assert_eq!(comment.body["via"]["name"], "CI");
     let comment_id = comment.body["id"].as_str().unwrap().to_owned();
     let edited = call(
         &app,
@@ -454,6 +550,56 @@ async fn public_api_on_postgres() {
     )
     .await;
     assert_eq!(thread.body["data"].as_array().unwrap().len(), 1);
+    let history = call(
+        &app,
+        "GET",
+        &format!("{base}/issues/{key}/activity"),
+        &read,
+        None,
+    )
+    .await;
+    assert_eq!(history.status, StatusCode::OK, "{}", history.body);
+    let entries = history.body["data"].as_array().unwrap();
+    assert!(entries.iter().any(|a| a["action"] == "create_issue"));
+    assert!(
+        entries
+            .iter()
+            .all(|a| a["via"]["name"] == "CI" && a["actor"]["display_name"] == "owner"),
+        "{}",
+        history.body
+    );
+
+    // Comment tokens write comments and nothing else.
+    let commenter = token(&app, &owner, json!({"name":"Reviewer","access":"comment"})).await;
+    let remark = call(
+        &app,
+        "POST",
+        &format!("{base}/issues/{key}/comments"),
+        &commenter,
+        Some(json!({"body":"Looks good", "mentions": [member.profile.email]})),
+    )
+    .await;
+    assert_eq!(remark.status, StatusCode::CREATED, "{}", remark.body);
+    assert_eq!(remark.body["mentions"][0]["display_name"], "member");
+    let remark_id = remark.body["id"].as_str().unwrap().to_owned();
+    let meddling = call(
+        &app,
+        "PATCH",
+        &format!("{base}/issues/{key}"),
+        &commenter,
+        Some(json!({"title":"Nope"})),
+    )
+    .await;
+    assert_eq!(meddling.status, StatusCode::FORBIDDEN, "{}", meddling.body);
+    let unsaid = call(
+        &app,
+        "DELETE",
+        &format!("{base}/comments/{remark_id}"),
+        &commenter,
+        None,
+    )
+    .await;
+    assert_eq!(unsaid.status, StatusCode::NO_CONTENT);
 
     // Trash and restore.
     let deleted = call(
@@ -569,6 +715,8 @@ async fn public_api_on_postgres() {
     assert_eq!(event["entity_type"], "comment");
     assert_eq!(event["workspace_id"], json!(ws));
     assert_eq!(event["actor_id"], json!(owner.profile.id));
+    assert_eq!(event["via"]["kind"], "api");
+    assert_eq!(event["via"]["name"], "CI");
     assert!(event.get("activity").is_none());
 
     let widened = call(
@@ -613,6 +761,20 @@ async fn public_api_on_postgres() {
         .collect();
     assert!(names.contains(&"search_issues"));
     assert!(!names.contains(&"create_issue"));
+    assert!(!names.contains(&"add_comment"));
+    let comment_tools = mcp(
+        commenter.clone(),
+        json!({"jsonrpc":"2.0","id":2,"method":"tools/list"}),
+    )
+    .await;
+    let comment_tools = comment_tools.body["result"]["tools"].as_array().unwrap();
+    assert!(comment_tools.iter().any(|t| t["name"] == "add_comment"));
+    assert!(!comment_tools.iter().any(|t| t["name"] == "update_issue"));
+    assert!(
+        comment_tools
+            .iter()
+            .any(|t| t["name"] == "delete_comment" && t["annotations"]["destructiveHint"] == true)
+    );
 
     // The read token reaches one workspace, so workspace_id may be omitted.
     let found = mcp(
@@ -633,7 +795,7 @@ async fn public_api_on_postgres() {
 
     let refused = mcp(
         read.clone(),
-        json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"create_issue","arguments":{"team_id":team_id,"title":"x"}}}),
+        json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"create_issue","arguments":{"team":"PLA","title":"x"}}}),
     )
     .await;
     assert_eq!(refused.body["result"]["isError"], true);
@@ -648,13 +810,18 @@ async fn public_api_on_postgres() {
     let made = mcp(
         write.clone(),
         json!({"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"create_issue","arguments":{
-            "workspace_id": ws, "team_id": team_id, "title": "From an agent", "parent_id": key
+            "workspace_id": ws, "team": "Platform", "title": "From an agent", "parent": key,
+            "stage": "Code review", "labels": ["bug"], "assignee": "me"
         }}}),
     )
     .await;
     let made = &made.body["result"]["structuredContent"]["issue"];
     assert_eq!(made["title"], "From an agent", "{made}");
-    assert_eq!(made["parent_id"], json!(issue_id));
+    assert_eq!(made["parent"]["id"], json!(issue_id));
+    assert_eq!(made["parent"]["key"], json!(key));
+    assert_eq!(made["stage"]["name"], "Code review");
+    assert_eq!(made["created_via"]["kind"], "mcp");
+    assert_eq!(made["created_via"]["name"], "CI");
 
     let searched = mcp(
         write.clone(),
@@ -668,20 +835,39 @@ async fn public_api_on_postgres() {
         .unwrap()
         .clone();
     assert_eq!(hits.len(), 1, "{}", searched.body);
-    assert!(hits[0].get("description").is_none());
+    assert_eq!(searched.body["result"]["structuredContent"]["total"], 1);
+    assert_eq!(hits[0]["stage"]["name"], "Code review");
+    assert_eq!(hits[0]["labels"], json!(["bug"]));
+    assert_eq!(hits[0]["parent"], json!(key));
+    assert_eq!(hits[0]["description"], "");
+    let mine = mcp(
+        write.clone(),
+        json!({"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"search_issues","arguments":{
+            "workspace_id": ws,
+            "where": [{"field": "stage", "op": "is", "values": ["code review"]}, {"field": "parent", "op": "is", "values": [key]}]
+        }}}),
+    )
+    .await;
+    assert_eq!(
+        mine.body["result"]["structuredContent"]["total"], 1,
+        "{}",
+        mine.body
+    );
 
     let overview = mcp(
         write.clone(),
         json!({"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"get_workspace_overview","arguments":{"workspace_id":ws}}}),
     )
     .await;
+    let overview = &overview.body["result"]["structuredContent"];
     assert_eq!(
-        overview.body["result"]["structuredContent"]["members"]
-            .as_array()
-            .unwrap()
-            .len(),
-        2
+        overview["members"].as_array().unwrap().len(),
+        2,
+        "{overview}"
     );
+    assert_eq!(overview["me"]["id"], json!(owner.profile.id));
+    assert_eq!(overview["teams"][0]["key"], "PLA");
+    assert_eq!(overview["projects"][0]["teams"], json!(["PLA"]));
     let unknown = mcp(
         write.clone(),
         json!({"jsonrpc":"2.0","id":9,"method":"resources/list"}),
@@ -700,7 +886,7 @@ async fn public_api_on_postgres() {
     .await;
     assert_eq!(removed.status, StatusCode::NO_CONTENT, "{}", removed.body);
     let moved = call(&app, "GET", &format!("{base}/issues/{key}"), &read, None).await;
-    assert_eq!(moved.body["stage_id"], json!(first_stage));
+    assert_eq!(moved.body["stage"]["id"], json!(first_stage));
 
     // Browsers may call the API from any origin, but never with cookies.
     let preflight = send(
