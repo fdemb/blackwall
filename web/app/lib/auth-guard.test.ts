@@ -27,7 +27,7 @@ async function reload(fetch: (path: string) => Promise<Response>) {
   };
 }
 const json = (body: unknown, status = 200) => Promise.resolve(Response.json(body, { status }));
-const online = (path: string) => json(path === "/api/me" ? profile : list);
+const online = (path: string) => json(path === "/internal-api/me" ? profile : list);
 const offline = () => Promise.reject(new TypeError("Failed to fetch"));
 
 describe("offline startup", () => {

@@ -210,6 +210,18 @@ async fn drain_poke(body: &mut axum::body::Body) {
     );
 }
 
+/// Swallows pokes for changes committed before the stream subscribed. Their
+/// notifications can reach the listener after the initial poke.
+async fn settle(body: &mut axum::body::Body) {
+    while let Some(bytes) = next_data(body, Duration::from_millis(500)).await {
+        assert!(
+            is_poke(&bytes),
+            "expected poke, got {:?}",
+            String::from_utf8_lossy(&bytes)
+        );
+    }
+}
+
 async fn expect_poke(body: &mut axum::body::Body, timeout: Duration) {
     let bytes = next_data(body, timeout).await.expect("expected poke");
     assert!(
@@ -284,6 +296,8 @@ async fn events_poke_workspace_isolation() {
     .into_body();
     drain_poke(&mut body_a).await;
     drain_poke(&mut body_b).await;
+    settle(&mut body_a).await;
+    settle(&mut body_b).await;
 
     created(
         &app,
@@ -319,6 +333,7 @@ async fn events_rollback_produces_no_poke() {
     .await
     .into_body();
     drain_poke(&mut body).await;
+    settle(&mut body).await;
 
     let mut tx = store.pool.begin().await.unwrap();
     let changed = Uuid::new_v4();
@@ -355,6 +370,7 @@ async fn events_single_transaction_coalesces_to_one_poke() {
     .await
     .into_body();
     drain_poke(&mut body).await;
+    settle(&mut body).await;
 
     // Many changes in one transaction: PostgreSQL collapses the identical
     // notifications, so exactly one poke follows.
