@@ -24,13 +24,12 @@ import { Tip } from "~/components/ui/tooltip";
 import { IssuePicker } from "~/components/app/issue-picker";
 import { AssigneePicker, PriorityPicker, StagePicker } from "~/components/app/pickers";
 import { EmptyState, Page, TeamCrumb } from "~/components/app/page";
-import { issueKey } from "~/lib/format";
 import { IssueKey } from "~/components/app/issue-key";
 import { isDoneOnly } from "~/lib/filters";
 import { useDocumentTitle } from "~/lib/title";
 import { teamPath } from "~/lib/last-view";
 import { useI18n } from "~/lib/i18n";
-import { useIssueDetail, type IssueDetail } from "~/lib/queries";
+import { useIssueDetail, useIssueRef, type IssueDetail } from "~/lib/queries";
 import { QueryStatus } from "~/components/app/query-status";
 import { useWorkspace } from "~/lib/workspace";
 import { cn } from "~/lib/utils";
@@ -50,17 +49,25 @@ import {
 import { Timeline } from "~/components/app/issue-timeline";
 import { revealOnHover } from "~/components/app/issue-section";
 
+/**
+ * The URL names the issue by its id until the server confirms its number, then by its key. Once
+ * the issue is confirmed, an id URL, or a key typed in another case, is replaced with the key.
+ */
 export default function IssuePage() {
-  const { issueId, ws: wsId } = useParams();
+  const { issueKey: issueRef = "" } = useParams();
   const { ws } = useWorkspace();
   const location = useLocation();
-  const inInbox = location.pathname.startsWith(`/${ws.id}/inbox/`);
-  const detail = useIssueDetail(issueId!);
+  const inInbox = location.pathname.startsWith(`/${ws.slug}/inbox/`);
+  const detail = useIssueDetail(useIssueRef(issueRef) ?? "");
   const issue = detail.issue;
+  if (issue && issue.ref !== issueRef)
+    return (
+      <Navigate to={location.pathname.replace(/[^/]+$/, issue.ref) + location.search} replace />
+    );
   if (detail.missing)
     return (
       <Navigate
-        to={inInbox ? `/${ws.id}/inbox${location.search}` : `/${ws.id}/my-issues`}
+        to={inInbox ? `/${ws.slug}/inbox${location.search}` : `/${ws.slug}/my-issues`}
         replace
       />
     );
@@ -70,25 +77,26 @@ export default function IssuePage() {
         <QueryStatus query={{ ...detail, hasMore: false, loadMore: detail.retry }} />
       </Page>
     );
-  if (issue.deleted_at) return <RecoverableIssue issue={issue} wsId={wsId!} state="deleted" />;
-  if (issue.archived_at) return <RecoverableIssue issue={issue} wsId={wsId!} state="archived" />;
+  if (issue.deleted_at) return <RecoverableIssue issue={issue} wsSlug={ws.slug} state="deleted" />;
+  if (issue.archived_at)
+    return <RecoverableIssue issue={issue} wsSlug={ws.slug} state="archived" />;
   return <IssueView key={issue.id} issue={issue} detail={detail} />;
 }
 
 /** A link to an archived or trashed issue says which issue it was and offers the way back. */
 function RecoverableIssue({
   issue,
-  wsId,
+  wsSlug,
   state,
 }: {
   issue: Issue;
-  wsId: string;
+  wsSlug: string;
   state: "archived" | "deleted";
 }) {
   const { t } = useI18n();
   const { run, canWrite: workspaceCanWrite } = useWorkspace();
   const toast = useToast();
-  useDocumentTitle(`${issueKey(issue.number)} ${issue.title}`);
+  useDocumentTitle(`${issue.key} ${issue.title}`);
   const archived = state === "archived";
   // Imported issues can be unarchived but not restored from the trash.
   const canWrite = workspaceCanWrite && (archived || issueCapabilities(issue).edit);
@@ -101,7 +109,7 @@ function RecoverableIssue({
     <Page>
       <EmptyState
         icon={archived ? <Archive /> : <Trash2 />}
-        title={`${issueKey(issue.number)} ${issue.title}`}
+        title={`${issue.key} ${issue.title}`}
         description={`${t(archived ? "issue.archived" : "issue.deleted")}. ${subtitle}`.trim()}
         action={
           <div className="flex items-center gap-3">
@@ -113,7 +121,7 @@ function RecoverableIssue({
             )}
             <Link
               className="text-primary hover:underline"
-              to={`/${wsId}/${archived ? "archive" : "trash"}`}
+              to={`/${wsSlug}/${archived ? "archive" : "trash"}`}
             >
               {t(archived ? "nav.archive" : "nav.trash")}
             </Link>
@@ -131,9 +139,9 @@ function IssueView({ issue, detail }: { issue: Issue; detail: IssueDetail }) {
   const toast = useToast();
   const { ws, me, run, team, canWrite: workspaceCanWrite } = useWorkspace();
   const canWrite = workspaceCanWrite && issueCapabilities(issue).edit;
-  const inInbox = location.pathname.startsWith(`/${ws.id}/inbox/`);
+  const inInbox = location.pathname.startsWith(`/${ws.slug}/inbox/`);
   const tm = team(issue.team_id);
-  useDocumentTitle(`${issueKey(issue.number)} ${issue.title}`);
+  useDocumentTitle(`${issue.key} ${issue.title}`);
   const patch = useIssuePatch(issue);
   const following = issue.followers.includes(me);
   const subs = detail.children.filter((i) => !i.deleted_at);
@@ -147,9 +155,9 @@ function IssueView({ issue, detail }: { issue: Issue; detail: IssueDetail }) {
   // Go back to wherever the issue was opened from. A fresh tab has no history, so use the team list.
   const goBack = () =>
     inInbox
-      ? nav(`/${ws.id}/inbox${location.search}`, { preventScrollReset: true })
+      ? nav(`/${ws.slug}/inbox${location.search}`, { preventScrollReset: true })
       : location.key === "default"
-        ? nav(teamPath(ws.id, issue.team_id))
+        ? nav(teamPath(ws.slug, tm?.key ?? ""))
         : nav(-1);
 
   return (
@@ -162,14 +170,14 @@ function IssueView({ issue, detail }: { issue: Issue; detail: IssueDetail }) {
           <div className="flex min-w-0 items-center gap-1.5">
             {tm && (
               <>
-                <TeamCrumb team={tm} wsId={ws.id} />
+                <TeamCrumb team={tm} wsSlug={ws.slug} />
                 <ChevronRight
                   aria-hidden="true"
                   className="size-3.5 shrink-0 text-muted-foreground/60"
                 />
               </>
             )}
-            <IssueKey number={issue.number} className="font-medium" />
+            <IssueKey value={issue.key} className="font-medium" />
           </div>
           <div className="ml-auto flex items-center gap-1">
             <SaveStatus />
@@ -199,7 +207,7 @@ function IssueView({ issue, detail }: { issue: Issue; detail: IssueDetail }) {
         <div className="min-h-0 flex-1 overflow-y-auto">
           <div className="mx-auto w-full max-w-[46rem] px-5 py-6 @min-[48rem]/issue:px-10 @min-[48rem]/issue:py-10">
             <h1 className="sr-only">
-              {t("issue.titleHeading", { key: issueKey(issue.number), title: issue.title })}
+              {t("issue.titleHeading", { key: issue.key, title: issue.title })}
             </h1>
             <OpenProjectNotice issue={issue} />
             {parent && (
@@ -402,10 +410,10 @@ function ParentLink({
   return (
     <div className="group mb-2 flex items-center gap-1 text-sm text-muted-foreground">
       <Link
-        to={`/${ws.id}/issue/${parent.id}`}
+        to={`/${ws.slug}/issue/${parent.ref}`}
         className="inline-flex min-w-0 items-center gap-1.5 rounded-md hover:text-foreground"
       >
-        <IssueKey number={parent.number} />
+        <IssueKey value={parent.key} />
         <span className="truncate">{parent.title}</span>
       </Link>
       {canWrite && (

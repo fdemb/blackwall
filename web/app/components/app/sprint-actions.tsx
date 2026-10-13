@@ -172,19 +172,11 @@ export function SprintForm({
   const [name, setName] = useState(sprint?.name ?? "");
   const [goal, setGoal] = useState(sprint?.goal ?? "");
   const [start, setStart] = useState<string | null>(sprint?.starts_at ?? new Date().toISOString());
-  const [end, setEnd] = useState<string | null>(
-    sprint?.ends_at ??
-      (start ? new Date(new Date(start).getTime() + 14 * 86400000).toISOString() : null),
-  );
+  const [end, setEnd] = useState<string | null>(() => defaultSprintEnd(sprint, start));
   const { pending, error, guard } = usePending();
   const reversed = Boolean(start && end && new Date(end) < new Date(start));
   const invalid = !name.trim() || !start || !end || reversed;
-  useDialogDirty(
-    name !== (sprint?.name ?? "") ||
-      goal !== (sprint?.goal ?? "") ||
-      start !== (sprint?.starts_at ?? start) ||
-      end !== (sprint?.ends_at ?? end),
-  );
+  useDialogDirty(isSprintDirty(sprint, { name, goal, start, end }));
   return (
     <Form
       className="flex flex-col gap-4"
@@ -250,6 +242,25 @@ export function SprintForm({
         </Button>
       </div>
     </Form>
+  );
+}
+
+function defaultSprintEnd(sprint: Sprint | null, start: string | null): string | null {
+  return (
+    sprint?.ends_at ??
+    (start ? new Date(new Date(start).getTime() + 14 * 86400000).toISOString() : null)
+  );
+}
+
+function isSprintDirty(
+  sprint: Sprint | null,
+  draft: { name: string; goal: string; start: string | null; end: string | null },
+): boolean {
+  return (
+    draft.name !== (sprint?.name ?? "") ||
+    draft.goal !== (sprint?.goal ?? "") ||
+    draft.start !== (sprint?.starts_at ?? draft.start) ||
+    draft.end !== (sprint?.ends_at ?? draft.end)
   );
 }
 

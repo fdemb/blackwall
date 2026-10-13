@@ -45,3 +45,6 @@ incremental = false
 [profile.test]
 debug = 0
 incremental = false
+
+[lints.clippy]
+cognitive_complexity = "warn"

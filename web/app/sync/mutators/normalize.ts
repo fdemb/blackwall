@@ -86,7 +86,13 @@ const id: Fields = { id: required };
 // listed too, so unknown keys are ignored at every object boundary, as Serde
 // does. default_stage_ids is Option<Vec<Uuid>> with the default None.
 const COMMAND_FIELDS: Record<Command["type"] | "add_attachment" | "attach_comment_file", Fields> = {
-  create_team: { id: option, name: required, members: defaulted([]), default_stage_ids: option },
+  create_team: {
+    id: option,
+    name: required,
+    key: required,
+    members: defaulted([]),
+    default_stage_ids: option,
+  },
   set_team_members: { id: required, members: required },
   set_team_archive: {
     id: required,

@@ -76,7 +76,7 @@ async function fixture({
     serverSchema: SCHEMA,
     entities: ["workspace", "members", "teams", "issues", "notifications", "time_entries"],
     records: {
-      workspace: [{ id: "workspace", name: "Replica workspace", version: 1 }],
+      workspace: [{ id: "workspace", name: "Replica workspace", slug: "workspace", version: 1 }],
       members: [
         {
           id: profile.id,
@@ -402,7 +402,9 @@ describe("workspace React integration without a DOM", () => {
             element={
               <Outlet
                 context={{
-                  workspaces: [{ id: "workspace", name: "Replica workspace", version: 1 }],
+                  workspaces: [
+                    { id: "workspace", name: "Replica workspace", slug: "workspace", version: 1 },
+                  ],
                 }}
               />
             }
@@ -414,7 +416,7 @@ describe("workspace React integration without a DOM", () => {
     );
     expect(html).toContain("Replica workspace");
     expect(html).toContain("Queued issue");
-    expect(html).toContain("BW-42");
+    expect(html).toContain("TEAM-42");
     expect(html).toContain("Waiting to sync");
     expect(html).toContain("lucide-wifi-off");
     expect(html).not.toContain("Load more");

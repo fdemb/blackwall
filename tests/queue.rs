@@ -138,7 +138,7 @@ async fn enqueue_and_notifications_are_transactional_and_deduplicated() {
     let mut listener = store.outbox.listen().await.unwrap();
 
     let mut tx = store.pool.begin().await.unwrap();
-    sqlx::query("INSERT INTO workspaces(id,name) VALUES($1,'rollback')")
+    sqlx::query("INSERT INTO workspaces(id,name,slug) VALUES($1,'rollback',$1::text)")
         .bind(Uuid::new_v4())
         .execute(&mut *tx)
         .await
@@ -449,7 +449,7 @@ async fn database_effects_and_completion_rollback_together() {
         .fetch_one(&mut *tx)
         .await
         .unwrap();
-    sqlx::query("INSERT INTO workspaces(id,name) VALUES($1,'atomic effect')")
+    sqlx::query("INSERT INTO workspaces(id,name,slug) VALUES($1,'atomic effect',$1::text)")
         .bind(workspace)
         .execute(&mut *tx)
         .await
@@ -467,7 +467,7 @@ async fn database_effects_and_completion_rollback_together() {
     );
 
     let mut tx = store.pool.begin().await.unwrap();
-    sqlx::query("INSERT INTO workspaces(id,name) VALUES($1,'atomic effect')")
+    sqlx::query("INSERT INTO workspaces(id,name,slug) VALUES($1,'atomic effect',$1::text)")
         .bind(workspace)
         .execute(&mut *tx)
         .await
@@ -924,13 +924,13 @@ async fn maintenance_backfills_more_than_one_archive_batch() {
     let workspace = Uuid::new_v4();
     let team = Uuid::new_v4();
     let stage = Uuid::new_v4();
-    sqlx::query("INSERT INTO workspaces(id,name) VALUES($1,'backfill')")
+    sqlx::query("INSERT INTO workspaces(id,name,slug) VALUES($1,'backfill',$1::text)")
         .bind(workspace)
         .execute(&store.pool)
         .await
         .unwrap();
     sqlx::query(
-        "INSERT INTO teams(id,workspace_id,name,archive_after_days) VALUES($1,$2,'t',NULL)",
+        "INSERT INTO teams(id,workspace_id,name,key,archive_after_days) VALUES($1,$2,'t','T',NULL)",
     )
     .bind(team)
     .bind(workspace)
@@ -1029,7 +1029,7 @@ async fn permanent_webhook_errors_fail_once_and_disabled_grants_skip_delivery() 
 
     let workspace = Uuid::new_v4();
     let integration = Uuid::new_v4();
-    sqlx::query("INSERT INTO workspaces(id,name) VALUES($1,'webhooks')")
+    sqlx::query("INSERT INTO workspaces(id,name,slug) VALUES($1,'webhooks',$1::text)")
         .bind(workspace)
         .execute(&store.pool)
         .await
@@ -1381,7 +1381,7 @@ async fn webhook_payload_omits_secret_and_follows_rotation() {
     let store = Store::connect(&db.url).await.unwrap();
     let workspace = Uuid::new_v4();
     let integration = Uuid::new_v4();
-    sqlx::query("INSERT INTO workspaces(id,name) VALUES($1,'webhook-secrets')")
+    sqlx::query("INSERT INTO workspaces(id,name,slug) VALUES($1,'webhook-secrets',$1::text)")
         .bind(workspace)
         .execute(&store.pool)
         .await

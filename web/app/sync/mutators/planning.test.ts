@@ -139,6 +139,7 @@ describe("create_team", () => {
     mutate(store, "create_team", {
       id: "team-new",
       name: "New",
+      key: "NEW",
       members: [MEMBER, ADMIN],
       default_stage_ids: STAGES_NEW,
     });
@@ -146,6 +147,7 @@ describe("create_team", () => {
       id: "team-new",
       version: 1,
       name: "New",
+      key: "NEW",
       members: [ADMIN, MEMBER],
       // The default stages are predicted from the client-chosen ids, in the
       // server's order; issue creates for the pending team resolve them.
@@ -176,6 +178,7 @@ describe("create_team", () => {
     mutate(store, "create_team", {
       id: "team-pending",
       name: "Pending",
+      key: "PEN",
       members: [],
       default_stage_ids: stages,
     });
@@ -190,7 +193,7 @@ describe("create_team", () => {
       openproject: null,
       id: "issue-pending",
       version: 1,
-      number: null,
+      number: 1,
       title: "P",
       description: "",
       team_id: "team-pending",
@@ -224,6 +227,7 @@ describe("create_team", () => {
     expectRecord(store, "issues", "issue-placed", {
       ...expected,
       id: "issue-placed",
+      number: 2,
       title: "Q",
       stage_id: "team-pending-active",
     });
@@ -231,7 +235,12 @@ describe("create_team", () => {
     store.setPending([...store.pending()]);
     expect(store.replayErrors().size).toBe(0);
     expectSame(store, once);
-    twice("create_team", { id: "team-pending", name: "Pending", default_stage_ids: stages });
+    twice("create_team", {
+      id: "team-pending",
+      name: "Pending",
+      key: "PEN",
+      default_stage_ids: stages,
+    });
   });
 
   it("keeps a stored never-archive setting on replay", () => {
@@ -245,6 +254,7 @@ describe("create_team", () => {
     mutate(store, "create_team", {
       id: "team-never",
       name: "Never",
+      key: "NEV",
       members: [],
       default_stage_ids: stages,
     });
@@ -260,6 +270,7 @@ describe("create_team", () => {
     const id = mutate(store, "create_team", {
       id: "team-never",
       name: "Never",
+      key: "NEV",
       members: [],
       default_stage_ids: stages,
     });
@@ -276,6 +287,7 @@ describe("create_team", () => {
     twice("create_team", {
       id: "team-new",
       name: "New",
+      key: "NEW",
       members: [MEMBER],
       default_stage_ids: STAGES_NEW,
     });
@@ -283,6 +295,7 @@ describe("create_team", () => {
     mutate(store, "create_team", {
       id: "team-new",
       name: "New",
+      key: "NEW",
       members: [MEMBER],
       default_stage_ids: STAGES_NEW,
     });
@@ -307,6 +320,7 @@ describe("create_team", () => {
     const id = mutate(store, "create_team", {
       id: "team-new",
       name: "New",
+      key: "NEW",
       members: [MEMBER],
       default_stage_ids: STAGES_NEW,
     });
@@ -317,14 +331,23 @@ describe("create_team", () => {
     ]);
   });
 
-  it("validates the name, members, stage ids and id", () => {
+  it("validates the name, key, members, stage ids and id", () => {
     const base = {
       id: "t",
       name: "N",
+      key: "N",
       members: [] as string[],
       default_stage_ids: ["s1", "s2", "s3", "s4"],
     };
     rejects("create_team", { ...base, name: "  " }, 400, "text must contain 1 to 200 bytes");
+    for (const key of ["", "ENGIN", "1AB", "eng", "E-1"])
+      rejects(
+        "create_team",
+        { ...base, key },
+        400,
+        "team key must be 1 to 4 uppercase letters or digits, starting with a letter",
+      );
+    rejects("create_team", { ...base, key: "TEAM" }, 409, "team key already exists");
     rejects("create_team", { ...base, members: [GHOST] }, 403, "permission denied");
     rejects(
       "create_team",
@@ -340,13 +363,13 @@ describe("create_team", () => {
     );
     rejects(
       "create_team",
-      { id: "t", name: "N", members: [] },
+      { id: "t", name: "N", key: "N", members: [] },
       400,
       "default_stage_ids is required",
     );
     rejects(
       "create_team",
-      { name: "N", members: [], default_stage_ids: base.default_stage_ids },
+      { name: "N", key: "N", members: [], default_stage_ids: base.default_stage_ids },
       400,
       "id is required",
     );
@@ -359,7 +382,13 @@ describe("create_team", () => {
   });
 
   it("requires owner or admin", () => {
-    const args = { id: "t", name: "N", members: [], default_stage_ids: ["s1", "s2", "s3", "s4"] };
+    const args = {
+      id: "t",
+      name: "N",
+      key: "N",
+      members: [],
+      default_stage_ids: ["s1", "s2", "s3", "s4"],
+    };
     rejects("create_team", args, 403, "permission denied", MEMBER);
     rejects("create_team", args, 403, "permission denied", VIEWER);
     rejects("create_team", args, 403, "permission denied", GHOST);

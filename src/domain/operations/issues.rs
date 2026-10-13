@@ -195,7 +195,14 @@ impl Workspace {
             subtask_completed: 0,
             version: 1,
             id,
-            number: self.issues.iter().map(|i| i.number).max().unwrap_or(0) + 1,
+            number: self
+                .issues
+                .iter()
+                .filter(|i| i.team_id == input.team_id)
+                .map(|i| i.number)
+                .max()
+                .unwrap_or(0)
+                + 1,
             title: input.title,
             description: input.description,
             team_id: input.team_id,

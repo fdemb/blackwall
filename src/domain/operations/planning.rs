@@ -13,9 +13,10 @@ impl Workspace {
             Command::CreateTeam {
                 id,
                 name,
+                key,
                 members,
                 default_stage_ids,
-            } => self.create_team(actor, id, name, members, default_stage_ids),
+            } => self.create_team(actor, id, name, key, members, default_stage_ids),
             Command::SetTeamMembers { id, members } => {
                 self.admin(actor)?;
                 for user in &members {
@@ -232,11 +233,16 @@ impl Workspace {
         actor: Uuid,
         id: Option<Uuid>,
         name: String,
+        key: String,
         members: Vec<Uuid>,
         default_stage_ids: Option<Vec<Uuid>>,
     ) -> Result<Uuid> {
         self.admin(actor)?;
         text(&name, 200)?;
+        super::super::validate_team_key(&key)?;
+        if self.teams.iter().any(|t| t.key == key) {
+            return Err(Error::Conflict("team key already exists".into()));
+        }
         for user in &members {
             self.member(*user)?;
         }
@@ -273,6 +279,7 @@ impl Workspace {
             version: 1,
             id,
             name,
+            key,
             members,
             stages,
             archive_after_days: super::super::default_archive_days(),

@@ -22,7 +22,7 @@ import { ConfirmDialog } from "./confirm";
 import { AssigneeMenu, DeadlineMenu, KeyButton, LabelLinks, PriorityMenu } from "./issue-menus";
 import { cn } from "~/lib/utils";
 import { PRIORITIES } from "~/lib/format";
-import { issueKeyLength } from "./issue-key";
+import { useIssueKeyWidth } from "./issue-key";
 import { stageOf, isDoneOnly } from "~/lib/filters";
 import { issueCapabilities } from "~/lib/ownership";
 import { useI18n } from "~/lib/i18n";
@@ -218,7 +218,7 @@ function useIssueGrid({
   }) {
   const { t } = useI18n();
   const groups = useGroups(issues, groupBy);
-  const keyLength = issueKeyLength(issues);
+  const keyWidth = useIssueKeyWidth(issues);
   const [selected, setSelected] = useState<Set<Id>>(() => new Set());
   const { canWrite } = useWorkspace();
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
@@ -283,7 +283,7 @@ function useIssueGrid({
       )}
     >
       {groupBy === "none" ? (
-        <IssueRows items={issues} showTeam={showTeam} canSelect={canSelect} keyLength={keyLength} />
+        <IssueRows items={issues} showTeam={showTeam} canSelect={canSelect} keyWidth={keyWidth} />
       ) : (
         groups.map((g) => {
           const isCollapsed = collapsed.has(g.id);
@@ -310,7 +310,7 @@ function useIssueGrid({
               </GridListHeader>
               <IssueRows
                 items={isCollapsed ? [] : g.items}
-                keyLength={keyLength}
+                keyWidth={keyWidth}
                 showTeam={showTeam}
                 canSelect={canSelect}
               />
@@ -335,17 +335,17 @@ function IssueRows({
   items,
   showTeam,
   canSelect,
-  keyLength,
+  keyWidth,
 }: {
   items: Issue[];
   showTeam?: boolean;
   canSelect?: boolean;
-  keyLength: number;
+  keyWidth: string | undefined;
 }) {
   return (
-    <Collection items={items} dependencies={[keyLength, showTeam, canSelect]}>
+    <Collection items={items} dependencies={[keyWidth, showTeam, canSelect]}>
       {(issue) => (
-        <IssueRow issue={issue} showTeam={showTeam} canSelect={canSelect} keyLength={keyLength} />
+        <IssueRow issue={issue} showTeam={showTeam} canSelect={canSelect} keyWidth={keyWidth} />
       )}
     </Collection>
   );
@@ -355,12 +355,12 @@ export function IssueRow({
   issue,
   showTeam,
   canSelect,
-  keyLength,
+  keyWidth,
 }: {
   issue: Issue;
   showTeam?: boolean;
   canSelect?: boolean;
-  keyLength?: number;
+  keyWidth?: string;
 }) {
   const { ws, canWrite } = useWorkspace();
   const stage = stageOf(ws, issue);
@@ -370,12 +370,12 @@ export function IssueRow({
     <GridListItem
       id={issue.id}
       textValue={issue.title}
-      href={`/${ws.id}/issue/${issue.id}`}
+      href={`/${ws.slug}/issue/${issue.ref}`}
       className="group flex h-10 cursor-default items-center gap-2.5 border-b border-border/70 px-4  outline-none hover:bg-muted/60 focus-visible:bg-muted/60 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/60 selected:bg-accent/60"
     >
       {canSelect && issueCapabilities(issue).edit && <RowSelectBox />}
       <PriorityMenu issue={issue} isDisabled={locked} className="-ml-1" />
-      <KeyButton issue={issue} length={keyLength} />
+      <KeyButton issue={issue} width={keyWidth} />
       {stage && (
         <span title={stage.name}>
           <StageIcon kind={stage.kind} />
@@ -393,7 +393,7 @@ export function IssueRow({
       {showTeam && <TeamCell issue={issue} />}
       {project && (
         <Link
-          href={`/${ws.id}/projects/${project.id}`}
+          href={`/${ws.slug}/projects/${project.id}`}
           className="hidden max-w-32 cursor-default truncate rounded-sm text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/60 xl:block"
         >
           {project.name}

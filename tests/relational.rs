@@ -93,7 +93,7 @@ async fn workspace(app: &axum::Router, owner: &Session, name: &str) -> Uuid {
         owner,
         "POST",
         "/internal-api/workspaces",
-        Some(json!({"name": name})),
+        Some(json!({"name": name, "slug": Uuid::new_v4().to_string()})),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{result}");
@@ -119,7 +119,7 @@ async fn independent_writes_stale_versions_atomic_bulk_and_idempotency() {
         &app,
         &owner,
         ws,
-        json!({"type": "create_team", "name": "Team", "members": [owner.profile.id]}),
+        json!({"type": "create_team", "name": "Team", "key": "TEA", "members": [owner.profile.id]}),
     )
     .await;
     let first = created(
@@ -251,19 +251,37 @@ async fn parallel_number_allocation_and_database_tenant_constraints() {
         &app,
         &owner,
         ws,
-        json!({"type": "create_team", "name": "Team", "members": []}),
+        json!({"type": "create_team", "name": "Team", "key": "TEA", "members": []}),
     )
     .await;
     let foreign_team = created(
         &app,
         &owner,
         other,
-        json!({"type": "create_team", "name": "Foreign", "members": []}),
+        json!({"type": "create_team", "name": "Foreign", "key": "FOR", "members": []}),
     )
     .await;
+    let second = created(
+        &app,
+        &owner,
+        ws,
+        json!({"type": "create_team", "name": "Second", "key": "SEC", "members": []}),
+    )
+    .await;
+    let taken = command(
+        &app,
+        &owner,
+        ws,
+        json!({"type": "create_team", "name": "Again", "key": "TEA", "members": []}),
+        json!({}),
+        None,
+    )
+    .await;
+    assert_eq!(taken.0, StatusCode::CONFLICT, "{}", taken.1);
 
     let mut tasks = tokio::task::JoinSet::new();
     for n in 0..16 {
+        let team = if n % 2 == 0 { team } else { second };
         let app = app.clone();
         let token = owner.token.clone();
         let profile = owner.profile.clone();
@@ -294,14 +312,18 @@ async fn parallel_number_allocation_and_database_tenant_constraints() {
         ids.push(result.unwrap());
     }
 
-    let numbers: Vec<i64> = sqlx::query_scalar(
-        "SELECT number::bigint FROM issues WHERE workspace_id=$1 ORDER BY number",
-    )
-    .bind(ws)
-    .fetch_all(&store.pool)
-    .await
-    .unwrap();
-    assert_eq!(numbers, (1..=16).collect::<Vec<_>>());
+    // Each team counts from 1 on its own, even when creates interleave.
+    for team in [team, second] {
+        let numbers: Vec<i64> = sqlx::query_scalar(
+            "SELECT number::bigint FROM issues WHERE workspace_id=$1 AND team_id=$2 ORDER BY number",
+        )
+        .bind(ws)
+        .bind(team)
+        .fetch_all(&store.pool)
+        .await
+        .unwrap();
+        assert_eq!(numbers, (1..=8).collect::<Vec<_>>());
+    }
 
     let invalid = sqlx::query("UPDATE issues SET team_id=$1 WHERE id=$2")
         .bind(foreign_team)
@@ -314,9 +336,9 @@ async fn parallel_number_allocation_and_database_tenant_constraints() {
     );
 
     let duplicate =
-        sqlx::query("UPDATE issues SET number=(SELECT number FROM issues WHERE id=$1) WHERE id=$2")
-            .bind(ids[0])
-            .bind(ids[1])
+        sqlx::query("UPDATE issues SET number=1 WHERE workspace_id=$1 AND team_id=$2 AND number=2")
+            .bind(ws)
+            .bind(team)
             .execute(&store.pool)
             .await
             .unwrap_err();
@@ -351,7 +373,7 @@ async fn revocation_waits_for_membership_lock_and_blocks_later_writes() {
         &app,
         &owner,
         ws,
-        json!({"type": "create_team", "name": "Team", "members": []}),
+        json!({"type": "create_team", "name": "Team", "key": "TEA", "members": []}),
     )
     .await;
 
@@ -443,7 +465,7 @@ async fn superseded_running_reminders_skip_inbox_and_current_generation_deduplic
         &app,
         &owner,
         ws,
-        json!({"type": "create_team", "name": "Team", "members": [owner.profile.id]}),
+        json!({"type": "create_team", "name": "Team", "key": "TEA", "members": [owner.profile.id]}),
     )
     .await;
 
@@ -788,12 +810,6 @@ async fn representative_workspace_lists_reports_and_indexed_board_plan() {
     .await
     .unwrap();
 
-    sqlx::query("UPDATE workspaces SET next_issue_number=5001 WHERE id=$1")
-        .bind(ws)
-        .execute(&store.pool)
-        .await
-        .unwrap();
-
     sqlx::query("ANALYZE issues")
         .execute(&store.pool)
         .await
@@ -858,7 +874,7 @@ async fn workspace_creation_retries_are_actor_scoped_and_atomic() {
     let owner = account(&store, "owner").await;
     let other = account(&store, "other").await;
 
-    let payload = json!({"name": "One workspace", "idempotency_key": "ambiguous-create"});
+    let payload = json!({"name": "One workspace", "slug": "one-workspace", "idempotency_key": "ambiguous-create"});
 
     let (a, b) = tokio::join!(
         call(
@@ -884,17 +900,36 @@ async fn workspace_creation_retries_are_actor_scoped_and_atomic() {
         &owner,
         "POST",
         "/internal-api/workspaces",
-        Some(json!({"name": "Another name", "idempotency_key": "ambiguous-create"})),
+        Some(json!({"name": "Another name", "slug": "another-name", "idempotency_key": "ambiguous-create"})),
     )
     .await;
     assert_eq!(mismatch.0, StatusCode::CONFLICT, "{}", mismatch.1);
+
+    let taken = call(
+        &app,
+        &owner,
+        "POST",
+        "/internal-api/workspaces",
+        Some(json!({"name": "Copy", "slug": "one-workspace", "idempotency_key": "taken-slug"})),
+    )
+    .await;
+    assert_eq!(taken.0, StatusCode::CONFLICT, "{}", taken.1);
+    let reserved = call(
+        &app,
+        &owner,
+        "POST",
+        "/internal-api/workspaces",
+        Some(json!({"name": "Login", "slug": "login"})),
+    )
+    .await;
+    assert_eq!(reserved.0, StatusCode::BAD_REQUEST, "{}", reserved.1);
 
     let other = call(
         &app,
         &other,
         "POST",
         "/internal-api/workspaces",
-        Some(json!({"name": "Another actor", "idempotency_key": "ambiguous-create"})),
+        Some(json!({"name": "Another actor", "slug": "another-actor", "idempotency_key": "ambiguous-create"})),
     )
     .await;
     assert_eq!(other.0, StatusCode::OK, "{}", other.1);
@@ -953,7 +988,7 @@ async fn idempotent_finish_child_replay_reports_current_records() {
         &app,
         &owner,
         ws,
-        json!({"type": "create_team", "name": "Ops", "members": [owner.profile.id]}),
+        json!({"type": "create_team", "name": "Ops", "key": "OPS", "members": [owner.profile.id]}),
         json!({}),
         None,
     )
@@ -1131,7 +1166,7 @@ async fn backlog_issues_stay_out_of_sprints() {
         &app,
         &owner,
         ws,
-        json!({"type": "create_team", "name": "Team", "members": [owner.profile.id]}),
+        json!({"type": "create_team", "name": "Team", "key": "TEA", "members": [owner.profile.id]}),
     )
     .await;
     let stage = |kind: &'static str| {

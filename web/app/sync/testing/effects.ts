@@ -5,7 +5,6 @@ import { Tables } from "./tables";
 interface ServerEffects {
   tx: Tables;
   before: Tables;
-  nextIssueNumber: number;
   actor: string;
   name: string;
   args: Record<string, unknown>;
@@ -16,13 +15,12 @@ interface ServerEffects {
 }
 
 /** Audit corrections to client predictions here against Operation and persistence. */
-export function applyServerOnlyEffects(context: ServerEffects): number {
+export function applyServerOnlyEffects(context: ServerEffects): void {
   correctPredictions(context);
-  const nextNumber = stampRecords(context);
+  stampRecords(context);
   finishCommand(context);
   recordCompletions(context);
   recordActivity(context);
-  return nextNumber;
 }
 
 function correctPredictions(context: ServerEffects): void {
@@ -84,9 +82,8 @@ function touchTeamMembers({ tx, before, name, id }: ServerEffects): void {
   }
 }
 
-function stampRecords(context: ServerEffects): number {
+function stampRecords(context: ServerEffects): void {
   const { tx, name } = context;
-  let nextNumber = context.nextIssueNumber;
   for (const { entity, id: key } of [...tx.touched.values()]) {
     const row = tx.get(entity, key);
     const before = context.before.get(entity, key);
@@ -100,20 +97,19 @@ function stampRecords(context: ServerEffects): number {
       const version = before && "version" in before ? before.version + (childChanged ? 0 : 1) : 1;
       tx.put(entity, { ...row, version });
     }
-    if (entity === "issues") nextNumber = stampIssue(context, key, nextNumber);
+    if (entity === "issues") stampIssue(context, key);
     if (entity === "teams") stampTeam(context, key);
   }
-  return nextNumber;
 }
 
-function stampIssue(context: ServerEffects, key: string, nextNumber: number): number {
+// The create mutator numbers issues by the server's rule, against the server's own rows.
+function stampIssue(context: ServerEffects, key: string): void {
   const { tx, actor, name, args, id } = context;
   const issue = tx.get("issues", key);
-  if (!issue) return nextNumber;
+  if (!issue) return;
   const created = !context.before.get("issues", key);
   tx.put("issues", {
     ...issue,
-    number: issue.number ?? nextNumber++,
     ...(created
       ? {
           created_at: context.now(),
@@ -137,7 +133,6 @@ function stampIssue(context: ServerEffects, key: string, nextNumber: number): nu
   if (name === "update_issue" || (name === "bulk_issues" && object(args.action)))
     for (const follower of issue.followers)
       if (follower !== actor) notify(context, tx, follower, issue.id, "change", issue.title);
-  return nextNumber;
 }
 
 function stampTeam(context: ServerEffects, key: string): void {

@@ -48,6 +48,7 @@ impl Fixture {
                 Command::CreateTeam {
                     id: None,
                     name: "Team".into(),
+                    key: "TEA".into(),
                     members: vec![],
                     default_stage_ids: None,
                 },

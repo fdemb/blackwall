@@ -74,17 +74,15 @@ describe("derived counts", () => {
     });
   });
 
-  it("N6: withCounts returns a readonly counted issue with a nullable number", () => {
+  it("N6: withCounts returns a readonly counted issue with its key", () => {
     const store = countedStore();
     const parent = store.get("issues", "parent");
     if (parent === undefined) throw new Error("missing parent");
     const counted = withCounts(store, parent);
-    expectTypeOf(counted.number).toEqualTypeOf<number | null>();
+    expectTypeOf(counted.key).toEqualTypeOf<string>();
     expectTypeOf(counted.dependencies).toEqualTypeOf<readonly string[]>();
     expect(counted.blocked_count).toBe(1);
     if (unreached()) {
-      // @ts-expect-error - counted.number.toFixed() throws while the number is null
-      counted.number.toFixed();
       // @ts-expect-error - counted issues are readonly
       counted.title = "changed";
       // @ts-expect-error - dependencies are a frozen readonly array

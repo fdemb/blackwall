@@ -25,6 +25,7 @@ function fixture(options: FakeServerOptions = {}) {
     type: "create_team",
     id: TEAM,
     name: "Team",
+    key: "TEA",
     members: [owner.id, member.id],
     default_stage_ids: STAGES,
   });
@@ -995,7 +996,12 @@ describe("server-only effects and request order", () => {
   it("generates omitted create ids and default stages like REST commands", async () => {
     const f = fixture();
     const response = await f.push([
-      { id: 1, name: "create_team", args: { name: "Server ids", members: [] }, at: CLIENT_AT },
+      {
+        id: 1,
+        name: "create_team",
+        args: { name: "Server ids", key: "SRV", members: [] },
+        at: CLIENT_AT,
+      },
     ]);
     expect((await response.json()).results[0].status).toBe("applied");
     const team = f.server.records("teams").find((row) => row.name === "Server ids");

@@ -53,6 +53,7 @@ async function fixture() {
     type: "create_team",
     id: id(1),
     name: "Team",
+    key: "TEA",
     members: [],
     default_stage_ids: [id(10), id(11), id(12), id(13)],
   });

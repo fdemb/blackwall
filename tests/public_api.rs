@@ -188,7 +188,7 @@ async fn public_api_on_postgres() {
         "POST",
         &format!("{base}/teams"),
         &read,
-        Some(json!({"name":"Nope"})),
+        Some(json!({"name":"Nope","key":"NOPE"})),
     )
     .await;
     assert_eq!(denied.status, StatusCode::FORBIDDEN);
@@ -199,7 +199,7 @@ async fn public_api_on_postgres() {
         "POST",
         &format!("{base}/teams"),
         &write,
-        Some(json!({"name":"Platform"})),
+        Some(json!({"name":"Platform","key":"PLA"})),
     )
     .await;
     assert_eq!(team.status, StatusCode::CREATED, "{}", team.body);
@@ -287,7 +287,7 @@ async fn public_api_on_postgres() {
     assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
     let issue_id = created.body["id"].as_str().unwrap().to_owned();
     let key = created.body["key"].as_str().unwrap().to_owned();
-    assert!(key.starts_with("BW-"));
+    assert_eq!(key, "PLA-1");
     assert_eq!(etag(&created), format!("\"{}\"", created.body["version"]));
 
     let by_key = call(&app, "GET", &format!("{base}/issues/{key}"), &read, None).await;
@@ -296,7 +296,14 @@ async fn public_api_on_postgres() {
     let lower = key.to_lowercase();
     let by_lower = call(&app, "GET", &format!("{base}/issues/{lower}"), &read, None).await;
     assert_eq!(by_lower.body["id"], json!(issue_id));
-    let missing = call(&app, "GET", &format!("{base}/issues/BW-99999"), &read, None).await;
+    let missing = call(
+        &app,
+        "GET",
+        &format!("{base}/issues/PLA-99999"),
+        &read,
+        None,
+    )
+    .await;
     assert_eq!(missing.status, StatusCode::NOT_FOUND);
     let nonsense = call(&app, "GET", &format!("{base}/issues/banana"), &read, None).await;
     assert_eq!(nonsense.status, StatusCode::BAD_REQUEST);
@@ -743,7 +750,7 @@ async fn public_api_on_postgres() {
         "POST",
         "/internal-api/workspaces",
         Some(&owner.token),
-        Some(json!({"name":"Cross"})),
+        Some(json!({"name":"Cross","slug":"cross"})),
         &[
             ("Origin", "https://elsewhere.example"),
             ("Host", "blackwall.example"),

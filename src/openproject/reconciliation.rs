@@ -459,8 +459,7 @@ async fn reserve_allocation(
         return Err(Error::BadRequest(CAPACITY_MESSAGE.into()));
     }
     Ok(Some(
-        persistence::allocate_creations(conn, import.workspace, import.mapping.team_id, new_count)
-            .await?,
+        persistence::allocate_creations(conn, import.workspace, import.mapping.team_id).await?,
     ))
 }
 
@@ -555,18 +554,7 @@ impl Lookups<'_> {
         after.description = item.description.clone();
         after.team_id = mapping.team_id;
         after.stage_id = destination.id;
-        let email = self.people.email(item.assignee_id);
-        after.assignee = self.people.user(&email);
-        tracing::debug!(work_package_id = item.id, remote_assignee_id = ?item.assignee_id,
-            email_available = email.is_some(), assignee_id = ?after.assignee,
-            explicit_mapping = self.people.explicitly_mapped(&email),
-            "OpenProject assignee mapped");
-        let author_email = self.people.email(item.author_id);
-        after.created_by = self.people.user(&author_email);
-        tracing::debug!(work_package_id = item.id, remote_author_id = ?item.author_id,
-            email_available = author_email.is_some(), created_by = ?after.created_by,
-            explicit_mapping = self.people.explicitly_mapped(&author_email),
-            "OpenProject author mapped");
+        self.map_people(item, &mut after);
         after.priority = item.priority.clone();
         after.deadline = item.deadline;
         after.project_id = None;
@@ -581,18 +569,37 @@ impl Lookups<'_> {
         after.openproject = Some(source.clone());
         after.parent_id = self.wanted_parents.get(&after.id).copied().flatten();
 
-        let mut fields = Vec::new();
-        if let Some(old) = before {
-            fields = old.changed_fields(&after);
-            if old.team_id != after.team_id {
-                fields.push("team".into());
-            }
-            if old.openproject != after.openproject {
-                fields.push("openproject".into());
-            }
-        }
+        let fields = before
+            .as_ref()
+            .map_or_else(Vec::new, |old| changed_fields(old, &after));
         Ok((after, source, fields))
     }
+
+    fn map_people(&self, item: &WorkPackage, after: &mut Issue) {
+        let email = self.people.email(item.assignee_id);
+        after.assignee = self.people.user(&email);
+        tracing::debug!(work_package_id = item.id, remote_assignee_id = ?item.assignee_id,
+            email_available = email.is_some(), assignee_id = ?after.assignee,
+            explicit_mapping = self.people.explicitly_mapped(&email),
+            "OpenProject assignee mapped");
+        let author_email = self.people.email(item.author_id);
+        after.created_by = self.people.user(&author_email);
+        tracing::debug!(work_package_id = item.id, remote_author_id = ?item.author_id,
+            email_available = author_email.is_some(), created_by = ?after.created_by,
+            explicit_mapping = self.people.explicitly_mapped(&author_email),
+            "OpenProject author mapped");
+    }
+}
+
+fn changed_fields(before: &Issue, after: &Issue) -> Vec<String> {
+    let mut fields = before.changed_fields(after);
+    if before.team_id != after.team_id {
+        fields.push("team".into());
+    }
+    if before.openproject != after.openproject {
+        fields.push("openproject".into());
+    }
+    fields
 }
 
 fn new_issue(id: Uuid, team_id: Uuid, stage_id: Uuid) -> Issue {

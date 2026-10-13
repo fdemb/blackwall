@@ -59,7 +59,7 @@ pub(super) fn select(
 ) -> Result<QueryBuilder<'static, Postgres>> {
     let mut q = match kind {
         "workspace" => QueryBuilder::<Postgres>::new(
-            "SELECT w.id,jsonb_build_object('id',w.id,'name',w.name,'version',w.version) \
+            "SELECT w.id,jsonb_build_object('id',w.id,'name',w.name,'slug',w.slug,'version',w.version) \
              FROM workspaces w WHERE w.id=",
         ),
         "members" => QueryBuilder::new(format!(

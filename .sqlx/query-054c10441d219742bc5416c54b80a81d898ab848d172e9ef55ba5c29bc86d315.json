@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT w.id,w.name,w.version FROM workspaces w JOIN workspace_members m ON m.workspace_id=w.id WHERE m.user_id=$1 ORDER BY w.name,w.id",
+  "query": "SELECT w.id,w.name,w.slug,w.version FROM workspaces w JOIN workspace_members m ON m.workspace_id=w.id WHERE m.user_id=$1 ORDER BY w.name,w.id",
   "describe": {
     "columns": [
       {
@@ -15,6 +15,11 @@
       },
       {
         "ordinal": 2,
+        "name": "slug",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
         "name": "version",
         "type_info": "Int8"
       }
@@ -27,8 +32,9 @@
     "nullable": [
       false,
       false,
+      false,
       false
     ]
   },
-  "hash": "d5f7f571605a4c06e25e7cc6800edd6be8a8edf7de21e7f225a573c808f4d6bc"
+  "hash": "054c10441d219742bc5416c54b80a81d898ab848d172e9ef55ba5c29bc86d315"
 }

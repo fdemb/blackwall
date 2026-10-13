@@ -20,7 +20,7 @@ export default function AppShell() {
   const [drawer, setDrawer] = useState(false);
 
   // Settings sends you back to the page you came from.
-  useEffect(() => rememberAppPath(ws.id, pathname + search), [ws.id, pathname, search]);
+  useEffect(() => rememberAppPath(ws.slug, pathname + search), [ws.slug, pathname, search]);
 
   return (
     <div className="flex h-dvh overflow-hidden">

@@ -284,6 +284,7 @@ export async function runConvergence(
     type: "create_team",
     id: team,
     name: "Team",
+    key: "TEA",
     members: [owner.id, admin.id, member.id],
     default_stage_ids: [3, 4, 5, 6].map(simulationId),
   });

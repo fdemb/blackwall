@@ -15,10 +15,7 @@ pub(crate) async fn create(
     i: &mut Issue,
     ownership: Ownership<'_>,
 ) -> Result<()> {
-    i.number = sqlx::query_scalar::<_,i64>("UPDATE workspaces SET next_issue_number=next_issue_number+1 WHERE id=$1 RETURNING next_issue_number-1")
-            .bind(workspace)
-            .fetch_one(&mut *conn)
-            .await? as u64;
+    i.number = next_number(conn, workspace, i.team_id).await?;
     i.position = sqlx::query_scalar("SELECT COALESCE(max(position),-1024)+1024 FROM issues WHERE workspace_id=$1 AND team_id=$2 AND stage_id=$3 AND deleted_at IS NULL")
             .bind(workspace)
             .bind(i.team_id)
@@ -26,6 +23,25 @@ pub(crate) async fn create(
             .fetch_one(&mut *conn)
             .await?;
     insert(conn, workspace, i, ownership).await
+}
+
+/// The team's highest issue number plus one, the same rule the sync client
+/// predicts with. Locking the team row serializes creations in the team until commit.
+async fn next_number(conn: &mut PgConnection, workspace: Uuid, team: Uuid) -> Result<u64> {
+    sqlx::query("SELECT 1 FROM teams WHERE workspace_id=$1 AND id=$2 FOR NO KEY UPDATE")
+        .bind(workspace)
+        .bind(team)
+        .fetch_optional(&mut *conn)
+        .await?
+        .ok_or(Error::NotFound)?;
+    let number: i64 = sqlx::query_scalar(
+        "SELECT COALESCE(max(number),0)+1 FROM issues WHERE workspace_id=$1 AND team_id=$2",
+    )
+    .bind(workspace)
+    .bind(team)
+    .fetch_one(&mut *conn)
+    .await?;
+    Ok(number as u64)
 }
 
 pub(crate) struct CreationBatch {
@@ -47,10 +63,8 @@ pub(crate) async fn allocate_creations(
     conn: &mut PgConnection,
     workspace: Uuid,
     team: Uuid,
-    count: i64,
 ) -> Result<CreationBatch> {
-    let next_number: i64 = sqlx::query_scalar("UPDATE workspaces SET next_issue_number=next_issue_number+$2 WHERE id=$1 RETURNING next_issue_number-$2")
-        .bind(workspace).bind(count).fetch_one(&mut *conn).await?;
+    let next_number = next_number(conn, workspace, team).await?;
     let rows = sqlx::query("SELECT stage_id,max(position) AS position FROM issues WHERE workspace_id=$1 AND team_id=$2 AND deleted_at IS NULL GROUP BY stage_id")
         .bind(workspace).bind(team).fetch_all(&mut *conn).await?;
     let mut positions = BTreeMap::new();
@@ -58,7 +72,7 @@ pub(crate) async fn allocate_creations(
         positions.insert(row.try_get("stage_id")?, row.try_get("position")?);
     }
     Ok(CreationBatch {
-        next_number: next_number as u64,
+        next_number,
         positions,
     })
 }

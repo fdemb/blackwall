@@ -102,10 +102,10 @@ export const tokens = {
 
 export const workspaces = {
   list: () => api<WorkspaceSummary[]>("/internal-api/workspaces"),
-  create: (name: string, idempotency_key: string = crypto.randomUUID()) =>
+  create: (name: string, slug: string, idempotency_key: string = crypto.randomUUID()) =>
     api<{ workspace: WorkspaceSummary }>("/internal-api/workspaces", {
       method: "POST",
-      body: { name, idempotency_key },
+      body: { name, slug, idempotency_key },
     }),
   report: (id: string) => api<Report>(`/internal-api/workspaces/${id}/report`),
   accept: (id: string, token: string) =>

@@ -58,7 +58,19 @@ export function clearLastWs() {
   safeRemove("local", LAST_WS);
 }
 
-export async function landing(): Promise<{ profile: SessionProfile; list: WorkspaceSummary[] }> {
+type Landing = { profile: SessionProfile; list: WorkspaceSummary[] };
+
+// The authed layout and the workspace route load together; they share one request pair.
+let landingRequest: Promise<Landing> | null = null;
+
+export function landing(): Promise<Landing> {
+  landingRequest ??= loadLanding().finally(() => {
+    landingRequest = null;
+  });
+  return landingRequest;
+}
+
+async function loadLanding(): Promise<Landing> {
   const profile = await currentProfile();
   if (!profile) throw redirect("/login");
   try {
@@ -70,4 +82,13 @@ export async function landing(): Promise<{ profile: SessionProfile; list: Worksp
     if (list) return { profile, list };
     throw e;
   }
+}
+
+/**
+ * The workspace a URL names: by slug, or by id for links from before slugs. Reads the remembered
+ * list first, so a known workspace opens offline, then asks the server about new ones.
+ */
+export async function findWorkspace(ref: string): Promise<WorkspaceSummary | undefined> {
+  const named = (list: WorkspaceSummary[]) => list.find((w) => w.slug === ref || w.id === ref);
+  return named(rememberedWorkspaces() ?? []) ?? named((await landing()).list);
 }

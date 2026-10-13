@@ -53,7 +53,7 @@ async fn issues_remember_their_creator() {
         &store,
         ws,
         owner,
-        json!({"type":"create_team","name":"Infra","members":[owner]}),
+        json!({"type":"create_team","name":"Infra", "key": "INF","members":[owner]}),
     )
     .await;
     let issue = op(

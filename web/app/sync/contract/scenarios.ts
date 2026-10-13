@@ -29,6 +29,7 @@ export async function fixture(ws: string, owner: User, member: User) {
       type: "create_team",
       id: ids.team,
       name: "Team 🦊",
+      key: "TEA",
       members: [owner.id, member.id],
       default_stage_ids: ids.stages,
     },
@@ -255,6 +256,7 @@ export const scenarios = {
     command: (f) => ({
       type: "create_team",
       name: "New team",
+      key: "NEW",
       members: [f.member.id, f.owner.id, f.member.id],
       default_stage_ids: [],
     }),

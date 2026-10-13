@@ -2,8 +2,8 @@ use crate::{
     error::{Error, Result},
     store::{Claim, LEASE_SECONDS, Outbox, Store},
 };
-use sqlx::{Postgres, Transaction};
-use std::{collections::HashMap, time::Duration};
+use sqlx::{Postgres, Transaction, postgres::PgListener};
+use std::{collections::HashMap, ops::ControlFlow, time::Duration};
 use tokio::{sync::watch, task::JoinSet};
 
 mod delivery;
@@ -161,25 +161,7 @@ pub async fn run_with_config(
     }
 
     let mut worker = Worker::new(store, mailer, config);
-    while !*shutdown.borrow() {
-        worker.schedule_openproject().await;
-        worker.claim_jobs(&shutdown).await;
-        if *shutdown.borrow() {
-            break;
-        }
-        worker.maintain().await;
-
-        let deadline = worker.next_wake();
-        tokio::select! {
-            biased;
-            _ = stopped(&mut shutdown) => break,
-            finished = worker.tasks.join_next_with_id(), if !worker.tasks.is_empty() => {
-                worker.finished(finished);
-            },
-            _ = worker.store.outbox.wait() => {},
-            _ = tokio::time::sleep_until(deadline) => {},
-        }
-    }
+    worker.run(&mut shutdown).await;
 
     listener.abort();
     if let Err(error) = listener.await
@@ -236,6 +218,28 @@ impl Worker {
     }
 
     /// Queues due OpenProject scans once per poll interval.
+    async fn run(&mut self, shutdown: &mut watch::Receiver<bool>) {
+        while !*shutdown.borrow() {
+            self.schedule_openproject().await;
+            self.claim_jobs(shutdown).await;
+            if *shutdown.borrow() {
+                break;
+            }
+            self.maintain().await;
+
+            let deadline = self.next_wake();
+            tokio::select! {
+                biased;
+                _ = stopped(shutdown) => break,
+                finished = self.tasks.join_next_with_id(), if !self.tasks.is_empty() => {
+                    self.finished(finished);
+                },
+                _ = self.store.outbox.wait() => {},
+                _ = tokio::time::sleep_until(deadline) => {},
+            }
+        }
+    }
+
     async fn schedule_openproject(&mut self) {
         if self.schedule_at > tokio::time::Instant::now() {
             return;
@@ -351,58 +355,51 @@ impl Worker {
 }
 
 async fn listen(outbox: Outbox, mut shutdown: watch::Receiver<bool>, poll: Duration) {
-    loop {
-        if *shutdown.borrow() {
-            return;
-        }
-
-        let mut listener = tokio::select! {
+    while !*shutdown.borrow() {
+        let connected = tokio::select! {
             _ = stopped(&mut shutdown) => return,
-            result = outbox.listen() => match result {
-                Ok(listener) => listener,
-                Err(error) => {
-                    tracing::warn!(error = %error, "queue listen failed; retrying");
-                    outbox.ready();
-
-                    tokio::select! {
-                        _ = stopped(&mut shutdown) => return,
-                        _ = tokio::time::sleep(poll) => {}
-                    }
-
-                    continue;
+            result = outbox.listen() => result,
+        };
+        match connected {
+            Ok(listener) => {
+                outbox.ready();
+                if relay(&outbox, listener, &mut shutdown).await.is_break() {
+                    return;
                 }
             }
-        };
+            Err(error) => {
+                tracing::warn!(error = %error, "queue listen failed; retrying");
+                outbox.ready();
+            }
+        }
 
+        tokio::select! {
+            _ = stopped(&mut shutdown) => return,
+            _ = tokio::time::sleep(poll) => {}
+        }
+    }
+}
+
+/// Wakes the worker on every notification until the connection drops. Breaks
+/// on shutdown.
+async fn relay(
+    outbox: &Outbox,
+    mut listener: PgListener,
+    shutdown: &mut watch::Receiver<bool>,
+) -> ControlFlow<()> {
+    loop {
+        let notification = tokio::select! {
+            _ = stopped(shutdown) => return ControlFlow::Break(()),
+            notification = listener.try_recv() => notification,
+        };
         outbox.ready();
 
-        loop {
-            tokio::select! {
-                _ = stopped(&mut shutdown) => return,
-                notification = listener.try_recv() => {
-                    outbox.ready();
-
-                    match notification {
-                        Ok(Some(_)) => {}
-                        Ok(None) => {
-                            tokio::select! {
-                                _ = stopped(&mut shutdown) => return,
-                                _ = tokio::time::sleep(poll) => {}
-                            }
-
-                            break;
-                        }
-                        Err(error) => {
-                            tracing::warn!(error = %error, "queue notification failed; reconnecting");
-                            tokio::select! {
-                                _ = stopped(&mut shutdown) => return,
-                                _ = tokio::time::sleep(poll) => {}
-                            }
-
-                            break;
-                        }
-                    }
-                }
+        match notification {
+            Ok(Some(_)) => {}
+            Ok(None) => return ControlFlow::Continue(()),
+            Err(error) => {
+                tracing::warn!(error = %error, "queue notification failed; reconnecting");
+                return ControlFlow::Continue(());
             }
         }
     }

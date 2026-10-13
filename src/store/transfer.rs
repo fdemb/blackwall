@@ -84,7 +84,7 @@ impl Store {
         &self,
         workspace: Uuid,
         actor: Uuid,
-        transfer: Transfer,
+        mut transfer: Transfer,
         expected: BTreeMap<Uuid, i64>,
         key: Option<String>,
     ) -> Result<(ImportSummary, BTreeMap<Uuid, i64>)> {
@@ -121,9 +121,16 @@ impl Store {
             .filter_map(|m| by_email.get(&m.email.to_lowercase()).map(|id| (m.id, *id)))
             .collect();
 
+        let mut taken: std::collections::BTreeSet<String> =
+            sqlx::query_scalar("SELECT key FROM teams WHERE workspace_id=$1")
+                .bind(op.workspace_id)
+                .fetch_all(&mut *op.tx)
+                .await?
+                .into_iter()
+                .collect();
+        transfer.claim_team_keys(&mut taken)?;
         let summary = transfer.import(&mut candidate, actor, &mapping, Utc::now())?;
         check_import_capacity(&mut op, &candidate).await?;
-        number_issues(&mut op, &mut candidate).await?;
         insert_import(&mut op, &candidate).await?;
         let result = (summary, op.response_versions());
         if let Some(key) = &key {
@@ -183,21 +190,6 @@ async fn check_import_capacity(op: &mut Operation<'_>, candidate: &Workspace) ->
     Ok(())
 }
 
-/// Reserves a block of issue numbers and assigns them in transfer order.
-async fn number_issues(op: &mut Operation<'_>, candidate: &mut Workspace) -> Result<()> {
-    let count = i64::try_from(candidate.issues.len())
-        .map_err(|_| Error::BadRequest("too many issues".into()))?;
-    let first: i64 = sqlx::query_scalar("UPDATE workspaces SET next_issue_number=next_issue_number+$2 WHERE id=$1 RETURNING next_issue_number-$2")
-        .bind(op.workspace_id)
-        .bind(count)
-        .fetch_one(&mut *op.tx)
-        .await?;
-    for (index, issue) in candidate.issues.iter_mut().enumerate() {
-        issue.number = (first + index as i64) as u64;
-    }
-    Ok(())
-}
-
 async fn insert_import(op: &mut Operation<'_>, w: &Workspace) -> Result<()> {
     insert_planning(op, w).await?;
     insert_issues(op, w).await?;
@@ -213,11 +205,12 @@ async fn insert_import(op: &mut Operation<'_>, w: &Workspace) -> Result<()> {
 async fn insert_planning(op: &mut Operation<'_>, w: &Workspace) -> Result<()> {
     for team in &w.teams {
         sqlx::query(
-            "INSERT INTO teams(id,workspace_id,name,archive_after_days,icon,color) VALUES($1,$2,$3,$4,$5,$6)",
+            "INSERT INTO teams(id,workspace_id,name,key,archive_after_days,icon,color) VALUES($1,$2,$3,$4,$5,$6,$7)",
         )
         .bind(team.id)
         .bind(w.id)
         .bind(&team.name)
+        .bind(&team.key)
         .bind(team.archive_after_days.map(i64::from))
         .bind(&team.icon)
         .bind(&team.color)
@@ -564,7 +557,7 @@ mod tests {
             &store,
             source,
             user,
-            json!({"type":"create_team","name":"Infra","members":[user]}),
+            json!({"type":"create_team","name":"Infra", "key": "INF","members":[user]}),
         )
         .await;
 
@@ -643,7 +636,7 @@ mod tests {
             &store,
             target,
             user,
-            json!({"type":"create_team","name":"Existing","members":[user]}),
+            json!({"type":"create_team","name":"Existing", "key": "EXI","members":[user]}),
         )
         .await;
 
@@ -743,8 +736,17 @@ mod tests {
 
         let child = imported.issues.iter().find(|i| i.title == "Child").unwrap();
         assert_ne!(parent.id, first);
-        assert_eq!(parent.number, 2);
-        assert_eq!(child.number, 3);
+        // Imported teams are new, so issues keep their numbers and the team its key.
+        assert_eq!(parent.number, 1);
+        assert_eq!(child.number, 2);
+        assert_eq!(
+            imported
+                .teams
+                .iter()
+                .map(|t| t.key.as_str())
+                .collect::<Vec<_>>(),
+            ["EXI", "INF"]
+        );
         assert_eq!(child.parent_id, Some(parent.id));
         assert_eq!(child.dependencies, vec![parent.id]);
         assert_eq!(child.blocked_count, 1);
@@ -770,14 +772,13 @@ mod tests {
                 .is_err()
         );
 
-        let counter: i64 =
-            sqlx::query_scalar("SELECT next_issue_number FROM workspaces WHERE id=$1")
-                .bind(target)
-                .fetch_one(&store.pool)
-                .await
-                .unwrap();
+        let teams: i64 = sqlx::query_scalar("SELECT count(*) FROM teams WHERE workspace_id=$1")
+            .bind(target)
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
 
-        let mut invalid = transfer;
+        let mut invalid = transfer.clone();
         invalid.comments[0].mentions = vec![user, user];
         assert!(
             store
@@ -792,13 +793,13 @@ mod tests {
                 .is_err()
         );
 
-        let after: i64 = sqlx::query_scalar("SELECT next_issue_number FROM workspaces WHERE id=$1")
+        let after: i64 = sqlx::query_scalar("SELECT count(*) FROM teams WHERE workspace_id=$1")
             .bind(target)
             .fetch_one(&store.pool)
             .await
             .unwrap();
 
-        assert_eq!(after, counter);
+        assert_eq!(after, teams);
         let jobs_after: i64 = sqlx::query_scalar(
             "SELECT count(*) FROM jobs WHERE kind='reminder' AND payload->>'workspace_id'=$1",
         )
@@ -824,6 +825,22 @@ mod tests {
                 .len(),
             3
         );
+
+        // A second copy finds its key taken and numbers its issues under the free variant.
+        store
+            .import_transfer(target, user, transfer, BTreeMap::new(), None)
+            .await
+            .unwrap();
+        let again = store.export_transfer(target, user).await.unwrap();
+        let copy = again.teams.iter().find(|t| t.key == "INF2").unwrap();
+        let mut numbers: Vec<_> = again
+            .issues
+            .iter()
+            .filter(|i| i.team_id == copy.id)
+            .map(|i| i.number)
+            .collect();
+        numbers.sort_unstable();
+        assert_eq!(numbers, [1, 2]);
 
         store.pool.close().await;
         db.cleanup().await;

@@ -1,4 +1,5 @@
 use sqlx::{PgPool, postgres::PgListener};
+use std::ops::ControlFlow;
 use std::time::Duration;
 use uuid::Uuid;
 
@@ -85,53 +86,14 @@ async fn run(
             result = connect(database_url) => result,
         };
         match connected {
-            Ok(mut listener) => {
+            Ok(listener) => {
                 tracing::info!("sync events listener connected");
                 // After every successful LISTEN, including the first:
                 // notifications may have been lost while disconnected.
                 let _ = sender.send(Uuid::nil());
                 backoff = initial;
-                loop {
-                    // Race reception against the request pool's close signal:
-                    // `try_recv` waits on the socket and would otherwise hold
-                    // the backend past pool shutdown. On closure the listener
-                    // is dropped with the task, releasing its backend.
-                    let received = tokio::select! {
-                        biased;
-                        _ = pool.close_event() => return,
-                        result = listener.try_recv() => result,
-                    };
-                    match received {
-                        Ok(Some(notification)) => match notification.payload().parse::<Uuid>() {
-                            Ok(workspace) => {
-                                let _ = sender.send(workspace);
-                            }
-                            Err(_) => {
-                                tracing::warn!(
-                                    payload = notification.payload(),
-                                    "sync events invalid payload; poking all subscribers"
-                                );
-                                let _ = sender.send(Uuid::nil());
-                            }
-                        },
-                        // The connection dropped. Drop the listener and
-                        // reconnect with backoff; the next successful LISTEN
-                        // broadcasts the wildcard that covers the gap.
-                        Ok(None) => {
-                            tracing::warn!("sync events listener connection lost; reconnecting");
-                            break;
-                        }
-                        Err(error) => {
-                            if pool.is_closed() {
-                                return;
-                            }
-                            tracing::warn!(
-                                error = %error,
-                                "sync events notification failed; reconnecting"
-                            );
-                            break;
-                        }
-                    }
+                if relay(pool, listener, sender).await.is_break() {
+                    return;
                 }
             }
             Err(error) => {
@@ -141,10 +103,67 @@ async fn run(
                 tracing::warn!(error = %error, "sync events listen failed; retrying");
             }
         }
-        tokio::select! {
-            _ = tokio::time::sleep(backoff) => {},
-            _ = pool.close_event() => return,
+        if pause(pool, backoff).await.is_break() {
+            return;
         }
         backoff = std::cmp::min(backoff.saturating_mul(2), MAX_RECONNECT_DELAY);
+    }
+}
+
+/// Forwards notifications until the connection drops. Breaks once the pool
+/// closes.
+async fn relay(
+    pool: &PgPool,
+    mut listener: PgListener,
+    sender: &tokio::sync::broadcast::Sender<Uuid>,
+) -> ControlFlow<()> {
+    loop {
+        // Race reception against the request pool's close signal:
+        // `try_recv` waits on the socket and would otherwise hold
+        // the backend past pool shutdown. On closure the listener
+        // is dropped with the task, releasing its backend.
+        let received = tokio::select! {
+            biased;
+            _ = pool.close_event() => return ControlFlow::Break(()),
+            result = listener.try_recv() => result,
+        };
+        match received {
+            Ok(Some(notification)) => broadcast(sender, notification.payload()),
+            // The connection dropped. Drop the listener and
+            // reconnect with backoff; the next successful LISTEN
+            // broadcasts the wildcard that covers the gap.
+            Ok(None) => {
+                tracing::warn!("sync events listener connection lost; reconnecting");
+                return ControlFlow::Continue(());
+            }
+            Err(error) => {
+                if pool.is_closed() {
+                    return ControlFlow::Break(());
+                }
+                tracing::warn!(
+                    error = %error,
+                    "sync events notification failed; reconnecting"
+                );
+                return ControlFlow::Continue(());
+            }
+        }
+    }
+}
+
+fn broadcast(sender: &tokio::sync::broadcast::Sender<Uuid>, payload: &str) {
+    let workspace = payload.parse::<Uuid>().unwrap_or_else(|_| {
+        tracing::warn!(
+            payload,
+            "sync events invalid payload; poking all subscribers"
+        );
+        Uuid::nil()
+    });
+    let _ = sender.send(workspace);
+}
+
+async fn pause(pool: &PgPool, delay: Duration) -> ControlFlow<()> {
+    tokio::select! {
+        _ = tokio::time::sleep(delay) => ControlFlow::Continue(()),
+        _ = pool.close_event() => ControlFlow::Break(()),
     }
 }

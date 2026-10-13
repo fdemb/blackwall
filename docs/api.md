@@ -21,7 +21,7 @@ Send `Authorization: Bearer bw_pat_...`. Session tokens are rejected on `/api/v1
 
 - `GET /api/v1/openapi.json` describes every endpoint and needs no token.
 - Lists return `{data, next_cursor}`. Pass `next_cursor` back as `cursor`. `limit` is 1 to 200 and defaults to 50. Issue lists sorted by `updated` page by keyset, which stays stable while issues change.
-- Issues are addressed by UUID or by key, such as `BW-42` (case-insensitive) or `42`. Responses include both `id` and `key`.
+- Issues are addressed by UUID or by key, such as `ENG-42` (case-insensitive): the team's key, then the issue's number in that team. Responses include both `id` and `key`. Creating a team requires a `key` of 1 to 4 uppercase letters or digits, starting with a letter and unique in the workspace.
 - Single records carry `ETag: "<version>"`. Send it back as `If-Match` on `PATCH`, `DELETE` or an issue transition. A stale version fails with 412 instead of overwriting a concurrent change. Writes without `If-Match` are last-writer-wins.
 - `PATCH` is a merge patch. Omitted fields stay as they are. On issues, `null` clears `assignee`, `estimate`, `deadline`, `project_id`, `milestone_id`, `sprint_id` and `parent_id`. Unknown fields are rejected.
 - Writes accept `Idempotency-Key`, which is scoped to the workspace and the user. Replaying a key with the same request returns the same record. Reusing it for a different request returns 409.
@@ -79,7 +79,7 @@ Personal, private and administrative actions never leave the workspace. These in
 
 As the transport requires against DNS rebinding, `/mcp` checks `Origin`. Requests without one (desktop, CLI and server clients) and same-origin requests pass. A browser client on another origin needs that origin listed in `MCP_ALLOWED_ORIGINS`, comma-separated, for example `https://inspector.example.com`; `*` admits any origin. Every other origin gets 403 and no CORS headers.
 
-The tools are `list_workspaces`, `get_workspace_overview`, `search_issues`, `get_issue`, `create_issue`, `update_issue` and `add_comment`. Read-only tokens see only the first four. `workspace_id` may be omitted when the token reaches exactly one workspace. Tools accept issue keys such as `BW-42` wherever they take an issue, including `parent_id`.
+The tools are `list_workspaces`, `get_workspace_overview`, `search_issues`, `get_issue`, `create_issue`, `update_issue` and `add_comment`. Read-only tokens see only the first four. `workspace_id` may be omitted when the token reaches exactly one workspace. Tools accept issue keys such as `ENG-42` wherever they take an issue, including `parent_id`.
 
 Example with Claude Code:
 

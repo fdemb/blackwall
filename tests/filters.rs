@@ -58,7 +58,7 @@ async fn fixture(database: &support::TestDatabase) -> Fixture {
         &store,
         ws,
         owner,
-        json!({"type":"create_team","name":"Infra","members":[owner]}),
+        json!({"type":"create_team","name":"Infra", "key": "INF","members":[owner]}),
     )
     .await;
     let done: Uuid = sqlx::query_scalar("SELECT id FROM stages WHERE team_id=$1 AND kind='done'")

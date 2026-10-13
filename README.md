@@ -53,7 +53,7 @@ Integrations, scripts and AI agents use the public API at `/api/v1` and the MCP 
 
 The rest of this section covers `/internal-api`, the web app's own API, which can change without notice. `GET /internal-api/schema.json` exposes OpenAPI generated from Rust types. Its clients use `Authorization: Bearer <session token>`. The browser uses an HttpOnly, SameSite=Strict cookie. Cookie mutations require `X-CSRF-Token`, returned at login and by `GET /internal-api/me`.
 
-Workspace creation accepts an optional `idempotency_key`, scoped to the authenticated user. The frontend keeps this key across an ambiguous creation failure.
+Workspace creation takes a `slug`, the workspace's name in app URLs: lowercase letters, digits and single hyphens, at most 48 bytes, unique across the server. It accepts an optional `idempotency_key`, scoped to the authenticated user. The frontend keeps this key across an ambiguous creation failure.
 
 Commands optionally carry versions for the entities they edit. Omit `expected_versions` for last-writer-wins. For example:
 
@@ -64,6 +64,7 @@ Commands optionally carry versions for the entities they edit. Omit `expected_ve
   "command": {
     "type": "create_team",
     "name": "Infrastructure",
+    "key": "INF",
     "members": []
   }
 }

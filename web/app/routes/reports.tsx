@@ -11,7 +11,7 @@ import { ConfirmDialog } from "~/components/app/confirm";
 import { Card, EmptyState, Page, PageHeader, Scroll } from "~/components/app/page";
 import { ProgressBar } from "~/components/app/progress";
 import { TimeForm } from "~/components/app/time-form";
-import { formatMinutes, fullDate, issueKey } from "~/lib/format";
+import { formatMinutes, fullDate } from "~/lib/format";
 import { useI18n } from "~/lib/i18n";
 import { useIssues, useTimeEntries } from "~/lib/queries";
 import { reportQuery, watchReportChanges } from "~/lib/query-client";
@@ -195,7 +195,7 @@ function TimeBy({ report }: { report: Report }) {
       projects: (id: string) => ws.projects.find((x) => x.id === id)?.name ?? "?",
       issues: (id: string) => {
         const i = report.issues.find((x) => x.id === id);
-        return i ? `${issueKey(i.number)} ${i.title}` : "?";
+        return i ? `${i.key} ${i.title}` : "?";
       },
     }),
     [ws, member, report],
@@ -296,10 +296,8 @@ function TimeLog({ lang }: { lang: string }) {
                   </td>
                   <td className="max-w-56 truncate px-2 py-2">
                     {issue ? (
-                      <Link to={`/${ws.id}/issue/${issue.id}`} className="hover:underline">
-                        <span className="tabular-nums text-muted-foreground">
-                          {issueKey(issue.number)}
-                        </span>{" "}
+                      <Link to={`/${ws.slug}/issue/${issue.ref}`} className="hover:underline">
+                        <span className="tabular-nums text-muted-foreground">{issue.key}</span>{" "}
                         {issue.title}
                       </Link>
                     ) : (

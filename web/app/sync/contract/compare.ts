@@ -7,7 +7,7 @@ import { recordKey } from "../persistence/shared";
 export const EXCLUSIONS = {
   version: "database triggers increment versions, including nested stages",
   newNumber:
-    "the server allocates issue numbers per workspace and sprint numbers per team on insert",
+    "the server allocates sprint numbers per team on insert; issue numbers are predicted and compared",
   timestamps: {
     issues: ["created_at", "updated_at", "deleted_at", "archived_at", "done_at"],
     comments: ["created_at", "edited_at"],
@@ -61,11 +61,7 @@ export function predictionView(view: Snapshot, before: Snapshot): object {
               .sort(([a], [b]) => a.localeCompare(b))
               .map(([id, row]) => [
                 id,
-                comparable(
-                  row,
-                  timestamps,
-                  (entity === "issues" || entity === "sprints") && !before.get(entity)?.has(id),
-                ),
+                comparable(row, timestamps, entity === "sprints" && !before.get(entity)?.has(id)),
               ]),
           ),
         ];

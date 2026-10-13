@@ -70,7 +70,7 @@ async fn workspace(app: &axum::Router, owner: &Session, name: &str) -> Uuid {
         "POST",
         "/internal-api/workspaces",
         Some(&owner.token),
-        Some(json!({"name": name})),
+        Some(json!({"name": name, "slug": Uuid::new_v4().to_string()})),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{result}");
@@ -83,7 +83,7 @@ async fn setup(app: &axum::Router, owner: &Session) -> (Uuid, Uuid) {
         app,
         owner,
         ws,
-        json!({"type": "create_team", "name": "Team", "members": [owner.profile.id]}),
+        json!({"type": "create_team", "name": "Team", "key": "TEA", "members": [owner.profile.id]}),
     )
     .await;
     (ws, team)
@@ -1234,7 +1234,7 @@ async fn pull_profile_edit_and_team_join_do_not_reset() {
         &app,
         &owner,
         ws,
-        json!({"type": "create_team", "name": "Second", "members": [owner.profile.id]}),
+        json!({"type": "create_team", "name": "Second", "key": "SEC", "members": [owner.profile.id]}),
     )
     .await;
 
@@ -1540,7 +1540,7 @@ async fn pull_replays_command_changes_with_current_records() {
         &app,
         owner,
         ws,
-        json!({"type":"create_team","name":"Ops","members":[owner.profile.id]}),
+        json!({"type":"create_team","name":"Ops", "key": "OPS","members":[owner.profile.id]}),
     )
     .await;
     let team = result["result"]["id"].as_str().unwrap().to_owned();

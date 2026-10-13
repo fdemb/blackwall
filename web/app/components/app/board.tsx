@@ -11,7 +11,7 @@ import {
 import { Plus } from "lucide-react";
 import { Button } from "~/components/ui/button";
 import { cn } from "~/lib/utils";
-import { issueKeyLength } from "./issue-key";
+import { useIssueKeyWidth } from "./issue-key";
 import { issueCapabilities } from "~/lib/ownership";
 import { useI18n } from "~/lib/i18n";
 import { useWorkspace } from "~/lib/workspace";
@@ -93,7 +93,7 @@ export function DndColumn({
 }: DndColumnProps) {
   const { t } = useI18n();
   const { canWrite } = useWorkspace();
-  const keyLength = issueKeyLength(issues);
+  const keyWidth = useIssueKeyWidth(issues);
   const beforeFor = useCallback(
     (target: DropTarget): Id | null => {
       if (target.type !== "item") return null;
@@ -154,7 +154,7 @@ export function DndColumn({
         <GridList
           aria-label={title}
           items={issues}
-          dependencies={[keyLength]}
+          dependencies={[keyWidth]}
           selectionMode="none"
           dragAndDropHooks={dragAndDropHooks}
           className="min-h-16 flex-1 overflow-y-auto overflow-x-hidden overscroll-contain rounded-b-xl [scrollbar-color:var(--border)_transparent] [scrollbar-width:thin] outline-none transition-colors drop-target:bg-accent/60 drop-target:ring-2 drop-target:ring-primary/40"
@@ -164,7 +164,7 @@ export function DndColumn({
             </p>
           )}
         >
-          {(issue) => <BoardCard issue={issue} keyLength={keyLength} />}
+          {(issue) => <BoardCard issue={issue} keyWidth={keyWidth} />}
         </GridList>
       </Virtualizer>
     </section>
@@ -192,18 +192,18 @@ export function ReadOnlyColumn(props: Omit<DndColumnProps, "canDrop">) {
  * One issue on the board. The card opens the issue; each property on it is its own control, so
  * pressing one edits that property, or for labels and the sprint, opens it.
  */
-export function BoardCard({ issue, keyLength }: { issue: Issue; keyLength?: number }) {
+export function BoardCard({ issue, keyWidth }: { issue: Issue; keyWidth?: string }) {
   const { ws, canWrite } = useWorkspace();
   const locked = !canWrite || !issueCapabilities(issue).edit;
   return (
     <GridListItem
       id={issue.id}
       textValue={issue.title}
-      href={`/${ws.id}/issue/${issue.id}`}
+      href={`/${ws.slug}/issue/${issue.ref}`}
       className="group flex cursor-default flex-col gap-2 rounded-lg border border-border/70 bg-board-card px-3 pb-2 pt-2.5 shadow-xs outline-none transition-[border-color,box-shadow,opacity] hover:border-foreground/15 hover:shadow-sm focus-visible:ring-2 focus-visible:ring-ring/60 dragging:opacity-40 dark:shadow-black/30"
     >
       <div className="flex h-5 items-center gap-1.5 text-muted-foreground">
-        <KeyButton issue={issue} length={keyLength} />
+        <KeyButton issue={issue} width={keyWidth} />
         <OpenProjectBadge issue={issue} />
         <BlockedBadge issue={issue} />
         <AssigneeMenu issue={issue} isDisabled={locked} className="-mr-0.5 ml-auto" />

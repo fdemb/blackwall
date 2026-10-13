@@ -278,10 +278,14 @@ fn push_issue_order(q: &mut QueryBuilder<'_, Postgres>, filter: &IssueFilter) {
     });
 }
 
-fn issue_number_search(search: &str) -> Option<i64> {
+/// A search for an issue number, bare or `#`-prefixed, or for a key such as `ENG-42`.
+fn issue_number_search(search: &str) -> Option<(Option<String>, i64)> {
+    if let Some((key, number)) = crate::domain::parse_issue_key(search.trim()) {
+        return Some((Some(key), number as i64));
+    }
     let raw = search.trim_start_matches('#');
     let number = raw.parse::<i64>().ok()?;
-    (number > 0 && number.to_string() == raw).then_some(number)
+    (number > 0 && number.to_string() == raw).then_some((None, number))
 }
 
 fn push_issue_search(
@@ -309,10 +313,17 @@ fn push_issue_search(
     q.push(" AND (i.title || ' ' || i.description) ILIKE ")
         .push_bind(pattern)
         .push(" ESCAPE E'\\\\'");
-    if let Some(number) = issue_number_search(search) {
+    if let Some((key, number)) = issue_number_search(search) {
         q.push(" UNION SELECT i.id FROM issues i WHERE ");
         push_issue_filters(q, workspace, filter, clauses)?;
         q.push(" AND i.number=").push_bind(number);
+        if let Some(key) = key {
+            q.push(" AND i.team_id=(SELECT t.id FROM teams t WHERE t.workspace_id=")
+                .push_bind(workspace)
+                .push(" AND t.key=")
+                .push_bind(key)
+                .push(")");
+        }
     }
     q.push("), ");
     Ok(())
@@ -499,7 +510,7 @@ pub(super) async fn collection_on(
 impl Store {
     pub async fn list_workspaces(&self, actor: Uuid) -> Result<Vec<Value>> {
         let rows = sqlx::query!(
-            "SELECT w.id,w.name,w.version FROM workspaces w JOIN workspace_members m ON m.workspace_id=w.id WHERE m.user_id=$1 ORDER BY w.name,w.id",
+            "SELECT w.id,w.name,w.slug,w.version FROM workspaces w JOIN workspace_members m ON m.workspace_id=w.id WHERE m.user_id=$1 ORDER BY w.name,w.id",
             actor,
         )
         .fetch_all(&self.pool)
@@ -507,7 +518,7 @@ impl Store {
 
         Ok(rows
             .into_iter()
-            .map(|row| json!({"id":row.id,"name":row.name,"version":row.version}))
+            .map(|row| json!({"id":row.id,"name":row.name,"slug":row.slug,"version":row.version}))
             .collect())
     }
 
@@ -516,26 +527,40 @@ impl Store {
         authorize(&mut conn, workspace, actor).await?;
 
         let row = sqlx::query!(
-            "SELECT id,name,version FROM workspaces WHERE id=$1",
+            "SELECT id,name,slug,version FROM workspaces WHERE id=$1",
             workspace,
         )
         .fetch_one(&mut *conn)
         .await?;
 
-        Ok(json!({"workspace":{"id":row.id,"name":row.name,"version":row.version}}))
+        Ok(json!({"workspace":{"id":row.id,"name":row.name,"slug":row.slug,"version":row.version}}))
     }
 
+    /// Creates a workspace under the first free slug derived from its name.
     pub async fn create_workspace(&self, name: String, actor: Uuid) -> Result<Value> {
-        self.create_workspace_with_key(name, actor, None).await
+        let base = crate::domain::workspace_slug(&name);
+        let taken: Vec<String> =
+            sqlx::query_scalar("SELECT slug FROM workspaces WHERE slug=$1 OR slug LIKE $1 || '-%'")
+                .bind(&base)
+                .fetch_all(&self.pool)
+                .await?;
+        let slug = std::iter::once(base.clone())
+            .chain((2..).map(|n| format!("{base}-{n}")))
+            .find(|slug| !taken.contains(slug))
+            .expect("an unbounded range has a free slug");
+        self.create_workspace_with_key(name, slug, actor, None)
+            .await
     }
 
     pub async fn create_workspace_with_key(
         &self,
         name: String,
+        slug: String,
         actor: Uuid,
         key: Option<String>,
     ) -> Result<Value> {
         text(&name, 200)?;
+        crate::domain::validate_workspace_slug(&slug)?;
 
         let mut tx = self.pool.begin().await?;
         if let Some(key) = &key {
@@ -551,22 +576,32 @@ impl Store {
                 .bind(key)
                 .fetch_one(&mut *tx)
                 .await?;
-            if row.try_get::<String, _>("name")? != name {
+            let result = row.try_get::<Option<Value>, _>("result")?;
+            if row.try_get::<String, _>("name")? != name
+                || result.as_ref().is_some_and(|r| r["slug"] != slug.as_str())
+            {
                 return Err(Error::Conflict(
                     "idempotency key reused for a different workspace".into(),
                 ));
             }
-            if let Some(result) = row.try_get::<Option<Value>, _>("result")? {
+            if let Some(result) = result {
                 return Ok(result);
             }
         }
 
         let id = Uuid::new_v4();
-        sqlx::query("INSERT INTO workspaces(id,name) VALUES($1,$2)")
+        sqlx::query("INSERT INTO workspaces(id,name,slug) VALUES($1,$2,$3)")
             .bind(id)
             .bind(&name)
+            .bind(&slug)
             .execute(&mut *tx)
-            .await?;
+            .await
+            .map_err(|error| match &error {
+                sqlx::Error::Database(db) if db.constraint() == Some("workspaces_slug") => {
+                    Error::Conflict("workspace slug is taken".into())
+                }
+                _ => Error::Database(error),
+            })?;
         sqlx::query(
             "INSERT INTO workspace_members(workspace_id,user_id,role) VALUES($1,$2,'owner')",
         )
@@ -575,7 +610,7 @@ impl Store {
         .execute(&mut *tx)
         .await?;
 
-        let result = json!({"id":id,"name":name,"version":1});
+        let result = json!({"id":id,"name":name,"slug":slug,"version":1});
         if let Some(key) = key {
             sqlx::query("UPDATE workspace_creation_keys SET result=$3 WHERE actor=$1 AND key=$2")
                 .bind(actor)
@@ -720,16 +755,37 @@ impl Store {
             .ok_or(Error::NotFound)
     }
 
-    /// Resolves a workspace-wide issue number, including trashed and archived issues.
-    pub async fn issue_by_number(&self, workspace: Uuid, actor: Uuid, number: i64) -> Result<Uuid> {
+    /// Resolves an issue key such as `ENG-42`, including trashed and archived issues.
+    pub async fn issue_by_key(
+        &self,
+        workspace: Uuid,
+        actor: Uuid,
+        team_key: &str,
+        number: u64,
+    ) -> Result<Uuid> {
         let mut conn = self.pool.acquire().await?;
         authorize(&mut conn, workspace, actor).await?;
-        sqlx::query_scalar("SELECT id FROM issues WHERE workspace_id=$1 AND number=$2")
+        sqlx::query_scalar("SELECT i.id FROM issues i JOIN teams t ON t.id=i.team_id WHERE i.workspace_id=$1 AND t.key=$2 AND i.number=$3")
             .bind(workspace)
-            .bind(number)
+            .bind(team_key)
+            .bind(number as i64)
             .fetch_optional(&mut *conn)
             .await?
             .ok_or(Error::NotFound)
+    }
+
+    /// Every team's key, for rendering issue keys.
+    pub async fn team_keys(&self, workspace: Uuid, actor: Uuid) -> Result<BTreeMap<Uuid, String>> {
+        let mut conn = self.pool.acquire().await?;
+        authorize(&mut conn, workspace, actor).await?;
+        Ok(
+            sqlx::query_as::<_, (Uuid, String)>("SELECT id,key FROM teams WHERE workspace_id=$1")
+                .bind(workspace)
+                .fetch_all(&mut *conn)
+                .await?
+                .into_iter()
+                .collect(),
+        )
     }
 
     pub async fn member_profiles(
@@ -770,7 +826,7 @@ impl Store {
 
         let sql = r#"
 WITH work AS (
- SELECT i.*,s.kind IN ('done','cancelled') AS done FROM issues i JOIN stages s ON s.id=i.stage_id WHERE i.workspace_id=$1
+ SELECT i.*,s.kind IN ('done','cancelled') AS done,t.key || '-' || i.number AS key FROM issues i JOIN stages s ON s.id=i.stage_id JOIN teams t ON t.id=i.team_id WHERE i.workspace_id=$1
 ), minutes AS (
  SELECT e.issue_id,e.user_id,e.minutes,i.team_id,i.project_id FROM time_entries e JOIN work i ON i.id=e.issue_id WHERE e.workspace_id=$1
 ), totals AS (
@@ -785,7 +841,7 @@ WITH work AS (
 ), grouped AS (
  SELECT category,id,sum(minutes)::bigint AS minutes,sum(open_issues)::bigint AS open_issues,sum(effort)::bigint AS effort FROM totals GROUP BY category,id
 ), category_rows AS (
- SELECT category,jsonb_agg(jsonb_build_object('id',g.id,'minutes',g.minutes,'open_issues',g.open_issues,'effort',g.effort) || CASE WHEN category='issues' THEN jsonb_build_object('title',i.title,'number',i.number) ELSE '{}'::jsonb END ORDER BY g.id) AS rows FROM grouped g LEFT JOIN work i ON category='issues' AND i.id=g.id GROUP BY category
+ SELECT category,jsonb_agg(jsonb_build_object('id',g.id,'minutes',g.minutes,'open_issues',g.open_issues,'effort',g.effort) || CASE WHEN category='issues' THEN jsonb_build_object('title',i.title,'number',i.number,'key',i.key) ELSE '{}'::jsonb END ORDER BY g.id) AS rows FROM grouped g LEFT JOIN work i ON category='issues' AND i.id=g.id GROUP BY category
 ), sprint_rows AS (
  SELECT s.id,COALESCE(o.total,count(i.id)) AS total,COALESCE(o.completed,count(i.id) FILTER(WHERE i.done)) AS completed,COALESCE(o.effort,COALESCE(sum(i.estimate),0)::bigint) AS effort FROM sprints s LEFT JOIN sprint_outcomes o ON o.sprint_id=s.id LEFT JOIN work i ON i.sprint_id=s.id AND i.deleted_at IS NULL WHERE s.workspace_id=$1 GROUP BY s.id,o.total,o.completed,o.effort
 ), delivery_rows AS (

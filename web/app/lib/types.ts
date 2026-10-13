@@ -26,6 +26,8 @@ export interface Team {
   id: Id;
   version: number;
   name: string;
+  /** Prefixes the team's issue numbers, as in `ENG-42`. Unique in the workspace. */
+  key: string;
   members: Id[];
   stages: Stage[];
   /** Days after Done before auto-archive. Null means never. */
@@ -131,7 +133,15 @@ export interface Issue {
   blocked_count: number;
   subtask_total: number;
   subtask_completed: number;
-  number: number | null;
+  /**
+   * Counts up per team. A locally created issue carries the client's
+   * prediction until the pull brings the server's.
+   */
+  number: number;
+  /** The team key and number, as in `ENG-42`. Derived on the client. */
+  key: string;
+  /** What URLs name the issue by: its confirmed key, or its id until the server confirms it. */
+  ref: string;
   title: string;
   description: string;
   team_id: Id;
@@ -282,6 +292,8 @@ export interface Activity {
 export interface Workspace {
   id: Id;
   name: string;
+  /** Names the workspace in app URLs. */
+  slug: string;
   members: { user_id: Id; role: Role; version: number }[];
   teams: Team[];
   labels: Label[];
@@ -296,6 +308,8 @@ export interface Workspace {
 export interface WorkspaceSummary {
   id: Id;
   name: string;
+  /** Names the workspace in app URLs. */
+  slug: string;
   version: number;
 }
 export interface MemberProfile {
@@ -344,7 +358,7 @@ export interface Report {
   label_counts: Record<Id, number>;
   project_stats: ProjectStats[];
   total_minutes: number;
-  issues: (Total & { number: number; title: string })[];
+  issues: (Total & { number: number; key: string; title: string })[];
   people: Total[];
   teams: Total[];
   projects: Total[];
@@ -391,7 +405,14 @@ export interface IssuePatch {
   dependencies?: Id[];
 }
 export type Command =
-  | { type: "create_team"; id?: Id; name: string; members: Id[]; default_stage_ids?: Id[] }
+  | {
+      type: "create_team";
+      id?: Id;
+      name: string;
+      key: string;
+      members: Id[];
+      default_stage_ids?: Id[];
+    }
   | { type: "set_team_members"; id: Id; members: Id[] }
   | { type: "set_team_archive"; id: Id; archive_after_days: number | null }
   | { type: "set_team_appearance"; id: Id; icon: TeamIcon; color: TeamColor }

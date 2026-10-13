@@ -7,7 +7,7 @@ import { issueCapabilities } from "~/lib/ownership";
 import { bulkIssueCommands } from "~/lib/bulk-issues";
 import { useIssues } from "~/lib/queries";
 import { QueryStatus } from "~/components/app/query-status";
-import { issueKey, relativeTime } from "~/lib/format";
+import { relativeTime } from "~/lib/format";
 import { useI18n } from "~/lib/i18n";
 import { useWorkspace } from "~/lib/workspace";
 import { useToast } from "~/components/ui/toast";
@@ -76,11 +76,9 @@ export default function ArchivePage() {
                 key={i.id}
                 className="flex min-h-11 items-center gap-3 border-b border-border/70 px-4 py-1 "
               >
-                <span className="w-14 tabular-nums text-muted-foreground">
-                  {issueKey(i.number)}
-                </span>
+                <span className="w-14 tabular-nums text-muted-foreground">{i.key}</span>
                 <Link
-                  to={`/${ws.id}/issue/${i.id}`}
+                  to={`/${ws.slug}/issue/${i.ref}`}
                   className="min-w-0 flex-1 truncate hover:text-foreground"
                 >
                   {i.title}

@@ -91,7 +91,7 @@ async fn workspace(app: &axum::Router, owner: &Session, name: &str) -> Uuid {
         owner,
         "POST",
         "/internal-api/workspaces",
-        Some(json!({"name": name})),
+        Some(json!({"name": name, "slug": Uuid::new_v4().to_string()})),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{result}");
@@ -104,7 +104,7 @@ async fn setup(app: &axum::Router, owner: &Session) -> (Uuid, Uuid) {
         app,
         owner,
         ws,
-        json!({"type": "create_team", "name": "Team", "members": [owner.profile.id]}),
+        json!({"type": "create_team", "name": "Team", "key": "TEA", "members": [owner.profile.id]}),
     )
     .await;
     (ws, team)
@@ -338,7 +338,7 @@ async fn creates_honor_client_chosen_ids() {
         &app,
         &owner,
         ws,
-        json!({"type": "create_team", "id": team_id, "name": "Team", "members": [owner.profile.id]}),
+        json!({"type": "create_team", "id": team_id, "name": "Team", "key": "TEA", "members": [owner.profile.id]}),
         Some(json!({})),
     )
     .await;
@@ -934,6 +934,7 @@ async fn in_memory_model_rejects_cross_collection_ids() {
             Command::CreateTeam {
                 id: None,
                 name: "Team".into(),
+                key: "TEA".into(),
                 members: vec![owner],
                 default_stage_ids: None,
             },
@@ -1040,7 +1041,7 @@ async fn concurrent_imports_in_opposite_order_never_deadlock() {
         &app,
         &owner,
         ws_a,
-        json!({"type": "create_team", "name": "Team", "members": [owner.profile.id]}),
+        json!({"type": "create_team", "name": "Team", "key": "TEA", "members": [owner.profile.id]}),
     )
     .await;
     let ws_b = workspace(&app, &owner, "Import B").await;
@@ -1048,7 +1049,7 @@ async fn concurrent_imports_in_opposite_order_never_deadlock() {
         &app,
         &owner,
         ws_b,
-        json!({"type": "create_team", "name": "Team", "members": [owner.profile.id]}),
+        json!({"type": "create_team", "name": "Team", "key": "TEA", "members": [owner.profile.id]}),
     )
     .await;
 

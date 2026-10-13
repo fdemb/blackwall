@@ -7,7 +7,7 @@ import { Kbd } from "~/components/ui/tooltip";
 import { ApiError } from "~/lib/api";
 import { attachWorkspaceEngine, openWorkspaceEngine } from "~/lib/workspace-engine";
 import { AccessError, UnauthorizedError } from "~/sync/transport";
-import { clearLastWs, writeLastWs } from "~/lib/auth-guard";
+import { clearLastWs, findWorkspace, writeLastWs } from "~/lib/auth-guard";
 import { WorkspaceProvider, useWorkspace } from "~/lib/workspace";
 import { useI18n, type Key } from "~/lib/i18n";
 import { useShortcutsEnabled } from "~/lib/shortcuts";
@@ -16,9 +16,18 @@ import type { Route } from "./+types/workspace";
 
 export async function clientLoader({ params, request }: Route.ClientLoaderArgs) {
   try {
-    const engine = await openWorkspaceEngine(params.ws, request.signal);
-    writeLastWs(params.ws);
-    return { id: params.ws, engine };
+    const summary = await findWorkspace(params.ws);
+    if (!summary) {
+      clearLastWs();
+      throw redirect("/");
+    }
+    if (summary.slug !== params.ws) {
+      const url = new URL(request.url);
+      throw redirect(url.pathname.replace(`/${params.ws}`, `/${summary.slug}`) + url.search);
+    }
+    const engine = await openWorkspaceEngine(summary.id, request.signal);
+    writeLastWs(summary.id);
+    return { id: summary.id, engine };
   } catch (e) {
     if (e instanceof UnauthorizedError) throw redirect("/login");
     if (
@@ -83,9 +92,9 @@ function Workspace() {
   const [palette, setPalette] = useState(false);
   const [help, setHelp] = useState(false);
   // The keydown handler reads through a ref so the single window listener never re-registers.
-  const keyState = useRef({ canWrite, shortcuts, wsId: ws.id, show: create.show, nav });
+  const keyState = useRef({ canWrite, shortcuts, wsSlug: ws.slug, show: create.show, nav });
   useEffect(() => {
-    keyState.current = { canWrite, shortcuts, wsId: ws.id, show: create.show, nav };
+    keyState.current = { canWrite, shortcuts, wsSlug: ws.slug, show: create.show, nav };
   });
   const gTimer = useRef(0);
 
@@ -98,7 +107,7 @@ function Workspace() {
         setPalette((o) => !o);
         return;
       }
-      const { canWrite: writable, shortcuts: enabled, wsId, show, nav: go } = keyState.current;
+      const { canWrite: writable, shortcuts: enabled, wsSlug, show, nav: go } = keyState.current;
       if (!enabled || typing || e.metaKey || e.ctrlKey || e.altKey) return;
       if (e.key === "c" && writable) {
         e.preventDefault();
@@ -115,7 +124,7 @@ function Workspace() {
             p: "projects",
             r: "reports",
           };
-          if (map[ev.key]) void go(`/${wsId}/${map[ev.key]}`);
+          if (map[ev.key]) void go(`/${wsSlug}/${map[ev.key]}`);
           window.removeEventListener("keydown", once);
           window.clearTimeout(gTimer.current);
         };

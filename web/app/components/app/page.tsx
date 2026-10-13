@@ -84,13 +84,13 @@ export function PageCrumb({ to, children }: { to: string; children: React.ReactN
 /** The team a page belongs to, as shown at the start of the header. */
 export function TeamCrumb({
   team,
-  wsId,
+  wsSlug,
 }: {
-  team: Pick<Team, "id" | "name" | "icon" | "color">;
-  wsId: string;
+  team: Pick<Team, "key" | "name" | "icon" | "color">;
+  wsSlug: string;
 }) {
   return (
-    <PageCrumb to={teamPath(wsId, team.id)}>
+    <PageCrumb to={teamPath(wsSlug, team.key)}>
       <span className="inline-flex items-center gap-1.5">
         <TeamIcon team={team} />
         {team.name}

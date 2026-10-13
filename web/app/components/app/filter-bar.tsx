@@ -460,28 +460,39 @@ function ChoiceMenu({
   );
 }
 
+type NamedField = "team_id" | "stage_id" | "labels" | "project_id" | "sprint_id";
+
 /** Names for clause values: people, stages, labels, dates and the rest. */
 function useValueLabels() {
   const { t, lang } = useI18n();
   const { ws, members } = useWorkspace();
   const nameOf = (items: readonly { id: string; name: string }[], id: string) =>
     items.find((item) => item.id === id)?.name ?? "?";
+  const named: Record<NamedField, readonly { id: string; name: string }[]> = {
+    team_id: ws.teams,
+    stage_id: ws.teams.flatMap((x) => x.stages),
+    labels: ws.labels,
+    project_id: ws.projects,
+    sprint_id: ws.sprints,
+  };
+  const isNamed = (field: FilterField): field is NamedField => field in named;
+  const noneLabel = (field: FilterField) => {
+    const key = NONE_LABEL[field];
+    return key ? t(key) : "—";
+  };
+  const dateLabel = (value: string) => {
+    const days = relativeDays(value);
+    if (days === undefined) return fullDate(value, lang);
+    if (days === 0) return t("filter.todayValue");
+    return days > 0 ? t("filter.inDays", { count: days }) : t("filter.daysAgo", { count: -days });
+  };
   return (field: FilterField, value: FilterValue): string => {
-    if (value === null) {
-      const key = NONE_LABEL[field];
-      return key ? t(key) : "—";
-    }
+    if (value === null) return noneLabel(field);
+    if (isNamed(field)) return nameOf(named[field], value);
     switch (field) {
       case "assignee":
       case "created_by":
         return members.find((m) => m.id === value)?.display_name ?? "?";
-      case "team_id":
-        return nameOf(ws.teams, value);
-      case "stage_id":
-        return nameOf(
-          ws.teams.flatMap((x) => x.stages),
-          value,
-        );
       case "stage_kind":
         return STAGE_KINDS.includes(value as StageKind)
           ? t(`stage.kind.${value as StageKind}`)
@@ -490,12 +501,6 @@ function useValueLabels() {
         return PRIORITIES.includes(value as never)
           ? t(`priority.${value as (typeof PRIORITIES)[number]}`)
           : value;
-      case "labels":
-        return nameOf(ws.labels, value);
-      case "project_id":
-        return nameOf(ws.projects, value);
-      case "sprint_id":
-        return nameOf(ws.sprints, value);
       case "parent_id":
       case "dependencies":
         return `#${value.slice(0, 8)}`;
@@ -503,14 +508,8 @@ function useValueLabels() {
         return value;
       case "deadline":
       case "created_at":
-      case "updated_at": {
-        const days = relativeDays(value);
-        if (days === undefined) return fullDate(value, lang);
-        if (days === 0) return t("filter.todayValue");
-        return days > 0
-          ? t("filter.inDays", { count: days })
-          : t("filter.daysAgo", { count: -days });
-      }
+      case "updated_at":
+        return dateLabel(value);
     }
   };
 }

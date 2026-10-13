@@ -654,10 +654,9 @@ describe("regressions F1-G2", () => {
     stop();
   });
 
-  it("base API: baseGet reads through the overlay and number null is allowed", () => {
+  it("base API: baseGet reads through the overlay", () => {
     const store = new SyncStore(testReplay);
-    store.replaceBase({ issues: [makeIssue("a", { title: "Base", number: null })] }, ["issues"]);
-    expect(store.get("issues", "a")?.number).toBeNull();
+    store.replaceBase({ issues: [makeIssue("a", { title: "Base" })] }, ["issues"]);
     expect(store.baseGet("issues", "a")?.title).toBe("Base");
     store.setPending([{ id: 1, name: "set_title", args: { id: "a", title: "Local" }, at: NOW }]);
     expect(store.get("issues", "a")?.title).toBe("Local");

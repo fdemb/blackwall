@@ -107,7 +107,13 @@ describe("server argument fidelity", () => {
 const CREATES = [
   [
     "create_team",
-    { id: TEAM, name: "Team", members: [], default_stage_ids: ["s1", "s2", "s3", "s4"] },
+    {
+      id: TEAM,
+      name: "Team",
+      key: "NEW",
+      members: [],
+      default_stage_ids: ["s1", "s2", "s3", "s4"],
+    },
   ],
   [
     "create_stage",
@@ -163,6 +169,7 @@ describe("create admission fidelity", () => {
           args: {
             id: "new",
             name: "Team",
+            key: "NEW",
             members: [],
             default_stage_ids: [STAGE_BACKLOG, "s2", "s3", "s4"],
           },
@@ -229,7 +236,13 @@ describe("replica capacity fidelity", () => {
       "teams",
       200,
       "create_team",
-      { id: "new", name: "Team", members: [], default_stage_ids: ["s1", "s2", "s3", "s4"] },
+      {
+        id: "new",
+        name: "Team",
+        key: "NEW",
+        members: [],
+        default_stage_ids: ["s1", "s2", "s3", "s4"],
+      },
     ],
     ["labels", 1000, "create_label", { id: "new", name: "Label", color: "red" }],
     ["projects", 1000, "create_project", { id: "new", name: "Project", team_ids: [TEAM] }],

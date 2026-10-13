@@ -14,7 +14,7 @@ import { cn } from "~/lib/utils";
 import { useI18n } from "~/lib/i18n";
 import { sprintStageId } from "~/lib/teams";
 import { useWorkspace } from "~/lib/workspace";
-import type { Id, IssueInput, Priority, Sprint, Stage } from "~/lib/types";
+import type { Id, IssueInput, Priority, Sprint, Stage, Team } from "~/lib/types";
 import { TeamIcon } from "./team-icon";
 // Loaded on demand: the editor (and the markdown renderer it pulls in) is the heaviest part of
 // this dialog, and most opens never touch the description.
@@ -50,10 +50,9 @@ function CreateIssueForm() {
   const { t } = useI18n();
   const nav = useNavigate();
   const toast = useToast();
-  const { ws, me, create, run, upload, offline } = useWorkspace();
-  const myTeam = ws.teams.find((tm) => tm.members.includes(me)) ?? ws.teams[0];
+  const { ws, me, create, run, upload, offline, issueRef } = useWorkspace();
   const d = create.defaults;
-  const [teamId, setTeamId] = useState<Id | undefined>(d.team_id ?? myTeam?.id);
+  const [teamId, setTeamId] = useState<Id | undefined>(() => defaultTeamId(ws.teams, me, d));
   const team = ws.teams.find((x) => x.id === teamId);
   const [stageId, setStageId] = useState<Id | null>(d.stage_id ?? null);
   const [title, setTitle] = useState("");
@@ -68,15 +67,12 @@ function CreateIssueForm() {
   const [deadline, setDeadline] = useState<string | null>(null);
   const [files, setFiles] = useState<File[]>([]);
   const { pending, error, guard } = usePending();
-  const [more, setMore] = useState(Boolean(d.project_id || d.sprint_id || d.labels?.length));
+  const [more, setMore] = useState(() => hasExtendedDefaults(d));
   useDialogDirty(title.trim() !== "" || description !== "" || files.length > 0);
 
   // The picker always shows a stage from the current team. A stale choice, from the defaults or a
   // previous team, falls back to the team's default stage.
-  const effectiveStageId =
-    stageId && team?.stages.some((s) => s.id === stageId)
-      ? stageId
-      : defaultStageId(team?.stages ?? [], sprintId);
+  const effectiveStageId = resolveStageId(team, stageId, sprintId);
   // Backlog issues have no sprint. Picking one side gives way on the other, as the server would.
   const inBacklog = (id: Id | null) => team?.stages.find((s) => s.id === id)?.kind === "backlog";
   const pickStage = (id: Id | null) => {
@@ -88,7 +84,7 @@ function CreateIssueForm() {
     if (id && inBacklog(effectiveStageId)) setStageId(null);
   };
 
-  if (ws.teams.length === 0) return <NeedTeam workspaceId={ws.id} onNavigate={create.hide} />;
+  if (ws.teams.length === 0) return <NeedTeam wsSlug={ws.slug} onNavigate={create.hide} />;
 
   const sprints = ws.sprints.filter(
     (s) => s.team_id === teamId && (s.state === "planned" || s.state === "active"),
@@ -131,7 +127,7 @@ function CreateIssueForm() {
             names: failed.map((f) => f.name).join(", "),
           }),
         );
-      if (id) void nav(`/${ws.id}/issue/${id}`);
+      if (id) void nav(`/${ws.slug}/issue/${issueRef(id)}`);
     });
   const addFiles = (list: FileList | null) => {
     if (!list) return;
@@ -269,6 +265,21 @@ function CreateIssueForm() {
   );
 }
 
+function defaultTeamId(teams: readonly Team[], me: Id, d: Partial<IssueInput>): Id | undefined {
+  const myTeam = teams.find((tm) => tm.members.includes(me)) ?? teams[0];
+  return d.team_id ?? myTeam?.id;
+}
+
+function hasExtendedDefaults(d: Partial<IssueInput>): boolean {
+  return Boolean(d.project_id || d.sprint_id || d.labels?.length);
+}
+
+function resolveStageId(team: Team | undefined, stageId: Id | null, sprintId: Id | null) {
+  return stageId && team?.stages.some((s) => s.id === stageId)
+    ? stageId
+    : defaultStageId(team?.stages ?? [], sprintId);
+}
+
 /**
  * The team's sprint stage for sprint work, else its first planned or backlog stage by position,
  * else its first stage.
@@ -281,13 +292,13 @@ function defaultStageId(stages: readonly Stage[], sprintId: Id | null) {
   return (open ?? stages[0])?.id ?? null;
 }
 
-function NeedTeam({ workspaceId, onNavigate }: { workspaceId: Id; onNavigate: () => void }) {
+function NeedTeam({ wsSlug, onNavigate }: { wsSlug: string; onNavigate: () => void }) {
   const { t } = useI18n();
   return (
     <div className="py-6 text-center">
       <p className=" text-muted-foreground">{t("issue.needTeam")}</p>
       <Link
-        to={`/${workspaceId}/settings/teams`}
+        to={`/${wsSlug}/settings/teams`}
         onClick={onNavigate}
         className="mt-3 inline-block  font-medium text-primary hover:underline"
       >

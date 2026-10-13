@@ -93,15 +93,14 @@ export type SyncIssue = Omit<
   | "blocked_count"
   | "subtask_total"
   | "subtask_completed"
-  | "number"
+  | "key"
+  | "ref"
   | "labels"
   | "dependencies"
   | "followers"
   | "attachments"
   | "source_links"
 > & {
-  /** Null until the server confirms a locally created issue and assigns a number. */
-  number: number | null;
   labels: Id[];
   dependencies: Id[];
   followers: Id[];
@@ -113,6 +112,7 @@ export type SyncIssue = Omit<
 export interface SyncWorkspace {
   id: Id;
   name: string;
+  slug: string;
   version: number;
 }
 
@@ -211,10 +211,8 @@ export function parseTimestamp(
   const outOfRange = () =>
     new Error(strict ? "input is out of range" : `unparseable timestamp ${value}`);
 
-  if (month < 1 || month > 12) throw outOfRange();
-  if (hour > 23 || minute > 59 || second > 60) throw outOfRange();
+  checkFields({ year, month, day, hour, minute, second }, outOfRange);
   const leap = second === 60;
-  if (day < 1 || day > daysInMonth(year, month)) throw outOfRange();
   const zone = probeZone(match[8], value, outOfRange);
 
   const datePart =
@@ -222,7 +220,26 @@ export function parseTimestamp(
     `T${pad(hour, 2)}:${pad(minute, 2)}:${pad(leap ? 59 : second, 2)}`;
   const probe = new Date(`${datePart}${zone}`);
   if (Number.isNaN(probe.getTime())) throw new Error(`unparseable timestamp ${value}`);
-  const utcMillis = probe.getTime() + (leap && format === "microseconds" ? 1000 : 0);
+  return formatUtc(probe.getTime(), leap, fractionRaw, format);
+}
+
+function checkFields(
+  fields: Record<"year" | "month" | "day" | "hour" | "minute" | "second", number>,
+  outOfRange: () => Error,
+): void {
+  const { year, month, day, hour, minute, second } = fields;
+  if (month < 1 || month > 12) throw outOfRange();
+  if (hour > 23 || minute > 59 || second > 60) throw outOfRange();
+  if (day < 1 || day > daysInMonth(year, month)) throw outOfRange();
+}
+
+function formatUtc(
+  probeMillis: number,
+  leap: boolean,
+  fractionRaw: string,
+  format: "microseconds" | "chrono",
+): string {
+  const utcMillis = probeMillis + (leap && format === "microseconds" ? 1000 : 0);
   const utc = new Date(utcMillis);
   const out =
     `${pad(utc.getUTCFullYear(), 4)}-${pad(utc.getUTCMonth() + 1, 2)}-${pad(utc.getUTCDate(), 2)}` +

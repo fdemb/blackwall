@@ -99,14 +99,14 @@ async fn setup(store: &Store, app: &axum::Router) -> (Session, Uuid, Uuid) {
         &owner,
         "POST",
         "/internal-api/workspaces",
-        Some(json!({"name":"Bootstrap"})),
+        Some(json!({"name":"Bootstrap","slug":Uuid::new_v4().to_string()})),
     )
     .await["workspace"]["id"]);
     let team = created(
         app,
         &owner,
         ws,
-        json!({"type":"create_team","name":"Team","members":[owner.profile.id]}),
+        json!({"type":"create_team","name":"Team", "key": "TEA","members":[owner.profile.id]}),
     )
     .await;
     (owner, ws, team)
@@ -625,11 +625,6 @@ async fn bulk_issues(store: &Store, ws: Uuid, team: Uuid) {
             .unwrap();
     sqlx::query("INSERT INTO issues(id,workspace_id,number,title,description,team_id,stage_id,priority,position,created_at,updated_at) SELECT gen_random_uuid(),$1,n,'Bulk '||n,'',$2,$3,'normal',n*1024,now(),now() FROM generate_series(1,5000) n")
         .bind(ws).bind(team).bind(stage).execute(&store.pool).await.unwrap();
-    sqlx::query("UPDATE workspaces SET next_issue_number=5001 WHERE id=$1")
-        .bind(ws)
-        .execute(&store.pool)
-        .await
-        .unwrap();
 }
 
 async fn open_snapshots(store: &Store) -> i64 {
@@ -884,7 +879,7 @@ async fn bootstrap_and_scope_reject_invalid_requests_and_client_owners() {
         &owner,
         "POST",
         "/internal-api/workspaces",
-        Some(json!({"name":"Other"})),
+        Some(json!({"name":"Other","slug":"other"})),
     )
     .await["workspace"]["id"]);
     let clients = [Uuid::new_v4(), Uuid::new_v4()];
@@ -1065,12 +1060,6 @@ async fn bulk_issues_n(store: &Store, ws: Uuid, team: Uuid, n: i64) {
             .unwrap();
     sqlx::query("INSERT INTO issues(id,workspace_id,number,title,description,team_id,stage_id,priority,position,created_at,updated_at) SELECT gen_random_uuid(),$1,n,'Bulk '||n,'',$2,$3,'normal',n*1024,now(),now() FROM generate_series(1,$4) n")
         .bind(ws).bind(team).bind(stage).bind(n).execute(&store.pool).await.unwrap();
-    sqlx::query("UPDATE workspaces SET next_issue_number=$2 WHERE id=$1")
-        .bind(ws)
-        .bind(n + 1)
-        .execute(&store.pool)
-        .await
-        .unwrap();
 }
 
 #[tokio::test]

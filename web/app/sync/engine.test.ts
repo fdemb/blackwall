@@ -69,6 +69,7 @@ function fixture(
     type: "create_team",
     id: TEAM,
     name: "Team",
+    key: "TEA",
     members: [owner.id, peer.id],
     default_stage_ids: [id(10), id(11), id(12), id(13)],
   });
@@ -259,7 +260,7 @@ describe("sync engine", () => {
     const f = fixture();
     await f.ready();
     f.engine.stop();
-    const team = await f.engine.mutate("create_team", { name: "Offline team" });
+    const team = await f.engine.mutate("create_team", { name: "Offline team", key: "OFF" });
     expect(team.id).toBe(id(100));
     expect(f.engine.store.get("teams", id(100))?.stages.map((stage) => stage.id)).toEqual([
       id(101),
@@ -681,7 +682,7 @@ describe("sync engine", () => {
       input: { title: "Created", team_id: TEAM },
     });
     expect(receipt.id).toBe(id(100));
-    expect(f.engine.store.get("issues", id(100))?.number).toBeNull();
+    expect(f.engine.store.get("issues", id(100))?.number).toBe(3);
     expect(f.engine.status.get().pending).toBe(1);
     expect(await receipt.settled).toBe("applied");
     await until(() => f.engine.status.get().pending === 0);

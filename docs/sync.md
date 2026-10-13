@@ -227,7 +227,7 @@ The leader runs bootstrap, pull and scope requests one at a time through one que
 1. **Client ids on creates.** Every create command takes an `id` chosen by the client: `create_team`, `create_stage`, `create_label`, `create_project`, `create_milestone`, `create_sprint`, `create_issue` through `IssueInput`, `add_comment`, `log_time`, `save_view` and `create_integration`. `create_team` also takes `default_stage_ids`, chosen by the client for its default stages in server order. A collision is a business error. The client can create an issue and a sub-issue offline before the server has seen either.
 2. **Optional preconditions.** `expected_versions` becomes optional on the REST command, upload and import endpoints. Absent means last-writer-wins. REST clients that send versions keep getting 409 on a stale version. Sync never sends them.
 3. **Field-level writes.** An `update_issue` patch writes only the fields it names. Two clients editing different fields of the same issue both win. Bulk edits follow the same rule.
-4. **Issue numbers** stay server-assigned. A locally created issue has no number until the pull that confirms it.
+4. **Issue numbers** count up per team. The server gives a new issue its team's highest number plus one, locking the team row so concurrent creates serialize. The client predicts the same rule from its replica, which holds every issue including trash and archive, so a locally created issue has a key such as `ENG-42` right away. When another client took that number first, the pull brings the server's number and the replay renumbers the remaining pending issues. A predicted key is only shown, never put in a URL: links name an unconfirmed issue by its id, and keys in URLs resolve only among confirmed numbers. Once the server confirms an issue, its page replaces the id URL with the key.
 5. **Endpoints.** Add bootstrap, pull, push, scope and events as specified above. Remove `GET /changes`.
 6. **Sessions.** Add a random, non-secret `public_id` to sessions and return it from `GET /internal-api/me` as `session_id`. It names the replica. It must never authenticate anything.
 7. **Docs.** Update the API section of `README.md` and `docs/architecture.md` as endpoints change.
@@ -252,7 +252,7 @@ One mutator per command in the `Command` union in `web/app/lib/types.ts`, with t
 - A pending mutation may carry `local`: data captured at admission, stored with the mutation and never sent. Replay uses it where re-deriving would change the command's meaning, such as the notifications "mark all read" applied to.
 - Idempotent in effect: set values, never toggle or increment. Running a mutation twice locally must give the same view as running it once.
 - Check what the client can know: the actor's role, the ownership policy in `web/app/lib/ownership.ts` for OpenProject-imported issues, and references to records that exist. A failed check throws before the mutation enters the outbox, and the UI shows the error right away.
-- Predict only what the client can compute. Server-only values such as issue numbers, notifications, activity rows and positions for `move_issue` with no `before_id` either take placeholders or are left for the server. The pull corrects them.
+- Predict only what the client can compute. Server-only values such as sprint numbers, notifications, activity rows and positions for `move_issue` with no `before_id` either take placeholders or are left for the server. The pull corrects them.
 - Commands with server-generated secrets or bulk server work don't get mutators. See online-only operations below.
 
 > A mutator runs in one of two modes. **Admit** runs once when the user issues the command, against the current view; a failure there rejects the edit before it reaches the outbox and is shown to the user. **Replay** runs on every rebase; a command whose effect is already in place, because the server applied it before acknowledging it, is a no-op there. Replay errors are diagnostics and are never shown to the user; the user learns about a server rejection from the push result. Before either mode, the engine normalizes command arguments the way the server deserializes them: an absent field gets the server's default, and `null` is dropped except where the server gives it a meaning of its own, such as a team's `archive_after_days`.
@@ -308,7 +308,7 @@ Some commands aren't queued offline: `invite`, `resend_invitation`, `create_inte
 
 - Reports stay a server read through TanStack Query. Refetch after a pull that touched issues or time entries, debounced. Offline, show the last result.
 - `inbox_unread` and issue counts come from the replica.
-- Issue search, people search and the command palette search the replica: title, description and issue number for issues. Local search splits text into runs of letters, marks and digits, so it can differ from the server's full-text search on punctuation-heavy text such as URLs and file paths.
+- Issue search, people search and the command palette search the replica: title, description, issue number and key for issues. Local search splits text into runs of letters, marks and digits, so it can differ from the server's full-text search on punctuation-heavy text such as URLs and file paths.
 - OpenProject connection settings stay a TanStack Query read.
 
 ### React bindings
@@ -344,7 +344,7 @@ Shape the hooks so call sites change little, but design them from this document,
 ### Engine, in Node
 
 - Each mutator against fixture state.
-- **Convergence.** Two or three engines run against an in-memory fake server that implements this protocol and applies commands with the same mutators plus server-only effects such as issue numbers. Random mutations, random latency, dropped and duplicated responses, and killed and reloaded clients mid-push. Once traffic stops, every replica's view must equal the server's state. Run it with fixed seeds in CI and print the seed on failure.
+- **Convergence.** Two or three engines run against an in-memory fake server that implements this protocol and applies commands with the same mutators plus server-only effects such as notifications and activity. Random mutations, random latency, dropped and duplicated responses, and killed and reloaded clients mid-push. Once traffic stops, every replica's view must equal the server's state. Run it with fixed seeds in CI and print the seed on failure.
 - Rebase: a pull arriving during a pending mutation keeps the local edit visible until the server reports it.
 - Persistence: reloading at any step resumes without losing or duplicating a mutation. Use an in-memory implementation of the persistence interface, or `fake-indexeddb`.
 - Tabs: two engines sharing one database and a channel allocate distinct ids, and only one pulls.

@@ -183,14 +183,9 @@ async fn configure(
     }
     let previous_people: BTreeMap<String, Uuid> =
         serde_json::from_value(row.try_get("people_mapping")?)?;
-    let people = match config.people_mapping {
-        Some(people) => normalize_people_mapping(people)?,
-        None => previous_people.clone(),
-    };
+    let people =
+        updated_people(&mut tx, workspace, config.people_mapping, &previous_people).await?;
     let people_changed = people != previous_people;
-    if people_changed {
-        validate_people_members(&mut tx, workspace, &people).await?;
-    }
     let previous_enabled: bool = row.try_get("enabled")?;
     let enabled = config.enabled.unwrap_or(previous_enabled);
     let scan_changed = created
@@ -200,12 +195,7 @@ async fn configure(
         || projects_changed
         || people_changed;
     if scan_changed {
-        let generation = row
-            .try_get::<i64, _>("generation")?
-            .checked_add(1)
-            .ok_or_else(|| {
-                Error::Conflict("OpenProject generation exhausted; create a new connection".into())
-            })?;
+        let generation = next_generation(row.try_get("generation")?)?;
         sqlx::query("UPDATE openproject_connections SET name=$3,base_url=$4,token=$5,enabled=$6,projects=$7,people_mapping=$9,generation=$10,checkpoint=$8,next_run_at=clock_timestamp(),status='pending',last_error='',incremental_supported=true WHERE workspace_id=$1 AND id=$2")
             .bind(workspace).bind(id).bind(name).bind(url).bind(token).bind(enabled).bind(json!(projects)).bind(json!(Checkpoint::default())).bind(json!(people)).bind(generation).execute(&mut *tx).await?;
         cancel_pending(&mut tx, id).await?;
@@ -230,6 +220,30 @@ async fn configure(
         enabled, project_count = result.projects.len(), people_override_count = result.people_mapping.len(),
         "OpenProject configuration saved");
     Ok(result)
+}
+
+/// The requested people mapping, normalized and checked against workspace
+/// membership when it differs from the stored one.
+async fn updated_people(
+    conn: &mut PgConnection,
+    workspace: Uuid,
+    requested: Option<BTreeMap<String, Uuid>>,
+    previous: &BTreeMap<String, Uuid>,
+) -> Result<BTreeMap<String, Uuid>> {
+    let Some(requested) = requested else {
+        return Ok(previous.clone());
+    };
+    let people = normalize_people_mapping(requested)?;
+    if &people != previous {
+        validate_people_members(conn, workspace, &people).await?;
+    }
+    Ok(people)
+}
+
+fn next_generation(generation: i64) -> Result<i64> {
+    generation.checked_add(1).ok_or_else(|| {
+        Error::Conflict("OpenProject generation exhausted; create a new connection".into())
+    })
 }
 
 /// Inserts a new connection after checking the required fields and the

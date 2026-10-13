@@ -58,6 +58,10 @@ pub struct Team {
     pub version: i64,
     pub id: Uuid,
     pub name: String,
+    /// Prefixes the team's issue numbers, as in `ENG-42`. Unique in the workspace.
+    /// Transfers without one get a key derived from the name.
+    #[serde(default)]
+    pub key: String,
     pub members: Vec<Uuid>,
     pub stages: Vec<Stage>,
     /// Days after entering Done before auto-archive. Null means never.
@@ -423,6 +427,125 @@ pub(crate) fn validate_team_appearance(icon: &str, color: &str) -> Result<()> {
     Ok(())
 }
 
+/// Top-level app and server paths a workspace slug would shadow.
+const RESERVED_SLUGS: [&str; 9] = [
+    "api",
+    "assets",
+    "health",
+    "internal-api",
+    "login",
+    "mcp",
+    "recover",
+    "register",
+    "welcome",
+];
+
+/// Workspace slugs name the workspace in app URLs: lowercase letters and digits
+/// in hyphen-separated runs, at most 48 bytes.
+pub fn validate_workspace_slug(slug: &str) -> Result<()> {
+    let valid = !slug.is_empty()
+        && slug.len() <= 48
+        && slug.split('-').all(|run| {
+            !run.is_empty()
+                && run
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+        });
+    if !valid {
+        return Err(Error::BadRequest(
+            "slug must be 1 to 48 lowercase letters, digits and single hyphens".into(),
+        ));
+    }
+    if RESERVED_SLUGS.contains(&slug) {
+        return Err(Error::BadRequest("slug is reserved".into()));
+    }
+    Ok(())
+}
+
+/// The slug the app suggests for a workspace name.
+pub fn workspace_slug(name: &str) -> String {
+    let mut slug = String::with_capacity(name.len().min(48));
+    for c in name.chars().map(|c| c.to_ascii_lowercase()) {
+        if c.is_ascii_lowercase() || c.is_ascii_digit() {
+            slug.push(c);
+        } else if !slug.is_empty() && !slug.ends_with('-') {
+            slug.push('-');
+        }
+        if slug.len() == 48 {
+            break;
+        }
+    }
+    let trimmed = slug.trim_end_matches('-').len();
+    slug.truncate(trimmed);
+    if slug.is_empty() {
+        slug.push_str("workspace");
+    } else if RESERVED_SLUGS.contains(&slug.as_str()) {
+        slug.push_str("-workspace");
+    }
+    slug
+}
+
+/// Team keys prefix issue numbers, as in `ENG-42`: an uppercase letter, then
+/// up to three uppercase letters or digits.
+pub fn validate_team_key(key: &str) -> Result<()> {
+    let bytes = key.as_bytes();
+    let valid = (1..=4).contains(&bytes.len())
+        && bytes[0].is_ascii_uppercase()
+        && bytes[1..]
+            .iter()
+            .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit());
+    if valid {
+        Ok(())
+    } else {
+        Err(Error::BadRequest(
+            "team key must be 1 to 4 uppercase letters or digits, starting with a letter".into(),
+        ))
+    }
+}
+
+/// The key the app suggests for a team name: its first three letters or digits,
+/// skipping leading digits.
+pub fn team_key(name: &str) -> String {
+    let key: String = name
+        .chars()
+        .filter(char::is_ascii_alphanumeric)
+        .skip_while(char::is_ascii_digit)
+        .take(3)
+        .map(|c| c.to_ascii_uppercase())
+        .collect();
+    if key.is_empty() { "T".into() } else { key }
+}
+
+/// `base`, or `base` with a number replacing its tail, whichever `taken` lacks first.
+pub(crate) fn unique_team_key(
+    base: &str,
+    taken: &std::collections::BTreeSet<String>,
+) -> Result<String> {
+    if !taken.contains(base) {
+        return Ok(base.into());
+    }
+    (2..1000)
+        .map(|n| {
+            let suffix = n.to_string();
+            format!("{}{suffix}", &base[..base.len().min(4 - suffix.len())])
+        })
+        .find(|key| !taken.contains(key))
+        .ok_or(Error::Conflict("no free team key".into()))
+}
+
+/// An issue key such as `ENG-42`, split into its team key and number.
+/// Case-insensitive; the key comes back uppercase.
+pub fn parse_issue_key(reference: &str) -> Option<(String, u64)> {
+    let (key, digits) = reference.split_once('-')?;
+    let key = key.to_ascii_uppercase();
+    validate_team_key(&key).ok()?;
+    let number = digits
+        .parse::<u64>()
+        .ok()
+        .filter(|n| *n > 0 && n.to_string() == digits)?;
+    Some((key, number))
+}
+
 /// Default stages for a new team, in order. Positions are the index. The sync
 /// client predicts them from client-chosen ids (`CreateTeam::default_stage_ids`).
 pub(crate) fn default_stages() -> [(&'static str, StageKind); 4] {
@@ -512,6 +635,29 @@ pub(crate) fn optional_timestamp(value: Option<DateTime<Utc>>) -> Result<()> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn slugs_and_keys_follow_the_url_rules() {
+        assert_eq!(workspace_slug("  Acme -- R&D 2026 "), "acme-r-d-2026");
+        assert_eq!(workspace_slug("Login"), "login-workspace");
+        assert_eq!(workspace_slug("!!!"), "workspace");
+        for slug in ["", "-acme", "acme-", "a--b", "Acme", "api", &"a".repeat(49)] {
+            assert!(validate_workspace_slug(slug).is_err(), "{slug}");
+        }
+
+        assert_eq!(team_key("2nd line support"), "NDL");
+        assert_eq!(team_key("!!"), "T");
+        for key in ["", "eng", "1AB", "ENGIN", "E-1"] {
+            assert!(validate_team_key(key).is_err(), "{key}");
+        }
+        let taken = ["OPSX".to_string(), "OPS2".to_string()].into();
+        assert_eq!(unique_team_key("OPSX", &taken).unwrap(), "OPS3");
+
+        assert_eq!(parse_issue_key("eng-42"), Some(("ENG".into(), 42)));
+        for reference in ["42", "ENG-042", "ENG-0", "ENGIN-1", "ENG-+1"] {
+            assert_eq!(parse_issue_key(reference), None, "{reference}");
+        }
+    }
+
     fn setup() -> (Workspace, Uuid, Uuid) {
         let owner = Uuid::new_v4();
         let mut w = Workspace::new("Blackwall".into(), owner).unwrap();
@@ -522,6 +668,7 @@ mod tests {
                 Command::CreateTeam {
                     id: None,
                     name: "Infra".into(),
+                    key: "INF".into(),
                     members: vec![owner],
                     default_stage_ids: None,
                 },
@@ -605,6 +752,7 @@ mod tests {
                     Command::CreateTeam {
                         id: Some(chosen),
                         name: "Taken".into(),
+                        key: "TAK".into(),
                         members: vec![],
                         default_stage_ids: None,
                     },

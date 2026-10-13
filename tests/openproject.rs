@@ -280,6 +280,7 @@ async fn setup(store: &Store, owner: &Session) -> (Uuid, Uuid, Uuid) {
                 Command::CreateTeam {
                     id: None,
                     name: name.into(),
+                    key: name.replace("Team ", "T"),
                     members: vec![],
                     default_stage_ids: None,
                 },
@@ -860,11 +861,6 @@ async fn capacity_stops_new_imports_but_existing_work_packages_still_update() {
             .await
             .unwrap();
     sqlx::query("INSERT INTO issues(id,workspace_id,number,title,description,team_id,stage_id,priority,position,created_at,updated_at) SELECT gen_random_uuid(),$1,n,'Filler','',$2,$3,'none',n*1024,clock_timestamp(),clock_timestamp() FROM generate_series(3,5000) n").bind(workspace).bind(team).bind(stage).execute(&store.pool).await.unwrap();
-    sqlx::query("UPDATE workspaces SET next_issue_number=5001 WHERE id=$1")
-        .bind(workspace)
-        .execute(&store.pool)
-        .await
-        .unwrap();
     mock.data.lock().await.moved = true;
     call(&app, &owner, "POST", &format!("{action}/sync"), None).await;
     drain(&store).await;

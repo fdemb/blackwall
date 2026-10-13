@@ -83,6 +83,7 @@ class ConvergenceRun {
       type: "create_team",
       id: this.team,
       name: "Convergence",
+      key: "CON",
       members: this.users.map((user) => user.id),
       default_stage_ids: [this.id(), this.id(), this.id(), this.id()],
     });

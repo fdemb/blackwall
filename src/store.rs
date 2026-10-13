@@ -140,6 +140,16 @@ pub(super) fn id_conflict(error: sqlx::Error) -> Error {
     Error::Database(error)
 }
 
+/// A team insert collides on its id or on its key.
+pub(super) fn team_conflict(error: sqlx::Error) -> Error {
+    if let sqlx::Error::Database(db) = &error
+        && db.constraint() == Some("teams_key")
+    {
+        return Error::Conflict("team key already exists".into());
+    }
+    id_conflict(error)
+}
+
 impl Operation<'_> {
     /// Reserve client-chosen ids across every entity table. Server-generated
     /// ids skip the check. Each id maps to one of 64 buckets by its low bits;
@@ -795,6 +805,7 @@ mod tests {
                 Command::CreateTeam {
                     id: None,
                     name: "Team".into(),
+                    key: "TEA".into(),
                     members: vec![actor],
                     default_stage_ids: None,
                 },

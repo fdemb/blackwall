@@ -50,7 +50,6 @@ export interface FakeServerOptions {
 }
 interface WorkspaceState {
   tables: Tables;
-  nextIssueNumber: number;
 }
 interface ClientState {
   workspace: string;
@@ -205,9 +204,10 @@ export class FakeServer {
   }
 
   addWorkspace(input: Partial<SyncWorkspace> = {}): SyncWorkspace {
-    const record = { id: input.id ?? this.id(), name: "Workspace", version: 1, ...input };
+    const id = input.id ?? this.id();
+    const record = { id, name: "Workspace", slug: `w-${id}`, version: 1, ...input };
     if (this.workspaces.has(record.id)) throw new Error("workspace already exists");
-    const state = { tables: new Tables(), nextIssueNumber: 1 };
+    const state = { tables: new Tables() };
     this.workspaces.set(record.id, state);
     const tx = new Tables(state.tables);
     tx.put("workspace", record);
@@ -281,8 +281,6 @@ export class FakeServer {
     const tx = new Tables(state.tables);
     for (const record of records) tx.put(entity, record as DeepReadonly<RecordOf[E]>);
     this.commit(workspace, tx);
-    for (const issue of tx.all("issues"))
-      state.nextIssueNumber = Math.max(state.nextIssueNumber, (issue.number ?? 0) + 1);
   }
 
   /** Upload fixtures retain private uploader ownership, absent from sync records. */
@@ -781,10 +779,9 @@ export class FakeServer {
             : typeof args.user_id === "string"
               ? args.user_id
               : null;
-    const nextNumber = applyServerOnlyEffects({
+    applyServerOnlyEffects({
       tx,
       before: state.tables,
-      nextIssueNumber: state.nextIssueNumber,
       actor,
       name,
       args,
@@ -828,7 +825,6 @@ export class FakeServer {
       }
     }
     const committed = this.commit(workspace, tx);
-    state.nextIssueNumber = nextNumber;
     return {
       result: { id },
       changes: committed.rows

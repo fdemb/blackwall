@@ -13,7 +13,7 @@ export default function General() {
   const toast = useToast();
   const { ws, role } = useWorkspace();
   const issueCount = useIssueCount();
-  const base = `/${ws.id}/settings`;
+  const base = `/${ws.slug}/settings`;
   const copyId = () =>
     navigator.clipboard.writeText(ws.id).then(
       () => toast.show(t("action.copied")),

@@ -30,7 +30,7 @@ use uuid::Uuid;
 const PROTOCOL_VERSIONS: &[&str] = &["2025-11-25", "2025-06-18", "2025-03-26"];
 
 const INSTRUCTIONS: &str = "Blackwall is a work tracker. Issues belong to a team and sit in one of \
-the team's stages; keys look like BW-42 and are accepted wherever an issue is named. Call \
+the team's stages; keys look like ENG-42 (team key, then number) and are accepted wherever an issue is named. Call \
 get_workspace_overview first to learn team, stage, label, project and member ids. When the token \
 reaches a single workspace, workspace_id may be omitted.";
 
@@ -273,7 +273,7 @@ fn workspace_id() -> Value {
 }
 
 fn issue_ref() -> Value {
-    json!({ "type": "string", "description": "Issue key such as BW-42, or its UUID." })
+    json!({ "type": "string", "description": "Issue key such as ENG-42, or its UUID." })
 }
 
 fn issue_fields() -> Value {
@@ -495,6 +495,7 @@ async fn overview(store: &Store, scope: Scope) -> Result<Value> {
         "teams": teams.data.iter().map(|t| json!({
             "id": t.id,
             "name": t.name,
+            "key": t.key,
             "stages": t.stages.iter().map(|s| json!({ "id": s.id, "name": s.name, "kind": s.kind })).collect::<Vec<_>>(),
         })).collect::<Vec<_>>(),
         "labels": labels.data.iter().map(|l| json!({ "id": l.id, "name": l.name })).collect::<Vec<_>>(),

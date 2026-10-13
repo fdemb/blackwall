@@ -12,7 +12,7 @@ import { IssuePicker } from "~/components/app/issue-picker";
 import { StageIcon } from "~/components/app/icons";
 import { isDone, stageOf } from "~/lib/filters";
 import { bytes, MAX_UPLOAD } from "~/lib/format";
-import { IssueKey, issueKeyLength } from "~/components/app/issue-key";
+import { IssueKey, useIssueKeyWidth } from "~/components/app/issue-key";
 import { useI18n } from "~/lib/i18n";
 import { usePending } from "~/lib/use-pending";
 import { useWorkspace } from "~/lib/workspace";
@@ -258,11 +258,11 @@ export function Description({
 function IssueRow({
   issue,
   trailing,
-  keyLength,
+  keyWidth,
 }: {
   issue: Issue;
   trailing?: React.ReactNode;
-  keyLength: number;
+  keyWidth: string | undefined;
 }) {
   const { ws, member } = useWorkspace();
   const st = stageOf(ws, issue);
@@ -270,11 +270,11 @@ function IssueRow({
   return (
     <li className="group flex h-9 items-center gap-2.5 px-3  hover:bg-muted/60">
       <Link
-        to={`/${ws.id}/issue/${issue.id}`}
+        to={`/${ws.slug}/issue/${issue.ref}`}
         className="flex min-w-0 flex-1 items-center gap-2.5 self-stretch"
       >
         {st && <StageIcon kind={st.kind} />}
-        <IssueKey number={issue.number} length={keyLength} className="text-muted-foreground" />
+        <IssueKey value={issue.key} width={keyWidth} className="text-muted-foreground" />
         <span className={cn("truncate", isDone(ws, issue) && "text-muted-foreground line-through")}>
           {issue.title}
         </span>
@@ -304,7 +304,7 @@ export function Subtasks({
   const [title, setTitle] = useState("");
   const { pending, guard } = usePending();
   const done = subs.filter((s) => isDone(ws, s)).length;
-  const keyLength = issueKeyLength(subs);
+  const keyWidth = useIssueKeyWidth(subs);
   // The title is cleared only after the issue exists. If the request fails it stays for another try.
   const submit = () =>
     guard(async () => {
@@ -346,7 +346,7 @@ export function Subtasks({
       )}
       <ul className="divide-y divide-border/70 rounded-lg border border-border">
         {subs.map((s) => (
-          <IssueRow key={s.id} issue={s} keyLength={keyLength} />
+          <IssueRow key={s.id} issue={s} keyWidth={keyWidth} />
         ))}
         {canWrite && (
           <li>
@@ -403,7 +403,7 @@ export function Dependencies({
   const { t } = useI18n();
   const { run, canWrite: workspaceCanWrite } = useWorkspace();
   const canWrite = workspaceCanWrite && issueCapabilities(issue).edit;
-  const keyLength = issueKeyLength([...blockers, ...blocking]);
+  const keyWidth = useIssueKeyWidth([...blockers, ...blocking]);
   const remove = (id: Id) =>
     run({
       type: "update_issue",
@@ -419,7 +419,7 @@ export function Dependencies({
             <IssueRow
               key={b.id}
               issue={b}
-              keyLength={keyLength}
+              keyWidth={keyWidth}
               trailing={
                 removable &&
                 canWrite && (
