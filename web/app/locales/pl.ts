@@ -636,6 +636,12 @@ export const pl = {
     "Ta czynność wymaga połączenia z serwerem. Połącz się ponownie i spróbuj jeszcze raz.",
   "error.outdated": "W innej karcie otwarto nowszą wersję. Odśwież stronę, aby kontynuować.",
   "error.createRejected": "Nie zapisano: {{name}}. {{message}}",
+  "rejected.banner_one": "Serwer odrzucił 1 zmianę. Jej treść jest zachowana.",
+  "rejected.banner_few": "Serwer odrzucił {{count}} zmiany. Ich treść jest zachowana.",
+  "rejected.banner_many": "Serwer odrzucił {{count}} zmian. Ich treść jest zachowana.",
+  "rejected.banner_other": "Serwer odrzucił {{count}} zmiany. Ich treść jest zachowana.",
+  "rejected.review": "Przejrzyj",
+  "rejected.title": "Zmiany odrzucone przez serwer",
 
   "filter.status": "Status",
   "filter.back": "Wszystkie filtry",

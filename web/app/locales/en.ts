@@ -627,6 +627,10 @@ export const en = {
   "error.onlineRequired": "This needs a connection to the server. Reconnect, then try again.",
   "error.outdated": "A newer version is open in another tab. Reload to continue.",
   "error.createRejected": "Not saved: {{name}}. {{message}}",
+  "rejected.banner_one": "The server refused 1 change. Its text is kept here.",
+  "rejected.banner_other": "The server refused {{count}} changes. Their text is kept here.",
+  "rejected.review": "Review",
+  "rejected.title": "Changes the server refused",
 
   "filter.status": "Status",
   "filter.back": "All filters",

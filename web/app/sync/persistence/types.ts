@@ -1,3 +1,4 @@
+import type { Rejection } from "../engine-types";
 import type { Change, Entity } from "../records";
 import type { PendingMutation } from "../store";
 
@@ -24,6 +25,8 @@ export interface LoadedReplica {
   /** Acknowledged mutations whose push result was never received, so a rejection may be unknown. */
   unconfirmed: readonly PendingMutation[];
   scopes: readonly Scope[];
+  /** Rejected commands kept until the user resolves them, ascending by mutation id. */
+  rejected: readonly Rejection[];
 }
 
 /** Each write is one atomic transaction, including its metadata and outbox changes. */
@@ -52,8 +55,11 @@ export interface Replica {
   /**
    * Records that these mutations' push results arrived. Acknowledgement keeps unconfirmed
    * mutations in the outbox, so a result lost with its response can still be asked for.
+   * `rejected` keeps the rejected commands, written in the same transaction.
    */
-  confirm(ids: readonly number[]): Promise<void>;
+  confirm(ids: readonly number[], rejected?: readonly Rejection[]): Promise<void>;
+  /** Forgets a kept rejection once the user restored, retried or dismissed it. */
+  resolveRejection(id: number): Promise<void>;
   close(): void;
 }
 

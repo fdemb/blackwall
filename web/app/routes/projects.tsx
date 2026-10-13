@@ -11,6 +11,7 @@ import { EmptyState, Page, PageHeader, Scroll } from "~/components/app/page";
 import { ProgressBar } from "~/components/app/progress";
 import { useI18n } from "~/lib/i18n";
 import { usePending } from "~/lib/use-pending";
+import { useProjectStats } from "~/lib/stats";
 import { useWorkspace } from "~/lib/workspace";
 import type { Id, Project } from "~/lib/types";
 
@@ -18,12 +19,13 @@ type ProjectSort = "name" | "progress" | "recent";
 
 export default function Projects() {
   const { t } = useI18n();
-  const { ws, canWrite, report } = useWorkspace();
+  const { ws, canWrite } = useWorkspace();
+  const projectStats = useProjectStats();
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState("");
   const [sort, setSort] = useState<ProjectSort>("name");
   const rows = ws.projects.map((p) => {
-    const stats = report.project_stats.find((stats) => stats.id === p.id);
+    const stats = projectStats.get(p.id);
     const total = stats?.total ?? 0;
     const done = stats?.completed ?? 0;
     const touched = stats?.updated_at ? +new Date(stats.updated_at) : 0;

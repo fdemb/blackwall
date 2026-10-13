@@ -244,6 +244,57 @@ function defsFor(entity: Entity): readonly IndexDef[] {
   return INDEX_DEFS.filter((def) => def.entity === entity);
 }
 
+/**
+ * What the replayed outbox read: point keys, index buckets and whole-table
+ * scans. Writes read the current value first, so every written key is here
+ * too. A base change outside this set cannot change any replay's outcome.
+ */
+class ReplayReads {
+  private readonly keys = new Map<Entity, Set<string>>();
+  private readonly buckets = new Map<IndexDef, Set<string>>();
+  private readonly scans = new Set<Entity>();
+
+  clear(): void {
+    this.keys.clear();
+    this.buckets.clear();
+    this.scans.clear();
+  }
+
+  key(entity: Entity, key: string): void {
+    addTo(this.keys, entity, key);
+  }
+
+  bucket(def: IndexDef, bucket: string): void {
+    addTo(this.buckets, def, bucket);
+  }
+
+  scan(entity: Entity): void {
+    this.scans.add(entity);
+  }
+
+  /** Whether a base record going from `before` to `after` is visible to any read. */
+  sees(entity: Entity, key: string, before?: AnyRecord, after?: AnyRecord): boolean {
+    if (this.scans.has(entity) || this.keys.get(entity)?.has(key) === true) return true;
+    return defsFor(entity).some((def) => {
+      const read = this.buckets.get(def);
+      return read !== undefined && (inBuckets(def, before, read) || inBuckets(def, after, read));
+    });
+  }
+}
+
+function addTo<K>(sets: Map<K, Set<string>>, owner: K, value: string): void {
+  let set = sets.get(owner);
+  if (set === undefined) {
+    set = new Set();
+    sets.set(owner, set);
+  }
+  set.add(value);
+}
+
+function inBuckets(def: IndexDef, record: AnyRecord | undefined, read: Set<string>): boolean {
+  return record !== undefined && def.values(record).some((value) => read.has(bucketOf(value)));
+}
+
 interface ViewBucket {
   keys: Set<string>;
   rows: readonly AnyRecord[];
@@ -296,8 +347,9 @@ function replayErrorEqual(a: ReplayError, b: ReplayError): boolean {
 
 /**
  * Base plus an overlay of replayed outbox mutations. Base changes only through
- * replaceBase and applyBase. A base change or an outbox change other than an
- * append rebuilds the overlay from scratch; an append replays only the new tail.
+ * replaceBase and applyBase. A base change the outbox read, or an outbox
+ * change other than an append, rebuilds the overlay from scratch; an append
+ * replays only the new tail.
  */
 export class SyncStore {
   private readonly replay: ReplayFn;
@@ -322,6 +374,10 @@ export class SyncStore {
   private isInRebase = false;
   private needsRebase = false;
   private activeJournal: Journal | null = null;
+  /** Reads of the mutations the overlay reflects. */
+  private readonly reads = new ReplayReads();
+  /** Set while replaying, so admission dry runs don't record reads. */
+  private recording: ReplayReads | null = null;
 
   /** Test-only counters: lazy rebuilds, base rows visited by table scans, and replayed mutations. Never reset by the store. */
   readonly debug = { allRebuilds: 0, indexRebuilds: 0, baseScans: 0, replays: 0 };
@@ -330,11 +386,14 @@ export class SyncStore {
     this.replay = replay;
     for (const entity of ENTITIES) this.allCache[entity] = { rows: EMPTY, dirty: false };
     this.tx = {
-      get: <E extends Entity>(entity: E, key: string): DeepReadonly<RecordOf[E]> | undefined =>
-        this.viewOf(entity, key) as unknown as DeepReadonly<RecordOf[E]> | undefined,
+      get: <E extends Entity>(entity: E, key: string): DeepReadonly<RecordOf[E]> | undefined => {
+        this.recording?.key(entity, key);
+        return this.viewOf(entity, key) as unknown as DeepReadonly<RecordOf[E]> | undefined;
+      },
       put: <E extends Entity>(entity: E, record: DeepReadonly<RecordOf[E]>): void => {
         this.assertEntity(entity);
         const key = keyOf(entity, record as unknown as RecordOf[E]);
+        this.recording?.key(entity, key);
         const current = this.viewOf(entity, key);
         const clean = ingest(entity, record);
         if (current !== undefined && deepEqual(current, clean)) return;
@@ -343,6 +402,7 @@ export class SyncStore {
       },
       delete: (entity: Entity, key: string): void => {
         this.assertEntity(entity);
+        this.recording?.key(entity, key);
         if (this.viewOf(entity, key) === undefined) return;
         this.journalTouch(entity, key);
         this.overlay[entity].set(key, TOMBSTONE);
@@ -354,6 +414,7 @@ export class SyncStore {
       ): readonly DeepReadonly<RecordOf[E]>[] => {
         const def = requireDef(entity, index as string);
         const bucket = bucketOf(value);
+        this.recording?.bucket(def, bucket);
         const baseBucket = this.baseIndexes.get(def)?.get(bucket);
         const out: AnyRecord[] = [];
         if (baseBucket !== undefined) {
@@ -372,6 +433,7 @@ export class SyncStore {
       },
       all: <E extends Entity>(entity: E): readonly DeepReadonly<RecordOf[E]>[] => {
         this.assertEntity(entity);
+        this.recording?.scan(entity);
         return this.scanView(entity) as unknown as readonly DeepReadonly<RecordOf[E]>[];
       },
     };
@@ -712,8 +774,7 @@ export class SyncStore {
   }
 
   private rebaseOnce(): void {
-    const append = this.dirtyBase.size === 0 && startsWith(this.pendingList, this.replayed);
-    const prior = append ? this.replayFrom(this.replayed.length) : this.replayAll();
+    const prior = this.replayChanges();
     this.replayed = this.pendingList;
     const changed = this.diffView(prior);
     this.dirtyBase.clear();
@@ -753,6 +814,32 @@ export class SyncStore {
     for (const listener of [...this.listeners]) listener(snapshot);
   }
 
+  /**
+   * Replays only the appended tail when the outbox grew and no base change
+   * reaches a read of the replayed mutations; their overlay is then the same
+   * on the new base. Anything else replays the whole outbox.
+   */
+  private replayChanges(): Journal {
+    if (!startsWith(this.pendingList, this.replayed) || this.baseReachesReplay()) {
+      return this.replayAll();
+    }
+    const prior: Journal = new Map();
+    for (const [entity, table] of this.dirtyBase) {
+      prior.set(entity, new Map([...table.keys()].map((key) => [key, undefined])));
+    }
+    mergeJournal(prior, this.replayFrom(this.replayed.length));
+    return prior;
+  }
+
+  private baseReachesReplay(): boolean {
+    for (const [entity, table] of this.dirtyBase) {
+      for (const [key, before] of table) {
+        if (this.reads.sees(entity, key, before, this.base[entity].get(key))) return true;
+      }
+    }
+    return false;
+  }
+
   /** Replays the whole outbox into a fresh overlay. Returns every key in the old or new overlay or changed in base. */
   private replayAll(): Journal {
     const prior: Journal = new Map();
@@ -765,6 +852,7 @@ export class SyncStore {
     }
     this.overlay = emptyTables<OverlayValue>();
     this.errors = new Map();
+    this.reads.clear();
     mergeJournal(prior, this.replayFrom(0));
     return prior;
   }
@@ -776,6 +864,7 @@ export class SyncStore {
     for (const mutation of this.pendingList.slice(start)) {
       const journal: Journal = new Map();
       this.activeJournal = journal;
+      this.recording = this.reads;
       this.debug.replays += 1;
       try {
         this.replay(this.tx, mutation);
@@ -784,6 +873,7 @@ export class SyncStore {
         this.errors.set(mutation.id, toReplayError(error));
       } finally {
         this.activeJournal = null;
+        this.recording = null;
       }
       mergeJournal(touched, journal);
     }

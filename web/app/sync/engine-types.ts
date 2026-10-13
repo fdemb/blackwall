@@ -67,7 +67,10 @@ export interface EngineStatus {
   /** A protocol error stopped pushing or pulling, so the outbox can't drain until unblock(). */
   blocked: boolean;
   lastError: Error | null;
+  /** Rejections reported during this engine's life. */
   rejected: readonly Rejection[];
+  /** Rejected commands kept in the replica until the user resolves them, across reloads. */
+  unresolved: readonly Rejection[];
 }
 
 export type EngineEvent =

@@ -24,10 +24,18 @@ export const keys = {
 export const reportQuery = (ws: Id) =>
   queryOptions({ queryKey: keys.report(ws), queryFn: () => workspaces.report(ws) });
 
+/**
+ * Marks the report stale after server-side issue or time changes. A local edit grows the outbox and
+ * the server totals don't move until it is confirmed, which shrinks the outbox again.
+ */
 export function watchReportChanges(store: SyncStore, workspaceId: Id): () => void {
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let pending = store.pending().length;
   const unsubscribe = store.subscribe((event) => {
-    if (!event.entities.has("issues") && !event.entities.has("time_entries")) return;
+    const before = pending;
+    pending = store.pending().length;
+    const touched = event.entities.has("issues") || event.entities.has("time_entries");
+    if (pending > before || (pending === before && !touched)) return;
     clearTimeout(timer);
     timer = setTimeout(() => {
       void queryClient.invalidateQueries({ queryKey: keys.report(workspaceId) });

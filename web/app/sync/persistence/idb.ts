@@ -1,3 +1,4 @@
+import type { Rejection } from "../engine-types";
 import { ENTITIES } from "../records";
 import type { PendingMutation } from "../store";
 import {
@@ -21,9 +22,11 @@ import type {
 } from "./types";
 
 /** Store layout version, independent of the client record/index schema in meta. */
-export const IDB_VERSION = 2;
+export const IDB_VERSION = 3;
 const META_KEY = "replica";
-const STORES = ["meta", ...ENTITIES, "outbox", "scopes"];
+const STORES = ["meta", ...ENTITIES, "outbox", "scopes", "rejected"];
+/** Stores that hold the user's own work, kept across layout upgrades. */
+const KEPT_STORES = ["meta", "outbox", "rejected"];
 /** The index on each scoped entity, named after the field that holds its scope id. */
 const SCOPE_INDEX = { comments: "issue_id", activity: "entity_id" } as const;
 
@@ -119,7 +122,8 @@ class IndexedDBReplica implements Replica {
       let meta: ReplicaMeta;
       let stored: StoredMutation[] = [];
       let scopes: Scope[] = [];
-      let remaining = ENTITIES.length + 3;
+      let rejected: Rejection[] = [];
+      let remaining = ENTITIES.length + 4;
       const received = () => {
         remaining -= 1;
         if (remaining > 0) return;
@@ -131,6 +135,7 @@ class IndexedDBReplica implements Replica {
           outbox: rows.filter((mutation) => !acknowledged(mutation)),
           unconfirmed: rows.filter(acknowledged),
           scopes,
+          rejected,
         });
       };
       read<ReplicaMeta | undefined>(tx.objectStore("meta").get(META_KEY), guard, (value) => {
@@ -150,6 +155,10 @@ class IndexedDBReplica implements Replica {
       });
       read<Scope[]>(tx.objectStore("scopes").getAll(), guard, (value) => {
         scopes = value;
+        received();
+      });
+      read<Rejection[]>(tx.objectStore("rejected").getAll(), guard, (value) => {
+        rejected = value;
         received();
       });
     });
@@ -317,8 +326,9 @@ class IndexedDBReplica implements Replica {
     });
   }
 
-  confirm(ids: readonly number[]): Promise<void> {
-    return this.transaction(["meta", "outbox"], "readwrite", (tx, done, guard) => {
+  confirm(ids: readonly number[], rejected: readonly Rejection[] = []): Promise<void> {
+    return this.transaction(["meta", "outbox", "rejected"], "readwrite", (tx, done, guard) => {
+      for (const rejection of rejected) tx.objectStore("rejected").put(rejection);
       read<ReplicaMeta>(tx.objectStore("meta").get(META_KEY), guard, (meta) => {
         const outbox = tx.objectStore("outbox");
         for (const id of ids) {
@@ -332,6 +342,13 @@ class IndexedDBReplica implements Replica {
         }
         done(undefined);
       });
+    });
+  }
+
+  resolveRejection(id: number): Promise<void> {
+    return this.transaction(["rejected"], "readwrite", (tx, done) => {
+      tx.objectStore("rejected").delete(id);
+      done(undefined);
     });
   }
 
@@ -376,9 +393,9 @@ export class IndexedDBReplicaStorage implements ReplicaStorage {
         const db = request.result;
         const tx = request.transaction;
         if (tx === null) throw new Error("replica upgrade transaction is missing");
-        // Changing the meta or outbox format requires an explicit migration.
+        // Changing the format of a kept store requires an explicit migration.
         for (const name of [...db.objectStoreNames]) {
-          if (name !== "meta" && name !== "outbox") db.deleteObjectStore(name);
+          if (!KEPT_STORES.includes(name)) db.deleteObjectStore(name);
         }
         if (db.objectStoreNames.contains("meta")) {
           const guard: Guard = (fn) => {
@@ -403,6 +420,8 @@ export class IndexedDBReplicaStorage implements ReplicaStorage {
         }
         if (!db.objectStoreNames.contains("outbox"))
           db.createObjectStore("outbox", { keyPath: "id" });
+        if (!db.objectStoreNames.contains("rejected"))
+          db.createObjectStore("rejected", { keyPath: "id" });
         db.createObjectStore("scopes");
       };
       request.onsuccess = () => {

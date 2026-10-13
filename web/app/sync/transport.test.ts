@@ -22,6 +22,7 @@ const TEAM = id(2);
 const ISSUE = id(3);
 const HEADER = { cursor: "10:10:", last_mutation_id: 0, schema: 1 };
 const POKE = { event: "poke", data: {} };
+const KEEPALIVE = { event: "keepalive" };
 const COMMENT_SCOPE: Scope = { entity: "comments", issueId: ISSUE };
 
 describe("review regressions", () => {
@@ -486,15 +487,17 @@ describe("bootstrap stream validation", () => {
 });
 
 describe("event streams", () => {
-  it("yields the initial poke and commit pokes, and ignores fake keepalive comments", async () => {
+  it("yields the initial poke, keep-alive comments and commit pokes", async () => {
     const f = fixture({ events: { keepaliveMs: 100 } });
     const abort = new AbortController();
     const events = iterator(
       await f.transport.events(f.workspace.id, CLIENT, { signal: abort.signal }),
     );
     expect(await events.next()).toEqual({ done: false, value: POKE });
-    const next = events.next();
+    const keepalive = events.next();
     f.server.advance(100);
+    expect(await keepalive).toEqual({ done: false, value: KEEPALIVE });
+    const next = events.next();
     let resolved = false;
     void next.then(() => {
       resolved = true;
@@ -503,7 +506,8 @@ describe("event streams", () => {
     expect(resolved).toBe(false);
     await f.transport.push(f.workspace.id, CLIENT, [label(1)]);
     f.server.advance(150);
-    expect(await next).toEqual({ done: false, value: POKE });
+    expect(await next).toEqual({ done: false, value: KEEPALIVE });
+    expect(await events.next()).toEqual({ done: false, value: POKE });
     abort.abort();
     expect(await events.next()).toMatchObject({ done: true });
   });
@@ -512,7 +516,12 @@ describe("event streams", () => {
     const text =
       "\uFEFF: keepalive\r\n\r\nretry: 1000\r\nid: 42\r\nunknown: ignored\r\nevent: ignored\r\nevent: poke\r\ndata: {\r\ndata: }\r\n\r\nevent: poke\rdata:{}\r\revent: poke\ndata: {}\n\n";
     const transport = responseTransport(byteResponse(text, "text/event-stream; charset=utf-8"));
-    expect(await collect(await transport.events(id(50), CLIENT))).toEqual([POKE, POKE, POKE]);
+    expect(await collect(await transport.events(id(50), CLIENT))).toEqual([
+      KEEPALIVE,
+      POKE,
+      POKE,
+      POKE,
+    ]);
   });
 
   it("discards unknown events, events without data and an incomplete event at EOF", async () => {

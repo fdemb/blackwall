@@ -1,3 +1,4 @@
+import type { Rejection } from "../engine-types";
 import { ENTITIES } from "../records";
 import type { Entity } from "../records";
 import type { PendingMutation } from "../store";
@@ -27,6 +28,7 @@ interface State {
   /** Outbox ids whose push results arrived. */
   confirmed: Set<number>;
   scopes: Map<string, Scope>;
+  rejected: Map<number, Rejection>;
 }
 
 /** Acknowledged mutations leave the outbox once confirmed, like the IndexedDB replica. */
@@ -77,6 +79,7 @@ class MemoryReplica implements Replica {
       outbox: outbox.filter((mutation) => !acknowledged(mutation)),
       unconfirmed: outbox.filter(acknowledged),
       scopes: [...state.scopes.values()],
+      rejected: [...state.rejected.values()].sort((a, b) => a.id - b.id),
     };
   }
 
@@ -178,11 +181,16 @@ class MemoryReplica implements Replica {
     });
   }
 
-  async confirm(ids: readonly number[]): Promise<void> {
+  async confirm(ids: readonly number[], rejected: readonly Rejection[] = []): Promise<void> {
     this.transaction((state) => {
       for (const id of ids) if (state.outbox.has(id)) state.confirmed.add(id);
+      for (const rejection of rejected) state.rejected.set(rejection.id, rejection);
       dropConfirmed(state);
     });
+  }
+
+  async resolveRejection(id: number): Promise<void> {
+    this.transaction((state) => state.rejected.delete(id));
   }
 
   close(): void {
@@ -211,6 +219,7 @@ export class MemoryReplicaStorage implements ReplicaStorage {
           outbox: new Map(),
           confirmed: new Set(),
           scopes: new Map(),
+          rejected: new Map(),
         },
         handles: new Set(),
       };

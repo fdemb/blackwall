@@ -346,6 +346,27 @@ describe("issue SQL ordering", () => {
       expect(ids(store, { group_by: "none" })).toEqual([id(1), id(2), id(3)]);
     },
   );
+  it("a limit keeps the first rows of the full order", () => {
+    const priorities = ["none", "low", "normal", "high", "urgent"] as const;
+    const store = storeOf(
+      Array.from({ length: 40 }, (_, n) =>
+        makeIssue(id(n + 1), {
+          position: (n * 7) % 5,
+          priority: priorities[n % 5],
+          stage_id: `stage-${n % 3}`,
+          updated_at: `2026-10-0${(n % 9) + 1}T12:00:00.000000Z`,
+        }),
+      ),
+    );
+    for (const sort of ["position", "deadline", "updated", "priority"] as const) {
+      for (const group_by of ["none", "stage", "priority"] as const) {
+        const all = filterIssues(store, { sort, group_by });
+        for (const limit of [1, 3, 39, 40, 41]) {
+          expect(filterIssues(store, { sort, group_by }, limit)).toEqual(all.slice(0, limit));
+        }
+      }
+    }
+  });
 });
 
 describe("issue SQL search", () => {

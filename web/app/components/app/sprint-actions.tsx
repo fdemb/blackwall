@@ -10,6 +10,7 @@ import { OPEN, whereIs } from "~/lib/filters";
 import { useI18n } from "~/lib/i18n";
 import { useIssues } from "~/lib/queries";
 import { usePending } from "~/lib/use-pending";
+import { useSprintProgress } from "~/lib/stats";
 import { useWorkspace } from "~/lib/workspace";
 import type { Id, Sprint } from "~/lib/types";
 import { NullableSelect } from "./pickers";
@@ -257,7 +258,7 @@ function CompleteForm({ sprint, close }: { sprint: Sprint; close: () => void }) 
   const [target, setTarget] = useState<Id | null>(null);
   const { pending, error, guard } = usePending();
   const query = useIssues({ where: [whereIs("sprint_id", sprint.id), OPEN] });
-  const stats = useWorkspace().report.sprints.find((stats) => stats.id === sprint.id);
+  const stats = useSprintProgress().get(sprint.id);
   const unfinished = (stats?.total ?? 0) - (stats?.completed ?? 0);
   const options = ws.sprints
     .filter(
