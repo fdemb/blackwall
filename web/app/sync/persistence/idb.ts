@@ -30,7 +30,10 @@ const SCOPE_INDEX = { comments: "issue_id", activity: "entity_id" } as const;
 /** An outbox row. `confirmed` marks a mutation whose push result arrived. */
 type StoredMutation = PendingMutation & { confirmed?: true };
 
-function pendingOf({ confirmed: _, ...mutation }: StoredMutation): PendingMutation {
+function pendingOf(row: StoredMutation): PendingMutation {
+  if (!row.confirmed) return row;
+  const mutation: StoredMutation = { ...row };
+  delete mutation.confirmed;
   return mutation;
 }
 
