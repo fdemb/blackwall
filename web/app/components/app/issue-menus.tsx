@@ -20,7 +20,7 @@ import { useIssuePatch } from "./issue-properties";
 import { LabelDot } from "./pickers";
 
 const NONE = "__none";
-const ESTIMATES = [1, 2, 3, 5, 8, 13];
+export const ESTIMATES = [1, 2, 3, 5, 8, 13];
 
 /**
  * Compact trigger for one property on a card. A disabled chip still shows its value, so it keeps

@@ -213,6 +213,38 @@
 .prose-bw td {
   @apply border border-border px-2 py-1;
 }
+.prose-bw h3 {
+  @apply text-[14px];
+}
+.prose-bw hr {
+  @apply border-border;
+}
+.prose-bw th {
+  @apply bg-muted/50 text-left font-medium;
+}
+
+/* The WYSIWYG editor shares `prose-bw` with rendered markdown and adds editing affordances. */
+.bw-editor {
+  @apply break-words;
+}
+.bw-editor .is-empty::before {
+  content: attr(data-placeholder);
+  @apply pointer-events-none float-left h-0 text-muted-foreground/60;
+}
+.bw-editor li > p,
+.bw-editor th > p,
+.bw-editor td > p {
+  @apply m-0;
+}
+.bw-editor .selectedCell {
+  @apply bg-primary/10;
+}
+.bw-editor hr.ProseMirror-selectednode {
+  @apply border-primary;
+}
+.bw-editor .suggestion {
+  @apply rounded-sm bg-muted;
+}
 
 @media (prefers-reduced-motion: reduce) {
   * {

@@ -31,7 +31,8 @@ import { Avatar } from "~/components/ui/avatar";
 import { Button } from "~/components/ui/button";
 import { ConfirmDialog } from "~/components/app/confirm";
 import { useToast } from "~/components/ui/toast";
-import { Markdown, MarkdownEditor, mentionsIn } from "~/components/app/markdown";
+import { Markdown, mentionsIn } from "~/components/app/markdown";
+import { MarkdownEditor } from "~/components/app/editor/rich-editor";
 import { formatMinutes, MAX_UPLOAD, relativeTime } from "~/lib/format";
 import { useI18n, isTranslationKey, type Key } from "~/lib/i18n";
 import { usePending } from "~/lib/use-pending";
@@ -305,7 +306,7 @@ function CommentItem({ comment: c }: { comment: Comment }) {
                 value={editBody}
                 onChange={setEditBody}
                 autoFocus
-                minRows={3}
+                className="min-h-16"
                 onSubmit={save}
               />
               <ConfirmDialog
@@ -414,7 +415,7 @@ function Composer({ issue, hasItems }: { issue: Issue; hasItems: boolean }) {
         value={body}
         onChange={setBody}
         placeholder={t("comment.placeholder")}
-        minRows={3}
+        className="min-h-16"
         onSubmit={post}
       />
       {files.length > 0 && (

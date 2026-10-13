@@ -5,9 +5,9 @@ import { Download, FileText, Loader2, Lock, Paperclip, Plus, X } from "lucide-re
 import { Avatar } from "~/components/ui/avatar";
 import { Button } from "~/components/ui/button";
 import { Input } from "~/components/ui/field";
-import { ConfirmDialog } from "~/components/app/confirm";
 import { useToast } from "~/components/ui/toast";
-import { Markdown, MarkdownEditor } from "~/components/app/markdown";
+import { Markdown } from "~/components/app/markdown";
+import { MarkdownEditor } from "~/components/app/editor/rich-editor";
 import { IssuePicker } from "~/components/app/issue-picker";
 import { StageIcon } from "~/components/app/icons";
 import { isDone, stageOf } from "~/lib/filters";
@@ -91,9 +91,13 @@ export function TitleField({
   );
 }
 
-/** Descriptions that failed to save, by issue, so reopening the editor brings the text back. */
+/** Descriptions that failed to save, by issue, so coming back to the issue brings the text back. */
 const failedDrafts = new Map<Id, string>();
 
+/**
+ * Always-editable description. Edits save when focus leaves the editor, on Ctrl/Cmd+Enter, and
+ * when the page closes. A failed save keeps the text in place.
+ */
 export function Description({
   issue,
   onSave,
@@ -104,12 +108,12 @@ export function Description({
   const { t } = useI18n();
   const { canWrite: workspaceCanWrite } = useWorkspace();
   const canWrite = workspaceCanWrite && issueCapabilities(issue).edit;
-  // null while not editing.
+  // Unsaved text, or null while the editor shows what the server has.
   const [draft, setDraft] = useState<string | null>(failedDrafts.get(issue.id) ?? null);
-  const [saving, setSaving] = useState(false);
-  const [discarding, setDiscarding] = useState(false);
   const busy = useRef(false);
+  // The version the draft was started from. Retries and follow-up edits move it to the latest.
   const baseVersion = useRef(issue.version);
+  const rebase = useRef(failedDrafts.has(issue.id));
   const box = useRef<HTMLDivElement>(null);
   const latest = useRef({ draft, saved: issue.description, version: issue.version, onSave });
   useEffect(() => {
@@ -117,33 +121,31 @@ export function Description({
   });
   const dirty = draft !== null && draft !== issue.description;
 
-  // The editor closes only once the server has the text. A failed save leaves it open with the draft intact.
+  const edit = (md: string) => {
+    if (latest.current.draft === null) baseVersion.current = issue.version;
+    latest.current.draft = md;
+    setDraft(md);
+  };
   const commit = async () => {
     const { draft: d, saved, onSave: save } = latest.current;
     if (d === null || busy.current) return;
     if (d === saved) {
       failedDrafts.delete(issue.id);
+      latest.current.draft = null;
       return setDraft(null);
     }
     busy.current = true;
-    setSaving(true);
-    if (failedDrafts.has(issue.id)) baseVersion.current = latest.current.version;
+    if (rebase.current) baseVersion.current = latest.current.version;
     const ok = await save(d, baseVersion.current);
     busy.current = false;
-    setSaving(false);
-    if (ok) {
-      failedDrafts.delete(issue.id);
+    rebase.current = !ok || latest.current.draft !== d;
+    if (!ok) return void failedDrafts.set(issue.id, d);
+    failedDrafts.delete(issue.id);
+    // Text typed while the save was in flight stays as the next draft.
+    if (latest.current.draft === d) {
       latest.current.draft = null;
       setDraft(null);
-    } else {
-      failedDrafts.set(issue.id, d);
     }
-  };
-  const cancel = () => (dirty ? setDiscarding(true) : setDraft(null));
-  const discard = () => {
-    failedDrafts.delete(issue.id);
-    latest.current.draft = null;
-    setDraft(null);
   };
   // Leaving the page mid-edit saves the draft, and keeps it for next time if that fails.
   useEffect(
@@ -163,93 +165,35 @@ export function Description({
     return () => removeEventListener("beforeunload", warn);
   }, [dirty]);
 
-  if (draft !== null)
+  if (!canWrite)
     return (
-      <div
-        ref={box}
-        className="space-y-2"
-        onBlur={() =>
-          setTimeout(() => {
-            // Save when focus leaves the editor for the page. Ignore window switches and the mention menu.
-            // Safari doesn't focus clicked buttons, so a pointer still over the editor means a click inside it.
-            const el = document.activeElement;
-            if (
-              !box.current ||
-              !document.hasFocus() ||
-              box.current.contains(el) ||
-              box.current.matches(":hover") ||
-              el?.closest("[role=menu], [role=dialog], [role=alertdialog]")
-            )
-              return;
-            void commit();
-          })
-        }
-        onKeyDown={(e) => {
-          if (e.key === "Escape") {
-            e.stopPropagation();
-            cancel();
-          }
-        }}
-      >
-        <MarkdownEditor
-          label={t("field.description")}
-          value={draft}
-          onChange={setDraft}
-          autoFocus
-          minRows={8}
-          onSubmit={() => void commit()}
-        />
-        <div className="flex justify-end gap-2">
-          <Button variant="ghost" onPress={cancel}>
-            {t("action.cancel")}
-          </Button>
-          <Button variant="primary" isDisabled={saving} onPress={() => void commit()}>
-            {saving ? t("action.saving") : t("action.save")}
-          </Button>
-        </div>
-        <ConfirmDialog
-          title={t("draft.discardTitle")}
-          description={t("draft.discardSub")}
-          confirmLabel={t("draft.discard")}
-          isOpen={discarding}
-          onOpenChange={setDiscarding}
-          onConfirm={async () => discard()}
-        />
+      <div className="min-h-16 py-2">
+        <Markdown text={issue.description} empty={t("issue.noDescription")} />
       </div>
     );
-  // Kept a div (not a <button>) because rendered Markdown can contain links,
-  // which must not live inside a button. Space opens the editor like Enter does.
   return (
     <div
-      role={canWrite ? "button" : undefined}
-      tabIndex={canWrite ? 0 : undefined}
-      aria-label={canWrite ? t("issue.editDescription") : undefined}
-      onClick={(e) => {
-        // Let people follow links and select text without opening the editor.
-        if (
-          !canWrite ||
-          (e.target instanceof Element && e.target.closest("a")) ||
-          getSelection()?.isCollapsed === false
-        )
-          return;
-        baseVersion.current = issue.version;
-        setDraft(issue.description);
+      ref={box}
+      className="-mx-1 min-h-16 rounded-md px-1 py-2"
+      onBlur={(e) => {
+        // Focus moving to the editor's own toolbar or menus is still editing.
+        if (box.current?.contains(e.relatedTarget) || !document.hasFocus()) return;
+        void commit();
       }}
       onKeyDown={(e) => {
-        if (canWrite && (e.key === "Enter" || e.key === " ")) {
-          e.preventDefault();
-          baseVersion.current = issue.version;
-          setDraft(issue.description);
-        }
+        if (e.key !== "Escape" || e.defaultPrevented) return;
+        e.stopPropagation();
+        (document.activeElement as HTMLElement | null)?.blur();
       }}
-      className={cn(
-        "-mx-3 min-h-16 rounded-lg px-3 py-2 outline-none",
-        canWrite && "cursor-text hover:bg-muted/50 focus-visible:ring-2 focus-visible:ring-ring/50",
-      )}
     >
-      <Markdown
-        text={issue.description}
-        empty={canWrite ? t("issue.addDescription") : t("issue.noDescription")}
+      <MarkdownEditor
+        label={t("field.description")}
+        value={draft ?? issue.description}
+        onChange={edit}
+        placeholder={t("issue.addDescription")}
+        appearance="plain"
+        className="min-h-24"
+        onSubmit={() => void commit()}
       />
     </div>
   );
