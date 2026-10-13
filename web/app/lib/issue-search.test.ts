@@ -75,7 +75,7 @@ function disagreements(cases: readonly SearchCase[]): SearchCase[] {
     const issue = makeIssue(id(2), {
       title: item.title,
       description: item.description,
-      number: null,
+      number: 999,
     });
     return matchesSearch(issue, item.search) === expected ? [] : [item];
   });
@@ -83,7 +83,7 @@ function disagreements(cases: readonly SearchCase[]): SearchCase[] {
 
 function matchesCase(item: SearchCase): boolean {
   return matchesSearch(
-    makeIssue(id(2), { title: item.title, description: item.description, number: null }),
+    makeIssue(id(2), { title: item.title, description: item.description, number: 999 }),
     item.search,
   );
 }

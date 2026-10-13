@@ -200,7 +200,7 @@ async fn complete_contract_on_postgres() {
         "POST",
         "/internal-api/workspaces",
         Some(&owner.token),
-        Some(json!({"name":"Infrastructure"})),
+        Some(json!({"name":"Infrastructure","slug":"infrastructure"})),
     )
     .await;
 
@@ -226,6 +226,7 @@ async fn complete_contract_on_postgres() {
         Command::CreateTeam {
             id: None,
             name: "Operations".into(),
+            key: "OPE".into(),
             members: vec![owner.profile.id],
             default_stage_ids: None,
         },
@@ -735,7 +736,7 @@ async fn complete_contract_on_postgres() {
         "POST",
         "/internal-api/workspaces",
         Some(&owner.token),
-        Some(json!({"name":"Imported workspace"})),
+        Some(json!({"name":"Imported workspace","slug":"imported-workspace"})),
     )
     .await;
 
@@ -915,7 +916,7 @@ async fn complete_contract_on_postgres() {
         .uri("/internal-api/workspaces")
         .header("Cookie", format!("blackwall_session={}", owner.token))
         .header("Content-Type", "application/json")
-        .body(Body::from("{\"name\":\"CSRF\"}"))
+        .body(Body::from("{\"name\":\"CSRF\",\"slug\":\"csrf\"}"))
         .unwrap();
 
     assert_eq!(
@@ -929,7 +930,7 @@ async fn complete_contract_on_postgres() {
         .header("Cookie", format!("blackwall_session={}", owner.token))
         .header("X-CSRF-Token", &owner.csrf_token)
         .header("Content-Type", "application/json")
-        .body(Body::from("{\"name\":\"CSRF\"}"))
+        .body(Body::from("{\"name\":\"CSRF\",\"slug\":\"csrf\"}"))
         .unwrap();
 
     assert_eq!(

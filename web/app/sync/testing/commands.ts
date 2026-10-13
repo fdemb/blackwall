@@ -15,7 +15,7 @@ export function uuid(value: unknown, field: string): string {
 }
 
 const required = new Map<string, string[]>([
-  ["create_team", ["name"]],
+  ["create_team", ["name", "key"]],
   ["set_team_members", ["id", "members"]],
   ["set_team_archive", ["id"]],
   ["set_team_appearance", ["id", "icon", "color"]],

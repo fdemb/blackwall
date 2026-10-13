@@ -1202,7 +1202,7 @@ mod tests {
             &store,
             workspace,
             owner,
-            json!({"type":"create_team","name":"Team"}),
+            json!({"type":"create_team","name":"Team", "key": "TEA"}),
             BTreeMap::new(),
         )
         .await

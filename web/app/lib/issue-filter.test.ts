@@ -296,9 +296,9 @@ describe("issue filter clauses", () => {
 });
 
 describe("issue SQL ordering", () => {
-  it("position orders by position, number, then UUID and puts unconfirmed numbers last", () => {
+  it("position orders by position, number, then UUID", () => {
     const store = storeOf([
-      makeIssue(id(4), { position: 0, number: null }),
+      makeIssue(id(4), { position: 0, number: 3 }),
       makeIssue(id(3), { position: 0, number: 2 }),
       makeIssue(id(2), { position: 0, number: 2 }),
       makeIssue(id(1), { position: 1, number: 1 }),
@@ -449,7 +449,7 @@ describe("issue SQL search", () => {
     ["ΟΣΟ", "ΟΣ", true],
     ["ΟΣ", "ΟΣΟ", false],
   ] as const)("matches %j against %j by words", (title, search, expected) => {
-    expect(matchesSearch(makeIssue(id(2), { title, number: null }), search)).toBe(expected);
+    expect(matchesSearch(makeIssue(id(2), { title, number: 999 }), search)).toBe(expected);
   });
   it("limits UTF-8 query bytes and keeps search conjunctive with visibility and other filters", () => {
     const store = storeOf([issue, makeIssue(id(2), { title: issue.title, deleted_at: NOW })]);
@@ -459,7 +459,7 @@ describe("issue SQL search", () => {
     expect(ids(store, { search: "Widget", trash: true })).toEqual([id(2)]);
     expect(() => ids(store, { search: "é".repeat(101) })).toThrow("search query too long");
     expect(ids(store, { search: "x".repeat(200) })).toEqual([]);
-    expect(matchesSearch({ ...issue, number: null }, "#42")).toBe(false);
+    expect(matchesSearch({ ...issue, number: 7 }, "#42")).toBe(false);
   });
 });
 

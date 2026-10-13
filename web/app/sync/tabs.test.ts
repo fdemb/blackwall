@@ -71,6 +71,7 @@ function fixture(count = 2, options: FakeServerOptions = {}) {
     type: "create_team",
     id: TEAM,
     name: "Team",
+    key: "TEA",
     members: [owner.id, peer.id],
     default_stage_ids: [id(10), id(11), id(12), id(13)],
   });

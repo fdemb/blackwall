@@ -32,7 +32,7 @@ export default function Sprints() {
   const progress = useSprintProgress();
   const [creating, setCreating] = useState(false);
   const { pending: archiving, guard } = usePending();
-  const pageOf = (s: Sprint) => sprintPath(ws.id, s);
+  const pageOf = (s: Sprint) => sprintPath(ws.slug, tm.key, s);
   const sprints = ws.sprints.filter((s) => s.team_id === tm.id);
   const open = sprints
     .filter((s) => s.state === "active" || s.state === "planned")
@@ -53,7 +53,7 @@ export default function Sprints() {
         title={`${tm.name}: ${t("team.sprints")}`}
         heading={
           <h1 className="mr-2 flex min-w-0 items-center gap-2">
-            <TeamCrumb team={tm} wsId={ws.id} />
+            <TeamCrumb team={tm} wsSlug={ws.slug} />
             <span aria-hidden="true" className="text-muted-foreground/50">
               /
             </span>

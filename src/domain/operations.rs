@@ -434,8 +434,13 @@ impl Workspace {
     }
 
     fn validate_imported_planning(&self) -> Result<()> {
+        let mut keys = BTreeSet::new();
         for team in &self.teams {
             text(&team.name, 200)?;
+            super::validate_team_key(&team.key)?;
+            if !keys.insert(team.key.as_str()) {
+                return Err(Error::BadRequest("team keys must be unique".into()));
+            }
             super::validate_archive_days(team.archive_after_days)?;
             super::validate_team_appearance(&team.icon, &team.color)?;
             if team.stages.is_empty() || team.stages.len() > 100 {
@@ -519,6 +524,17 @@ impl Workspace {
                 validate_url(&link.url)?;
                 text(&link.title, 500)?;
             }
+        }
+
+        let mut numbers = BTreeSet::new();
+        if self
+            .issues
+            .iter()
+            .any(|i| i.number == 0 || !numbers.insert((i.team_id, i.number)))
+        {
+            return Err(Error::BadRequest(
+                "issue numbers must be positive and unique per team".into(),
+            ));
         }
 
         Ok(())

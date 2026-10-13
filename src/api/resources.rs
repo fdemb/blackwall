@@ -105,6 +105,8 @@ pub async fn me(State(store): State<Store>, actor: ApiActor) -> Result<Json<ApiM
 pub struct ApiWorkspace {
     pub id: Uuid,
     pub name: String,
+    /// Names the workspace in app URLs.
+    pub slug: String,
     /// The token user's role, which bounds what the token can do.
     pub role: Role,
 }
@@ -115,7 +117,7 @@ async fn workspace_rows(
     only: Option<Uuid>,
 ) -> Result<Vec<ApiWorkspace>> {
     sqlx::query(
-        "SELECT w.id,w.name,m.role FROM workspaces w \
+        "SELECT w.id,w.name,w.slug,m.role FROM workspaces w \
          JOIN workspace_members m ON m.workspace_id=w.id \
          WHERE m.user_id=$1 AND ($2::uuid[] IS NULL OR w.id=ANY($2)) AND ($3::uuid IS NULL OR w.id=$3) \
          ORDER BY w.name,w.id",
@@ -130,6 +132,7 @@ async fn workspace_rows(
         Ok(ApiWorkspace {
             id: row.try_get("id")?,
             name: row.try_get("name")?,
+            slug: row.try_get("slug")?,
             role: serde_json::from_value(serde_json::Value::String(row.try_get("role")?))?,
         })
     })
@@ -240,6 +243,9 @@ pub async fn team(
 #[derive(Deserialize, utoipa::ToSchema)]
 pub struct CreateTeam {
     pub name: String,
+    /// Prefixes the team's issue numbers, as in `ENG-42`: an uppercase letter,
+    /// then up to three uppercase letters or digits. Unique in the workspace.
+    pub key: String,
     /// Member user ids. The creator joins automatically.
     #[serde(default)]
     pub members: Vec<Uuid>,
@@ -267,6 +273,7 @@ pub async fn create_team(
         Command::CreateTeam {
             id: None,
             name: body.name,
+            key: body.key,
             members: body.members,
             default_stage_ids: None,
         },

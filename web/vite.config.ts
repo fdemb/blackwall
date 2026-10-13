@@ -11,7 +11,17 @@ export default defineConfig(({ mode }) => {
     lint: {
       plugins: ["react", "react-perf"],
       jsPlugins: [{ name: "vite-plus", specifier: "vite-plus/oxlint-plugin" }],
-      rules: { "vite-plus/prefer-vite-plus-imports": "error" },
+      rules: {
+        "vite-plus/prefer-vite-plus-imports": "error",
+        // Warns above 20. scripts/complexity.mjs fails the check above 30.
+        "eslint/complexity": ["warn", { max: 20 }],
+      },
+      overrides: [
+        {
+          files: ["**/*.test.ts", "**/*.test.tsx", "app/sync/testing/**", "app/sync/contract/**"],
+          rules: { "eslint/complexity": "off" },
+        },
+      ],
       categories: {
         correctness: "error",
       },

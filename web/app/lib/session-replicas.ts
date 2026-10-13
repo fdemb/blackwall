@@ -13,7 +13,7 @@ interface WorkspaceEngine {
 
 // The last session and workspace list the server confirmed, so a reload can open replicas offline.
 const SESSION_KEY = "bw-session:v1";
-const WORKSPACES_KEY = "bw-workspaces:v1";
+const WORKSPACES_KEY = "bw-workspaces:v2";
 
 let storage: IndexedDBReplicaStorage | undefined;
 let session: SessionProfile | null = null;

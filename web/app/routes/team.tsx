@@ -30,24 +30,27 @@ export function useTeamContext() {
 }
 
 export default function Team() {
-  const { teamId } = useParams();
+  const { teamKey } = useParams();
   // Filters live in the layout, so every team view shares them. A new team starts clean.
-  return <TeamLayout key={teamId} />;
+  return <TeamLayout key={teamKey} />;
 }
 
 function TeamLayout() {
   const { t } = useI18n();
-  const { teamId, ws: wsId } = useParams();
+  const { teamKey = "" } = useParams();
   const { pathname } = useLocation();
   const navigate = useNavigate();
-  const { ws, team } = useWorkspace();
+  const { ws } = useWorkspace();
   const state = useQueueState();
-  const tm = team(teamId!);
-  const base = `/${ws.id}/team/${teamId}`;
+  // Older links name the team by id; any case of the key works too.
+  const tm = ws.teams.find((x) => x.key === teamKey.toUpperCase() || x.id === teamKey);
+  const base = `/${ws.slug}/team/${teamKey}`;
   const section = pathname.slice(base.length).split("/")[1] || "list";
   useEffect(() => rememberTeamView(section), [section]);
   useDocumentTitle(tm?.name ?? null);
-  if (!tm) return <Navigate to={`/${wsId}/my-issues`} replace />;
+  if (!tm) return <Navigate to={`/${ws.slug}/my-issues`} replace />;
+  if (tm.key !== teamKey)
+    return <Navigate to={`/${ws.slug}/team/${tm.key}${pathname.slice(base.length)}`} replace />;
   const tabs = (
     <Tabs
       selectedKey={section}
@@ -71,7 +74,7 @@ function TeamLayout() {
   );
   const heading = (
     <h1 className="mr-2">
-      <TeamCrumb team={tm} wsId={ws.id} />
+      <TeamCrumb team={tm} wsSlug={ws.slug} />
     </h1>
   );
   return <Outlet context={{ team: tm, state, heading, tabs } satisfies TeamContext} />;

@@ -79,7 +79,12 @@ export async function login(user: User): Promise<User> {
 }
 export async function workspace(owner: User): Promise<string> {
   return textField(
-    object(await request("/internal-api/workspaces", owner, { name: "Sync contract" })).workspace,
+    object(
+      await request("/internal-api/workspaces", owner, {
+        name: "Sync contract",
+        slug: `sync-${crypto.randomUUID()}`,
+      }),
+    ).workspace,
     "id",
   );
 }

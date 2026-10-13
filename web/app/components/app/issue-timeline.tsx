@@ -247,7 +247,7 @@ function CommentItem({ comment: c }: { comment: Comment }) {
       <div className="min-w-0 flex-1 rounded-lg border border-border bg-card shadow-xs">
         <div className="flex h-9 items-center gap-1.5 pl-3.5 pr-1">
           <Link
-            to={`/${ws.id}/people/${c.author}`}
+            to={`/${ws.slug}/people/${c.author}`}
             className="truncate font-medium hover:underline"
           >
             {m?.display_name ?? t("person.unknown")}

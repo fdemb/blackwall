@@ -942,7 +942,7 @@ impl Store {
 }
 
 /// Bump whenever a sync record shape changes.
-pub const SYNC_SCHEMA: u32 = 3;
+pub const SYNC_SCHEMA: u32 = 4;
 
 /// How long a bootstrap waits for a concurrency permit before answering 503.
 pub const BOOTSTRAP_PERMIT_WAIT: std::time::Duration = std::time::Duration::from_secs(5);

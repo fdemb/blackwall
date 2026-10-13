@@ -16,6 +16,7 @@ import { useI18n } from "~/lib/i18n";
 import { usePending } from "~/lib/use-pending";
 import { useIssueCount } from "~/lib/stats";
 import { useWorkspace } from "~/lib/workspace";
+import { freeTeamKey, isTeamKey, teamKey, teamKeyInput } from "~/lib/identifiers";
 import type { Id, Stage, StageKind, Team } from "~/lib/types";
 
 export default function Teams() {
@@ -81,18 +82,32 @@ export default function Teams() {
 
 function CreateTeam({ close }: { close: () => void }) {
   const { t } = useI18n();
-  const { run, me } = useWorkspace();
+  const { run, me, ws } = useWorkspace();
   const [name, setName] = useState("");
+  // The key follows the name until edited by hand.
+  const [key, setKey] = useState<string | null>(null);
   const [members, setMembers] = useState<Id[]>([me]);
   const { pending, error, guard } = usePending();
   useDialogDirty(name !== "");
+  const taken = new Set(ws.teams.map((team) => team.key));
+  const shownKey = key ?? freeTeamKey(teamKey(name), taken);
+  const keyError = !shownKey
+    ? ""
+    : !isTeamKey(shownKey)
+      ? t("team.keyInvalid")
+      : taken.has(shownKey)
+        ? t("team.keyTaken")
+        : "";
   return (
     <Form
       className="flex flex-col gap-4"
       onSubmit={(e) => {
         e.preventDefault();
         void guard(async () => {
-          await run({ type: "create_team", name: name.trim(), members }, { quiet: true });
+          await run(
+            { type: "create_team", name: name.trim(), key: shownKey, members },
+            { quiet: true },
+          );
           close();
         });
       }}
@@ -105,6 +120,16 @@ function CreateTeam({ close }: { close: () => void }) {
         isRequired
         placeholder={t("team.namePlaceholder")}
       />
+      <TextField
+        label={t("team.key")}
+        description={shownKey ? t("team.keyHint", { example: `${shownKey}-1` }) : undefined}
+        error={keyError}
+        value={shownKey}
+        onChange={(value) => setKey(teamKeyInput(value))}
+        autoComplete="off"
+        spellCheck="false"
+        isRequired
+      />
       <div>
         <span className="mb-1 block  font-medium text-muted-foreground">{t("nav.people")}</span>
         <MultiMemberPicker value={members} onChange={setMembers} />
@@ -114,7 +139,11 @@ function CreateTeam({ close }: { close: () => void }) {
         <Button variant="ghost" onPress={close}>
           {t("action.cancel")}
         </Button>
-        <Button type="submit" variant="primary" isDisabled={!name.trim() || pending}>
+        <Button
+          type="submit"
+          variant="primary"
+          isDisabled={!name.trim() || !shownKey || Boolean(keyError) || pending}
+        >
           {pending ? t("action.saving") : t("action.save")}
         </Button>
       </div>
@@ -163,6 +192,7 @@ function TeamSection({ team }: { team: Team }) {
             <TeamIcon team={team} className="size-6" />
           )}
           <span className="truncate">{team.name}</span>
+          <span className="font-normal tabular-nums text-muted-foreground">{team.key}</span>
         </span>
       }
       actions={

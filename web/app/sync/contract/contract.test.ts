@@ -67,8 +67,8 @@ describe.skipIf(!enabled)(`${suiteName}: prediction contract`, () => {
         };
       const { type, ...args } = value;
       const preparedArgs =
-        type === "create_team" && "members" in args && "name" in args
-          ? { name: args.name, members: args.members }
+        type === "create_team" && "members" in args && "name" in args && "key" in args
+          ? { name: args.name, key: args.key, members: args.members }
           : args;
       const c = client(ws, owner);
       clients.push(c);
@@ -144,7 +144,13 @@ describe.skipIf(!enabled)(`${suiteName}: prediction contract`, () => {
       { c: ownerClient, value: { type: "bulk_issues", ids: [], action: "delete" } },
       {
         c: viewerClient,
-        value: { type: "create_team", name: "Denied", members: [], default_stage_ids: f.stages },
+        value: {
+          type: "create_team",
+          name: "Denied",
+          key: "DEN",
+          members: [],
+          default_stage_ids: f.stages,
+        },
       },
       {
         c: ownerClient,

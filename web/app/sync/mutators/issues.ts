@@ -81,6 +81,20 @@ function createPosition(tx: Tx, teamId: string, stageId: string, excludeId: stri
 }
 
 /**
+ * Number for a new issue: the team's highest plus one, the rule
+ * `persistence::next_number` applies. The replica holds every issue,
+ * including trash and archive, so this matches the server unless another
+ * client created in the team first; the pull then brings the real number.
+ */
+function createNumber(tx: Tx, teamId: string, excludeId: string): number {
+  let max = 0;
+  for (const peer of tx.byIndex("issues", "team_id", teamId)) {
+    if (peer.id !== excludeId) max = Math.max(max, peer.number);
+  }
+  return max + 1;
+}
+
+/**
  * Position for `move_issue` over the rows the client holds. Without
  * `before_id` this matches the server exactly (`max + 1024`, `0` when empty).
  * With `before_id` it mirrors the midpoint between the neighbor and the
@@ -163,8 +177,7 @@ export const createIssue: Mutator<ArgsOf<"create_issue">> = (tx, args, ctx) => {
   const stageId = resolveStage(tx, input.team_id, input.stage_id);
   const next = issueFromInput(input, id, stageId, ctx);
   fitSprint(tx, next, input.stage_id !== null && input.stage_id !== undefined);
-  // The server stamps done_at when creating into a done stage; the issue
-  // number stays null until the pull confirms the create.
+  // The server stamps done_at when creating into a done stage.
   next.done_at = doneAt(tx, input.team_id, next.stage_id, null, ctx.at);
   // A replay over a base that already holds this id keeps the stored number,
   // version and timestamps; `createPosition` excludes the id itself so the
@@ -174,6 +187,8 @@ export const createIssue: Mutator<ArgsOf<"create_issue">> = (tx, args, ctx) => {
     next.number = previous.number;
     next.version = previous.version;
     next.created_at = previous.created_at;
+  } else {
+    next.number = createNumber(tx, next.team_id, id);
   }
   next.position = createPosition(tx, next.team_id, next.stage_id, id);
   validateIssue(tx, next, null);
@@ -191,7 +206,7 @@ function issueFromInput(
     openproject: null,
     id,
     version: 1,
-    number: null,
+    number: 0,
     title: input.title,
     description: input.description ?? "",
     team_id: input.team_id,

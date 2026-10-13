@@ -11,8 +11,7 @@ import {
 import { Search } from "lucide-react";
 import { Popover } from "~/components/ui/popover";
 import { stageOf } from "~/lib/filters";
-import { issueKey } from "~/lib/format";
-import { IssueKey, issueKeyLength } from "./issue-key";
+import { IssueKey, issueKeyWidth } from "./issue-key";
 import { useI18n } from "~/lib/i18n";
 import { useIssues } from "~/lib/queries";
 import { QueryStatus } from "./query-status";
@@ -36,7 +35,7 @@ export function IssuePicker({
   const query = useIssues({ search: q, sort: "updated" }, open);
   const excluded = new Set(exclude);
   const results = query.items.filter((i) => !excluded.has(i.id)).slice(0, 30);
-  const keyLength = issueKeyLength(results);
+  const keyWidth = issueKeyWidth(results);
   return (
     <DialogTrigger
       onOpenChange={(o) => {
@@ -63,7 +62,7 @@ export function IssuePicker({
               <Menu
                 aria-label={t("issue.find")}
                 items={results}
-                dependencies={[keyLength]}
+                dependencies={[keyWidth]}
                 onAction={(k) => {
                   onPick(String(k));
                   close();
@@ -80,15 +79,11 @@ export function IssuePicker({
                   return (
                     <MenuItem
                       id={i.id}
-                      textValue={`${issueKey(i.number)} ${i.title}`}
+                      textValue={`${i.key} ${i.title}`}
                       className="flex cursor-default items-center gap-2 rounded-md px-2 py-1.5  outline-none focus:bg-accent"
                     >
                       {s && <StageIcon kind={s.kind} />}
-                      <IssueKey
-                        number={i.number}
-                        length={keyLength}
-                        className="text-muted-foreground"
-                      />
+                      <IssueKey value={i.key} width={keyWidth} className="text-muted-foreground" />
                       <span className="truncate">{i.title}</span>
                     </MenuItem>
                   );

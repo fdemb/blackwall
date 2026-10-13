@@ -7,21 +7,20 @@ use crate::domain::{
 use axum::extract::{Path, Query};
 use chrono::{DateTime, Utc};
 
-/// Issue keys are the workspace-wide number behind this prefix, as the app shows them.
-pub const ISSUE_KEY_PREFIX: &str = "BW-";
-
 #[derive(Serialize, utoipa::ToSchema)]
 pub struct ApiIssue {
-    /// Human-readable key such as `BW-42`. Accepted wherever an issue id is.
+    /// Human-readable key such as `ENG-42`: the team's key and the issue's
+    /// number in that team. Accepted wherever an issue id is.
     pub key: String,
     #[serde(flatten)]
     pub issue: Issue,
 }
 
-impl From<Issue> for ApiIssue {
-    fn from(issue: Issue) -> Self {
+impl ApiIssue {
+    fn new(issue: Issue, keys: &BTreeMap<Uuid, String>) -> Self {
+        let team = keys.get(&issue.team_id).map_or("", String::as_str);
         Self {
-            key: format!("{ISSUE_KEY_PREFIX}{}", issue.number),
+            key: format!("{team}-{}", issue.number),
             issue,
         }
     }
@@ -33,34 +32,22 @@ impl Versioned for ApiIssue {
     }
 }
 
-/// An issue's UUID, from a UUID, a key such as `BW-42`, or a bare number.
+/// An issue's UUID, from a UUID or a key such as `ENG-42`.
 pub async fn resolve(store: &Store, scope: Scope, reference: &str) -> Result<Uuid> {
     if let Ok(id) = Uuid::parse_str(reference) {
         return Ok(id);
     }
-    let digits = reference
-        .get(..ISSUE_KEY_PREFIX.len())
-        .filter(|prefix| prefix.eq_ignore_ascii_case(ISSUE_KEY_PREFIX))
-        .map_or(reference, |_| &reference[ISSUE_KEY_PREFIX.len()..]);
-    let number = digits
-        .parse::<i64>()
-        .ok()
-        .filter(|n| *n > 0)
-        .ok_or_else(|| {
-            Error::BadRequest(format!(
-                "issue must be a UUID or a key such as {ISSUE_KEY_PREFIX}42"
-            ))
-        })?;
+    let (key, number) = crate::domain::parse_issue_key(reference)
+        .ok_or_else(|| Error::BadRequest("issue must be a UUID or a key such as ENG-42".into()))?;
     store
-        .issue_by_number(scope.workspace, scope.user, number)
+        .issue_by_key(scope.workspace, scope.user, &key, number)
         .await
 }
 
 pub async fn fetch(store: &Store, scope: Scope, id: Uuid) -> Result<ApiIssue> {
-    Ok(store
-        .get_issue(scope.workspace, scope.user, id)
-        .await?
-        .into())
+    let issue = store.get_issue(scope.workspace, scope.user, id).await?;
+    let keys = store.team_keys(scope.workspace, scope.user).await?;
+    Ok(ApiIssue::new(issue, &keys))
 }
 
 #[derive(Default, Deserialize, utoipa::IntoParams)]
@@ -120,8 +107,12 @@ pub async fn search(store: &Store, scope: Scope, query: IssueQuery) -> Result<Pa
         (None, None) => None,
     };
     let issues: Vec<Issue> = serde_json::from_value(value["items"].clone())?;
+    let keys = store.team_keys(scope.workspace, scope.user).await?;
     Ok(Page {
-        data: issues.into_iter().map(ApiIssue::from).collect(),
+        data: issues
+            .into_iter()
+            .map(|issue| ApiIssue::new(issue, &keys))
+            .collect(),
         next_cursor,
     })
 }
@@ -146,7 +137,7 @@ pub async fn list(
     get,
     path = "/api/v1/workspaces/{workspace}/issues/{issue}",
     tag = "issues",
-    params(("workspace" = Uuid, Path), ("issue" = String, Path, description = "UUID or key such as BW-42")),
+    params(("workspace" = Uuid, Path), ("issue" = String, Path, description = "UUID or key such as ENG-42")),
     responses((status = 200, body = ApiIssue))
 )]
 pub async fn get(
@@ -315,7 +306,7 @@ pub async fn update_issue(
     patch,
     path = "/api/v1/workspaces/{workspace}/issues/{issue}",
     tag = "issues",
-    params(("workspace" = Uuid, Path), ("issue" = String, Path, description = "UUID or key such as BW-42")),
+    params(("workspace" = Uuid, Path), ("issue" = String, Path, description = "UUID or key such as ENG-42")),
     request_body = UpdateIssue,
     responses((status = 200, body = ApiIssue), (status = 412, body = crate::error::ErrorBody))
 )]
@@ -337,7 +328,7 @@ pub async fn update(
     path = "/api/v1/workspaces/{workspace}/issues/{issue}",
     tag = "issues",
     description = "Moves the issue to the trash. Restore it with POST .../restore.",
-    params(("workspace" = Uuid, Path), ("issue" = String, Path, description = "UUID or key such as BW-42")),
+    params(("workspace" = Uuid, Path), ("issue" = String, Path, description = "UUID or key such as ENG-42")),
     responses((status = 204))
 )]
 pub async fn delete(
@@ -377,7 +368,7 @@ async fn transition(
     post,
     path = "/api/v1/workspaces/{workspace}/issues/{issue}/restore",
     tag = "issues",
-    params(("workspace" = Uuid, Path), ("issue" = String, Path, description = "UUID or key such as BW-42")),
+    params(("workspace" = Uuid, Path), ("issue" = String, Path, description = "UUID or key such as ENG-42")),
     responses((status = 200, body = ApiIssue))
 )]
 pub async fn restore(
@@ -397,7 +388,7 @@ pub async fn restore(
     path = "/api/v1/workspaces/{workspace}/issues/{issue}/archive",
     tag = "issues",
     description = "Archives an issue in a Done stage.",
-    params(("workspace" = Uuid, Path), ("issue" = String, Path, description = "UUID or key such as BW-42")),
+    params(("workspace" = Uuid, Path), ("issue" = String, Path, description = "UUID or key such as ENG-42")),
     responses((status = 200, body = ApiIssue))
 )]
 pub async fn archive(
@@ -416,7 +407,7 @@ pub async fn archive(
     post,
     path = "/api/v1/workspaces/{workspace}/issues/{issue}/unarchive",
     tag = "issues",
-    params(("workspace" = Uuid, Path), ("issue" = String, Path, description = "UUID or key such as BW-42")),
+    params(("workspace" = Uuid, Path), ("issue" = String, Path, description = "UUID or key such as ENG-42")),
     responses((status = 200, body = ApiIssue))
 )]
 pub async fn unarchive(
@@ -446,7 +437,7 @@ pub async fn issue_comments(
     get,
     path = "/api/v1/workspaces/{workspace}/issues/{issue}/comments",
     tag = "comments",
-    params(("workspace" = Uuid, Path), ("issue" = String, Path, description = "UUID or key such as BW-42"), PageParams),
+    params(("workspace" = Uuid, Path), ("issue" = String, Path, description = "UUID or key such as ENG-42"), PageParams),
     responses((status = 200, body = Page<Comment>))
 )]
 pub async fn comments(
@@ -513,7 +504,7 @@ pub async fn add_comment(
     post,
     path = "/api/v1/workspaces/{workspace}/issues/{issue}/comments",
     tag = "comments",
-    params(("workspace" = Uuid, Path), ("issue" = String, Path, description = "UUID or key such as BW-42")),
+    params(("workspace" = Uuid, Path), ("issue" = String, Path, description = "UUID or key such as ENG-42")),
     request_body = CreateComment,
     responses((status = 201, body = Comment))
 )]

@@ -54,7 +54,7 @@ export default function ProjectPage() {
       <PageHeader
         title={project.name}
         heading={
-          <PageHeading parent={{ to: `/${ws.id}/projects`, label: t("nav.projects") }}>
+          <PageHeading parent={{ to: `/${ws.slug}/projects`, label: t("nav.projects") }}>
             {project.name}
           </PageHeading>
         }

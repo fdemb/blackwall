@@ -15,7 +15,7 @@ export default [
         route("my-issues", "routes/my-issues.tsx"),
         route("issues", "routes/issues.tsx"),
         route("views/:viewId", "routes/view.tsx"),
-        route("team/:teamId", "routes/team.tsx", [
+        route("team/:teamKey", "routes/team.tsx", [
           index("routes/team-list.tsx"),
           route("board", "routes/team-board.tsx"),
           route("backlog", "routes/team-backlog.tsx"),
@@ -26,10 +26,10 @@ export default [
             route("plan", "routes/sprint-plan.tsx"),
           ]),
         ]),
-        route("issue/:issueId", "routes/issue.tsx"),
+        route("issue/:issueKey", "routes/issue.tsx"),
         route("projects", "routes/projects.tsx"),
         route("projects/:projectId", "routes/project.tsx"),
-        route("inbox", "routes/inbox.tsx", [route("issue/:issueId", "routes/inbox-issue.tsx")]),
+        route("inbox", "routes/inbox.tsx", [route("issue/:issueKey", "routes/inbox-issue.tsx")]),
         route("reports", "routes/reports.tsx"),
         route("people", "routes/people.tsx"),
         route("people/:userId", "routes/person.tsx"),

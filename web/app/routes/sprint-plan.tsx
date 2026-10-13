@@ -24,7 +24,7 @@ export default function SprintPlan() {
   const { team, sprint, heading, tabs, actions } = useSprintContext();
   const { ws } = useWorkspace();
   if (!isOpenSprint(sprint))
-    return <Navigate to={`/${ws.id}/team/${team.id}/sprints/${sprint.id}`} replace />;
+    return <Navigate to={`/${ws.slug}/team/${team.key}/sprints/${sprint.id}`} replace />;
   return (
     <Page>
       <PageHeader title={sprint.name} heading={heading} nav={tabs} actions={actions} />

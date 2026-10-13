@@ -15,9 +15,9 @@ import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
 import { Tab, TabList, Tabs } from "~/components/ui/tabs";
 import { EmptyState, Page, PageHeader, Scroll } from "~/components/app/page";
-import { issueKey, relativeTime } from "~/lib/format";
+import { relativeTime } from "~/lib/format";
 import { useI18n } from "~/lib/i18n";
-import { useIssues, useNotifications } from "~/lib/queries";
+import { useIssueRef, useIssues, useNotifications } from "~/lib/queries";
 import { QueryStatus } from "~/components/app/query-status";
 import { useWorkspace } from "~/lib/workspace";
 import { cn } from "~/lib/utils";
@@ -34,9 +34,10 @@ const ICONS: Record<AlertKind, React.ComponentType<{ className?: string }>> = {
 export default function Inbox() {
   const { t, lang } = useI18n();
   const nav = useNavigate();
-  const { issueId } = useParams();
+  const { issueKey = "" } = useParams();
+  const issueId = useIssueRef(issueKey);
   const outletContext = useOutletContext();
-  const { ws, run, unread } = useWorkspace();
+  const { ws, run, unread, issueRef } = useWorkspace();
   const [params, setParams] = useSearchParams();
   const view = params.get("view") === "unread" ? "unread" : "all";
   const setView = (v: "all" | "unread") =>
@@ -149,7 +150,7 @@ export default function Inbox() {
                         if (!n.read_at)
                           run({ type: "mark_notification_read", id: n.id }).catch(() => {});
                         if (n.issue_id)
-                          void nav(`/${ws.id}/inbox/issue/${n.issue_id}?${params}`, {
+                          void nav(`/${ws.slug}/inbox/issue/${issueRef(n.issue_id)}?${params}`, {
                             preventScrollReset: true,
                           });
                       }}
@@ -174,8 +175,7 @@ export default function Inbox() {
                           <span>{t(`alert.${n.kind}`)}</span>
                           {issue && (
                             <span className="min-w-0 truncate">
-                              <span className="tabular-nums">{issueKey(issue.number)}</span>{" "}
-                              {issue.title}
+                              <span className="tabular-nums">{issue.key}</span> {issue.title}
                             </span>
                           )}
                           {issue?.deleted_at && <Badge tone="warning">{t("inbox.inTrash")}</Badge>}

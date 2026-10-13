@@ -15,7 +15,9 @@ const profile: SessionProfile = {
   alerts: { assignments: true, replies: true, changes: true, deadlines: true },
   session_id: "11111111-1111-4111-8111-000000000002",
 };
-const list = [{ id: "11111111-1111-4111-8111-000000000003", name: "Acme", version: 1 }];
+const list = [
+  { id: "11111111-1111-4111-8111-000000000003", name: "Acme", slug: "acme", version: 1 },
+];
 
 // Each load is a fresh page: module state is gone, localStorage and IndexedDB stay.
 async function reload(fetch: (path: string) => Promise<Response>) {
@@ -63,6 +65,14 @@ describe("offline startup", () => {
     await (await reload(online)).guard.landing();
     const { guard } = await reload(() => json({ error: "down" }, 503));
     await expect(guard.landing()).resolves.toEqual({ profile, list });
+  });
+
+  it("finds a workspace by slug or by an older id link, offline from the remembered list", async () => {
+    const { guard } = await reload(online);
+    await expect(guard.findWorkspace("acme")).resolves.toEqual(list[0]);
+    await expect(guard.findWorkspace("nope")).resolves.toBeUndefined();
+    const away = await reload(offline);
+    await expect(away.guard.findWorkspace(list[0].id)).resolves.toEqual(list[0]);
   });
 
   it("forgets the session on 401 and never falls back on 403", async () => {

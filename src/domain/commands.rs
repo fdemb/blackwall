@@ -6,6 +6,8 @@ pub enum Command {
     CreateTeam {
         id: Option<Uuid>,
         name: String,
+        /// Prefixes the team's issue numbers, as in `ENG-42`. Unique in the workspace.
+        key: String,
         #[serde(default)]
         members: Vec<Uuid>,
         /// Client-chosen ids for the default stages, in stage order

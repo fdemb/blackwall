@@ -111,7 +111,8 @@ describe("create_issue", () => {
         openproject: null,
         id: "issue-new",
         version: 1,
-        number: null,
+        // The team's issues, including trash and archive, go up to 15.
+        number: 16,
         title: "New",
         description: "",
         team_id: TEAM,
@@ -167,7 +168,7 @@ describe("create_issue", () => {
       normalize("issues", {
         ...before,
         id: "issue-full",
-        number: null,
+        number: 16,
         title: "Full",
         description: "Body",
         stage_id: STAGE_DONE,
@@ -194,6 +195,27 @@ describe("create_issue", () => {
 
   it("overwrites an existing id with the same result when run twice", () => {
     twice("create_issue", { input: { id: "issue-new", title: "New", team_id: TEAM } });
+  });
+
+  it("numbers after the team's highest and renumbers when a pull takes the number", () => {
+    const store = seedStore();
+    for (const [id, team] of [
+      ["issue-new", TEAM],
+      ["issue-other", TEAM_OTHER],
+      ["issue-next", TEAM],
+    ])
+      mutate(store, "create_issue", { input: { id, title: id, team_id: team } });
+    const number = (id: string) => store.get("issues", id)?.number;
+    expect([number("issue-new"), number("issue-next"), number("issue-other")]).toEqual([16, 17, 1]);
+    // Another client created first, so the server will give the pending issues later numbers.
+    store.applyBase([
+      {
+        entity: "issues",
+        id: "issue-remote",
+        record: { ...live(store, "issue-1"), id: "issue-remote", number: 16 },
+      },
+    ]);
+    expect([number("issue-new"), number("issue-next"), number("issue-other")]).toEqual([17, 18, 1]);
   });
 
   it("requires an id, rejects nil, and validates text", () => {

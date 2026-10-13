@@ -68,7 +68,7 @@ export default function People() {
                 return (
                   <li key={m.id}>
                     <Link
-                      to={`/${ws.id}/people/${m.id}`}
+                      to={`/${ws.slug}/people/${m.id}`}
                       className="flex min-h-12 items-center gap-3 px-4 py-2 outline-none transition-colors hover:bg-muted/60 focus-visible:bg-muted/60 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/60"
                     >
                       <Avatar name={m.display_name} src={m.avatar_url} size={28} />

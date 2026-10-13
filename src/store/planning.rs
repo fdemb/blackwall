@@ -6,10 +6,11 @@ impl Operation<'_> {
             Command::CreateTeam {
                 id,
                 name,
+                key,
                 members,
                 default_stage_ids,
             } => {
-                self.create_team(id, name, members, default_stage_ids)
+                self.create_team(id, name, key, members, default_stage_ids)
                     .await?
             }
             Command::SetTeamMembers { id, members } => {
@@ -133,11 +134,13 @@ impl Operation<'_> {
         &mut self,
         id: Option<Uuid>,
         name: String,
+        key: String,
         members: Vec<Uuid>,
         default_stage_ids: Option<Vec<Uuid>>,
     ) -> Result<Uuid> {
         self.admin()?;
         text(&name, 200)?;
+        crate::domain::validate_team_key(&key)?;
         self.capacity("teams", 200).await?;
         let members = sorted_unique(members);
         for user in &members {
@@ -170,16 +173,17 @@ impl Operation<'_> {
                 .await?;
         let color = crate::domain::least_used_team_color(taken.iter().map(String::as_str));
         sqlx::query(
-            "INSERT INTO teams(id,workspace_id,name,archive_after_days,icon,color) VALUES($1,$2,$3,30,$4,$5)",
+            "INSERT INTO teams(id,workspace_id,name,key,archive_after_days,icon,color) VALUES($1,$2,$3,$4,30,$5,$6)",
         )
         .bind(team_id)
         .bind(self.workspace_id)
         .bind(name)
+        .bind(key)
         .bind(crate::domain::TEAM_ICONS[0])
         .bind(color)
         .execute(&mut *self.tx)
         .await
-        .map_err(id_conflict)?;
+        .map_err(team_conflict)?;
         self.created("teams", team_id);
         self.insert_team_members(team_id, members).await?;
 
@@ -984,10 +988,10 @@ mod tests {
             }
         };
         let (first, second) = (Uuid::new_v4(), Uuid::new_v4());
-        run(json!({"type": "create_team", "id": first, "name": "A"}))
+        run(json!({"type": "create_team", "id": first, "name": "A", "key": "A"}))
             .await
             .unwrap();
-        run(json!({"type": "create_team", "id": second, "name": "B"}))
+        run(json!({"type": "create_team", "id": second, "name": "B", "key": "B"}))
             .await
             .unwrap();
         let appearance = |id: Uuid| {
@@ -1036,6 +1040,7 @@ mod tests {
                     "type": "create_team",
                     "id": team,
                     "name": "Team",
+                    "key": "TEA",
                     "default_stage_ids": stages,
                 }))
                 .unwrap(),
@@ -1091,6 +1096,7 @@ mod tests {
                     serde_json::from_value(json!({
                         "type": "create_team",
                         "name": "Team",
+                        "key": "TEA",
                         "default_stage_ids": stages,
                     }))
                     .unwrap(),
@@ -1120,6 +1126,7 @@ mod tests {
                 serde_json::from_value(json!({
                     "type": "create_team",
                     "name": "First",
+                    "key": "FIR",
                     "default_stage_ids": stages,
                 }))
                 .unwrap(),
@@ -1158,6 +1165,7 @@ mod tests {
                         "type": "create_team",
                         "id": id,
                         "name": "Second",
+                        "key": "SEC",
                         "default_stage_ids": ids,
                     }))
                     .unwrap(),

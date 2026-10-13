@@ -93,6 +93,8 @@ fn constant_eq(left: &[u8], right: &[u8]) -> bool {
 pub struct WorkspaceSummary {
     pub id: Uuid,
     pub name: String,
+    /// Names the workspace in app URLs. Unique across the server.
+    pub slug: String,
     pub version: i64,
 }
 
@@ -104,6 +106,8 @@ pub struct WorkspaceResponse {
 #[derive(Deserialize, utoipa::ToSchema)]
 pub struct CreateWorkspace {
     pub name: String,
+    /// Lowercase letters, digits and single hyphens, at most 48 bytes.
+    pub slug: String,
     pub idempotency_key: Option<String>,
 }
 
@@ -583,7 +587,12 @@ async fn create_workspace(
 ) -> Result<Json<Value>> {
     Ok(Json(json!({
         "workspace": store
-            .create_workspace_with_key(input.name, actor.profile.id, input.idempotency_key)
+            .create_workspace_with_key(
+                input.name,
+                input.slug,
+                actor.profile.id,
+                input.idempotency_key
+            )
             .await?
     })))
 }

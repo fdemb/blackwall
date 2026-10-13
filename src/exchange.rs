@@ -98,8 +98,8 @@ impl Transfer {
             identities: BTreeMap::new(),
         };
         self.remap_planning(&remap)?;
-        let last_number = workspace.issues.iter().map(|i| i.number).max().unwrap_or(0);
-        self.remap_issues(&remap, last_number)?;
+        self.claim_team_keys(&mut workspace.teams.iter().map(|t| t.key.clone()).collect())?;
+        self.remap_issues(&remap)?;
         self.remap_records(&mut remap)?;
 
         let summary = ImportSummary {
@@ -203,14 +203,25 @@ impl Transfer {
         Ok(())
     }
 
-    /// Remaps issue references and numbers the issues after `last_number`.
-    fn remap_issues(&mut self, remap: &Remap, mut last_number: u64) -> Result<()> {
-        for issue in &mut self.issues {
-            last_number = last_number
-                .checked_add(1)
-                .ok_or(Error::BadRequest("issue number overflow".into()))?;
-            issue.number = last_number;
+    /// Gives each team its key, or a free variant when `taken` or an earlier
+    /// team holds it. Teams without a key get one derived from the name.
+    pub fn claim_team_keys(&mut self, taken: &mut BTreeSet<String>) -> Result<()> {
+        for team in &mut self.teams {
+            let base = if team.key.is_empty() {
+                team_key(&team.name)
+            } else {
+                validate_team_key(&team.key)?;
+                std::mem::take(&mut team.key)
+            };
+            team.key = unique_team_key(&base, taken)?;
+            taken.insert(team.key.clone());
+        }
+        Ok(())
+    }
 
+    /// Remaps issue references. Imported teams are new, so issues keep their numbers.
+    fn remap_issues(&mut self, remap: &Remap) -> Result<()> {
+        for issue in &mut self.issues {
             issue.id = remap.entity(issue.id)?;
             issue.team_id = remap.entity(issue.team_id)?;
             issue.stage_id = remap.entity(issue.stage_id)?;
@@ -405,6 +416,7 @@ mod tests {
                 Command::CreateTeam {
                     id: None,
                     name: "Infra".into(),
+                    key: "INF".into(),
                     members: vec![source_user],
                     default_stage_ids: None,
                 },
@@ -570,6 +582,7 @@ mod tests {
                 Command::CreateTeam {
                     id: None,
                     name: "Infra".into(),
+                    key: "INF".into(),
                     members: vec![source_user],
                     default_stage_ids: None,
                 },
@@ -643,6 +656,7 @@ mod tests {
                 Command::CreateTeam {
                     id: None,
                     name: "Team".into(),
+                    key: "TEA".into(),
                     members: vec![],
                     default_stage_ids: None,
                 },

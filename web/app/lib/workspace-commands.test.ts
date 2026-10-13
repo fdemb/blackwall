@@ -39,6 +39,7 @@ async function fixture() {
     type: "create_team",
     id: id(1),
     name: "Team",
+    key: "TEA",
     members: [],
     default_stage_ids: [id(10), id(11), id(12), id(13)],
   });
@@ -86,7 +87,7 @@ describe("workspace commands", () => {
       input: { title: "Offline issue", team_id: id(1) },
     });
     expect(created).toBe(id(100));
-    expect(engine.store.get("issues", id(100))?.number).toBeNull();
+    expect(engine.store.get("issues", id(100))?.number).toBe(2);
     expect(engine.status.get().pending).toBe(1);
     expect(fetch.mock.calls.length).toBe(before);
     expect(
@@ -272,7 +273,7 @@ describe("confirmation for REST writes", () => {
   it("waits for the default stage ids a pending create_team names", async () => {
     const { engine } = await fixture();
     engine.stop();
-    await runCommand(engine, { type: "create_team", name: "Ops", members: [] });
+    await runCommand(engine, { type: "create_team", name: "Ops", key: "OPS", members: [] });
     const [team] = engine.store.pending();
     const [stage] = (team!.args as { default_stage_ids: string[] }).default_stage_ids;
     let confirmed = false;

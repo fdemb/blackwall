@@ -24,16 +24,16 @@ export const rememberSprintView = (view: string) => {
 };
 
 /** The team's issues, on the tab last used. List is the index route. */
-export function teamPath(wsId: string, teamId: string) {
+export function teamPath(wsSlug: string, teamKey: string) {
   const view = read(TEAM_KEY, TEAM_VIEWS, "list");
-  const base = `/${wsId}/team/${teamId}`;
+  const base = `/${wsSlug}/team/${teamKey}`;
   return view === "list" ? base : `${base}/${view}`;
 }
 
 /** The sprint, on the tab last used. Board is the index route; a finished sprint has no plan. */
-export function sprintPath(wsId: string, sprint: Pick<Sprint, "id" | "team_id" | "state">) {
+export function sprintPath(wsSlug: string, teamKey: string, sprint: Pick<Sprint, "id" | "state">) {
   let view = read(SPRINT_KEY, SPRINT_VIEWS, "board");
   if (view === "plan" && sprint.state !== "planned" && sprint.state !== "active") view = "board";
-  const base = `/${wsId}/team/${sprint.team_id}/sprints/${sprint.id}`;
+  const base = `/${wsSlug}/team/${teamKey}/sprints/${sprint.id}`;
   return view === "board" ? base : `${base}/${view}`;
 }

@@ -52,8 +52,8 @@ export default function SettingsLayout() {
   const ctx = useOutletContext<WorkspaceOutlet>();
   const { ws, canAdmin } = useWorkspace();
   const { pathname } = useLocation();
-  const base = `/${ws.id}/settings`;
-  const back = lastAppPath(ws.id);
+  const base = `/${ws.slug}/settings`;
+  const back = lastAppPath(ws.slug);
 
   const groups: Group[] = [
     {

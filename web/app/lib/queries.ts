@@ -1,6 +1,7 @@
 import { useEngine, useScope, useSyncStatus, useView } from "../sync/react";
 import { withCounts, type CountedIssue } from "../sync/derived";
-import type { SyncStore } from "../sync/store";
+import { teamNumber, type SyncStore } from "../sync/store";
+import { parseIssueKey } from "./identifiers";
 import { shallowEqual } from "../sync/selection";
 import type { IssueFilter } from "./types";
 import { filterIssues } from "./issue-filter";
@@ -34,6 +35,18 @@ export function countedIssue(store: SyncStore, id: string): CountedIssue | undef
   if (previous && shallowEqual(previous, next)) return previous;
   cache.set(id, next);
   return next;
+}
+
+/** The issue a URL names: a key such as `ENG-42` in any case, or an id. */
+export function resolveIssue(store: SyncStore, ref: string): string | undefined {
+  const key = parseIssueKey(ref);
+  if (!key) return store.get("issues", ref)?.id;
+  const team = store.all("teams").find((t) => t.key === key.team);
+  return team && store.byIndex("issues", "team_number", teamNumber(team.id, key.number))[0]?.id;
+}
+
+export function useIssueRef(ref: string): string | undefined {
+  return useView((store) => resolveIssue(store, ref), ["issues", "teams"], [ref]);
 }
 
 // A scope list loads on its own schedule, so its loading state comes from the scope, not the bootstrap.

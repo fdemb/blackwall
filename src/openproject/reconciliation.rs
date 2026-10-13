@@ -459,8 +459,7 @@ async fn reserve_allocation(
         return Err(Error::BadRequest(CAPACITY_MESSAGE.into()));
     }
     Ok(Some(
-        persistence::allocate_creations(conn, import.workspace, import.mapping.team_id, new_count)
-            .await?,
+        persistence::allocate_creations(conn, import.workspace, import.mapping.team_id).await?,
     ))
 }
 

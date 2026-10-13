@@ -314,6 +314,7 @@ describe("mutator registry", () => {
           args: {
             id: "team-1",
             name: "Ops",
+            key: "OPS",
             members: [],
             default_stage_ids: ["stage-1", "stage-2"],
           },
@@ -398,7 +399,7 @@ describe("mutator registry", () => {
         openproject: null,
         id: "issue-round",
         version: 1,
-        number: null,
+        number: 16,
         title: "Round",
         description: "",
         team_id: TEAM,

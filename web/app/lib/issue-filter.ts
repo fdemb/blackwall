@@ -1,4 +1,5 @@
 import { ApiError } from "./api";
+import { parseIssueKey } from "./identifiers";
 import type {
   FilterClause,
   FilterField,
@@ -48,11 +49,20 @@ function searchable(issue: DeepReadonly<SyncIssue>): Searchable {
   return entry;
 }
 
-function searchPredicate(search: string): (issue: DeepReadonly<SyncIssue>) => boolean {
+/**
+ * Text, words, an issue number, or a key such as `ENG-42`, which `teamOf` maps to its team id as
+ * the server's `issue_number_search` does.
+ */
+function searchPredicate(
+  search: string,
+  teamOf: (key: string) => string | undefined = () => undefined,
+): (issue: DeepReadonly<SyncIssue>) => boolean {
   if (!search.trim()) return () => true;
   const substring = lowercase(search);
   const query = words(search);
-  const raw = search.replace(/^#+/, "");
+  const key = parseIssueKey(search.trim());
+  const keyTeam = key ? teamOf(key.team) : undefined;
+  const raw = key ? String(key.number) : search.replace(/^#+/, "");
   const number = /^[1-9]\d*$/.test(raw) && BigInt(raw) <= 9223372036854775807n ? raw : undefined;
   return (issue) => {
     const entry = searchable(issue);
@@ -62,12 +72,16 @@ function searchPredicate(search: string): (issue: DeepReadonly<SyncIssue>) => bo
       const document = entry.words;
       if (query.every((word) => document.has(word))) return true;
     }
-    return issue.number !== null && String(issue.number) === number;
+    return String(issue.number) === number && (!key || issue.team_id === keyTeam);
   };
 }
 
-export function matchesSearch(issue: DeepReadonly<SyncIssue>, search: string): boolean {
-  return searchPredicate(search)(issue);
+export function matchesSearch(
+  issue: DeepReadonly<SyncIssue>,
+  search: string,
+  teamOf?: (key: string) => string | undefined,
+): boolean {
+  return searchPredicate(search, teamOf)(issue);
 }
 
 type ReplicaIssueFilter = { [Key in keyof IssueFilter]: IssueFilter[Key] | null };
@@ -362,7 +376,10 @@ export function filterIssues(
     throw new ApiError("search query too long", 400);
   const ids = filter.ids == null ? undefined : parseIds(filter.ids);
   const clauses = compileFilter(filter.where);
-  const matches = searchPredicate(filter.search ?? "");
+  const matches = searchPredicate(
+    filter.search ?? "",
+    (key) => store.all("teams").find((team) => team.key === key)?.id,
+  );
   const kindOf = (stageId: string) => store.stageKind(stageId);
   const rows = candidates(store, ids, clauses).filter((issue) => {
     if (!inLifecycle(filter, issue)) return false;
@@ -476,10 +493,7 @@ const SORTS = new Map<string, Compare>([
   ],
   [
     "position",
-    (a, b) =>
-      a.position - b.position ||
-      nullable(a.number, b.number, (x, y) => x - y) ||
-      compareCodePoints(a.id, b.id),
+    (a, b) => a.position - b.position || a.number - b.number || compareCodePoints(a.id, b.id),
   ],
 ]);
 

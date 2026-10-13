@@ -21,6 +21,7 @@ import {
   reserveClientId,
 } from "./common";
 import { MutationError } from "./errors";
+import { isTeamKey } from "../../lib/identifiers";
 import { TEAM_ICONS, leastUsedTeamColor } from "../../lib/teams";
 
 /** Mutable working copy: the store freezes records, so every write builds a new object. */
@@ -60,15 +61,24 @@ export const DEFAULT_STAGES: readonly { name: string; kind: StageKind; position:
 
 export const createTeam: Mutator<ArgsOf<"create_team">> = (tx, args, ctx) => {
   requireAdmin(requireRole(tx, ctx.actor, "create_team", args));
-  // Order mirrors `planning::CreateTeam`: name, members, stage ids, then the
-  // client id.
+  // Order mirrors `planning::CreateTeam`: name, key, members, stage ids, then
+  // the client id and the key's uniqueness.
   checkText(args.name, 200);
+  if (!isTeamKey(args.key)) {
+    throw new MutationError(
+      400,
+      "team key must be 1 to 4 uppercase letters or digits, starting with a letter",
+    );
+  }
   checkCapacity(tx, "teams", 200, ctx, args.id);
   const members = dedupeSortUuids(args.members);
   for (const user of members) requireMember(tx, user);
   const stageIds = reserveStageIds(tx, args.default_stage_ids, ctx);
   const id = reserveClientId(tx, args.id, ctx);
   if (stageIds.includes(id)) throw new MutationError(409, "id already exists");
+  if (tx.all("teams").some((team) => team.key === args.key && team.id !== id)) {
+    throw new MutationError(409, "team key already exists");
+  }
   // Replay upserts preserve pulled stages and archive settings,
   // including changes made after the server created this team.
   const previous = tx.get("teams", id);
@@ -76,6 +86,7 @@ export const createTeam: Mutator<ArgsOf<"create_team">> = (tx, args, ctx) => {
     id,
     version: previous?.version ?? 1,
     name: args.name,
+    key: args.key,
     members,
     stages: previous
       ? previous.stages.map((stage) => ({ ...stage }))

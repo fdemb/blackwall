@@ -1,11 +1,11 @@
 INSERT INTO users(id,email,password_hash,profile) VALUES
 ('20000000-0000-0000-0000-000000000001','owner@example.com','__FIXTURE_PASSWORD_HASH__','{"id":"20000000-0000-0000-0000-000000000001","email":"owner@example.com","display_name":"Fixture owner","avatar_url":null,"contact":"","language":"en","theme":"system","alerts":{"assignments":true,"replies":true,"changes":true,"deadlines":true}}'),
 ('20000000-0000-0000-0000-000000000002','member@example.com','__FIXTURE_PASSWORD_HASH__','{"id":"20000000-0000-0000-0000-000000000002","email":"member@example.com","display_name":"Fixture member","avatar_url":null,"contact":"","language":"pl","theme":"dark","alerts":{"assignments":true,"replies":true,"changes":true,"deadlines":true}}');
-INSERT INTO workspaces(id,name,next_issue_number) VALUES('20000000-0000-0000-0000-000000000010','Release planning',4);
+INSERT INTO workspaces(id,name,slug) VALUES('20000000-0000-0000-0000-000000000010','Release planning','release-planning');
 INSERT INTO workspace_members(workspace_id,user_id,role) VALUES
 ('20000000-0000-0000-0000-000000000010','20000000-0000-0000-0000-000000000001','owner'),
 ('20000000-0000-0000-0000-000000000010','20000000-0000-0000-0000-000000000002','member');
-INSERT INTO teams(id,workspace_id,name) VALUES('20000000-0000-0000-0000-000000000020','20000000-0000-0000-0000-000000000010','Platform');
+INSERT INTO teams(id,workspace_id,name,key) VALUES('20000000-0000-0000-0000-000000000020','20000000-0000-0000-0000-000000000010','Platform','PLA');
 INSERT INTO team_members(workspace_id,team_id,user_id) SELECT workspace_id,'20000000-0000-0000-0000-000000000020',user_id FROM workspace_members WHERE workspace_id='20000000-0000-0000-0000-000000000010';
 INSERT INTO stages(id,workspace_id,team_id,name,kind,position) VALUES
 ('20000000-0000-0000-0000-000000000021','20000000-0000-0000-0000-000000000010','20000000-0000-0000-0000-000000000020','Backlog','backlog',1000),

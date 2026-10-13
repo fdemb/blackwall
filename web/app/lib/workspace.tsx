@@ -25,6 +25,7 @@ import {
   whenConfirmed,
 } from "./workspace-commands";
 import { useI18n } from "./i18n";
+import { issueKey } from "./format";
 
 export interface RunOptions {
   quiet?: boolean;
@@ -65,6 +66,7 @@ function useWorkspaceValue() {
       const ws: Workspace = {
         id: row.id,
         name: row.name,
+        slug: row.slug,
         members: members
           .map(({ id, role, version }) => ({ user_id: id, role, version }))
           .sort(byUserId),
@@ -175,6 +177,22 @@ function useWorkspaceValue() {
   const hide = useCallback(() => setCreateState((state) => ({ ...state, open: false })), []);
   const create = useMemo(() => ({ ...createState, show, hide }), [createState, show, hide]);
   const resolveRejection = useCallback((id: number) => engine.resolveRejection(id), [engine]);
+  // What issue URLs name an issue by: its key, read at call time. The issue route also accepts
+  // the id. A shareable link keeps the id until the server confirms the number, because another
+  // client may take the predicted one.
+  const issueRef = useCallback(
+    (id: string, shareable = false) => {
+      const issue = engine.store.get("issues", id);
+      const team = issue && engine.store.get("teams", issue.team_id);
+      if (!issue || !team || (shareable && !engine.store.baseGet("issues", id))) return id;
+      return issueKey(team.key, issue.number);
+    },
+    [engine],
+  );
+  const issuePath = useCallback(
+    (id: string) => `/${ws.slug}/issue/${issueRef(id)}`,
+    [ws.slug, issueRef],
+  );
   const retrySync = useCallback(async () => {
     await engine.start();
     engine.unblock();
@@ -189,6 +207,8 @@ function useWorkspaceValue() {
     me: profile.id,
     member: (id: string | null | undefined) => members.find((member) => member.id === id),
     team: (id: string) => ws.teams.find((team) => team.id === id),
+    issueRef,
+    issuePath,
     stage: (id: string) => ws.teams.flatMap((team) => team.stages).find((stage) => stage.id === id),
     unread,
     pending: status.pending,

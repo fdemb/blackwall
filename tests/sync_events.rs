@@ -68,7 +68,7 @@ async fn workspace(app: &axum::Router, owner: &Session, name: &str) -> Uuid {
         owner,
         "POST",
         "/internal-api/workspaces",
-        Some(json!({"name": name})),
+        Some(json!({"name": name, "slug": Uuid::new_v4().to_string()})),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{result}");
@@ -103,7 +103,7 @@ async fn setup(app: &axum::Router, owner: &Session) -> (Uuid, Uuid) {
         app,
         owner,
         ws,
-        json!({"type": "create_team", "name": "Team", "members": [owner.profile.id]}),
+        json!({"type": "create_team", "name": "Team", "key": "TEA", "members": [owner.profile.id]}),
     )
     .await;
     (ws, team)

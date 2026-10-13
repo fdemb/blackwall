@@ -12,7 +12,9 @@ export const STAGE_KINDS: StageKind[] = ["backlog", "planned", "active", "done",
 
 export const MAX_UPLOAD = 5 * 1024 * 1024;
 
-export const issueKey = (number: number | null) => `BW-${number ?? "…"}`;
+/** `ENG-42`: the team's key and the issue's number in that team. */
+export const issueKey = (teamKey: string | undefined, number: number) =>
+  `${teamKey ?? "…"}-${number}`;
 export const sprintKey = (number: number | null) => `#${number ?? "…"}`;
 export const sprintLabel = (s: { number: number | null; name: string }) =>
   `${sprintKey(s.number)} ${s.name}`;

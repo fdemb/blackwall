@@ -49,7 +49,7 @@ export default function Sprint() {
   const progress = useSprintProgress();
   const { team, state } = useTeamContext();
   const sprint = ws.sprints.find((s) => s.id === sprintId && s.team_id === team.id);
-  const sprints = `/${ws.id}/team/${team.id}/sprints`;
+  const sprints = `/${ws.slug}/team/${team.key}/sprints`;
   const base = `${sprints}/${sprintId}`;
   const section = pathname.slice(base.length).split("/")[1] || "board";
   useEffect(() => rememberSprintView(section), [section]);
@@ -57,7 +57,7 @@ export default function Sprint() {
   const stats = progress.get(sprint.id);
   const heading = (
     <h1 className="mr-2 flex min-w-0 items-center gap-2 ">
-      <TeamCrumb team={team} wsId={ws.id} />
+      <TeamCrumb team={team} wsSlug={ws.slug} />
       <span aria-hidden="true" className="text-muted-foreground/50">
         /
       </span>

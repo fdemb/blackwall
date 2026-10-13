@@ -50,7 +50,7 @@ function CreateIssueForm() {
   const { t } = useI18n();
   const nav = useNavigate();
   const toast = useToast();
-  const { ws, me, create, run, upload, offline } = useWorkspace();
+  const { ws, me, create, run, upload, offline, issuePath } = useWorkspace();
   const myTeam = ws.teams.find((tm) => tm.members.includes(me)) ?? ws.teams[0];
   const d = create.defaults;
   const [teamId, setTeamId] = useState<Id | undefined>(d.team_id ?? myTeam?.id);
@@ -88,7 +88,7 @@ function CreateIssueForm() {
     if (id && inBacklog(effectiveStageId)) setStageId(null);
   };
 
-  if (ws.teams.length === 0) return <NeedTeam workspaceId={ws.id} onNavigate={create.hide} />;
+  if (ws.teams.length === 0) return <NeedTeam wsSlug={ws.slug} onNavigate={create.hide} />;
 
   const sprints = ws.sprints.filter(
     (s) => s.team_id === teamId && (s.state === "planned" || s.state === "active"),
@@ -131,7 +131,7 @@ function CreateIssueForm() {
             names: failed.map((f) => f.name).join(", "),
           }),
         );
-      if (id) void nav(`/${ws.id}/issue/${id}`);
+      if (id) void nav(issuePath(id));
     });
   const addFiles = (list: FileList | null) => {
     if (!list) return;
@@ -281,13 +281,13 @@ function defaultStageId(stages: readonly Stage[], sprintId: Id | null) {
   return (open ?? stages[0])?.id ?? null;
 }
 
-function NeedTeam({ workspaceId, onNavigate }: { workspaceId: Id; onNavigate: () => void }) {
+function NeedTeam({ wsSlug, onNavigate }: { wsSlug: string; onNavigate: () => void }) {
   const { t } = useI18n();
   return (
     <div className="py-6 text-center">
       <p className=" text-muted-foreground">{t("issue.needTeam")}</p>
       <Link
-        to={`/${workspaceId}/settings/teams`}
+        to={`/${wsSlug}/settings/teams`}
         onClick={onNavigate}
         className="mt-3 inline-block  font-medium text-primary hover:underline"
       >

@@ -93,15 +93,13 @@ export type SyncIssue = Omit<
   | "blocked_count"
   | "subtask_total"
   | "subtask_completed"
-  | "number"
+  | "key"
   | "labels"
   | "dependencies"
   | "followers"
   | "attachments"
   | "source_links"
 > & {
-  /** Null until the server confirms a locally created issue and assigns a number. */
-  number: number | null;
   labels: Id[];
   dependencies: Id[];
   followers: Id[];
@@ -113,6 +111,7 @@ export type SyncIssue = Omit<
 export interface SyncWorkspace {
   id: Id;
   name: string;
+  slug: string;
   version: number;
 }
 

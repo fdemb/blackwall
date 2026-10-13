@@ -54,7 +54,7 @@ export function Sidebar({
   const { ws, unread, create, canWrite } = useWorkspace();
   const { profile, logout } = useSession();
   const { workspaces } = useOutletContext<{ workspaces: WorkspaceSummary[] }>();
-  const base = `/${ws.id}`;
+  const base = `/${ws.slug}`;
   const myTeams = ws.teams.filter((tm) => tm.members.includes(profile.id));
   const otherTeams = ws.teams.filter((tm) => !tm.members.includes(profile.id));
 
@@ -84,9 +84,10 @@ export function Sidebar({
                 else if (k === "account") void nav(`${base}/settings/profile`);
                 else if (k === "settings") void nav(`${base}/settings/general`);
                 else if (String(k).startsWith("ws:")) {
-                  const id = String(k).slice(3);
-                  localStorage.setItem(LAST_WS, id);
-                  void nav(`/${id}/my-issues`);
+                  const target = workspaces.find((w) => w.id === String(k).slice(3));
+                  if (!target) return;
+                  localStorage.setItem(LAST_WS, target.id);
+                  void nav(`/${target.slug}/my-issues`);
                 }
               }}
             >
@@ -261,15 +262,17 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 }
 
 function TeamLinks({ team, base }: { team: Team; base: string }) {
-  const { id, name } = team;
+  const { id, key, name } = team;
   const { t } = useI18n();
   const { pathname } = useLocation();
   const { ws } = useWorkspace();
   // null follows the route (open while you're inside the team). Once clicked, the choice sticks.
   const [open, setOpen] = useState<boolean | null>(null);
-  const inTeam = pathname.startsWith(`${base}/team/${id}`);
+  // Keys vary in length, so match whole segments: team/EN must not claim team/ENG.
+  const teamBase = `${base}/team/${key}`;
+  const inTeam = pathname === teamBase || pathname.startsWith(`${teamBase}/`);
   const isOpen = open ?? inTeam;
-  const sprints = `${base}/team/${id}/sprints`;
+  const sprints = `${teamBase}/sprints`;
   const onSprints = pathname.startsWith(sprints);
   const active = ws.sprints.find((s) => s.team_id === id && s.state === "active");
   // The active sprint's board and its plan both count as the sprint.
@@ -293,7 +296,10 @@ function TeamLinks({ team, base }: { team: Team; base: string }) {
       </button>
       {isOpen && (
         <div className="ml-4 mt-0.5 space-y-0.5 border-l border-border pl-2">
-          <Link to={teamPath(ws.id, id)} className={linkClass({ isActive: inTeam && !onSprints })}>
+          <Link
+            to={teamPath(ws.slug, key)}
+            className={linkClass({ isActive: inTeam && !onSprints })}
+          >
             {t("team.issues")}
           </Link>
           <Link to={sprints} className={linkClass({ isActive: onSprints && !onActive })}>
@@ -301,7 +307,7 @@ function TeamLinks({ team, base }: { team: Team; base: string }) {
           </Link>
           {active && (
             <Link
-              to={sprintPath(ws.id, active)}
+              to={sprintPath(ws.slug, key, active)}
               aria-current={onActive ? "page" : undefined}
               className={linkClass({ isActive: onActive })}
             >

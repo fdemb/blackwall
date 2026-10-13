@@ -7,7 +7,7 @@ import { Menu, MenuItem, MenuPopover, MenuSeparator, MenuTrigger } from "~/compo
 import { Popover } from "~/components/ui/popover";
 import { useToast } from "~/components/ui/toast";
 import { Tip } from "~/components/ui/tooltip";
-import { PRIORITIES, issueKey, sprintKey } from "~/lib/format";
+import { PRIORITIES, sprintKey } from "~/lib/format";
 import { useI18n } from "~/lib/i18n";
 import { sprintPath } from "~/lib/last-view";
 import { cn } from "~/lib/utils";
@@ -40,22 +40,22 @@ interface MenuProps {
 }
 
 /** The issue key. Pressing it copies a link to the issue. */
-export function KeyButton({ issue, length }: { issue: Issue; length?: number }) {
+export function KeyButton({ issue, width }: { issue: Issue; width?: string }) {
   const { t } = useI18n();
-  const { ws } = useWorkspace();
+  const { ws, issueRef } = useWorkspace();
   const toast = useToast();
   const copy = () =>
     void navigator.clipboard
-      .writeText(`${window.location.origin}/${ws.id}/issue/${issue.id}`)
+      .writeText(`${window.location.origin}/${ws.slug}/issue/${issueRef(issue.id, true)}`)
       .then(() => toast.show(t("issue.linkCopied")));
   return (
     <Tip label={t("issue.copyLink")}>
       <RACButton
         onPress={copy}
-        aria-label={`${t("issue.copyLink")}: ${issueKey(issue.number)}`}
+        aria-label={`${t("issue.copyLink")}: ${issue.key}`}
         className={cn(chip, "group/key -ml-1.5 h-5 gap-1 px-1.5")}
       >
-        <IssueKey number={issue.number} length={length} />
+        <IssueKey value={issue.key} width={width} />
         <Link2
           aria-hidden
           className="size-3 opacity-0 transition-opacity group-hover/key:opacity-100 group-focus-visible/key:opacity-100"
@@ -159,7 +159,7 @@ export function LabelLinks({ issue, className }: { issue: Issue; className?: str
       {labels.slice(0, max).map((l) => (
         <Link
           key={l.id}
-          href={`/${ws.id}/issues?label=${l.id}`}
+          href={`/${ws.slug}/issues?label=${l.id}`}
           className="inline-flex cursor-default items-center gap-1.5 rounded-full border border-border px-1.5 py-px text-[11px] text-muted-foreground outline-none transition-colors hover:border-foreground/20 hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/60"
         >
           <LabelDot color={l.color} />
@@ -176,13 +176,18 @@ export function LabelLinks({ issue, className }: { issue: Issue; className?: str
 /** The issue's sprint key. Links to the sprint. */
 export function SprintLink({ issue, className }: { issue: Issue; className?: string }) {
   const { t } = useI18n();
-  const { ws } = useWorkspace();
+  const { ws, team } = useWorkspace();
   const sprint = ws.sprints.find((s) => s.id === issue.sprint_id);
-  if (!sprint) return null;
+  const teamKey = sprint && team(sprint.team_id)?.key;
+  if (!sprint || !teamKey) return null;
   const label = `${t("field.sprint")}: ${sprint.name}`;
   return (
     <Tip label={label}>
-      <Link href={sprintPath(ws.id, sprint)} aria-label={label} className={cn(chip, className)}>
+      <Link
+        href={sprintPath(ws.slug, teamKey, sprint)}
+        aria-label={label}
+        className={cn(chip, className)}
+      >
         <IterationCw aria-hidden className="size-3.5" />
         {sprintKey(sprint.number)}
       </Link>

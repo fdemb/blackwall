@@ -79,7 +79,7 @@ async fn done_issues_archive_on_team_deadline_and_stay_out_of_lists() {
         &store,
         ws,
         owner,
-        json!({"type":"create_team","name":"Infra","members":[owner]}),
+        json!({"type":"create_team","name":"Infra", "key": "INF","members":[owner]}),
         BTreeMap::new(),
     )
     .await
@@ -422,7 +422,7 @@ async fn global_search_spans_live_and_archived_issues() {
         &store,
         ws,
         owner,
-        json!({"type":"create_team","name":"Infra","members":[owner]}),
+        json!({"type":"create_team","name":"Infra", "key": "INF","members":[owner]}),
         BTreeMap::new(),
     )
     .await
