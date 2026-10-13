@@ -112,7 +112,7 @@ try:
                 start()
                 session = request("POST", "/internal-api/auth/register", {"email": "owner@example.com", "password": "smoke-password-123", "display_name": "Owner"})
                 token = session["token"]
-                workspace = request("POST", "/internal-api/workspaces", {"name": "HTTP smoke"})
+                workspace = request("POST", "/internal-api/workspaces", {"name": "HTTP smoke", "slug": "http-smoke"})
                 workspace_id = workspace["workspace"]["id"]
                 path = f"/internal-api/workspaces/{workspace_id}"
 
@@ -122,7 +122,7 @@ try:
                         payload["idempotency_key"] = key
                     return request("POST", path + "/commands", payload)
 
-                team = command({"type": "create_team", "name": "Operations", "members": []})["result"]["id"]
+                team = command({"type": "create_team", "name": "Operations", "key": "OPS", "members": []})["result"]["id"]
                 creation = {"type": "create_issue", "input": {"team_id": team, "title": "Verify actual HTTP", "assignee": session["profile"]["id"]}}
                 created = command(creation, key="smoke-create")
                 assert command(creation, key="smoke-create") == created
