@@ -1,0 +1,21 @@
+[Unit]
+Description=Blackwall background worker
+After=network-online.target postgresql.service
+Wants=network-online.target
+Requires=postgresql.service
+ConditionPathExists=/opt/blackwall/current/blackwall
+
+[Service]
+User=blackwall
+Group=blackwall
+EnvironmentFile=/etc/blackwall/blackwall.env
+WorkingDirectory=/opt/blackwall/current
+ExecStart=/opt/blackwall/current/blackwall worker
+Restart=on-failure
+RestartSec=5
+# Above JOBS_DRAIN_SECONDS so in-flight jobs finish before systemd kills the worker.
+TimeoutStopSec=70
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=multi-user.target
