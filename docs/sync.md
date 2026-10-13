@@ -112,14 +112,14 @@ Keep the `changes` table, its triggers and `change_horizon`. They are correct an
 `GET sync/bootstrap?client_id=<uuid>` streams the whole always-loaded data set from one `REPEATABLE READ READ ONLY` transaction. The response is `application/x-ndjson`, compressed with gzip when the request's `Accept-Encoding` accepts gzip, and plain otherwise.
 
 ```
-{"cursor":"812:812:","last_mutation_id":0,"schema":2}
+{"cursor":"812:812:","last_mutation_id":0,"schema":3}
 {"entity":"teams","record":{...}}
 {"entity":"issues","record":{...}}
 ...
 {"end":true,"records":42}
 ```
 
-The header, client mutation id and every record come from the same snapshot. `schema` is the server constant `SYNC_SCHEMA`, currently 2; bump it whenever a sync record shape changes. Record lines use pull's shapes and visibility rules, including trashed and archived issues. Comments and activity are excluded.
+The header, client mutation id and every record come from the same snapshot. `schema` is the server constant `SYNC_SCHEMA`, currently 3; bump it whenever a sync record shape changes. Record lines use pull's shapes and visibility rules, including trashed and archived issues. Comments and activity are excluded.
 
 The trailer counts only record lines. A failure ends the body without a trailer. The client discards any bootstrap without a trailer, and writes a completed bootstrap into a fresh base with its cursor in one IndexedDB transaction. A page reload in the middle leaves no partial replica.
 

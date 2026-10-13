@@ -6,7 +6,8 @@ import { recordKey } from "../persistence/shared";
 // The only prediction exclusions. Client-supplied dates remain exact.
 export const EXCLUSIONS = {
   version: "database triggers increment versions, including nested stages",
-  newIssueNumber: "the server allocates a workspace issue number on insert",
+  newNumber:
+    "the server allocates issue numbers per workspace and sprint numbers per team on insert",
   timestamps: {
     issues: ["created_at", "updated_at", "deleted_at", "archived_at", "done_at"],
     comments: ["created_at", "edited_at"],
@@ -30,12 +31,12 @@ export function snapshot(engine: SyncEngine): Snapshot {
   );
 }
 
-function comparable(value: unknown, timestamps: readonly string[], newIssue: boolean): unknown {
+function comparable(value: unknown, timestamps: readonly string[], created: boolean): unknown {
   if (Array.isArray(value)) return value.map((item) => comparable(item, [], false));
   if (typeof value !== "object" || value === null) return value;
   return Object.fromEntries(
     Object.entries(value)
-      .filter(([key]) => key !== "version" && !(newIssue && key === "number"))
+      .filter(([key]) => key !== "version" && !(created && key === "number"))
       .map(([key, item]) => [
         key,
         timestamps.includes(key) && typeof item === "string"
@@ -60,7 +61,11 @@ export function predictionView(view: Snapshot, before: Snapshot): object {
               .sort(([a], [b]) => a.localeCompare(b))
               .map(([id, row]) => [
                 id,
-                comparable(row, timestamps, entity === "issues" && !before.get(entity)?.has(id)),
+                comparable(
+                  row,
+                  timestamps,
+                  (entity === "issues" || entity === "sprints") && !before.get(entity)?.has(id),
+                ),
               ]),
           ),
         ];

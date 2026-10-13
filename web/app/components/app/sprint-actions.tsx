@@ -7,6 +7,7 @@ import { Dialog, useDialogDirty } from "~/components/ui/dialog";
 import { TextField } from "~/components/ui/field";
 import { Menu, MenuItem, MenuPopover, MenuTrigger } from "~/components/ui/menu";
 import { OPEN, whereIs } from "~/lib/filters";
+import { sprintLabel } from "~/lib/format";
 import { useI18n } from "~/lib/i18n";
 import { useIssues } from "~/lib/queries";
 import { usePending } from "~/lib/use-pending";
@@ -267,7 +268,7 @@ function CompleteForm({ sprint, close }: { sprint: Sprint; close: () => void }) 
         s.id !== sprint.id &&
         (s.state === "planned" || s.state === "active"),
     )
-    .map((s) => ({ id: s.id, label: s.name }));
+    .map((s) => ({ id: s.id, label: sprintLabel(s) }));
   return (
     <Form
       className="flex flex-col gap-4"

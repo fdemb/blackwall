@@ -6,7 +6,7 @@ import { Button, buttonVariants } from "~/components/ui/button";
 import { Dialog } from "~/components/ui/dialog";
 import { Page, PageHeader, Card, EmptyState, TeamCrumb } from "~/components/app/page";
 import { SprintForm, SprintMenu } from "~/components/app/sprint-actions";
-import { fullDate, shortDate } from "~/lib/format";
+import { fullDate, shortDate, sprintKey } from "~/lib/format";
 import { useI18n } from "~/lib/i18n";
 import { usePending } from "~/lib/use-pending";
 import { cn } from "~/lib/utils";
@@ -84,6 +84,9 @@ export default function Sprints() {
                 return (
                   <div key={s.id} className={cn(ROW, "py-3")}>
                     <div className="flex flex-wrap items-center gap-2">
+                      <span className="text-muted-foreground tabular-nums">
+                        {sprintKey(s.number)}
+                      </span>
                       <Link to={pageOf(s)} className={STRETCHED_LINK}>
                         {s.name}
                       </Link>
@@ -124,6 +127,7 @@ export default function Sprints() {
                   key={s.id}
                   className={cn(ROW, "flex flex-wrap items-center gap-x-3 gap-y-1 py-2.5")}
                 >
+                  <span className="text-muted-foreground tabular-nums">{sprintKey(s.number)}</span>
                   <Link to={pageOf(s)} className={STRETCHED_LINK}>
                     {s.name}
                   </Link>

@@ -8,13 +8,13 @@ import { Input, Label } from "~/components/ui/field";
 import { DatePicker } from "~/components/ui/date-picker";
 import { Select } from "~/components/ui/select";
 import { useToast } from "~/components/ui/toast";
-import { bytes, ellipsis, MAX_UPLOAD } from "~/lib/format";
+import { bytes, ellipsis, MAX_UPLOAD, sprintLabel } from "~/lib/format";
 import { usePending } from "~/lib/use-pending";
 import { cn } from "~/lib/utils";
 import { useI18n } from "~/lib/i18n";
 import { sprintStageId } from "~/lib/teams";
 import { useWorkspace } from "~/lib/workspace";
-import type { Id, IssueInput, Priority, Stage } from "~/lib/types";
+import type { Id, IssueInput, Priority, Sprint, Stage } from "~/lib/types";
 import { TeamIcon } from "./team-icon";
 // Loaded on demand: the editor (and the markdown renderer it pulls in) is the heaviest part of
 // this dialog, and most opens never touch the description.
@@ -339,7 +339,7 @@ function ExtendedProperties({
   setLabels,
 }: {
   projects: { id: Id; name: string }[];
-  sprints: { id: Id; name: string }[];
+  sprints: Pick<Sprint, "id" | "number" | "name">[];
   projectId: Id | null;
   setProjectId: (id: Id | null) => void;
   sprintId: Id | null;
@@ -366,7 +366,7 @@ function ExtendedProperties({
         noneLabel={t("sprint.none")}
         value={sprintId}
         onChange={setSprintId}
-        options={sprints.map((s) => ({ id: s.id, label: s.name }))}
+        options={sprints.map((s) => ({ id: s.id, label: sprintLabel(s) }))}
       />
       <DatePicker label={t("field.deadline")} value={deadline} onChange={setDeadline} />
       <div>

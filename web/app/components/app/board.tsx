@@ -1,8 +1,8 @@
 import { useCallback } from "react";
 import {
   DropIndicator,
-  ListBox,
-  ListBoxItem,
+  GridList,
+  GridListItem,
   ListLayout,
   useDragAndDrop,
   Virtualizer,
@@ -11,20 +11,21 @@ import {
 import { Plus } from "lucide-react";
 import { Button } from "~/components/ui/button";
 import { cn } from "~/lib/utils";
-import { IssueKey, issueKeyLength } from "./issue-key";
+import { issueKeyLength } from "./issue-key";
 import { issueCapabilities } from "~/lib/ownership";
 import { useI18n } from "~/lib/i18n";
 import { useWorkspace } from "~/lib/workspace";
 import type { Id, Issue } from "~/lib/types";
-import { PriorityIcon } from "./icons";
+import { BlockedBadge, SubtaskProgress, OpenProjectBadge } from "./issue-parts";
 import {
-  AssigneeAvatar,
-  BlockedBadge,
-  DeadlineChip,
-  LabelChips,
-  SubtaskProgress,
-  OpenProjectBadge,
-} from "./issue-parts";
+  AssigneeMenu,
+  DeadlineMenu,
+  EstimateMenu,
+  KeyButton,
+  LabelsMenu,
+  PriorityMenu,
+  SprintMenu,
+} from "./issue-menus";
 
 /** Drag payload type for issues, shared by board columns and issue lists. */
 export const ISSUE_DRAG_TYPE = "application/x-blackwall-issue";
@@ -58,7 +59,7 @@ export async function readDraggedIssues(
  * Columns render only the cards in view. Cards vary in height, so the layout starts from an
  * estimate and measures each card; gap and padding replace the column's CSS spacing.
  */
-const COLUMN_LAYOUT = { estimatedRowSize: 92, gap: 6, padding: 6, dropIndicatorThickness: 2 };
+const COLUMN_LAYOUT = { estimatedRowSize: 112, gap: 8, padding: 8, dropIndicatorThickness: 2 };
 
 export interface DndColumnProps {
   id: string;
@@ -130,9 +131,12 @@ export function DndColumn({
   });
   return (
     <section
-      className={cn("flex min-h-0 w-72 shrink-0 flex-col rounded-xl bg-muted/50", className)}
+      className={cn(
+        "flex min-h-0 w-80 shrink-0 flex-col rounded-xl border border-border/50 bg-board-column",
+        className,
+      )}
     >
-      <header className="flex items-center gap-2 px-3 pb-1 pt-2.5">
+      <header className="flex h-11 shrink-0 items-center gap-2 pl-3.5 pr-2">
         {icon}
         <h3 className=" font-medium">{title}</h3>
         <span className=" tabular-nums text-muted-foreground">{count ?? issues.length}</span>
@@ -147,7 +151,7 @@ export function DndColumn({
       </header>
       {summary}
       <Virtualizer layout={ListLayout} layoutOptions={COLUMN_LAYOUT}>
-        <ListBox
+        <GridList
           aria-label={title}
           items={issues}
           dependencies={[keyLength]}
@@ -161,7 +165,7 @@ export function DndColumn({
           )}
         >
           {(issue) => <BoardCard issue={issue} keyLength={keyLength} />}
-        </ListBox>
+        </GridList>
       </Virtualizer>
     </section>
   );
@@ -184,36 +188,40 @@ export function ReadOnlyColumn(props: Omit<DndColumnProps, "canDrop">) {
   return <DndColumn {...props} canDrop={false} />;
 }
 
+/**
+ * One issue on the board. The card opens the issue; each property on it is its own control, so
+ * pressing one edits that property instead.
+ */
 export function BoardCard({ issue, keyLength }: { issue: Issue; keyLength?: number }) {
-  const { ws } = useWorkspace();
-  const { t } = useI18n();
+  const { ws, canWrite } = useWorkspace();
+  const locked = !canWrite || !issueCapabilities(issue).edit;
   return (
-    <ListBoxItem
+    <GridListItem
       id={issue.id}
       textValue={issue.title}
       href={`/${ws.id}/issue/${issue.id}`}
-      className="group block cursor-default rounded-lg border border-border bg-card p-2.5  shadow-xs outline-none transition-[transform,opacity] hover:border-primary/40 hover:shadow-sm focus-visible:ring-2 focus-visible:ring-ring/60 dragging:opacity-40"
+      className="group flex cursor-default flex-col gap-2 rounded-lg border border-border/70 bg-board-card px-3 pb-2 pt-2.5 shadow-xs outline-none transition-[border-color,box-shadow,opacity] hover:border-foreground/15 hover:shadow-sm focus-visible:ring-2 focus-visible:ring-ring/60 dragging:opacity-40 dark:shadow-black/30"
     >
-      <div className="flex items-center gap-1.5  text-muted-foreground">
-        <IssueKey number={issue.number} length={keyLength} />
+      <div className="flex h-5 items-center gap-1.5 text-muted-foreground">
+        <KeyButton issue={issue} length={keyLength} />
         <OpenProjectBadge issue={issue} />
         <BlockedBadge issue={issue} />
-        <span className="ml-auto">
-          <AssigneeAvatar issue={issue} size={18} />
+        <AssigneeMenu issue={issue} isDisabled={locked} className="-mr-0.5 ml-auto" />
+      </div>
+      <p className="line-clamp-3 font-medium leading-snug text-pretty">{issue.title}</p>
+      {issue.labels.length > 0 && (
+        <LabelsMenu issue={issue} isDisabled={locked} className="-ml-1.5 self-start" />
+      )}
+      <div className="-ml-1.5 flex min-h-6 flex-wrap items-center gap-0.5">
+        <PriorityMenu issue={issue} isDisabled={locked} />
+        <SprintMenu issue={issue} isDisabled={locked} />
+        <DeadlineMenu issue={issue} isDisabled={locked} />
+        <EstimateMenu issue={issue} isDisabled={locked} />
+        {issue.labels.length === 0 && <LabelsMenu issue={issue} isDisabled={locked} />}
+        <span className="ml-auto pr-0.5 text-xs">
+          <SubtaskProgress issue={issue} />
         </span>
       </div>
-      <p className="mt-1 line-clamp-3 font-medium leading-snug">{issue.title}</p>
-      <div className="mt-2 flex flex-wrap items-center gap-x-2.5 gap-y-1">
-        <PriorityIcon priority={issue.priority} />
-        <LabelChips issue={issue} max={2} />
-        <DeadlineChip issue={issue} />
-        <SubtaskProgress issue={issue} />
-        {issue.estimate ? (
-          <span className=" tabular-nums text-muted-foreground">
-            {issue.estimate} {t("estimate.unit")}
-          </span>
-        ) : null}
-      </div>
-    </ListBoxItem>
+    </GridListItem>
   );
 }

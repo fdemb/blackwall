@@ -1,0 +1,322 @@
+import { Button as RACButton, Calendar, Dialog, DialogTrigger } from "react-aria-components";
+import { CalendarDays, Gauge, IterationCw, Link2, Tag, User, X } from "lucide-react";
+import { Avatar } from "~/components/ui/avatar";
+import { Button } from "~/components/ui/button";
+import { CalendarBody, fromCalendarDate, toCalendarDate } from "~/components/ui/date-picker";
+import { Menu, MenuItem, MenuPopover, MenuSeparator, MenuTrigger } from "~/components/ui/menu";
+import { Popover } from "~/components/ui/popover";
+import { useToast } from "~/components/ui/toast";
+import { Tip } from "~/components/ui/tooltip";
+import { PRIORITIES, issueKey, sprintKey } from "~/lib/format";
+import { useI18n } from "~/lib/i18n";
+import { cn } from "~/lib/utils";
+import { useWorkspace } from "~/lib/workspace";
+import type { Id, Issue } from "~/lib/types";
+import { PriorityIcon } from "./icons";
+import { IssueKey } from "./issue-key";
+import { AssigneeAvatar, DeadlineChip, LabelChips } from "./issue-parts";
+import { useIssuePatch } from "./issue-properties";
+import { LabelsPicker } from "./pickers";
+
+const NONE = "__none";
+const ESTIMATES = [1, 2, 3, 5, 8, 13];
+
+/**
+ * Compact trigger for one property on a card. A disabled chip still shows its value, so it keeps
+ * full contrast and only drops the hover.
+ */
+export const chip =
+  "inline-flex h-6 min-w-0 shrink-0 cursor-default items-center gap-1 rounded-md px-1.5 text-xs tabular-nums text-muted-foreground outline-none transition-colors hover:bg-foreground/[0.07] hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/60 pressed:bg-foreground/10 aria-expanded:bg-foreground/10 aria-expanded:text-foreground disabled:hover:bg-transparent disabled:hover:text-muted-foreground";
+
+/** For a property the issue doesn't have yet: hidden until the card is hovered or focused. */
+export const emptyChip =
+  "[@media(hover:hover)]:opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 aria-expanded:opacity-100";
+
+interface MenuProps {
+  issue: Issue;
+  isDisabled?: boolean;
+  className?: string;
+}
+
+/** The issue key. Pressing it copies a link to the issue. */
+export function KeyButton({ issue, length }: { issue: Issue; length?: number }) {
+  const { t } = useI18n();
+  const { ws } = useWorkspace();
+  const toast = useToast();
+  const copy = () =>
+    void navigator.clipboard
+      .writeText(`${window.location.origin}/${ws.id}/issue/${issue.id}`)
+      .then(() => toast.show(t("issue.linkCopied")));
+  return (
+    <Tip label={t("issue.copyLink")}>
+      <RACButton
+        onPress={copy}
+        aria-label={`${t("issue.copyLink")}: ${issueKey(issue.number)}`}
+        className={cn(chip, "group/key -ml-1.5 h-5 gap-1 px-1.5")}
+      >
+        <IssueKey number={issue.number} length={length} />
+        <Link2
+          aria-hidden
+          className="size-3 opacity-0 transition-opacity group-hover/key:opacity-100 group-focus-visible/key:opacity-100"
+        />
+      </RACButton>
+    </Tip>
+  );
+}
+
+export function PriorityMenu({ issue, isDisabled, className }: MenuProps) {
+  const { t } = useI18n();
+  const patch = useIssuePatch(issue);
+  return (
+    <MenuTrigger>
+      <Tip label={`${t("field.priority")}: ${t(`priority.${issue.priority}`)}`}>
+        <Button
+          variant="ghost"
+          size="icon"
+          isDisabled={isDisabled}
+          aria-label={t("field.priority")}
+          className={cn("size-6 disabled:opacity-100", className)}
+        >
+          <PriorityIcon priority={issue.priority} />
+        </Button>
+      </Tip>
+      <MenuPopover placement="bottom start">
+        <Menu
+          aria-label={t("field.priority")}
+          selectionMode="single"
+          selectedKeys={[issue.priority]}
+          onAction={(k) => void patch({ priority: k as Issue["priority"] })}
+        >
+          {PRIORITIES.map((p) => (
+            <MenuItem key={p} id={p} textValue={t(`priority.${p}`)}>
+              <PriorityIcon priority={p} />
+              {t(`priority.${p}`)}
+            </MenuItem>
+          ))}
+        </Menu>
+      </MenuPopover>
+    </MenuTrigger>
+  );
+}
+
+export function AssigneeMenu({ issue, isDisabled, className }: MenuProps) {
+  const { t } = useI18n();
+  const { members, member, team } = useWorkspace();
+  const patch = useIssuePatch(issue);
+  const current = member(issue.assignee);
+  const ids = new Set(team(issue.team_id)?.members ?? []);
+  const pool = members.filter((m) => ids.size === 0 || ids.has(m.id) || m.id === issue.assignee);
+  const label = current?.display_name ?? t("assignee.none");
+  return (
+    <MenuTrigger>
+      <Tip label={label}>
+        <RACButton
+          isDisabled={isDisabled}
+          aria-label={`${t("field.assignee")}: ${label}`}
+          className={cn(
+            "inline-flex size-6 shrink-0 cursor-default items-center justify-center rounded-full outline-none transition-[box-shadow] hover:ring-2 hover:ring-foreground/10 focus-visible:ring-2 focus-visible:ring-ring/60 disabled:hover:ring-0",
+            className,
+          )}
+        >
+          <AssigneeAvatar issue={issue} size={20} />
+        </RACButton>
+      </Tip>
+      <MenuPopover placement="bottom end">
+        <Menu
+          aria-label={t("field.assignee")}
+          selectionMode="single"
+          selectedKeys={[issue.assignee ?? NONE]}
+          onAction={(k) =>
+            void patch(k === NONE ? { clear_assignee: true } : { assignee: k as Id })
+          }
+        >
+          <MenuItem id={NONE} textValue={t("assignee.none")}>
+            <User />
+            {t("assignee.none")}
+          </MenuItem>
+          <MenuSeparator />
+          {pool.map((m) => (
+            <MenuItem key={m.id} id={m.id} textValue={m.display_name}>
+              <Avatar name={m.display_name} src={m.avatar_url} size={16} />
+              {m.display_name}
+            </MenuItem>
+          ))}
+        </Menu>
+      </MenuPopover>
+    </MenuTrigger>
+  );
+}
+
+/** The issue's labels as chips. Pressing them opens the labels picker. */
+export function LabelsMenu({ issue, isDisabled, className }: MenuProps) {
+  const { t } = useI18n();
+  const patch = useIssuePatch(issue);
+  const empty = issue.labels.length === 0;
+  if (empty && isDisabled) return null;
+  return (
+    <LabelsPicker
+      value={[...issue.labels]}
+      onChange={(labels) => void patch({ labels })}
+      trigger={
+        <RACButton
+          isDisabled={isDisabled}
+          aria-label={t("field.labels")}
+          className={cn(chip, "h-auto min-h-6 flex-wrap py-0.5", empty && emptyChip, className)}
+        >
+          {empty ? <Tag aria-hidden className="size-3.5" /> : <LabelChips issue={issue} max={3} />}
+        </RACButton>
+      }
+    />
+  );
+}
+
+export function SprintMenu({ issue, isDisabled, className }: MenuProps) {
+  const { t } = useI18n();
+  const { ws } = useWorkspace();
+  const patch = useIssuePatch(issue);
+  const sprint = ws.sprints.find((s) => s.id === issue.sprint_id);
+  const options = ws.sprints
+    .filter(
+      (s) =>
+        s.team_id === issue.team_id &&
+        (s.state === "planned" || s.state === "active" || s.id === issue.sprint_id),
+    )
+    .sort((a, b) => (a.number ?? Infinity) - (b.number ?? Infinity));
+  if (!sprint && (isDisabled || options.length === 0)) return null;
+  const label = sprint ? `${t("field.sprint")}: ${sprint.name}` : t("sprint.none");
+  return (
+    <MenuTrigger>
+      <Tip label={label}>
+        <RACButton
+          isDisabled={isDisabled}
+          aria-label={label}
+          className={cn(chip, !sprint && emptyChip, className)}
+        >
+          <IterationCw aria-hidden className="size-3.5" />
+          {sprint && sprintKey(sprint.number)}
+        </RACButton>
+      </Tip>
+      <MenuPopover placement="bottom start">
+        <Menu
+          aria-label={t("field.sprint")}
+          selectionMode="single"
+          selectedKeys={[issue.sprint_id ?? NONE]}
+          onAction={(k) => void patch(k === NONE ? { clear_sprint: true } : { sprint_id: k as Id })}
+        >
+          <MenuItem id={NONE} textValue={t("sprint.none")}>
+            <IterationCw />
+            {t("sprint.none")}
+          </MenuItem>
+          <MenuSeparator />
+          {options.map((s) => (
+            <MenuItem key={s.id} id={s.id} textValue={s.name}>
+              <span className="w-7 text-muted-foreground tabular-nums">{sprintKey(s.number)}</span>
+              <span className="truncate">{s.name}</span>
+            </MenuItem>
+          ))}
+        </Menu>
+      </MenuPopover>
+    </MenuTrigger>
+  );
+}
+
+export function DeadlineMenu({ issue, isDisabled, className }: MenuProps) {
+  const { t } = useI18n();
+  const patch = useIssuePatch(issue);
+  if (!issue.deadline && isDisabled) return null;
+  return (
+    <DialogTrigger>
+      <Tip label={t("field.deadline")}>
+        <RACButton
+          isDisabled={isDisabled}
+          aria-label={t("field.deadline")}
+          className={cn(chip, !issue.deadline && emptyChip, className)}
+        >
+          {issue.deadline ? (
+            <DeadlineChip issue={issue} />
+          ) : (
+            <CalendarDays aria-hidden className="size-3.5" />
+          )}
+        </RACButton>
+      </Tip>
+      <Popover placement="bottom start" className="w-auto min-w-0">
+        <Dialog aria-label={t("field.deadline")} className="p-3 outline-none">
+          {({ close }) => (
+            <>
+              <Calendar
+                aria-label={t("field.deadline")}
+                value={toCalendarDate(issue.deadline)}
+                onChange={(d) => {
+                  void patch({ deadline: fromCalendarDate(d) ?? undefined });
+                  close();
+                }}
+              >
+                <CalendarBody />
+              </Calendar>
+              {issue.deadline && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="mt-2 w-full"
+                  onPress={() => {
+                    void patch({ clear_deadline: true });
+                    close();
+                  }}
+                >
+                  <X aria-hidden />
+                  {t("action.clearField")}
+                </Button>
+              )}
+            </>
+          )}
+        </Dialog>
+      </Popover>
+    </DialogTrigger>
+  );
+}
+
+export function EstimateMenu({ issue, isDisabled, className }: MenuProps) {
+  const { t } = useI18n();
+  const patch = useIssuePatch(issue);
+  const values =
+    issue.estimate && !ESTIMATES.includes(issue.estimate)
+      ? [...ESTIMATES, issue.estimate].sort((a, b) => a - b)
+      : ESTIMATES;
+  if (!issue.estimate && isDisabled) return null;
+  return (
+    <MenuTrigger>
+      <Tip label={t("field.estimate")}>
+        <RACButton
+          isDisabled={isDisabled}
+          aria-label={t("field.estimate")}
+          className={cn(chip, !issue.estimate && emptyChip, className)}
+        >
+          <Gauge aria-hidden className="size-3.5" />
+          {issue.estimate ? `${issue.estimate} ${t("estimate.unit")}` : null}
+        </RACButton>
+      </Tip>
+      <MenuPopover placement="bottom start">
+        <Menu
+          aria-label={t("field.estimate")}
+          selectionMode="single"
+          selectedKeys={[issue.estimate ? String(issue.estimate) : NONE]}
+          onAction={(k) =>
+            void patch(k === NONE ? { clear_estimate: true } : { estimate: Number(k) })
+          }
+        >
+          <MenuItem id={NONE} textValue={t("estimate.none")}>
+            {t("estimate.none")}
+          </MenuItem>
+          <MenuSeparator />
+          {values.map((v) => (
+            <MenuItem key={v} id={String(v)} textValue={String(v)}>
+              <span className="tabular-nums">
+                {v} {t("estimate.unit")}
+              </span>
+            </MenuItem>
+          ))}
+        </Menu>
+      </MenuPopover>
+    </MenuTrigger>
+  );
+}

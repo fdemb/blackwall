@@ -292,7 +292,7 @@ async fn insert_planning(op: &mut Operation<'_>, w: &Workspace) -> Result<()> {
     }
 
     for sprint in &w.sprints {
-        sqlx::query("INSERT INTO sprints(id,workspace_id,team_id,name,goal,starts_at,ends_at,state) VALUES($1,$2,$3,$4,$5,$6,$7,$8)")
+        sqlx::query("INSERT INTO sprints(id,workspace_id,team_id,number,name,goal,starts_at,ends_at,state) VALUES($1,$2,$3,(SELECT COALESCE(max(number),0)+1 FROM sprints WHERE workspace_id=$2 AND team_id=$3),$4,$5,$6,$7,$8)")
             .bind(sprint.id)
             .bind(w.id)
             .bind(sprint.team_id)

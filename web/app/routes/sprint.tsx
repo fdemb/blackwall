@@ -12,7 +12,7 @@ import { Tab, TabList, Tabs } from "~/components/ui/tabs";
 import { PageCrumb, TeamCrumb } from "~/components/app/page";
 import { SprintActions } from "~/components/app/sprint-actions";
 import type { QueueState } from "~/components/app/workbench";
-import { shortDate } from "~/lib/format";
+import { shortDate, sprintKey } from "~/lib/format";
 import { useI18n } from "~/lib/i18n";
 import { useSprintProgress } from "~/lib/stats";
 import { useWorkspace } from "~/lib/workspace";
@@ -61,6 +61,7 @@ export default function Sprint() {
       <span aria-hidden="true" className="text-muted-foreground/50">
         /
       </span>
+      <span className="text-muted-foreground tabular-nums">{sprintKey(sprint.number)}</span>
       <span className="truncate font-medium">{sprint.name}</span>
       <Badge tone={sprint.state === "active" ? "primary" : "neutral"}>
         {t(`sprint.state.${sprint.state}`)}

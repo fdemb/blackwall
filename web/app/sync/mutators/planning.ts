@@ -383,6 +383,8 @@ export const createSprint: Mutator<ArgsOf<"create_sprint">> = (tx, args, ctx) =>
     id,
     version: previous?.version ?? 1,
     team_id: args.team_id,
+    // The server numbers sprints per team; a replay keeps the confirmed number.
+    number: previous?.number ?? null,
     name: args.name,
     goal: args.goal,
     starts_at: starts,

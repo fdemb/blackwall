@@ -30,6 +30,9 @@
   --input: oklch(0.9 0.005 286);
   --ring: oklch(0.6 0.2 293);
   --sidebar: oklch(0.968 0.003 286);
+  /* Board columns sit a step off the page and cards a step further, darker in dark mode. */
+  --board-column: oklch(0.962 0.003 286);
+  --board-card: oklch(1 0 0);
   --radius: 0.5rem;
 }
 
@@ -58,6 +61,8 @@
   --input: oklch(0.32 0.009 286);
   --ring: oklch(0.64 0.2 293);
   --sidebar: oklch(0.15 0.006 286);
+  --board-column: oklch(0.152 0.006 286);
+  --board-card: oklch(0.128 0.006 286);
 }
 
 @theme inline {
@@ -67,6 +72,8 @@
   --color-foreground: var(--foreground);
   --color-card: var(--card);
   --color-card-foreground: var(--card-foreground);
+  --color-board-column: var(--board-column);
+  --color-board-card: var(--board-card);
   --color-popover: var(--popover);
   --color-popover-foreground: var(--popover-foreground);
   --color-primary: var(--primary);
