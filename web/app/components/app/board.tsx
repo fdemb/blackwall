@@ -22,9 +22,9 @@ import {
   DeadlineMenu,
   EstimateMenu,
   KeyButton,
-  LabelsMenu,
+  LabelLinks,
   PriorityMenu,
-  SprintMenu,
+  SprintLink,
 } from "./issue-menus";
 
 /** Drag payload type for issues, shared by board columns and issue lists. */
@@ -157,7 +157,7 @@ export function DndColumn({
           dependencies={[keyLength]}
           selectionMode="none"
           dragAndDropHooks={dragAndDropHooks}
-          className="min-h-16 flex-1 overflow-y-auto overscroll-contain rounded-b-xl outline-none transition-colors drop-target:bg-accent/60 drop-target:ring-2 drop-target:ring-primary/40"
+          className="min-h-16 flex-1 overflow-y-auto overflow-x-hidden overscroll-contain rounded-b-xl [scrollbar-color:var(--border)_transparent] [scrollbar-width:thin] outline-none transition-colors drop-target:bg-accent/60 drop-target:ring-2 drop-target:ring-primary/40"
           renderEmptyState={() => (
             <p className="px-2 py-6 text-center  text-muted-foreground">
               {emptyText ?? t("board.empty")}
@@ -190,7 +190,7 @@ export function ReadOnlyColumn(props: Omit<DndColumnProps, "canDrop">) {
 
 /**
  * One issue on the board. The card opens the issue; each property on it is its own control, so
- * pressing one edits that property instead.
+ * pressing one edits that property, or for labels and the sprint, opens it.
  */
 export function BoardCard({ issue, keyLength }: { issue: Issue; keyLength?: number }) {
   const { ws, canWrite } = useWorkspace();
@@ -209,15 +209,12 @@ export function BoardCard({ issue, keyLength }: { issue: Issue; keyLength?: numb
         <AssigneeMenu issue={issue} isDisabled={locked} className="-mr-0.5 ml-auto" />
       </div>
       <p className="line-clamp-3 font-medium leading-snug text-pretty">{issue.title}</p>
-      {issue.labels.length > 0 && (
-        <LabelsMenu issue={issue} isDisabled={locked} className="-ml-1.5 self-start" />
-      )}
+      <LabelLinks issue={issue} />
       <div className="-ml-1.5 flex min-h-6 flex-wrap items-center gap-0.5">
         <PriorityMenu issue={issue} isDisabled={locked} />
-        <SprintMenu issue={issue} isDisabled={locked} />
+        <SprintLink issue={issue} />
         <DeadlineMenu issue={issue} isDisabled={locked} />
         <EstimateMenu issue={issue} isDisabled={locked} />
-        {issue.labels.length === 0 && <LabelsMenu issue={issue} isDisabled={locked} />}
         <span className="ml-auto pr-0.5 text-xs">
           <SubtaskProgress issue={issue} />
         </span>

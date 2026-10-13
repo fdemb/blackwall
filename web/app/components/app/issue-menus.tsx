@@ -1,5 +1,5 @@
-import { Button as RACButton, Calendar, Dialog, DialogTrigger } from "react-aria-components";
-import { CalendarDays, Gauge, IterationCw, Link2, Tag, User, X } from "lucide-react";
+import { Button as RACButton, Calendar, Dialog, DialogTrigger, Link } from "react-aria-components";
+import { CalendarDays, Gauge, IterationCw, Link2, User, X } from "lucide-react";
 import { Avatar } from "~/components/ui/avatar";
 import { Button } from "~/components/ui/button";
 import { CalendarBody, fromCalendarDate, toCalendarDate } from "~/components/ui/date-picker";
@@ -14,9 +14,9 @@ import { useWorkspace } from "~/lib/workspace";
 import type { Id, Issue } from "~/lib/types";
 import { PriorityIcon } from "./icons";
 import { IssueKey } from "./issue-key";
-import { AssigneeAvatar, DeadlineChip, LabelChips } from "./issue-parts";
+import { AssigneeAvatar, DeadlineChip } from "./issue-parts";
 import { useIssuePatch } from "./issue-properties";
-import { LabelsPicker } from "./pickers";
+import { LabelDot } from "./pickers";
 
 const NONE = "__none";
 const ESTIMATES = [1, 2, 3, 5, 8, 13];
@@ -147,76 +147,49 @@ export function AssigneeMenu({ issue, isDisabled, className }: MenuProps) {
   );
 }
 
-/** The issue's labels as chips. Pressing them opens the labels picker. */
-export function LabelsMenu({ issue, isDisabled, className }: MenuProps) {
-  const { t } = useI18n();
-  const patch = useIssuePatch(issue);
-  const empty = issue.labels.length === 0;
-  if (empty && isDisabled) return null;
+/** The issue's labels as chips. Each links to all issues with that label. */
+export function LabelLinks({ issue, className }: { issue: Issue; className?: string }) {
+  const { ws } = useWorkspace();
+  const labels = ws.labels.filter((l) => issue.labels.includes(l.id));
+  if (!labels.length) return null;
+  const max = 3;
   return (
-    <LabelsPicker
-      value={[...issue.labels]}
-      onChange={(labels) => void patch({ labels })}
-      trigger={
-        <RACButton
-          isDisabled={isDisabled}
-          aria-label={t("field.labels")}
-          className={cn(chip, "h-auto min-h-6 flex-wrap py-0.5", empty && emptyChip, className)}
+    <span className={cn("flex flex-wrap items-center gap-1", className)}>
+      {labels.slice(0, max).map((l) => (
+        <Link
+          key={l.id}
+          href={`/${ws.id}/issues?label=${l.id}`}
+          className="inline-flex cursor-default items-center gap-1.5 rounded-full border border-border px-1.5 py-px text-[11px] text-muted-foreground outline-none transition-colors hover:border-foreground/20 hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/60"
         >
-          {empty ? <Tag aria-hidden className="size-3.5" /> : <LabelChips issue={issue} max={3} />}
-        </RACButton>
-      }
-    />
+          <LabelDot color={l.color} />
+          {l.name}
+        </Link>
+      ))}
+      {labels.length > max && (
+        <span className="text-[11px] text-muted-foreground">+{labels.length - max}</span>
+      )}
+    </span>
   );
 }
 
-export function SprintMenu({ issue, isDisabled, className }: MenuProps) {
+/** The issue's sprint key. Links to the sprint. */
+export function SprintLink({ issue, className }: { issue: Issue; className?: string }) {
   const { t } = useI18n();
   const { ws } = useWorkspace();
-  const patch = useIssuePatch(issue);
   const sprint = ws.sprints.find((s) => s.id === issue.sprint_id);
-  const options = ws.sprints
-    .filter(
-      (s) =>
-        s.team_id === issue.team_id &&
-        (s.state === "planned" || s.state === "active" || s.id === issue.sprint_id),
-    )
-    .sort((a, b) => (a.number ?? Infinity) - (b.number ?? Infinity));
-  if (!sprint && (isDisabled || options.length === 0)) return null;
-  const label = sprint ? `${t("field.sprint")}: ${sprint.name}` : t("sprint.none");
+  if (!sprint) return null;
+  const label = `${t("field.sprint")}: ${sprint.name}`;
   return (
-    <MenuTrigger>
-      <Tip label={label}>
-        <RACButton
-          isDisabled={isDisabled}
-          aria-label={label}
-          className={cn(chip, !sprint && emptyChip, className)}
-        >
-          <IterationCw aria-hidden className="size-3.5" />
-          {sprint && sprintKey(sprint.number)}
-        </RACButton>
-      </Tip>
-      <MenuPopover placement="bottom start">
-        <Menu
-          aria-label={t("field.sprint")}
-          selectionMode="single"
-          selectedKeys={[issue.sprint_id ?? NONE]}
-          onAction={(k) => void patch(k === NONE ? { clear_sprint: true } : { sprint_id: k as Id })}
-        >
-          <MenuItem id={NONE} textValue={t("sprint.none")}>
-            <IterationCw />
-            {t("sprint.none")}
-          </MenuItem>
-          <MenuSeparator />
-          {options.map((s) => (
-            <MenuItem key={s.id} id={s.id} textValue={s.name}>
-              <span className="w-7 text-muted-foreground tabular-nums">{sprintKey(s.number)}</span>
-              <span className="truncate">{s.name}</span>
-            </MenuItem>
-          ))}
-        </Menu>
-      </MenuPopover>
-    </MenuTrigger>
+    <Tip label={label}>
+      <Link
+        href={`/${ws.id}/team/${sprint.team_id}/sprints/${sprint.id}`}
+        aria-label={label}
+        className={cn(chip, className)}
+      >
+        <IterationCw aria-hidden className="size-3.5" />
+        {sprintKey(sprint.number)}
+      </Link>
+    </Tip>
   );
 }
 
