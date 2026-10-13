@@ -24,7 +24,22 @@ interface State {
   meta: ReplicaMeta;
   records: Map<Entity, Map<string, object>>;
   outbox: Map<number, PendingMutation>;
+  /** Outbox ids whose push results arrived. */
+  confirmed: Set<number>;
   scopes: Map<string, Scope>;
+}
+
+/** Acknowledged mutations leave the outbox once confirmed, like the IndexedDB replica. */
+function dropConfirmed(state: State): void {
+  for (const id of state.outbox.keys()) {
+    if (id > state.meta.lastMutationId || !state.confirmed.has(id)) continue;
+    state.outbox.delete(id);
+    state.confirmed.delete(id);
+  }
+}
+
+function sortedOutbox(state: State): PendingMutation[] {
+  return [...state.outbox.values()].sort((a, b) => a.id - b.id);
 }
 
 interface Entry {
@@ -54,17 +69,23 @@ class MemoryReplica implements Replica {
     const state = structuredClone(this.entry.state);
     const records: LoadedReplica["records"] = {};
     for (const [entity, table] of state.records) records[entity] = [...table.values()];
+    const outbox = sortedOutbox(state);
+    const acknowledged = (mutation: PendingMutation) => mutation.id <= state.meta.lastMutationId;
     return {
       meta: state.meta,
       records,
-      outbox: [...state.outbox.values()].sort((a, b) => a.id - b.id),
+      outbox: outbox.filter((mutation) => !acknowledged(mutation)),
+      unconfirmed: outbox.filter(acknowledged),
       scopes: [...state.scopes.values()],
     };
   }
 
   async loadOutbox(): Promise<readonly PendingMutation[]> {
     if (this.closed) throw new Error("replica is closed");
-    return structuredClone([...this.entry.state.outbox.values()].sort((a, b) => a.id - b.id));
+    const { state } = this.entry;
+    return structuredClone(
+      sortedOutbox(state).filter((mutation) => mutation.id > state.meta.lastMutationId),
+    );
   }
 
   async resetBase(): Promise<void> {
@@ -91,9 +112,7 @@ class MemoryReplica implements Replica {
       state.scopes.clear();
       state.meta.cursor = input.cursor;
       state.meta.lastMutationId = Math.max(state.meta.lastMutationId, input.lastMutationId);
-      for (const id of state.outbox.keys()) {
-        if (id <= state.meta.lastMutationId) state.outbox.delete(id);
-      }
+      dropConfirmed(state);
       state.meta.serverSchema = input.serverSchema;
     });
   }
@@ -116,9 +135,7 @@ class MemoryReplica implements Replica {
       state.meta.cursor = input.cursor;
       if (input.acknowledgedUpTo !== null) {
         state.meta.lastMutationId = Math.max(state.meta.lastMutationId, input.acknowledgedUpTo);
-        for (const id of state.outbox.keys()) {
-          if (id <= state.meta.lastMutationId) state.outbox.delete(id);
-        }
+        dropConfirmed(state);
       }
     });
   }
@@ -161,6 +178,13 @@ class MemoryReplica implements Replica {
     });
   }
 
+  async confirm(ids: readonly number[]): Promise<void> {
+    this.transaction((state) => {
+      for (const id of ids) if (state.outbox.has(id)) state.confirmed.add(id);
+      dropConfirmed(state);
+    });
+  }
+
   close(): void {
     this.closed = true;
     this.entry.handles.delete(this);
@@ -185,6 +209,7 @@ export class MemoryReplicaStorage implements ReplicaStorage {
           meta: initialMeta(input),
           records: new Map(ENTITIES.map((entity) => [entity, new Map<string, object>()])),
           outbox: new Map(),
+          confirmed: new Set(),
           scopes: new Map(),
         },
         handles: new Set(),

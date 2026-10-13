@@ -1,7 +1,13 @@
 import { redirect } from "react-router";
 import { ApiError, auth, workspaces } from "./api";
 import { safeGet, safeRemove, safeSet } from "./storage";
-import { acceptSession, clearSession } from "./session-replicas";
+import {
+  acceptSession,
+  clearSession,
+  rememberWorkspaces,
+  rememberedWorkspaces,
+  restoreSession,
+} from "./session-replicas";
 import type { SessionProfile } from "../sync/transport";
 import type { WorkspaceSummary } from "./types";
 
@@ -27,8 +33,15 @@ async function readProfile(sequence: number): Promise<SessionProfile | null> {
       await clearSession();
       return null;
     }
+    const restored = unavailable(e) ? restoreSession() : null;
+    if (restored) return restored;
     throw e;
   }
+}
+
+/** The server could not be reached or failed, as opposed to answering about the session. */
+function unavailable(e: unknown) {
+  return e instanceof TypeError || (e instanceof ApiError && e.status >= 500);
 }
 
 export const LAST_WS = "bw-last-workspace:v1";
@@ -48,5 +61,13 @@ export function clearLastWs() {
 export async function landing(): Promise<{ profile: SessionProfile; list: WorkspaceSummary[] }> {
   const profile = await currentProfile();
   if (!profile) throw redirect("/login");
-  return { profile, list: await workspaces.list() };
+  try {
+    const list = await workspaces.list();
+    rememberWorkspaces(list);
+    return { profile, list };
+  } catch (e) {
+    const list = unavailable(e) ? rememberedWorkspaces() : null;
+    if (list) return { profile, list };
+    throw e;
+  }
 }

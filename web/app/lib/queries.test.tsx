@@ -110,7 +110,7 @@ describe("scope hooks", () => {
     await engine.start();
     await until(() => engine.status.get().phase === "ready");
     // Scope loads share one read queue, so the held activity load waits behind this delayed one.
-    server.inject({ kind: "delay", route: "scope", milliseconds: 60_000 });
+    server.inject({ kind: "delay", route: "scope", milliseconds: 20_000 });
     const releaseComments = engine.useScope(COMMENTS);
     const releaseActivity = engine.useScope(ACTIVITY);
     await until(() => scopeRequests.length === 1);
@@ -118,7 +118,7 @@ describe("scope hooks", () => {
       comments: { loading: true, error: null, length: 0 },
       activity: { loading: true, error: null },
     });
-    server.advance(60_000);
+    server.advance(20_000);
     await until(
       () => engine.scopeStatus(COMMENTS) === "loaded" && engine.scopeStatus(ACTIVITY) === "loaded",
     );

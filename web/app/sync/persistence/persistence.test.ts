@@ -258,6 +258,41 @@ for (const backend of ["memory", "idb"]) {
       expect((await replica.load()).outbox).toEqual([]);
     });
 
+    it("keeps acknowledged mutations until their results are confirmed", async () => {
+      const first = await replica.appendMutation(() => mutation(1));
+      const second = await replica.appendMutation(() => mutation(2));
+      const third = await replica.appendMutation(() => mutation(3));
+      await replica.confirm([second.id]);
+      await replica.applyPull({ changes: [], cursor: "pull-1", acknowledgedUpTo: 2 });
+      let loaded = await replica.load();
+      expect(loaded.outbox).toEqual([third]);
+      expect(loaded.unconfirmed).toEqual([first]);
+      expect(await replica.loadOutbox()).toEqual([third]);
+      await replica.confirm([first.id, third.id]);
+      loaded = await replica.load();
+      expect(loaded.unconfirmed).toEqual([]);
+      expect(loaded.outbox).toEqual([third]);
+      await replica.applyPull({ changes: [], cursor: "pull-2", acknowledgedUpTo: 3 });
+      loaded = await replica.load();
+      expect(loaded.outbox).toEqual([]);
+      expect(loaded.unconfirmed).toEqual([]);
+    });
+
+    it("replaces and reads one scope without touching other scopes' records", async () => {
+      const other = { id: "comment-2", issue_id: "issue-2", body: "Other" };
+      await replica.writeScope({
+        scope: { entity: "comments", issueId: "issue-2" },
+        records: [other],
+      });
+      await replica.writeScope({ scope: COMMENT_SCOPE, records: [COMMENT] });
+      await replica.writeScope({ scope: COMMENT_SCOPE, records: [] });
+      expect(await replica.loadScope(COMMENT_SCOPE)).toEqual({ loaded: true, records: [] });
+      expect(await replica.loadScope({ entity: "comments", issueId: "issue-2" })).toEqual({
+        loaded: true,
+        records: [other],
+      });
+    });
+
     it("an empty loaded scope admits subsequent pulls and ordered scoped tombstones", async () => {
       await replica.writeScope({ scope: COMMENT_SCOPE, records: [] });
       await replica.writeScope({ scope: ACTIVITY_SCOPE, records: [] });

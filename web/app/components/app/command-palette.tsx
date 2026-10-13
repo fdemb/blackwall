@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useDeferredValue, useMemo, useState } from "react";
 import {
   Autocomplete,
   Input,
@@ -162,17 +162,20 @@ export function CommandPalette({
   );
 
   const query = q.trim().toLowerCase();
-  const liveQuery = useIssues({ search: query, sort: "updated" }, open);
+  // Issue search scans the whole replica, so it trails the input while typing.
+  const issueSearch = useDeferredValue(query);
+  const liveQuery = useIssues({ search: issueSearch, sort: "updated" }, open, issueSearch ? 8 : 5);
   // Archived issues hide from listings but stay findable here, after live matches.
   const archivedQuery = useIssues(
-    { search: query, sort: "updated", archived: true },
-    open && query !== "",
+    { search: issueSearch, sort: "updated", archived: true },
+    open && issueSearch !== "",
+    8,
   );
   const issues = useMemo(() => {
-    if (!query) return liveQuery.items.slice(0, 5);
+    if (!issueSearch) return liveQuery.items.slice(0, 5);
     const seen = new Set(liveQuery.items.map((i) => i.id));
     return [...liveQuery.items, ...archivedQuery.items.filter((i) => !seen.has(i.id))].slice(0, 8);
-  }, [query, liveQuery.items, archivedQuery.items]);
+  }, [issueSearch, liveQuery.items, archivedQuery.items]);
   const issueQuery = liveQuery;
   const keyLength = issueKeyLength(issues);
   const people = query

@@ -22,13 +22,30 @@ function nullable<T>(a: T | null, b: T | null, compareValues: (a: T, b: T) => nu
 const WORD = /[\p{L}\p{M}\p{N}]+/gu;
 
 // Lowercases one code point at a time. Whole-string toLowerCase() turns a word-final Σ into ς, and
-// PostgreSQL keeps σ, so "ΟΣ" would miss "ΟΣΟ".
+// PostgreSQL keeps σ, so "ΟΣ" would miss "ΟΣΟ". Final sigma is the only context-dependent mapping,
+// so text without Σ takes the whole-string path.
 function lowercase(text: string): string {
+  if (!text.includes("Σ")) return text.toLowerCase();
   return Array.from(text, (char) => char.toLowerCase()).join("");
 }
 
 function words(text: string): string[] {
   return (text.match(WORD) ?? []).map((word) => lowercase(word));
+}
+
+// Store records are frozen and replaced on change, so the record itself keys its search text.
+interface Searchable {
+  text: string;
+  words?: Set<string>;
+}
+const searchables = new WeakMap<DeepReadonly<SyncIssue>, Searchable>();
+function searchable(issue: DeepReadonly<SyncIssue>): Searchable {
+  let entry = searchables.get(issue);
+  if (!entry) {
+    entry = { text: lowercase(`${issue.title} ${issue.description}`) };
+    searchables.set(issue, entry);
+  }
+  return entry;
 }
 
 function searchPredicate(search: string): (issue: DeepReadonly<SyncIssue>) => boolean {
@@ -38,10 +55,13 @@ function searchPredicate(search: string): (issue: DeepReadonly<SyncIssue>) => bo
   const raw = search.replace(/^#+/, "");
   const number = /^[1-9]\d*$/.test(raw) && BigInt(raw) <= 9223372036854775807n ? raw : undefined;
   return (issue) => {
-    const text = `${issue.title} ${issue.description}`;
-    if (lowercase(text).includes(substring)) return true;
-    const document = new Set(words(text));
-    if (query.length > 0 && query.every((word) => document.has(word))) return true;
+    const entry = searchable(issue);
+    if (entry.text.includes(substring)) return true;
+    if (query.length > 0) {
+      entry.words ??= new Set(words(`${issue.title} ${issue.description}`));
+      const document = entry.words;
+      if (query.every((word) => document.has(word))) return true;
+    }
     return issue.number !== null && String(issue.number) === number;
   };
 }

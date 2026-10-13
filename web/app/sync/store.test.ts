@@ -798,7 +798,7 @@ describe("review N1-N5", () => {
     const { events, stop } = collect(store);
     const before = store.pendingVersion();
     code = "E_B";
-    store.applyBase([]);
+    store.applyBase([{ entity: "issues", id: "x", record: makeIssue("x") }]);
     stop();
     expect(store.replayErrors().get(1)).toEqual({ name: "Error", message: "locked", code: "E_B" });
     expect(events).toHaveLength(1);
@@ -897,5 +897,107 @@ describe("review N1-N5", () => {
     store.replaceBase({ issues: [makeIssue("a")] }, ["issues"]);
     store.setPending([{ id: 1, name: "noop", args: {}, at: NOW }]);
     expect(store.get("issues", "a")).toBeDefined();
+  });
+});
+
+describe("incremental replay", () => {
+  const mutation = (id: number, name: string, args: unknown = {}): PendingMutation => ({
+    id,
+    name,
+    args,
+    at: NOW,
+  });
+
+  it("replays only appended mutations and skips unchanged pulls", () => {
+    const store = new SyncStore(testReplay);
+    store.replaceBase({ issues: [makeIssue("a")] }, ["issues"]);
+    for (let i = 1; i <= 500; i += 1) {
+      store.setPending([...store.pending(), mutation(i, "set_title", { id: "a", title: `t${i}` })]);
+    }
+    expect(store.debug.replays).toBe(500);
+    store.batch(() => {
+      store.applyBase([{ entity: "issues", id: "a", record: makeIssue("a") }]);
+      store.setPending(store.pending().filter(() => true));
+    });
+    expect(store.debug.replays).toBe(500);
+    store.applyBase([{ entity: "issues", id: "a", record: makeIssue("a", { title: "Server" }) }]);
+    expect(store.debug.replays).toBe(1000);
+    expect(store.get("issues", "a")?.title).toBe("t500");
+  });
+
+  it("matches full rebases over random appends, base changes and acks", () => {
+    const replay: ReplayFn = (tx, m) => {
+      const args = m.args as { id: string; team: string };
+      if (m.name === "create") tx.put("issues", makeIssue(args.id, { team_id: args.team }));
+      else if (m.name === "move") {
+        const issue = tx.get("issues", args.id);
+        if (issue === undefined) throw new Error(`missing issue ${args.id}`);
+        tx.put("issues", { ...issue, team_id: args.team });
+      } else testReplay(tx, m);
+    };
+    let seed = 7;
+    const rand = (n: number): number => {
+      seed = (seed * 1103515245 + 12345) % 2147483648;
+      return seed % n;
+    };
+    const ids = ["a", "b", "c", "d", "e"];
+    const teams = ["t1", "t2"];
+    const randomMutation = (id: number): PendingMutation => {
+      const issue = ids[rand(ids.length)] ?? "a";
+      const team = teams[rand(teams.length)] ?? "t1";
+      const kinds: [string, unknown][] = [
+        ["set_title", { id: issue, title: `v${rand(3)}` }],
+        ["append_title", { id: issue, suffix: "!" }],
+        ["delete_issue", { id: issue }],
+        ["create", { id: issue, team }],
+        ["move", { id: issue, team }],
+        ["boom", {}],
+      ];
+      const [name, args] = kinds[rand(kinds.length)] ?? ["boom", {}];
+      return mutation(id, name, args);
+    };
+    const randomChange = () => {
+      const id = ids[rand(ids.length)] ?? "a";
+      const record =
+        rand(4) === 0 ? null : makeIssue(id, { title: `v${rand(3)}`, team_id: teams[rand(2)] });
+      return { entity: "issues" as const, id, record };
+    };
+    const incremental = new SyncStore(replay);
+    const full = new SyncStore(replay);
+    const logs = [incremental, full].map((store) => {
+      const log: unknown[] = [];
+      store.subscribe((e) => log.push(e));
+      return log;
+    });
+    const seedBase = { issues: [makeIssue("a", { team_id: "t1" }), makeIssue("b")] };
+    incremental.replaceBase(seedBase, ["issues"]);
+    full.replaceBase(seedBase, ["issues"]);
+    let next = 1;
+    for (let step = 0; step < 400; step += 1) {
+      const op = rand(4);
+      const changes = op === 1 ? [randomChange()] : [];
+      const appended = op === 0 ? [randomMutation(next++), randomMutation(next++)] : [];
+      const acked = op === 2 ? rand(3) : 0;
+      const pending = [...incremental.pending().slice(acked), ...appended];
+      incremental.batch(() => {
+        incremental.applyBase(changes);
+        incremental.setPending(pending);
+      });
+      full.batch(() => {
+        full.applyBase(changes);
+        full.setPending(pending.map((m) => ({ ...m })));
+      });
+      expect(incremental.all("issues")).toEqual(full.all("issues"));
+      for (const team of teams) {
+        expect(incremental.byIndex("issues", "team_id", team)).toEqual(
+          full.byIndex("issues", "team_id", team),
+        );
+      }
+      expect(incremental.replayErrors()).toEqual(full.replayErrors());
+      expect(incremental.version("issues")).toBe(full.version("issues"));
+      expect(incremental.pendingVersion()).toBe(full.pendingVersion());
+      expect(logs[0]).toEqual(logs[1]);
+    }
+    expect(incremental.debug.replays).toBeLessThan(full.debug.replays / 2);
   });
 });
