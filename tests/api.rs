@@ -65,7 +65,7 @@ async fn page(app: &axum::Router, user: &Session, id: &str, resource: &str) -> V
     let (status, value) = call(
         app,
         "GET",
-        &format!("/api/workspaces/{id}/{resource}{separator}limit=200"),
+        &format!("/internal-api/workspaces/{id}/{resource}{separator}limit=200"),
         Some(&user.token),
         None,
     )
@@ -81,7 +81,7 @@ async fn workspace_state(app: &axum::Router, user: &Session, id: &str) -> Value 
     let (status, mut value) = call(
         app,
         "GET",
-        &format!("/api/workspaces/{id}"),
+        &format!("/internal-api/workspaces/{id}"),
         Some(&user.token),
         None,
     )
@@ -111,7 +111,7 @@ async fn workspace_state(app: &axum::Router, user: &Session, id: &str) -> Value 
     let (status, members) = call(
         app,
         "GET",
-        &format!("/api/workspaces/{id}/members"),
+        &format!("/internal-api/workspaces/{id}/members"),
         Some(&user.token),
         None,
     )
@@ -156,7 +156,7 @@ async fn change(app: &axum::Router, user: &Session, id: &str, command: Command) 
     let (status, value) = call(
         app,
         "POST",
-        &format!("/api/workspaces/{id}/commands"),
+        &format!("/internal-api/workspaces/{id}/commands"),
         Some(&user.token),
         Some(json!({"expected_versions":expected_versions,"command":command})),
     )
@@ -198,7 +198,7 @@ async fn complete_contract_on_postgres() {
     let (status, value) = call(
         &app,
         "POST",
-        "/api/workspaces",
+        "/internal-api/workspaces",
         Some(&owner.token),
         Some(json!({"name":"Infrastructure"})),
     )
@@ -210,7 +210,7 @@ async fn complete_contract_on_postgres() {
         call(
             &app,
             "GET",
-            &format!("/api/workspaces/{id}"),
+            &format!("/internal-api/workspaces/{id}"),
             Some(&outsider.token),
             None
         )
@@ -319,7 +319,7 @@ async fn complete_contract_on_postgres() {
     let (status, value) = call(
         &app,
         "POST",
-        &format!("/api/workspaces/{id}/commands"),
+        &format!("/internal-api/workspaces/{id}/commands"),
         Some(&owner.token),
         Some(json!({
             "expected_versions": {first.to_string(): -1},
@@ -390,7 +390,7 @@ async fn complete_contract_on_postgres() {
     let (status, report) = call(
         &app,
         "GET",
-        &format!("/api/workspaces/{id}/report"),
+        &format!("/internal-api/workspaces/{id}/report"),
         Some(&owner.token),
         None,
     )
@@ -404,7 +404,7 @@ async fn complete_contract_on_postgres() {
         &app,
         "GET",
         &format!(
-            "/api/workspaces/{id}/issues?{}",
+            "/internal-api/workspaces/{id}/issues?{}",
             serde_urlencoded::to_string([(
                 "where",
                 serde_json::json!([
@@ -429,7 +429,7 @@ async fn complete_contract_on_postgres() {
     let (status, _) = call(
         &app,
         "POST",
-        &format!("/api/workspaces/{id}/commands"),
+        &format!("/internal-api/workspaces/{id}/commands"),
         Some(&owner.token),
         Some(json!({
             "expected_versions": expected_versions,
@@ -466,7 +466,7 @@ async fn complete_contract_on_postgres() {
     let (status, trash) = call(
         &app,
         "GET",
-        &format!("/api/workspaces/{id}/issues?trash=true"),
+        &format!("/internal-api/workspaces/{id}/issues?trash=true"),
         Some(&owner.token),
         None,
     )
@@ -524,7 +524,7 @@ async fn complete_contract_on_postgres() {
     let (status, value) = call(
         &app,
         "POST",
-        &format!("/api/workspaces/{id}/invitations/accept"),
+        &format!("/internal-api/workspaces/{id}/invitations/accept"),
         Some(&colleague.token),
         Some(json!({"token":mail["token"]})),
     )
@@ -535,7 +535,7 @@ async fn complete_contract_on_postgres() {
         call(
             &app,
             "POST",
-            &format!("/api/workspaces/{id}/invitations/accept"),
+            &format!("/internal-api/workspaces/{id}/invitations/accept"),
             Some(&colleague.token),
             Some(json!({"token":mail["token"]}))
         )
@@ -602,7 +602,7 @@ async fn complete_contract_on_postgres() {
         call(
             &app,
             "POST",
-            &format!("/api/workspaces/{id}/commands"),
+            &format!("/internal-api/workspaces/{id}/commands"),
             Some(&colleague.token),
             Some(json!({"expected_versions":{},"command":{"type":"delete_issue","id":first}}))
         )
@@ -625,7 +625,7 @@ async fn complete_contract_on_postgres() {
         call(
             &app,
             "GET",
-            &format!("/api/workspaces/{id}"),
+            &format!("/internal-api/workspaces/{id}"),
             Some(&colleague.token),
             None
         )
@@ -646,7 +646,9 @@ async fn complete_contract_on_postgres() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!("/api/workspaces/{id}/issues/{first}/attachments"))
+                .uri(format!(
+                    "/internal-api/workspaces/{id}/issues/{first}/attachments"
+                ))
                 .header("Authorization", format!("Bearer {}", owner.token))
                 .header(
                     "Content-Type",
@@ -698,7 +700,7 @@ async fn complete_contract_on_postgres() {
     let (status, html) = call(
         &app,
         "POST",
-        "/api/markdown",
+        "/internal-api/markdown",
         Some(&owner.token),
         Some(json!({"text":"**Hello** <script>alert(1)</script> [x](javascript:alert(1))"})),
     )
@@ -718,7 +720,7 @@ async fn complete_contract_on_postgres() {
     let (status, export) = call(
         &app,
         "GET",
-        &format!("/api/workspaces/{id}/export"),
+        &format!("/internal-api/workspaces/{id}/export"),
         Some(&owner.token),
         None,
     )
@@ -731,7 +733,7 @@ async fn complete_contract_on_postgres() {
     let (status, target) = call(
         &app,
         "POST",
-        "/api/workspaces",
+        "/internal-api/workspaces",
         Some(&owner.token),
         Some(json!({"name":"Imported workspace"})),
     )
@@ -743,7 +745,7 @@ async fn complete_contract_on_postgres() {
     let (status, imported) = call(
         &app,
         "POST",
-        &format!("/api/workspaces/{target_id}/import"),
+        &format!("/internal-api/workspaces/{target_id}/import"),
         Some(&owner.token),
         Some(json!({"expected_versions":{},"transfer":export})),
     )
@@ -768,6 +770,7 @@ async fn complete_contract_on_postgres() {
             name: "Source control".into(),
             webhook_url: "https://blackwall-test.invalid/hook".into(),
             secret: "integration-test-secret".into(),
+            events: vec![],
         },
     )
     .await;
@@ -846,6 +849,7 @@ async fn complete_contract_on_postgres() {
         Command::UpdateIntegration {
             id: integration,
             enabled: false,
+            events: None,
         },
     )
     .await;
@@ -894,7 +898,7 @@ async fn complete_contract_on_postgres() {
 
     let foreign_login = Request::builder()
         .method("POST")
-        .uri("/api/auth/login")
+        .uri("/internal-api/auth/login")
         .header("Host", "blackwall.local")
         .header("Origin", "https://attacker.example")
         .header("Content-Type", "application/json")
@@ -908,7 +912,7 @@ async fn complete_contract_on_postgres() {
 
     let cookie_request = Request::builder()
         .method("POST")
-        .uri("/api/workspaces")
+        .uri("/internal-api/workspaces")
         .header("Cookie", format!("blackwall_session={}", owner.token))
         .header("Content-Type", "application/json")
         .body(Body::from("{\"name\":\"CSRF\"}"))
@@ -921,7 +925,7 @@ async fn complete_contract_on_postgres() {
 
     let cookie_request = Request::builder()
         .method("POST")
-        .uri("/api/workspaces")
+        .uri("/internal-api/workspaces")
         .header("Cookie", format!("blackwall_session={}", owner.token))
         .header("X-CSRF-Token", &owner.csrf_token)
         .header("Content-Type", "application/json")
@@ -933,7 +937,7 @@ async fn complete_contract_on_postgres() {
         StatusCode::OK
     );
 
-    let (status, schema) = call(&app, "GET", "/api/schema.json", None, None).await;
+    let (status, schema) = call(&app, "GET", "/internal-api/schema.json", None, None).await;
 
     assert_eq!(status, StatusCode::OK);
     assert!(schema["components"]["schemas"]["Command"].is_object());
@@ -966,7 +970,7 @@ async fn complete_contract_on_postgres() {
         );
     }
 
-    let (status, _) = call(&app, "GET", "/api/nope", None, None).await;
+    let (status, _) = call(&app, "GET", "/internal-api/nope", None, None).await;
 
     assert_eq!(status, StatusCode::NOT_FOUND);
 

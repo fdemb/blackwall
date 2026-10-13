@@ -70,12 +70,12 @@ and remote response bodies are omitted.
 All routes are scoped to a workspace and require owner or administrator access:
 
 ```text
-GET    /api/workspaces/{workspace_id}/openproject/connections
-POST   /api/workspaces/{workspace_id}/openproject/connections
-PATCH  /api/workspaces/{workspace_id}/openproject/connections/{connection_id}
-DELETE /api/workspaces/{workspace_id}/openproject/connections/{connection_id}
-POST   /api/workspaces/{workspace_id}/openproject/connections/{connection_id}/refresh
-POST   /api/workspaces/{workspace_id}/openproject/connections/{connection_id}/sync
+GET    /internal-api/workspaces/{workspace_id}/openproject/connections
+POST   /internal-api/workspaces/{workspace_id}/openproject/connections
+PATCH  /internal-api/workspaces/{workspace_id}/openproject/connections/{connection_id}
+DELETE /internal-api/workspaces/{workspace_id}/openproject/connections/{connection_id}
+POST   /internal-api/workspaces/{workspace_id}/openproject/connections/{connection_id}/refresh
+POST   /internal-api/workspaces/{workspace_id}/openproject/connections/{connection_id}/sync
 ```
 
 Create a connection:

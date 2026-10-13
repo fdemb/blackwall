@@ -71,7 +71,7 @@ async fn command(
         app,
         owner,
         "POST",
-        &format!("/api/workspaces/{workspace}/commands"),
+        &format!("/internal-api/workspaces/{workspace}/commands"),
         Some(json!({
             "command": command,
             "expected_versions": versions,
@@ -92,7 +92,7 @@ async fn workspace(app: &axum::Router, owner: &Session, name: &str) -> Uuid {
         app,
         owner,
         "POST",
-        "/api/workspaces",
+        "/internal-api/workspaces",
         Some(json!({"name": name})),
     )
     .await;
@@ -865,10 +865,16 @@ async fn workspace_creation_retries_are_actor_scoped_and_atomic() {
             &app,
             &owner,
             "POST",
-            "/api/workspaces",
+            "/internal-api/workspaces",
             Some(payload.clone())
         ),
-        call(&app, &owner, "POST", "/api/workspaces", Some(payload)),
+        call(
+            &app,
+            &owner,
+            "POST",
+            "/internal-api/workspaces",
+            Some(payload)
+        ),
     );
     assert_eq!(a.0, StatusCode::OK, "{}", a.1);
     assert_eq!(a, b);
@@ -877,7 +883,7 @@ async fn workspace_creation_retries_are_actor_scoped_and_atomic() {
         &app,
         &owner,
         "POST",
-        "/api/workspaces",
+        "/internal-api/workspaces",
         Some(json!({"name": "Another name", "idempotency_key": "ambiguous-create"})),
     )
     .await;
@@ -887,7 +893,7 @@ async fn workspace_creation_retries_are_actor_scoped_and_atomic() {
         &app,
         &other,
         "POST",
-        "/api/workspaces",
+        "/internal-api/workspaces",
         Some(json!({"name": "Another actor", "idempotency_key": "ambiguous-create"})),
     )
     .await;
@@ -988,7 +994,7 @@ async fn idempotent_finish_child_replay_reports_current_records() {
         &app,
         &owner,
         "GET",
-        &format!("/api/workspaces/{ws}/issues/{parent}"),
+        &format!("/internal-api/workspaces/{ws}/issues/{parent}"),
         None,
     )
     .await;
@@ -1041,7 +1047,7 @@ async fn idempotent_finish_child_replay_reports_current_records() {
             &app,
             &owner,
             "GET",
-            &format!("/api/workspaces/{ws}/issues/{issue}"),
+            &format!("/internal-api/workspaces/{ws}/issues/{issue}"),
             None,
         )
         .await;
@@ -1084,7 +1090,7 @@ async fn idempotent_finish_child_replay_reports_current_records() {
         &app,
         &owner,
         "GET",
-        &format!("/api/workspaces/{ws}/issues/{parent}"),
+        &format!("/internal-api/workspaces/{ws}/issues/{parent}"),
         None,
     )
     .await;
@@ -1095,7 +1101,7 @@ async fn idempotent_finish_child_replay_reports_current_records() {
         &app,
         &owner,
         "GET",
-        &format!("/api/workspaces/{ws}/issues/{blocked}"),
+        &format!("/internal-api/workspaces/{ws}/issues/{blocked}"),
         None,
     )
     .await;

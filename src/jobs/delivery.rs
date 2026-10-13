@@ -221,28 +221,29 @@ async fn send_webhook(id: &str, webhook: &Webhook, secret: &str) -> Result<(), D
     let signature = signature(secret.as_bytes(), &body);
 
     let client = webhook_client(id, &url).await?;
-    let response = client
+    let mut request = client
         .post(url)
         .header("Content-Type", "application/json")
         .header("Idempotency-Key", id)
-        .header("X-Blackwall-Signature", signature)
-        .body(body)
-        .send()
-        .await
-        .map_err(|error| {
-            let timeout = error.is_timeout();
-            let connect = error.is_connect();
-            let status = error.status();
-            tracing::warn!(
-                job = %id,
-                error = %error.without_url(),
-                timeout,
-                connect,
-                status = ?status,
-                "webhook request failed"
-            );
-            DeliveryError::Transient("webhook request failed")
-        })?;
+        .header("X-Blackwall-Signature", signature);
+    // Jobs queued before typed events carry no type.
+    if let Some(kind) = webhook.event["type"].as_str() {
+        request = request.header("X-Blackwall-Event", kind);
+    }
+    let response = request.body(body).send().await.map_err(|error| {
+        let timeout = error.is_timeout();
+        let connect = error.is_connect();
+        let status = error.status();
+        tracing::warn!(
+            job = %id,
+            error = %error.without_url(),
+            timeout,
+            connect,
+            status = ?status,
+            "webhook request failed"
+        );
+        DeliveryError::Transient("webhook request failed")
+    })?;
 
     let status = response.status();
 

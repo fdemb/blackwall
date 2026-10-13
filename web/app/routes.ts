@@ -39,6 +39,7 @@ export default [
         route("preferences", "routes/settings-preferences.tsx"),
         route("notifications", "routes/settings-notifications.tsx"),
         route("security", "routes/settings-security.tsx"),
+        route("tokens", "routes/settings-tokens.tsx"),
         route("general", "routes/settings-general.tsx"),
         route("members", "routes/settings-members.tsx"),
         route("teams", "routes/settings-teams.tsx"),

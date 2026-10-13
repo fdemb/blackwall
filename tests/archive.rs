@@ -486,7 +486,7 @@ async fn global_search_spans_live_and_archived_issues() {
     let response = app
         .oneshot(
             Request::builder()
-                .uri(format!("/api/workspaces/{ws}/search?q=zebra"))
+                .uri(format!("/internal-api/workspaces/{ws}/search?q=zebra"))
                 .header("Authorization", format!("Bearer {}", session.token))
                 .body(Body::empty())
                 .unwrap(),

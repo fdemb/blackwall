@@ -5,6 +5,7 @@ import {
   ArrowUpDown,
   Bell,
   Building2,
+  KeySquare,
   ChevronsUpDown,
   KeyRound,
   Plug,
@@ -76,6 +77,7 @@ export default function SettingsLayout() {
         { path: "preferences", label: "account.preferences", icon: SlidersHorizontal },
         { path: "notifications", label: "account.alerts", icon: Bell },
         { path: "security", label: "account.security", icon: KeyRound },
+        { path: "tokens", label: "account.tokens", icon: KeySquare },
       ],
     },
   ];

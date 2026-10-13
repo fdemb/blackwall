@@ -21,7 +21,9 @@ export default defineConfig(({ mode }) => {
     resolve: { tsconfigPaths: true },
     server: {
       proxy: {
+        "/internal-api": { target: api, changeOrigin: false },
         "/api": { target: api, changeOrigin: false },
+        "/mcp": { target: api, changeOrigin: false },
         "/health": { target: api, changeOrigin: false },
       },
     },

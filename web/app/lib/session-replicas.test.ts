@@ -93,7 +93,7 @@ afterEach(async () => {
 });
 
 describe("session replica lifetime", () => {
-  it("GET /api/me deletes other sessions' replicas and preserves this session", async () => {
+  it("GET /internal-api/me deletes other sessions' replicas and preserves this session", async () => {
     const { profile } = await fixture();
     await seed(id(90), id(91), true);
     await seed(profile.session_id, id(92));
@@ -103,7 +103,7 @@ describe("session replica lifetime", () => {
     ]);
     expect(currentSession()?.session_id).toBe(profile.session_id);
   });
-  it("an older /api/me reply that lands last neither changes the session nor deletes the newer replica", async () => {
+  it("an older /internal-api/me reply that lands last neither changes the session nor deletes the newer replica", async () => {
     const { profile } = await fixture();
     let resolveOlder: (value: typeof profile) => void = () => {};
     let resolveNewer: (value: typeof profile) => void = () => {};
@@ -142,7 +142,7 @@ describe("session replica lifetime", () => {
       return new Response(null, { status: 204 });
     });
     await logoutSession();
-    expect(fetch.mock.calls.at(-1)?.[0]).toBe("/api/auth/logout");
+    expect(fetch.mock.calls.at(-1)?.[0]).toBe("/internal-api/auth/logout");
     expect(currentSession()).toBeNull();
     expect(assign).toHaveBeenCalledWith("/login");
   });

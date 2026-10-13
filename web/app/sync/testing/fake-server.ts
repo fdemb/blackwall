@@ -406,10 +406,10 @@ export class FakeServer {
     request.signal.throwIfAborted();
     const url = new URL(request.url);
     const matched =
-      /^\/api\/workspaces\/([^/]+)\/(?:sync\/(bootstrap|pull|push|scope|events)|(commands))$/.exec(
+      /^\/internal-api\/workspaces\/([^/]+)\/(?:sync\/(bootstrap|pull|push|scope|events)|(commands))$/.exec(
         url.pathname,
       );
-    const route = url.pathname === "/api/me" ? "me" : (matched?.[2] ?? matched?.[3]);
+    const route = url.pathname === "/internal-api/me" ? "me" : (matched?.[2] ?? matched?.[3]);
     if (
       !route ||
       (route === "push" || route === "commands"

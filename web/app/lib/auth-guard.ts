@@ -14,7 +14,7 @@ export function currentProfile(): Promise<SessionProfile | null> {
   return newestMe;
 }
 
-// Only the newest /api/me may change the session. An older reply that lands last answers with
+// Only the newest /internal-api/me may change the session. An older reply that lands last answers with
 // the newest one, so it can't delete the replicas of the session the newest reply started.
 async function readProfile(sequence: number): Promise<SessionProfile | null> {
   try {

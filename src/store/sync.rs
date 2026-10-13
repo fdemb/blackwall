@@ -146,6 +146,9 @@ fn is_business(error: &Error) -> bool {
         Error::BadRequest(_)
         | Error::NotFound
         | Error::Conflict(_)
+        | Error::Stale(_)
+        | Error::PreconditionFailed(_)
+        | Error::Denied(_)
         | Error::Forbidden
         | Error::Json(_) => true,
         Error::Database(sqlx::Error::Database(db)) => db
@@ -162,9 +165,10 @@ fn is_business(error: &Error) -> bool {
 fn rejection(error: &Error) -> MutationError {
     let (status, message) = match error {
         Error::BadRequest(message) => (400, message.clone()),
-        Error::Forbidden => (403, error.to_string()),
+        Error::Forbidden | Error::Denied(_) => (403, error.to_string()),
+        Error::PreconditionFailed(message) => (412, message.clone()),
         Error::NotFound => (404, error.to_string()),
-        Error::Conflict(message) => (409, message.clone()),
+        Error::Conflict(message) | Error::Stale(message) => (409, message.clone()),
         Error::Json(error) => (400, error.to_string()),
         Error::Database(sqlx::Error::Database(db))
             if db.code().as_deref() == Some("23514")

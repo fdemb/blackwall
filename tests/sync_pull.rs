@@ -68,7 +68,7 @@ async fn workspace(app: &axum::Router, owner: &Session, name: &str) -> Uuid {
     let (status, result) = call(
         app,
         "POST",
-        "/api/workspaces",
+        "/internal-api/workspaces",
         Some(&owner.token),
         Some(json!({"name": name})),
     )
@@ -98,7 +98,7 @@ async fn command(
     call(
         app,
         "POST",
-        &format!("/api/workspaces/{workspace}/commands"),
+        &format!("/internal-api/workspaces/{workspace}/commands"),
         Some(&owner.token),
         Some(json!({"command": cmd})),
     )
@@ -124,7 +124,7 @@ async fn push(
     call(
         app,
         "POST",
-        &format!("/api/workspaces/{workspace}/sync/push"),
+        &format!("/internal-api/workspaces/{workspace}/sync/push"),
         Some(token),
         Some(json!({"client_id": client, "mutations": mutations})),
     )
@@ -145,7 +145,7 @@ async fn pull(
     call(
         app,
         "GET",
-        &format!("/api/workspaces/{workspace}/sync/pull{query}"),
+        &format!("/internal-api/workspaces/{workspace}/sync/pull{query}"),
         Some(token),
         None,
     )
@@ -202,7 +202,7 @@ async fn invite_member(
     let (status, result) = call(
         app,
         "POST",
-        &format!("/api/workspaces/{workspace}/invitations/accept"),
+        &format!("/internal-api/workspaces/{workspace}/invitations/accept"),
         Some(&user.token),
         Some(json!({"token": mail["token"]})),
     )
@@ -254,7 +254,7 @@ async fn pull_returns_rendered_records_and_quiet_poll_is_empty() {
     let (status, detail) = call(
         &app,
         "GET",
-        &format!("/api/workspaces/{ws}/issues/{issue}"),
+        &format!("/internal-api/workspaces/{ws}/issues/{issue}"),
         Some(&owner.token),
         None,
     )
@@ -671,7 +671,7 @@ async fn import_issues(app: &axum::Router, owner: &Session, ws: Uuid, issues: Ve
     let (status, result) = call(
         app,
         "POST",
-        &format!("/api/workspaces/{ws}/import"),
+        &format!("/internal-api/workspaces/{ws}/import"),
         Some(&owner.token),
         Some(json!({"issues": issues})),
     )
@@ -1209,12 +1209,12 @@ async fn pull_profile_edit_and_team_join_do_not_reset() {
 
     // A profile edit marks the actor's membership row, but writes no role
     // marker, so it rides along as a normal change.
-    let (status, me) = call(&app, "GET", "/api/me", Some(&owner.token), None).await;
+    let (status, me) = call(&app, "GET", "/internal-api/me", Some(&owner.token), None).await;
     assert_eq!(status, StatusCode::OK, "{me}");
     let (status, result) = call(
         &app,
         "PATCH",
-        "/api/me",
+        "/internal-api/me",
         Some(&owner.token),
         Some(json!({
             "display_name": "Renamed",
@@ -1474,7 +1474,7 @@ async fn pull_request_errors() {
     let (status, _) = call(
         &app,
         "GET",
-        &format!("/api/workspaces/{ws}/sync/pull"),
+        &format!("/internal-api/workspaces/{ws}/sync/pull"),
         Some(&owner.token),
         None,
     )
@@ -1483,7 +1483,7 @@ async fn pull_request_errors() {
     let (status, _) = call(
         &app,
         "GET",
-        &format!("/api/workspaces/{ws}/sync/pull?client_id=nope"),
+        &format!("/internal-api/workspaces/{ws}/sync/pull?client_id=nope"),
         Some(&owner.token),
         None,
     )
@@ -1496,7 +1496,7 @@ async fn pull_request_errors() {
         let (status, _) = call(
             &app,
             "GET",
-            &format!("/api/workspaces/{ws}/sync/pull?client_id={client}&cursor={bad}"),
+            &format!("/internal-api/workspaces/{ws}/sync/pull?client_id={client}&cursor={bad}"),
             Some(&owner.token),
             None,
         )

@@ -640,7 +640,7 @@ impl Operation<'_> {
         if let Some(expected) = self.expected.get(&id)
             && *expected != version
         {
-            return Err(Error::Conflict(format!(
+            return Err(Error::Stale(format!(
                 "entity {id} changed; current version is {version}"
             )));
         }

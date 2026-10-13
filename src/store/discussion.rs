@@ -152,19 +152,31 @@ impl Operation<'_> {
                 name,
                 webhook_url,
                 secret,
+                events,
             } => {
-                self.create_integration(id, name, webhook_url, secret)
+                self.create_integration(id, name, webhook_url, secret, events)
                     .await?
             }
-            Command::UpdateIntegration { id, enabled } => {
+            Command::UpdateIntegration {
+                id,
+                enabled,
+                events,
+            } => {
                 self.admin()?;
+                if let Some(events) = &events {
+                    crate::domain::validate_webhook_events(events)?;
+                }
                 self.touch("integrations", id).await?;
-                sqlx::query("UPDATE integrations SET enabled=$3 WHERE workspace_id=$1 AND id=$2")
-                    .bind(self.workspace_id)
-                    .bind(id)
-                    .bind(enabled)
-                    .execute(&mut *self.tx)
-                    .await?;
+                sqlx::query(
+                    "UPDATE integrations SET enabled=$3,events=COALESCE($4,events) \
+                     WHERE workspace_id=$1 AND id=$2",
+                )
+                .bind(self.workspace_id)
+                .bind(id)
+                .bind(enabled)
+                .bind(events)
+                .execute(&mut *self.tx)
+                .await?;
                 id
             }
             Command::DeleteIntegration { id } => {
@@ -856,23 +868,26 @@ impl Operation<'_> {
         name: String,
         webhook_url: String,
         secret: String,
+        events: Vec<String>,
     ) -> Result<Uuid> {
         self.admin()?;
         crate::domain::text(&name, 200)?;
         validate_url(&webhook_url)?;
         crate::domain::text(&secret, 4096)?;
+        crate::domain::validate_webhook_events(&events)?;
         self.capacity("integrations", 100).await?;
         let id = self.reserve_client_id(id).await?;
 
         sqlx::query(
-            "INSERT INTO integrations(id,workspace_id,name,webhook_url,secret) \
-            VALUES($1,$2,$3,$4,$5)",
+            "INSERT INTO integrations(id,workspace_id,name,webhook_url,secret,events) \
+            VALUES($1,$2,$3,$4,$5,$6)",
         )
         .bind(id)
         .bind(self.workspace_id)
         .bind(name)
         .bind(webhook_url)
         .bind(secret)
+        .bind(events)
         .execute(&mut *self.tx)
         .await
         .map_err(id_conflict)?;
@@ -1245,7 +1260,7 @@ mod tests {
                 BTreeMap::from([(comment, 1)])
             )
             .await,
-            Err(Error::Conflict(_))
+            Err(Error::Stale(_))
         ));
 
         let body: String = sqlx::query_scalar("SELECT body FROM comments WHERE id=$1")
@@ -1320,7 +1335,7 @@ mod tests {
                 BTreeMap::from([(issue, 1)])
             )
             .await,
-            Err(Error::Conflict(_))
+            Err(Error::Stale(_))
         ));
         let exists: bool =
             sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM attachments WHERE id=$1)")
@@ -1408,7 +1423,7 @@ mod tests {
                     BTreeMap::from([(target, 0)])
                 )
                 .await,
-                Err(Error::Conflict(_))
+                Err(Error::Stale(_))
             ));
         }
 

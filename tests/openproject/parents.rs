@@ -13,7 +13,7 @@ async fn create(
     url: &str,
     projects: Value,
 ) -> String {
-    let base = format!("/api/workspaces/{workspace}/openproject/connections");
+    let base = format!("/internal-api/workspaces/{workspace}/openproject/connections");
     let (status, config) = call(
         app,
         owner,
@@ -267,7 +267,7 @@ async fn reparenting_moves_link_and_marks_only_the_child() {
             &app,
             &owner,
             "GET",
-            &format!("/api/workspaces/{workspace}/issues/{parent}"),
+            &format!("/internal-api/workspaces/{workspace}/issues/{parent}"),
             None,
         )
         .await;
@@ -604,7 +604,7 @@ async fn local_issues_cannot_use_imported_parents() {
         &app,
         &owner,
         "POST",
-        &format!("/api/workspaces/{workspace}/commands"),
+        &format!("/internal-api/workspaces/{workspace}/commands"),
         Some(json!({"expected_versions":{},"command":{"type":"create_issue","input":{"team_id":team_id,"stage_id":stage_id,"title":"Local","parent_id":imported}}})),
     )
     .await;
@@ -614,7 +614,7 @@ async fn local_issues_cannot_use_imported_parents() {
         &app,
         &owner,
         "POST",
-        &format!("/api/workspaces/{workspace}/commands"),
+        &format!("/internal-api/workspaces/{workspace}/commands"),
         Some(json!({"expected_versions":{},"command":{"type":"create_issue","input":{"team_id":team_id,"stage_id":stage_id,"title":"Local"}}})),
     )
     .await;
@@ -630,7 +630,7 @@ async fn local_issues_cannot_use_imported_parents() {
         &app,
         &owner,
         "POST",
-        &format!("/api/workspaces/{workspace}/commands"),
+        &format!("/internal-api/workspaces/{workspace}/commands"),
         Some(json!({"expected_versions":{local_id.clone():local_version},"command":{"type":"update_issue","id":local_id,"patch":{"parent_id":imported}}})),
     )
     .await;

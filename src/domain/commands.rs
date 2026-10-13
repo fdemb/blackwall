@@ -237,10 +237,16 @@ pub enum Command {
         name: String,
         webhook_url: String,
         secret: String,
+        /// Public webhook event types. Empty means every event.
+        #[serde(default)]
+        events: Vec<String>,
     },
     UpdateIntegration {
         id: Uuid,
         enabled: bool,
+        /// Replaces the subscribed event types when present.
+        #[serde(default)]
+        events: Option<Vec<String>>,
     },
     DeleteIntegration {
         id: Uuid,

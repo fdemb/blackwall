@@ -9,7 +9,7 @@ async fn legacy_unmapped_checkpoint_restarts_discovery_on_upgrade() {
     let app = http::router(store.clone());
     let mock = Mock::default();
     let (url, server) = mock_server(mock.clone()).await;
-    let base = format!("/api/workspaces/{workspace}/openproject/connections");
+    let base = format!("/internal-api/workspaces/{workspace}/openproject/connections");
     let (status, config) = call(
         &app,
         &owner,

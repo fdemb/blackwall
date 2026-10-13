@@ -229,7 +229,7 @@ async fn summary_is_opt_in_and_full_detail_and_pull_keeps_complete_records() {
         .oneshot(
             Request::builder()
                 .uri(format!(
-                    "/api/workspaces/{workspace}/issues?projection=summary&sort=updated&limit=1"
+                    "/internal-api/workspaces/{workspace}/issues?projection=summary&sort=updated&limit=1"
                 ))
                 .header("Authorization", format!("Bearer {}", owner.token))
                 .body(Body::empty())

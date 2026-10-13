@@ -5,11 +5,13 @@ use utoipa::ToSchema;
 use uuid::Uuid;
 
 mod commands;
+mod events;
 mod filter;
 mod issues;
 mod operations;
 
 pub use commands::*;
+pub use events::*;
 pub use filter::*;
 pub use issues::*;
 
@@ -260,6 +262,9 @@ pub struct Integration {
     pub webhook_url: String,
     pub secret: String,
     pub enabled: bool,
+    /// Public webhook event types to deliver. Empty means every event.
+    #[serde(default)]
+    pub events: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]

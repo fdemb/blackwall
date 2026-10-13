@@ -7,7 +7,7 @@ import type { PendingMutation } from "./store";
 
 export interface TransportOptions {
   fetch: typeof fetch;
-  /** Origin or path prefix before /api, with or without a trailing slash. */
+  /** Origin or path prefix before /internal-api, with or without a trailing slash. */
   baseUrl?: string;
   headers?: () => HeadersInit;
   signal?: AbortSignal;
@@ -110,7 +110,7 @@ export function createTransport(options: TransportOptions) {
       : (signal ?? options.signal);
   }
   function path(ws: string, route: string, clientId: string, query: Record<string, string> = {}) {
-    return `/api/workspaces/${encodeURIComponent(ws)}/sync/${route}?${new URLSearchParams({ client_id: clientId, ...query })}`;
+    return `/internal-api/workspaces/${encodeURIComponent(ws)}/sync/${route}?${new URLSearchParams({ client_id: clientId, ...query })}`;
   }
   async function request(path: string, init: RequestInit = {}): Promise<Response> {
     const headers = new Headers(options.headers?.());
@@ -133,7 +133,7 @@ export function createTransport(options: TransportOptions) {
   }
   async function checked(path: string, init?: RequestInit): Promise<Response> {
     const response = await request(path, init);
-    if (!response.ok) await fail(response, path !== "/api/me");
+    if (!response.ok) await fail(response, path !== "/internal-api/me");
     return response;
   }
   return {
@@ -210,12 +210,15 @@ export function createTransport(options: TransportOptions) {
       input: { command: object; idempotencyKey: string },
       requestOptions: StreamOptions = {},
     ): Promise<CommandResponse> {
-      const response = await checked(`/api/workspaces/${encodeURIComponent(ws)}/commands`, {
-        method: "POST",
-        signal: signalFor(requestOptions.signal),
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ command: input.command, idempotency_key: input.idempotencyKey }),
-      });
+      const response = await checked(
+        `/internal-api/workspaces/${encodeURIComponent(ws)}/commands`,
+        {
+          method: "POST",
+          signal: signalFor(requestOptions.signal),
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ command: input.command, idempotency_key: input.idempotencyKey }),
+        },
+      );
       const value = await json(response);
       if (
         !object(value) ||
@@ -281,7 +284,7 @@ export function createTransport(options: TransportOptions) {
       return pokes(response, signal);
     },
     async me(): Promise<SessionProfile> {
-      const response = await checked("/api/me");
+      const response = await checked("/internal-api/me");
       return parseProfile(await json(response), response.status);
     },
   };

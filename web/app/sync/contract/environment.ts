@@ -65,7 +65,7 @@ export async function request(path: string, user?: User, body?: unknown): Promis
 }
 export async function register(name: string): Promise<User> {
   return session(
-    await request("/api/auth/register", undefined, {
+    await request("/internal-api/auth/register", undefined, {
       display_name: name,
       email: `${randomUUID()}@example.test`,
       password,
@@ -73,17 +73,19 @@ export async function register(name: string): Promise<User> {
   );
 }
 export async function login(user: User): Promise<User> {
-  return session(await request("/api/auth/login", undefined, { email: user.email, password }));
+  return session(
+    await request("/internal-api/auth/login", undefined, { email: user.email, password }),
+  );
 }
 export async function workspace(owner: User): Promise<string> {
   return textField(
-    object(await request("/api/workspaces", owner, { name: "Sync contract" })).workspace,
+    object(await request("/internal-api/workspaces", owner, { name: "Sync contract" })).workspace,
     "id",
   );
 }
 export async function command(ws: string, user: User, value: Command): Promise<string | null> {
   const result = object(
-    await request(`/api/workspaces/${ws}/commands`, user, { command: value }),
+    await request(`/internal-api/workspaces/${ws}/commands`, user, { command: value }),
   ).result;
   const id = object(result).id;
   if (id === null || typeof id === "string") return id;
@@ -103,7 +105,7 @@ export async function addMember(ws: string, owner: User, user: User, role: Role)
     `SELECT payload->>'token' FROM jobs WHERE payload->>'invitation_id'='${id}'`,
   );
   if (!token) throw new Error("missing invitation email token");
-  await request(`/api/workspaces/${ws}/invitations/accept`, user, { token });
+  await request(`/internal-api/workspaces/${ws}/invitations/accept`, user, { token });
 }
 
 export class Connection {

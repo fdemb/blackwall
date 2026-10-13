@@ -282,7 +282,7 @@ async fn admin_stage_migration_moves_imported_and_local_issues_atomically() {
                 None
             )
             .await,
-        Err(Error::Conflict(_))
+        Err(Error::Stale(_))
     ));
     assert_eq!(f.versions().await, before);
     let projects: serde_json::Value =

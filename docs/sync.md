@@ -93,7 +93,7 @@ Some visibility changes don't produce a change row for every record they affect.
 
 ## Protocol
 
-All endpoints live under `/api/workspaces/{id}/sync/` and use the existing authentication and CSRF rules. Each request names its `client_id`. The server rejects a `client_id` that belongs to another user or workspace.
+All endpoints live under `/internal-api/workspaces/{id}/sync/` and use the existing authentication and CSRF rules. Each request names its `client_id`. The server rejects a `client_id` that belongs to another user or workspace.
 
 ### Clients
 
@@ -229,7 +229,7 @@ The leader runs bootstrap, pull and scope requests one at a time through one que
 3. **Field-level writes.** An `update_issue` patch writes only the fields it names. Two clients editing different fields of the same issue both win. Bulk edits follow the same rule.
 4. **Issue numbers** stay server-assigned. A locally created issue has no number until the pull that confirms it.
 5. **Endpoints.** Add bootstrap, pull, push, scope and events as specified above. Remove `GET /changes`.
-6. **Sessions.** Add a random, non-secret `public_id` to sessions and return it from `GET /api/me` as `session_id`. It names the replica. It must never authenticate anything.
+6. **Sessions.** Add a random, non-secret `public_id` to sessions and return it from `GET /internal-api/me` as `session_id`. It names the replica. It must never authenticate anything.
 7. **Docs.** Update the API section of `README.md` and `docs/architecture.md` as endpoints change.
 
 ## Client architecture
@@ -278,7 +278,7 @@ A bootstrap also drops loaded comment and activity scopes; the engine reloads th
 
 ### Session lifetime
 
-- After `GET /api/me`, delete every `blackwall:*` database whose `session_id` isn't the current one.
+- After `GET /internal-api/me`, delete every `blackwall:*` database whose `session_id` isn't the current one.
 - Logout deletes the current session's databases before calling the server. If the outbox isn't empty, the existing confirm dialog asks first, because pending edits will be lost.
 - A 401 on any sync request deletes the session's databases and returns to login.
 - A 403 or 404 on a workspace deletes that replica and leaves the workspace.
@@ -298,7 +298,7 @@ A bootstrap also drops loaded comment and activity scopes; the engine reloads th
 
 Some commands aren't queued offline: `invite`, `resend_invitation`, `create_integration` because of its secret, `set_role`, `remove_member`, `import_issues`, file uploads, import, export, workspace creation, and OpenProject settings.
 
-- `invite`, `resend_invitation`, `create_integration`, `set_role`, `remove_member`, and `import_issues` use `POST /api/workspaces/{id}/commands` with a per-call `idempotency_key`. The tab that issued the command sends it after its replica's outbox drains. If a protocol error keeps the outbox from draining, the command fails and asks for a reload instead of waiting. Transient failures retry the same key and command body with backoff. These commands never allocate mutation ids or enter the outbox. Push carries only outbox mutations.
+- `invite`, `resend_invitation`, `create_integration`, `set_role`, `remove_member`, and `import_issues` use `POST /internal-api/workspaces/{id}/commands` with a per-call `idempotency_key`. The tab that issued the command sends it after its replica's outbox drains. If a protocol error keeps the outbox from draining, the command fails and asks for a reload instead of waiting. Transient failures retry the same key and command body with backoff. These commands never allocate mutation ids or enter the outbox. Push carries only outbox mutations.
 - Their effects arrive through the next pull. The REST command pokes the leader's event stream even when a follower sends it.
 - Uploads, export, workspace creation, and OpenProject settings use their own REST endpoints.
 - The UI disables them while offline.

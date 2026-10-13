@@ -31,10 +31,10 @@ list. An explicit `null` is rejected.
 `search`, `trash`, `archived`, `sort`, `group_by`, `ids`, `after` and `projection` keep their
 previous meaning. `ids`, `after` and `projection` are REST-only and the replica ignores them.
 
-On `GET /api/workspaces/{id}/issues` the `where` parameter carries the JSON array as a string:
+On `GET /internal-api/workspaces/{id}/issues` the `where` parameter carries the JSON array as a string:
 
 ```
-GET /api/workspaces/{id}/issues?where=[{"field":"stage_kind","op":"is_not","values":["done","cancelled"]}]
+GET /internal-api/workspaces/{id}/issues?where=[{"field":"stage_kind","op":"is_not","values":["done","cancelled"]}]
 ```
 
 ## Fields

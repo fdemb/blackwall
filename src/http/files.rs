@@ -4,7 +4,7 @@ use axum::{body::Bytes, extract::Multipart, http::HeaderMap};
 
 #[utoipa::path(
     post,
-    path = "/api/workspaces/{id}/issues/{issue}/attachments",
+    path = "/internal-api/workspaces/{id}/issues/{issue}/attachments",
     params(("id" = Uuid, Path), ("issue" = Uuid, Path)),
     responses((status = 200, body = CommandResponse)),
     description = "Multipart file up to 5 MiB, expected_versions JSON map, optional idempotency_key and comment_id."
@@ -128,6 +128,16 @@ pub(super) async fn download(
     actor: Actor,
     Path((id, attachment)): Path<(Uuid, Uuid)>,
 ) -> Result<Response> {
+    attachment_response(&store, id, actor.profile.id, attachment).await
+}
+
+/// The attachment's bytes, if `user` belongs to the workspace and its issue is not trashed.
+pub(crate) async fn attachment_response(
+    store: &Store,
+    id: Uuid,
+    user: Uuid,
+    attachment: Uuid,
+) -> Result<Response> {
     let row = sqlx::query(
         "SELECT a.filename, a.bytes FROM attachments a \
          JOIN issues i ON i.id = a.issue_id \
@@ -137,7 +147,7 @@ pub(super) async fn download(
     )
     .bind(id)
     .bind(attachment)
-    .bind(actor.profile.id)
+    .bind(user)
     .fetch_optional(&store.pool)
     .await?
     .ok_or(Error::NotFound)?;
@@ -166,7 +176,7 @@ pub(super) async fn download(
 
 #[utoipa::path(
     get,
-    path = "/api/workspaces/{id}/export",
+    path = "/internal-api/workspaces/{id}/export",
     params(("id" = Uuid, Path)),
     responses((status = 200, body = crate::exchange::Transfer))
 )]
@@ -180,7 +190,7 @@ pub(super) async fn export(
 
 #[utoipa::path(
     post,
-    path = "/api/workspaces/{id}/import",
+    path = "/internal-api/workspaces/{id}/import",
     params(("id" = Uuid, Path)),
     request_body = ImportRequest,
     responses((status = 200, body = ImportResponse))

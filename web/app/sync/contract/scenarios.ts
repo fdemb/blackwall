@@ -146,7 +146,7 @@ export async function fixture(ws: string, owner: User, member: User) {
     token_hash: "server-generated",
   });
   if (!invitation) throw new Error("missing invitation");
-  const page = object(await request(`/api/workspaces/${ws}/notifications`, owner));
+  const page = object(await request(`/internal-api/workspaces/${ws}/notifications`, owner));
   if (!Array.isArray(page.items) || !page.items.length)
     throw new Error("missing notification fixture");
   const notification = textField(page.items[0], "id");
@@ -155,7 +155,7 @@ export async function fixture(ws: string, owner: User, member: User) {
     form.append("file", new Blob(["contract upload"], { type: "text/plain" }), "contract.txt");
     const { inject } = await import("vite-plus/test");
     const response = await fetch(
-      `${inject("syncContract").baseUrl}/api/workspaces/${ws}/issues/${ids.issue}/attachments`,
+      `${inject("syncContract").baseUrl}/internal-api/workspaces/${ws}/issues/${ids.issue}/attachments`,
       { method: "POST", headers: { Authorization: `Bearer ${owner.token}` }, body: form },
     );
     if (!response.ok) throw new Error(`upload failed ${response.status}: ${await response.text()}`);

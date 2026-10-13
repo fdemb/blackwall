@@ -122,7 +122,9 @@ function fixture(
       .map(([, init]) => JSON.parse(String(init?.body)));
   const requests = (route: string) =>
     fetch.mock.calls.filter(([url]) =>
-      route === "me" ? String(url).endsWith("/api/me") : String(url).includes(`/${route}?`),
+      route === "me"
+        ? String(url).endsWith("/internal-api/me")
+        : String(url).includes(`/${route}?`),
     ).length;
   const advance = async (ms: number) => {
     server.advance(ms);
@@ -1486,7 +1488,7 @@ describe("record preparation", () => {
       await f.engine.open();
       const before = await f.disk();
       const full = await f.server.fetch(
-        `/api/workspaces/${f.workspace.id}/sync/bootstrap?client_id=${before.meta.clientId}`,
+        `/internal-api/workspaces/${f.workspace.id}/sync/bootstrap?client_id=${before.meta.clientId}`,
         { headers: { cookie: `blackwall_session=${f.token}` } },
       );
       const bytes = new Uint8Array(await full.arrayBuffer());

@@ -17,7 +17,7 @@ pub struct PullQuery {
 
 #[utoipa::path(
     get,
-    path = "/api/workspaces/{id}/sync/pull",
+    path = "/internal-api/workspaces/{id}/sync/pull",
     params(("id" = Uuid, Path), PullQuery),
     responses((status = 200, body = PullResponse)),
     description = "Changed records since a cursor in sync shapes, with issue counts omitted. Omit cursor for a starting cursor. Intermediate pages set last_mutation_id null; only the final page reports it. When reset is true, bootstrap again and continue from the returned cursor."
@@ -38,7 +38,7 @@ pub(super) async fn pull(
 
 #[utoipa::path(
     post,
-    path = "/api/workspaces/{id}/sync/push",
+    path = "/internal-api/workspaces/{id}/sync/push",
     params(("id" = Uuid, Path)),
     request_body = PushRequest,
     responses(
@@ -79,7 +79,7 @@ pub struct BootstrapQuery {
 
 #[utoipa::path(
     get,
-    path = "/api/workspaces/{id}/sync/bootstrap",
+    path = "/internal-api/workspaces/{id}/sync/bootstrap",
     params(("id" = Uuid, Path), BootstrapQuery),
     responses((status = 200, content_type = "application/x-ndjson")),
     description = "Streams the always-loaded records from one snapshot. A header carries cursor, last_mutation_id and schema; a trailer confirms the record count. Accept-Encoding negotiates gzip."
@@ -108,7 +108,7 @@ pub struct ScopeQuery {
 
 #[utoipa::path(
     get,
-    path = "/api/workspaces/{id}/sync/scope",
+    path = "/internal-api/workspaces/{id}/sync/scope",
     params(("id" = Uuid, Path), ScopeQuery),
     responses((status = 200, body = ScopeResponse)),
     description = "All comments for issue_id, or all activity for entity_id, from one snapshot."
@@ -157,7 +157,7 @@ fn poke_event() -> Event {
 
 #[utoipa::path(
     get,
-    path = "/api/workspaces/{id}/sync/events",
+    path = "/internal-api/workspaces/{id}/sync/events",
     params(("id" = Uuid, Path), EventsQuery),
     responses((status = 200, content_type = "text/event-stream")),
     description = "Server-sent pokes for workspace commits. Sends one poke on connect and one per commit, coalesced to one per 250 ms with keep-alive comments every 15 seconds. Each stream ends after 30 minutes; clients reconnect."

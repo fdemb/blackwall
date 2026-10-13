@@ -178,7 +178,7 @@ describe("upload target confirmation", () => {
     const rest = vi.fn(async (path: RequestInfo | URL, init?: RequestInit) => {
       pullsAtUpload = fetch.mock.calls.filter(([url]) => String(url).includes("/pull?")).length;
       expect(engine.store.pending()).toHaveLength(0);
-      expect(path).toBe(`/api/workspaces/${workspace.id}/issues/${id(200)}/attachments`);
+      expect(path).toBe(`/internal-api/workspaces/${workspace.id}/issues/${id(200)}/attachments`);
       expect(init?.method).toBe("POST");
       if (!(init?.body instanceof FormData)) throw new Error("Expected upload form data");
       expect(init.body.has("expected_versions")).toBe(false);

@@ -331,6 +331,14 @@ pub(crate) async fn issue_effects(
 struct Integration {
     id: Uuid,
     url: String,
+    /// Subscribed public event types; empty means all.
+    events: Vec<String>,
+}
+
+impl Integration {
+    fn wants(&self, event: &str) -> bool {
+        self.events.is_empty() || self.events.iter().any(|e| e == event)
+    }
 }
 
 pub(crate) struct PageEffects {
@@ -486,16 +494,18 @@ pub(crate) async fn activity(
 }
 
 async fn integrations(conn: &mut PgConnection, workspace: Uuid) -> Result<Vec<Integration>> {
-    let rows =
-        sqlx::query("SELECT id,webhook_url FROM integrations WHERE workspace_id=$1 AND enabled")
-            .bind(workspace)
-            .fetch_all(conn)
-            .await?;
+    let rows = sqlx::query(
+        "SELECT id,webhook_url,events FROM integrations WHERE workspace_id=$1 AND enabled",
+    )
+    .bind(workspace)
+    .fetch_all(conn)
+    .await?;
     rows.into_iter()
         .map(|row| {
             Ok(Integration {
                 id: row.try_get("id")?,
                 url: row.try_get("webhook_url")?,
+                events: row.try_get("events")?,
             })
         })
         .collect()
@@ -520,6 +530,10 @@ async fn activity_with_integrations(
     };
     sqlx::query("INSERT INTO activity(id,workspace_id,actor,action,entity_id,at,fields) VALUES($1,$2,$3,$4,$5,$6,$7)")
         .bind(event.id).bind(workspace).bind(actor).bind(action).bind(issue).bind(event.at).bind(serde_json::to_value(&event.fields)?).execute(&mut *conn).await?;
+    // Only public events leave the workspace; see `WEBHOOK_EVENTS`.
+    let Some((kind, entity_type)) = crate::domain::webhook_event(action) else {
+        return Ok(());
+    };
     let loaded;
     let integrations = if let Some(cached) = cached {
         cached
@@ -527,7 +541,19 @@ async fn activity_with_integrations(
         loaded = integrations(conn, workspace).await?;
         &loaded
     };
-    for integration in integrations {
+    let mut payload = serde_json::json!({
+        "id": event.id,
+        "type": kind,
+        "workspace_id": workspace,
+        "occurred_at": event.at,
+        "actor_id": actor,
+        "entity_type": entity_type,
+        "entity_id": issue,
+    });
+    if !event.fields.is_empty() {
+        payload["fields"] = serde_json::json!(event.fields);
+    }
+    for integration in integrations.iter().filter(|i| i.wants(kind)) {
         let id = integration.id;
         Outbox::insert(
             conn,
@@ -537,7 +563,7 @@ async fn activity_with_integrations(
                     workspace_id: workspace,
                     integration_id: id,
                     url: integration.url.clone(),
-                    event: serde_json::json!({"workspace_id":workspace,"activity":event}),
+                    event: payload.clone(),
                 }),
             ),
         )

@@ -353,7 +353,7 @@ describe("sync transport requests", () => {
     setCsrf(token);
     await transport.push(f.workspace.id, CLIENT, [label(2)]);
     expect(String(fetch.mock.calls[0][0])).toBe(
-      `https://example.test/api/workspaces/${f.workspace.id}/sync/push?client_id=${CLIENT}`,
+      `https://example.test/internal-api/workspaces/${f.workspace.id}/sync/push?client_id=${CLIENT}`,
     );
     expect(new Headers(fetch.mock.calls[1][1]?.headers).get("X-CSRF-Token")).toBe("second");
     expect(new Headers(fetch.mock.calls[1][1]?.headers).get("X-Request")).toBe("second");
@@ -366,7 +366,7 @@ describe("sync transport requests", () => {
     const transport = createTransport({ fetch });
     await expect(transport.me()).rejects.toBeInstanceOf(ProtocolError);
     vi.stubGlobal("fetch", fetch);
-    await api("/api/test", { method: "POST", body: {} });
+    await api("/internal-api/test", { method: "POST", body: {} });
     expect(new Headers(fetch.mock.calls[1]?.[1]?.headers).get("X-CSRF-Token")).toBe("rotated");
   });
 });
@@ -974,7 +974,7 @@ describe("REST commands", () => {
       changes: [],
     });
     const [url, init] = fetch.mock.calls[0] ?? [];
-    expect(url).toBe("/api/workspaces/workspace%2Fone/commands");
+    expect(url).toBe("/internal-api/workspaces/workspace%2Fone/commands");
     expect(init).toMatchObject({ method: "POST", credentials: "same-origin" });
     expect(new Headers(init?.headers).get("X-CSRF-Token")).toBe("command-csrf");
     expect(new Headers(init?.headers).get("Content-Type")).toBe("application/json");

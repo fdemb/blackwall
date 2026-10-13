@@ -29,7 +29,7 @@ function fixture(options: FakeServerOptions = {}) {
     default_stage_ids: STAGES,
   });
   const url = (route: string, query: Record<string, string> = {}) =>
-    `/api/workspaces/${workspace.id}/sync/${route}?${new URLSearchParams({ client_id: CLIENT, ...query })}`;
+    `/internal-api/workspaces/${workspace.id}/sync/${route}?${new URLSearchParams({ client_id: CLIENT, ...query })}`;
   const get = (route: string, query: Record<string, string> = {}, auth = token) =>
     server.fetch(url(route, { client_id: auth === memberToken ? id(11) : CLIENT, ...query }), {
       headers: { authorization: `Bearer ${auth}` },
@@ -253,7 +253,7 @@ describe("fake sync push", () => {
     f.server.addMember(other.id, f.owner, "owner");
     expect(
       (
-        await f.server.fetch(`/api/workspaces/${other.id}/sync/pull?client_id=${CLIENT}`, {
+        await f.server.fetch(`/internal-api/workspaces/${other.id}/sync/pull?client_id=${CLIENT}`, {
           headers: { authorization: `Bearer ${f.token}` },
         })
       ).status,
@@ -696,7 +696,7 @@ describe("fake bootstrap, scope and sessions", () => {
       expect((await f.get(route, { client_id: "bad" })).status).toBe(400);
       expect(
         (
-          await f.server.fetch(`/api/workspaces/${f.workspace.id}/sync/${route}`, {
+          await f.server.fetch(`/internal-api/workspaces/${f.workspace.id}/sync/${route}`, {
             headers: { authorization: `Bearer ${f.token}` },
           })
         ).status,
@@ -708,7 +708,7 @@ describe("fake bootstrap, scope and sessions", () => {
   it("returns fresh session ids per login, never authenticates by session id, and expires sessions", async () => {
     const f = fixture({ sessionLifetimeMs: 100 });
     const me = (token: string) =>
-      f.server.fetch("/api/me", { headers: { authorization: `Bearer ${token}` } });
+      f.server.fetch("/internal-api/me", { headers: { authorization: `Bearer ${token}` } });
     const first = await (await me(f.token)).json();
     const secondToken = f.server.login(f.owner);
     const second = await (await me(secondToken)).json();
@@ -1148,10 +1148,12 @@ describe("server-only effects and request order", () => {
   it("requires the Bearer scheme, accepts Request and URL inputs, and exports a bound fetch", async () => {
     const f = fixture();
     const fetch = f.server.fetch;
-    expect((await fetch("/api/me", { headers: { authorization: f.token } })).status).toBe(401);
+    expect((await fetch("/internal-api/me", { headers: { authorization: f.token } })).status).toBe(
+      401,
+    );
     expect(
       (
-        await fetch(new URL("http://fake.test/api/me"), {
+        await fetch(new URL("http://fake.test/internal-api/me"), {
           headers: { authorization: `Bearer ${f.token}` },
         })
       ).status,
@@ -1159,7 +1161,7 @@ describe("server-only effects and request order", () => {
     expect(
       (
         await fetch(
-          new Request("http://fake.test/api/me", {
+          new Request("http://fake.test/internal-api/me", {
             headers: { authorization: `Bearer ${f.token}` },
           }),
         )
@@ -1643,7 +1645,7 @@ describe("cookie authentication", () => {
   it("requires matching CSRF on cookie pushes, captures token rotation on me, and exempts bearer requests", async () => {
     const f = fixture();
     const cookie = `unrelated=value; blackwall_session=${f.token}; other=value`;
-    const me = await f.server.fetch("/api/me", { headers: { cookie } });
+    const me = await f.server.fetch("/internal-api/me", { headers: { cookie } });
     expect(me.status).toBe(200);
     expect(me.headers.get("X-CSRF-Token")).toBe(f.server.csrfToken(f.token));
     const push = (csrf?: string) =>
@@ -1663,7 +1665,9 @@ describe("cookie authentication", () => {
     const rotated = f.server.rotateCsrf(f.token, "test-rotation");
     expect((await push(old)).status).toBe(403);
     expect(
-      (await f.server.fetch("/api/me", { headers: { cookie } })).headers.get("X-CSRF-Token"),
+      (await f.server.fetch("/internal-api/me", { headers: { cookie } })).headers.get(
+        "X-CSRF-Token",
+      ),
     ).toBe(rotated);
     expect((await push(rotated)).status).toBe(200);
     expect((await f.push([label(2)])).status).toBe(200);
@@ -1675,7 +1679,7 @@ describe("REST command idempotency", () => {
   function commands() {
     const f = fixture();
     const send = (command: object, key: unknown, token = f.token) =>
-      f.server.fetch(`/api/workspaces/${f.workspace.id}/commands`, {
+      f.server.fetch(`/internal-api/workspaces/${f.workspace.id}/commands`, {
         method: "POST",
         headers: { authorization: `Bearer ${token}`, "Content-Type": "application/json" },
         body: JSON.stringify({ command, idempotency_key: key }),

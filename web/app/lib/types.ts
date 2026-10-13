@@ -256,6 +256,17 @@ export interface Integration {
   webhook_url: string;
   enabled: boolean;
 }
+/** A personal access token for /api/v1 and /mcp. The secret is only returned at creation. */
+export interface ApiToken {
+  id: Id;
+  name: string;
+  prefix: string;
+  access: "read" | "write";
+  workspace_ids: Id[] | null;
+  created_at: string;
+  expires_at: string | null;
+  last_used_at: string | null;
+}
 export interface Activity {
   id: Id;
   actor: Id;

@@ -67,7 +67,7 @@ async fn workspace(app: &axum::Router, owner: &Session, name: &str) -> Uuid {
         app,
         owner,
         "POST",
-        "/api/workspaces",
+        "/internal-api/workspaces",
         Some(json!({"name": name})),
     )
     .await;
@@ -85,7 +85,7 @@ async fn command(
         app,
         owner,
         "POST",
-        &format!("/api/workspaces/{workspace}/commands"),
+        &format!("/internal-api/workspaces/{workspace}/commands"),
         Some(json!({"command": cmd})),
     )
     .await
@@ -159,9 +159,9 @@ async fn sse_response(
     workspace: Uuid,
     query: &str,
 ) -> axum::response::Response {
-    let mut request = Request::builder()
-        .method("GET")
-        .uri(format!("/api/workspaces/{workspace}/sync/events{query}"));
+    let mut request = Request::builder().method("GET").uri(format!(
+        "/internal-api/workspaces/{workspace}/sync/events{query}"
+    ));
     if let Some(token) = token {
         request = request.header("Authorization", format!("Bearer {token}"));
     }

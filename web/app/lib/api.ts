@@ -1,5 +1,6 @@
 import { safeGet, safeSet } from "./storage";
 import type {
+  ApiToken,
   ImportSummary,
   Profile,
   Report,
@@ -63,49 +64,63 @@ export async function api<T>(
 }
 
 export const auth = {
-  me: () => api<Profile & { session_id: string }>("/api/me"),
+  me: () => api<Profile & { session_id: string }>("/internal-api/me"),
   login: (email: string, password: string) =>
-    api<{ csrf_token: string; profile: Profile }>("/api/auth/login", {
+    api<{ csrf_token: string; profile: Profile }>("/internal-api/auth/login", {
       method: "POST",
       body: { email, password },
     }),
   register: (email: string, password: string, display_name: string) =>
-    api<{ csrf_token: string; profile: Profile }>("/api/auth/register", {
+    api<{ csrf_token: string; profile: Profile }>("/internal-api/auth/register", {
       method: "POST",
       body: { email, password, display_name },
     }),
-  logout: () => api<null>("/api/auth/logout", { method: "POST" }),
+  logout: () => api<null>("/internal-api/auth/logout", { method: "POST" }),
   requestReset: (email: string) =>
-    api<null>("/api/auth/reset-request", { method: "POST", body: { email } }),
+    api<null>("/internal-api/auth/reset-request", { method: "POST", body: { email } }),
   reset: (token: string, password: string) =>
-    api<null>("/api/auth/reset", { method: "POST", body: { token, password } }),
+    api<null>("/internal-api/auth/reset", { method: "POST", body: { token, password } }),
   changePassword: (current_password: string, new_password: string) =>
-    api<null>("/api/auth/password", { method: "POST", body: { current_password, new_password } }),
+    api<null>("/internal-api/auth/password", {
+      method: "POST",
+      body: { current_password, new_password },
+    }),
   editProfile: (profile: Omit<Profile, "id" | "email">) =>
-    api<Profile>("/api/me", { method: "PATCH", body: profile }),
+    api<Profile>("/internal-api/me", { method: "PATCH", body: profile }),
+};
+
+export const tokens = {
+  list: () => api<ApiToken[]>("/internal-api/me/tokens"),
+  create: (body: {
+    name: string;
+    access: ApiToken["access"];
+    workspace_ids?: string[];
+    expires_in_days?: number;
+  }) => api<ApiToken & { secret: string }>("/internal-api/me/tokens", { method: "POST", body }),
+  revoke: (id: string) => api<null>(`/internal-api/me/tokens/${id}`, { method: "DELETE" }),
 };
 
 export const workspaces = {
-  list: () => api<WorkspaceSummary[]>("/api/workspaces"),
+  list: () => api<WorkspaceSummary[]>("/internal-api/workspaces"),
   create: (name: string, idempotency_key: string = crypto.randomUUID()) =>
-    api<{ workspace: WorkspaceSummary }>("/api/workspaces", {
+    api<{ workspace: WorkspaceSummary }>("/internal-api/workspaces", {
       method: "POST",
       body: { name, idempotency_key },
     }),
-  report: (id: string) => api<Report>(`/api/workspaces/${id}/report`),
+  report: (id: string) => api<Report>(`/internal-api/workspaces/${id}/report`),
   accept: (id: string, token: string) =>
-    api<{ workspace: WorkspaceSummary }>(`/api/workspaces/${id}/invitations/accept`, {
+    api<{ workspace: WorkspaceSummary }>(`/internal-api/workspaces/${id}/invitations/accept`, {
       method: "POST",
       body: { token },
     }),
-  export: (id: string) => api<unknown>(`/api/workspaces/${id}/export`),
+  export: (id: string) => api<unknown>(`/internal-api/workspaces/${id}/export`),
   import: (
     id: string,
     body: { issues?: unknown[]; transfer?: unknown },
     idempotency_key: string = crypto.randomUUID(),
   ) =>
     api<{ versions: EntityVersions; summary: ImportSummary | null }>(
-      `/api/workspaces/${id}/import`,
+      `/internal-api/workspaces/${id}/import`,
       {
         method: "POST",
         body: { expected_versions: {}, idempotency_key, ...body },
@@ -125,7 +140,7 @@ export const workspaces = {
     form.append("idempotency_key", idempotency_key);
     if (commentId) form.append("comment_id", commentId);
     form.append("file", file);
-    return api<CommandResult>(`/api/workspaces/${id}/issues/${issueId}/attachments`, {
+    return api<CommandResult>(`/internal-api/workspaces/${id}/issues/${issueId}/attachments`, {
       method: "POST",
       body: form,
     });
@@ -133,7 +148,7 @@ export const workspaces = {
 };
 
 export function markdown(text: string) {
-  return api<{ html: string }>("/api/markdown", { method: "POST", body: { text } }).then(
+  return api<{ html: string }>("/internal-api/markdown", { method: "POST", body: { text } }).then(
     (r) => r.html,
   );
 }

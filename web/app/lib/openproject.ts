@@ -11,7 +11,7 @@ import type {
   StageKind,
 } from "./types";
 
-const base = (ws: Id) => `/api/workspaces/${ws}/openproject/connections`;
+const base = (ws: Id) => `/internal-api/workspaces/${ws}/openproject/connections`;
 
 export const openproject = {
   list: (ws: Id) => api<{ connections: OpenProjectConnection[] }>(base(ws)),

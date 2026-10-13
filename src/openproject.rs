@@ -87,19 +87,19 @@ fn connection(row: sqlx::postgres::PgRow) -> Result<Connection> {
 pub fn router() -> Router<Store> {
     Router::new()
         .route(
-            "/api/workspaces/{workspace}/openproject/connections",
+            "/internal-api/workspaces/{workspace}/openproject/connections",
             get(list).post(create),
         )
         .route(
-            "/api/workspaces/{workspace}/openproject/connections/{id}",
+            "/internal-api/workspaces/{workspace}/openproject/connections/{id}",
             axum::routing::patch(update).delete(delete),
         )
         .route(
-            "/api/workspaces/{workspace}/openproject/connections/{id}/refresh",
+            "/internal-api/workspaces/{workspace}/openproject/connections/{id}/refresh",
             post(refresh),
         )
         .route(
-            "/api/workspaces/{workspace}/openproject/connections/{id}/sync",
+            "/internal-api/workspaces/{workspace}/openproject/connections/{id}/sync",
             post(sync),
         )
 }
@@ -802,9 +802,10 @@ pub fn failure_message(error: &Error) -> String {
                 _ => message.clone(),
             }
         }
-        Error::Internal(message) | Error::BadRequest(message) | Error::Conflict(message) => {
-            message.clone()
-        }
+        Error::Internal(message)
+        | Error::BadRequest(message)
+        | Error::Conflict(message)
+        | Error::Stale(message) => message.clone(),
         _ => "OpenProject database write failed; check destination team/stage configuration".into(),
     }
 }

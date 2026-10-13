@@ -56,7 +56,9 @@ describe("OpenProject connection API", () => {
   it("reads only the workspace-scoped cache and polls local metadata", async () => {
     respond = () => ({ body: { connections: [] } });
     expect(await openproject.list("workspace-a")).toEqual({ connections: [] });
-    expect(requests[0].url.pathname).toBe("/api/workspaces/workspace-a/openproject/connections");
+    expect(requests[0].url.pathname).toBe(
+      "/internal-api/workspaces/workspace-a/openproject/connections",
+    );
     expect(requests[0].method).toBe("GET");
     expect(requests[0].body).toBe("");
     expect(openprojectQuery("workspace-a").refetchInterval).toBe(5_000);
@@ -92,8 +94,8 @@ describe("OpenProject connection API", () => {
     expect(await openproject.refresh("workspace-a", "connection-a")).toEqual({ queued: true });
     expect(await openproject.sync("workspace-a", "connection-a")).toEqual({ queued: true });
     expect(requests.map((request) => [request.method, request.url.pathname])).toEqual([
-      ["POST", "/api/workspaces/workspace-a/openproject/connections/connection-a/refresh"],
-      ["POST", "/api/workspaces/workspace-a/openproject/connections/connection-a/sync"],
+      ["POST", "/internal-api/workspaces/workspace-a/openproject/connections/connection-a/refresh"],
+      ["POST", "/internal-api/workspaces/workspace-a/openproject/connections/connection-a/sync"],
     ]);
   });
 

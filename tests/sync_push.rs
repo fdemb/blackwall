@@ -71,7 +71,7 @@ async fn command(
     call(
         app,
         "POST",
-        &format!("/api/workspaces/{workspace}/commands"),
+        &format!("/internal-api/workspaces/{workspace}/commands"),
         Some(&owner.token),
         Some(json!({"command": cmd})),
     )
@@ -88,7 +88,7 @@ async fn workspace(app: &axum::Router, owner: &Session, name: &str) -> Uuid {
     let (status, result) = call(
         app,
         "POST",
-        "/api/workspaces",
+        "/internal-api/workspaces",
         Some(&owner.token),
         Some(json!({"name": name})),
     )
@@ -119,7 +119,7 @@ async fn push(
     call(
         app,
         "POST",
-        &format!("/api/workspaces/{workspace}/sync/push"),
+        &format!("/internal-api/workspaces/{workspace}/sync/push"),
         Some(token),
         Some(json!({"client_id": client, "mutations": mutations})),
     )
@@ -155,7 +155,7 @@ async fn invite_member(
     let (status, result) = call(
         app,
         "POST",
-        &format!("/api/workspaces/{workspace}/invitations/accept"),
+        &format!("/internal-api/workspaces/{workspace}/invitations/accept"),
         Some(&user.token),
         Some(json!({"token": mail["token"]})),
     )
@@ -275,7 +275,7 @@ async fn push_applies_batch_in_order() {
     let (status, labels) = call(
         &app,
         "GET",
-        &format!("/api/workspaces/{ws}/labels"),
+        &format!("/internal-api/workspaces/{ws}/labels"),
         Some(&owner.token),
         None,
     )
@@ -292,7 +292,7 @@ async fn push_applies_batch_in_order() {
     let (status, row) = call(
         &app,
         "GET",
-        &format!("/api/workspaces/{ws}/issues/{issue}"),
+        &format!("/internal-api/workspaces/{ws}/issues/{issue}"),
         Some(&owner.token),
         None,
     )
@@ -360,7 +360,7 @@ async fn push_resend_dedupes() {
     let (status, comments) = call(
         &app,
         "GET",
-        &format!("/api/workspaces/{ws}/comments?issue_id={issue}"),
+        &format!("/internal-api/workspaces/{ws}/comments?issue_id={issue}"),
         Some(&owner.token),
         None,
     )
@@ -437,7 +437,7 @@ async fn push_gaps_accepted_and_bad_batches_rejected() {
     let (status, labels) = call(
         &app,
         "GET",
-        &format!("/api/workspaces/{ws}/labels"),
+        &format!("/internal-api/workspaces/{ws}/labels"),
         Some(&owner.token),
         None,
     )
@@ -569,7 +569,7 @@ async fn push_rejected_mutation_advances_id_and_rolls_back() {
     let (status, _) = call(
         &app,
         "GET",
-        &format!("/api/workspaces/{ws}/issues/{kept}"),
+        &format!("/internal-api/workspaces/{ws}/issues/{kept}"),
         Some(&owner.token),
         None,
     )
@@ -785,7 +785,7 @@ async fn push_viewer_personal_rules() {
     let (status, inbox) = call(
         &app,
         "GET",
-        &format!("/api/workspaces/{ws}/notifications"),
+        &format!("/internal-api/workspaces/{ws}/notifications"),
         Some(&viewer.token),
         None,
     )
@@ -822,7 +822,7 @@ async fn push_viewer_personal_rules() {
     let (status, row) = call(
         &app,
         "GET",
-        &format!("/api/workspaces/{ws}/issues/{issue}"),
+        &format!("/internal-api/workspaces/{ws}/issues/{issue}"),
         Some(&owner.token),
         None,
     )
@@ -833,7 +833,7 @@ async fn push_viewer_personal_rules() {
     let (status, inbox) = call(
         &app,
         "GET",
-        &format!("/api/workspaces/{ws}/notifications"),
+        &format!("/internal-api/workspaces/{ws}/notifications"),
         Some(&viewer.token),
         None,
     )
@@ -1039,19 +1039,19 @@ async fn push_session_id_from_me_and_login() {
     let session = account(&store, "owner").await;
     assert!(!session.session_id.is_nil());
 
-    let (status, me) = call(&app, "GET", "/api/me", Some(&session.token), None).await;
+    let (status, me) = call(&app, "GET", "/internal-api/me", Some(&session.token), None).await;
     assert_eq!(status, StatusCode::OK, "{me}");
     assert_eq!(me["session_id"], session.session_id.to_string());
     assert_eq!(me["email"], session.profile.email);
 
-    let (status, again) = call(&app, "GET", "/api/me", Some(&session.token), None).await;
+    let (status, again) = call(&app, "GET", "/internal-api/me", Some(&session.token), None).await;
     assert_eq!(status, StatusCode::OK, "{again}");
     assert_eq!(again["session_id"], session.session_id.to_string());
 
     let (status, login) = call(
         &app,
         "POST",
-        "/api/auth/login",
+        "/internal-api/auth/login",
         None,
         Some(json!({"email": session.profile.email, "password": "test-password-123"})),
     )
@@ -1064,7 +1064,7 @@ async fn push_session_id_from_me_and_login() {
     let (status, _) = call(
         &app,
         "GET",
-        "/api/me",
+        "/internal-api/me",
         Some(&session.session_id.to_string()),
         None,
     )

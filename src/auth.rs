@@ -448,6 +448,11 @@ impl Store {
             .bind(user)
             .execute(&mut *tx)
             .await?;
+        // Recovery assumes the account may be compromised, so its API tokens go too.
+        sqlx::query("DELETE FROM api_tokens WHERE user_id = $1")
+            .bind(user)
+            .execute(&mut *tx)
+            .await?;
         sqlx::query("DELETE FROM password_resets WHERE user_id = $1")
             .bind(user)
             .execute(&mut *tx)

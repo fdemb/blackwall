@@ -110,11 +110,11 @@ try:
                 for _ in range(2):
                     subprocess.run([binary, "migrate"], cwd=temporary, env=environment, stdout=log, stderr=log, check=True)
                 start()
-                session = request("POST", "/api/auth/register", {"email": "owner@example.com", "password": "smoke-password-123", "display_name": "Owner"})
+                session = request("POST", "/internal-api/auth/register", {"email": "owner@example.com", "password": "smoke-password-123", "display_name": "Owner"})
                 token = session["token"]
-                workspace = request("POST", "/api/workspaces", {"name": "HTTP smoke"})
+                workspace = request("POST", "/internal-api/workspaces", {"name": "HTTP smoke"})
                 workspace_id = workspace["workspace"]["id"]
-                path = f"/api/workspaces/{workspace_id}"
+                path = f"/internal-api/workspaces/{workspace_id}"
 
                 def command(value, expected=None, key=None):
                     payload = {"expected_versions": expected or {}, "command": value}
@@ -158,18 +158,18 @@ try:
                     time.sleep(0.1)
                 assert cancelled_state in ("cancelled", "succeeded")
                 assert "cancelled@example.com" not in spooled
-                colleague = request("POST", "/api/auth/register", {"email": "colleague@example.com", "password": "smoke-password-456", "display_name": "Colleague"})
+                colleague = request("POST", "/internal-api/auth/register", {"email": "colleague@example.com", "password": "smoke-password-456", "display_name": "Colleague"})
                 token = colleague["token"]
                 joined = request("POST", path + "/invitations/accept", {"token": mail["token"]})
                 assert joined["workspace"]["id"] == workspace_id
                 assert len(request("GET", path + "/members")) == 2
-                assert request("GET", "/api/workspaces")[0]["id"] == workspace_id
+                assert request("GET", "/internal-api/workspaces")[0]["id"] == workspace_id
                 shell = request("GET", "/login")
                 assert b"<!DOCTYPE html>" in shell and b"/assets/" in shell
                 assets = re.findall(rb"(?:src|href)=[\"'](/assets/[^\"']+\.js)[\"']", shell)
                 assert assets
                 assert len(request("GET", assets[0].decode())) > 100
-                assert request("GET", "/api/schema.json")["components"]["schemas"]["Command"]
+                assert request("GET", "/internal-api/schema.json")["components"]["schemas"]["Command"]
                 print("PASS: PostgreSQL migrations, real HTTP, idempotency, restart, expired-lease recovery, invitation delivery and acceptance, HTML, assets, OpenAPI")
             except Exception:
                 log.flush()

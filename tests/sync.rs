@@ -73,7 +73,7 @@ async fn command(
         app,
         owner,
         "POST",
-        &format!("/api/workspaces/{workspace}/commands"),
+        &format!("/internal-api/workspaces/{workspace}/commands"),
         Some(Value::Object(body)),
     )
     .await
@@ -90,7 +90,7 @@ async fn workspace(app: &axum::Router, owner: &Session, name: &str) -> Uuid {
         app,
         owner,
         "POST",
-        "/api/workspaces",
+        "/internal-api/workspaces",
         Some(json!({"name": name})),
     )
     .await;
@@ -115,7 +115,7 @@ async fn items(app: &axum::Router, owner: &Session, workspace: Uuid, resource: &
         app,
         owner,
         "GET",
-        &format!("/api/workspaces/{workspace}/{resource}"),
+        &format!("/internal-api/workspaces/{workspace}/{resource}"),
         None,
     )
     .await;
@@ -177,7 +177,7 @@ async fn update_without_versions_succeeds_and_stale_version_conflicts() {
         &app,
         &owner,
         "GET",
-        &format!("/api/workspaces/{ws}/issues/{issue}"),
+        &format!("/internal-api/workspaces/{ws}/issues/{issue}"),
         None,
     )
     .await;
@@ -226,7 +226,7 @@ async fn different_field_edits_without_versions_both_win() {
         &app,
         &owner,
         "GET",
-        &format!("/api/workspaces/{ws}/issues/{issue}"),
+        &format!("/internal-api/workspaces/{ws}/issues/{issue}"),
         None,
     )
     .await;
@@ -276,7 +276,7 @@ async fn bulk_edit_and_upload_without_versions_succeed() {
             &app,
             &owner,
             "GET",
-            &format!("/api/workspaces/{ws}/issues/{issue}"),
+            &format!("/internal-api/workspaces/{ws}/issues/{issue}"),
             None,
         )
         .await;
@@ -294,7 +294,9 @@ async fn bulk_edit_and_upload_without_versions_succeed() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!("/api/workspaces/{ws}/issues/{first}/attachments"))
+                .uri(format!(
+                    "/internal-api/workspaces/{ws}/issues/{first}/attachments"
+                ))
                 .header("Authorization", format!("Bearer {}", owner.token))
                 .header(
                     "Content-Type",
@@ -311,7 +313,7 @@ async fn bulk_edit_and_upload_without_versions_succeed() {
         &app,
         &owner,
         "GET",
-        &format!("/api/workspaces/{ws}/issues/{first}"),
+        &format!("/internal-api/workspaces/{ws}/issues/{first}"),
         None,
     )
     .await;
@@ -450,7 +452,7 @@ async fn creates_honor_client_chosen_ids() {
         &app,
         &owner,
         "GET",
-        &format!("/api/workspaces/{ws}/issues/{issue_id}"),
+        &format!("/internal-api/workspaces/{ws}/issues/{issue_id}"),
         None,
     )
     .await;
@@ -541,7 +543,7 @@ async fn creates_honor_client_chosen_ids() {
         &app,
         &owner,
         "POST",
-        &format!("/api/workspaces/{ws}/import"),
+        &format!("/internal-api/workspaces/{ws}/import"),
         Some(json!({"issues": [
             {"id": parent_id, "team_id": team_id, "title": "Imported parent"},
             {"id": child_id, "team_id": team_id, "title": "Imported child", "parent_id": parent_id},
@@ -553,7 +555,7 @@ async fn creates_honor_client_chosen_ids() {
         &app,
         &owner,
         "GET",
-        &format!("/api/workspaces/{ws}/issues/{child_id}"),
+        &format!("/internal-api/workspaces/{ws}/issues/{child_id}"),
         None,
     )
     .await;
@@ -1072,8 +1074,8 @@ async fn concurrent_imports_in_opposite_order_never_deadlock() {
             .unwrap();
     }
 
-    let url_a = format!("/api/workspaces/{ws_a}/import");
-    let url_b = format!("/api/workspaces/{ws_b}/import");
+    let url_a = format!("/internal-api/workspaces/{ws_a}/import");
+    let url_b = format!("/internal-api/workspaces/{ws_b}/import");
     let import_a = call(
         &app,
         &owner,
@@ -1339,7 +1341,7 @@ async fn large_import_with_client_ids_succeeds() {
         &app,
         &owner,
         "POST",
-        &format!("/api/workspaces/{ws}/import"),
+        &format!("/internal-api/workspaces/{ws}/import"),
         Some(json!({"issues": issues})),
     )
     .await;

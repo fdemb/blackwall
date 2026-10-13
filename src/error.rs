@@ -15,10 +15,18 @@ pub enum Error {
     Unauthorized,
     #[error("permission denied")]
     Forbidden,
+    /// Denied with a reason the caller can act on, such as a token's scope.
+    #[error("{0}")]
+    Denied(String),
     #[error("not found")]
     NotFound,
     #[error("{0}")]
     Conflict(String),
+    /// A supplied entity version no longer matches. HTTP 409, or 412 under `If-Match`.
+    #[error("{0}")]
+    Stale(String),
+    #[error("{0}")]
+    PreconditionFailed(String),
     #[error("{0}")]
     ServiceUnavailable(String),
     #[error(transparent)]
@@ -59,9 +67,10 @@ impl IntoResponse for Error {
         let status = match self {
             Self::BadRequest(_) => StatusCode::BAD_REQUEST,
             Self::Unauthorized => StatusCode::UNAUTHORIZED,
-            Self::Forbidden => StatusCode::FORBIDDEN,
+            Self::Forbidden | Self::Denied(_) => StatusCode::FORBIDDEN,
             Self::NotFound => StatusCode::NOT_FOUND,
-            Self::Conflict(_) => StatusCode::CONFLICT,
+            Self::Conflict(_) | Self::Stale(_) => StatusCode::CONFLICT,
+            Self::PreconditionFailed(_) => StatusCode::PRECONDITION_FAILED,
             _ => StatusCode::INTERNAL_SERVER_ERROR,
         };
 

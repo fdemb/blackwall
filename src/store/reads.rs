@@ -689,6 +689,49 @@ impl Store {
         Ok(page(rows, query.limit, query.offset))
     }
 
+    /// The actor's role in the workspace; non-members are forbidden.
+    pub async fn member_role(&self, workspace: Uuid, actor: Uuid) -> Result<Role> {
+        let mut conn = self.pool.acquire().await?;
+        authorize(&mut conn, workspace, actor).await
+    }
+
+    /// One record of a workspace collection in its list shape, under the list's visibility rules.
+    pub async fn collection_record(
+        &self,
+        workspace: Uuid,
+        actor: Uuid,
+        kind: &str,
+        id: Uuid,
+    ) -> Result<Value> {
+        let (table, expression, _) = collection_select(kind)?;
+        let mut conn = self.pool.acquire().await?;
+        authorize(&mut conn, workspace, actor).await?;
+
+        let mut q = QueryBuilder::<Postgres>::new(format!(
+            "SELECT {expression} FROM {table} WHERE t.workspace_id="
+        ));
+        q.push_bind(workspace);
+        push_visibility(&mut q, kind, actor);
+        q.push(" AND t.id=").push_bind(id);
+
+        q.build_query_scalar::<Value>()
+            .fetch_optional(&mut *conn)
+            .await?
+            .ok_or(Error::NotFound)
+    }
+
+    /// Resolves a workspace-wide issue number, including trashed and archived issues.
+    pub async fn issue_by_number(&self, workspace: Uuid, actor: Uuid, number: i64) -> Result<Uuid> {
+        let mut conn = self.pool.acquire().await?;
+        authorize(&mut conn, workspace, actor).await?;
+        sqlx::query_scalar("SELECT id FROM issues WHERE workspace_id=$1 AND number=$2")
+            .bind(workspace)
+            .bind(number)
+            .fetch_optional(&mut *conn)
+            .await?
+            .ok_or(Error::NotFound)
+    }
+
     pub async fn member_profiles(
         &self,
         workspace: Uuid,

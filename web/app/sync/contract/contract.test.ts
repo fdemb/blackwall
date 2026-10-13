@@ -223,7 +223,7 @@ describe.skipIf(!enabled)(`${suiteName}: prediction contract`, () => {
     await ready(c.engine);
     connection.csrf = "";
     const response = await connection.fetch(
-      `${inject("syncContract").baseUrl}/api/workspaces/${ws}/sync/push`,
+      `${inject("syncContract").baseUrl}/internal-api/workspaces/${ws}/sync/push`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },

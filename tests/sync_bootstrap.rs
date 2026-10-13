@@ -82,7 +82,7 @@ async fn command(app: &axum::Router, user: &Session, ws: Uuid, command: Value) -
         app,
         user,
         "POST",
-        &format!("/api/workspaces/{ws}/commands"),
+        &format!("/internal-api/workspaces/{ws}/commands"),
         Some(json!({"command":command})),
     )
     .await
@@ -98,7 +98,7 @@ async fn setup(store: &Store, app: &axum::Router) -> (Session, Uuid, Uuid) {
         app,
         &owner,
         "POST",
-        "/api/workspaces",
+        "/internal-api/workspaces",
         Some(json!({"name":"Bootstrap"})),
     )
     .await["workspace"]["id"]);
@@ -119,7 +119,7 @@ async fn pull(
     client: Uuid,
     cursor: Option<&str>,
 ) -> Value {
-    let mut path = format!("/api/workspaces/{ws}/sync/pull?client_id={client}");
+    let mut path = format!("/internal-api/workspaces/{ws}/sync/pull?client_id={client}");
     if let Some(cursor) = cursor {
         path.push_str("&cursor=");
         path.push_str(cursor);
@@ -147,7 +147,7 @@ async fn bootstrap(
         app,
         user,
         "GET",
-        &format!("/api/workspaces/{ws}/sync/bootstrap?client_id={client}"),
+        &format!("/internal-api/workspaces/{ws}/sync/bootstrap?client_id={client}"),
         None,
         encoding,
     )
@@ -357,7 +357,7 @@ async fn bootstrap_all_entities_match_pull_and_rest_keeps_counts() {
         &app,
         &owner,
         "GET",
-        &format!("/api/workspaces/{ws}/issues/{issue}"),
+        &format!("/internal-api/workspaces/{ws}/issues/{issue}"),
         None,
     )
     .await;
@@ -365,7 +365,7 @@ async fn bootstrap_all_entities_match_pull_and_rest_keeps_counts() {
         &app,
         &owner,
         "GET",
-        &format!("/api/workspaces/{ws}/issues"),
+        &format!("/internal-api/workspaces/{ws}/issues"),
         None,
     )
     .await;
@@ -513,7 +513,7 @@ async fn bootstrap_cursor_and_acknowledgment_share_the_snapshot() {
     let (owner, ws, team) = setup(&store, &app).await;
     let client = Uuid::new_v4();
     let issue = Uuid::new_v4();
-    let push_path = format!("/api/workspaces/{ws}/sync/push");
+    let push_path = format!("/internal-api/workspaces/{ws}/sync/push");
     let pushed = call(&app, &owner, "POST", &push_path, Some(json!({"client_id":client,"mutations":[
         {"id":7,"name":"create_issue","args":{"input":{"id":issue,"team_id":team,"title":"Before"}},"at":"2026-10-09T12:00:00Z"}
     ]}))).await;
@@ -601,9 +601,9 @@ async fn bootstrap_negotiates_gzip_only_on_its_route() {
     let (headers, _) = bootstrap(&app, &owner, ws, client, Some("gzip;q=0")).await;
     assert!(!headers.contains_key("content-encoding"));
     for path in [
-        format!("/api/workspaces/{ws}/sync/pull?client_id={client}"),
+        format!("/internal-api/workspaces/{ws}/sync/pull?client_id={client}"),
         format!(
-            "/api/workspaces/{ws}/sync/scope?client_id={client}&entity=comments&issue_id={}",
+            "/internal-api/workspaces/{ws}/sync/scope?client_id={client}&entity=comments&issue_id={}",
             Uuid::new_v4()
         ),
     ] {
@@ -704,7 +704,7 @@ async fn bootstrap_streams_5000_issues_with_backpressure_and_disconnect_cleanup(
         &app,
         &owner,
         "GET",
-        &format!("/api/workspaces/{ws}/sync/bootstrap?client_id={client}"),
+        &format!("/internal-api/workspaces/{ws}/sync/bootstrap?client_id={client}"),
         None,
         None,
     )
@@ -738,7 +738,7 @@ async fn bootstrap_failure_ends_without_a_trailer() {
         &owner,
         "GET",
         &format!(
-            "/api/workspaces/{ws}/sync/bootstrap?client_id={}",
+            "/internal-api/workspaces/{ws}/sync/bootstrap?client_id={}",
             Uuid::new_v4()
         ),
         None,
@@ -816,7 +816,7 @@ async fn scopes_return_every_record_for_only_the_requested_target() {
     let pulled = pull(&app, &owner, ws, client, Some(&cursor)).await;
     assert_eq!(pulled["reset"], false);
     for (entity, column) in [("comments", "issue_id"), ("activity", "entity_id")] {
-        let scope = call(&app,&owner,"GET",&format!("/api/workspaces/{ws}/sync/scope?client_id={client}&entity={entity}&{column}={issue}"),None).await;
+        let scope = call(&app,&owner,"GET",&format!("/internal-api/workspaces/{ws}/sync/scope?client_id={client}&entity={entity}&{column}={issue}"),None).await;
         let scope = scope["records"].as_array().unwrap();
         assert_eq!(scope.len(), 251);
         assert!(scope.iter().all(|record| id(&record[column]) == issue));
@@ -834,7 +834,7 @@ async fn scopes_return_every_record_for_only_the_requested_target() {
             &owner,
             "GET",
             &format!(
-                "/api/workspaces/{ws}/sync/scope?client_id={client}&entity={entity}&{column}={}",
+                "/internal-api/workspaces/{ws}/sync/scope?client_id={client}&entity={entity}&{column}={}",
                 Uuid::new_v4()
             ),
             None,
@@ -847,7 +847,7 @@ async fn scopes_return_every_record_for_only_the_requested_target() {
         &owner,
         "GET",
         &format!(
-            "/api/workspaces/{ws}/sync/scope?client_id={client}&entity=comments&issue_id={issue}"
+            "/internal-api/workspaces/{ws}/sync/scope?client_id={client}&entity=comments&issue_id={issue}"
         ),
         None,
     )
@@ -883,7 +883,7 @@ async fn bootstrap_and_scope_reject_invalid_requests_and_client_owners() {
         &app,
         &owner,
         "POST",
-        "/api/workspaces",
+        "/internal-api/workspaces",
         Some(json!({"name":"Other"})),
     )
     .await["workspace"]["id"]);
@@ -915,7 +915,7 @@ async fn bootstrap_and_scope_reject_invalid_requests_and_client_owners() {
             } else {
                 query
             };
-            let path = format!("/api/workspaces/{ws}/sync/{route}{query}{suffix}");
+            let path = format!("/internal-api/workspaces/{ws}/sync/{route}{query}{suffix}");
             assert_eq!(
                 request(&app, &owner, "GET", &path, None, None)
                     .await
@@ -924,7 +924,7 @@ async fn bootstrap_and_scope_reject_invalid_requests_and_client_owners() {
                 "{path}"
             );
         }
-        let path = format!("/api/workspaces/{ws}/sync/{route}?client_id={client}{suffix}");
+        let path = format!("/internal-api/workspaces/{ws}/sync/{route}?client_id={client}{suffix}");
         assert_eq!(
             request(&app, &stranger, "GET", &path, None, None)
                 .await
@@ -950,7 +950,7 @@ async fn bootstrap_and_scope_reject_invalid_requests_and_client_owners() {
         format!("&entity=comments&entity_id={}", Uuid::new_v4()),
         format!("&entity=activity&issue_id={}", Uuid::new_v4()),
     ] {
-        let path = format!("/api/workspaces/{ws}/sync/scope?client_id={client}{suffix}");
+        let path = format!("/internal-api/workspaces/{ws}/sync/scope?client_id={client}{suffix}");
         assert_eq!(
             request(&app, &owner, "GET", &path, None, None)
                 .await
@@ -1111,7 +1111,7 @@ async fn bootstrap_concurrency_limit_returns_503_and_spares_rest() {
         &owner,
         "GET",
         &format!(
-            "/api/workspaces/{ws}/sync/bootstrap?client_id={}",
+            "/internal-api/workspaces/{ws}/sync/bootstrap?client_id={}",
             Uuid::new_v4()
         ),
         None,
@@ -1135,7 +1135,7 @@ async fn bootstrap_concurrency_limit_returns_503_and_spares_rest() {
 
     // One held bootstrap leaves the rest of the pool usable.
     let start = Instant::now();
-    let response = request(&app, &owner, "GET", "/api/workspaces", None, None).await;
+    let response = request(&app, &owner, "GET", "/internal-api/workspaces", None, None).await;
     assert_eq!(response.status(), StatusCode::OK);
     assert!(
         start.elapsed() < Duration::from_secs(5),
@@ -1257,7 +1257,7 @@ async fn bootstrap_failure_without_trailer_under_gzip() {
         &owner,
         "GET",
         &format!(
-            "/api/workspaces/{ws}/sync/bootstrap?client_id={}",
+            "/internal-api/workspaces/{ws}/sync/bootstrap?client_id={}",
             Uuid::new_v4()
         ),
         None,

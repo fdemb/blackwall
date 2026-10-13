@@ -231,11 +231,13 @@ impl Workspace {
                 name,
                 webhook_url,
                 secret,
+                events,
             } => {
                 self.admin(actor)?;
                 text(&name, 200)?;
                 validate_url(&webhook_url)?;
                 text(&secret, 4096)?;
+                validate_webhook_events(&events)?;
                 let id = self.take_client_id(id)?;
                 self.integrations.push(Integration {
                     version: 1,
@@ -244,12 +246,24 @@ impl Workspace {
                     webhook_url,
                     secret,
                     enabled: true,
+                    events,
                 });
                 id
             }
-            Command::UpdateIntegration { id, enabled } => {
+            Command::UpdateIntegration {
+                id,
+                enabled,
+                events,
+            } => {
                 self.admin(actor)?;
-                find_mut(&mut self.integrations, |i| i.id == id)?.enabled = enabled;
+                if let Some(events) = &events {
+                    validate_webhook_events(events)?;
+                }
+                let integration = find_mut(&mut self.integrations, |i| i.id == id)?;
+                integration.enabled = enabled;
+                if let Some(events) = events {
+                    integration.events = events;
+                }
                 id
             }
             Command::DeleteIntegration { id } => {
