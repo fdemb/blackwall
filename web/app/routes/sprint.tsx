@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import {
   Navigate,
   Outlet,
@@ -15,6 +16,7 @@ import type { QueueState } from "~/components/app/workbench";
 import { shortDate, sprintKey } from "~/lib/format";
 import { useI18n } from "~/lib/i18n";
 import { useSprintProgress } from "~/lib/stats";
+import { rememberSprintView } from "~/lib/last-view";
 import { useWorkspace } from "~/lib/workspace";
 import type { Sprint as SprintT, Team } from "~/lib/types";
 import { useTeamContext } from "./team";
@@ -48,8 +50,10 @@ export default function Sprint() {
   const { team, state } = useTeamContext();
   const sprint = ws.sprints.find((s) => s.id === sprintId && s.team_id === team.id);
   const sprints = `/${ws.id}/team/${team.id}/sprints`;
+  const base = `${sprints}/${sprintId}`;
+  const section = pathname.slice(base.length).split("/")[1] || "board";
+  useEffect(() => rememberSprintView(section), [section]);
   if (!sprint) return <Navigate to={sprints} replace />;
-  const base = `${sprints}/${sprint.id}`;
   const stats = progress.get(sprint.id);
   const heading = (
     <h1 className="mr-2 flex min-w-0 items-center gap-2 ">
@@ -68,7 +72,6 @@ export default function Sprint() {
       </Badge>
     </h1>
   );
-  const section = pathname.slice(base.length).split("/")[1] || "board";
   const tabs = (
     <Tabs
       selectedKey={section}

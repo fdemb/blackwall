@@ -9,6 +9,7 @@ import { useToast } from "~/components/ui/toast";
 import { Tip } from "~/components/ui/tooltip";
 import { PRIORITIES, issueKey, sprintKey } from "~/lib/format";
 import { useI18n } from "~/lib/i18n";
+import { sprintPath } from "~/lib/last-view";
 import { cn } from "~/lib/utils";
 import { useWorkspace } from "~/lib/workspace";
 import type { Id, Issue } from "~/lib/types";
@@ -181,11 +182,7 @@ export function SprintLink({ issue, className }: { issue: Issue; className?: str
   const label = `${t("field.sprint")}: ${sprint.name}`;
   return (
     <Tip label={label}>
-      <Link
-        href={`/${ws.id}/team/${sprint.team_id}/sprints/${sprint.id}`}
-        aria-label={label}
-        className={cn(chip, className)}
-      >
+      <Link href={sprintPath(ws.id, sprint)} aria-label={label} className={cn(chip, className)}>
         <IterationCw aria-hidden className="size-3.5" />
         {sprintKey(sprint.number)}
       </Link>

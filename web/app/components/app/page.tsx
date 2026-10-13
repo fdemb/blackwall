@@ -1,6 +1,7 @@
 import { Link } from "react-router";
 import { Separator } from "~/components/ui/separator";
 import { useDocumentTitle } from "~/lib/title";
+import { teamPath } from "~/lib/last-view";
 import type { Team } from "~/lib/types";
 import { TeamIcon } from "./team-icon";
 import { cn } from "~/lib/utils";
@@ -89,7 +90,7 @@ export function TeamCrumb({
   wsId: string;
 }) {
   return (
-    <PageCrumb to={`/${wsId}/team/${team.id}`}>
+    <PageCrumb to={teamPath(wsId, team.id)}>
       <span className="inline-flex items-center gap-1.5">
         <TeamIcon team={team} />
         {team.name}

@@ -10,7 +10,9 @@ import { KanbanSquare, List, ListTodo } from "lucide-react";
 import { Tab, TabList, Tabs } from "~/components/ui/tabs";
 import { useQueueState, type QueueState } from "~/components/app/workbench";
 import { TeamCrumb } from "~/components/app/page";
+import { useEffect } from "react";
 import { useI18n } from "~/lib/i18n";
+import { rememberTeamView } from "~/lib/last-view";
 import { useDocumentTitle } from "~/lib/title";
 import { useWorkspace } from "~/lib/workspace";
 import type { Team as TeamT } from "~/lib/types";
@@ -41,10 +43,11 @@ function TeamLayout() {
   const { ws, team } = useWorkspace();
   const state = useQueueState();
   const tm = team(teamId!);
+  const base = `/${ws.id}/team/${teamId}`;
+  const section = pathname.slice(base.length).split("/")[1] || "list";
+  useEffect(() => rememberTeamView(section), [section]);
   useDocumentTitle(tm?.name ?? null);
   if (!tm) return <Navigate to={`/${wsId}/my-issues`} replace />;
-  const base = `/${ws.id}/team/${tm.id}`;
-  const section = pathname.slice(base.length).split("/")[1] || "list";
   const tabs = (
     <Tabs
       selectedKey={section}

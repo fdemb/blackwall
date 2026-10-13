@@ -27,6 +27,7 @@ import { Kbd } from "~/components/ui/tooltip";
 import { Menu, MenuItem, MenuPopover, MenuSeparator, MenuTrigger } from "~/components/ui/menu";
 import { LAST_WS } from "~/lib/auth-guard";
 import { useI18n } from "~/lib/i18n";
+import { sprintPath, teamPath } from "~/lib/last-view";
 import { useSession } from "~/lib/session";
 import { useWorkspace } from "~/lib/workspace";
 import { cn } from "~/lib/utils";
@@ -292,7 +293,7 @@ function TeamLinks({ team, base }: { team: Team; base: string }) {
       </button>
       {isOpen && (
         <div className="ml-4 mt-0.5 space-y-0.5 border-l border-border pl-2">
-          <Link to={`${base}/team/${id}`} className={linkClass({ isActive: inTeam && !onSprints })}>
+          <Link to={teamPath(ws.id, id)} className={linkClass({ isActive: inTeam && !onSprints })}>
             {t("team.issues")}
           </Link>
           <Link to={sprints} className={linkClass({ isActive: onSprints && !onActive })}>
@@ -300,7 +301,7 @@ function TeamLinks({ team, base }: { team: Team; base: string }) {
           </Link>
           {active && (
             <Link
-              to={`${sprints}/${active.id}`}
+              to={sprintPath(ws.id, active)}
               aria-current={onActive ? "page" : undefined}
               className={linkClass({ isActive: onActive })}
             >

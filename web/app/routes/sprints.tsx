@@ -8,6 +8,7 @@ import { Page, PageHeader, Card, EmptyState, TeamCrumb } from "~/components/app/
 import { SprintForm, SprintMenu } from "~/components/app/sprint-actions";
 import { fullDate, shortDate, sprintKey } from "~/lib/format";
 import { useI18n } from "~/lib/i18n";
+import { sprintPath } from "~/lib/last-view";
 import { usePending } from "~/lib/use-pending";
 import { cn } from "~/lib/utils";
 import { useSprintProgress } from "~/lib/stats";
@@ -31,7 +32,7 @@ export default function Sprints() {
   const progress = useSprintProgress();
   const [creating, setCreating] = useState(false);
   const { pending: archiving, guard } = usePending();
-  const pageOf = (s: Sprint) => `/${ws.id}/team/${tm.id}/sprints/${s.id}`;
+  const pageOf = (s: Sprint) => sprintPath(ws.id, s);
   const sprints = ws.sprints.filter((s) => s.team_id === tm.id);
   const open = sprints
     .filter((s) => s.state === "active" || s.state === "planned")

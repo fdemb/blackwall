@@ -28,6 +28,7 @@ import { issueKey } from "~/lib/format";
 import { IssueKey } from "~/components/app/issue-key";
 import { isDoneOnly } from "~/lib/filters";
 import { useDocumentTitle } from "~/lib/title";
+import { teamPath } from "~/lib/last-view";
 import { useI18n } from "~/lib/i18n";
 import { useIssueDetail, type IssueDetail } from "~/lib/queries";
 import { QueryStatus } from "~/components/app/query-status";
@@ -148,7 +149,7 @@ function IssueView({ issue, detail }: { issue: Issue; detail: IssueDetail }) {
     inInbox
       ? nav(`/${ws.id}/inbox${location.search}`, { preventScrollReset: true })
       : location.key === "default"
-        ? nav(`/${ws.id}/team/${issue.team_id}`)
+        ? nav(teamPath(ws.id, issue.team_id))
         : nav(-1);
 
   return (

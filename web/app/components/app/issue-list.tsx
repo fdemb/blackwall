@@ -5,6 +5,7 @@ import {
   GridListHeader,
   GridListItem,
   GridListSection,
+  Link,
   ListLayout,
   useDragAndDrop,
   Virtualizer,
@@ -18,24 +19,17 @@ import { Avatar } from "~/components/ui/avatar";
 import { useToast } from "~/components/ui/toast";
 import { ISSUE_DRAG_TYPE, issueDragItem, readDraggedIssues } from "./board";
 import { ConfirmDialog } from "./confirm";
-import { PriorityMenu } from "./issue-menus";
+import { AssigneeMenu, DeadlineMenu, KeyButton, LabelLinks, PriorityMenu } from "./issue-menus";
 import { cn } from "~/lib/utils";
 import { PRIORITIES } from "~/lib/format";
-import { IssueKey, issueKeyLength } from "./issue-key";
+import { issueKeyLength } from "./issue-key";
 import { stageOf, isDoneOnly } from "~/lib/filters";
 import { issueCapabilities } from "~/lib/ownership";
 import { useI18n } from "~/lib/i18n";
 import { useWorkspace } from "~/lib/workspace";
 import type { Id, Issue, IssueGroup, IssuePatch } from "~/lib/types";
 import { PriorityIcon, StageIcon } from "./icons";
-import {
-  AssigneeAvatar,
-  BlockedBadge,
-  DeadlineChip,
-  LabelChips,
-  SubtaskProgress,
-  OpenProjectBadge,
-} from "./issue-parts";
+import { BlockedBadge, SubtaskProgress, OpenProjectBadge } from "./issue-parts";
 
 export type GroupBy = IssueGroup;
 
@@ -371,6 +365,7 @@ export function IssueRow({
   const { ws, canWrite } = useWorkspace();
   const stage = stageOf(ws, issue);
   const project = ws.projects.find((p) => p.id === issue.project_id);
+  const locked = !canWrite || !issueCapabilities(issue).edit;
   return (
     <GridListItem
       id={issue.id}
@@ -379,12 +374,8 @@ export function IssueRow({
       className="group flex h-10 cursor-default items-center gap-2.5 border-b border-border/70 px-4  outline-none hover:bg-muted/60 focus-visible:bg-muted/60 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/60 selected:bg-accent/60"
     >
       {canSelect && issueCapabilities(issue).edit && <RowSelectBox />}
-      <PriorityMenu
-        issue={issue}
-        isDisabled={!canWrite || !issueCapabilities(issue).edit}
-        className="-ml-1"
-      />
-      <IssueKey number={issue.number} length={keyLength} className="text-muted-foreground" />
+      <PriorityMenu issue={issue} isDisabled={locked} className="-ml-1" />
+      <KeyButton issue={issue} length={keyLength} />
       {stage && (
         <span title={stage.name}>
           <StageIcon kind={stage.kind} />
@@ -397,18 +388,21 @@ export function IssueRow({
         <SubtaskProgress issue={issue} />
       </span>
       <span className="hidden md:block">
-        <LabelChips issue={issue} />
+        <LabelLinks issue={issue} className="flex-nowrap" />
       </span>
       {showTeam && <TeamCell issue={issue} />}
       {project && (
-        <span className="hidden max-w-32 truncate  text-muted-foreground xl:block">
+        <Link
+          href={`/${ws.id}/projects/${project.id}`}
+          className="hidden max-w-32 cursor-default truncate rounded-sm text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/60 xl:block"
+        >
           {project.name}
-        </span>
+        </Link>
       )}
-      <span className="text-right sm:w-20">
-        <DeadlineChip issue={issue} className="justify-end" />
+      <span className="flex justify-end sm:w-20">
+        <DeadlineMenu issue={issue} isDisabled={locked} />
       </span>
-      <AssigneeAvatar issue={issue} />
+      <AssigneeMenu issue={issue} isDisabled={locked} />
     </GridListItem>
   );
 }
