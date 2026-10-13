@@ -39,6 +39,8 @@ Fixtures use `fixture-password-123`. The empty fixture account is `empty@example
 
 There is no converter for old development databases.
 
+Run `./scripts/worktree.sh init` in a linked git worktree. It writes a `.env` with its own database and HTTP port, reuses the main checkout's Compose services and Rust build cache, builds the frontend, and applies migrations. `FIXTURE=rich` loads a fixture into a new database. In the worktree, `pnpm run dev` proxies to that port and `./scripts/database.sh reset` resets only that database. Run `./scripts/worktree.sh drop` before removing the worktree.
+
 Checked SQL compiles offline using the committed `.sqlx` metadata. After changing a checked query, regenerate its metadata against a migrated PostgreSQL database:
 
 ```sh
