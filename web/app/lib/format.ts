@@ -13,6 +13,9 @@ export const STAGE_KINDS: StageKind[] = ["backlog", "planned", "active", "done",
 export const MAX_UPLOAD = 5 * 1024 * 1024;
 
 export const issueKey = (number: number | null) => `BW-${number ?? "…"}`;
+export const sprintKey = (number: number | null) => `#${number ?? "…"}`;
+export const sprintLabel = (s: { number: number | null; name: string }) =>
+  `${sprintKey(s.number)} ${s.name}`;
 
 /** Normalizes a trailing "..." to "…". (The locale strings still carry "..."; fix them at the source when those files are touched.) */
 export const ellipsis = (s: string) => s.replace(/\.\.\.$/, "…");

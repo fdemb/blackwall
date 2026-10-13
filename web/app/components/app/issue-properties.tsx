@@ -14,7 +14,7 @@ import {
   PriorityPicker,
   StagePicker,
 } from "~/components/app/pickers";
-import { formatMinutes, fullDate, relativeTime } from "~/lib/format";
+import { formatMinutes, fullDate, relativeTime, sprintLabel } from "~/lib/format";
 import { useI18n } from "~/lib/i18n";
 import { useTimeEntries } from "~/lib/queries";
 import { useWorkspace } from "~/lib/workspace";
@@ -138,7 +138,7 @@ export function Properties({
             isDisabled={!canWrite}
             noneLabel={t("sprint.none")}
             value={issue.sprint_id}
-            options={sprints.map((s) => ({ id: s.id, label: s.name }))}
+            options={sprints.map((s) => ({ id: s.id, label: sprintLabel(s) }))}
             onChange={(id) => patch(id ? { sprint_id: id } : { clear_sprint: true })}
           />
         </Prop>

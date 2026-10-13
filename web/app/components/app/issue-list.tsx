@@ -18,6 +18,7 @@ import { Avatar } from "~/components/ui/avatar";
 import { useToast } from "~/components/ui/toast";
 import { ISSUE_DRAG_TYPE, issueDragItem, readDraggedIssues } from "./board";
 import { ConfirmDialog } from "./confirm";
+import { PriorityMenu } from "./issue-menus";
 import { cn } from "~/lib/utils";
 import { PRIORITIES } from "~/lib/format";
 import { IssueKey, issueKeyLength } from "./issue-key";
@@ -367,7 +368,7 @@ export function IssueRow({
   canSelect?: boolean;
   keyLength?: number;
 }) {
-  const { ws, run, canWrite } = useWorkspace();
+  const { ws, canWrite } = useWorkspace();
   const stage = stageOf(ws, issue);
   const project = ws.projects.find((p) => p.id === issue.project_id);
   return (
@@ -380,8 +381,8 @@ export function IssueRow({
       {canSelect && issueCapabilities(issue).edit && <RowSelectBox />}
       <PriorityMenu
         issue={issue}
-        disabled={!canWrite || !issueCapabilities(issue).edit}
-        run={(patch) => run({ type: "update_issue", id: issue.id, patch })}
+        isDisabled={!canWrite || !issueCapabilities(issue).edit}
+        className="-ml-1"
       />
       <IssueKey number={issue.number} length={keyLength} className="text-muted-foreground" />
       {stage && (
@@ -430,45 +431,6 @@ export function TeamCell({ issue }: { issue: Issue }) {
   const name = team(issue.team_id)?.name;
   if (!name) return null;
   return <span className="hidden  text-muted-foreground lg:block">{name}</span>;
-}
-
-function PriorityMenu({
-  issue,
-  disabled,
-  run,
-}: {
-  issue: Issue;
-  disabled: boolean;
-  run: (p: IssuePatch) => Promise<unknown>;
-}) {
-  const { t } = useI18n();
-  return (
-    <MenuTrigger>
-      <Button
-        variant="ghost"
-        size="icon"
-        isDisabled={disabled}
-        aria-label={t("field.priority")}
-        className="-ml-1 size-6"
-      >
-        <PriorityIcon priority={issue.priority} />
-      </Button>
-      <MenuPopover placement="bottom start">
-        <Menu
-          selectionMode="single"
-          selectedKeys={[issue.priority]}
-          onAction={(k) => run({ priority: k as never }).catch(() => {})}
-        >
-          {PRIORITIES.map((p) => (
-            <MenuItem key={p} id={p} textValue={t(`priority.${p}`)}>
-              <PriorityIcon priority={p} />
-              {t(`priority.${p}`)}
-            </MenuItem>
-          ))}
-        </Menu>
-      </MenuPopover>
-    </MenuTrigger>
-  );
 }
 
 function BulkBar({

@@ -192,14 +192,23 @@ export function LabelsPicker({
   onChange,
   variant = "ghost",
   isDisabled,
+  trigger,
 }: {
   value: Id[];
   onChange: (ids: Id[]) => void;
   variant?: "field" | "ghost";
   isDisabled?: boolean;
+  /** Replaces the default chip button, for places with their own look such as board cards. */
+  trigger?: React.ReactElement;
 }) {
   return (
-    <LabelsPickerBase value={value} onChange={onChange} variant={variant} isDisabled={isDisabled} />
+    <LabelsPickerBase
+      value={value}
+      onChange={onChange}
+      variant={variant}
+      isDisabled={isDisabled}
+      trigger={trigger}
+    />
   );
 }
 
@@ -208,11 +217,13 @@ function LabelsPickerBase({
   onChange,
   variant = "ghost",
   isDisabled,
+  trigger,
 }: {
   value: Id[];
   onChange: (ids: Id[]) => void;
   variant?: "field" | "ghost";
   isDisabled?: boolean;
+  trigger?: React.ReactElement;
 }) {
   const { t } = useI18n();
   const { ws, run, canWrite } = useWorkspace();
@@ -248,33 +259,35 @@ function LabelsPickerBase({
         if (!o) setQ("");
       }}
     >
-      <Button
-        variant={variant === "ghost" ? "ghost" : "secondary"}
-        isDisabled={isDisabled}
-        className={cn(
-          "w-full justify-start gap-1.5 font-normal",
-          variant === "ghost"
-            ? "h-auto min-h-7 flex-wrap px-2 py-1 text-foreground"
-            : "min-h-8 px-2.5",
-        )}
-      >
-        {chosen.length === 0 ? (
-          <span className="flex items-center gap-2 text-muted-foreground">
-            <Tag aria-hidden className="size-3.5" />
-            {t("labels.none")}
-          </span>
-        ) : (
-          chosen.map((l) => (
-            <span
-              key={l.id}
-              className="inline-flex items-center gap-1.5 rounded-full border border-border px-2 py-0.5 text-[11px]"
-            >
-              <LabelDot color={l.color} />
-              {l.name}
+      {trigger ?? (
+        <Button
+          variant={variant === "ghost" ? "ghost" : "secondary"}
+          isDisabled={isDisabled}
+          className={cn(
+            "w-full justify-start gap-1.5 font-normal",
+            variant === "ghost"
+              ? "h-auto min-h-7 flex-wrap px-2 py-1 text-foreground"
+              : "min-h-8 px-2.5",
+          )}
+        >
+          {chosen.length === 0 ? (
+            <span className="flex items-center gap-2 text-muted-foreground">
+              <Tag aria-hidden className="size-3.5" />
+              {t("labels.none")}
             </span>
-          ))
-        )}
-      </Button>
+          ) : (
+            chosen.map((l) => (
+              <span
+                key={l.id}
+                className="inline-flex items-center gap-1.5 rounded-full border border-border px-2 py-0.5 text-[11px]"
+              >
+                <LabelDot color={l.color} />
+                {l.name}
+              </span>
+            ))
+          )}
+        </Button>
+      )}
       <Popover placement="bottom start" className="w-64">
         <Dialog aria-label={t("field.labels")} className="outline-none">
           <Autocomplete inputValue={q} onInputChange={setQ} filter={contains}>

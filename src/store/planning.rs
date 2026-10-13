@@ -620,7 +620,7 @@ impl Operation<'_> {
         self.capacity("sprints", 2000).await?;
         self.lock_team(team_id, false).await?;
         let id = self.reserve_client_id(id).await?;
-        sqlx::query("INSERT INTO sprints(id,workspace_id,team_id,name,goal,starts_at,ends_at,state) VALUES($1,$2,$3,$4,$5,$6,$7,'planned')")
+        sqlx::query("INSERT INTO sprints(id,workspace_id,team_id,number,name,goal,starts_at,ends_at,state) VALUES($1,$2,$3,(SELECT COALESCE(max(number),0)+1 FROM sprints WHERE workspace_id=$2 AND team_id=$3),$4,$5,$6,$7,'planned')")
             .bind(id)
             .bind(self.workspace_id)
             .bind(team_id)

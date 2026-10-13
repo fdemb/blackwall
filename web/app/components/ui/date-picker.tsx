@@ -111,37 +111,46 @@ export function DatePicker({
       <Popover placement="bottom start" className="w-auto min-w-0">
         <Dialog className="p-3 outline-none">
           <Calendar>
-            <header className="mb-2 flex items-center justify-between">
-              {/* RAC wires localized labels + navigation into slot="previous"/"next" buttons, so no
-                  explicit aria-label here — that would override the localized one. */}
-              <Button slot="previous" variant="ghost" size="icon">
-                <ChevronLeft aria-hidden="true" />
-              </Button>
-              <Heading className=" font-semibold" />
-              <Button slot="next" variant="ghost" size="icon">
-                <ChevronRight aria-hidden="true" />
-              </Button>
-            </header>
-            <CalendarGrid className="border-separate border-spacing-0.5">
-              <CalendarGridHeader>
-                {(day) => (
-                  <CalendarHeaderCell className="pb-1 text-[11px] font-medium text-muted-foreground">
-                    {day}
-                  </CalendarHeaderCell>
-                )}
-              </CalendarGridHeader>
-              <CalendarGridBody>
-                {(date) => (
-                  <CalendarCell
-                    date={date}
-                    className="flex size-8 cursor-default items-center justify-center rounded-md  outline-none hover:bg-muted selected:bg-primary-solid selected:text-primary-foreground focus-visible:ring-2 focus-visible:ring-ring/60 outside-month:text-muted-foreground/40 disabled:opacity-30 unavailable:text-destructive"
-                  />
-                )}
-              </CalendarGridBody>
-            </CalendarGrid>
+            <CalendarBody />
           </Calendar>
         </Dialog>
       </Popover>
     </RACDatePicker>
+  );
+}
+
+/** Month navigation and day grid, for use inside a RAC `Calendar`. */
+export function CalendarBody() {
+  return (
+    <>
+      <header className="mb-2 flex items-center justify-between">
+        {/* RAC wires localized labels + navigation into slot="previous"/"next" buttons, so no
+            explicit aria-label here — that would override the localized one. */}
+        <Button slot="previous" variant="ghost" size="icon">
+          <ChevronLeft aria-hidden="true" />
+        </Button>
+        <Heading className=" font-semibold" />
+        <Button slot="next" variant="ghost" size="icon">
+          <ChevronRight aria-hidden="true" />
+        </Button>
+      </header>
+      <CalendarGrid className="border-separate border-spacing-0.5">
+        <CalendarGridHeader>
+          {(day) => (
+            <CalendarHeaderCell className="pb-1 text-[11px] font-medium text-muted-foreground">
+              {day}
+            </CalendarHeaderCell>
+          )}
+        </CalendarGridHeader>
+        <CalendarGridBody>
+          {(date) => (
+            <CalendarCell
+              date={date}
+              className="flex size-8 cursor-default items-center justify-center rounded-md  outline-none hover:bg-muted selected:bg-primary-solid selected:text-primary-foreground focus-visible:ring-2 focus-visible:ring-ring/60 outside-month:text-muted-foreground/40 disabled:opacity-30 unavailable:text-destructive"
+            />
+          )}
+        </CalendarGridBody>
+      </CalendarGrid>
+    </>
   );
 }

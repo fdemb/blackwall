@@ -1205,6 +1205,7 @@ describe("create_sprint / update_sprint", () => {
       id: "sprint-new",
       version: 1,
       team_id: TEAM,
+      number: null,
       name: "Next",
       goal: "Ship",
       starts_at: STARTS,

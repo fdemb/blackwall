@@ -139,6 +139,9 @@ pub struct Sprint {
     pub version: i64,
     pub id: Uuid,
     pub team_id: Uuid,
+    /// Counts up per team. The store assigns it on insert, so imported values are ignored.
+    #[serde(default)]
+    pub number: u64,
     pub name: String,
     pub goal: String,
     pub starts_at: DateTime<Utc>,

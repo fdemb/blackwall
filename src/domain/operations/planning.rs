@@ -171,10 +171,19 @@ impl Workspace {
                     return Err(Error::BadRequest("sprint end must follow start".into()));
                 }
                 let id = self.take_client_id(id)?;
+                let number = self
+                    .sprints
+                    .iter()
+                    .filter(|s| s.team_id == team_id)
+                    .map(|s| s.number)
+                    .max()
+                    .unwrap_or(0)
+                    + 1;
                 self.sprints.push(Sprint {
                     version: 1,
                     id,
                     team_id,
+                    number,
                     name,
                     goal,
                     starts_at,

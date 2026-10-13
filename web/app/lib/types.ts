@@ -57,6 +57,8 @@ export interface Sprint {
   id: Id;
   version: number;
   team_id: Id;
+  /** Counts up per team. Null until the server confirms a create. */
+  number: number | null;
   name: string;
   goal: string;
   starts_at: string;
