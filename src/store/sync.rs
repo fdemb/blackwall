@@ -1024,19 +1024,9 @@ async fn bootstrap_on(
     use std::sync::atomic::Ordering;
     use tokio_stream::StreamExt;
 
-    match send_value(sender, header, send_timeout).await? {
-        SendOutcome::Sent => {}
-        SendOutcome::Timeout => {
-            tracing::warn!(
-                workspace_id = %workspace,
-                client_id = %client_id,
-                records = 0,
-                deadline = "send",
-                "sync bootstrap timed out"
-            );
-            return Ok(());
-        }
-        SendOutcome::Closed => return Ok(()),
+    let outcome = send_value(sender, header, send_timeout).await?;
+    if !delivered(outcome, workspace, client_id, 0) {
+        return Ok(());
     }
     let mut records = 0u64;
     for entity in BOOTSTRAP_ENTITIES {
@@ -1052,40 +1042,34 @@ async fn bootstrap_on(
             let Some((_, record)) = row.transpose()? else {
                 break;
             };
-            match send_value(
+            let outcome = send_value(
                 sender,
                 serde_json::json!({"entity": entity, "record": record}),
                 send_timeout,
             )
-            .await?
-            {
-                SendOutcome::Sent => {
-                    records += 1;
-                    sent.store(records, Ordering::Relaxed);
-                }
-                SendOutcome::Timeout => {
-                    tracing::warn!(
-                        workspace_id = %workspace,
-                        client_id = %client_id,
-                        records = records,
-                        deadline = "send",
-                        "sync bootstrap timed out"
-                    );
-                    return Ok(());
-                }
-                SendOutcome::Closed => return Ok(()),
+            .await?;
+            if !delivered(outcome, workspace, client_id, records) {
+                return Ok(());
             }
+            records += 1;
+            sent.store(records, Ordering::Relaxed);
         }
     }
     tx.commit().await?;
-    match send_value(
+    let outcome = send_value(
         sender,
         serde_json::json!({"end": true, "records": records}),
         send_timeout,
     )
-    .await?
-    {
-        SendOutcome::Sent => {}
+    .await?;
+    delivered(outcome, workspace, client_id, records);
+    Ok(())
+}
+
+/// Whether the bootstrap may keep sending. Logs a send timeout.
+fn delivered(outcome: SendOutcome, workspace: Uuid, client_id: Uuid, records: u64) -> bool {
+    match outcome {
+        SendOutcome::Sent => true,
         SendOutcome::Timeout => {
             tracing::warn!(
                 workspace_id = %workspace,
@@ -1094,10 +1078,10 @@ async fn bootstrap_on(
                 deadline = "send",
                 "sync bootstrap timed out"
             );
+            false
         }
-        SendOutcome::Closed => {}
+        SendOutcome::Closed => false,
     }
-    Ok(())
 }
 
 impl Store {

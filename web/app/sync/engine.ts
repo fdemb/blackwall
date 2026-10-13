@@ -756,18 +756,18 @@ export class SyncEngine {
       this.inbox.push(message);
       return;
     }
+    this.dispatch(message);
+  }
+
+  private dispatch(message: TabMessage): void {
     switch (message.type) {
       case "appended":
         this.receiveAppended(message.mutation);
         return;
       case "pulled":
-        if (this.role === "follower") this.receivePulled(message);
-        return;
       case "reset":
-        if (this.role === "follower") this.receiveReset();
-        return;
       case "status":
-        if (this.role === "follower") this.receiveStatus(message);
+        if (this.role === "follower") this.receiveFromLeader(message);
         return;
       case "result":
         this.receiveResult(message.mutationId, message.outcome);
@@ -777,13 +777,9 @@ export class SyncEngine {
         if (this.role === "leader") this.resolveStored(message.mutationId);
         return;
       case "hello":
-        if (this.role === "leader") this.post(this.statusMessage());
-        return;
       case "retry":
-        if (this.role === "leader") this.unblock();
-        return;
       case "request":
-        if (this.role === "leader") this.serve(message);
+        if (this.role === "leader") this.receiveFromFollower(message);
         return;
       case "unauthorized":
       case "accessLost":
@@ -794,6 +790,38 @@ export class SyncEngine {
           message.requestId,
           message.ok ? { ok: true, value: message.value } : { ok: false, error: message.error },
         );
+        return;
+    }
+  }
+
+  private receiveFromLeader(
+    message: Extract<TabMessage, { type: "pulled" | "reset" | "status" }>,
+  ): void {
+    switch (message.type) {
+      case "pulled":
+        this.receivePulled(message);
+        return;
+      case "reset":
+        this.receiveReset();
+        return;
+      case "status":
+        this.receiveStatus(message);
+        return;
+    }
+  }
+
+  private receiveFromFollower(
+    message: Extract<TabMessage, { type: "hello" | "retry" | "request" }>,
+  ): void {
+    switch (message.type) {
+      case "hello":
+        this.post(this.statusMessage());
+        return;
+      case "retry":
+        this.unblock();
+        return;
+      case "request":
+        this.serve(message);
         return;
     }
   }

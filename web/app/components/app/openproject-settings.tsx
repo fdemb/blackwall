@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, type Dispatch, type SetStateAction } from "react";
 import { Form } from "react-aria-components";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Pencil, Plug, Plus, RefreshCw, Trash2 } from "lucide-react";
@@ -261,6 +261,25 @@ async function migrateStages({
   return resolved;
 }
 
+function isConnectionDirty(
+  connection: OpenProjectConnection | null,
+  draft: {
+    name: string;
+    url: string;
+    token: string;
+    projects: OpenProjectMapping[];
+    people: OpenProjectConnection["people_mapping"];
+  },
+): boolean {
+  return (
+    draft.name !== (connection?.name ?? "") ||
+    draft.url !== (connection?.base_url ?? "") ||
+    draft.token !== "" ||
+    JSON.stringify(draft.projects) !== JSON.stringify(connection?.projects ?? []) ||
+    JSON.stringify(draft.people) !== JSON.stringify(connection?.people_mapping ?? {})
+  );
+}
+
 function ConnectionForm({
   editor,
   close,
@@ -270,7 +289,7 @@ function ConnectionForm({
   close: () => void;
   refresh: () => Promise<void>;
 }) {
-  const { ws, members, run, confirmed } = useWorkspace();
+  const { ws, run, confirmed } = useWorkspace();
   const { t } = useI18n();
   const connection = editor.kind === "edit" ? editor.connection : null;
   const [name, setName] = useState(connection?.name ?? "");
@@ -279,13 +298,7 @@ function ConnectionForm({
   const [projects, setProjects] = useState<OpenProjectMapping[]>(connection?.projects ?? []);
   const [people, setPeople] = useState(connection?.people_mapping ?? {});
   const { pending, error, guard } = usePending();
-  useDialogDirty(
-    name !== (connection?.name ?? "") ||
-      url !== (connection?.base_url ?? "") ||
-      token !== "" ||
-      JSON.stringify(projects) !== JSON.stringify(connection?.projects ?? []) ||
-      JSON.stringify(people) !== JSON.stringify(connection?.people_mapping ?? {}),
-  );
+  useDialogDirty(isConnectionDirty(connection, { name, url, token, projects, people }));
   // Retain mapped projects even if discovery no longer returns them.
   const available = new Map(connection?.cached_projects.map((p) => [p.id, p.name]));
   for (const p of projects)
@@ -436,58 +449,12 @@ function ConnectionForm({
         </fieldset>
       ) : null}
       {connection ? (
-        <fieldset className="space-y-3" disabled={pending}>
-          <legend className=" font-medium">{t("openproject.people")}</legend>
-          <p className=" text-muted-foreground">{t("openproject.peopleHint")}</p>
-          {connection.cached_people
-            .filter((person) => !person.email)
-            .map((person) => (
-              <p key={person.id} className=" text-muted-foreground">
-                {t("openproject.hiddenEmail", { name: person.name })}
-              </p>
-            ))}
-          {[
-            ...new Set([
-              ...connection.cached_people.flatMap((person) => (person.email ? [person.email] : [])),
-              ...Object.keys(people),
-            ]),
-          ].map((email) => {
-            const match = members.find((member) => member.email.toLowerCase() === email);
-            const options = members.map((member) => ({
-              id: member.id,
-              label: `${member.display_name} (${member.email})`,
-            }));
-            const mapped = people[email];
-            if (mapped && !members.some((member) => member.id === mapped)) {
-              options.push({ id: mapped, label: t("openproject.missingPerson") });
-            }
-            return (
-              <NullableSelect
-                key={email}
-                label={email}
-                value={people[email]}
-                noneLabel={
-                  match
-                    ? t("openproject.automaticPerson", { name: match.display_name })
-                    : t("openproject.unassigned")
-                }
-                options={options}
-                isDisabled={pending}
-                onChange={(id) =>
-                  setPeople((old) => {
-                    const next = { ...old };
-                    if (id) next[email] = id;
-                    else delete next[email];
-                    return next;
-                  })
-                }
-              />
-            );
-          })}
-          {connection.cached_people.length === 0 ? (
-            <p className=" text-muted-foreground">{t("openproject.noPeople")}</p>
-          ) : null}
-        </fieldset>
+        <PeopleFields
+          connection={connection}
+          people={people}
+          setPeople={setPeople}
+          pending={pending}
+        />
       ) : null}
       <FormError>{error}</FormError>
       <div className="flex justify-end gap-2">
@@ -504,6 +471,75 @@ function ConnectionForm({
         </Button>
       </div>
     </Form>
+  );
+}
+
+function PeopleFields({
+  connection,
+  people,
+  setPeople,
+  pending,
+}: {
+  connection: OpenProjectConnection;
+  people: OpenProjectConnection["people_mapping"];
+  setPeople: Dispatch<SetStateAction<OpenProjectConnection["people_mapping"]>>;
+  pending: boolean;
+}) {
+  const { members } = useWorkspace();
+  const { t } = useI18n();
+  return (
+    <fieldset className="space-y-3" disabled={pending}>
+      <legend className=" font-medium">{t("openproject.people")}</legend>
+      <p className=" text-muted-foreground">{t("openproject.peopleHint")}</p>
+      {connection.cached_people
+        .filter((person) => !person.email)
+        .map((person) => (
+          <p key={person.id} className=" text-muted-foreground">
+            {t("openproject.hiddenEmail", { name: person.name })}
+          </p>
+        ))}
+      {[
+        ...new Set([
+          ...connection.cached_people.flatMap((person) => (person.email ? [person.email] : [])),
+          ...Object.keys(people),
+        ]),
+      ].map((email) => {
+        const match = members.find((member) => member.email.toLowerCase() === email);
+        const options = members.map((member) => ({
+          id: member.id,
+          label: `${member.display_name} (${member.email})`,
+        }));
+        const mapped = people[email];
+        if (mapped && !members.some((member) => member.id === mapped)) {
+          options.push({ id: mapped, label: t("openproject.missingPerson") });
+        }
+        return (
+          <NullableSelect
+            key={email}
+            label={email}
+            value={people[email]}
+            noneLabel={
+              match
+                ? t("openproject.automaticPerson", { name: match.display_name })
+                : t("openproject.unassigned")
+            }
+            options={options}
+            isDisabled={pending}
+            onChange={(id) =>
+              setPeople((old) => {
+                const next = { ...old };
+                if (id) next[email] = id;
+                else delete next[email];
+                return next;
+              })
+            }
+          />
+        );
+      })}
+      {connection.cached_people.length === 0 ? (
+        <p className=" text-muted-foreground">{t("openproject.noPeople")}</p>
+      ) : null}
+    </fieldset>
   );
 }
 

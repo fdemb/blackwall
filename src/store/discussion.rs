@@ -50,11 +50,7 @@ impl Operation<'_> {
                 id
             }
             Command::DeleteComment { id } => {
-                let row = self.discussion_record("comments", "author", id).await?;
-                self.author_or_admin(row.try_get("author")?)?;
-                self.touch_locked("comments", id, row.try_get("version")?)
-                    .await?;
-                self.delete_row("comments", id).await?;
+                self.delete_authored("comments", "author", id).await?;
                 id
             }
             Command::LogTime {
@@ -77,13 +73,7 @@ impl Operation<'_> {
                 id
             }
             Command::DeleteTime { id } => {
-                let row = self
-                    .discussion_record("time_entries", "user_id", id)
-                    .await?;
-                self.author_or_admin(row.try_get("user_id")?)?;
-                self.touch_locked("time_entries", id, row.try_get("version")?)
-                    .await?;
-                self.delete_row("time_entries", id).await?;
+                self.delete_authored("time_entries", "user_id", id).await?;
                 id
             }
             Command::SaveView {
@@ -102,9 +92,7 @@ impl Operation<'_> {
                 id
             }
             Command::DeleteView { id } => {
-                self.lock_own_view(id).await?;
-                self.touch("saved_views", id).await?;
-                self.delete_row("saved_views", id).await?;
+                self.delete_view(id).await?;
                 id
             }
             Command::Invite { email, role, .. } => self.invite(email, role).await?,
@@ -162,27 +150,11 @@ impl Operation<'_> {
                 enabled,
                 events,
             } => {
-                self.admin()?;
-                if let Some(events) = &events {
-                    crate::domain::validate_webhook_events(events)?;
-                }
-                self.touch("integrations", id).await?;
-                sqlx::query(
-                    "UPDATE integrations SET enabled=$3,events=COALESCE($4,events) \
-                     WHERE workspace_id=$1 AND id=$2",
-                )
-                .bind(self.workspace_id)
-                .bind(id)
-                .bind(enabled)
-                .bind(events)
-                .execute(&mut *self.tx)
-                .await?;
+                self.update_integration(id, enabled, events).await?;
                 id
             }
             Command::DeleteIntegration { id } => {
-                self.admin()?;
-                self.touch("integrations", id).await?;
-                self.delete_row("integrations", id).await?;
+                self.delete_integration(id).await?;
                 id
             }
             _ => {
@@ -193,6 +165,51 @@ impl Operation<'_> {
         };
 
         Ok(Some(id))
+    }
+
+    /// Deletes a comment or time entry. Only its author or an admin may.
+    async fn delete_authored(&mut self, table: &str, author: &str, id: Uuid) -> Result<()> {
+        let row = self.discussion_record(table, author, id).await?;
+        self.author_or_admin(row.try_get(author)?)?;
+        self.touch_locked(table, id, row.try_get("version")?)
+            .await?;
+        self.delete_row(table, id).await
+    }
+
+    async fn delete_view(&mut self, id: Uuid) -> Result<()> {
+        self.lock_own_view(id).await?;
+        self.touch("saved_views", id).await?;
+        self.delete_row("saved_views", id).await
+    }
+
+    async fn update_integration(
+        &mut self,
+        id: Uuid,
+        enabled: bool,
+        events: Option<Vec<String>>,
+    ) -> Result<()> {
+        self.admin()?;
+        if let Some(events) = &events {
+            crate::domain::validate_webhook_events(events)?;
+        }
+        self.touch("integrations", id).await?;
+        sqlx::query(
+            "UPDATE integrations SET enabled=$3,events=COALESCE($4,events) \
+             WHERE workspace_id=$1 AND id=$2",
+        )
+        .bind(self.workspace_id)
+        .bind(id)
+        .bind(enabled)
+        .bind(events)
+        .execute(&mut *self.tx)
+        .await?;
+        Ok(())
+    }
+
+    async fn delete_integration(&mut self, id: Uuid) -> Result<()> {
+        self.admin()?;
+        self.touch("integrations", id).await?;
+        self.delete_row("integrations", id).await
     }
 
     /// Deletes one row of a workspace-scoped table the caller already locked.
