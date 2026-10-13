@@ -24,6 +24,7 @@ import { QueryStatus } from "../components/app/query-status";
 import { ToastProvider, useToast } from "../components/ui/toast";
 import { createEngine, SCHEMA, type SyncEngine } from "../sync/engine";
 import { makeIssue, makeTeam, NOW } from "../sync/fixtures";
+import { MutationError } from "../sync/mutators";
 import { IDB_VERSION, IndexedDBReplicaStorage } from "../sync/persistence/idb";
 import type { ReplicaStorage } from "../sync/persistence/types";
 import { MemoryReplicaStorage } from "../sync/persistence/memory";
@@ -38,10 +39,11 @@ import {
   useNotifications,
   useTimeEntries,
 } from "./queries";
-import { queryClient, keys } from "./query-client";
+import { queryClient } from "./query-client";
+import { useIssueCount } from "./stats";
 import { SessionProvider } from "./session";
 import { WorkspaceProvider, useWorkspace } from "./workspace";
-import type { Language, Profile, Report } from "./types";
+import type { Language, Profile } from "./types";
 import type { ReactNode } from "react";
 
 const profile: Profile = {
@@ -53,19 +55,6 @@ const profile: Profile = {
   language: "en",
   theme: "system",
   alerts: { assignments: true, replies: true, changes: true, deadlines: true },
-};
-const report: Report = {
-  issue_count: 99,
-  inbox_unread: 999,
-  label_counts: {},
-  project_stats: [],
-  total_minutes: 123,
-  issues: [],
-  people: [],
-  teams: [],
-  projects: [],
-  sprints: [],
-  delivery: [],
 };
 const engines: SyncEngine[] = [];
 async function fixture({
@@ -194,7 +183,6 @@ async function fixture({
   });
   engines.push(engine);
   await engine.open();
-  queryClient.setQueryData(keys.report("workspace"), report);
   return engine;
 }
 function render(engine: SyncEngine, children: ReactNode, language: Language = "en") {
@@ -241,6 +229,7 @@ function HookProbe() {
   const allTime = useTimeEntries();
   const record = useRecord("issues", "issue");
   const status = useSyncStatus();
+  const liveIssues = useIssueCount();
   return (
     <pre>
       {JSON.stringify({
@@ -252,7 +241,7 @@ function HookProbe() {
         unread: workspace.unread,
         pending: workspace.pending,
         offline: workspace.offline,
-        serverReport: workspace.report.issue_count,
+        liveIssues,
         member: workspace.member("user")?.display_name,
         team: workspace.team("team-1")?.name,
         stage: workspace.stage("stage-todo")?.kind,
@@ -313,7 +302,7 @@ function ChangingDependencies() {
 }
 
 describe("workspace React integration without a DOM", () => {
-  it("assembles all workspace fields and local hooks from disk while retaining the cached server report offline", async () => {
+  it("assembles all workspace fields and local hooks from disk while offline", async () => {
     const engine = await fixture();
     const html = render(engine, <HookProbe />);
     const state: unknown = JSON.parse(
@@ -328,7 +317,7 @@ describe("workspace React integration without a DOM", () => {
       unread: 1,
       pending: 0,
       offline: true,
-      serverReport: 99,
+      liveIssues: 5,
       member: "Ada",
       team: "Team",
       stage: "planned",
@@ -511,6 +500,22 @@ function RunProbeComponent({ observe }: { observe: (run: Run, toast: Toast) => v
   observe(run, useToast());
   return null;
 }
+
+describe("online command failures", () => {
+  it("reports a server rejection with one toast, since online commands emit no rejection event", async () => {
+    const engine = await fixture({ online: true });
+    vi.spyOn(engine, "runOnline").mockRejectedValue(new MutationError(403, "Owners only"));
+    let seen: { run: Run; toast: Toast } | undefined;
+    render(engine, <RunProbeComponent observe={(run, toast) => (seen = { run, toast })} />);
+    if (!seen) throw new Error("Workspace callbacks missing");
+    const error = vi.spyOn(seen.toast, "error");
+    await expect(seen.run({ type: "set_role", user_id: "user", role: "viewer" })).rejects.toThrow(
+      "Owners only",
+    );
+    expect(error).toHaveBeenCalledOnce();
+    expect(error).toHaveBeenCalledWith("Owners only");
+  });
+});
 
 describe("outdated workspace", () => {
   it.each(["en", "pl"] satisfies Language[])(

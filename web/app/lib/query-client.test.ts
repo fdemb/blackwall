@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { SyncStore } from "../sync/store";
-import { makeIssue, NOW } from "../sync/fixtures";
+import { makeIssue, NOW, testReplay } from "../sync/fixtures";
 import { keys, queryClient, watchReportChanges } from "./query-client";
 
 afterEach(() => {
@@ -46,6 +46,30 @@ describe("report invalidation", () => {
     await vi.advanceTimersByTimeAsync(50);
     expect(queryClient.getQueryState(keys.report("ws"))?.isInvalidated).toBe(true);
     expect(queryClient.getQueryData(keys.report("ws"))).toBe(cached);
+    unsubscribe();
+  });
+  it("waits for a local edit's confirmation instead of refetching for its prediction", async () => {
+    vi.useFakeTimers();
+    const store = new SyncStore(testReplay);
+    store.applyBase([{ entity: "issues", id: "a", record: makeIssue("a") }]);
+    queryClient.setQueryData(keys.report("ws"), { issue_count: 1 });
+    const unsubscribe = watchReportChanges(store, "ws");
+    const edit = { id: 1, name: "set_title", args: { id: "a", title: "Local" }, at: NOW };
+    store.setPending([edit]);
+    await vi.advanceTimersByTimeAsync(300);
+    expect(queryClient.getQueryState(keys.report("ws"))?.isInvalidated).toBe(false);
+    store.batch(() => {
+      store.applyBase([
+        {
+          entity: "issues",
+          id: "a",
+          record: { ...makeIssue("a"), title: "Local", updated_at: NOW },
+        },
+      ]);
+      store.setPending([]);
+    });
+    await vi.advanceTimersByTimeAsync(300);
+    expect(queryClient.getQueryState(keys.report("ws"))?.isInvalidated).toBe(true);
     unsubscribe();
   });
   it("releases its subscription and scheduled invalidation when the workspace closes", async () => {

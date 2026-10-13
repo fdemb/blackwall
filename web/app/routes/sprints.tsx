@@ -10,6 +10,7 @@ import { fullDate, shortDate, sprintKey } from "~/lib/format";
 import { useI18n } from "~/lib/i18n";
 import { usePending } from "~/lib/use-pending";
 import { cn } from "~/lib/utils";
+import { useSprintProgress } from "~/lib/stats";
 import { useWorkspace } from "~/lib/workspace";
 import type { Sprint } from "~/lib/types";
 import { useTeamContext } from "./team";
@@ -26,7 +27,8 @@ const ABOVE_LINK = "relative z-10";
 export default function Sprints() {
   const { t, lang } = useI18n();
   const { team: tm } = useTeamContext();
-  const { ws, run, canWrite, report } = useWorkspace();
+  const { ws, run, canWrite } = useWorkspace();
+  const progress = useSprintProgress();
   const [creating, setCreating] = useState(false);
   const { pending: archiving, guard } = usePending();
   const pageOf = (s: Sprint) => `/${ws.id}/team/${tm.id}/sprints/${s.id}`;
@@ -78,7 +80,7 @@ export default function Sprints() {
           <section className="px-4 pt-4 pb-4">
             <Card className="divide-y divide-border overflow-hidden">
               {open.map((s) => {
-                const stats = report.sprints.find((stats) => stats.id === s.id);
+                const stats = progress.get(s.id);
                 return (
                   <div key={s.id} className={cn(ROW, "py-3")}>
                     <div className="flex flex-wrap items-center gap-2">

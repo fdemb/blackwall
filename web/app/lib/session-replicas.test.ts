@@ -553,7 +553,14 @@ describe("app tab coordination", () => {
     const f = await twoTabs();
     const sender = f.hub.channel(`blackwall-sync:${f.profile.session_id}:${f.workspace.id}`);
     const status = (connected: boolean, online: boolean) =>
-      sender.postMessage({ type: "status", connected, online, blocked: false, from: "leader" });
+      sender.postMessage({
+        type: "status",
+        connected,
+        online,
+        blocked: false,
+        error: null,
+        from: "leader",
+      });
     try {
       expect(f.second.status.get().online).toBe(true);
       status(false, true);

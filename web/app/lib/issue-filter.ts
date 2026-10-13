@@ -249,7 +249,7 @@ function overlaps(
   hasNull: boolean,
 ) {
   if (actual.length === 0) return hasNull;
-  return actual.some((item) => wanted.includes(uuid(item) ?? item));
+  return actual.some((item) => wanted.includes(canonical(item)));
 }
 
 function ordered<T extends string | number>(actual: T | null, bound: T, op: FilterOp): boolean {
@@ -280,7 +280,20 @@ function test<T extends string | number>(
     : member(actual, wanted, clause.null);
 }
 
-const id = (value: string | null) => (value === null ? null : (uuid(value) ?? value));
+// Every list query canonicalizes the id fields of every issue, so the parsed spellings are kept.
+// Distinct ids are bounded by the replica; the cap only guards against unbounded growth.
+const canonicalIds = new Map<string, string>();
+function canonical(value: string): string {
+  let parsed = canonicalIds.get(value);
+  if (parsed === undefined) {
+    if (canonicalIds.size >= 100_000) canonicalIds.clear();
+    parsed = uuid(value) ?? value;
+    canonicalIds.set(value, parsed);
+  }
+  return parsed;
+}
+
+const id = (value: string | null) => (value === null ? null : canonical(value));
 
 export function matchesClause(
   clause: CompiledClause,
@@ -339,9 +352,11 @@ export function matchesClause(
   return clause.op === "is_not" ? !hit : hit;
 }
 
+/** Matching issues in display order. With `limit`, only the first `limit` of them. */
 export function filterIssues(
   store: SyncStore,
   filter: ReplicaIssueFilter = {},
+  limit?: number,
 ): DeepReadonly<SyncIssue>[] {
   if (filter.search && new TextEncoder().encode(filter.search).length > 200)
     throw new ApiError("search query too long", 400);
@@ -349,13 +364,73 @@ export function filterIssues(
   const clauses = compileFilter(filter.where);
   const matches = searchPredicate(filter.search ?? "");
   const kindOf = (stageId: string) => store.stageKind(stageId);
-  const rows = store.all("issues").filter((issue) => {
+  const rows = candidates(store, ids, clauses).filter((issue) => {
     if (!inLifecycle(filter, issue)) return false;
     for (const clause of clauses) if (!matchesClause(clause, issue, kindOf)) return false;
-    if (ids && !ids.has(issue.id)) return false;
     return matches(issue);
   });
-  return rows.sort((a, b) => compareGroup(filter, a, b) || compareSort(filter, a, b));
+  return first(rows, comparator(filter), limit);
+}
+
+/**
+ * Rows that can match: the `ids` list by key, else the smallest index lookup an `is` clause
+ * allows, else the whole table.
+ */
+function candidates(
+  store: SyncStore,
+  ids: Set<string> | undefined,
+  clauses: readonly CompiledClause[],
+): readonly Row[] {
+  if (ids) return [...ids].flatMap((key) => store.get("issues", key) ?? []);
+  let best: readonly Row[] | undefined;
+  for (const clause of clauses) {
+    const rows = indexed(store, clause);
+    if (rows && (!best || rows.length < best.length)) best = rows;
+  }
+  return best ?? store.all("issues");
+}
+
+// Clause fields backed by a store index of the same name. The index keys raw values, so this
+// relies on the replica holding canonical ids: the server sends PostgreSQL uuids, and mutators
+// only store team, stage, sprint, project and parent ids they found by key.
+type IndexedField = "team_id" | "stage_id" | "sprint_id" | "project_id" | "parent_id";
+const INDEXED = new Set<FilterField>([
+  "team_id",
+  "stage_id",
+  "sprint_id",
+  "project_id",
+  "parent_id",
+]);
+
+function indexed(store: SyncStore, clause: CompiledClause): readonly Row[] | undefined {
+  if (clause.op !== "is" || !INDEXED.has(clause.field)) return undefined;
+  const values = new Set<string | null>(clause.values as string[]);
+  if (clause.null) values.add(null);
+  const field = clause.field as IndexedField;
+  return [...values].flatMap((value) => store.byIndex("issues", field, value));
+}
+
+/** The first `limit` rows in order. Keeps a sorted window instead of sorting every match. */
+function first(rows: Row[], compare: Compare, limit?: number): Row[] {
+  if (limit === undefined || limit < 1 || rows.length <= limit) return rows.sort(compare);
+  const top: Row[] = [];
+  for (const row of rows) {
+    if (top.length >= limit && compare(row, top[top.length - 1]!) >= 0) continue;
+    top.splice(insertionPoint(top, row, compare), 0, row);
+    if (top.length > limit) top.pop();
+  }
+  return top;
+}
+
+function insertionPoint(sorted: Row[], row: Row, compare: Compare): number {
+  let low = 0;
+  let high = sorted.length;
+  while (low < high) {
+    const middle = (low + high) >>> 1;
+    if (compare(sorted[middle]!, row) < 0) low = middle + 1;
+    else high = middle;
+  }
+  return low;
 }
 
 function parseIds(list: string): Set<string> {
@@ -372,40 +447,47 @@ function inLifecycle(filter: ReplicaIssueFilter, issue: DeepReadonly<SyncIssue>)
   return issue.deleted_at === null && (issue.archived_at !== null) === Boolean(filter.archived);
 }
 
-function compareGroup(filter: ReplicaIssueFilter, a: Row, b: Row): number {
-  switch (filter.group_by) {
-    case "stage":
-      return compareCodePoints(a.stage_id, b.stage_id);
-    case "priority":
-      return rank[b.priority] - rank[a.priority];
-    case "assignee":
-      return nullable(a.assignee, b.assignee, compareCodePoints);
-    default:
-      return 0;
-  }
-}
+type Compare = (a: Row, b: Row) => number;
 
-function compareSort(filter: ReplicaIssueFilter, a: Row, b: Row): number {
-  switch (filter.sort ?? "position") {
-    case "deadline":
-      return (
-        nullable(a.deadline, b.deadline, compareCodePoints) ||
-        a.position - b.position ||
-        compareCodePoints(a.id, b.id)
-      );
-    case "updated":
-      return compareCodePoints(b.updated_at, a.updated_at) || compareCodePoints(a.id, b.id);
-    case "priority":
-      return (
-        rank[b.priority] - rank[a.priority] ||
-        a.position - b.position ||
-        compareCodePoints(a.id, b.id)
-      );
-    case "position":
-      return (
-        a.position - b.position ||
-        nullable(a.number, b.number, (x, y) => x - y) ||
-        compareCodePoints(a.id, b.id)
-      );
-  }
+// Stored timestamps are canonical ASCII, where UTF-16 order is code point order.
+const compareTimes = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
+
+const GROUPS = new Map<string, Compare>([
+  ["stage", (a, b) => compareCodePoints(a.stage_id, b.stage_id)],
+  ["priority", (a, b) => rank[b.priority] - rank[a.priority]],
+  ["assignee", (a, b) => nullable(a.assignee, b.assignee, compareCodePoints)],
+]);
+
+const SORTS = new Map<string, Compare>([
+  [
+    "deadline",
+    (a, b) =>
+      nullable(a.deadline, b.deadline, compareTimes) ||
+      a.position - b.position ||
+      compareCodePoints(a.id, b.id),
+  ],
+  ["updated", (a, b) => compareTimes(b.updated_at, a.updated_at) || compareCodePoints(a.id, b.id)],
+  [
+    "priority",
+    (a, b) =>
+      rank[b.priority] - rank[a.priority] ||
+      a.position - b.position ||
+      compareCodePoints(a.id, b.id),
+  ],
+  [
+    "position",
+    (a, b) =>
+      a.position - b.position ||
+      nullable(a.number, b.number, (x, y) => x - y) ||
+      compareCodePoints(a.id, b.id),
+  ],
+]);
+
+const unordered: Compare = () => 0;
+
+/** Display order: the group first, then the sort. Picked once per query, not per comparison. */
+function comparator(filter: ReplicaIssueFilter): Compare {
+  const sort = SORTS.get(filter.sort ?? "position") ?? unordered;
+  const group = GROUPS.get(filter.group_by ?? "none");
+  return group ? (a, b) => group(a, b) || sort(a, b) : sort;
 }

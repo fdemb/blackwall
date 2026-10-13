@@ -785,10 +785,9 @@ describe("review N1-N5", () => {
   });
 
   it("N3: an Error whose code changes emits errorsChanged", () => {
-    let code = "E_A";
-    const replay = (): void => {
+    const replay: ReplayFn = (tx) => {
       const error = new Error("locked") as Error & { code?: string };
-      error.code = code;
+      error.code = tx.get("issues", "x") === undefined ? "E_A" : "E_B";
       throw error;
     };
     const store = new SyncStore(replay);
@@ -797,7 +796,6 @@ describe("review N1-N5", () => {
     expect(store.replayErrors().get(1)).toEqual({ name: "Error", message: "locked", code: "E_A" });
     const { events, stop } = collect(store);
     const before = store.pendingVersion();
-    code = "E_B";
     store.applyBase([{ entity: "issues", id: "x", record: makeIssue("x") }]);
     stop();
     expect(store.replayErrors().get(1)).toEqual({ name: "Error", message: "locked", code: "E_B" });
@@ -925,6 +923,25 @@ describe("incremental replay", () => {
     expect(store.get("issues", "a")?.title).toBe("t500");
   });
 
+  it("replays again only for base changes a pending mutation read", () => {
+    const replay: ReplayFn = (tx, m) => {
+      const issue = tx.get("issues", "a");
+      if (issue === undefined) return;
+      const peers = tx.byIndex("issues", "team_id", "t2").length;
+      tx.put("issues", { ...issue, title: `${(m.args as { title: string }).title} ${peers}` });
+    };
+    const store = new SyncStore(replay);
+    store.replaceBase({ issues: [makeIssue("a"), makeIssue("b")] }, ["issues"]);
+    store.setPending([mutation(1, "count", { title: "x" })]);
+    expect(store.get("issues", "a")?.title).toBe("x 0");
+    store.applyBase([{ entity: "issues", id: "b", record: makeIssue("b", { title: "B" }) }]);
+    expect(store.debug.replays).toBe(1);
+    expect(store.get("issues", "b")?.title).toBe("B");
+    store.applyBase([{ entity: "issues", id: "b", record: makeIssue("b", { team_id: "t2" }) }]);
+    expect(store.debug.replays).toBe(2);
+    expect(store.get("issues", "a")?.title).toBe("x 1");
+  });
+
   it("matches full rebases over random appends, base changes and acks", () => {
     const replay: ReplayFn = (tx, m) => {
       const args = m.args as { id: string; team: string };
@@ -933,6 +950,13 @@ describe("incremental replay", () => {
         const issue = tx.get("issues", args.id);
         if (issue === undefined) throw new Error(`missing issue ${args.id}`);
         tx.put("issues", { ...issue, team_id: args.team });
+      } else if (m.name === "count_team" || m.name === "count_all") {
+        // Reads through an index bucket or a table scan, not just point keys.
+        const issue = tx.get("issues", args.id);
+        if (issue === undefined) throw new Error(`missing issue ${args.id}`);
+        const rows =
+          m.name === "count_team" ? tx.byIndex("issues", "team_id", args.team) : tx.all("issues");
+        tx.put("issues", { ...issue, title: `n${rows.length}` });
       } else testReplay(tx, m);
     };
     let seed = 7;
@@ -951,6 +975,8 @@ describe("incremental replay", () => {
         ["delete_issue", { id: issue }],
         ["create", { id: issue, team }],
         ["move", { id: issue, team }],
+        ["count_team", { id: issue, team }],
+        ["count_all", { id: issue }],
         ["boom", {}],
       ];
       const [name, args] = kinds[rand(kinds.length)] ?? ["boom", {}];

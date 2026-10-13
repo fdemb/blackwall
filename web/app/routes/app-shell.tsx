@@ -4,6 +4,7 @@ import { Menu as MenuIcon } from "lucide-react";
 import { ModalOverlay, Modal, Dialog as RACDialog } from "react-aria-components";
 import { Button } from "~/components/ui/button";
 import { OfflineBanner } from "~/components/app/offline-banner";
+import { RejectedBanner } from "~/components/app/rejected-banner";
 import { Sidebar } from "~/components/app/sidebar";
 import { rememberAppPath } from "~/lib/settings-nav";
 import { useI18n } from "~/lib/i18n";
@@ -63,6 +64,7 @@ export default function AppShell() {
           <span className="ml-1 truncate  font-semibold">{ws.name}</span>
         </div>
         <OfflineBanner />
+        <RejectedBanner />
         <Outlet context={ctx} />
       </main>
     </div>

@@ -7,21 +7,18 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { useQuery } from "@tanstack/react-query";
 import { useToast } from "~/components/ui/toast";
 import { EngineProvider, useEngine, useSyncStatus, useView } from "../sync/react";
 import { OutdatedError, type EngineStatus, type SyncEngine } from "../sync/engine";
 import { NetworkError, UnavailableError } from "../sync/transport";
 import { createdLabel } from "../sync/mutators";
-import { reportQuery, watchReportChanges } from "./query-client";
 import { byDisplayName, byExpiryDesc, byName, byPosition, bySprintStart, byUserId } from "./order";
 import { useSession } from "./session";
-import type { Command, EntityVersions, IssueInput, Report, Workspace } from "./types";
+import type { Command, EntityVersions, IssueInput, Workspace } from "./types";
 import {
   uploadFile,
   OnlineRequiredError,
   runCommand,
-  ServerRejection,
   uuidsIn,
   watchRejections,
   watchOutdated,
@@ -39,19 +36,6 @@ export interface UploadOptions {
   // Callers that report a batch's failures themselves stay quiet, so each failure is not toasted twice.
   quiet?: boolean;
 }
-const emptyReport: Report = {
-  issue_count: 0,
-  inbox_unread: 0,
-  label_counts: {},
-  project_stats: [],
-  total_minutes: 0,
-  issues: [],
-  people: [],
-  teams: [],
-  projects: [],
-  sprints: [],
-  delivery: [],
-};
 
 /** Why edits can't reach the server right now, or null when sync is healthy. */
 export type SyncProblem = "offline" | "unreachable" | "blocked" | "error" | null;
@@ -129,10 +113,6 @@ function useWorkspaceValue() {
     ["notifications"],
     [],
   );
-  const report =
-    useQuery({ ...reportQuery(ws.id), enabled: status.online, refetchOnMount: "always" }).data ??
-    emptyReport;
-  useEffect(() => watchReportChanges(engine.store, ws.id), [engine, ws.id]);
   useEffect(
     () =>
       watchRejections(engine, (rejection) => {
@@ -163,8 +143,9 @@ function useWorkspaceValue() {
       try {
         return await runCommand(engine, command);
       } catch (error) {
-        // Server rejections already have an engine event; admission failures don't.
-        if (!opts.quiet && !(error instanceof ServerRejection)) toast.error(describeError(error));
+        // Synced edits return before the server answers, so their rejections arrive only as engine
+        // events. Anything thrown here (admission, online commands) has no event and is shown now.
+        if (!opts.quiet) toast.error(describeError(error));
         throw error instanceof OutdatedError ? new OutdatedError(describeError(error)) : error;
       }
     },
@@ -193,6 +174,7 @@ function useWorkspaceValue() {
   );
   const hide = useCallback(() => setCreateState((state) => ({ ...state, open: false })), []);
   const create = useMemo(() => ({ ...createState, show, hide }), [createState, show, hide]);
+  const resolveRejection = useCallback((id: number) => engine.resolveRejection(id), [engine]);
   const retrySync = useCallback(async () => {
     await engine.start();
     engine.unblock();
@@ -208,10 +190,11 @@ function useWorkspaceValue() {
     member: (id: string | null | undefined) => members.find((member) => member.id === id),
     team: (id: string) => ws.teams.find((team) => team.id === id),
     stage: (id: string) => ws.teams.flatMap((team) => team.stages).find((stage) => stage.id === id),
-    report,
     unread,
     pending: status.pending,
     rejected: status.rejected.length,
+    unresolved: status.unresolved,
+    resolveRejection,
     offline: !status.online,
     syncProblem: syncProblem(status),
     syncError: status.lastError,

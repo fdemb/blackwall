@@ -14,12 +14,14 @@ import { TeamAppearancePicker, TeamIcon } from "~/components/app/team-icon";
 import { STAGE_KINDS } from "~/lib/format";
 import { useI18n } from "~/lib/i18n";
 import { usePending } from "~/lib/use-pending";
+import { useIssueCount } from "~/lib/stats";
 import { useWorkspace } from "~/lib/workspace";
 import type { Id, Stage, StageKind, Team } from "~/lib/types";
 
 export default function Teams() {
   const { t } = useI18n();
-  const { ws, canAdmin, canWrite, create, report } = useWorkspace();
+  const { ws, canAdmin, canWrite, create } = useWorkspace();
+  const issueCount = useIssueCount();
   const [creating, setCreating] = useState(false);
   return (
     <SettingsPage
@@ -34,7 +36,7 @@ export default function Teams() {
         )
       }
     >
-      {ws.teams.length > 0 && report.issue_count === 0 && canWrite && (
+      {ws.teams.length > 0 && issueCount === 0 && canWrite && (
         <SettingsBlock>
           <div className="flex flex-wrap items-center gap-3 rounded-lg bg-accent/50 px-4 py-3">
             <div className="min-w-0 flex-1">

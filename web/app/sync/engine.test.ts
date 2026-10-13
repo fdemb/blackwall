@@ -1810,6 +1810,75 @@ describe("offline sync review fixes", () => {
     await until(() => f.engine.scopeStatus({ entity: "comments", issueId: ISSUE }) === "loaded");
   });
 
+  it("times out a stalled push and resends the same batch", async () => {
+    const f = fixture();
+    await f.ready();
+    const original = f.transport.push;
+    let stalled = false;
+    f.transport.push = (...args) => {
+      if (stalled) return original(...args);
+      stalled = true;
+      return new Promise(() => {});
+    };
+    const first = await f.engine.mutate("update_issue", { id: ISSUE, patch: { title: "One" } });
+    const second = await f.engine.mutate("update_issue", { id: ISSUE, patch: { title: "Two" } });
+    await until(() => stalled);
+    await f.advance(60_000);
+    await f.advance(5000);
+    await until(() => f.engine.status.get().pending === 0);
+    expect(await first.settled).toBe("applied");
+    expect(await second.settled).toBe("applied");
+    expect(f.authoritativeIssue(ISSUE).title).toBe("Two");
+  });
+
+  it("reconnects an event stream that stops sending keep-alives", async () => {
+    const f = fixture();
+    f.server.inject({ kind: "close_events", afterMs: 10 });
+    await f.ready();
+    const original = f.transport.events;
+    f.transport.events = async () => ({
+      [Symbol.asyncIterator]: () => ({ next: () => new Promise<never>(() => {}) }),
+    });
+    await f.advance(10);
+    await until(() => !f.engine.status.get().connected);
+    await f.advance(1000);
+    await until(() => f.engine.status.get().connected);
+    f.transport.events = original;
+    f.server.run(f.peer, { type: "update_issue", id: ISSUE, patch: { title: "Silent" } });
+    await f.advance(60_000);
+    expect(f.engine.store.get("issues", ISSUE)?.title).toBe("Original");
+    await f.advance(15_000);
+    await f.advance(5000);
+    await until(() => f.engine.store.get("issues", ISSUE)?.title === "Silent");
+  });
+
+  it("keeps a rejected command across reopen until it is resolved", async () => {
+    const f = fixture();
+    await f.ready();
+    f.signals.send("offline");
+    await f.engine.mutate("update_issue", { id: ISSUE, patch: { dependencies: [OTHER_ISSUE] } });
+    f.server.run(f.peer, {
+      type: "update_issue",
+      id: OTHER_ISSUE,
+      patch: { dependencies: [ISSUE] },
+    });
+    f.signals.send("online");
+    await until(() => f.engine.status.get().unresolved.length === 1);
+    await until(() => f.engine.status.get().pending === 0);
+    await f.engine.close();
+    const reopened = f.build();
+    await reopened.open();
+    const [kept] = reopened.status.get().unresolved;
+    expect(kept).toMatchObject({
+      status: 400,
+      command: { name: "update_issue", args: { patch: { dependencies: [OTHER_ISSUE] } } },
+    });
+    reopened.resolveRejection(kept.id);
+    expect(reopened.status.get().unresolved).toEqual([]);
+    await flush();
+    expect((await f.disk()).rejected).toEqual([]);
+  });
+
   it("reports a rejection whose response was lost even after a pull and reopen", async () => {
     const results: { status: string }[] = [];
     const f = fixture(new MemoryReplicaStorage(), {

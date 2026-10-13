@@ -63,6 +63,10 @@ export class OutdatedError extends Error {
 const REQUEST_RESEND_MS = 1000;
 /** A pull or scope read that takes longer fails and retries, so it can't hold the read queue. */
 const READ_DEADLINE_MS = 30_000;
+/** A push or online command that takes longer fails and retries with the same ids. */
+const WRITE_DEADLINE_MS = 60_000;
+/** The server comments every 15 seconds, so an event stream silent for five of them is dead. */
+const STREAM_IDLE_MS = 75_000;
 /** The server caps mutations per push at 100 and request bodies at 6 MiB. */
 const PUSH_MUTATIONS = 100;
 const PUSH_BYTES = 4 * 1024 * 1024;
@@ -192,6 +196,8 @@ export class SyncEngine {
   private pulling: Promise<void> | null = null;
   private pushing: Promise<void> | null = null;
   private batch: PushBatch | null = null;
+  /** The last error came from a push, so only a push success clears it. */
+  private writeFailing = false;
 
   constructor(private readonly deps: EngineDependencies) {
     this.store = new SyncStore(createReplay(deps.actor));
@@ -210,6 +216,7 @@ export class SyncEngine {
       blocked: false,
       lastError: null,
       rejected: Object.freeze([]),
+      unresolved: Object.freeze([]),
     });
     this.status = {
       get: () => this.snapshot,
@@ -301,6 +308,7 @@ export class SyncEngine {
       this.store.replaceBase(loaded.records, BOOTSTRAP_REPLACED_ENTITIES);
       this.store.setPending(loaded.outbox);
     });
+    this.update({ unresolved: Object.freeze(loaded.rejected) });
   }
 
   async start(): Promise<void> {
@@ -536,11 +544,8 @@ export class SyncEngine {
       controller.signal.throwIfAborted();
       await this.drainOutbox(controller.signal);
       try {
-        await cancellable(
-          this.deps.transport.command(this.deps.workspaceId, input, {
-            signal: controller.signal,
-          }),
-          controller.signal,
+        await this.withDeadline(controller, WRITE_DEADLINE_MS, (signal) =>
+          this.deps.transport.command(this.deps.workspaceId, input, { signal }),
         );
         controller.signal.throwIfAborted();
         // The server pokes the leader's event stream, including when a follower sends this call.
@@ -711,11 +716,19 @@ export class SyncEngine {
   }
 
   private statusMessage(): TabBody {
+    const error = this.snapshot.lastError;
     return {
       type: "status",
       connected: this.snapshot.connected,
       online: this.snapshot.online,
       blocked: this.outboxBlocked(),
+      error:
+        error === null || error instanceof OutdatedError
+          ? null
+          : {
+              message: error.message,
+              unreachable: error instanceof NetworkError || error instanceof UnavailableError,
+            },
     };
   }
 
@@ -724,7 +737,10 @@ export class SyncEngine {
       return;
     this.snapshot = Object.freeze({ ...this.snapshot, ...patch });
     for (const listener of this.statusListeners) listener();
-    if (this.role === "leader" && ("connected" in patch || "online" in patch))
+    if (
+      this.role === "leader" &&
+      ("connected" in patch || "online" in patch || "lastError" in patch)
+    )
       this.post(this.statusMessage());
   }
 
@@ -751,24 +767,14 @@ export class SyncEngine {
         if (this.role === "follower") this.receiveReset();
         return;
       case "status":
-        if (this.role !== "follower") return;
-        // Not `connected`: the leader's stream drops on every reconnect, and the leader stays online then.
-        this.leaderOnline = message.online;
-        this.leaderBlocked = message.blocked;
-        this.update({
-          connected: message.connected,
-          online: this.leaderOnline && this.deps.signals.getOnline(),
-          blocked: message.blocked,
-        });
-        this.notifyChange();
-        // A new leader announces itself with its status, so waiting scope requests go to it.
-        if (message.from !== this.leaderId) {
-          this.leaderId = message.from;
-          this.resendScopeRequests();
-        }
+        if (this.role === "follower") this.receiveStatus(message);
         return;
       case "result":
         this.receiveResult(message.mutationId, message.outcome);
+        return;
+      case "resolved":
+        this.dropUnresolved(message.mutationId);
+        if (this.role === "leader") this.resolveStored(message.mutationId);
         return;
       case "hello":
         if (this.role === "leader") this.post(this.statusMessage());
@@ -790,6 +796,33 @@ export class SyncEngine {
         );
         return;
     }
+  }
+
+  private receiveStatus(message: Extract<TabMessage, { type: "status" }>): void {
+    // Not `connected`: the leader's stream drops on every reconnect, and the leader stays online then.
+    this.leaderOnline = message.online;
+    this.leaderBlocked = message.blocked;
+    this.update({
+      connected: message.connected,
+      online: this.leaderOnline && this.deps.signals.getOnline(),
+      blocked: message.blocked,
+      lastError: this.leaderError(message.error),
+    });
+    this.notifyChange();
+    // A new leader announces itself with its status, so waiting scope requests go to it.
+    if (message.from !== this.leaderId) {
+      this.leaderId = message.from;
+      this.resendScopeRequests();
+    }
+  }
+
+  /** The leader's sync error as this follower reports it. This tab's outdated error stays. */
+  private leaderError(error: Extract<TabBody, { type: "status" }>["error"]): Error | null {
+    const current = this.snapshot.lastError;
+    if (current instanceof OutdatedError) return current;
+    if (error === null) return null;
+    if (current?.message === error.message) return current;
+    return error.unreachable ? new NetworkError(error.message) : new Error(error.message);
   }
 
   /** Another tab's mutation is in the database. Track it, unless its push already acknowledged it. */
@@ -899,9 +932,10 @@ export class SyncEngine {
   /** The leader's verdict for a mutation. Only the tab that created it settles its receipt. */
   private receiveResult(mutationId: number, outcome: TabOutcome): void {
     if (mutationId > this.acknowledged) this.resulted.add(mutationId);
+    const rejection = this.settle(mutationId, outcome, false);
     this.unconfirmed.delete(mutationId);
     this.appendedIds.delete(mutationId);
-    this.settle(mutationId, outcome, false);
+    if (rejection?.command) this.keepUnresolved([rejection]);
   }
 
   private receiveReply(requestId: string, reply: TabReply): void {
@@ -932,11 +966,15 @@ export class SyncEngine {
     });
   }
 
-  /** Holds the scope on the leader, then answers once it is loaded or has failed. */
+  /**
+   * Holds the scope on the leader until it is loaded or has failed, then answers. The follower
+   * asks again after a reset or a leader change, so the leader doesn't keep the hold.
+   */
   private performScope(scope: Scope): Promise<TabReply> {
     const key = scopeKey(scope);
+    let release: () => void;
     try {
-      this.useScope(scope);
+      release = this.useScope(scope);
     } catch (error) {
       return Promise.resolve({ ok: false, error: tabError(error) });
     }
@@ -950,6 +988,7 @@ export class SyncEngine {
           reply = { ok: false, error: tabError(failure) };
         }
         this.scopeWaiters.delete(settle);
+        release();
         resolve(reply);
         return true;
       };
@@ -982,13 +1021,16 @@ export class SyncEngine {
     send();
   }
 
-  /** Settles this tab's receipt for a mutation. A rejection is reported once per engine. */
-  private settle(id: number, outcome: TabOutcome, reportOrphan: boolean): void {
+  /**
+   * Settles this tab's receipt for a mutation. A rejection is reported once per engine, and
+   * returned with its command so it can be kept.
+   */
+  private settle(id: number, outcome: TabOutcome, reportOrphan: boolean): Rejection | null {
     const owned = this.outcomes.get(id);
     this.outcomes.delete(id);
     if (outcome === "applied") {
       owned?.resolve("applied");
-      return;
+      return null;
     }
     const source =
       owned?.mutation ??
@@ -1002,6 +1044,35 @@ export class SyncEngine {
       this.emit({ type: "rejected", rejection });
     }
     owned?.resolve(rejection);
+    return rejection;
+  }
+
+  /**
+   * Forgets a kept rejection in every tab, once the user restored, retried or dismissed it. The
+   * leader deletes it from the replica after any write that may still be storing it.
+   */
+  resolveRejection(id: number): void {
+    this.dropUnresolved(id);
+    this.post({ type: "resolved", mutationId: id });
+    if (this.role === "leader" || !this.channel) this.resolveStored(id);
+  }
+
+  private resolveStored(id: number): void {
+    this.commits
+      .run(() => this.requireReplica().resolveRejection(id))
+      .catch((error: unknown) => this.finishError(error));
+  }
+
+  private keepUnresolved(rejections: readonly Rejection[]): void {
+    const kept = new Map(this.snapshot.unresolved.map((rejection) => [rejection.id, rejection]));
+    for (const rejection of rejections) kept.set(rejection.id, rejection);
+    this.update({ unresolved: Object.freeze([...kept.values()].sort((a, b) => a.id - b.id)) });
+  }
+
+  private dropUnresolved(id: number): void {
+    const unresolved = this.snapshot.unresolved.filter((rejection) => rejection.id !== id);
+    if (unresolved.length < this.snapshot.unresolved.length)
+      this.update({ unresolved: Object.freeze(unresolved) });
   }
 
   private emit(event: EngineEvent): void {
@@ -1212,19 +1283,28 @@ export class SyncEngine {
     return response.more;
   }
 
-  /** Aborts a read that outlives its deadline with a NetworkError, which `retry` backs off from. */
+  /**
+   * Aborts a request that outlives its deadline with a NetworkError, which callers back off from.
+   * `extend` restarts the deadline, for a stream that proves it is alive.
+   */
   private async withDeadline<T>(
     controller: AbortController,
-    read: (signal: AbortSignal) => Promise<T>,
+    milliseconds: number,
+    read: (signal: AbortSignal, extend: () => void) => Promise<T>,
   ): Promise<T> {
     const request = new AbortController();
     const timeout = new NetworkError("Request timed out");
     const abort = () => request.abort(controller.signal.reason);
     controller.signal.addEventListener("abort", abort, { once: true });
     if (controller.signal.aborted) abort();
-    const cancel = this.deps.clock.schedule(READ_DEADLINE_MS, () => request.abort(timeout));
+    let cancel = () => {};
+    const extend = () => {
+      cancel();
+      cancel = this.deps.clock.schedule(milliseconds, () => request.abort(timeout));
+    };
+    extend();
     try {
-      return await cancellable(read(request.signal), request.signal);
+      return await cancellable(read(request.signal, extend), request.signal);
     } catch (error) {
       throw request.signal.reason === timeout ? timeout : error;
     } finally {
@@ -1236,7 +1316,7 @@ export class SyncEngine {
   private async readPull(controller: AbortController): Promise<PullResponse> {
     this.check(controller);
     const cursor = this.cursor;
-    const response = await this.withDeadline(controller, (signal) =>
+    const response = await this.withDeadline(controller, READ_DEADLINE_MS, (signal) =>
       this.deps.transport.pull(this.deps.workspaceId, this.clientId, cursor, { signal }),
     );
     this.check(controller);
@@ -1350,7 +1430,7 @@ export class SyncEngine {
   }
 
   private async loadScope(scope: Scope, controller: AbortController): Promise<void> {
-    const response = await this.withDeadline(controller, (signal) =>
+    const response = await this.withDeadline(controller, READ_DEADLINE_MS, (signal) =>
       this.deps.transport.scope(this.deps.workspaceId, this.clientId, scope, { signal }),
     );
     const records = response.records.map((record) => this.prepareRecord(scope.entity, record));
@@ -1467,16 +1547,19 @@ export class SyncEngine {
     controller: AbortController,
   ): Promise<"sent" | "again" | "stop"> {
     try {
-      const response = await cancellable(
+      const response = await this.withDeadline(controller, WRITE_DEADLINE_MS, (signal) =>
         this.deps.transport.push(this.deps.workspaceId, this.clientId, batch.mutations, {
-          signal: controller.signal,
+          signal,
         }),
-        controller.signal,
       );
       this.check(controller);
-      for (const result of response.results) this.recordResult(result);
-      this.confirm(response.results.map((result) => result.id));
-      this.recovered();
+      const rejected = response.results.flatMap((result) => this.recordResult(result) ?? []);
+      this.keepUnresolved(rejected);
+      this.confirm(
+        response.results.map((result) => result.id),
+        rejected,
+      );
+      this.recovered("push");
       void this.pull();
       if (response.status === "partial") {
         this.scheduleRetry(batch, response.retryAfter);
@@ -1565,14 +1648,15 @@ export class SyncEngine {
    * The replica drops these from its outbox once acknowledged, since their results are known.
    * Queued before the pull that follows, so that pull's acknowledgement sees them confirmed.
    */
-  private confirm(ids: readonly number[]): void {
+  private confirm(ids: readonly number[], rejected: readonly Rejection[]): void {
     if (ids.length === 0) return;
     this.commits
-      .run(() => this.requireReplica().confirm(ids))
+      .run(() => this.requireReplica().confirm(ids, rejected))
       .catch((error: unknown) => this.finishError(error));
   }
 
-  private recordResult(result: MutationResult): void {
+  /** Returns a rejection that kept its command, so the user can still recover the edit. */
+  private recordResult(result: MutationResult): Rejection | null {
     const outcome: TabOutcome =
       result.status === "rejected"
         ? { id: result.id, status: result.error.status, message: result.error.message }
@@ -1580,11 +1664,12 @@ export class SyncEngine {
     // The creating tab reports its own rejections. The leader reports the others that no tab
     // appended while it listened, since their creator may have closed.
     const reportOrphan = this.role === "leader" && !this.appendedIds.has(result.id);
-    this.settle(result.id, outcome, reportOrphan);
+    const rejection = this.settle(result.id, outcome, reportOrphan);
     if (result.id > this.acknowledged) this.resulted.add(result.id);
     this.unconfirmed.delete(result.id);
     this.appendedIds.delete(result.id);
     this.post({ type: "result", mutationId: result.id, outcome });
+    return rejection?.command ? rejection : null;
   }
 
   private async events(controller: AbortController): Promise<void> {
@@ -1592,20 +1677,12 @@ export class SyncEngine {
     while (this.active(controller) && !this.blocked.has("events")) {
       let retryAfter: number | string | null = null;
       try {
-        const stream = await cancellable(
-          this.deps.transport.events(this.deps.workspaceId, this.clientId, {
-            signal: controller.signal,
+        await this.withDeadline(controller, STREAM_IDLE_MS, (signal, extend) =>
+          this.listen(controller, signal, () => {
+            extend();
+            attempt = 0;
           }),
-          controller.signal,
         );
-        this.check(controller);
-        this.update({ connected: true });
-        this.recovered();
-        for await (const _poke of stream) {
-          this.check(controller);
-          attempt = 0;
-          void this.pull();
-        }
         this.check(controller);
       } catch (error) {
         this.check(controller);
@@ -1614,6 +1691,27 @@ export class SyncEngine {
       }
       this.update({ connected: false });
       await pause(this.deps.clock, this.delay(attempt++, retryAfter), controller.signal);
+    }
+  }
+
+  /** Reads one event stream until it ends. Every poke or keep-alive calls `alive`. */
+  private async listen(
+    controller: AbortController,
+    signal: AbortSignal,
+    alive: () => void,
+  ): Promise<void> {
+    const stream = await this.deps.transport.events(this.deps.workspaceId, this.clientId, {
+      signal,
+    });
+    if (signal.aborted) return;
+    this.check(controller);
+    this.update({ connected: true });
+    this.recovered();
+    for await (const message of stream) {
+      if (signal.aborted) return;
+      this.check(controller);
+      alive();
+      if (message.event === "poke") void this.pull();
     }
   }
 
@@ -1626,6 +1724,7 @@ export class SyncEngine {
 
   private async handleError(error: unknown, kind: RequestKind): Promise<boolean> {
     const failure = error instanceof Error ? error : new Error(String(error));
+    this.writeFailing = kind === "push";
     this.update({ lastError: failure });
     this.emit({ type: "error", error: failure });
     if (failure instanceof UnauthorizedError || failure instanceof AccessError) {
@@ -1661,8 +1760,13 @@ export class SyncEngine {
     return false;
   }
 
-  /** A request succeeded, so an earlier error no longer describes the connection. Blocks stay. */
-  private recovered(): void {
+  /**
+   * A request succeeded, so an earlier error no longer describes the connection. Blocks stay. A
+   * failing push stays reported until a push succeeds, since reads can't drain the outbox.
+   */
+  private recovered(kind: "read" | "push" = "read"): void {
+    if (this.writeFailing && kind !== "push") return;
+    this.writeFailing = false;
     const error = this.snapshot.lastError;
     if (error && !(error instanceof ProtocolError || error instanceof OutdatedError))
       this.update({ lastError: null });

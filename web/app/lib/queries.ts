@@ -68,9 +68,9 @@ export function useIssues(
     (store) => {
       try {
         if (!enabled) return [];
-        return filterIssues(store, filter)
-          .slice(0, limit)
-          .flatMap((issue) => countedIssue(store, issue.id) ?? []);
+        return filterIssues(store, filter, limit).flatMap(
+          (issue) => countedIssue(store, issue.id) ?? [],
+        );
       } catch (error) {
         return error instanceof Error ? error.message : String(error);
       }

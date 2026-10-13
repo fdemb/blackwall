@@ -27,6 +27,7 @@ import {
 } from "~/components/ui/menu";
 import { Kbd } from "~/components/ui/tooltip";
 import { OfflineBanner } from "~/components/app/offline-banner";
+import { RejectedBanner } from "~/components/app/rejected-banner";
 import { linkClass } from "~/components/app/sidebar";
 import { lastAppPath } from "~/lib/settings-nav";
 import { useI18n, type Key } from "~/lib/i18n";
@@ -192,6 +193,7 @@ export default function SettingsLayout() {
           </MenuTrigger>
         </div>
         <OfflineBanner />
+        <RejectedBanner />
         <div className="min-h-0 flex-1 overflow-y-auto">
           <div className="mx-auto w-full max-w-3xl px-4 pb-16 pt-6 sm:px-6 md:pt-10">
             <Outlet context={ctx} />

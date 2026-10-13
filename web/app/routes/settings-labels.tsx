@@ -8,6 +8,7 @@ import { SettingsList, SettingsPage, SettingsSection } from "~/components/app/se
 import { LABEL_COLORS, LabelDot } from "~/components/app/pickers";
 import { useI18n, type Key } from "~/lib/i18n";
 import { usePending } from "~/lib/use-pending";
+import { useLabelCounts } from "~/lib/stats";
 import { useWorkspace } from "~/lib/workspace";
 import type { Label } from "~/lib/types";
 
@@ -59,7 +60,8 @@ function ColorPicker({ value, onChange }: { value: string; onChange: (c: string)
 
 export default function Labels() {
   const { t } = useI18n();
-  const { ws, run, canWrite, report } = useWorkspace();
+  const { ws, run, canWrite } = useWorkspace();
+  const labelCounts = useLabelCounts();
   const [name, setName] = useState("");
   const [color, setColor] = useState(COLORS[0][0]);
   const [editing, setEditing] = useState<Label | null>(null);
@@ -109,7 +111,7 @@ export default function Labels() {
                 <LabelDot color={l.color} className="size-2.5" />
                 <span className="min-w-0 flex-1 truncate">{l.name}</span>
                 <span className=" tabular-nums text-muted-foreground">
-                  {t("count.issues", { count: report.label_counts[l.id] ?? 0 })}
+                  {t("count.issues", { count: labelCounts[l.id] ?? 0 })}
                 </span>
                 {canWrite && (
                   <Button

@@ -17,6 +17,7 @@ import { useI18n } from "~/lib/i18n";
 import { usePending } from "~/lib/use-pending";
 import { useIssues } from "~/lib/queries";
 import { QueryStatus } from "~/components/app/query-status";
+import { useProjectStats } from "~/lib/stats";
 import { useWorkspace } from "~/lib/workspace";
 import { ProjectForm } from "./projects";
 import { effectiveFilter, isNarrowed, whereIs } from "~/lib/filters";
@@ -25,7 +26,8 @@ import type { IssueFilter, Milestone } from "~/lib/types";
 export default function ProjectPage() {
   const { t, lang } = useI18n();
   const { projectId, ws: wsId } = useParams();
-  const { ws, canWrite, create, report } = useWorkspace();
+  const { ws, canWrite, create } = useWorkspace();
+  const projectStats = useProjectStats();
   const [editing, setEditing] = useState(false);
   const [milestoneForm, setMilestoneForm] = useState<Milestone | "new" | null>(null);
   const { filter, setFilter } = useQueueState();
@@ -33,7 +35,7 @@ export default function ProjectPage() {
   const query = useIssues(effectiveFilter(filter, base), Boolean(projectId));
   const project = ws.projects.find((p) => p.id === projectId);
   if (!project) return <Navigate to={`/${wsId}/projects`} replace />;
-  const stats = report.project_stats.find((stats) => stats.id === project.id);
+  const stats = projectStats.get(project.id);
   const total = stats?.total ?? 0;
   const shown = query.items;
   const narrowed = isNarrowed(filter);

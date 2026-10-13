@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router";
 import { BarChart3, Pencil, Trash2 } from "lucide-react";
@@ -14,9 +14,10 @@ import { TimeForm } from "~/components/app/time-form";
 import { formatMinutes, fullDate, issueKey } from "~/lib/format";
 import { useI18n } from "~/lib/i18n";
 import { useIssues, useTimeEntries } from "~/lib/queries";
-import { reportQuery } from "~/lib/query-client";
+import { reportQuery, watchReportChanges } from "~/lib/query-client";
 import { QueryStatus } from "~/components/app/query-status";
 import { useWorkspace } from "~/lib/workspace";
+import { useEngine } from "~/sync/react";
 import type { Report, TimeEntry } from "~/lib/types";
 
 export default function Reports() {
@@ -24,7 +25,10 @@ export default function Reports() {
   const { ws } = useWorkspace();
   // Time entries only load when the tab is open, so the overview never pays for them.
   const [tab, setTab] = useState("overview");
-  const query = useQuery(reportQuery(ws.id));
+  const engine = useEngine();
+  // Only this page reads the server report, so only it fetches and refreshes it.
+  const query = useQuery({ ...reportQuery(ws.id), refetchOnMount: "always" });
+  useEffect(() => watchReportChanges(engine.store, ws.id), [engine, ws.id]);
   const report = query.data;
   const error = query.isError && !report ? query.error.message || t("reports.loadFailed") : "";
 

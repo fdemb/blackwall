@@ -66,10 +66,8 @@ export interface ScopeResponse {
   records: object[];
 }
 
-export interface Poke {
-  event: "poke";
-  data: object;
-}
+/** A poke asks for a pull. A keep-alive only shows the stream is still open. */
+export type Poke = { event: "poke"; data: object } | { event: "keepalive" };
 
 export type SessionProfile = Profile & { session_id: string };
 
@@ -629,7 +627,8 @@ async function* pokes(response: Response | null, signal?: AbortSignal): AsyncGen
       }
       event = "";
       data = [];
-    } else if (!line.startsWith(":")) {
+    } else if (line.startsWith(":")) yield { event: "keepalive" };
+    else {
       const colon = line.indexOf(":");
       const field = colon < 0 ? line : line.slice(0, colon);
       const value = colon < 0 ? "" : line.slice(colon + 1).replace(/^ /, "");

@@ -14,6 +14,7 @@ import { SprintActions } from "~/components/app/sprint-actions";
 import type { QueueState } from "~/components/app/workbench";
 import { shortDate, sprintKey } from "~/lib/format";
 import { useI18n } from "~/lib/i18n";
+import { useSprintProgress } from "~/lib/stats";
 import { useWorkspace } from "~/lib/workspace";
 import type { Sprint as SprintT, Team } from "~/lib/types";
 import { useTeamContext } from "./team";
@@ -42,13 +43,14 @@ export default function Sprint() {
   const { sprintId } = useParams();
   const { pathname } = useLocation();
   const navigate = useNavigate();
-  const { ws, report } = useWorkspace();
+  const { ws } = useWorkspace();
+  const progress = useSprintProgress();
   const { team, state } = useTeamContext();
   const sprint = ws.sprints.find((s) => s.id === sprintId && s.team_id === team.id);
   const sprints = `/${ws.id}/team/${team.id}/sprints`;
   if (!sprint) return <Navigate to={sprints} replace />;
   const base = `${sprints}/${sprint.id}`;
-  const stats = report.sprints.find((s) => s.id === sprint.id);
+  const stats = progress.get(sprint.id);
   const heading = (
     <h1 className="mr-2 flex min-w-0 items-center gap-2 ">
       <TeamCrumb team={team} wsId={ws.id} />

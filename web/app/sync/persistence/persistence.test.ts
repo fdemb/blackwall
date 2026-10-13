@@ -552,7 +552,7 @@ describe("IndexedDB lifecycle", () => {
     try {
       const db = await rawOpen(factory, replicaName(INPUT));
       expect([...db.objectStoreNames].sort()).toEqual(
-        ["meta", ...ENTITIES, "outbox", "scopes"].sort(),
+        ["meta", ...ENTITIES, "outbox", "scopes", "rejected"].sort(),
       );
       db.close();
       expect((await replica.load()).meta.cursor).toBeNull();
@@ -610,7 +610,7 @@ describe("IndexedDB lifecycle", () => {
       for (const entity of ENTITIES) expect(loaded.records[entity]).toEqual([]);
       const db = await rawOpen(factory, replicaName(INPUT));
       expect([...db.objectStoreNames].sort()).toEqual(
-        ["meta", ...ENTITIES, "outbox", "scopes"].sort(),
+        ["meta", ...ENTITIES, "outbox", "scopes", "rejected"].sort(),
       );
       db.close();
       expect((await upgraded.appendMutation(mutation)).id).toBe(before.meta.nextMutationId);

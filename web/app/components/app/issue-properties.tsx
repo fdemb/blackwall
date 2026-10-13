@@ -330,9 +330,9 @@ type TimeView = { kind: "closed" } | { kind: "list" } | { kind: "form"; entry: T
 
 function TimeProp({ issue }: { issue: Issue }) {
   const { t } = useI18n();
-  const { canWrite, report } = useWorkspace();
+  const { canWrite } = useWorkspace();
   const entries = useTimeEntries(issue.id).items;
-  const total = report.issues.find((total) => total.id === issue.id)?.minutes ?? 0;
+  const total = entries.reduce((sum, entry) => sum + entry.minutes, 0);
   const [view, setView] = useState<TimeView>({ kind: "closed" });
   const [deleting, setDeleting] = useState<Id | null>(null);
   if (!entries.length && !canWrite) return null;

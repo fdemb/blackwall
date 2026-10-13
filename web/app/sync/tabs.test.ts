@@ -11,7 +11,7 @@ import { createFakeServer } from "./testing/fake-server";
 import type { FakeServerOptions } from "./testing/fake-server";
 import { createTabHub } from "./testing/tabs";
 import type { TabHub } from "./testing/tabs";
-import { createTransport, ProtocolError } from "./transport";
+import { createTransport, NetworkError, ProtocolError } from "./transport";
 
 const id = (n: number) => `11111111-1111-4111-8111-${n.toString(16).padStart(12, "0")}`;
 const TEAM = id(1);
@@ -411,6 +411,45 @@ describe("tab coordination", () => {
     await until(() => f.hub.sent("reply") === 2);
     expect(load).toHaveBeenCalledOnce();
     channel.close();
+  });
+
+  it("doesn't keep holding a follower's scope on the leader after answering", async () => {
+    const f = fixture(2);
+    await f.start();
+    const { leader, follower } = f.roles();
+    const scope = { entity: "comments", issueId: ISSUE } as const;
+    const scopeReads = () =>
+      leader.fetch.mock.calls.filter(([url]) => String(url).includes("/scope?")).length;
+    const release = follower.engine.useScope(scope);
+    await until(() => follower.engine.scopeStatus(scope) === "loaded");
+    release();
+    const reads = scopeReads();
+    f.server.inject({ kind: "reset_pull" });
+    await leader.engine.pull();
+    await until(() => leader.engine.scopeStatus(scope) === "loading");
+    await f.advance(1000);
+    expect(scopeReads()).toBe(reads);
+  });
+
+  it("shows the leader's push failure in a follower while it retries", async () => {
+    const f = fixture(2);
+    await f.start();
+    const { leader, follower } = f.roles();
+    leader.fetch.mockImplementation((input: RequestInfo | URL, init?: RequestInit) =>
+      String(input).includes("/push?")
+        ? Promise.reject(new TypeError("Failed to fetch"))
+        : f.server.fetch(input, init),
+    );
+    await follower.engine.mutate("update_issue", { id: ISSUE, patch: { title: "Waiting" } });
+    await until(() => follower.engine.status.get().lastError !== null);
+    expect(follower.engine.status.get().lastError).toBeInstanceOf(NetworkError);
+    // A successful pull doesn't hide a push that keeps failing.
+    await leader.engine.pull();
+    expect(follower.engine.status.get().lastError).toBeInstanceOf(NetworkError);
+    leader.fetch.mockImplementation(f.server.fetch);
+    await f.advance(2000);
+    await f.settleAll();
+    await until(() => follower.engine.status.get().lastError === null);
   });
 
   it("loads a scope the leader already holds from the database for a follower", async () => {
