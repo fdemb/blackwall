@@ -64,6 +64,8 @@ export interface EngineStatus {
   connected: boolean;
   online: boolean;
   pending: number;
+  /** A protocol error stopped pushing or pulling, so the outbox can't drain until unblock(). */
+  blocked: boolean;
   lastError: Error | null;
   rejected: readonly Rejection[];
 }

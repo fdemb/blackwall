@@ -30,6 +30,8 @@ export type TabBody =
   | { type: "result"; mutationId: number; outcome: TabOutcome }
   /** A new tab asks the leader to repeat its status. */
   | { type: "hello" }
+  /** A follower's user asked to retry, so the leader clears its protocol blocks. */
+  | { type: "retry" }
   | ({ type: "request"; requestId: string } & TabCall)
   | ({ type: "reply"; requestId: string } & (
       | { ok: true; value: unknown }

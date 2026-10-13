@@ -19,14 +19,17 @@ export type Scope =
 export interface LoadedReplica {
   meta: ReplicaMeta;
   records: Partial<Record<Entity, readonly object[]>>;
+  /** Mutations the server hasn't acknowledged, ascending by id. */
   outbox: readonly PendingMutation[];
+  /** Acknowledged mutations whose push result was never received, so a rejection may be unknown. */
+  unconfirmed: readonly PendingMutation[];
   scopes: readonly Scope[];
 }
 
 /** Each write is one atomic transaction, including its metadata and outbox changes. */
 export interface Replica {
   load(): Promise<LoadedReplica>;
-  /** The outbox alone, ascending by id, for a push that doesn't need the whole replica. */
+  /** The unacknowledged outbox alone, ascending by id, for a push that doesn't need the whole replica. */
   loadOutbox(): Promise<readonly PendingMutation[]>;
   /** Discard base and scopes, adopt the open schema, and keep meta ids and the outbox. */
   resetBase(): Promise<void>;
@@ -46,6 +49,11 @@ export interface Replica {
   /** Whether the scope is loaded, and its records, read in one transaction. */
   loadScope(scope: Scope): Promise<{ loaded: boolean; records: readonly object[] }>;
   appendMutation(build: (id: number) => Omit<PendingMutation, "id">): Promise<PendingMutation>;
+  /**
+   * Records that these mutations' push results arrived. Acknowledgement keeps unconfirmed
+   * mutations in the outbox, so a result lost with its response can still be asked for.
+   */
+  confirm(ids: readonly number[]): Promise<void>;
   close(): void;
 }
 

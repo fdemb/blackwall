@@ -1,6 +1,7 @@
 An open source PM app with performance in mind, built by agents, and eventually for agents + humans.
 
 Rules:
+
 - Be mindful with Rust allocations
 - Beware of high CRAP/circular complexity code as both people and agents prefer cleaner, less complex code
 - Don't write tautological tests. If you need the test to prove your point - write the test, run it, then delete it

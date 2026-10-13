@@ -1735,3 +1735,125 @@ describe("external replica closure", () => {
     await expect(f.engine.mutate("mark_all_notifications_read", {})).rejects.toThrow("closed");
   });
 });
+
+describe("offline sync review fixes", () => {
+  it("keeps every edit when tabs without locks or a channel push the same outbox", async () => {
+    const f = fixture();
+    await f.ready();
+    const other = f.build();
+    await other.start();
+    await until(() => other.status.get().phase === "ready");
+    const original = f.transport.push;
+    let release = () => {};
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let calls = 0;
+    f.transport.push = async (...args) => {
+      if (calls++ === 0) await held;
+      return original(...args);
+    };
+    const first = await f.engine.mutate("update_issue", { id: ISSUE, patch: { title: "First" } });
+    await until(() => calls > 0);
+    const second = await other.mutate("update_issue", {
+      id: OTHER_ISSUE,
+      patch: { title: "Second" },
+    });
+    expect(await second.settled).toBe("applied");
+    release();
+    expect(await first.settled).toBe("applied");
+    expect(f.authoritativeIssue(ISSUE).title).toBe("First");
+    expect(f.authoritativeIssue(OTHER_ISSUE).title).toBe("Second");
+  });
+
+  it("splits a push the server refuses as too large", async () => {
+    const f = fixture();
+    await f.ready();
+    const limit = 1024 * 1024;
+    const original = f.server.fetch;
+    f.fetch.mockImplementation(async (...args) => {
+      const body = args[1]?.body;
+      if (String(args[0]).includes("/push?") && String(body).length > limit)
+        return Response.json({ error: "Payload Too Large" }, { status: 413 });
+      return original(...args);
+    });
+    f.engine.stop();
+    for (let n = 0; n < 64; n += 1)
+      await f.engine.mutate("update_issue", {
+        id: ISSUE,
+        patch: { description: `${n} ${"x".repeat(90_000)}` },
+      });
+    await f.engine.start();
+    await until(() => f.engine.status.get().pending === 0);
+    expect(f.engine.status.get().blocked).toBe(false);
+    expect(f.pushes()[0].length).toBeLessThan(64);
+    expect(f.authoritativeIssue(ISSUE).description.startsWith("63 ")).toBe(true);
+  });
+
+  it("times out a stalled scope read so later edits still drain", async () => {
+    const f = fixture();
+    await f.ready();
+    const original = f.transport.scope;
+    let stalled = false;
+    f.transport.scope = (...args) => {
+      if (stalled) return original(...args);
+      stalled = true;
+      return new Promise(() => {});
+    };
+    f.engine.useScope({ entity: "comments", issueId: ISSUE });
+    await until(() => stalled);
+    const receipt = await f.engine.mutate("update_issue", { id: ISSUE, patch: { title: "Later" } });
+    await f.advance(30_000);
+    await until(() => f.engine.status.get().pending === 0);
+    expect(await receipt.settled).toBe("applied");
+    await f.advance(60_000);
+    await until(() => f.engine.scopeStatus({ entity: "comments", issueId: ISSUE }) === "loaded");
+  });
+
+  it("reports a rejection whose response was lost even after a pull and reopen", async () => {
+    const results: { status: string }[] = [];
+    const f = fixture(new MemoryReplicaStorage(), {
+      onResult: (_client, result) => results.push(result),
+    });
+    await f.ready();
+    f.signals.send("offline");
+    await f.engine.mutate("update_issue", { id: ISSUE, patch: { dependencies: [OTHER_ISSUE] } });
+    f.server.run(f.peer, {
+      type: "update_issue",
+      id: OTHER_ISSUE,
+      patch: { dependencies: [ISSUE] },
+    });
+    f.server.inject({ kind: "drop_response", route: "push" });
+    f.signals.send("online");
+    await until(() => results.length === 1);
+    await f.engine.pull();
+    expect(f.engine.status.get().pending).toBe(0);
+    expect((await f.disk()).unconfirmed).toHaveLength(1);
+    await f.engine.close();
+    const reopened = f.build();
+    await reopened.start();
+    await until(() => reopened.status.get().rejected.length === 1);
+    expect(reopened.status.get().rejected[0]).toMatchObject({
+      status: 400,
+      command: { name: "update_issue" },
+    });
+    await flush();
+    expect((await f.disk()).unconfirmed).toEqual([]);
+  });
+
+  it("clears protocol blocks on unblock so the outbox drains", async () => {
+    const f = fixture();
+    await f.ready();
+    const original = f.transport.pull;
+    f.transport.pull = async () => {
+      throw new ProtocolError("Bad cursor", 400);
+    };
+    await f.engine.mutate("update_issue", { id: ISSUE, patch: { title: "Blocked" } });
+    await until(() => f.engine.status.get().blocked);
+    f.transport.pull = original;
+    f.engine.unblock();
+    expect(f.engine.status.get()).toMatchObject({ blocked: false, lastError: null });
+    await until(() => f.engine.status.get().pending === 0);
+    expect(f.authoritativeIssue(ISSUE).title).toBe("Blocked");
+  });
+});

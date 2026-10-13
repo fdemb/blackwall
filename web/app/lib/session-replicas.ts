@@ -2,12 +2,18 @@ import { IndexedDBReplicaStorage } from "../sync/persistence/idb";
 import { SCHEMA } from "../sync/engine";
 import type { SyncEngine } from "../sync/engine";
 import type { SessionProfile } from "../sync/transport";
+import type { WorkspaceSummary } from "./types";
+import { safeGet, safeRemove, safeSet } from "./storage";
 
 interface WorkspaceEngine {
   workspaceId: string;
   sessionId: string;
   engine: SyncEngine;
 }
+
+// The last session and workspace list the server confirmed, so a reload can open replicas offline.
+const SESSION_KEY = "bw-session:v1";
+const WORKSPACES_KEY = "bw-workspaces:v1";
 
 let storage: IndexedDBReplicaStorage | undefined;
 let session: SessionProfile | null = null;
@@ -27,7 +33,28 @@ export async function acceptSession(profile: SessionProfile) {
   if (session?.session_id !== profile.session_id) await closeAllWorkspaceEngines();
   await replicaStorage().deleteAllExcept(profile.session_id);
   session = profile;
+  safeSet("local", SESSION_KEY, JSON.stringify(profile));
   return profile;
+}
+/** Resumes the last confirmed session without asking the server. Other replicas stay. */
+export function restoreSession(): SessionProfile | null {
+  session ??= read<SessionProfile>(SESSION_KEY);
+  return session;
+}
+export function rememberWorkspaces(list: WorkspaceSummary[]) {
+  if (session)
+    safeSet("local", WORKSPACES_KEY, JSON.stringify({ sessionId: session.session_id, list }));
+}
+export function rememberedWorkspaces(): WorkspaceSummary[] | null {
+  const saved = read<{ sessionId: string; list: WorkspaceSummary[] }>(WORKSPACES_KEY);
+  return saved && saved.sessionId === session?.session_id ? saved.list : null;
+}
+function read<T>(key: string): T | null {
+  try {
+    return JSON.parse(safeGet("local", key) ?? "null") as T | null;
+  } catch {
+    return null;
+  }
 }
 export function activeWorkspaceEngine(workspaceId: string) {
   return active.get(workspaceId) ?? null;
@@ -99,4 +126,6 @@ export async function clearSession() {
   }
   if (!sessionId) await replicaStorage().deleteAllExcept(null);
   session = null;
+  safeRemove("local", SESSION_KEY);
+  safeRemove("local", WORKSPACES_KEY);
 }

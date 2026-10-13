@@ -606,6 +606,8 @@ export const en = {
   "action.saving": "Saving…",
   "action.saved": "Saved",
   "action.saveFailed": "Not saved",
+  "action.queued": "Waiting to sync",
+  "action.notSent": "Can't send",
   "action.openCalendar": "Open calendar",
   "action.reload": "Reload page",
   "action.copy": "Copy",
@@ -617,6 +619,9 @@ export const en = {
   "error.refresh": "Your change was saved, but the latest data couldn't be loaded.",
   "error.offline": "Can't reach the server. You're looking at the last data we loaded.",
   "error.offlineRetry": "Retry now",
+  "error.syncBlocked":
+    "The server refused some changes, so they can't be sent. Retry, or reload if it keeps happening.",
+  "error.syncFailed": "Sync stopped: {{message}}",
 
   "error.network": "Couldn't reach the server. Check your connection and try again.",
   "error.onlineRequired": "This needs a connection to the server. Reconnect, then try again.",

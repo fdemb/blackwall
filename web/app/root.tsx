@@ -65,6 +65,11 @@ export function HydrateFallback() {
 export default function App() {
   const navigate = useNavigate();
   useEffect(() => watchSystemTheme(), []);
+  useEffect(() => {
+    // Caches the app shell so a reload can reopen the local replicas while offline.
+    if (import.meta.env.PROD && window.isSecureContext && "serviceWorker" in navigator)
+      navigator.serviceWorker.register("/sw.js").catch(() => {});
+  }, []);
   return (
     <QueryClientProvider client={queryClient}>
       <RouterProvider navigate={navigate} useHref={useHref}>

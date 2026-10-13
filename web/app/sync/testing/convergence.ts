@@ -334,6 +334,7 @@ export async function runConvergence(
         writeScope: (value) => write(() => replica.writeScope(value)),
         loadScope: (scope) => replica.loadScope(scope),
         appendMutation: (value) => write(() => replica.appendMutation(value)),
+        confirm: (ids) => write(() => replica.confirm(ids)),
       };
     },
   });
