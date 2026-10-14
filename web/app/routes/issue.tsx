@@ -32,7 +32,7 @@ import { useIssueDetail, type IssueDetail } from "~/lib/queries";
 import { QueryStatus } from "~/components/app/query-status";
 import { useWorkspace } from "~/lib/workspace";
 import { cn } from "~/lib/utils";
-import { SyncNotice } from "~/components/app/issue-parts";
+import { TrackerNotice } from "~/components/app/issue-parts";
 import type { Id, Issue, IssuePatch } from "~/lib/types";
 import { Properties } from "~/components/app/issue-properties";
 import {
@@ -266,7 +266,7 @@ function IssueView({ issue, detail }: { issue: Issue; detail: IssueDetail }) {
             <h1 className="sr-only">
               {t("issue.titleHeading", { key: issueKey(issue.number), title: issue.title })}
             </h1>
-            <SyncNotice issue={issue} />
+            <TrackerNotice issue={issue} />
             <div className="space-y-3">
               {parent && (
                 <div className="group flex items-center gap-1 text-xs text-muted-foreground">

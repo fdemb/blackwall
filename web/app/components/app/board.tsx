@@ -22,7 +22,7 @@ import {
   DeadlineChip,
   LabelChips,
   SubtaskProgress,
-  SyncBadge,
+  TrackerBadge,
 } from "./issue-parts";
 
 const TYPE = "application/x-blackwall-issue";
@@ -185,7 +185,7 @@ export function BoardCard({ issue, keyLength }: { issue: Issue; keyLength?: numb
     >
       <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
         <IssueKey number={issue.number} length={keyLength} />
-        <SyncBadge issue={issue} />
+        <TrackerBadge issue={issue} />
         <BlockedBadge issue={issue} />
         <span className="ml-auto">
           <AssigneeAvatar issue={issue} size={18} />

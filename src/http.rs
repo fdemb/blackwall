@@ -197,7 +197,7 @@ pub fn router(store: Store) -> Router {
 
 pub fn router_with_web(store: Store, web_dir: std::path::PathBuf) -> Router {
     Router::new()
-        .merge(crate::sync::router())
+        .merge(crate::tracker::router())
         .route("/health", get(health))
         .route("/api/schema.json", get(schema))
         .route("/api/auth/register", post(register))

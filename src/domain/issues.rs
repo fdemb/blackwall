@@ -31,7 +31,7 @@ pub struct SourceLink {
 
 /// Links an issue to the remote item it was imported from.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
-pub struct SyncLink {
+pub struct TrackerLink {
     pub provider: String,
     pub connection_id: Uuid,
     pub remote_id: String,
@@ -81,7 +81,7 @@ pub struct Baseline {
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct Issue {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub sync: Option<SyncLink>,
+    pub tracker: Option<TrackerLink>,
     #[serde(default)]
     pub blocked_count: u64,
     #[serde(default)]

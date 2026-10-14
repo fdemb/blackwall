@@ -67,8 +67,8 @@ export interface SourceLink {
   url: string;
   title: string;
 }
-export interface SyncLink {
-  provider: SyncProviderKind;
+export interface TrackerLink {
+  provider: TrackerProviderKind;
   connection_id: Id;
   remote_id: string;
   project_id: string;
@@ -77,8 +77,8 @@ export interface SyncLink {
   url: string;
   push_error?: string | null;
 }
-export type SyncProviderKind = "openproject";
-export type SyncField =
+export type TrackerProviderKind = "openproject";
+export type TrackerField =
   | "status"
   | "title"
   | "description"
@@ -87,46 +87,46 @@ export type SyncField =
   | "priority"
   | "parent"
   | "comments";
-export interface SyncDirection {
+export interface TrackerDirection {
   import: boolean;
   export: boolean;
 }
-export type SyncOptions = Partial<Record<SyncField, SyncDirection>>;
-export interface SyncProvider {
-  kind: SyncProviderKind;
+export type TrackerOptions = Partial<Record<TrackerField, TrackerDirection>>;
+export interface TrackerProvider {
+  kind: TrackerProviderKind;
   name: string;
   /** Directions the provider supports. */
-  fields: SyncOptions;
+  fields: TrackerOptions;
   /** Options for new connections. */
-  defaults: SyncOptions;
+  defaults: TrackerOptions;
 }
-export interface SyncMapping {
+export interface TrackerMapping {
   project_id: string;
   team_id: Id;
   stage_mapping?: Record<string, Id>;
 }
-export interface SyncStatus {
+export interface TrackerStatus {
   id: string;
   name: string;
   is_closed: boolean;
 }
-export interface SyncPerson {
+export interface TrackerPerson {
   id: string;
   name: string;
   email: string | null;
 }
-export interface SyncConnection {
+export interface TrackerConnection {
   id: Id;
-  provider: SyncProviderKind;
+  provider: TrackerProviderKind;
   name: string;
   base_url: string;
   enabled: boolean;
   generation: number;
-  options: SyncOptions;
-  projects: SyncMapping[];
+  options: TrackerOptions;
+  projects: TrackerMapping[];
   cached_projects: { id: string; name: string }[];
-  cached_statuses: SyncStatus[];
-  cached_people: SyncPerson[];
+  cached_statuses: TrackerStatus[];
+  cached_people: TrackerPerson[];
   people_mapping: Record<string, Id>;
   status: "pending" | "syncing" | "idle" | "error";
   last_error: string;
@@ -137,18 +137,18 @@ export interface SyncConnection {
   /** Why waiting changes can't be sent (credentials or permissions); older servers omit it. */
   push_error?: string | null;
 }
-export interface SyncConnectionInput {
-  provider: SyncProviderKind;
+export interface TrackerConnectionInput {
+  provider: TrackerProviderKind;
   name: string;
   base_url: string;
   token: string;
   enabled?: boolean;
-  options?: SyncOptions;
-  projects?: SyncMapping[];
+  options?: TrackerOptions;
+  projects?: TrackerMapping[];
   people_mapping?: Record<string, Id>;
 }
 export interface Issue {
-  sync?: SyncLink | null;
+  tracker?: TrackerLink | null;
   id: Id;
   version: number;
   blocked_count: number;
@@ -191,10 +191,10 @@ export interface Comment {
   attachments: Attachment[];
   created_at: string;
   edited_at: string | null;
-  /** Set on comments imported from a sync provider; older servers omit it. */
-  sync?: CommentSync | null;
+  /** Set on comments imported from an issue tracker; older servers omit it. */
+  tracker?: CommentTracker | null;
 }
-export interface CommentSync {
+export interface CommentTracker {
   provider: string;
   author_name?: string | null;
 }

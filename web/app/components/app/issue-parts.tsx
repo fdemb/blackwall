@@ -8,16 +8,18 @@ import { useI18n } from "~/lib/i18n";
 import { useWorkspace } from "~/lib/workspace";
 import type { Issue } from "~/lib/types";
 import { LabelDot } from "./pickers";
-import { syncIssueUrl, syncProviderName, syncPushError } from "~/lib/sync";
+import { trackerIssueUrl, trackerProviderName, trackerPushError } from "~/lib/trackers";
 
-export function SyncBadge({ issue }: { issue: Issue }) {
+export function TrackerBadge({ issue }: { issue: Issue }) {
   const { t } = useI18n();
-  if (!issue.sync) return null;
-  const provider = syncProviderName(issue.sync.provider);
-  const failed = syncPushError(issue) !== null;
+  if (!issue.tracker) return null;
+  const provider = trackerProviderName(issue.tracker.provider);
+  const failed = trackerPushError(issue) !== null;
   return (
     <span
-      title={failed ? t("sync.pushFailedShort", { provider }) : t("sync.syncedWith", { provider })}
+      title={
+        failed ? t("tracker.pushFailedShort", { provider }) : t("tracker.syncedWith", { provider })
+      }
       className={cn(
         "inline-flex shrink-0 items-center gap-1 text-[11px]",
         failed
@@ -36,13 +38,13 @@ export function SyncBadge({ issue }: { issue: Issue }) {
 }
 
 /** Where a synced issue lives remotely and whether the last change made it there. */
-export function SyncNotice({ issue }: { issue: Pick<Issue, "sync"> }) {
+export function TrackerNotice({ issue }: { issue: Pick<Issue, "tracker"> }) {
   const { t } = useI18n();
-  if (!issue.sync) return null;
-  const provider = syncProviderName(issue.sync.provider);
-  const url = syncIssueUrl(issue);
-  const error = syncPushError(issue);
-  const label = t("sync.syncedWith", { provider });
+  if (!issue.tracker) return null;
+  const provider = trackerProviderName(issue.tracker.provider);
+  const url = trackerIssueUrl(issue);
+  const error = trackerPushError(issue);
+  const label = t("tracker.syncedWith", { provider });
   return (
     <div className="mb-4 space-y-1.5 text-xs text-muted-foreground">
       {url ? (
@@ -68,7 +70,7 @@ export function SyncNotice({ issue }: { issue: Pick<Issue, "sync"> }) {
           className="flex items-start gap-1.5 text-[color-mix(in_oklch,var(--warning)_70%,var(--foreground))]"
         >
           <TriangleAlert aria-hidden className="mt-px size-3 shrink-0" />
-          <span className="break-words">{t("sync.pushFailed", { provider, error })}</span>
+          <span className="break-words">{t("tracker.pushFailed", { provider, error })}</span>
         </p>
       ) : null}
     </div>

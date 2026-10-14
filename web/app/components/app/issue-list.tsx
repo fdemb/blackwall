@@ -30,7 +30,7 @@ import {
   DeadlineChip,
   LabelChips,
   SubtaskProgress,
-  SyncBadge,
+  TrackerBadge,
 } from "./issue-parts";
 
 export type GroupBy = IssueGroup;
@@ -332,7 +332,7 @@ export function IssueRow({
         </span>
       )}
       <span className="min-w-0 flex-1 truncate font-medium">{issue.title}</span>
-      <SyncBadge issue={issue} />
+      <TrackerBadge issue={issue} />
       <BlockedBadge issue={issue} />
       <SubtaskProgress issue={issue} />
       <span className="hidden md:block">

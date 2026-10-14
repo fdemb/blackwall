@@ -218,7 +218,7 @@ impl Operation<'_> {
                     return Err(Error::BadRequest("invalid replacement stage".into()));
                 }
 
-                // Sync pages lock the issue graph before their connection.
+                // Tracker pages lock the issue graph before their connection.
                 self.lock_graph().await?;
                 let mappings = self.lock_stage_mappings(id).await?;
                 self.lock_team(team_id, true).await?;
@@ -560,8 +560,8 @@ impl Operation<'_> {
     async fn lock_stage_mappings(
         &mut self,
         stage: Uuid,
-    ) -> Result<Vec<(Uuid, Vec<crate::sync::Mapping>)>> {
-        let rows = sqlx::query("SELECT id,projects FROM sync_connections WHERE workspace_id=$1 AND EXISTS(SELECT 1 FROM jsonb_array_elements(projects) mapping, jsonb_each_text(COALESCE(mapping->'stage_mapping','{}'::jsonb)) entry WHERE entry.value=$2) ORDER BY id FOR NO KEY UPDATE")
+    ) -> Result<Vec<(Uuid, Vec<crate::tracker::Mapping>)>> {
+        let rows = sqlx::query("SELECT id,projects FROM tracker_connections WHERE workspace_id=$1 AND EXISTS(SELECT 1 FROM jsonb_array_elements(projects) mapping, jsonb_each_text(COALESCE(mapping->'stage_mapping','{}'::jsonb)) entry WHERE entry.value=$2) ORDER BY id FOR NO KEY UPDATE")
             .bind(self.workspace_id).bind(stage.to_string()).fetch_all(&mut *self.tx).await?;
         rows.into_iter()
             .map(|row| {
@@ -575,7 +575,7 @@ impl Operation<'_> {
 
     async fn replace_stage_mappings(
         &mut self,
-        mappings: Vec<(Uuid, Vec<crate::sync::Mapping>)>,
+        mappings: Vec<(Uuid, Vec<crate::tracker::Mapping>)>,
         previous: Uuid,
         replacement: Uuid,
     ) -> Result<()> {
@@ -588,10 +588,10 @@ impl Operation<'_> {
                 }
             }
             // Fence pages fetched with the previous mapping; the pagination cursor remains valid.
-            sqlx::query("UPDATE sync_connections SET projects=$3,generation=generation+1,next_run_at=clock_timestamp(),status='pending',last_error='',push_error=NULL WHERE workspace_id=$1 AND id=$2")
+            sqlx::query("UPDATE tracker_connections SET projects=$3,generation=generation+1,next_run_at=clock_timestamp(),status='pending',last_error='',push_error=NULL WHERE workspace_id=$1 AND id=$2")
                 .bind(self.workspace_id).bind(connection).bind(serde_json::to_value(projects)?)
                 .execute(&mut *self.tx).await?;
-            sqlx::query("UPDATE jobs SET state='cancelled',finished_at=clock_timestamp(),updated_at=clock_timestamp() WHERE queue='sync' AND state='pending' AND payload->>'connection_id'=$1")
+            sqlx::query("UPDATE jobs SET state='cancelled',finished_at=clock_timestamp(),updated_at=clock_timestamp() WHERE queue='tracker' AND state='pending' AND payload->>'connection_id'=$1")
                 .bind(connection.to_string()).execute(&mut *self.tx).await?;
         }
         Ok(())

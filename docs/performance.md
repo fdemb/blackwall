@@ -2,11 +2,11 @@
 
 ## Changes
 
-Sync workers reuse an HTTP client across pages. Reconciliation resolves stages, assignees, and pending local changes, locks existing imported issues, and repairs source links in batches. Unchanged issues avoid detail hydration and individual queries. New imports allocate issue numbers and stage positions together and insert complete issue rows. Shared persistence caches audit owners, stage kinds, and webhook destinations per page. Follower change notifications use one set-based insert per changed issue and still apply membership and alert preferences.
+Tracker workers reuse an HTTP client across pages. Reconciliation resolves stages, assignees, and pending local changes, locks existing imported issues, and repairs source links in batches. Unchanged issues avoid detail hydration and individual queries. New imports allocate issue numbers and stage positions together and insert complete issue rows. Shared persistence caches audit owners, stage kinds, and webhook destinations per page. Follower change notifications use one set-based insert per changed issue and still apply membership and alert preferences.
 
 Discovery stores each normalized page separately and publishes a cache only when its resource finishes. Work-package checkpoint updates do not read or rewrite those caches. Configuration validation checks referenced IDs in batches; name-only and no-op saves leave active scans alone.
 
-Automatic polling uses fixed, overlapping datetime windows between periodic unfiltered discovery scans. Unsupported date filters fall back to full polling. See [Issue sync](sync.md) for the cadence, overlap, and recovery rules. The workspace graph lock remains in place, but reconciliation performs fewer queries while holding it. Increasing worker concurrency does not parallelize one connection. Comment import adds one activity request per new or changed work package on a page, outside the page transaction, and a queued push adds a fetch and a PATCH or POST per change before the page.
+Automatic polling uses fixed, overlapping datetime windows between periodic unfiltered discovery scans. Unsupported date filters fall back to full polling. See [Issue trackers](trackers.md) for the cadence, overlap, and recovery rules. The workspace graph lock remains in place, but reconciliation performs fewer queries while holding it. Increasing worker concurrency does not parallelize one connection. Comment import adds one activity request per new or changed work package on a page, outside the page transaction, and a queued push adds a fetch and a PATCH or POST per change before the page.
 
 Issue lists select a bounded page of IDs before building their JSON records. Search combines independent full-text, substring, and numeric-ID branches. Migration `0011_read_performance.sql` installs the trusted PostgreSQL `pg_trgm` extension and adds a substring GIN index and an active-issue Updated ordering index. The migration role needs permission to install the extension, or an administrator must install it first. Short substring searches can still scan a workspace; they do not silently exclude older matches.
 
@@ -14,7 +14,7 @@ Issue lists select a bounded page of IDs before building their JSON records. Sea
 
 Existing issue lists, issue details, change-feed records, and exports retain their full shapes by default. The frontend's offline collection continues to use full records.
 
-For a lighter list response, request `projection=summary`. Summary includes issue scalar fields, sync link metadata, labels, and blocker/subtask counts. It omits `description`, `dependencies`, `followers`, `attachments`, and `source_links`. Do not replace a complete offline issue record with a summary.
+For a lighter list response, request `projection=summary`. Summary includes issue scalar fields, tracker link metadata, labels, and blocker/subtask counts. It omits `description`, `dependencies`, `followers`, `attachments`, and `source_links`. Do not replace a complete offline issue record with a summary.
 
 Ungrouped `sort=updated` lists return `next_cursor` when another page exists. Pass that token as `after` with `offset=0` to continue. Cursors use descending update times and ascending UUIDs, preserve ties, and validate their version, workspace, and filter scope. The projection and page size can change without invalidating the cursor. Filters cannot. Existing `offset` and `next_offset` pagination remains available.
 
@@ -22,13 +22,13 @@ Cursor pagination is not a snapshot. An issue updated between pages can move ahe
 
 ## Measurement
 
-Sync debug logs split each page's work into `http_ms`, `normalize_ms`, `pool_ms`, `connection_lock_ms`, `lock_ms`, and `reconcile_ms`, plus total elapsed time. No tokens, URLs, emails, titles, descriptions, comment bodies, or response bodies enter these logs. Existing queue maintenance logs expose pool and lock pressure.
+Tracker debug logs split each page's work into `http_ms`, `normalize_ms`, `pool_ms`, `connection_lock_ms`, `lock_ms`, and `reconcile_ms`, plus total elapsed time. No tokens, URLs, emails, titles, descriptions, comment bodies, or response bodies enter these logs. Existing queue maintenance logs expose pool and lock pressure.
 
 Run the repeatable benchmark against disposable PostgreSQL databases and a local mock OpenProject server:
 
 ```sh
 TEST_POSTGRES_URL=postgres://blackwall:blackwall@127.0.0.1:5432/blackwall \
-  cargo test --locked --test sync benchmark_thousand_issue_scans \
+  cargo test --locked --test tracker benchmark_thousand_issue_scans \
   -- --ignored --nocapture
 ```
 

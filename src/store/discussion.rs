@@ -155,7 +155,8 @@ impl Operation<'_> {
                     }
                 }
 
-                crate::sync::enqueue_comment(&mut self.tx, self.workspace_id, issue_id, id).await?;
+                crate::tracker::enqueue_comment(&mut self.tx, self.workspace_id, issue_id, id)
+                    .await?;
                 self.created(id);
 
                 Some(id)

@@ -3,11 +3,11 @@ use super::*;
 use crate::jobs::{Job, Reminder};
 use std::collections::BTreeSet;
 
-/// Who writes the issue. Local writes keep the stored sync link; sync writes replace it.
+/// Who writes the issue. Local writes keep the stored tracker link; tracker writes replace it.
 #[derive(Clone, Copy)]
 pub(crate) enum Origin<'a> {
     Local,
-    Remote(&'a SyncLink),
+    Remote(&'a TrackerLink),
 }
 
 pub(crate) async fn create(
@@ -68,7 +68,7 @@ pub(crate) async fn create_allocated(
     conn: &mut PgConnection,
     workspace: Uuid,
     issue: &mut Issue,
-    source: &SyncLink,
+    source: &TrackerLink,
     allocation: &mut CreationBatch,
 ) -> Result<()> {
     issue.number = allocation.next_number;
@@ -95,7 +95,7 @@ async fn insert(
     origin: Origin<'_>,
 ) -> Result<()> {
     let source = source_value(origin)?;
-    sqlx::query("INSERT INTO issues(id,workspace_id,number,title,description,team_id,stage_id,assignee,priority,estimate,deadline,project_id,milestone_id,sprint_id,parent_id,position,archived_at,done_at,created_at,updated_at,sync,created_by) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$19,$20,$21)")
+    sqlx::query("INSERT INTO issues(id,workspace_id,number,title,description,team_id,stage_id,assignee,priority,estimate,deadline,project_id,milestone_id,sprint_id,parent_id,position,archived_at,done_at,created_at,updated_at,tracker,created_by) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$19,$20,$21)")
             .bind(i.id)
             .bind(workspace)
             .bind(i.number as i64)
@@ -151,7 +151,7 @@ async fn save_fields(
 ) -> Result<()> {
     let source = source_value(origin)?;
     let remote = matches!(origin, Origin::Remote(_));
-    sqlx::query("UPDATE issues SET title=$3,description=$4,team_id=$16,stage_id=$5,assignee=$6,priority=$7,estimate=$8,deadline=$9,project_id=$10,milestone_id=$11,sprint_id=$12,parent_id=$13,position=$14,deleted_at=$15,updated_at=now(),sync=CASE WHEN $21 THEN $17 ELSE sync END,archived_at=$18,done_at=$19,version=version+CASE WHEN $20 THEN 1 ELSE 0 END WHERE workspace_id=$1 AND id=$2")
+    sqlx::query("UPDATE issues SET title=$3,description=$4,team_id=$16,stage_id=$5,assignee=$6,priority=$7,estimate=$8,deadline=$9,project_id=$10,milestone_id=$11,sprint_id=$12,parent_id=$13,position=$14,deleted_at=$15,updated_at=now(),tracker=CASE WHEN $21 THEN $17 ELSE tracker END,archived_at=$18,done_at=$19,version=version+CASE WHEN $20 THEN 1 ELSE 0 END WHERE workspace_id=$1 AND id=$2")
             .bind(workspace)
             .bind(i.id)
             .bind(&i.title)
@@ -345,7 +345,7 @@ pub(crate) async fn issue_effects(
 ) -> Result<()> {
     // Local edits of synced issues queue their exported fields; imports use `PageEffects`.
     if let (IssueEffects::Update | IssueEffects::Move, Some(before)) = (&effects, before) {
-        crate::sync::enqueue_fields(conn, workspace, before, after).await?;
+        crate::tracker::enqueue_fields(conn, workspace, before, after).await?;
     }
     issue_effects_with_context(conn, workspace, actor, before, after, effects, None).await
 }
@@ -355,8 +355,8 @@ struct Integration {
     url: String,
 }
 
-/// The member that sync activity is attributed to: the workspace's first owner.
-pub(crate) async fn sync_actor(conn: &mut PgConnection, workspace: Uuid) -> Result<Uuid> {
+/// The member that tracker activity is attributed to: the workspace's first owner.
+pub(crate) async fn tracker_actor(conn: &mut PgConnection, workspace: Uuid) -> Result<Uuid> {
     Ok(sqlx::query_scalar("SELECT user_id FROM workspace_members WHERE workspace_id=$1 AND role='owner' ORDER BY user_id LIMIT 1")
         .bind(workspace).fetch_one(conn).await?)
 }
@@ -374,7 +374,7 @@ impl PageEffects {
         stages: BTreeMap<Uuid, String>,
     ) -> Result<Self> {
         Ok(Self {
-            actor: sync_actor(conn, workspace).await?,
+            actor: tracker_actor(conn, workspace).await?,
             integrations: integrations(conn, workspace).await?,
             stages,
         })

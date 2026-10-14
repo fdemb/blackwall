@@ -6,7 +6,7 @@ pub mod fixtures;
 pub mod http;
 pub mod jobs;
 pub mod store;
-pub mod sync;
+pub mod tracker;
 pub mod web;
 
 #[cfg(test)]

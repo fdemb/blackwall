@@ -132,14 +132,14 @@ pub struct Comment {
     pub attachments: Vec<Attachment>,
     pub created_at: DateTime<Utc>,
     pub edited_at: Option<DateTime<Utc>>,
-    /// Set on comments sent to or imported from a sync provider.
+    /// Set on comments sent to or imported from an issue tracker.
     #[serde(default)]
-    pub sync: Option<CommentSync>,
+    pub tracker: Option<CommentTracker>,
 }
 
 /// The remote comment a local comment corresponds to.
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
-pub struct CommentSync {
+pub struct CommentTracker {
     pub provider: String,
     pub connection_id: Uuid,
     pub remote_id: String,

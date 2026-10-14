@@ -25,7 +25,7 @@ pub use reads::CollectionQuery;
 pub struct Store {
     pub pool: PgPool,
     pub outbox: Outbox,
-    pub(crate) sync_client: reqwest::Client,
+    pub(crate) tracker_client: reqwest::Client,
 }
 
 pub struct NewAttachment {
@@ -87,7 +87,7 @@ impl Store {
 
         Ok(Self {
             outbox: Outbox::new(pool.clone()),
-            sync_client: crate::sync::http_client()?,
+            tracker_client: crate::tracker::http_client()?,
             pool,
         })
     }

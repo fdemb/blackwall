@@ -13,7 +13,7 @@ import { usePending } from "~/lib/use-pending";
 import { useWorkspace } from "~/lib/workspace";
 import { useToast } from "~/components/ui/toast";
 import type { Integration } from "~/lib/types";
-import { SyncSettings } from "~/components/app/sync/sync-settings";
+import { TrackerSettings } from "~/components/app/trackers/tracker-settings";
 
 export default function Integrations() {
   const { t } = useI18n();
@@ -51,7 +51,7 @@ export default function Integrations() {
         </Button>
       }
     >
-      <SyncSettings />
+      <TrackerSettings />
       <SettingsSection title={t("integrations.webhooks")}>
         {ws.integrations.length === 0 ? (
           <EmptyState

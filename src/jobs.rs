@@ -39,7 +39,7 @@ pub struct WorkerConfig {
     pub email_concurrency: usize,
     pub webhook_concurrency: usize,
     pub database_concurrency: usize,
-    pub sync_concurrency: usize,
+    pub tracker_concurrency: usize,
     pub poll_interval: Duration,
     pub drain_timeout: Duration,
     pub retention_days: i32,
@@ -52,7 +52,7 @@ impl Default for WorkerConfig {
             email_concurrency: 4,
             webhook_concurrency: 4,
             database_concurrency: 2,
-            sync_concurrency: 2,
+            tracker_concurrency: 2,
             poll_interval: Duration::from_secs(5),
             drain_timeout: Duration::from_secs(50),
             retention_days: 30,
@@ -84,7 +84,7 @@ impl WorkerConfig {
                 1,
                 16,
             )? as usize,
-            sync_concurrency: setting(sync_concurrency_variable(), 2, 1, 4)? as usize,
+            tracker_concurrency: setting(tracker_concurrency_variable(), 2, 1, 4)? as usize,
             poll_interval: Duration::from_millis(setting("JOBS_POLL_MS", 5000, 50, 5000)?),
             drain_timeout: Duration::from_secs(setting("JOBS_DRAIN_SECONDS", 50, 1, 120)?),
             retention_days: setting("JOBS_RETENTION_DAYS", 30, 1, 3650)? as i32,
@@ -101,9 +101,9 @@ impl WorkerConfig {
             || self.email_concurrency > 32
             || self.webhook_concurrency > 32
             || self.database_concurrency > 16
-            || self.sync_concurrency == 0
-            || self.sync_concurrency > 4
-            || pool_size < self.database_concurrency + self.sync_concurrency + 3
+            || self.tracker_concurrency == 0
+            || self.tracker_concurrency > 4
+            || pool_size < self.database_concurrency + self.tracker_concurrency + 3
             || self.poll_interval.is_zero()
             || self.poll_interval > Duration::from_secs(5)
             || self.drain_timeout.is_zero()
@@ -120,14 +120,14 @@ impl WorkerConfig {
     }
 }
 
-/// `JOBS_OPENPROJECT_CONCURRENCY` remains an alias from before sync supported other providers.
-fn sync_concurrency_variable() -> &'static str {
-    if std::env::var_os("JOBS_SYNC_CONCURRENCY").is_none()
+/// `JOBS_OPENPROJECT_CONCURRENCY` remains an alias from before trackers other than OpenProject.
+fn tracker_concurrency_variable() -> &'static str {
+    if std::env::var_os("JOBS_TRACKER_CONCURRENCY").is_none()
         && std::env::var_os("JOBS_OPENPROJECT_CONCURRENCY").is_some()
     {
         "JOBS_OPENPROJECT_CONCURRENCY"
     } else {
-        "JOBS_SYNC_CONCURRENCY"
+        "JOBS_TRACKER_CONCURRENCY"
     }
 }
 
@@ -171,7 +171,7 @@ pub async fn run_with_config(
     let mut tasks = JoinSet::new();
     let mut active = [0_usize; 4];
     let mut task_queues = HashMap::new();
-    let queues = ["email", "webhook", "database", "sync"];
+    let queues = ["email", "webhook", "database", "tracker"];
 
     let limits = [
         if mailer.enabled() {
@@ -181,7 +181,7 @@ pub async fn run_with_config(
         },
         config.webhook_concurrency,
         config.database_concurrency,
-        config.sync_concurrency,
+        config.tracker_concurrency,
     ];
 
     if !mailer.enabled() {
@@ -199,10 +199,10 @@ pub async fn run_with_config(
         if schedule_at <= tokio::time::Instant::now() {
             schedule_at = tokio::time::Instant::now() + config.poll_interval;
 
-            if let Err(error) = crate::sync::schedule(&store).await {
+            if let Err(error) = crate::tracker::schedule(&store).await {
                 tracing::warn!(
-                    error = %crate::sync::failure_message(&error),
-                    "Sync scheduling failed"
+                    error = %crate::tracker::failure_message(&error),
+                    "Tracker scheduling failed"
                 );
             }
         }
@@ -381,8 +381,8 @@ async fn stopped(shutdown: &mut watch::Receiver<bool>) {
 
 /// Executes currently due work once, preserving missing-SMTP pause behavior.
 pub async fn tick(store: &Store, mailer: &Mailer) -> Result<()> {
-    crate::sync::schedule(store).await?;
-    for queue in ["database", "webhook", "email", "sync"] {
+    crate::tracker::schedule(store).await?;
+    for queue in ["database", "webhook", "email", "tracker"] {
         if queue == "email" && !mailer.enabled() {
             continue;
         }
@@ -431,10 +431,10 @@ pub async fn execute_with_renew_interval(
             Ok(job) if job.queue() != claim.queue => {
                 Err(DeliveryError::Permanent("job kind does not match queue"))
             }
-            Ok(Job::Sync(job)) => {
+            Ok(Job::Tracker(job)) => {
                 let work = tokio::time::timeout(
                     Duration::from_secs(75),
-                    crate::sync::execute(store, claim, &job),
+                    crate::tracker::execute(store, claim, &job),
                 );
                 let Some(result) =
                     run_with_renewal(&store.outbox, claim, work, renew_interval).await
@@ -445,20 +445,20 @@ pub async fn execute_with_renew_interval(
                     Ok(Ok(())) => return Ok(()),
                     failed => {
                         let message = match &failed {
-                            Ok(Err(error)) => crate::sync::failure_message(error),
-                            _ => "Sync timed out; retry scheduled".into(),
+                            Ok(Err(error)) => crate::tracker::failure_message(error),
+                            _ => "Tracker job timed out; retry scheduled".into(),
                         };
-                        tracing::warn!(job = %claim.id, error = %message, "Sync failed");
+                        tracing::warn!(job = %claim.id, error = %message, "Tracker job failed");
                         if let Err(error) =
-                            crate::sync::record_failure(store, claim, &job, &message).await
+                            crate::tracker::record_failure(store, claim, &job, &message).await
                         {
                             tracing::warn!(
                                 job = %claim.id,
                                 error = %error,
-                                "Sync failure could not be recorded"
+                                "Tracker job failure could not be recorded"
                             );
                         }
-                        Err(DeliveryError::Transient("sync failed"))
+                        Err(DeliveryError::Transient("tracker job failed"))
                     }
                 }
             }

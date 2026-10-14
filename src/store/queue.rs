@@ -62,7 +62,7 @@ impl Outbox {
     }
 
     /// Call on the same connection as the business writes. NOTIFY becomes visible at commit.
-    /// Returns false when a duplicate key or another active sync job for the connection exists.
+    /// Returns false when a duplicate key or another active tracker job for the connection exists.
     pub async fn insert(conn: &mut PgConnection, job: &NewJob) -> Result<bool> {
         if job.max_attempts.is_some_and(|n| !(1..=100).contains(&n)) {
             return Err(Error::BadRequest(
@@ -203,7 +203,7 @@ impl Outbox {
     }
 
     pub async fn claim_next(&self) -> Result<Option<Claim>> {
-        for queue in ["database", "email", "webhook", "sync"] {
+        for queue in ["database", "email", "webhook", "tracker"] {
             if let Some(claim) = self.claim(queue, 1).await?.pop() {
                 return Ok(Some(claim));
             }

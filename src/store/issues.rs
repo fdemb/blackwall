@@ -212,7 +212,7 @@ impl Operation<'_> {
         let now = Utc::now();
         let id = Uuid::new_v4();
         let mut i = Issue {
-            sync: None,
+            tracker: None,
             blocked_count: 0,
             subtask_total: 0,
             subtask_completed: 0,
