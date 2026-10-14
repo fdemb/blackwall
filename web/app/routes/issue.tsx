@@ -219,10 +219,7 @@ function IssueView({ issue, detail }: { issue: Issue; detail: IssueDetail }) {
 
             <div className="mt-4 space-y-8">
               <div className="space-y-2">
-                <Description
-                  issue={issue}
-                  onSave={(description, version) => patch({ description }, version)}
-                />
+                <Description issue={issue} onSave={(description) => patch({ description })} />
                 {canWrite && (
                   <QuickActions
                     issue={issue}

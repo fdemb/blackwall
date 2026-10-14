@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useEffectEvent, useLayoutEffect, useRef, useState } from "react";
 import { FileTrigger, Form } from "react-aria-components";
 import { Link } from "react-router";
 import { Download, FileText, Loader2, Lock, Paperclip, Plus, X } from "lucide-react";
@@ -92,72 +92,83 @@ export function TitleField({
 /** Descriptions that failed to save, by issue, so coming back to the issue brings the text back. */
 const failedDrafts = new Map<Id, string>();
 
+/** How long typing has to pause before the description saves. Each save is a sync mutation. */
+const AUTOSAVE_MS = 1000;
+
 /**
- * Always-editable description. Edits save when focus leaves the editor, on Ctrl/Cmd+Enter, and
- * when the page closes. A failed save keeps the text in place.
+ * Always-editable description. Edits save once typing pauses, when focus leaves the editor, on
+ * Ctrl/Cmd+Enter, and when the page closes. A failed save keeps the text in place.
  */
 export function Description({
   issue,
   onSave,
 }: {
   issue: Issue;
-  onSave: (d: string, version: number) => Promise<boolean>;
+  onSave: (description: string) => Promise<boolean>;
 }) {
   const { t } = useI18n();
   const { canWrite } = useWorkspace();
-  // Unsaved text, or null while the editor shows what the server has.
+  // Unsaved text, or null while the editor shows what the store has.
   const [draft, setDraft] = useState<string | null>(failedDrafts.get(issue.id) ?? null);
-  const busy = useRef(false);
-  // The version the draft was started from. Retries and follow-up edits move it to the latest.
-  const baseVersion = useRef(issue.version);
-  const rebase = useRef(failedDrafts.has(issue.id));
+  const saving = useRef(false);
+  const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
   const box = useRef<HTMLDivElement>(null);
-  const latest = useRef({ draft, saved: issue.description, version: issue.version, onSave });
+  const latest = useRef({ draft, saved: issue.description, onSave });
   useEffect(() => {
-    latest.current = { draft, saved: issue.description, version: issue.version, onSave };
+    latest.current = { draft, saved: issue.description, onSave };
   });
   const dirty = draft !== null && draft !== issue.description;
 
+  const schedule = () => {
+    clearTimeout(timer.current);
+    timer.current = setTimeout(() => void commit(), AUTOSAVE_MS);
+  };
   const edit = (md: string) => {
-    if (latest.current.draft === null) baseVersion.current = issue.version;
     latest.current.draft = md;
     setDraft(md);
+    schedule();
   };
   const commit = async () => {
+    clearTimeout(timer.current);
     const { draft: d, saved, onSave: save } = latest.current;
-    if (d === null || busy.current) return;
+    if (d === null || saving.current) return;
     if (d === saved) {
       failedDrafts.delete(issue.id);
       latest.current.draft = null;
       return setDraft(null);
     }
-    busy.current = true;
-    if (rebase.current) baseVersion.current = latest.current.version;
-    const ok = await save(d, baseVersion.current);
-    busy.current = false;
-    rebase.current = !ok || latest.current.draft !== d;
+    saving.current = true;
+    const ok = await save(d);
+    saving.current = false;
     if (!ok) return void failedDrafts.set(issue.id, d);
     failedDrafts.delete(issue.id);
-    // Text typed while the save was in flight stays as the next draft.
     if (latest.current.draft === d) {
       latest.current.draft = null;
       setDraft(null);
+    } else {
+      // Text typed while the save was in flight goes out on the next pause.
+      schedule();
     }
   };
-  // Leaving the page mid-edit saves the draft, and keeps it for next time if that fails.
+  // Leaving the issue before the pause is over saves right away, and keeps the draft if that fails.
   useEffect(
     () => () => {
+      clearTimeout(timer.current);
       const { draft: d, saved, onSave: save } = latest.current;
-      if (d !== null && d !== saved && !busy.current)
-        void save(d, baseVersion.current).then((ok) =>
+      if (d !== null && d !== saved)
+        void save(d).then((ok) =>
           ok ? failedDrafts.delete(issue.id) : failedDrafts.set(issue.id, d),
         );
     },
     [issue.id],
   );
+  const flush = useEffectEvent(() => void commit());
   useEffect(() => {
     if (!dirty) return;
-    const warn = (e: BeforeUnloadEvent) => e.preventDefault();
+    const warn = (e: BeforeUnloadEvent) => {
+      flush();
+      e.preventDefault();
+    };
     addEventListener("beforeunload", warn);
     return () => removeEventListener("beforeunload", warn);
   }, [dirty]);

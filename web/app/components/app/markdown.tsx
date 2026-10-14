@@ -51,7 +51,7 @@ export function Markdown({
   if (html === null)
     return <p className={cn("whitespace-pre-wrap text-[14px]", className)}>{text}</p>;
   // The backend sanitizes with ammonia before returning HTML.
-  return <div className={cn("prose-bw", className)} dangerouslySetInnerHTML={{ __html: html }} />;
+  return <div className={cn("typeset", className)} dangerouslySetInnerHTML={{ __html: html }} />;
 }
 
 /** Server-rendered HTML for `text`, or null until it arrives or when rendering fails. */
