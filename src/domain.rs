@@ -1592,5 +1592,46 @@ mod tests {
         .unwrap();
 
         assert_eq!(w.report(owner).unwrap().delivery.len(), 1);
+
+        // Reopening the blocker leaves the done dependent blocked, still editable and
+        // exportable.
+        let todo = w.teams[0].stages[1].id;
+        w.apply(
+            owner,
+            Command::MoveIssue {
+                id: blocker,
+                stage_id: todo,
+                before_id: None,
+            },
+            now,
+        )
+        .unwrap();
+        w.apply(
+            owner,
+            Command::UpdateIssue {
+                id,
+                patch: IssuePatch {
+                    title: Some("Renew again".into()),
+                    ..Default::default()
+                },
+            },
+            now,
+        )
+        .unwrap();
+        w.validate_imported().unwrap();
+        let active = w.teams[0].stages[2].id;
+        assert!(
+            w.apply(
+                owner,
+                Command::MoveIssue {
+                    id,
+                    stage_id: active,
+                    before_id: None
+                },
+                now
+            )
+            .is_err(),
+            "entering another started stage waits for the blocker"
+        );
     }
 }

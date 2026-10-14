@@ -633,3 +633,43 @@ async fn permission_failures_never_use_up_the_retry_budget() {
     assert!(f.push_error().await.is_null());
     f.cleanup().await;
 }
+
+#[tokio::test]
+async fn deleted_comments_stay_deleted() {
+    let f = Fixture::new().await;
+    f.remote_comment(301, STRANGER, "Ghost Writer", "Imported once")
+        .await;
+    f.add_comment("Sent from here").await;
+    f.sync_now().await;
+    let comments = f.comments().await;
+    assert_eq!(comments.len(), 2, "{comments:?}");
+    for (remote_id, ..) in &comments {
+        let id: Uuid = sqlx::query_scalar("SELECT id FROM comments WHERE tracker->>'remote_id'=$1")
+            .bind(remote_id)
+            .fetch_one(&f.store.pool)
+            .await
+            .unwrap();
+        let (status, value) = call(
+            &f.app,
+            &f.owner,
+            "POST",
+            &format!("/internal-api/workspaces/{}/commands", f.workspace),
+            Some(json!({"expected_versions":{},"command":{"type":"delete_comment","id":id}})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{value}");
+    }
+    assert!(f.comments().await.is_empty());
+
+    // An unrelated remote change lists the comments again.
+    f.touch_remote().await;
+    f.sync_now().await;
+    assert!(f.comments().await.is_empty());
+    f.remote_comment(302, STRANGER, "Ghost Writer", "New remote")
+        .await;
+    f.sync_now().await;
+    let comments = f.comments().await;
+    assert_eq!(comments.len(), 1);
+    assert_eq!(comments[0].3, "New remote");
+    f.cleanup().await;
+}

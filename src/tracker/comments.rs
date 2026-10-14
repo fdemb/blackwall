@@ -1,6 +1,7 @@
 //! Inbound comments. Activities are fetched before the page transaction, only for items
 //! whose remote modification time moved since their comments were last imported; the
-//! page transaction inserts the missing ones. Local comments are never edited or deleted.
+//! page transaction inserts the missing ones. Local comments are never edited or deleted,
+//! and ones deleted here stay deleted.
 use super::{
     ProviderKind,
     provider::{Endpoint, RemoteComment, RemoteIssue},
@@ -151,7 +152,7 @@ pub(super) struct Incoming<'a> {
     pub author_name: Option<String>,
 }
 
-/// Inserts comments not yet linked and returns the issues with comments left out: those
+/// Inserts comments not yet linked or deleted here and returns the issues with comments left out: those
 /// past the workspace limit, and the integration account's comments on an issue with a
 /// comment push that may have reached the provider, which that push adopts or rules out.
 pub(super) async fn import(
@@ -199,7 +200,7 @@ pub(super) async fn import(
     Ok(incomplete)
 }
 
-/// The comments not linked yet, without the ones held back for a comment push that may
+/// The comments not linked yet or deleted here, without the ones held back for a comment push that may
 /// have reached the provider; their issues go to `incomplete`.
 async fn unlinked<'a>(
     conn: &mut PgConnection,
@@ -212,7 +213,8 @@ async fn unlinked<'a>(
         .iter()
         .map(|item| item.comment.id.as_str())
         .collect();
-    let known: BTreeSet<String> = sqlx::query_scalar("SELECT tracker->>'remote_id' FROM comments WHERE workspace_id=$1 AND tracker->>'connection_id'=$2 AND tracker->>'remote_id'=ANY($3)")
+    // Linked comments, and linked comments deleted here.
+    let known: BTreeSet<String> = sqlx::query_scalar("SELECT tracker->>'remote_id' FROM comments WHERE workspace_id=$1 AND tracker->>'connection_id'=$2 AND tracker->>'remote_id'=ANY($3) UNION SELECT remote_id FROM tracker_deleted_comments WHERE connection_id=$2::uuid AND remote_id=ANY($3)")
         .bind(workspace).bind(connection.to_string()).bind(&remote_ids)
         .fetch_all(&mut *conn).await?.into_iter().collect();
     let issues: Vec<Uuid> = incoming.iter().map(|item| item.issue).collect();

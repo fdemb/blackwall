@@ -673,3 +673,126 @@ async fn edits_holding_the_graph_lock_can_queue_while_a_page_waits_for_it() {
     assert_eq!(f.outbox().await.len(), 1);
     f.cleanup().await;
 }
+
+#[tokio::test]
+async fn unmapped_projects_stop_pushing() {
+    let f = Fixture::new().await;
+    let issue = f.first().await;
+    // A queued edit waits out a transient failure while the project is unmapped.
+    f.mock.data.lock().await.push_statuses.push_back(500);
+    f.run(json!({"type":"update_issue","id":issue["id"],"patch":{"title":"Queued title"}}))
+        .await;
+    drain(&f.store).await;
+    assert_eq!(f.outbox().await.len(), 1);
+    let (status, value) = call(
+        &f.app,
+        &f.owner,
+        "PATCH",
+        &f.action,
+        Some(json!({"projects":[]})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{value}");
+    // Dropped at once, though the row was still backing off.
+    assert!(f.outbox().await.is_empty(), "the queued edit is dropped");
+
+    // New edits and comments no longer queue.
+    f.run(json!({"type":"update_issue","id":issue["id"],"patch":{"title":"Local title"}}))
+        .await;
+    let (status, value) = call(
+        &f.app,
+        &f.owner,
+        "POST",
+        &format!("/internal-api/workspaces/{}/commands", f.workspace),
+        Some(json!({"expected_versions":{},"command":{"type":"add_comment","issue_id":issue["id"],"body":"Local only","mentions":[]}})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{value}");
+    assert!(f.outbox().await.is_empty());
+    drain(&f.store).await;
+    let data = f.mock.data.lock().await;
+    assert_eq!(data.patches.len(), 1, "only the refused first attempt");
+    assert!(data.comments.is_empty());
+    drop(data);
+    f.cleanup().await;
+}
+
+#[tokio::test]
+async fn remote_reopening_leaves_local_dependents_blocked_and_editable() {
+    let f = Fixture::new().await;
+    let closed = issues(&f.app, &f.owner, f.workspace)
+        .await
+        .into_iter()
+        .find(|issue| issue["tracker"]["remote_id"] == "8")
+        .unwrap();
+    let in_progress = f.stage("In progress").await;
+    let (status, value) = call(
+        &f.app,
+        &f.owner,
+        "POST",
+        &format!("/internal-api/workspaces/{}/commands", f.workspace),
+        Some(json!({"expected_versions":{},"command":{"type":"create_issue","input":{"title":"Local work",
+            "team_id":f.team,"stage_id":in_progress,"dependencies":[closed["id"]]}}})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{value}");
+    let local = || async {
+        issues(&f.app, &f.owner, f.workspace)
+            .await
+            .into_iter()
+            .find(|issue| issue["title"] == "Local work" || issue["title"] == "Renamed")
+            .unwrap()
+    };
+    assert_eq!(local().await["blocked_count"], 0);
+
+    // The remote reopens package 8.
+    {
+        let mut data = f.mock.data.lock().await;
+        data.same_stage = true;
+        data.updated_at = Some(chrono::Utc::now().to_rfc3339());
+    }
+    f.sync_now().await;
+    let reopened = issues(&f.app, &f.owner, f.workspace)
+        .await
+        .into_iter()
+        .find(|issue| issue["tracker"]["remote_id"] == "8")
+        .unwrap();
+    assert_eq!(reopened["stage_id"], json!(in_progress));
+    let issue = local().await;
+    assert_eq!(
+        issue["dependencies"],
+        json!([closed["id"]]),
+        "the link stays"
+    );
+    assert_eq!(issue["blocked_count"], 1);
+    assert_eq!(issue["stage_id"], json!(in_progress));
+
+    let commands = format!("/internal-api/workspaces/{}/commands", f.workspace);
+    let command = |issue: &Value, command: Value| {
+        call(
+            &f.app,
+            &f.owner,
+            "POST",
+            &commands,
+            Some(
+                json!({"expected_versions":{issue["id"].as_str().unwrap():issue["version"]},"command":command}),
+            ),
+        )
+    };
+    let (status, value) = command(
+        &issue,
+        json!({"type":"update_issue","id":issue["id"],"patch":{"title":"Renamed"}}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{value}");
+    // Moving on to Done still waits for the dependency.
+    let issue = local().await;
+    let done = f.stage("Done").await;
+    let (status, value) = command(
+        &issue,
+        json!({"type":"move_issue","id":issue["id"],"stage_id":done,"before_id":null}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{value}");
+    f.cleanup().await;
+}

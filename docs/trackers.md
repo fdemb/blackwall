@@ -82,6 +82,10 @@ Local changes to a synced issue queue in a per-connection outbox in the same tra
 
 Everything else stays local: deleting, restoring, archiving, priority, parent, labels, estimates, projects, milestones, sprints, dependencies, attachments, source links, and comment edits or deletions.
 
+Only issues of mapped projects push. Removing a project mapping drops the changes its issues still have queued, and their later edits stay local. A synced comment deleted here stays deleted: later imports skip its remote copy.
+
+Dependencies only gate local moves into an active or done stage. An imported stage change never checks them, so a remote reopening leaves started dependents in place, shown as blocked.
+
 An issue has at most one pending field change. Further edits add field names to it. The outbox stores field names, not values: the push reads the current local values when it is sent. Several quick edits therefore become one request carrying the latest values. Comments queue one entry each.
 
 A queued change makes the connection's tracker job due immediately, so it is usually sent within seconds. Between scans, a push-only job sends due changes; a scheduled scan sends them before fetching its page. Each job sends at most 20 changes in 30 seconds, oldest first. The scheduler starts another job for the rest.

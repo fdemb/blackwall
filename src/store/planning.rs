@@ -438,10 +438,10 @@ impl Operation<'_> {
         Ok(())
     }
 
-    /// Issues in `stage` moved from kind `previous` to `next`: check the
-    /// workflow, keep the Done-entry clock for auto-archive (Done only, not
-    /// cancelled), take backlog work out of sprints, reschedule reminders and
-    /// record newly completed issues.
+    /// Issues in `stage` moved from kind `previous` to `next`: keep the
+    /// Done-entry clock for auto-archive (Done only, not cancelled), take
+    /// backlog work out of sprints, reschedule reminders and record newly
+    /// completed issues.
     async fn after_stage_kind_change(
         &mut self,
         stage: Uuid,
@@ -449,7 +449,6 @@ impl Operation<'_> {
         previous: &str,
         next: &str,
     ) -> Result<()> {
-        self.validate_workflow().await?;
         if next == "done" {
             sqlx::query("UPDATE issues SET done_at=COALESCE(done_at,now()),updated_at=now() WHERE workspace_id=$1 AND stage_id=$2 AND archived_at IS NULL AND done_at IS NULL")
                 .bind(self.workspace_id)

@@ -19,14 +19,15 @@ const FIELDS: [(&str, TrackerField); 5] = [
     ("deadline", TrackerField::DueDate),
 ];
 
-/// The connection's options while it is enabled.
+/// The connection's options while it is enabled and still maps the issue's project.
 async fn exporting(
     conn: &mut PgConnection,
     workspace: Uuid,
     connection: Uuid,
+    project: &str,
 ) -> Result<Option<TrackerOptions>> {
-    let options: Option<serde_json::Value> = sqlx::query_scalar("SELECT options FROM tracker_connections WHERE workspace_id=$1 AND id=$2 AND enabled AND NOT deleted")
-        .bind(workspace).bind(connection).fetch_optional(&mut *conn).await?;
+    let options: Option<serde_json::Value> = sqlx::query_scalar("SELECT options FROM tracker_connections WHERE workspace_id=$1 AND id=$2 AND enabled AND NOT deleted AND projects @> jsonb_build_array(jsonb_build_object('project_id',$3::text))")
+        .bind(workspace).bind(connection).bind(project).fetch_optional(&mut *conn).await?;
     Ok(options.map(serde_json::from_value).transpose()?)
 }
 
@@ -50,7 +51,8 @@ pub(crate) async fn enqueue_fields(
     if candidates.is_empty() {
         return Ok(());
     }
-    let Some(options) = exporting(conn, workspace, link.connection_id).await? else {
+    let Some(options) = exporting(conn, workspace, link.connection_id, &link.project_id).await?
+    else {
         return Ok(());
     };
     let fields: Vec<&str> = candidates
@@ -76,17 +78,17 @@ pub(crate) async fn enqueue_comment(
     issue: Uuid,
     comment: Uuid,
 ) -> Result<()> {
-    let connection: Option<Uuid> = sqlx::query_scalar(
-        "SELECT (tracker->>'connection_id')::uuid FROM issues WHERE workspace_id=$1 AND id=$2 AND tracker IS NOT NULL",
+    let connection: Option<(Uuid, String)> = sqlx::query_as(
+        "SELECT (tracker->>'connection_id')::uuid,tracker->>'project_id' FROM issues WHERE workspace_id=$1 AND id=$2 AND tracker IS NOT NULL",
     )
     .bind(workspace)
     .bind(issue)
     .fetch_optional(&mut *conn)
     .await?;
-    let Some(id) = connection else {
+    let Some((id, project)) = connection else {
         return Ok(());
     };
-    let Some(options) = exporting(conn, workspace, id).await? else {
+    let Some(options) = exporting(conn, workspace, id, &project).await? else {
         return Ok(());
     };
     if !options.get(TrackerField::Comments).export {

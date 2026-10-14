@@ -1245,3 +1245,93 @@ async fn backlog_issues_stay_out_of_sprints() {
     store.pool.close().await;
     database.cleanup().await;
 }
+
+#[tokio::test]
+async fn dependencies_gate_starting_work_but_reopening_leaves_dependents_blocked() {
+    let database = support::TestDatabase::new().await;
+    let store = Store::connect(&database.url).await.unwrap();
+    let app = router(store.clone());
+    let owner = account(&store, "owner").await;
+    let ws = workspace(&app, &owner, "Blockers").await;
+    let (status, result) = command(
+        &app,
+        &owner,
+        ws,
+        json!({"type": "create_team", "name": "Ops", "key": "OPS", "members": [owner.profile.id]}),
+        json!({}),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+    let team = id(&result["result"]["id"]);
+    let stages = record(&result["changes"], "teams", &team.to_string()).unwrap()["stages"]
+        .as_array()
+        .unwrap()
+        .clone();
+    let stage = |kind: &str| stages.iter().find(|s| s["kind"] == kind).unwrap()["id"].clone();
+    let (planned, active, done) = (stage("planned"), stage("active"), stage("done"));
+    let run = |command_value: Value| command(&app, &owner, ws, command_value, json!({}), None);
+    let blocked_count = |issue: Uuid| {
+        let path = format!("/internal-api/workspaces/{ws}/issues/{issue}");
+        let (app, owner) = (&app, &owner);
+        async move { call(app, owner, "GET", &path, None).await.1["blocked_count"].clone() }
+    };
+
+    let blocker = created(
+        &app,
+        &owner,
+        ws,
+        json!({"type": "create_issue", "input": {"team_id": team, "title": "Blocker", "stage_id": done}}),
+    )
+    .await;
+    let dependent = created(
+        &app,
+        &owner,
+        ws,
+        json!({"type": "create_issue", "input": {"team_id": team, "title": "Dependent", "stage_id": active, "dependencies": [blocker]}}),
+    )
+    .await;
+
+    // Reopening the blocker leaves the dependent started, blocked and editable.
+    let (status, result) =
+        run(json!({"type": "move_issue", "id": blocker, "stage_id": planned, "before_id": null}))
+            .await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+    assert_eq!(blocked_count(dependent).await, 1);
+    let (status, result) =
+        run(json!({"type": "update_issue", "id": dependent, "patch": {"title": "Renamed"}})).await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+
+    // Entering another started stage still waits for the blocker.
+    let (status, result) =
+        run(json!({"type": "move_issue", "id": dependent, "stage_id": done, "before_id": null}))
+            .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{result}");
+
+    // A started issue cannot gain an open dependency.
+    let other = created(
+        &app,
+        &owner,
+        ws,
+        json!({"type": "create_issue", "input": {"team_id": team, "title": "Other"}}),
+    )
+    .await;
+    let (status, result) = run(
+        json!({"type": "update_issue", "id": dependent, "patch": {"dependencies": [blocker, other]}}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{result}");
+
+    // Trashing the blocker unblocks the dependent, which stays editable.
+    let (status, result) = run(json!({"type": "delete_issue", "id": blocker})).await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+    assert_eq!(blocked_count(dependent).await, 0);
+    let (status, result) =
+        run(json!({"type": "update_issue", "id": dependent, "patch": {"title": "Again"}})).await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+    let (status, result) =
+        run(json!({"type": "move_issue", "id": dependent, "stage_id": done, "before_id": null}))
+            .await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+    database.cleanup().await;
+}

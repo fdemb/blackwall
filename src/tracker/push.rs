@@ -135,7 +135,12 @@ async fn local(store: &Store, connection: &Connection<'_>, issue: Uuid) -> Resul
         return Ok(None);
     };
     let link: TrackerLink = serde_json::from_value(row.try_get("tracker")?)?;
-    if link.connection_id != connection.id {
+    // Unmapping a project stops its issues from pushing.
+    let mapped = connection
+        .mappings
+        .iter()
+        .any(|mapping| mapping.project_id == link.project_id);
+    if link.connection_id != connection.id || !mapped {
         return Ok(None);
     }
     Ok(Some(Local {
@@ -158,7 +163,7 @@ async fn send(
     deadline: Instant,
 ) -> Result<Sent> {
     let Some(local) = local(store, connection, row.issue).await? else {
-        tracing::debug!(issue_id = %row.issue, "Tracker push dropped: issue no longer linked");
+        tracing::debug!(issue_id = %row.issue, "Tracker push dropped: issue no longer linked or its project unmapped");
         return discard(store, row).await;
     };
     let Some(push) = prepare(store, connection, metadata, row, &local).await? else {
@@ -330,8 +335,9 @@ async fn send_comment(
             Ok(comments) => comments,
             Err(refused) => return Ok(refused),
         };
-        let linked: Vec<String> = sqlx::query_scalar("SELECT tracker->>'remote_id' FROM comments WHERE workspace_id=$1 AND issue_id=$2 AND tracker->>'connection_id'=$3")
-            .bind(connection.workspace).bind(row.issue).bind(connection.id.to_string())
+        let listed: Vec<&str> = comments.iter().map(|comment| comment.id.as_str()).collect();
+        let linked: Vec<String> = sqlx::query_scalar("SELECT tracker->>'remote_id' FROM comments WHERE workspace_id=$1 AND issue_id=$2 AND tracker->>'connection_id'=$3 UNION SELECT remote_id FROM tracker_deleted_comments WHERE connection_id=$3::uuid AND remote_id=ANY($4)")
+            .bind(connection.workspace).bind(row.issue).bind(connection.id.to_string()).bind(&listed)
             .fetch_all(&store.pool).await?;
         let window = (*sent_at - comments::SKEW, Utc::now() + comments::SKEW);
         let sender = sent_account.as_deref().unwrap_or(&account);

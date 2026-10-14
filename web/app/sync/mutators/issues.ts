@@ -6,7 +6,6 @@ import type { ArgsOf, Mutator, MutatorContext } from "./common";
 import {
   checkSourceUrl,
   checkText,
-  checkWorkflow,
   dedupeSortUuids,
   checkCapacity,
   requireIssue,
@@ -190,7 +189,6 @@ export const createIssue: Mutator<ArgsOf<"create_issue">> = (tx, args, ctx) => {
   next.position = createPosition(tx, next.team_id, next.stage_id, id);
   validateIssue(tx, next, null);
   tx.put("issues", next);
-  checkWorkflow(tx, [id]);
 };
 
 function issueFromInput(
@@ -242,7 +240,7 @@ function patchIssue(
   if (current.archived_at !== null) throw new MutationError(409, "issue is archived");
   const next = patchedIssue(current, patch);
   fitSprint(tx, next, next.stage_id !== current.stage_id);
-  validateIssue(tx, next, current.sprint_id);
+  validateIssue(tx, next, current);
   if (next.stage_id !== current.stage_id) {
     next.done_at = doneAt(tx, next.team_id, next.stage_id, current.done_at, ctx.at);
   }
@@ -282,7 +280,6 @@ function setOrClear<T>(current: T | null, value: T | null | undefined, clear?: b
 export const updateIssue: Mutator<ArgsOf<"update_issue">> = (tx, args, ctx) => {
   requireRole(tx, ctx.actor, "update_issue", args);
   patchIssue(tx, args.id, args.patch, ctx);
-  checkWorkflow(tx, [args.id]);
 };
 
 export const moveIssue: Mutator<ArgsOf<"move_issue">> = (tx, args, ctx) => {
@@ -296,14 +293,13 @@ export const moveIssue: Mutator<ArgsOf<"move_issue">> = (tx, args, ctx) => {
   const next = copyIssue(current);
   next.stage_id = args.stage_id;
   fitSprint(tx, next, true);
-  validateIssue(tx, next, current.sprint_id);
+  validateIssue(tx, next, current);
   next.position = orderPosition(tx, current, args.stage_id, args.before_id ?? null);
   if (next.stage_id !== current.stage_id) {
     next.done_at = doneAt(tx, next.team_id, next.stage_id, current.done_at, ctx.at);
   }
   next.updated_at = ctx.at;
   tx.put("issues", next);
-  checkWorkflow(tx, [args.id]);
 };
 
 /** Shared by `delete_issue` and the bulk delete action. Archived issues can be deleted. */
@@ -324,7 +320,6 @@ function deleteIssueById(tx: Tx, id: string, ctx: MutatorContext): void {
 export const deleteIssue: Mutator<ArgsOf<"delete_issue">> = (tx, args, ctx) => {
   requireRole(tx, ctx.actor, "delete_issue", args);
   deleteIssueById(tx, args.id, ctx);
-  checkWorkflow(tx, [args.id]);
 };
 
 /** Shared by `restore_issue` and the bulk restore action. Restoring revalidates references. */
@@ -336,7 +331,7 @@ function restoreIssueById(tx: Tx, id: string, ctx: MutatorContext): void {
   }
   const next = copyIssue(current);
   next.deleted_at = null;
-  validateIssue(tx, next, current.sprint_id);
+  validateIssue(tx, next, current);
   next.updated_at = ctx.at;
   tx.put("issues", next);
 }
@@ -344,7 +339,6 @@ function restoreIssueById(tx: Tx, id: string, ctx: MutatorContext): void {
 export const restoreIssue: Mutator<ArgsOf<"restore_issue">> = (tx, args, ctx) => {
   requireRole(tx, ctx.actor, "restore_issue", args);
   restoreIssueById(tx, args.id, ctx);
-  checkWorkflow(tx, [args.id]);
 };
 
 /** Shared by `archive_issue` and the bulk archive action. Only done-stage issues archive. */
@@ -369,7 +363,6 @@ function archiveIssueById(tx: Tx, id: string, ctx: MutatorContext): void {
 export const archiveIssue: Mutator<ArgsOf<"archive_issue">> = (tx, args, ctx) => {
   requireRole(tx, ctx.actor, "archive_issue", args);
   archiveIssueById(tx, args.id, ctx);
-  checkWorkflow(tx, [args.id]);
 };
 
 /** Shared by `unarchive_issue` and the bulk unarchive action. Unarchiving restarts the done clock. */
@@ -390,7 +383,6 @@ function unarchiveIssueById(tx: Tx, id: string, ctx: MutatorContext): void {
 export const unarchiveIssue: Mutator<ArgsOf<"unarchive_issue">> = (tx, args, ctx) => {
   requireRole(tx, ctx.actor, "unarchive_issue", args);
   unarchiveIssueById(tx, args.id, ctx);
-  checkWorkflow(tx, [args.id]);
 };
 
 export const bulkIssues: Mutator<ArgsOf<"bulk_issues">> = (tx, args, ctx) => {
@@ -413,7 +405,6 @@ export const bulkIssues: Mutator<ArgsOf<"bulk_issues">> = (tx, args, ctx) => {
       patchIssue(tx, id, action.update, ctx);
     }
   }
-  checkWorkflow(tx, sorted);
 };
 
 export const followIssue: Mutator<ArgsOf<"follow">> = (tx, args, ctx) => {
@@ -428,7 +419,6 @@ export const followIssue: Mutator<ArgsOf<"follow">> = (tx, args, ctx) => {
       : dedupeSortUuids(issue.followers.filter((follower: Id) => follower !== ctx.actor));
     return next;
   });
-  checkWorkflow(tx, [args.issue_id]);
 };
 
 export const addSourceLink: Mutator<ArgsOf<"add_source_link">> = (tx, args, ctx) => {
@@ -447,7 +437,6 @@ export const addSourceLink: Mutator<ArgsOf<"add_source_link">> = (tx, args, ctx)
     next.source_links = [...issue.source_links, { url: args.url, title: args.title }];
     return next;
   });
-  checkWorkflow(tx, [args.issue_id]);
 };
 
 export const removeAttachment: Mutator<ArgsOf<"remove_attachment">> = (tx, args, ctx) => {
@@ -467,5 +456,4 @@ export const removeAttachment: Mutator<ArgsOf<"remove_attachment">> = (tx, args,
     );
     return next;
   });
-  checkWorkflow(tx, [args.issue_id]);
 };

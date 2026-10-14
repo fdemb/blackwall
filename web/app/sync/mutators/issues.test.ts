@@ -1045,7 +1045,7 @@ describe("team and stage references", () => {
 });
 
 describe("review findings", () => {
-  it("F1: deleting a completed dependency fails workflow so a later rename succeeds", () => {
+  it("F1: deleting a completed dependency leaves the dependent editable", () => {
     const store = seedStore();
     // Active A depends on completed B (issue-3 is done).
     mutate(store, "create_issue", {
@@ -1057,21 +1057,44 @@ describe("review findings", () => {
         dependencies: ["issue-3"],
       },
     });
-    expect(store.replayErrors().size).toBe(0);
-    const beforeDelete = snapshotIssues(store);
     const deleteId = mutate(store, "delete_issue", { id: "issue-3" });
-    expect(store.replayErrors().get(deleteId)?.status).toBe(409);
-    expect(store.replayErrors().get(deleteId)?.message).toBe(
-      "workflow would leave an issue with unfinished dependencies",
-    );
-    expect(snapshotIssues(store)).toEqual(beforeDelete);
-    // The server rejects the deletion, so the rename applies.
+    expect(store.replayErrors().get(deleteId)).toBeUndefined();
     const renameId = mutate(store, "update_issue", {
       id: "issue-f1-a",
       patch: { title: "Valid rename" },
     });
     expect(store.replayErrors().get(renameId)).toBeUndefined();
     expect(live(store, "issue-f1-a").title).toBe("Valid rename");
+  });
+
+  it("reopening a dependency leaves the dependent blocked but editable", () => {
+    const store = seedStore();
+    mutate(store, "create_issue", {
+      input: {
+        id: "issue-blocked",
+        title: "Blocked",
+        team_id: TEAM,
+        stage_id: STAGE_ACTIVE,
+        dependencies: ["issue-3"],
+      },
+    });
+    const reopen = mutate(store, "move_issue", {
+      id: "issue-3",
+      stage_id: STAGE_BACKLOG,
+      before_id: null,
+    });
+    expect(store.replayErrors().get(reopen)).toBeUndefined();
+    const rename = mutate(store, "update_issue", {
+      id: "issue-blocked",
+      patch: { title: "Renamed" },
+    });
+    expect(store.replayErrors().get(rename)).toBeUndefined();
+    const finish = mutate(store, "move_issue", {
+      id: "issue-blocked",
+      stage_id: STAGE_DONE,
+      before_id: null,
+    });
+    expect(store.replayErrors().get(finish)?.message).toBe("issue has unfinished dependencies");
   });
 
   it("F2: replay over a base already containing the effect is a no-op", () => {

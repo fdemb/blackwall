@@ -261,15 +261,16 @@ export function stageKindOf(tx: Tx, teamId: string, stageId: string): StageKind 
 /**
  * Full `validate_issue_sql` mirror (`src/store/issues.rs`), in the server's
  * order so the first failure matches. Runs against the candidate issue, so
- * create, update, move and restore share it. `retainedSprint` is the issue's
- * sprint before the command; staying in a finished sprint is allowed only
- * from a done/cancelled stage. Unknown stage kinds are skipped: the server
- * cannot see them, and the replica always loads every team.
+ * create, update, move and restore share it. `before` is the stored issue,
+ * null when creating; its sprint is the one the issue may keep, and staying
+ * in a finished sprint is allowed only from a done/cancelled stage. Unknown
+ * stage kinds are skipped: the server cannot see them, and the replica
+ * always loads every team.
  */
 export function validateIssue(
   tx: Tx,
   issue: DeepReadonly<SyncIssue>,
-  retainedSprint: string | null,
+  before: DeepReadonly<SyncIssue> | null,
 ): void {
   checkText(issue.title, 500);
   checkTimestamp(issue.deadline);
@@ -281,8 +282,8 @@ export function validateIssue(
   if (kind === undefined) throw new MutationError(400, "stage belongs to another team");
 
   checkIssueReferences(tx, issue);
-  checkIssueSprint(tx, issue, kind, retainedSprint);
-  checkIssueDependencies(tx, issue, kind);
+  checkIssueSprint(tx, issue, kind, before?.sprint_id ?? null);
+  checkIssueDependencies(tx, issue, kind, before);
   checkIssueParent(tx, issue);
 }
 
@@ -331,21 +332,36 @@ function checkIssueSprint(
   }
 }
 
-function checkIssueDependencies(tx: Tx, issue: DeepReadonly<SyncIssue>, kind: StageKind): void {
-  const blocking = issue.deleted_at === null && (kind === "active" || kind === "done");
+/**
+ * Dependencies gate entering an active or done stage, and new dependencies of
+ * a started issue. Ones that reopen later leave the issue blocked, not invalid.
+ */
+function checkIssueDependencies(
+  tx: Tx,
+  issue: DeepReadonly<SyncIssue>,
+  kind: StageKind,
+  before: DeepReadonly<SyncIssue> | null,
+): void {
+  const started = issue.deleted_at === null && (kind === "active" || kind === "done");
+  const entered = before === null || before.stage_id !== issue.stage_id;
   for (const dep of new Set(issue.dependencies)) {
+    const added = before === null || !before.dependencies.includes(dep);
     const other = tx.get("issues", dep);
-    if (other === undefined) throw new MutationError(404, "not found");
-    if (dep === issue.id || other.deleted_at !== null) {
-      throw new MutationError(400, "invalid dependency");
+    if (added) {
+      if (other === undefined) throw new MutationError(404, "not found");
+      if (dep === issue.id || other.deleted_at !== null) {
+        throw new MutationError(400, "invalid dependency");
+      }
     }
-    if (blocking) {
+    if (started && (added || entered) && other !== undefined && other.deleted_at === null) {
       const depKind = stageKindOf(tx, other.team_id, other.stage_id);
       if (depKind !== undefined && !isFinished(depKind)) {
         throw new MutationError(409, "issue has unfinished dependencies");
       }
     }
-    if (reachable(tx, dep, issue.id)) throw new MutationError(400, "dependency cycle");
+    if (added && reachable(tx, dep, issue.id)) {
+      throw new MutationError(400, "dependency cycle");
+    }
   }
 }
 
@@ -385,62 +401,6 @@ function hasAncestor(tx: Tx, parentId: string, id: string): boolean {
     current = tx.get("issues", current)?.parent_id ?? null;
   }
   return false;
-}
-
-/**
- * `validate_workflow` mirror (`src/store/issues.rs:27`). The server checks
- * every touched id after the command's writes but before the Done-entry
- * restamp: any active/done, non-deleted issue whose id, stage id or one of
- * whose dependencies is touched must not have an unfinished dependency
- * (deleted or not done/cancelled). `affected` is the set of ids the command
- * touched, including stage ids, independent of the restamp writes, which only
- * move the Done clock and cannot change the outcome. Uses point reads and
- * the stage and dependency indexes only, never a table scan.
- */
-export function checkWorkflow(tx: Tx, affected: readonly string[]): void {
-  if (affected.length === 0) return;
-  const affectedSet = new Set(affected);
-  for (const id of workflowCandidates(tx, affectedSet)) {
-    const issue = tx.get("issues", id);
-    if (issue === undefined || issue.deleted_at !== null) continue;
-    const kind = stageKindOf(tx, issue.team_id, issue.stage_id);
-    if (kind !== "active" && kind !== "done") continue;
-    // The server only checks issues the command touched directly, through
-    // their stage, or through a dependency; untouched issues already
-    // satisfied the invariant.
-    if (isTouched(issue, affectedSet)) checkDependenciesFinished(tx, issue);
-  }
-}
-
-function workflowCandidates(tx: Tx, affected: ReadonlySet<string>): Set<string> {
-  const candidates = new Set<string>();
-  for (const id of affected) {
-    candidates.add(id);
-    for (const issue of tx.byIndex("issues", "stage_id", id)) candidates.add(issue.id);
-    for (const dependent of tx.byIndex("issues", "dependency", id)) {
-      candidates.add(dependent.id);
-    }
-  }
-  return candidates;
-}
-
-function isTouched(issue: DeepReadonly<SyncIssue>, affected: ReadonlySet<string>): boolean {
-  return (
-    affected.has(issue.id) ||
-    affected.has(issue.stage_id) ||
-    issue.dependencies.some((dep) => affected.has(dep))
-  );
-}
-
-function checkDependenciesFinished(tx: Tx, issue: DeepReadonly<SyncIssue>): void {
-  for (const dep of new Set(issue.dependencies)) {
-    const other = tx.get("issues", dep);
-    if (other === undefined) continue;
-    const depKind = stageKindOf(tx, other.team_id, other.stage_id);
-    if (other.deleted_at !== null || (depKind !== undefined && !isFinished(depKind))) {
-      throw new MutationError(409, "workflow would leave an issue with unfinished dependencies");
-    }
-  }
 }
 
 /** A client-chosen id must be present and not nil (`domain::client_id`). */

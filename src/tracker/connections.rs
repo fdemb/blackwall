@@ -208,6 +208,17 @@ async fn insert(conn: &mut PgConnection, workspace: Uuid, config: &Config) -> Re
     Ok(id)
 }
 
+/// Drops changes queued for projects no longer mapped, even rows backing off.
+async fn drop_unmapped(
+    conn: &mut sqlx::PgConnection,
+    id: Uuid,
+    projects: &[Mapping],
+) -> Result<()> {
+    sqlx::query("DELETE FROM tracker_outbox o USING issues i WHERE o.connection_id=$1 AND i.id=o.issue_id AND NOT $2::jsonb @> jsonb_build_array(jsonb_build_object('project_id',i.tracker->>'project_id'))")
+        .bind(id).bind(json!(projects)).execute(conn).await?;
+    Ok(())
+}
+
 async fn validate_projects(
     conn: &mut PgConnection,
     workspace: Uuid,
@@ -447,6 +458,7 @@ async fn configure(
             .bind(provider.checkpoint(false)).bind(json!(people)).bind(generation).bind(json!(options))
             .execute(&mut *tx).await?;
         cancel_pending(&mut tx, id).await?;
+        drop_unmapped(&mut tx, id, &projects).await?;
     } else if name != previous_name || options != previous_options {
         sqlx::query(
             "UPDATE tracker_connections SET name=$3,options=$4 WHERE workspace_id=$1 AND id=$2",

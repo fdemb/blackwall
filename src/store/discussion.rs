@@ -173,7 +173,20 @@ impl Operation<'_> {
         self.author_or_admin(row.try_get(author)?)?;
         self.touch_locked(table, id, row.try_get("version")?)
             .await?;
+        if table == "comments" {
+            self.forget_tracker_comment(id).await?;
+        }
         self.delete_row(table, id).await
+    }
+
+    /// Remembers a synced comment's remote identity so imports do not restore it.
+    async fn forget_tracker_comment(&mut self, id: Uuid) -> Result<()> {
+        sqlx::query("INSERT INTO tracker_deleted_comments(connection_id,remote_id) SELECT t.id,c.tracker->>'remote_id' FROM comments c JOIN tracker_connections t ON t.id::text=c.tracker->>'connection_id' WHERE c.workspace_id=$1 AND c.id=$2 AND c.tracker IS NOT NULL ON CONFLICT DO NOTHING")
+            .bind(self.workspace_id)
+            .bind(id)
+            .execute(&mut *self.tx)
+            .await?;
+        Ok(())
     }
 
     async fn delete_view(&mut self, id: Uuid) -> Result<()> {
