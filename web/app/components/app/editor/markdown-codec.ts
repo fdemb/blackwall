@@ -66,7 +66,11 @@ export function markdownCodec(extensions: AnyExtension[]): MarkdownCodec {
   internals.encodeTextForMarkdown = (text, node, parent) =>
     inCode(node, parent) ? text : escapeText(text);
   return {
-    parse: (markdown) => manager.parse(markdown),
+    // Blank markdown parses to a doc with no blocks, which leaves the placeholder nowhere to show.
+    parse: (markdown) => {
+      const doc = manager.parse(markdown);
+      return doc.content?.length ? doc : { type: "doc", content: [{ type: "paragraph" }] };
+    },
     serialize: (doc) => manager.serialize(doc).replace(/^\n+|\s+$/g, ""),
   };
 }

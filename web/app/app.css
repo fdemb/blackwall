@@ -1,5 +1,6 @@
 @import "tailwindcss";
 @import "tw-animate-css";
+@import "./typeset.css";
 @plugin "tailwindcss-react-aria-components";
 @import "@fontsource-variable/inter";
 @import "@fontsource-variable/jetbrains-mono";
@@ -168,73 +169,24 @@
   }
 }
 
-.prose-bw {
-  @apply text-[14px] leading-6;
-}
-.prose-bw > * + * {
-  @apply mt-3;
-}
-.prose-bw h1,
-.prose-bw h2,
-.prose-bw h3 {
-  @apply font-semibold tracking-tight;
-}
-.prose-bw h1 {
-  @apply text-lg;
-}
-.prose-bw h2 {
-  @apply text-base;
-}
-.prose-bw ul {
-  @apply list-disc pl-5;
-}
-.prose-bw ol {
-  @apply list-decimal pl-5;
-}
-.prose-bw a {
-  @apply text-primary underline underline-offset-2;
-}
-.prose-bw code {
-  @apply rounded bg-muted px-1 py-0.5 font-mono text-sm;
-}
-.prose-bw pre {
-  @apply overflow-x-auto rounded-md bg-muted p-3;
-}
-.prose-bw pre code {
-  @apply bg-transparent p-0;
-}
-.prose-bw blockquote {
-  @apply border-l-2 border-primary/40 pl-3 text-muted-foreground;
-}
-.prose-bw table {
-  @apply w-full border-collapse;
-}
-.prose-bw th,
-.prose-bw td {
-  @apply border border-border px-2 py-1;
-}
-.prose-bw h3 {
-  @apply text-[14px];
-}
-.prose-bw hr {
-  @apply border-border;
-}
-.prose-bw th {
-  @apply bg-muted/50 text-left font-medium;
-}
-
-/* The WYSIWYG editor shares `prose-bw` with rendered markdown and adds editing affordances. */
-.bw-editor {
-  @apply break-words;
-}
+/* The WYSIWYG editor shares `typeset` with rendered markdown and adds editing affordances. */
 .bw-editor .is-empty::before {
   content: attr(data-placeholder);
   @apply pointer-events-none float-left h-0 text-muted-foreground/60;
 }
-.bw-editor li > p,
-.bw-editor th > p,
-.bw-editor td > p {
-  @apply m-0;
+/* Block hints such as "Type / for blocks" are for the line being typed on. A saved description can
+   end on an empty line, and an editor without focus should show only its own placeholder. */
+.bw-editor:not(.ProseMirror-focused) .is-empty:not(.is-editor-empty)::before {
+  content: none;
+}
+.bw-editor .tableWrapper {
+  @apply overflow-x-auto;
+}
+.bw-editor .tableWrapper:not(:first-child) {
+  margin-block-start: var(--typeset-flow);
+}
+.bw-editor .tableWrapper > table {
+  margin-block-start: 0;
 }
 .bw-editor .selectedCell {
   @apply bg-primary/10;

@@ -96,7 +96,7 @@ export function MarkdownEditor({
         "aria-multiline": "true",
         role: "textbox",
         class: cn(
-          "prose-bw bw-editor min-h-6 outline-none",
+          "typeset bw-editor min-h-6 outline-none",
           appearance === "boxed" && "px-3 py-2.5",
           className,
         ),
