@@ -31,7 +31,8 @@ import { Avatar } from "~/components/ui/avatar";
 import { Button } from "~/components/ui/button";
 import { ConfirmDialog } from "~/components/app/confirm";
 import { useToast } from "~/components/ui/toast";
-import { Markdown, MarkdownEditor, mentionsIn } from "~/components/app/markdown";
+import { Markdown, mentionsIn } from "~/components/app/markdown";
+import { MarkdownEditor } from "~/components/app/editor/rich-editor";
 import { formatMinutes, MAX_UPLOAD, relativeTime } from "~/lib/format";
 import { useI18n, isTranslationKey, type Key } from "~/lib/i18n";
 import { usePending } from "~/lib/use-pending";
@@ -192,6 +193,7 @@ function EventItem({ event, entries }: { event: Activity; entries: Map<Id, TimeE
         <span className="font-medium text-foreground">
           {member(event.actor)?.display_name ?? t("person.unknown")}
         </span>{" "}
+        {event.via && <>{t("timeline.via", { name: event.via.name })} </>}
         {label}{" "}
         <time
           dateTime={event.at}
@@ -259,6 +261,11 @@ function CommentItem({ comment: c }: { comment: Comment }) {
           >
             {relativeTime(c.created_at, lang)}
           </time>
+          {c.via && (
+            <span className="truncate text-sm text-muted-foreground">
+              {t("timeline.via", { name: c.via.name })}
+            </span>
+          )}
           {c.edited_at && (
             <span className="shrink-0 text-sm text-muted-foreground">· {t("comment.edited")}</span>
           )}
@@ -305,7 +312,7 @@ function CommentItem({ comment: c }: { comment: Comment }) {
                 value={editBody}
                 onChange={setEditBody}
                 autoFocus
-                minRows={3}
+                className="min-h-16"
                 onSubmit={save}
               />
               <ConfirmDialog
@@ -414,7 +421,7 @@ function Composer({ issue, hasItems }: { issue: Issue; hasItems: boolean }) {
         value={body}
         onChange={setBody}
         placeholder={t("comment.placeholder")}
-        minRows={3}
+        className="min-h-16"
         onSubmit={post}
       />
       {files.length > 0 && (

@@ -178,6 +178,14 @@ export interface Comment {
   attachments: readonly Attachment[];
   created_at: string;
   edited_at: string | null;
+  /** The API token that wrote the comment for its author, if one did. */
+  via?: Via | null;
+}
+/** The personal access token behind a write: an integration or agent acting for the actor. */
+export interface Via {
+  kind: "api" | "mcp";
+  token_id: Id;
+  name: string;
 }
 export interface TimeEntry {
   id: Id;
@@ -273,7 +281,7 @@ export interface ApiToken {
   id: Id;
   name: string;
   prefix: string;
-  access: "read" | "write";
+  access: "read" | "comment" | "write";
   workspace_ids: Id[] | null;
   created_at: string;
   expires_at: string | null;
@@ -286,6 +294,7 @@ export interface Activity {
   entity_id: Id | null;
   at: string;
   fields?: readonly string[];
+  via?: Via | null;
 }
 
 /** Workspace metadata assembled from the current replica view. */

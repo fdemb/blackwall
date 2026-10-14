@@ -541,9 +541,10 @@ async fn activity_with_integrations(
         entity_id: issue,
         at: Utc::now(),
         fields,
+        via: None,
     };
-    sqlx::query("INSERT INTO activity(id,workspace_id,actor,action,entity_id,at,fields) VALUES($1,$2,$3,$4,$5,$6,$7)")
-        .bind(event.id).bind(workspace).bind(actor).bind(action).bind(issue).bind(event.at).bind(serde_json::to_value(&event.fields)?).execute(&mut *conn).await?;
+    let via: Option<serde_json::Value> = sqlx::query_scalar("INSERT INTO activity(id,workspace_id,actor,action,entity_id,at,fields) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING via")
+        .bind(event.id).bind(workspace).bind(actor).bind(action).bind(issue).bind(event.at).bind(serde_json::to_value(&event.fields)?).fetch_one(&mut *conn).await?;
     // Only public events leave the workspace; see `WEBHOOK_EVENTS`.
     let Some((kind, entity_type)) = crate::domain::webhook_event(action) else {
         return Ok(());
@@ -566,6 +567,9 @@ async fn activity_with_integrations(
     });
     if !event.fields.is_empty() {
         payload["fields"] = serde_json::json!(event.fields);
+    }
+    if let Some(via) = via {
+        payload["via"] = via;
     }
     for integration in integrations.iter().filter(|i| i.wants(kind)) {
         let id = integration.id;

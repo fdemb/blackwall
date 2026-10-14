@@ -339,6 +339,7 @@ impl Workspace {
             attachments,
             created_at: now,
             edited_at: None,
+            via: None,
         });
         Ok(id)
     }
