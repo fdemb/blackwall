@@ -18,13 +18,19 @@ pub const MAX_VALUES: usize = 200;
 pub enum FilterField {
     Assignee,
     CreatedBy,
+    #[serde(alias = "team")]
     TeamId,
+    #[serde(alias = "stage")]
     StageId,
     StageKind,
     Priority,
+    #[serde(alias = "label")]
     Labels,
+    #[serde(alias = "project")]
     ProjectId,
+    #[serde(alias = "sprint")]
     SprintId,
+    #[serde(alias = "parent")]
     ParentId,
     Dependencies,
     Estimate,

@@ -106,6 +106,8 @@ export const addComment: Mutator<ArgsOf<"add_comment">> = (tx, args, ctx) => {
     attachments: moved,
     created_at: previous?.created_at ?? ctx.at,
     edited_at: null,
+    // The app writes without a token, so nothing acts for the author.
+    via: previous?.via ?? null,
   });
 };
 

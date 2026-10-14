@@ -173,6 +173,33 @@ pub struct Comment {
     pub attachments: Vec<Attachment>,
     pub created_at: DateTime<Utc>,
     pub edited_at: Option<DateTime<Utc>>,
+    /// The token that wrote the comment for its author, if one did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub via: Option<Via>,
+}
+
+/// The personal access token a write went through. The actor is still the token's user;
+/// this says an integration or agent acted for them.
+#[derive(Clone, Debug, Serialize, Deserialize, ToSchema, PartialEq, Eq)]
+pub struct Via {
+    pub kind: ViaKind,
+    pub token_id: Uuid,
+    /// The token's name when it acted, such as `Claude Code`.
+    pub name: String,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, ToSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ViaKind {
+    Api,
+    Mcp,
+}
+
+/// The token a write goes through; the store records it as a [`Via`] with the token's name.
+#[derive(Clone, Copy, Debug)]
+pub struct ViaToken {
+    pub kind: ViaKind,
+    pub token_id: Uuid,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
@@ -277,6 +304,8 @@ pub struct Activity {
     /// Issue fields an update changed, so the timeline can say what moved.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub fields: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub via: Option<Via>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]

@@ -390,6 +390,7 @@ impl Workspace {
                 entity_id: Some(id),
                 at: now,
                 fields: vec![],
+                via: None,
             });
         }
 
@@ -616,6 +617,7 @@ impl Workspace {
             entity_id: result,
             at: now,
             fields,
+            via: None,
         });
 
         Ok(CommandResult { id: result })

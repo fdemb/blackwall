@@ -1,6 +1,6 @@
 use super::*;
 use crate::{
-    domain::{Comment, Label, Project, Role, Stage, StageKind, Team},
+    domain::{Comment, Label, Milestone, Project, Role, Sprint, Stage, StageKind, Team},
     http::MemberProfile,
     store::CollectionQuery,
 };
@@ -22,7 +22,7 @@ macro_rules! versioned {
     };
 }
 
-versioned!(Team, Stage, Label, Project, Comment);
+versioned!(Team, Stage, Label, Project, Comment, Milestone, Sprint);
 
 pub fn one<T: Serialize + Versioned>(status: StatusCode, record: T) -> Response {
     tagged(status, record.version(), record)
@@ -157,6 +157,7 @@ pub async fn workspaces(
     Ok(Json(Page {
         data: workspace_list(&store, &actor).await?,
         next_cursor: None,
+        total: None,
     }))
 }
 
@@ -203,6 +204,7 @@ pub async fn members(
     Ok(Json(Page {
         data: member_list(&store, actor.read(workspace)?).await?,
         next_cursor: None,
+        total: None,
     }))
 }
 
@@ -309,6 +311,7 @@ pub async fn stages(
     Ok(Json(Page {
         data: team.stages,
         next_cursor: None,
+        total: None,
     }))
 }
 
@@ -685,4 +688,74 @@ pub async fn update_project(
     .await?;
     let project: Project = record(&store, scope, "projects", project).await?;
     Ok(one(StatusCode::OK, project))
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/workspaces/{workspace}/milestones",
+    tag = "projects",
+    params(("workspace" = Uuid, Path), PageParams),
+    responses((status = 200, body = Page<Milestone>))
+)]
+pub async fn milestones(
+    State(store): State<Store>,
+    actor: ApiActor,
+    Path(workspace): Path<Uuid>,
+    Query(params): Query<PageParams>,
+) -> Result<Json<Page<Milestone>>> {
+    Ok(Json(
+        list_collection(&store, actor.read(workspace)?, "milestones", &params, None).await?,
+    ))
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/workspaces/{workspace}/milestones/{milestone}",
+    tag = "projects",
+    params(("workspace" = Uuid, Path), ("milestone" = Uuid, Path)),
+    responses((status = 200, body = Milestone))
+)]
+pub async fn milestone(
+    State(store): State<Store>,
+    actor: ApiActor,
+    Path((workspace, milestone)): Path<(Uuid, Uuid)>,
+) -> Result<Response> {
+    let milestone: Milestone =
+        record(&store, actor.read(workspace)?, "milestones", milestone).await?;
+    Ok(one(StatusCode::OK, milestone))
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/workspaces/{workspace}/sprints",
+    tag = "teams",
+    description = "Every team's sprints, oldest first.",
+    params(("workspace" = Uuid, Path), PageParams),
+    responses((status = 200, body = Page<Sprint>))
+)]
+pub async fn sprints(
+    State(store): State<Store>,
+    actor: ApiActor,
+    Path(workspace): Path<Uuid>,
+    Query(params): Query<PageParams>,
+) -> Result<Json<Page<Sprint>>> {
+    Ok(Json(
+        list_collection(&store, actor.read(workspace)?, "sprints", &params, None).await?,
+    ))
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/workspaces/{workspace}/sprints/{sprint}",
+    tag = "teams",
+    params(("workspace" = Uuid, Path), ("sprint" = Uuid, Path)),
+    responses((status = 200, body = Sprint))
+)]
+pub async fn sprint(
+    State(store): State<Store>,
+    actor: ApiActor,
+    Path((workspace, sprint)): Path<(Uuid, Uuid)>,
+) -> Result<Response> {
+    let sprint: Sprint = record(&store, actor.read(workspace)?, "sprints", sprint).await?;
+    Ok(one(StatusCode::OK, sprint))
 }

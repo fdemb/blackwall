@@ -341,6 +341,30 @@ impl Store {
         key: Option<String>,
         attachment: Option<NewAttachment>,
     ) -> Result<OperationResult> {
+        self.operation_via(
+            workspace_id,
+            actor,
+            command,
+            expected,
+            key,
+            attachment,
+            None,
+        )
+        .await
+    }
+
+    /// Runs a command as `actor`, recording on its activity and comments that `via` acted for them.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn operation_via(
+        &self,
+        workspace_id: Uuid,
+        actor: Uuid,
+        command: Command,
+        expected: BTreeMap<Uuid, i64>,
+        key: Option<String>,
+        attachment: Option<NewAttachment>,
+        via: Option<crate::domain::ViaToken>,
+    ) -> Result<OperationResult> {
         use sha2::{Digest, Sha256};
 
         let mut command_fingerprint = serde_json::to_value(&command)?;
@@ -367,6 +391,23 @@ impl Store {
         let mut op = self
             .begin_operation(workspace_id, actor, expected, membership)
             .await?;
+        if let Some(via) = via {
+            // Column defaults on activity and comments read this until the transaction ends.
+            sqlx::query(
+                "SELECT set_config('blackwall.via', \
+                 jsonb_build_object('kind',$1::text,'token_id',id,'name',name)::text, true) \
+                 FROM api_tokens WHERE id=$2",
+            )
+            .bind(
+                serde_json::to_value(via.kind)?
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned(),
+            )
+            .bind(via.token_id)
+            .execute(&mut *op.tx)
+            .await?;
+        }
 
         if let Some(key) = &key
             && let Some(value) = op.claim_key(key, &request).await?

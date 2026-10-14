@@ -697,6 +697,35 @@ impl Store {
         Ok(result)
     }
 
+    /// How many issues match a filter, ignoring sort and paging.
+    pub async fn count_issues(
+        &self,
+        workspace: Uuid,
+        actor: Uuid,
+        filter: &IssueFilter,
+    ) -> Result<i64> {
+        let search = filter.search.as_deref().filter(|s| !s.trim().is_empty());
+        if filter.search.as_ref().is_some_and(|s| s.len() > 200) {
+            return Err(Error::BadRequest("search query too long".into()));
+        }
+        let clauses = filter.compile(Utc::now())?;
+
+        let mut conn = self.pool.acquire().await?;
+        authorize(&mut conn, workspace, actor).await?;
+
+        let mut q = QueryBuilder::<Postgres>::new("WITH ");
+        if let Some(search) = search {
+            push_issue_search(&mut q, workspace, filter, &clauses, search)?;
+        }
+        q.push("counted AS (SELECT 1 FROM issues i WHERE ");
+        push_issue_filters(&mut q, workspace, filter, &clauses)?;
+        if search.is_some() {
+            q.push(" AND i.id IN (SELECT id FROM search_matches)");
+        }
+        q.push(") SELECT count(*) FROM counted");
+        Ok(q.build_query_scalar::<i64>().fetch_one(&mut *conn).await?)
+    }
+
     pub async fn collection(
         &self,
         workspace: Uuid,

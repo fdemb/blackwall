@@ -4,7 +4,7 @@
 //! so validation, permissions, activity and webhooks match the app exactly.
 
 use crate::{
-    domain::Command,
+    domain::{Command, ViaKind, ViaToken},
     error::{Error, Result},
     store::{OperationResult, Store},
 };
@@ -22,17 +22,19 @@ use std::collections::BTreeMap;
 use utoipa::OpenApi;
 use uuid::Uuid;
 
+pub mod directory;
 pub mod issues;
 pub mod resources;
 pub mod tokens;
 mod webhooks;
 
-pub use issues::{ApiIssue, CreateComment, IssueQuery, UpdateIssue};
+pub use issues::{ApiComment, ApiIssue, CreateComment, CreateIssue, IssueQuery, UpdateIssue};
 pub use tokens::{Access, TokenGrant};
 
-/// The authenticated token behind a public API request.
+/// The authenticated token behind a public API request, and whether it came through
+/// `/api/v1` or `/mcp`.
 #[derive(Clone, Debug)]
-pub struct ApiActor(pub TokenGrant);
+pub struct ApiActor(pub TokenGrant, pub ViaKind);
 
 /// A workspace the token may act in, at the access level it was checked for.
 /// Handlers take one of these, so a token's scope can't be skipped.
@@ -40,6 +42,8 @@ pub struct ApiActor(pub TokenGrant);
 pub struct Scope {
     pub workspace: Uuid,
     pub user: Uuid,
+    /// Recorded on every write, so activity and comments say which token acted.
+    pub token: ViaToken,
 }
 
 impl ApiActor {
@@ -63,14 +67,29 @@ impl ApiActor {
         Ok(Scope {
             workspace,
             user: self.0.user,
+            token: ViaToken {
+                kind: self.1,
+                token_id: self.0.token_id,
+            },
         })
     }
 
     pub fn write(&self, workspace: Uuid) -> Result<Scope> {
-        if self.0.access != Access::Write {
-            return Err(Error::Denied("this token is read-only".into()));
+        match self.0.access {
+            Access::Write => self.read(workspace),
+            Access::Comment => Err(Error::Denied(
+                "this token may only read and write comments".into(),
+            )),
+            Access::Read => Err(Error::Denied("this token is read-only".into())),
         }
-        self.read(workspace)
+    }
+
+    /// Writing, editing or deleting comments, which comment tokens may also do.
+    pub fn comment(&self, workspace: Uuid) -> Result<Scope> {
+        match self.0.access {
+            Access::Write | Access::Comment => self.read(workspace),
+            Access::Read => Err(Error::Denied("this token is read-only".into())),
+        }
     }
 }
 
@@ -128,7 +147,12 @@ async fn authenticate(State(store): State<Store>, mut request: Request, next: Ne
         return response;
     }
 
-    request.extensions_mut().insert(ApiActor(grant));
+    let kind = if request.uri().path() == "/mcp" {
+        ViaKind::Mcp
+    } else {
+        ViaKind::Api
+    };
+    request.extensions_mut().insert(ApiActor(grant, kind));
     let mut response = next.run(request).await;
     window.write(response.headers_mut());
     response
@@ -211,6 +235,9 @@ pub struct Page<T> {
     pub data: Vec<T>,
     /// Pass as `cursor` for the next page. Null on the last page.
     pub next_cursor: Option<String>,
+    /// How many records match across every page. Issue lists report it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total: Option<i64>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -265,6 +292,7 @@ fn page_of<T: serde::de::DeserializeOwned>(value: serde_json::Value) -> Result<P
     Ok(Page {
         data: serde_json::from_value(value["items"].clone())?,
         next_cursor,
+        total: None,
     })
 }
 
@@ -342,13 +370,14 @@ pub async fn run(
     }
     let guarded = !expected.is_empty();
     store
-        .operation(
+        .operation_via(
             scope.workspace,
             scope.user,
             command,
             expected,
             options.idempotency_key,
             None,
+            Some(scope.token),
         )
         .await
         .map_err(|error| match error {
@@ -404,6 +433,19 @@ pub fn router(store: Store) -> Router<Store> {
             get(resources::project).patch(resources::update_project),
         )
         .route(
+            &format!("{workspace}/milestones"),
+            get(resources::milestones),
+        )
+        .route(
+            &format!("{workspace}/milestones/{{milestone}}"),
+            get(resources::milestone),
+        )
+        .route(&format!("{workspace}/sprints"), get(resources::sprints))
+        .route(
+            &format!("{workspace}/sprints/{{sprint}}"),
+            get(resources::sprint),
+        )
+        .route(
             &format!("{workspace}/issues"),
             get(issues::list).post(issues::create),
         )
@@ -424,6 +466,10 @@ pub fn router(store: Store) -> Router<Store> {
         .route(
             &format!("{workspace}/issues/{{issue}}/unarchive"),
             post(issues::unarchive),
+        )
+        .route(
+            &format!("{workspace}/issues/{{issue}}/activity"),
+            get(issues::activity),
         )
         .route(
             &format!("{workspace}/issues/{{issue}}/comments"),
@@ -517,6 +563,10 @@ fn cors() -> tower_http::cors::CorsLayer {
         resources::project,
         resources::create_project,
         resources::update_project,
+        resources::milestones,
+        resources::milestone,
+        resources::sprints,
+        resources::sprint,
         issues::list,
         issues::get,
         issues::create,
@@ -525,6 +575,7 @@ fn cors() -> tower_http::cors::CorsLayer {
         issues::restore,
         issues::archive,
         issues::unarchive,
+        issues::activity,
         issues::comments,
         issues::comment,
         issues::create_comment,
@@ -547,9 +598,11 @@ fn cors() -> tower_http::cors::CorsLayer {
         description = "Beta: breaking changes are possible and will be announced. \
             Authenticate with `Authorization: Bearer bw_pat_...`, a personal access token \
             created under Settings → API tokens. A token acts as its user, limited to read \
-            or write access and optionally to listed workspaces. Lists return \
-            `{data, next_cursor}`. Single records carry an `ETag`; send it back as `If-Match` \
-            to fail with 412 instead of overwriting a concurrent change. Writes accept an \
+            access, comment access or write access, and optionally to listed workspaces. \
+            Writes record the token as `via`, so they show which integration acted. Records \
+            name what they point at, and writes and filters take names, keys and emails \
+            wherever they take ids. Lists return `{data, next_cursor}`. Single records carry \
+            an `ETag`; send it back as `If-Match` to fail with 412 instead of overwriting a concurrent change. Writes accept an \
             `Idempotency-Key` header. Responses report `X-RateLimit-Limit`, \
             `X-RateLimit-Remaining` and `X-RateLimit-Reset`. Errors are `{error}`."
     )

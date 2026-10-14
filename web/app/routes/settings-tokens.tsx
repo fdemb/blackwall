@@ -66,7 +66,7 @@ export default function Tokens() {
                 <div className="min-w-0 flex-1 basis-60">
                   <p className="flex items-center gap-2 font-medium">
                     <span className="truncate">{token.name}</span>
-                    <Badge>{t(token.access === "write" ? "tokens.write" : "tokens.read")}</Badge>
+                    <Badge>{t(`tokens.${token.access}`)}</Badge>
                   </p>
                   <p className="truncate text-muted-foreground">
                     <code className="font-mono text-[11px]">{token.prefix}…</code>
@@ -198,6 +198,7 @@ function TokenForm({
     >
       <TextField
         label={t("field.name")}
+        description={t("tokens.nameHint")}
         value={name}
         onChange={setName}
         autoComplete="off"
@@ -213,6 +214,7 @@ function TokenForm({
         onSelectionChange={(k) => setAccess(k as ApiToken["access"])}
         options={[
           { id: "read", label: t("tokens.read") },
+          { id: "comment", label: t("tokens.comment") },
           { id: "write", label: t("tokens.write") },
         ]}
       />

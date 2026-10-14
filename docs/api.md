@@ -10,20 +10,26 @@ Create personal access tokens under Settings → API tokens, or with `POST /inte
 
 A token acts as its user and never exceeds the user's role. It narrows that role further in two ways:
 
-- `access`: `read` allows only reads, and `write` also allows writes.
+- `access`: `read` allows only reads, `comment` also allows writing, editing and deleting comments, and `write` allows every write.
 - `workspace_ids`: an optional allowlist. A token without one reaches every workspace the user belongs to.
 
 Tokens may expire after 1 to 366 days or never expire. A user may hold at most 50. `last_used_at` is updated at most once a minute. Revoking a token takes effect on the next request. A password reset revokes every token of the account; a password change does not.
 
 Send `Authorization: Bearer bw_pat_...`. Session tokens are rejected on `/api/v1`, and PATs are rejected on `/internal-api`.
 
+## Attribution
+
+Writes through a token are the token user's writes: roles, notifications and `actor_id` treat them that way. Each one also records the token as `via`: `{"kind": "api" | "mcp", "token_id": "...", "name": "Claude Code"}`, with the token's name at the time of the write. Comments carry it as `via`, activity entries as `via`, issues as `created_via`, and webhook deliveries as `via`. The app shows it as "Filip via Claude Code". Name each agent's token after the agent, so its changes can be found and reverted on their own.
+
 ## Conventions
 
 - `GET /api/v1/openapi.json` describes every endpoint and needs no token.
-- Lists return `{data, next_cursor}`. Pass `next_cursor` back as `cursor`. `limit` is 1 to 200 and defaults to 50. Issue lists sorted by `updated` page by keyset, which stays stable while issues change.
+- Lists return `{data, next_cursor}`. Pass `next_cursor` back as `cursor`. `limit` is 1 to 200 and defaults to 50. Issue lists also return `total`, the number of matches across every page. Issue lists sorted by `updated` page by keyset, which stays stable while issues change.
 - Issues are addressed by UUID or by key, such as `ENG-42` (case-insensitive): the team's key, then the issue's number in that team. Responses include both `id` and `key`. Creating a team requires a `key` of 1 to 4 uppercase letters or digits, starting with a letter and unique in the workspace.
 - Single records carry `ETag: "<version>"`. Send it back as `If-Match` on `PATCH`, `DELETE` or an issue transition. A stale version fails with 412 instead of overwriting a concurrent change. Writes without `If-Match` are last-writer-wins.
-- `PATCH` is a merge patch. Omitted fields stay as they are. On issues, `null` clears `assignee`, `estimate`, `deadline`, `project_id`, `milestone_id`, `sprint_id` and `parent_id`. Unknown fields are rejected.
+- Issues name the records they point at: `team` is `{id, key, name}`, `stage` is `{id, name, kind}`, `assignee`, `created_by` and `followers` are `{id, display_name, email}`, `labels` are `{id, name, color}`, `project` and `milestone` are `{id, name}`, `sprint` is `{id, number, name, state}`, and `parent` and `dependencies` are `{id, key, title}`. Comments name their `author` and `mentions` the same way.
+- Issue and comment writes take the same field names, and each accepts a UUID or a name: `team` by key or name, `stage` by name in the issue's team, `assignee` and `mentions` by email, display name or `me`, `labels`, `project` and `milestone` by name, `sprint` by name or number (`12` or `#12`), and `parent` and `dependencies` by key. Names match case-insensitively. A name that matches nothing returns 400 listing the names that exist; one that matches several returns 400 asking for the id.
+- `PATCH` is a merge patch. Omitted fields stay as they are. On issues, `null` clears `assignee`, `estimate`, `deadline`, `project`, `milestone`, `sprint` and `parent`. `labels` replaces the whole set, and `[]` removes every label; `add_labels` and `remove_labels` change only the labels they name. Unknown fields are rejected.
 - Writes accept `Idempotency-Key`, which is scoped to the workspace and the user. Replaying a key with the same request returns the same record. Reusing it for a different request returns 409.
 - Errors are `{error}` with the usual status codes. A request outside the token's scope returns 403 and names the reason.
 - Browsers may call `/api/v1` from any origin (`Access-Control-Allow-Origin: *`). Preflights need no token, and credentials are never allowed, so cookies play no part. `ETag`, `Retry-After`, `WWW-Authenticate` and the rate-limit headers are readable from scripts. Prefer keeping tokens out of browser code that other people use.
@@ -41,12 +47,16 @@ All of these are under `/api/v1`:
 | Stages | `GET`, `POST .../teams/{team}/stages`; `GET`, `PATCH`, `DELETE .../stages/{stage}?replacement=<stage>` |
 | Labels | `GET`, `POST .../labels`; `GET`, `PATCH .../labels/{label}` |
 | Projects | `GET`, `POST .../projects`; `GET`, `PATCH .../projects/{project}` |
-| Issues | `GET`, `POST .../issues`; `GET`, `PATCH`, `DELETE .../issues/{issue}`; `POST .../issues/{issue}/restore`, `/archive`, `/unarchive` |
+| Milestones | `GET .../milestones`; `GET .../milestones/{milestone}` |
+| Sprints | `GET .../sprints`; `GET .../sprints/{sprint}` |
+| Issues | `GET`, `POST .../issues`; `GET`, `PATCH`, `DELETE .../issues/{issue}`; `POST .../issues/{issue}/restore`, `/archive`, `/unarchive`; `GET .../issues/{issue}/activity` |
 | Comments | `GET`, `POST .../issues/{issue}/comments`; `GET`, `PATCH`, `DELETE .../comments/{comment}` |
 | Attachments | `GET .../attachments/{attachment}` |
 | Webhooks | `GET /webhook-events`; `GET`, `POST .../webhooks`; `GET`, `PATCH`, `DELETE .../webhooks/{webhook}` |
 
-The issue list accepts `where` (the JSON clause array described in [filters](filters.md)), `search`, `archived`, `trash` and `sort`. `DELETE` on an issue moves it to the trash.
+The issue list accepts `where` (the JSON clause array described in [filters](filters.md)), `search`, `archived`, `trash` and `sort`. Filter values may be names wherever writes take them, and `team`, `stage`, `label`, `project`, `sprint` and `parent` stand for `team_id`, `stage_id`, `labels`, `project_id`, `sprint_id` and `parent_id`. A stage or sprint name matches every team's stage or sprint of that name. `DELETE` on an issue moves it to the trash.
+
+`GET .../issues/{issue}/activity` is the issue's history, newest first. Each entry has `actor`, `via`, `action` and the `fields` an update changed.
 
 Every write runs the same `Command` the app runs, through the same transaction. Validation, roles, OpenProject ownership, activity, notifications and webhooks therefore behave exactly as they do in the app.
 
@@ -65,11 +75,12 @@ Each delivery is a signed POST with only the essentials:
   "actor_id": "uuid",
   "entity_type": "issue",
   "entity_id": "uuid",
-  "fields": ["stage", "assignee"]
+  "fields": ["stage", "assignee"],
+  "via": { "kind": "mcp", "token_id": "uuid", "name": "Claude Code" }
 }
 ```
 
-`fields` appears only on issue updates. Fetch the entity through the API for its current state. Headers are `X-Blackwall-Event`, `Idempotency-Key` (the same on every retry) and `X-Blackwall-Signature: sha256=<hex HMAC-SHA256 of the raw body>`. Delivery is at least once.
+`fields` appears only on issue updates, and `via` only on writes made through a token. Fetch the entity through the API for its current state. Headers are `X-Blackwall-Event`, `Idempotency-Key` (the same on every retry) and `X-Blackwall-Signature: sha256=<hex HMAC-SHA256 of the raw body>`. Delivery is at least once.
 
 Personal, private and administrative actions never leave the workspace. These include notifications, alert settings, saved views, follows, invitations and integration changes. `issues.bulk_changed` and `issues.imported` carry no entity id, so list issues by `sort=updated` to see what changed.
 
@@ -79,7 +90,17 @@ Personal, private and administrative actions never leave the workspace. These in
 
 As the transport requires against DNS rebinding, `/mcp` checks `Origin`. Requests without one (desktop, CLI and server clients) and same-origin requests pass. A browser client on another origin needs that origin listed in `MCP_ALLOWED_ORIGINS`, comma-separated, for example `https://inspector.example.com`; `*` admits any origin. Every other origin gets 403 and no CORS headers.
 
-The tools are `list_workspaces`, `get_workspace_overview`, `search_issues`, `get_issue`, `create_issue`, `update_issue` and `add_comment`. Read-only tokens see only the first four. `workspace_id` may be omitted when the token reaches exactly one workspace. Tools accept issue keys such as `ENG-42` wherever they take an issue, including `parent_id`.
+The tools:
+
+| Access | Tools |
+| --- | --- |
+| `read` | `list_workspaces`, `get_workspace_overview`, `search_issues`, `get_issue`, `list_comments`, `get_issue_history`, `list_projects`, `list_sprints` |
+| `comment` | the above, plus `add_comment`, `edit_comment`, `delete_comment` |
+| `write` | all of the above, plus `create_issue`, `update_issue`, `delete_issue`, `restore_issue`, `archive_issue`, `unarchive_issue` |
+
+`tools/list` shows only the tools the token may call. `delete_issue` and `delete_comment` are annotated as destructive, so clients can ask before running them. `workspace_id` may be omitted when the token reaches exactly one workspace.
+
+Tools take the same names as the REST API, so an agent can write `{"issue": "ENG-42", "stage": "In progress", "assignee": "me"}` without looking anything up. Responses name every record. `search_issues` returns `total`, and compact issues with the first 200 characters of each description (`include_description` returns all of it). `get_issue` returns the first 20 comments and a cursor for `list_comments`. The `where` schema lists every filter field and its value format.
 
 Example with Claude Code:
 
