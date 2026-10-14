@@ -12,7 +12,6 @@ import { Plus } from "lucide-react";
 import { Button } from "~/components/ui/button";
 import { cn } from "~/lib/utils";
 import { IssueKey, issueKeyLength } from "./issue-key";
-import { issueCapabilities } from "~/lib/ownership";
 import { useI18n } from "~/lib/i18n";
 import { useWorkspace } from "~/lib/workspace";
 import type { Id, Issue } from "~/lib/types";
@@ -23,7 +22,7 @@ import {
   DeadlineChip,
   LabelChips,
   SubtaskProgress,
-  OpenProjectBadge,
+  SyncBadge,
 } from "./issue-parts";
 
 const TYPE = "application/x-blackwall-issue";
@@ -96,12 +95,10 @@ export function DndColumn({
   const { dragAndDropHooks } = useDragAndDrop({
     isDisabled: !canWrite || !canDrop,
     getItems: (keys) =>
-      [...keys]
-        .filter((k) => issues.some((issue) => issue.id === k && issueCapabilities(issue).move))
-        .map((k) => ({
-          [TYPE]: JSON.stringify({ id: k, column: id }),
-          "text/plain": String(k),
-        })),
+      [...keys].map((k) => ({
+        [TYPE]: JSON.stringify({ id: k, column: id }),
+        "text/plain": String(k),
+      })),
     acceptedDragTypes: [TYPE],
     getDropOperation: () => "move",
     onInsert: async (e) => {
@@ -110,9 +107,7 @@ export function DndColumn({
     },
     onReorder: (e) =>
       onDrop(
-        issues
-          .filter((issue) => e.keys.has(issue.id) && issueCapabilities(issue).move)
-          .map((issue) => issue.id),
+        issues.filter((issue) => e.keys.has(issue.id)).map((issue) => issue.id),
         beforeFor(e.target),
         id,
       ),
@@ -190,7 +185,7 @@ export function BoardCard({ issue, keyLength }: { issue: Issue; keyLength?: numb
     >
       <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
         <IssueKey number={issue.number} length={keyLength} />
-        <OpenProjectBadge issue={issue} />
+        <SyncBadge issue={issue} />
         <BlockedBadge issue={issue} />
         <span className="ml-auto">
           <AssigneeAvatar issue={issue} size={18} />

@@ -4,7 +4,7 @@ import { ApiError, workspaces } from "./api";
 import type { WorkspaceDb } from "./db";
 import { commandEntityIds, expectedVersions } from "./entity-versions";
 import { keys } from "./query-client";
-import { applyChanges } from "./sync";
+import { applyChanges } from "./change-feed";
 import type { Command, CommandResult, EntityVersions, Id, Issue, IssuePatch } from "./types";
 
 const now = () => new Date().toISOString();

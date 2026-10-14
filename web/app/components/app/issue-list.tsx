@@ -20,7 +20,6 @@ import { cn } from "~/lib/utils";
 import { PRIORITIES } from "~/lib/format";
 import { IssueKey, issueKeyLength } from "./issue-key";
 import { stageOf, isDoneOnly } from "~/lib/filters";
-import { issueCapabilities } from "~/lib/ownership";
 import { useI18n } from "~/lib/i18n";
 import { useWorkspace } from "~/lib/workspace";
 import type { Id, Issue, IssueGroup, IssuePatch } from "~/lib/types";
@@ -31,7 +30,7 @@ import {
   DeadlineChip,
   LabelChips,
   SubtaskProgress,
-  OpenProjectBadge,
+  SyncBadge,
 } from "./issue-parts";
 
 export type GroupBy = IssueGroup;
@@ -204,11 +203,7 @@ function useIssueGrid({
   // from the selection, so a bulk action never touches issues the person can't see.
   const visible = useMemo(
     () =>
-      new Set(
-        groups
-          .filter((g) => !collapsed.has(g.id))
-          .flatMap((g) => g.items.filter((i) => issueCapabilities(i).edit).map((i) => i.id)),
-      ),
+      new Set(groups.filter((g) => !collapsed.has(g.id)).flatMap((g) => g.items.map((i) => i.id))),
     [groups, collapsed],
   );
   const visibleSelected = useMemo(
@@ -228,8 +223,6 @@ function useIssueGrid({
     <GridList
       aria-label={t("nav.issues")}
       selectionMode={canSelect ? "multiple" : "none"}
-      disabledKeys={issues.filter((issue) => !issueCapabilities(issue).edit).map((i) => i.id)}
-      disabledBehavior="selection"
       selectionBehavior="toggle"
       selectedKeys={visibleSelected}
       onSelectionChange={(s: Selection) =>
@@ -326,10 +319,10 @@ export function IssueRow({
       href={`/${ws.id}/issue/${issue.id}`}
       className="group flex h-10 cursor-default items-center gap-2.5 border-b border-border/70 px-4 text-[13px] outline-none hover:bg-muted/60 focus-visible:bg-muted/60 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/60 selected:bg-accent/60"
     >
-      {canSelect && issueCapabilities(issue).edit && <RowSelectBox />}
+      {canSelect && <RowSelectBox />}
       <PriorityMenu
         issue={issue}
-        disabled={!canWrite || !issueCapabilities(issue).edit}
+        disabled={!canWrite}
         run={(patch) => run({ type: "update_issue", id: issue.id, patch })}
       />
       <IssueKey number={issue.number} length={keyLength} className="text-muted-foreground" />
@@ -339,7 +332,7 @@ export function IssueRow({
         </span>
       )}
       <span className="min-w-0 flex-1 truncate font-medium">{issue.title}</span>
-      <OpenProjectBadge issue={issue} />
+      <SyncBadge issue={issue} />
       <BlockedBadge issue={issue} />
       <SubtaskProgress issue={issue} />
       <span className="hidden md:block">
@@ -432,10 +425,7 @@ function BulkBar({
   const { ws, members, run } = useWorkspace();
   const [confirm, setConfirm] = useState(false);
   const byId = useMemo(() => new Map(issues.map((i) => [i.id, i] as const)), [issues]);
-  const ids = [...selected].filter((id) => {
-    const issue = byId.get(id);
-    return issue && issueCapabilities(issue).edit;
-  });
+  const ids = [...selected].filter((id) => byId.has(id));
   if (ids.length === 0) return null;
   const first = byId.get(ids[0]);
   const team = ws.teams.find((tm) => tm.id === first?.team_id);

@@ -10,7 +10,6 @@ use uuid::Uuid;
 mod changes;
 mod discussion;
 mod issues;
-pub mod ownership;
 pub(crate) mod persistence;
 mod planning;
 mod queue;
@@ -26,7 +25,7 @@ pub use reads::CollectionQuery;
 pub struct Store {
     pub pool: PgPool,
     pub outbox: Outbox,
-    pub(crate) openproject_client: reqwest::Client,
+    pub(crate) sync_client: reqwest::Client,
 }
 
 pub struct NewAttachment {
@@ -88,7 +87,7 @@ impl Store {
 
         Ok(Self {
             outbox: Outbox::new(pool.clone()),
-            openproject_client: crate::openproject::http_client()?,
+            sync_client: crate::sync::http_client()?,
             pool,
         })
     }
@@ -185,8 +184,6 @@ impl Store {
         if op.role == Role::Viewer && !personal {
             return Err(Error::Forbidden);
         }
-
-        op.authorize_issue_ownership(&command).await?;
 
         let action = command.kind();
         let id = match &command {

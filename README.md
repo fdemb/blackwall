@@ -13,7 +13,7 @@ cp .env.example .env
 cargo run
 ```
 
-`cargo run` starts HTTP only. Run `cargo run -- worker` in a second terminal for email, webhooks, reminders and OpenProject sync.
+`cargo run` starts HTTP only. Run `cargo run -- worker` in a second terminal for email, webhooks, reminders and issue sync.
 
 The server requires a PostgreSQL `DATABASE_URL` and applies SQLx migrations at startup. `DATABASE_MAX_CONNECTIONS` defaults to 16 and `DATABASE_ACQUIRE_TIMEOUT_SECONDS` to 10. `.env.example` uses `postgres://blackwall:blackwall@127.0.0.1:5432/blackwall`. The Compose services bind to loopback, and PostgreSQL keeps local data in the `postgres-data` volume. Set `POSTGRES_PORT` to change the host port and update your database URLs to match.
 
@@ -77,7 +77,7 @@ The API includes membership and invitations, workflows, labels, issue relations,
 
 ## Background delivery
 
-`blackwall serve` runs HTTP only. `blackwall worker` runs jobs only. Run both processes in production. Workers claim PostgreSQL jobs with leases and bounded attempts. Database changes and their jobs commit together. Workers use separate limits for email, webhook, and database jobs. `.env.example` documents concurrency, idle polling, shutdown drain time, and history retention. The idle poll interval is at most five seconds. Failed jobs expire after `JOBS_FAILED_RETENTION_DAYS`.
+`blackwall serve` runs HTTP only. `blackwall worker` runs jobs only. Run both processes in production. Workers claim PostgreSQL jobs with leases and bounded attempts. Database changes and their jobs commit together. Workers use separate limits for email, webhook, database, and sync jobs. `.env.example` documents concurrency, idle polling, shutdown drain time, and history retention. The idle poll interval is at most five seconds. Failed jobs expire after `JOBS_FAILED_RETENTION_DAYS`.
 
 A missing or stuck worker shows up as a growing `oldest_overdue_seconds`. It is reported by `blackwall queue status` and by the worker periodic "database and queue pressure" log line. Alert on it.
 
@@ -109,7 +109,7 @@ Outgoing integration requests use `Idempotency-Key` and `X-Blackwall-Signature: 
 }
 ```
 
-Generic signed webhooks and source links are included. OpenProject connections import basic work-package fields into selected teams through five-minute background polling. Imported issues are read-only, and settings uses asynchronously discovered project choices. See [OpenProject sync](docs/openproject.md) for setup, field ownership, and operational limits. Provider-specific OAuth and automatic repository synchronization are not included.
+Generic signed webhooks and source links are included. Issue sync connections keep selected teams in step with OpenProject in both directions: background polling imports work packages and comments, and local edits and comments are sent back in the background. Synced issues stay fully editable, and each field's import and send directions are configurable. See [Issue sync](docs/sync.md) for setup, merge rules, and operational limits. Provider-specific OAuth and automatic repository synchronization are not included.
 
 ## Verify
 

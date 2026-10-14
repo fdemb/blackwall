@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { createCommandRunner } from "./commands";
 import { workspaceDb, type Source } from "./db";
 import { issueQuery } from "./queries";
-import { applyChanges } from "./sync";
+import { applyChanges } from "./change-feed";
 import type { Comment, CommandResult, Issue, IssueFilter, Label } from "./types";
 
 const issue = (id: string, extra: Partial<Issue> = {}): Issue => ({

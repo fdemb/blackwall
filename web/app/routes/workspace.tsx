@@ -7,7 +7,7 @@ import { Kbd } from "~/components/ui/tooltip";
 import { ApiError } from "~/lib/api";
 import { preloadWorkspace } from "~/lib/db";
 import { queryClient } from "~/lib/query-client";
-import { startChangeFeed } from "~/lib/sync";
+import { startChangeFeed } from "~/lib/change-feed";
 import { clearLastWs, writeLastWs } from "~/lib/auth-guard";
 import { WorkspaceProvider, useWorkspace } from "~/lib/workspace";
 import { useI18n, type Key } from "~/lib/i18n";

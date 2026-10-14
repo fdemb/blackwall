@@ -62,7 +62,8 @@ impl Outbox {
     }
 
     /// Call on the same connection as the business writes. NOTIFY becomes visible at commit.
-    pub async fn insert(conn: &mut PgConnection, job: &NewJob) -> Result<()> {
+    /// Returns false when a duplicate key or another active sync job for the connection exists.
+    pub async fn insert(conn: &mut PgConnection, job: &NewJob) -> Result<bool> {
         if job.max_attempts.is_some_and(|n| !(1..=100).contains(&n)) {
             return Err(Error::BadRequest(
                 "job max_attempts must be between 1 and 100".into(),
@@ -81,12 +82,12 @@ impl Outbox {
             Some(_) => {
                 "INSERT INTO jobs(id,kind,payload_version,payload,queue,run_at,\
                 dedup_key,max_attempts) VALUES($1,$2,$3,$4,$5,to_timestamp($6),$7,$8) ON \
-                CONFLICT(dedup_key) DO NOTHING"
+                CONFLICT DO NOTHING"
             }
             None => {
                 "INSERT INTO jobs(id,kind,payload_version,payload,queue,run_at,\
                 dedup_key) VALUES($1,$2,$3,$4,$5,to_timestamp($6),$7) ON \
-                CONFLICT(dedup_key) DO NOTHING"
+                CONFLICT DO NOTHING"
             }
         };
         let mut query = sqlx::query(sql)
@@ -100,8 +101,7 @@ impl Outbox {
         if let Some(max_attempts) = job.max_attempts {
             query = query.bind(max_attempts);
         }
-        query.execute(conn).await?;
-        Ok(())
+        Ok(query.execute(conn).await?.rows_affected() == 1)
     }
 
     pub fn ready(&self) {
@@ -203,7 +203,7 @@ impl Outbox {
     }
 
     pub async fn claim_next(&self) -> Result<Option<Claim>> {
-        for queue in ["database", "email", "webhook", "openproject"] {
+        for queue in ["database", "email", "webhook", "sync"] {
             if let Some(claim) = self.claim(queue, 1).await?.pop() {
                 return Ok(Some(claim));
             }

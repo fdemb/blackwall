@@ -301,7 +301,7 @@ impl Workspace {
         };
 
         let mut issue = Issue {
-            openproject: None,
+            sync: None,
             blocked_count: 0,
             subtask_total: 0,
             subtask_completed: 0,
@@ -1348,6 +1348,7 @@ impl Workspace {
                     attachments,
                     created_at: now,
                     edited_at: None,
+                    sync: None,
                 });
                 result = Some(id)
             }

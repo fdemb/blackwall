@@ -5,8 +5,8 @@ pub mod exchange;
 pub mod fixtures;
 pub mod http;
 pub mod jobs;
-pub mod openproject;
 pub mod store;
+pub mod sync;
 pub mod web;
 
 #[cfg(test)]

@@ -132,6 +132,19 @@ pub struct Comment {
     pub attachments: Vec<Attachment>,
     pub created_at: DateTime<Utc>,
     pub edited_at: Option<DateTime<Utc>>,
+    /// Set on comments sent to or imported from a sync provider.
+    #[serde(default)]
+    pub sync: Option<CommentSync>,
+}
+
+/// The remote comment a local comment corresponds to.
+#[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
+pub struct CommentSync {
+    pub provider: String,
+    pub connection_id: Uuid,
+    pub remote_id: String,
+    /// The remote author's name when no member maps to them; None for sent comments.
+    pub author_name: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]

@@ -40,6 +40,7 @@ import { QueryStatus } from "~/components/app/query-status";
 import { useWorkspace } from "~/lib/workspace";
 import { cn } from "~/lib/utils";
 import type { Activity, Comment, Id, Issue, TimeEntry } from "~/lib/types";
+import { syncProviderName } from "~/lib/sync";
 import { Section, revealOnHover } from "./issue-section";
 import { AttachmentChip } from "./issue-content";
 
@@ -255,6 +256,16 @@ function CommentItem({ comment: c }: { comment: Comment }) {
           >
             {relativeTime(c.created_at, lang)}
           </time>
+          {c.sync?.provider && (
+            <span className="min-w-0 truncate text-xs text-muted-foreground">
+              {c.sync.author_name
+                ? t("sync.commentVia", {
+                    provider: syncProviderName(c.sync.provider),
+                    name: c.sync.author_name,
+                  })
+                : t("sync.commentViaProvider", { provider: syncProviderName(c.sync.provider) })}
+            </span>
+          )}
           {c.edited_at && (
             <span className="shrink-0 text-xs text-muted-foreground">· {t("comment.edited")}</span>
           )}

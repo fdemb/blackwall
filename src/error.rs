@@ -34,18 +34,6 @@ pub struct ErrorBody {
 
 impl IntoResponse for Error {
     fn into_response(self) -> Response {
-        if let Self::Database(sqlx::Error::Database(error)) = &self
-            && error.code().as_deref() == Some("23514")
-            && error.constraint() == Some(crate::store::ownership::OWNERSHIP_CONSTRAINT)
-        {
-            return (
-                StatusCode::CONFLICT,
-                Json(ErrorBody {
-                    error: crate::store::ownership::OWNERSHIP_MESSAGE.into(),
-                }),
-            )
-                .into_response();
-        }
         let status = match self {
             Self::BadRequest(_) => StatusCode::BAD_REQUEST,
             Self::Unauthorized => StatusCode::UNAUTHORIZED,

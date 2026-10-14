@@ -39,7 +39,7 @@ pub struct WorkerConfig {
     pub email_concurrency: usize,
     pub webhook_concurrency: usize,
     pub database_concurrency: usize,
-    pub openproject_concurrency: usize,
+    pub sync_concurrency: usize,
     pub poll_interval: Duration,
     pub drain_timeout: Duration,
     pub retention_days: i32,
@@ -52,7 +52,7 @@ impl Default for WorkerConfig {
             email_concurrency: 4,
             webhook_concurrency: 4,
             database_concurrency: 2,
-            openproject_concurrency: 2,
+            sync_concurrency: 2,
             poll_interval: Duration::from_secs(5),
             drain_timeout: Duration::from_secs(50),
             retention_days: 30,
@@ -84,7 +84,7 @@ impl WorkerConfig {
                 1,
                 16,
             )? as usize,
-            openproject_concurrency: setting("JOBS_OPENPROJECT_CONCURRENCY", 2, 1, 4)? as usize,
+            sync_concurrency: setting(sync_concurrency_variable(), 2, 1, 4)? as usize,
             poll_interval: Duration::from_millis(setting("JOBS_POLL_MS", 5000, 50, 5000)?),
             drain_timeout: Duration::from_secs(setting("JOBS_DRAIN_SECONDS", 50, 1, 120)?),
             retention_days: setting("JOBS_RETENTION_DAYS", 30, 1, 3650)? as i32,
@@ -101,9 +101,9 @@ impl WorkerConfig {
             || self.email_concurrency > 32
             || self.webhook_concurrency > 32
             || self.database_concurrency > 16
-            || self.openproject_concurrency == 0
-            || self.openproject_concurrency > 4
-            || pool_size < self.database_concurrency + self.openproject_concurrency + 3
+            || self.sync_concurrency == 0
+            || self.sync_concurrency > 4
+            || pool_size < self.database_concurrency + self.sync_concurrency + 3
             || self.poll_interval.is_zero()
             || self.poll_interval > Duration::from_secs(5)
             || self.drain_timeout.is_zero()
@@ -117,6 +117,17 @@ impl WorkerConfig {
         }
 
         Ok(())
+    }
+}
+
+/// `JOBS_OPENPROJECT_CONCURRENCY` remains an alias from before sync supported other providers.
+fn sync_concurrency_variable() -> &'static str {
+    if std::env::var_os("JOBS_SYNC_CONCURRENCY").is_none()
+        && std::env::var_os("JOBS_OPENPROJECT_CONCURRENCY").is_some()
+    {
+        "JOBS_OPENPROJECT_CONCURRENCY"
+    } else {
+        "JOBS_SYNC_CONCURRENCY"
     }
 }
 
@@ -160,7 +171,7 @@ pub async fn run_with_config(
     let mut tasks = JoinSet::new();
     let mut active = [0_usize; 4];
     let mut task_queues = HashMap::new();
-    let queues = ["email", "webhook", "database", "openproject"];
+    let queues = ["email", "webhook", "database", "sync"];
 
     let limits = [
         if mailer.enabled() {
@@ -170,7 +181,7 @@ pub async fn run_with_config(
         },
         config.webhook_concurrency,
         config.database_concurrency,
-        config.openproject_concurrency,
+        config.sync_concurrency,
     ];
 
     if !mailer.enabled() {
@@ -188,10 +199,10 @@ pub async fn run_with_config(
         if schedule_at <= tokio::time::Instant::now() {
             schedule_at = tokio::time::Instant::now() + config.poll_interval;
 
-            if let Err(error) = crate::openproject::schedule(&store).await {
+            if let Err(error) = crate::sync::schedule(&store).await {
                 tracing::warn!(
-                    error = %crate::openproject::failure_message(&error),
-                    "OpenProject scheduling failed"
+                    error = %crate::sync::failure_message(&error),
+                    "Sync scheduling failed"
                 );
             }
         }
@@ -370,8 +381,8 @@ async fn stopped(shutdown: &mut watch::Receiver<bool>) {
 
 /// Executes currently due work once, preserving missing-SMTP pause behavior.
 pub async fn tick(store: &Store, mailer: &Mailer) -> Result<()> {
-    crate::openproject::schedule(store).await?;
-    for queue in ["database", "webhook", "email", "openproject"] {
+    crate::sync::schedule(store).await?;
+    for queue in ["database", "webhook", "email", "sync"] {
         if queue == "email" && !mailer.enabled() {
             continue;
         }
@@ -420,10 +431,10 @@ pub async fn execute_with_renew_interval(
             Ok(job) if job.queue() != claim.queue => {
                 Err(DeliveryError::Permanent("job kind does not match queue"))
             }
-            Ok(Job::OpenProject(job)) => {
+            Ok(Job::Sync(job)) => {
                 let work = tokio::time::timeout(
                     Duration::from_secs(75),
-                    crate::openproject::execute(store, claim, &job),
+                    crate::sync::execute(store, claim, &job),
                 );
                 let Some(result) =
                     run_with_renewal(&store.outbox, claim, work, renew_interval).await
@@ -434,20 +445,20 @@ pub async fn execute_with_renew_interval(
                     Ok(Ok(())) => return Ok(()),
                     failed => {
                         let message = match &failed {
-                            Ok(Err(error)) => crate::openproject::failure_message(error),
-                            _ => "OpenProject sync timed out; retry scheduled".into(),
+                            Ok(Err(error)) => crate::sync::failure_message(error),
+                            _ => "Sync timed out; retry scheduled".into(),
                         };
-                        tracing::warn!(job = %claim.id, error = %message, "OpenProject sync failed");
+                        tracing::warn!(job = %claim.id, error = %message, "Sync failed");
                         if let Err(error) =
-                            crate::openproject::record_failure(store, claim, &job, &message).await
+                            crate::sync::record_failure(store, claim, &job, &message).await
                         {
                             tracing::warn!(
                                 job = %claim.id,
                                 error = %error,
-                                "OpenProject failure could not be recorded"
+                                "Sync failure could not be recorded"
                             );
                         }
-                        Err(DeliveryError::Transient("OpenProject sync failed"))
+                        Err(DeliveryError::Transient("sync failed"))
                     }
                 }
             }

@@ -13,7 +13,6 @@ import { useI18n } from "~/lib/i18n";
 import { useTimeEntries } from "~/lib/queries";
 import { useWorkspace } from "~/lib/workspace";
 import { cn } from "~/lib/utils";
-import { issueCapabilities } from "~/lib/ownership";
 import type { Id, Issue, IssuePatch, TimeEntry } from "~/lib/types";
 import { revealOnHover } from "./issue-section";
 
@@ -27,8 +26,7 @@ export function Properties({
   excludeIds: Id[];
 }) {
   const { t, lang } = useI18n();
-  const { ws, run, canWrite: workspaceCanWrite, member } = useWorkspace();
-  const canWrite = workspaceCanWrite && issueCapabilities(issue).edit;
+  const { ws, run, canWrite, member } = useWorkspace();
   const patch = (p: IssuePatch, version = issue.version) =>
     run(
       { type: "update_issue", id: issue.id, patch: p },

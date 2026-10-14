@@ -14,7 +14,7 @@ pub enum Job {
     Email(Email),
     Webhook(Webhook),
     Reminder(Reminder),
-    OpenProject(crate::openproject::SyncJob),
+    Sync(crate::sync::SyncJob),
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -63,7 +63,7 @@ impl Job {
             Job::Email(_) => "email",
             Job::Webhook(_) => "webhook",
             Job::Reminder(_) => "reminder",
-            Job::OpenProject(_) => "openproject",
+            Job::Sync(_) => "sync",
         }
     }
 
@@ -72,7 +72,7 @@ impl Job {
             Job::Email(_) => "email",
             Job::Webhook(_) => "webhook",
             Job::Reminder(_) => "database",
-            Job::OpenProject(_) => "openproject",
+            Job::Sync(_) => "sync",
         }
     }
 
@@ -81,7 +81,7 @@ impl Job {
             Job::Email(email) => serde_json::to_string(email),
             Job::Webhook(webhook) => serde_json::to_string(webhook),
             Job::Reminder(reminder) => serde_json::to_string(reminder),
-            Job::OpenProject(job) => serde_json::to_string(job),
+            Job::Sync(job) => serde_json::to_string(job),
         }
     }
 
@@ -90,7 +90,7 @@ impl Job {
             "email" => serde_json::from_str(payload).map(Job::Email),
             "webhook" => serde_json::from_str(payload).map(Job::Webhook),
             "reminder" => serde_json::from_str(payload).map(Job::Reminder),
-            "openproject" => serde_json::from_str(payload).map(Job::OpenProject),
+            "sync" => serde_json::from_str(payload).map(Job::Sync),
             _ => return Err("unknown job kind".into()),
         }
         .map_err(|_| "invalid job payload".into())
@@ -121,7 +121,7 @@ impl Job {
                 };
                 send_webhook(id, webhook, &secret).await
             }
-            Job::OpenProject(_) => Err(DeliveryError::Permanent(
+            Job::Sync(_) => Err(DeliveryError::Permanent(
                 "sync requires a fenced transaction",
             )),
             Job::Reminder(_) => Err(DeliveryError::Permanent(

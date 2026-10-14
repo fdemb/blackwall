@@ -155,6 +155,7 @@ impl Operation<'_> {
                     }
                 }
 
+                crate::sync::enqueue_comment(&mut self.tx, self.workspace_id, issue_id, id).await?;
                 self.created(id);
 
                 Some(id)
@@ -916,7 +917,8 @@ impl Operation<'_> {
                 }),
             ),
         )
-        .await
+        .await?;
+        Ok(())
     }
 
     async fn member_role(&mut self, user: Uuid) -> Result<String> {

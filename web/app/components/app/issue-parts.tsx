@@ -1,4 +1,4 @@
-import { CalendarDays, Link2, Lock } from "lucide-react";
+import { CalendarDays, ExternalLink, Link2, Lock, RefreshCw, TriangleAlert } from "lucide-react";
 import { Avatar } from "~/components/ui/avatar";
 import { Badge } from "~/components/ui/badge";
 import { cn } from "~/lib/utils";
@@ -8,38 +8,68 @@ import { useI18n } from "~/lib/i18n";
 import { useWorkspace } from "~/lib/workspace";
 import type { Issue } from "~/lib/types";
 import { LabelDot } from "./pickers";
-import { isImportedIssue, openprojectIssueUrl } from "~/lib/openproject";
+import { syncIssueUrl, syncProviderName, syncPushError } from "~/lib/sync";
 
-export function OpenProjectBadge({ issue }: { issue: Issue }) {
+export function SyncBadge({ issue }: { issue: Issue }) {
   const { t } = useI18n();
-  if (!isImportedIssue(issue)) return null;
+  if (!issue.sync) return null;
+  const provider = syncProviderName(issue.sync.provider);
+  const failed = syncPushError(issue) !== null;
   return (
-    <span title={t("openproject.readonly")} className="shrink-0 text-[11px] text-muted-foreground">
-      <Lock aria-hidden className="inline size-3" />{" "}
-      <span className="hidden sm:inline">{t("openproject.badge")}</span>
+    <span
+      title={failed ? t("sync.pushFailedShort", { provider }) : t("sync.syncedWith", { provider })}
+      className={cn(
+        "inline-flex shrink-0 items-center gap-1 text-[11px]",
+        failed
+          ? "text-[color-mix(in_oklch,var(--warning)_70%,var(--foreground))]"
+          : "text-muted-foreground",
+      )}
+    >
+      {failed ? (
+        <TriangleAlert aria-hidden className="size-3" />
+      ) : (
+        <RefreshCw aria-hidden className="size-3" />
+      )}
+      <span className="sr-only sm:not-sr-only">{provider}</span>
     </span>
   );
 }
 
-export function OpenProjectNotice({ issue }: { issue: Pick<Issue, "openproject"> }) {
+/** Where a synced issue lives remotely and whether the last change made it there. */
+export function SyncNotice({ issue }: { issue: Pick<Issue, "sync"> }) {
   const { t } = useI18n();
-  if (!isImportedIssue(issue)) return null;
-  const url = openprojectIssueUrl(issue);
+  if (!issue.sync) return null;
+  const provider = syncProviderName(issue.sync.provider);
+  const url = syncIssueUrl(issue);
+  const error = syncPushError(issue);
+  const label = t("sync.syncedWith", { provider });
   return (
-    <div className="mb-5 space-y-2 rounded-lg border border-border bg-muted/40 p-3 text-[13px]">
-      <p>{t("openproject.readonly")}</p>
-      {issue.openproject?.unavailable ? (
-        <p className="text-muted-foreground">{t("openproject.unavailable")}</p>
-      ) : null}
+    <div className="mb-4 space-y-1.5 text-xs text-muted-foreground">
       {url ? (
         <a
           href={url}
           target="_blank"
           rel="noreferrer noopener"
-          className="text-primary underline underline-offset-2"
+          className="inline-flex items-center gap-1.5 hover:text-foreground"
         >
-          {t("openproject.open")}
+          <RefreshCw aria-hidden className="size-3" />
+          {label}
+          <ExternalLink aria-hidden className="size-3" />
         </a>
+      ) : (
+        <p className="inline-flex items-center gap-1.5">
+          <RefreshCw aria-hidden className="size-3" />
+          {label}
+        </p>
+      )}
+      {error ? (
+        <p
+          role="status"
+          className="flex items-start gap-1.5 text-[color-mix(in_oklch,var(--warning)_70%,var(--foreground))]"
+        >
+          <TriangleAlert aria-hidden className="mt-px size-3 shrink-0" />
+          <span className="break-words">{t("sync.pushFailed", { provider, error })}</span>
+        </p>
       ) : null}
     </div>
   );

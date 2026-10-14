@@ -32,8 +32,7 @@ import { useIssueDetail, type IssueDetail } from "~/lib/queries";
 import { QueryStatus } from "~/components/app/query-status";
 import { useWorkspace } from "~/lib/workspace";
 import { cn } from "~/lib/utils";
-import { issueCapabilities } from "~/lib/ownership";
-import { OpenProjectNotice } from "~/components/app/issue-parts";
+import { SyncNotice } from "~/components/app/issue-parts";
 import type { Id, Issue, IssuePatch } from "~/lib/types";
 import { Properties } from "~/components/app/issue-properties";
 import {
@@ -113,8 +112,7 @@ function ArchivedBanner({ issue, wsId }: { issue: Issue; wsId: string }) {
 /** A link to a trashed issue still says which issue it was and offers the way back. */
 function DeletedIssue({ issue, wsId }: { issue: Issue; wsId: string }) {
   const { t } = useI18n();
-  const { run, canWrite: workspaceCanWrite } = useWorkspace();
-  const canWrite = workspaceCanWrite && issueCapabilities(issue).edit;
+  const { run, canWrite } = useWorkspace();
   const toast = useToast();
   useDocumentTitle(`${issueKey(issue.number)} ${issue.title}`);
   return (
@@ -153,8 +151,7 @@ function IssueView({ issue, detail }: { issue: Issue; detail: IssueDetail }) {
   const nav = useNavigate();
   const location = useLocation();
   const toast = useToast();
-  const { ws, me, run, team, canWrite: workspaceCanWrite } = useWorkspace();
-  const canWrite = workspaceCanWrite && issueCapabilities(issue).edit;
+  const { ws, me, run, team, canWrite } = useWorkspace();
   const inInbox = location.pathname.startsWith(`/${ws.id}/inbox/`);
   const tm = team(issue.team_id);
   useDocumentTitle(`${issueKey(issue.number)} ${issue.title}`);
@@ -269,7 +266,7 @@ function IssueView({ issue, detail }: { issue: Issue; detail: IssueDetail }) {
             <h1 className="sr-only">
               {t("issue.titleHeading", { key: issueKey(issue.number), title: issue.title })}
             </h1>
-            <OpenProjectNotice issue={issue} />
+            <SyncNotice issue={issue} />
             <div className="space-y-3">
               {parent && (
                 <div className="group flex items-center gap-1 text-xs text-muted-foreground">
@@ -384,10 +381,6 @@ function IssueView({ issue, detail }: { issue: Issue; detail: IssueDetail }) {
                   </div>
                 )}
               </div>
-              {!canWrite &&
-                workspaceCanWrite &&
-                issueCapabilities(issue).add_attachment &&
-                !issue.attachments.length && <AttachButton uploader={uploader} />}
               {(subs.length > 0 || addingSubtask) && (
                 <Subtasks
                   issue={issue}

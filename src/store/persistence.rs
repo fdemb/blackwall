@@ -3,17 +3,18 @@ use super::*;
 use crate::jobs::{Job, Reminder};
 use std::collections::BTreeSet;
 
+/// Who writes the issue. Local writes keep the stored sync link; sync writes replace it.
 #[derive(Clone, Copy)]
-pub(crate) enum Ownership<'a> {
+pub(crate) enum Origin<'a> {
     Local,
-    Remote(&'a OpenProjectSource),
+    Remote(&'a SyncLink),
 }
 
 pub(crate) async fn create(
     conn: &mut PgConnection,
     workspace: Uuid,
     i: &mut Issue,
-    ownership: Ownership<'_>,
+    origin: Origin<'_>,
 ) -> Result<()> {
     i.number = sqlx::query_scalar::<_,i64>("UPDATE workspaces SET next_issue_number=next_issue_number+1 WHERE id=$1 RETURNING next_issue_number-1")
             .bind(workspace)
@@ -25,7 +26,7 @@ pub(crate) async fn create(
             .bind(i.stage_id)
             .fetch_one(&mut *conn)
             .await?;
-    insert(conn, workspace, i, ownership).await
+    insert(conn, workspace, i, origin).await
 }
 
 pub(crate) struct CreationBatch {
@@ -67,7 +68,7 @@ pub(crate) async fn create_allocated(
     conn: &mut PgConnection,
     workspace: Uuid,
     issue: &mut Issue,
-    source: &OpenProjectSource,
+    source: &SyncLink,
     allocation: &mut CreationBatch,
 ) -> Result<()> {
     issue.number = allocation.next_number;
@@ -77,16 +78,13 @@ pub(crate) async fn create_allocated(
         .checked_add(1024)
         .ok_or_else(|| Error::Conflict("issue position exhausted".into()))?;
     issue.position = *position;
-    insert(conn, workspace, issue, Ownership::Remote(source)).await
+    insert(conn, workspace, issue, Origin::Remote(source)).await
 }
 
-fn source_value(i: &Issue, ownership: Ownership<'_>) -> Result<Option<serde_json::Value>> {
-    match ownership {
-        Ownership::Local if i.openproject.is_some() => Err(Error::Conflict(
-            "OpenProject imported issues are read-only".into(),
-        )),
-        Ownership::Local => Ok(None),
-        Ownership::Remote(source) => Ok(Some(serde_json::to_value(source)?)),
+fn source_value(origin: Origin<'_>) -> Result<Option<serde_json::Value>> {
+    match origin {
+        Origin::Local => Ok(None),
+        Origin::Remote(source) => Ok(Some(serde_json::to_value(source)?)),
     }
 }
 
@@ -94,10 +92,10 @@ async fn insert(
     conn: &mut PgConnection,
     workspace: Uuid,
     i: &Issue,
-    ownership: Ownership<'_>,
+    origin: Origin<'_>,
 ) -> Result<()> {
-    let source = source_value(i, ownership)?;
-    sqlx::query("INSERT INTO issues(id,workspace_id,number,title,description,team_id,stage_id,assignee,priority,estimate,deadline,project_id,milestone_id,sprint_id,parent_id,position,archived_at,done_at,created_at,updated_at,openproject,created_by) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$19,$20,$21)")
+    let source = source_value(origin)?;
+    sqlx::query("INSERT INTO issues(id,workspace_id,number,title,description,team_id,stage_id,assignee,priority,estimate,deadline,project_id,milestone_id,sprint_id,parent_id,position,archived_at,done_at,created_at,updated_at,sync,created_by) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$19,$20,$21)")
             .bind(i.id)
             .bind(workspace)
             .bind(i.number as i64)
@@ -121,7 +119,7 @@ async fn insert(
             .bind(i.created_by)
             .execute(&mut *conn)
             .await?;
-    if matches!(ownership, Ownership::Local) {
+    if matches!(origin, Origin::Local) {
         save_relations(conn, workspace, i).await?;
     }
 
@@ -132,14 +130,14 @@ pub(crate) async fn save(
     conn: &mut PgConnection,
     workspace: Uuid,
     i: &Issue,
-    ownership: Ownership<'_>,
+    origin: Origin<'_>,
 ) -> Result<()> {
     save_fields(
         conn,
         workspace,
         i,
-        ownership,
-        matches!(ownership, Ownership::Remote(_)),
+        origin,
+        matches!(origin, Origin::Remote(_)),
     )
     .await
 }
@@ -148,13 +146,12 @@ async fn save_fields(
     conn: &mut PgConnection,
     workspace: Uuid,
     i: &Issue,
-    ownership: Ownership<'_>,
+    origin: Origin<'_>,
     increment_version: bool,
 ) -> Result<()> {
-    let source = source_value(i, ownership)?;
-    // Only OpenProject reassigns the creator, when its author or the people mapping changes.
-    let remote = matches!(ownership, Ownership::Remote(_));
-    sqlx::query("UPDATE issues SET title=$3,description=$4,team_id=$16,stage_id=$5,assignee=$6,priority=$7,estimate=$8,deadline=$9,project_id=$10,milestone_id=$11,sprint_id=$12,parent_id=$13,position=$14,deleted_at=$15,updated_at=now(),openproject=$17,archived_at=$18,done_at=$19,version=version+CASE WHEN $20 THEN 1 ELSE 0 END,created_by=CASE WHEN $21 THEN $22 ELSE created_by END WHERE workspace_id=$1 AND id=$2")
+    let source = source_value(origin)?;
+    let remote = matches!(origin, Origin::Remote(_));
+    sqlx::query("UPDATE issues SET title=$3,description=$4,team_id=$16,stage_id=$5,assignee=$6,priority=$7,estimate=$8,deadline=$9,project_id=$10,milestone_id=$11,sprint_id=$12,parent_id=$13,position=$14,deleted_at=$15,updated_at=now(),sync=CASE WHEN $21 THEN $17 ELSE sync END,archived_at=$18,done_at=$19,version=version+CASE WHEN $20 THEN 1 ELSE 0 END WHERE workspace_id=$1 AND id=$2")
             .bind(workspace)
             .bind(i.id)
             .bind(&i.title)
@@ -176,7 +173,6 @@ async fn save_fields(
             .bind(i.done_at)
             .bind(increment_version)
             .bind(remote)
-            .bind(i.created_by)
             .execute(&mut *conn)
             .await?;
 
@@ -347,12 +343,22 @@ pub(crate) async fn issue_effects(
     after: &Issue,
     effects: IssueEffects,
 ) -> Result<()> {
+    // Local edits of synced issues queue their exported fields; imports use `PageEffects`.
+    if let (IssueEffects::Update | IssueEffects::Move, Some(before)) = (&effects, before) {
+        crate::sync::enqueue_fields(conn, workspace, before, after).await?;
+    }
     issue_effects_with_context(conn, workspace, actor, before, after, effects, None).await
 }
 
 struct Integration {
     id: Uuid,
     url: String,
+}
+
+/// The member that sync activity is attributed to: the workspace's first owner.
+pub(crate) async fn sync_actor(conn: &mut PgConnection, workspace: Uuid) -> Result<Uuid> {
+    Ok(sqlx::query_scalar("SELECT user_id FROM workspace_members WHERE workspace_id=$1 AND role='owner' ORDER BY user_id LIMIT 1")
+        .bind(workspace).fetch_one(conn).await?)
 }
 
 pub(crate) struct PageEffects {
@@ -367,10 +373,8 @@ impl PageEffects {
         workspace: Uuid,
         stages: BTreeMap<Uuid, String>,
     ) -> Result<Self> {
-        let actor = sqlx::query_scalar("SELECT user_id FROM workspace_members WHERE workspace_id=$1 AND role='owner' ORDER BY user_id LIMIT 1")
-            .bind(workspace).fetch_one(&mut *conn).await?;
         Ok(Self {
-            actor,
+            actor: sync_actor(conn, workspace).await?,
             integrations: integrations(conn, workspace).await?,
             stages,
         })

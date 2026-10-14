@@ -67,56 +67,88 @@ export interface SourceLink {
   url: string;
   title: string;
 }
-export interface OpenProjectIssue {
+export interface SyncLink {
+  provider: SyncProviderKind;
   connection_id: Id;
-  work_package_id: number;
-  project_id: number;
-  parent_work_package_id?: number | null;
+  remote_id: string;
+  project_id: string;
+  parent_remote_id?: string | null;
   status_name: string;
   url: string;
-  unavailable: boolean;
+  push_error?: string | null;
 }
-export interface OpenProjectMapping {
-  project_id: number;
+export type SyncProviderKind = "openproject";
+export type SyncField =
+  | "status"
+  | "title"
+  | "description"
+  | "assignee"
+  | "due_date"
+  | "priority"
+  | "parent"
+  | "comments";
+export interface SyncDirection {
+  import: boolean;
+  export: boolean;
+}
+export type SyncOptions = Partial<Record<SyncField, SyncDirection>>;
+export interface SyncProvider {
+  kind: SyncProviderKind;
+  name: string;
+  /** Directions the provider supports. */
+  fields: SyncOptions;
+  /** Options for new connections. */
+  defaults: SyncOptions;
+}
+export interface SyncMapping {
+  project_id: string;
   team_id: Id;
   stage_mapping?: Record<string, Id>;
 }
-export interface OpenProjectStatus {
-  id: number;
+export interface SyncStatus {
+  id: string;
   name: string;
   is_closed: boolean;
 }
-export interface OpenProjectPerson {
-  id: number;
+export interface SyncPerson {
+  id: string;
   name: string;
   email: string | null;
 }
-export interface OpenProjectConnection {
+export interface SyncConnection {
   id: Id;
+  provider: SyncProviderKind;
   name: string;
   base_url: string;
   enabled: boolean;
   generation: number;
-  projects: OpenProjectMapping[];
-  cached_projects: { id: number; name: string }[];
-  cached_statuses: OpenProjectStatus[];
-  cached_people: OpenProjectPerson[];
+  options: SyncOptions;
+  projects: SyncMapping[];
+  cached_projects: { id: string; name: string }[];
+  cached_statuses: SyncStatus[];
+  cached_people: SyncPerson[];
   people_mapping: Record<string, Id>;
   status: "pending" | "syncing" | "idle" | "error";
   last_error: string;
   last_checked_at: string | null;
   last_synced_at: string | null;
+  /** Local changes waiting to be sent; older servers omit it. */
+  pending_pushes?: number;
+  /** Why waiting changes can't be sent (credentials or permissions); older servers omit it. */
+  push_error?: string | null;
 }
-export interface OpenProjectConnectionInput {
+export interface SyncConnectionInput {
+  provider: SyncProviderKind;
   name: string;
   base_url: string;
   token: string;
   enabled?: boolean;
-  projects?: OpenProjectMapping[];
+  options?: SyncOptions;
+  projects?: SyncMapping[];
   people_mapping?: Record<string, Id>;
 }
 export interface Issue {
-  openproject?: OpenProjectIssue | null;
+  sync?: SyncLink | null;
   id: Id;
   version: number;
   blocked_count: number;
@@ -128,7 +160,7 @@ export interface Issue {
   team_id: Id;
   stage_id: Id;
   assignee: Id | null;
-  /** Null for OpenProject issues and issues created before creators were stored. */
+  /** Null for synced issues without a mapped author and issues created before creators were stored. */
   created_by: Id | null;
   priority: Priority;
   labels: Id[];
@@ -159,6 +191,12 @@ export interface Comment {
   attachments: Attachment[];
   created_at: string;
   edited_at: string | null;
+  /** Set on comments imported from a sync provider; older servers omit it. */
+  sync?: CommentSync | null;
+}
+export interface CommentSync {
+  provider: string;
+  author_name?: string | null;
 }
 export interface TimeEntry {
   id: Id;
