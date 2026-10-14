@@ -1,14 +1,18 @@
 use crate::error::{Error, Result};
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Datelike, Utc};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use uuid::Uuid;
 
 mod commands;
+mod events;
+mod filter;
 mod issues;
 mod operations;
 
 pub use commands::*;
+pub use events::*;
+pub use filter::*;
 pub use issues::*;
 
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema, PartialEq, Eq)]
@@ -54,11 +58,38 @@ pub struct Team {
     pub version: i64,
     pub id: Uuid,
     pub name: String,
+    /// Prefixes the team's issue numbers, as in `ENG-42`. Unique in the workspace.
+    /// Transfers without one get a key derived from the name.
+    #[serde(default)]
+    pub key: String,
     pub members: Vec<Uuid>,
     pub stages: Vec<Stage>,
     /// Days after entering Done before auto-archive. Null means never.
     #[serde(default = "default_archive_days")]
     pub archive_after_days: Option<u32>,
+    #[serde(default = "default_team_icon")]
+    pub icon: String,
+    #[serde(default = "default_team_color")]
+    pub color: String,
+}
+
+impl Team {
+    /// Where backlog work lands when it joins a sprint: the first planned stage,
+    /// else the first active one.
+    pub(crate) fn sprint_stage(&self) -> Result<Uuid> {
+        [StageKind::Planned, StageKind::Active]
+            .iter()
+            .find_map(|kind| {
+                self.stages
+                    .iter()
+                    .filter(|s| s.kind == *kind)
+                    .min_by_key(|s| (s.position, s.id))
+            })
+            .map(|s| s.id)
+            .ok_or(Error::BadRequest(
+                "team has no stage for sprint work".into(),
+            ))
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
@@ -99,12 +130,22 @@ pub enum SprintState {
     Archived,
 }
 
+impl SprintState {
+    /// Completed and archived sprints no longer accept planning changes.
+    pub fn is_finished(&self) -> bool {
+        matches!(self, Self::Completed | Self::Archived)
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct Sprint {
     #[serde(default = "initial_version")]
     pub version: i64,
     pub id: Uuid,
     pub team_id: Uuid,
+    /// Counts up per team. The store assigns it on insert, so imported values are ignored.
+    #[serde(default)]
+    pub number: u64,
     pub name: String,
     pub goal: String,
     pub starts_at: DateTime<Utc>,
@@ -135,6 +176,9 @@ pub struct Comment {
     /// Set on comments sent to or imported from an issue tracker.
     #[serde(default)]
     pub tracker: Option<CommentTracker>,
+    /// The token that wrote the comment for its author, if one did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub via: Option<Via>,
 }
 
 /// The remote comment a local comment corresponds to.
@@ -145,6 +189,30 @@ pub struct CommentTracker {
     pub remote_id: String,
     /// The remote author's name when no member maps to them; None for sent comments.
     pub author_name: Option<String>,
+}
+
+/// The personal access token a write went through. The actor is still the token's user;
+/// this says an integration or agent acted for them.
+#[derive(Clone, Debug, Serialize, Deserialize, ToSchema, PartialEq, Eq)]
+pub struct Via {
+    pub kind: ViaKind,
+    pub token_id: Uuid,
+    /// The token's name when it acted, such as `Claude Code`.
+    pub name: String,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, ToSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ViaKind {
+    Api,
+    Mcp,
+}
+
+/// The token a write goes through; the store records it as a [`Via`] with the token's name.
+#[derive(Clone, Copy, Debug)]
+pub struct ViaToken {
+    pub kind: ViaKind,
+    pub token_id: Uuid,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
@@ -249,6 +317,8 @@ pub struct Activity {
     /// Issue fields an update changed, so the timeline can say what moved.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub fields: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub via: Option<Via>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
@@ -260,6 +330,9 @@ pub struct Integration {
     pub webhook_url: String,
     pub secret: String,
     pub enabled: bool,
+    /// Public webhook event types to deliver. Empty means every event.
+    #[serde(default)]
+    pub events: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
@@ -331,6 +404,201 @@ pub fn default_archive_days() -> Option<u32> {
     Some(30)
 }
 
+/// Icons a team can show, as lucide names. The web client renders the same list.
+pub const TEAM_ICONS: [&str; 24] = [
+    "users",
+    "rocket",
+    "code",
+    "palette",
+    "megaphone",
+    "shield",
+    "server",
+    "database",
+    "bug",
+    "flask",
+    "briefcase",
+    "headset",
+    "globe",
+    "zap",
+    "book",
+    "wrench",
+    "chart",
+    "heart",
+    "cpu",
+    "smartphone",
+    "layers",
+    "target",
+    "compass",
+    "leaf",
+];
+
+/// Team colors in assignment order. A new team takes the first least-used one.
+pub const TEAM_COLORS: [&str; 12] = [
+    "violet", "blue", "sky", "teal", "green", "lime", "amber", "orange", "red", "pink", "fuchsia",
+    "slate",
+];
+
+pub fn default_team_icon() -> String {
+    TEAM_ICONS[0].into()
+}
+
+pub fn default_team_color() -> String {
+    TEAM_COLORS[0].into()
+}
+
+/// The first palette color used by the fewest of `taken`.
+pub(crate) fn least_used_team_color<'a>(taken: impl IntoIterator<Item = &'a str>) -> &'static str {
+    let mut counts = [0usize; TEAM_COLORS.len()];
+    for color in taken {
+        if let Some(i) = TEAM_COLORS.iter().position(|c| *c == color) {
+            counts[i] += 1;
+        }
+    }
+    let min = counts.iter().min().copied().unwrap_or(0);
+    let index = counts.iter().position(|n| *n == min).unwrap_or(0);
+    TEAM_COLORS[index]
+}
+
+pub(crate) fn validate_team_appearance(icon: &str, color: &str) -> Result<()> {
+    if !TEAM_ICONS.contains(&icon) {
+        return Err(Error::BadRequest("unknown team icon".into()));
+    }
+    if !TEAM_COLORS.contains(&color) {
+        return Err(Error::BadRequest("unknown team color".into()));
+    }
+    Ok(())
+}
+
+/// Top-level app and server paths a workspace slug would shadow.
+const RESERVED_SLUGS: [&str; 9] = [
+    "api",
+    "assets",
+    "health",
+    "internal-api",
+    "login",
+    "mcp",
+    "recover",
+    "register",
+    "welcome",
+];
+
+/// Workspace slugs name the workspace in app URLs: lowercase letters and digits
+/// in hyphen-separated runs, at most 48 bytes.
+pub fn validate_workspace_slug(slug: &str) -> Result<()> {
+    let valid = !slug.is_empty()
+        && slug.len() <= 48
+        && slug.split('-').all(|run| {
+            !run.is_empty()
+                && run
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+        });
+    if !valid {
+        return Err(Error::BadRequest(
+            "slug must be 1 to 48 lowercase letters, digits and single hyphens".into(),
+        ));
+    }
+    if RESERVED_SLUGS.contains(&slug) {
+        return Err(Error::BadRequest("slug is reserved".into()));
+    }
+    Ok(())
+}
+
+/// The slug the app suggests for a workspace name.
+pub fn workspace_slug(name: &str) -> String {
+    let mut slug = String::with_capacity(name.len().min(48));
+    for c in name.chars().map(|c| c.to_ascii_lowercase()) {
+        if c.is_ascii_lowercase() || c.is_ascii_digit() {
+            slug.push(c);
+        } else if !slug.is_empty() && !slug.ends_with('-') {
+            slug.push('-');
+        }
+        if slug.len() == 48 {
+            break;
+        }
+    }
+    let trimmed = slug.trim_end_matches('-').len();
+    slug.truncate(trimmed);
+    if slug.is_empty() {
+        slug.push_str("workspace");
+    } else if RESERVED_SLUGS.contains(&slug.as_str()) {
+        slug.push_str("-workspace");
+    }
+    slug
+}
+
+/// Team keys prefix issue numbers, as in `ENG-42`: an uppercase letter, then
+/// up to three uppercase letters or digits.
+pub fn validate_team_key(key: &str) -> Result<()> {
+    let bytes = key.as_bytes();
+    let valid = (1..=4).contains(&bytes.len())
+        && bytes[0].is_ascii_uppercase()
+        && bytes[1..]
+            .iter()
+            .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit());
+    if valid {
+        Ok(())
+    } else {
+        Err(Error::BadRequest(
+            "team key must be 1 to 4 uppercase letters or digits, starting with a letter".into(),
+        ))
+    }
+}
+
+/// The key the app suggests for a team name: its first three letters or digits,
+/// skipping leading digits.
+pub fn team_key(name: &str) -> String {
+    let key: String = name
+        .chars()
+        .filter(char::is_ascii_alphanumeric)
+        .skip_while(char::is_ascii_digit)
+        .take(3)
+        .map(|c| c.to_ascii_uppercase())
+        .collect();
+    if key.is_empty() { "T".into() } else { key }
+}
+
+/// `base`, or `base` with a number replacing its tail, whichever `taken` lacks first.
+pub(crate) fn unique_team_key(
+    base: &str,
+    taken: &std::collections::BTreeSet<String>,
+) -> Result<String> {
+    if !taken.contains(base) {
+        return Ok(base.into());
+    }
+    (2..1000)
+        .map(|n| {
+            let suffix = n.to_string();
+            format!("{}{suffix}", &base[..base.len().min(4 - suffix.len())])
+        })
+        .find(|key| !taken.contains(key))
+        .ok_or(Error::Conflict("no free team key".into()))
+}
+
+/// An issue key such as `ENG-42`, split into its team key and number.
+/// Case-insensitive; the key comes back uppercase.
+pub fn parse_issue_key(reference: &str) -> Option<(String, u64)> {
+    let (key, digits) = reference.split_once('-')?;
+    let key = key.to_ascii_uppercase();
+    validate_team_key(&key).ok()?;
+    let number = digits
+        .parse::<u64>()
+        .ok()
+        .filter(|n| *n > 0 && n.to_string() == digits)?;
+    Some((key, number))
+}
+
+/// Default stages for a new team, in order. Positions are the index. The sync
+/// client predicts them from client-chosen ids (`CreateTeam::default_stage_ids`).
+pub(crate) fn default_stages() -> [(&'static str, StageKind); 4] {
+    [
+        ("Backlog", StageKind::Backlog),
+        ("Todo", StageKind::Planned),
+        ("In progress", StageKind::Active),
+        ("Done", StageKind::Done),
+    ]
+}
+
 pub(crate) fn validate_archive_days(value: Option<u32>) -> Result<()> {
     if let Some(days) = value
         && !(1..=3650).contains(&days)
@@ -340,6 +608,30 @@ pub(crate) fn validate_archive_days(value: Option<u32>) -> Result<()> {
         ));
     }
     Ok(())
+}
+
+pub(crate) fn validate_email(email: &str) -> Result<()> {
+    if email.len() > 254
+        || email.contains(char::is_whitespace)
+        || !email
+            .split_once('@')
+            .is_some_and(|(a, b)| !a.is_empty() && b.contains('.'))
+    {
+        Err(Error::BadRequest("invalid email".into()))
+    } else {
+        Ok(())
+    }
+}
+
+pub(crate) fn validate_url(url: &str) -> Result<()> {
+    if url.len() > 2000
+        || !(url.starts_with("https://") || url.starts_with("http://"))
+        || url.contains(char::is_whitespace)
+    {
+        Err(Error::BadRequest("HTTP or HTTPS URL required".into()))
+    } else {
+        Ok(())
+    }
 }
 
 pub(crate) fn text(value: &str, max: usize) -> Result<()> {
@@ -352,9 +644,61 @@ pub(crate) fn text(value: &str, max: usize) -> Result<()> {
     }
 }
 
+/// Client-chosen id for a create command. Absent means the server generates one.
+pub(crate) fn client_id(provided: Option<Uuid>) -> Result<Uuid> {
+    match provided {
+        Some(id) if id.is_nil() => Err(Error::BadRequest("id must not be nil".into())),
+        Some(id) => Ok(id),
+        None => Ok(Uuid::new_v4()),
+    }
+}
+
+/// A timestamp a client wrote. PostgreSQL stores years outside 1-9999 that the
+/// sync client cannot ingest, so every client-writable timestamp is rejected
+/// unless its UTC value falls in years 1 through 9999.
+pub(crate) fn timestamp(value: DateTime<Utc>) -> Result<()> {
+    if (1..=9999).contains(&value.year()) {
+        Ok(())
+    } else {
+        Err(Error::BadRequest(
+            "timestamp year must be between 1 and 9999".into(),
+        ))
+    }
+}
+
+pub(crate) fn optional_timestamp(value: Option<DateTime<Utc>>) -> Result<()> {
+    if let Some(value) = value {
+        timestamp(value)?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn slugs_and_keys_follow_the_url_rules() {
+        assert_eq!(workspace_slug("  Acme -- R&D 2026 "), "acme-r-d-2026");
+        assert_eq!(workspace_slug("Login"), "login-workspace");
+        assert_eq!(workspace_slug("!!!"), "workspace");
+        for slug in ["", "-acme", "acme-", "a--b", "Acme", "api", &"a".repeat(49)] {
+            assert!(validate_workspace_slug(slug).is_err(), "{slug}");
+        }
+
+        assert_eq!(team_key("2nd line support"), "NDL");
+        assert_eq!(team_key("!!"), "T");
+        for key in ["", "eng", "1AB", "ENGIN", "E-1"] {
+            assert!(validate_team_key(key).is_err(), "{key}");
+        }
+        let taken = ["OPSX".to_string(), "OPS2".to_string()].into();
+        assert_eq!(unique_team_key("OPSX", &taken).unwrap(), "OPS3");
+
+        assert_eq!(parse_issue_key("eng-42"), Some(("ENG".into(), 42)));
+        for reference in ["42", "ENG-042", "ENG-0", "ENGIN-1", "ENG-+1"] {
+            assert_eq!(parse_issue_key(reference), None, "{reference}");
+        }
+    }
 
     fn setup() -> (Workspace, Uuid, Uuid) {
         let owner = Uuid::new_v4();
@@ -364,8 +708,11 @@ mod tests {
             .apply(
                 owner,
                 Command::CreateTeam {
+                    id: None,
                     name: "Infra".into(),
+                    key: "INF".into(),
                     members: vec![owner],
+                    default_stage_ids: None,
                 },
                 Utc::now(),
             )
@@ -378,6 +725,7 @@ mod tests {
 
     fn input(team_id: Uuid) -> IssueInput {
         IssueInput {
+            id: None,
             title: "Rotate keys".into(),
             description: String::new(),
             team_id,
@@ -393,6 +741,314 @@ mod tests {
             parent_id: None,
             dependencies: vec![],
         }
+    }
+
+    #[test]
+    fn client_ids_are_honored_and_collisions_rejected() {
+        let (mut w, owner, team) = setup();
+        let now = Utc::now();
+
+        let chosen = Uuid::new_v4();
+        let mut named = input(team);
+        named.id = Some(chosen);
+        let created = w
+            .apply(owner, Command::CreateIssue { input: named }, now)
+            .unwrap()
+            .id
+            .unwrap();
+        assert_eq!(created, chosen);
+
+        let mut again = input(team);
+        again.id = Some(chosen);
+        assert!(matches!(
+            w.apply(owner, Command::CreateIssue { input: again }, now),
+            Err(Error::Conflict(_))
+        ));
+
+        let mut nil = input(team);
+        nil.id = Some(Uuid::nil());
+        assert!(matches!(
+            w.apply(owner, Command::CreateIssue { input: nil }, now),
+            Err(Error::BadRequest(_))
+        ));
+
+        assert!(
+            matches!(
+                w.apply(
+                    owner,
+                    Command::CreateLabel {
+                        id: Some(chosen),
+                        name: "bug".into(),
+                        color: "#ef4444".into(),
+                    },
+                    now,
+                ),
+                Err(Error::Conflict(_))
+            ),
+            "ids are unique across entities in the domain model, as in SQL"
+        );
+        assert!(
+            matches!(
+                w.apply(
+                    owner,
+                    Command::CreateTeam {
+                        id: Some(chosen),
+                        name: "Taken".into(),
+                        key: "TAK".into(),
+                        members: vec![],
+                        default_stage_ids: None,
+                    },
+                    now
+                ),
+                Err(Error::Conflict(_))
+            ),
+            "ids are unique across entities in the domain model, as in SQL"
+        );
+    }
+
+    #[test]
+    fn client_timestamps_outside_years_1_to_9999_are_rejected() {
+        use chrono::NaiveDate;
+
+        fn utc(year: i32, month: u32, day: u32, hour: u32, min: u32, sec: u32) -> DateTime<Utc> {
+            DateTime::from_naive_utc_and_offset(
+                NaiveDate::from_ymd_opt(year, month, day)
+                    .unwrap()
+                    .and_hms_opt(hour, min, sec)
+                    .unwrap(),
+                Utc,
+            )
+        }
+
+        // 9999-12-31T23:30:00-01:00 lands in year 10000 UTC; PostgreSQL would
+        // store it, but the sync client could never ingest it back.
+        let after_range = utc(10000, 1, 1, 0, 30, 0);
+        let before_range = utc(0, 12, 31, 23, 30, 0);
+        let max_valid = utc(9999, 12, 31, 23, 59, 59);
+
+        let (mut w, owner, team) = setup();
+        let now = Utc::now();
+
+        for deadline in [after_range, before_range] {
+            let mut named = input(team);
+            named.deadline = Some(deadline);
+            assert!(
+                matches!(
+                    w.apply(owner, Command::CreateIssue { input: named }, now),
+                    Err(Error::BadRequest(_))
+                ),
+                "deadline {deadline} must be rejected"
+            );
+        }
+
+        let mut valid = input(team);
+        valid.deadline = Some(max_valid);
+        let issue = w
+            .apply(owner, Command::CreateIssue { input: valid }, now)
+            .unwrap()
+            .id
+            .unwrap();
+
+        for deadline in [after_range, before_range] {
+            assert!(
+                matches!(
+                    w.apply(
+                        owner,
+                        Command::UpdateIssue {
+                            id: issue,
+                            patch: IssuePatch {
+                                deadline: Some(deadline),
+                                ..Default::default()
+                            }
+                        },
+                        now
+                    ),
+                    Err(Error::BadRequest(_))
+                ),
+                "patch deadline {deadline} must be rejected"
+            );
+        }
+
+        let project = w
+            .apply(
+                owner,
+                Command::CreateProject {
+                    id: None,
+                    name: "Launch".into(),
+                    description: String::new(),
+                    team_ids: vec![team],
+                },
+                now,
+            )
+            .unwrap()
+            .id
+            .unwrap();
+
+        for deadline in [after_range, before_range] {
+            assert!(
+                matches!(
+                    w.apply(
+                        owner,
+                        Command::CreateMilestone {
+                            id: None,
+                            project_id: project,
+                            name: "Beta".into(),
+                            deadline: Some(deadline),
+                        },
+                        now
+                    ),
+                    Err(Error::BadRequest(_))
+                ),
+                "milestone deadline {deadline} must be rejected"
+            );
+        }
+        let milestone = w
+            .apply(
+                owner,
+                Command::CreateMilestone {
+                    id: None,
+                    project_id: project,
+                    name: "Beta".into(),
+                    deadline: Some(max_valid),
+                },
+                now,
+            )
+            .unwrap()
+            .id
+            .unwrap();
+        assert!(matches!(
+            w.apply(
+                owner,
+                Command::UpdateMilestone {
+                    id: milestone,
+                    name: "Beta".into(),
+                    deadline: Some(after_range),
+                },
+                now
+            ),
+            Err(Error::BadRequest(_))
+        ));
+
+        for instant in [after_range, before_range] {
+            assert!(
+                matches!(
+                    w.apply(
+                        owner,
+                        Command::CreateSprint {
+                            id: None,
+                            team_id: team,
+                            name: "Sprint".into(),
+                            goal: "Ship".into(),
+                            starts_at: instant,
+                            ends_at: instant + chrono::Duration::days(14),
+                        },
+                        now
+                    ),
+                    Err(Error::BadRequest(_))
+                ),
+                "sprint start {instant} must be rejected"
+            );
+        }
+        let sprint = w
+            .apply(
+                owner,
+                Command::CreateSprint {
+                    id: None,
+                    team_id: team,
+                    name: "Sprint".into(),
+                    goal: "Ship".into(),
+                    starts_at: max_valid - chrono::Duration::days(14),
+                    ends_at: max_valid,
+                },
+                now,
+            )
+            .unwrap()
+            .id
+            .unwrap();
+        assert!(matches!(
+            w.apply(
+                owner,
+                Command::UpdateSprint {
+                    id: sprint,
+                    name: "Sprint".into(),
+                    goal: "Ship".into(),
+                    starts_at: max_valid - chrono::Duration::days(14),
+                    ends_at: after_range,
+                    state: SprintState::Planned,
+                },
+                now
+            ),
+            Err(Error::BadRequest(_))
+        ));
+
+        for logged_at in [after_range, before_range] {
+            assert!(
+                matches!(
+                    w.apply(
+                        owner,
+                        Command::LogTime {
+                            id: None,
+                            issue_id: issue,
+                            minutes: 30,
+                            note: "Review".into(),
+                            logged_at,
+                        },
+                        now
+                    ),
+                    Err(Error::BadRequest(_))
+                ),
+                "logged_at {logged_at} must be rejected"
+            );
+        }
+        let entry = w
+            .apply(
+                owner,
+                Command::LogTime {
+                    id: None,
+                    issue_id: issue,
+                    minutes: 30,
+                    note: "Review".into(),
+                    logged_at: max_valid,
+                },
+                now,
+            )
+            .unwrap()
+            .id
+            .unwrap();
+        assert!(matches!(
+            w.apply(
+                owner,
+                Command::UpdateTime {
+                    id: entry,
+                    minutes: 30,
+                    note: "Review".into(),
+                    logged_at: before_range,
+                },
+                now
+            ),
+            Err(Error::BadRequest(_))
+        ));
+
+        assert!(matches!(
+            w.apply(
+                owner,
+                Command::SaveView {
+                    id: None,
+                    name: "Late".into(),
+                    shared: false,
+                    filter: IssueFilter {
+                        clauses: vec![FilterClause {
+                            field: FilterField::Deadline,
+                            op: FilterOp::Lte,
+                            values: vec![Some(after_range.to_rfc3339())],
+                        }],
+                        ..Default::default()
+                    },
+                },
+                now
+            ),
+            Err(Error::BadRequest(_))
+        ));
     }
 
     #[test]
@@ -530,7 +1186,11 @@ mod tests {
             .query(
                 owner,
                 IssueFilter {
-                    unassigned: true,
+                    clauses: vec![FilterClause {
+                        field: FilterField::Assignee,
+                        op: FilterOp::Is,
+                        values: vec![None],
+                    }],
                     ..Default::default()
                 },
             )
@@ -543,10 +1203,15 @@ mod tests {
             .apply(
                 owner,
                 Command::SaveView {
+                    id: None,
                     name: "Mine".into(),
                     shared: false,
                     filter: IssueFilter {
-                        assignee: Some(owner),
+                        clauses: vec![FilterClause {
+                            field: FilterField::Assignee,
+                            op: FilterOp::Is,
+                            values: vec![Some(owner.to_string())],
+                        }],
                         ..Default::default()
                     },
                 },
@@ -586,6 +1251,7 @@ mod tests {
             .apply(
                 viewer,
                 Command::SaveView {
+                    id: None,
                     name: "Mine".into(),
                     shared: false,
                     filter: IssueFilter::default(),
@@ -632,6 +1298,7 @@ mod tests {
             .apply(
                 owner,
                 Command::CreateLabel {
+                    id: None,
                     name: "bug".into(),
                     color: "#ef4444".into(),
                 },
@@ -658,6 +1325,7 @@ mod tests {
             .apply(
                 owner,
                 Command::CreateProject {
+                    id: None,
                     name: "Launch".into(),
                     description: String::new(),
                     team_ids: vec![],
@@ -671,6 +1339,7 @@ mod tests {
             .apply(
                 owner,
                 Command::CreateMilestone {
+                    id: None,
                     project_id: project,
                     name: "Beta".into(),
                     deadline: None,
@@ -767,6 +1436,7 @@ mod tests {
             .apply(
                 owner,
                 Command::CreateSprint {
+                    id: None,
                     team_id: team,
                     name: "Sprint".into(),
                     goal: "Ship".into(),
@@ -864,8 +1534,18 @@ mod tests {
             .query(
                 owner,
                 IssueFilter {
-                    assignee: Some(owner),
-                    priority: Some(Priority::High),
+                    clauses: vec![
+                        FilterClause {
+                            field: FilterField::Assignee,
+                            op: FilterOp::Is,
+                            values: vec![Some(owner.to_string())],
+                        },
+                        FilterClause {
+                            field: FilterField::Priority,
+                            op: FilterOp::Gte,
+                            values: vec![Some("high".into())],
+                        },
+                    ],
                     search: Some("certificates".into()),
                     ..Default::default()
                 },

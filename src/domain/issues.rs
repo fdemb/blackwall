@@ -1,10 +1,14 @@
+use super::filter::{Compiled, FilterClause, compile, deserialize_where};
 use super::initial_version;
+use crate::error::Result;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use uuid::Uuid;
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize, ToSchema, PartialEq, Eq)]
+#[derive(
+    Clone, Debug, Default, Serialize, Deserialize, ToSchema, PartialEq, Eq, PartialOrd, Ord,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum Priority {
     #[default]
@@ -122,8 +126,77 @@ pub struct Issue {
     pub updated_at: DateTime<Utc>,
 }
 
+/// What an edit does to keep backlog work out of sprints.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum SprintFit {
+    Keep,
+    /// The issue entered a backlog stage, so it leaves its sprint.
+    LeaveSprint,
+    /// The issue joined a sprint from the backlog, so it moves to the team's sprint stage.
+    Plan,
+}
+
+impl Issue {
+    /// Backlog issues have no sprint. `entered_stage` says whether the edit chose
+    /// the stage, which then wins over the sprint.
+    pub(crate) fn sprint_fit(&self, in_backlog: bool, entered_stage: bool) -> SprintFit {
+        if self.sprint_id.is_none() || !in_backlog {
+            SprintFit::Keep
+        } else if entered_stage {
+            SprintFit::LeaveSprint
+        } else {
+            SprintFit::Plan
+        }
+    }
+
+    /// Apply field values and clear flags; callers validate and persist the result.
+    pub(crate) fn apply_patch(&mut self, p: IssuePatch) {
+        set(&mut self.title, p.title);
+        set(&mut self.description, p.description);
+        set(&mut self.stage_id, p.stage_id);
+        set_or_clear(&mut self.assignee, p.assignee, p.clear_assignee);
+        set(&mut self.priority, p.priority);
+        set(&mut self.labels, p.labels);
+        set_or_clear(&mut self.estimate, p.estimate, p.clear_estimate);
+        set_or_clear(&mut self.deadline, p.deadline, p.clear_deadline);
+        set_or_clear(&mut self.project_id, p.project_id, p.clear_project);
+        // Leaving the project also leaves its milestone, unless the patch names one.
+        if p.clear_project {
+            self.milestone_id = None;
+        }
+        set_or_clear(&mut self.milestone_id, p.milestone_id, p.clear_milestone);
+        set_or_clear(&mut self.sprint_id, p.sprint_id, p.clear_sprint);
+        set_or_clear(&mut self.parent_id, p.parent_id, p.clear_parent);
+        set(&mut self.dependencies, p.dependencies);
+    }
+
+    /// Editable fields changed by the supplied replacement, in activity order.
+    pub(crate) fn changed_fields(&self, after: &Issue) -> Vec<String> {
+        [
+            ("title", self.title != after.title),
+            ("description", self.description != after.description),
+            ("stage", self.stage_id != after.stage_id),
+            ("assignee", self.assignee != after.assignee),
+            ("priority", self.priority != after.priority),
+            ("labels", self.labels != after.labels),
+            ("estimate", self.estimate != after.estimate),
+            ("deadline", self.deadline != after.deadline),
+            ("project", self.project_id != after.project_id),
+            ("milestone", self.milestone_id != after.milestone_id),
+            ("sprint", self.sprint_id != after.sprint_id),
+            ("parent", self.parent_id != after.parent_id),
+            ("dependencies", self.dependencies != after.dependencies),
+        ]
+        .into_iter()
+        .filter(|(_, changed)| *changed)
+        .map(|(name, _)| name.to_string())
+        .collect()
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct IssueInput {
+    pub id: Option<Uuid>,
     pub title: String,
     #[serde(default)]
     pub description: String,
@@ -188,25 +261,12 @@ pub enum BulkAction {
 #[derive(Clone, Debug, Default, Serialize, Deserialize, ToSchema, utoipa::IntoParams)]
 #[into_params(parameter_in = Query)]
 pub struct IssueFilter {
-    pub parent_id: Option<Uuid>,
-    pub dependency_id: Option<Uuid>,
+    /// Clauses ANDed together; see docs/filters.md. In a query string, the JSON array as text.
+    #[serde(default, rename = "where", deserialize_with = "deserialize_where")]
+    #[param(value_type = Option<String>)]
+    pub clauses: Vec<FilterClause>,
     pub ids: Option<String>,
-    #[serde(default)]
-    pub no_sprint: bool,
-    #[serde(default)]
-    pub open: bool,
-    pub assignee: Option<Uuid>,
-    pub created_by: Option<Uuid>,
-    pub team_id: Option<Uuid>,
-    pub stage_id: Option<Uuid>,
-    pub priority: Option<Priority>,
-    pub label_id: Option<Uuid>,
-    pub sprint_id: Option<Uuid>,
-    pub project_id: Option<Uuid>,
-    pub due_before: Option<DateTime<Utc>>,
     pub search: Option<String>,
-    #[serde(default)]
-    pub unassigned: bool,
     #[serde(default)]
     pub trash: bool,
     #[serde(default)]
@@ -219,6 +279,18 @@ pub struct IssueFilter {
     /// Summary omits description and detail-only relations. Full is the offline sync shape.
     #[serde(default)]
     pub projection: IssueProjection,
+}
+
+impl IssueFilter {
+    /// Parses the clauses, resolving relative days against `now`.
+    pub fn compile(&self, now: DateTime<Utc>) -> Result<Vec<Compiled>> {
+        compile(&self.clauses, now)
+    }
+
+    /// Rejects a filter the list query could not run.
+    pub fn validate(&self) -> Result<()> {
+        self.compile(Utc::now()).map(drop)
+    }
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, ToSchema)]
@@ -246,4 +318,19 @@ pub enum IssueSort {
     Deadline,
     Updated,
     Priority,
+}
+
+fn set<T>(field: &mut T, value: Option<T>) {
+    if let Some(value) = value {
+        *field = value;
+    }
+}
+
+/// `clear` wins over a supplied value.
+fn set_or_clear<T>(field: &mut Option<T>, value: Option<T>, clear: bool) {
+    if clear {
+        *field = None;
+    } else if value.is_some() {
+        *field = value;
+    }
 }

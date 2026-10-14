@@ -15,7 +15,7 @@ export function ProjectsStep({ draft, update, connection, pending }: StepProps) 
   const teams = ws.teams.map((team) => ({ id: team.id, label: team.name }));
   return (
     <div className="space-y-3">
-      <p className="text-xs text-muted-foreground">{t("tracker.projectsHint", { provider })}</p>
+      <p className="text-sm text-muted-foreground">{t("tracker.projectsHint", { provider })}</p>
       <Discovery
         connection={connection}
         hasItems={projects.length > 0}

@@ -6,7 +6,10 @@ import { EmptyState, Page, PageHeader } from "~/components/app/page";
 import { QueryStatus } from "~/components/app/query-status";
 import { useI18n } from "~/lib/i18n";
 import { useIssues } from "~/lib/queries";
+import { backlogStageId } from "~/lib/teams";
 import { useWorkspace } from "~/lib/workspace";
+import { effectiveFilter, isNarrowed, whereIs } from "~/lib/filters";
+import type { IssueFilter } from "~/lib/types";
 import { useTeamContext } from "./team";
 
 export default function TeamBacklog() {
@@ -15,17 +18,13 @@ export default function TeamBacklog() {
   const teamId = team.id;
   const { create, canWrite } = useWorkspace();
   const { filter, setFilter } = state;
-  const narrowed = Object.keys(filter).some(
-    (k) => k !== "sort" && k !== "sprint_id" && k !== "team_id" && filter[k as keyof typeof filter],
-  );
-  const query = useIssues({
-    ...filter,
-    team_id: teamId,
-    sprint_id: undefined,
-    no_sprint: true,
-    open: true,
+  // Issues in a backlog stage. Those never belong to a sprint.
+  const base: IssueFilter = {
+    where: [whereIs("team_id", teamId), whereIs("stage_kind", "backlog")],
     sort: filter.sort ?? "priority",
-  });
+  };
+  const narrowed = isNarrowed(filter, ["team_id", "sprint_id", "stage_kind"]);
+  const query = useIssues(effectiveFilter(filter, base));
   const issues = query.items;
 
   return (
@@ -36,7 +35,13 @@ export default function TeamBacklog() {
         nav={tabs}
         actions={
           canWrite && (
-            <Button variant="primary" size="sm" onPress={() => create.show({ team_id: teamId })}>
+            <Button
+              variant="primary"
+              size="sm"
+              onPress={() =>
+                create.show({ team_id: teamId, stage_id: backlogStageId(team.stages) })
+              }
+            >
               <Plus aria-hidden />
               {t("issue.new")}
             </Button>
@@ -46,7 +51,8 @@ export default function TeamBacklog() {
         <FilterBar
           filter={filter}
           onChange={setFilter}
-          hide={["team_id", "sprint_id"]}
+          hide={["team_id", "sprint_id", "stage_kind"]}
+          scope={base}
           saveable={false}
         />
       </PageHeader>

@@ -5,25 +5,35 @@ import { CreateIssueDialog } from "~/components/app/create-issue";
 import { Dialog } from "~/components/ui/dialog";
 import { Kbd } from "~/components/ui/tooltip";
 import { ApiError } from "~/lib/api";
-import { preloadWorkspace } from "~/lib/db";
-import { queryClient } from "~/lib/query-client";
-import { startChangeFeed } from "~/lib/change-feed";
-import { clearLastWs, writeLastWs } from "~/lib/auth-guard";
+import { attachWorkspaceEngine, openWorkspaceEngine } from "~/lib/workspace-engine";
+import { AccessError, UnauthorizedError } from "~/sync/transport";
+import { clearLastWs, findWorkspace, writeLastWs } from "~/lib/auth-guard";
 import { WorkspaceProvider, useWorkspace } from "~/lib/workspace";
 import { useI18n, type Key } from "~/lib/i18n";
 import { useShortcutsEnabled } from "~/lib/shortcuts";
 import type { WorkspaceSummary } from "~/lib/types";
 import type { Route } from "./+types/workspace";
 
-export async function clientLoader({ params }: Route.ClientLoaderArgs) {
+export async function clientLoader({ params, request }: Route.ClientLoaderArgs) {
   try {
-    // The cursor comes first, so changes made while the records load still reach the client.
-    await startChangeFeed(params.ws);
-    await preloadWorkspace(queryClient, params.ws);
-    writeLastWs(params.ws);
-    return { id: params.ws };
+    const summary = await findWorkspace(params.ws);
+    if (!summary) {
+      clearLastWs();
+      throw redirect("/");
+    }
+    if (summary.slug !== params.ws) {
+      const url = new URL(request.url);
+      throw redirect(url.pathname.replace(`/${params.ws}`, `/${summary.slug}`) + url.search);
+    }
+    const engine = await openWorkspaceEngine(summary.id, request.signal);
+    writeLastWs(summary.id);
+    return { id: summary.id, engine };
   } catch (e) {
-    if (e instanceof ApiError && (e.status === 404 || e.status === 403)) {
+    if (e instanceof UnauthorizedError) throw redirect("/login");
+    if (
+      e instanceof AccessError ||
+      (e instanceof ApiError && (e.status === 404 || e.status === 403))
+    ) {
       clearLastWs();
       throw redirect("/");
     }
@@ -46,8 +56,9 @@ export function shouldRevalidate({
 }
 
 export default function WorkspaceLayout({ loaderData }: Route.ComponentProps) {
+  useEffect(() => attachWorkspaceEngine(loaderData.engine), [loaderData.engine]);
   return (
-    <WorkspaceProvider key={loaderData.id} id={loaderData.id}>
+    <WorkspaceProvider key={loaderData.id} engine={loaderData.engine}>
       <Workspace />
     </WorkspaceProvider>
   );
@@ -81,9 +92,9 @@ function Workspace() {
   const [palette, setPalette] = useState(false);
   const [help, setHelp] = useState(false);
   // The keydown handler reads through a ref so the single window listener never re-registers.
-  const keyState = useRef({ canWrite, shortcuts, wsId: ws.id, show: create.show, nav });
+  const keyState = useRef({ canWrite, shortcuts, wsSlug: ws.slug, show: create.show, nav });
   useEffect(() => {
-    keyState.current = { canWrite, shortcuts, wsId: ws.id, show: create.show, nav };
+    keyState.current = { canWrite, shortcuts, wsSlug: ws.slug, show: create.show, nav };
   });
   const gTimer = useRef(0);
 
@@ -96,7 +107,7 @@ function Workspace() {
         setPalette((o) => !o);
         return;
       }
-      const { canWrite: writable, shortcuts: enabled, wsId, show, nav: go } = keyState.current;
+      const { canWrite: writable, shortcuts: enabled, wsSlug, show, nav: go } = keyState.current;
       if (!enabled || typing || e.metaKey || e.ctrlKey || e.altKey) return;
       if (e.key === "c" && writable) {
         e.preventDefault();
@@ -113,7 +124,7 @@ function Workspace() {
             p: "projects",
             r: "reports",
           };
-          if (map[ev.key]) void go(`/${wsId}/${map[ev.key]}`);
+          if (map[ev.key]) void go(`/${wsSlug}/${map[ev.key]}`);
           window.removeEventListener("keydown", once);
           window.clearTimeout(gTimer.current);
         };
@@ -143,16 +154,14 @@ function Workspace() {
         isOpen={help}
         onOpenChange={setHelp}
       >
-        <dl className="space-y-1.5 text-[13px]">
+        <dl className="space-y-1.5 ">
           {SHORTCUTS.map(([keys, label]) => (
             <div key={label} className="flex items-center justify-between gap-4">
               <dt>{t(label)}</dt>
               <dd className="flex items-center gap-1">
                 {keys.map((k, i) => (
                   <span key={i} className="flex items-center gap-1">
-                    {i > 0 && (
-                      <span className="text-xs text-muted-foreground">{t("help.then")}</span>
-                    )}
+                    {i > 0 && <span className=" text-muted-foreground">{t("help.then")}</span>}
                     <Kbd>{k}</Kbd>
                   </span>
                 ))}

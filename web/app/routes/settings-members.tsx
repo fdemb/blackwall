@@ -19,9 +19,72 @@ import type { Id, Role } from "~/lib/types";
 const ROLES: Role[] = ["owner", "admin", "member", "viewer"];
 const rank = (r: Role) => ROLES.length - ROLES.indexOf(r);
 
+function MemberRow({
+  member: wm,
+  locked,
+  roleOptions,
+  isDisabled,
+  onRoleChange,
+  onRemove,
+}: {
+  member: { user_id: Id; role: Role };
+  locked: boolean;
+  roleOptions: { id: Role; label: string }[];
+  isDisabled: boolean;
+  onRoleChange: (role: Role) => void;
+  onRemove: () => void;
+}) {
+  const { t } = useI18n();
+  const { members, me, role, canAdmin, offline } = useWorkspace();
+  const m = members.find((x) => x.id === wm.user_id);
+  // Only an owner may change another owner's role.
+  const canChangeRole = canAdmin && !locked && (wm.role !== "owner" || role === "owner");
+  return (
+    <li className="flex min-h-13 items-center gap-3 py-2">
+      <Avatar name={m?.display_name ?? "?"} src={m?.avatar_url} size={28} />
+      <div className="min-w-0 flex-1">
+        <p className="truncate  font-medium">
+          {m?.display_name}
+          {wm.user_id === me && (
+            <span className="ml-1.5  font-normal text-muted-foreground">({t("members.you")})</span>
+          )}
+        </p>
+        <p className="truncate  text-muted-foreground">{m?.email}</p>
+      </div>
+      {canChangeRole ? (
+        <Select
+          aria-label={t("members.roleFor", { name: m?.display_name ?? "" })}
+          className="w-32"
+          isDisabled={isDisabled}
+          selectedKey={wm.role}
+          options={roleOptions}
+          onSelectionChange={(k) => onRoleChange(k as Role)}
+        />
+      ) : (
+        <Badge>{t(`role.${wm.role}`)}</Badge>
+      )}
+      {canAdmin && (
+        <span className="w-7 shrink-0">
+          {!locked && wm.user_id !== me && (
+            <Button
+              variant="ghost"
+              size="icon"
+              aria-label={`${t("members.remove")}: ${m?.display_name ?? ""}`}
+              isDisabled={offline}
+              onPress={onRemove}
+            >
+              <UserMinus />
+            </Button>
+          )}
+        </span>
+      )}
+    </li>
+  );
+}
+
 export default function Members() {
   const { t, lang } = useI18n();
-  const { ws, members, me, role, run, canAdmin } = useWorkspace();
+  const { ws, members, me, role, run, canAdmin, offline } = useWorkspace();
   const toast = useToast();
   const [inviting, setInviting] = useState(false);
   const [removing, setRemoving] = useState<Id | null>(null);
@@ -44,7 +107,12 @@ export default function Members() {
       description={`${t("members.sub")} ${t("members.roleHelp")}`}
       actions={
         canAdmin && (
-          <Button variant="primary" size="sm" onPress={() => setInviting(true)}>
+          <Button
+            variant="primary"
+            size="sm"
+            isDisabled={offline}
+            onPress={() => setInviting(true)}
+          >
             <MailPlus />
             {t("invite.new")}
           </Button>
@@ -53,71 +121,32 @@ export default function Members() {
     >
       <SettingsSection>
         <SettingsList>
-          {ws.members.map((wm) => {
-            const m = members.find((x) => x.id === wm.user_id);
-            const locked = wm.role === "owner" && owners <= 1;
-            return (
-              <li key={wm.user_id} className="flex min-h-13 items-center gap-3 py-2">
-                <Avatar name={m?.display_name ?? "?"} src={m?.avatar_url} size={28} />
-                <div className="min-w-0 flex-1">
-                  <p className="truncate text-[13px] font-medium">
-                    {m?.display_name}
-                    {wm.user_id === me && (
-                      <span className="ml-1.5 text-xs font-normal text-muted-foreground">
-                        ({t("members.you")})
-                      </span>
-                    )}
-                  </p>
-                  <p className="truncate text-xs text-muted-foreground">{m?.email}</p>
-                </div>
-                {canAdmin && !locked && (wm.role !== "owner" || role === "owner") ? (
-                  <Select
-                    aria-label={t("members.roleFor", { name: m?.display_name ?? "" })}
-                    className="w-32"
-                    isDisabled={pending}
-                    selectedKey={wm.role}
-                    options={roleOptions}
-                    onSelectionChange={(k) => changeRole(wm.user_id, k as Role, wm.role)}
-                  />
-                ) : (
-                  <Badge>{t(`role.${wm.role}`)}</Badge>
-                )}
-                {canAdmin && (
-                  <span className="w-7 shrink-0">
-                    {!locked && wm.user_id !== me && (
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        aria-label={`${t("members.remove")}: ${m?.display_name ?? ""}`}
-                        onPress={() => setRemoving(wm.user_id)}
-                      >
-                        <UserMinus />
-                      </Button>
-                    )}
-                  </span>
-                )}
-              </li>
-            );
-          })}
+          {ws.members.map((wm) => (
+            <MemberRow
+              key={wm.user_id}
+              member={wm}
+              // The last owner can't be demoted or removed.
+              locked={wm.role === "owner" && owners <= 1}
+              roleOptions={roleOptions}
+              isDisabled={pending || offline}
+              onRoleChange={(next) => changeRole(wm.user_id, next, wm.role)}
+              onRemove={() => setRemoving(wm.user_id)}
+            />
+          ))}
         </SettingsList>
       </SettingsSection>
 
       {canAdmin && (
         <SettingsSection title={t("invite.pending")}>
           {invitations.length === 0 ? (
-            <p className="px-4 py-4 text-[13px] text-muted-foreground sm:px-5">
-              {t("invite.none")}
-            </p>
+            <p className="px-4 py-4  text-muted-foreground sm:px-5">{t("invite.none")}</p>
           ) : (
             <SettingsList>
               {invitations.map((i) => (
-                <li
-                  key={i.id}
-                  className="flex flex-wrap items-center gap-x-3 gap-y-1 py-2.5 text-[13px]"
-                >
-                  <div className="min-w-0 flex-1">
+                <li key={i.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 py-2.5 ">
+                  <div className="min-w-0 flex-1 basis-48">
                     <p className="truncate font-medium">{i.email}</p>
-                    <p className="text-xs text-muted-foreground">
+                    <p className=" text-muted-foreground">
                       {t("invite.expires", { date: fullDate(i.expires_at, lang) })}
                     </p>
                   </div>
@@ -126,7 +155,7 @@ export default function Members() {
                   <Button
                     variant="ghost"
                     size="sm"
-                    isDisabled={pending}
+                    isDisabled={pending || offline}
                     onPress={() =>
                       void guard(() =>
                         run({ type: "resend_invitation", id: i.id, token_hash: "" }).then(() =>
@@ -189,7 +218,7 @@ export default function Members() {
             </Button>
             <Button
               variant="destructive"
-              isDisabled={pending}
+              isDisabled={pending || offline}
               onPress={() =>
                 void guard(() => run({ type: "remove_member", user_id: removing! }).then(close))
               }
@@ -211,7 +240,7 @@ function InviteForm({
   roles: { id: string; label: string }[];
 }) {
   const { t } = useI18n();
-  const { run } = useWorkspace();
+  const { run, offline } = useWorkspace();
   const toast = useToast();
   const [email, setEmail] = useState("");
   const [role, setRole] = useState<Role>("member");
@@ -248,7 +277,7 @@ function InviteForm({
         <Button variant="ghost" onPress={close}>
           {t("action.cancel")}
         </Button>
-        <Button type="submit" variant="primary" isDisabled={!email.trim() || pending}>
+        <Button type="submit" variant="primary" isDisabled={!email.trim() || pending || offline}>
           {pending ? t("invite.sending") : t("invite.send")}
         </Button>
       </div>

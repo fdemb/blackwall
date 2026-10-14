@@ -2,7 +2,7 @@ mod support;
 
 use blackwall::{
     auth::Register,
-    domain::{Command, IssueFilter},
+    domain::{Command, FilterClause, FilterField, FilterOp, IssueFilter},
     store::Store,
 };
 use serde_json::{Value, json};
@@ -53,7 +53,7 @@ async fn issues_remember_their_creator() {
         &store,
         ws,
         owner,
-        json!({"type":"create_team","name":"Infra","members":[owner]}),
+        json!({"type":"create_team","name":"Infra", "key": "INF","members":[owner]}),
     )
     .await;
     let issue = op(
@@ -69,8 +69,12 @@ async fn issues_remember_their_creator() {
         Some(owner)
     );
 
-    let by = |user| IssueFilter {
-        created_by: Some(user),
+    let by = |user: Uuid| IssueFilter {
+        clauses: vec![FilterClause {
+            field: FilterField::CreatedBy,
+            op: FilterOp::Is,
+            values: vec![Some(user.to_string())],
+        }],
         ..Default::default()
     };
     let mine = store

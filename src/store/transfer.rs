@@ -85,7 +85,7 @@ impl Store {
         &self,
         workspace: Uuid,
         actor: Uuid,
-        transfer: Transfer,
+        mut transfer: Transfer,
         expected: BTreeMap<Uuid, i64>,
         key: Option<String>,
     ) -> Result<(ImportSummary, BTreeMap<Uuid, i64>)> {
@@ -105,104 +105,34 @@ impl Store {
 
         op.admin()?;
         op.lock_graph().await?;
-        if let Some(key) = &key {
-            text(key, 200)?;
-            sqlx::query("INSERT INTO operation_keys(workspace_id,actor,key,request) VALUES($1,$2,$3,$4) ON CONFLICT DO NOTHING")
-                .bind(workspace)
-                .bind(actor)
-                .bind(key)
-                .bind(&request)
-                .execute(&mut *op.tx)
-                .await?;
-
-            let row = sqlx::query("SELECT request,result FROM operation_keys WHERE workspace_id=$1 AND actor=$2 AND key=$3 FOR UPDATE")
-                .bind(workspace)
-                .bind(actor)
-                .bind(key)
-                .fetch_one(&mut *op.tx)
-                .await?;
-
-            if row.try_get::<Value, _>("request")? != request {
-                return Err(Error::Conflict(
-                    "idempotency key reused for a different request".into(),
-                ));
-            }
-
-            if let Some(result) = row.try_get::<Option<Value>, _>("result")? {
-                return Ok(serde_json::from_value(result)?);
-            }
+        if let Some(key) = &key
+            && let Some(result) = op.claim_key(key, &request).await?
+        {
+            return Ok(serde_json::from_value(result)?);
         }
 
-        let member_rows = sqlx::query("SELECT m.user_id,m.role,m.version,u.email FROM workspace_members m JOIN users u ON u.id=m.user_id WHERE m.workspace_id=$1 ORDER BY m.user_id FOR SHARE OF m")
-            .bind(workspace)
-            .fetch_all(&mut *op.tx)
-            .await?;
-
-        let mut candidate = Workspace::new("Import".into(), actor)?;
-        candidate.id = workspace;
-        candidate.members.clear();
-        let mut by_email = BTreeMap::<String, Uuid>::new();
-        for row in member_rows {
-            let user_id = row.try_get("user_id")?;
-            by_email.insert(row.try_get::<String, _>("email")?.to_lowercase(), user_id);
-            candidate.members.push(Member {
-                user_id,
-                role: serde_json::from_value(Value::String(row.try_get("role")?))?,
-                version: row.try_get("version")?,
-            });
-        }
-
+        let (mut candidate, by_email) = member_candidate(&mut op).await?;
         let mapping: BTreeMap<Uuid, Uuid> = transfer
             .members
             .iter()
             .filter_map(|m| by_email.get(&m.email.to_lowercase()).map(|id| (m.id, *id)))
             .collect();
 
+        let mut taken: std::collections::BTreeSet<String> =
+            sqlx::query_scalar("SELECT key FROM teams WHERE workspace_id=$1")
+                .bind(op.workspace_id)
+                .fetch_all(&mut *op.tx)
+                .await?
+                .into_iter()
+                .collect();
+        transfer.claim_team_keys(&mut taken)?;
         let summary = transfer.import(&mut candidate, actor, &mapping, Utc::now())?;
-        let capacities = [
-            ("activity", candidate.activity.len(), 50000),
-            ("comments", candidate.comments.len(), 20000),
-            ("issues", candidate.issues.len(), 5000),
-            ("labels", candidate.labels.len(), 1000),
-            ("milestones", candidate.milestones.len(), 5000),
-            ("projects", candidate.projects.len(), 1000),
-            ("saved_views", candidate.views.len(), 5000),
-            ("sprints", candidate.sprints.len(), 2000),
-            ("teams", candidate.teams.len(), 200),
-            ("time_entries", candidate.time_entries.len(), 20000),
-        ];
-
-        for (table, incoming, maximum) in capacities {
-            if incoming > 0 {
-                op.capacity(table, maximum - incoming as i64 + 1).await?;
-            }
-        }
-
-        let count = i64::try_from(candidate.issues.len())
-            .map_err(|_| Error::BadRequest("too many issues".into()))?;
-
-        let first: i64 = sqlx::query_scalar("UPDATE workspaces SET next_issue_number=next_issue_number+$2 WHERE id=$1 RETURNING next_issue_number-$2")
-            .bind(workspace)
-            .bind(count)
-            .fetch_one(&mut *op.tx)
-            .await?;
-
-        for (index, issue) in candidate.issues.iter_mut().enumerate() {
-            issue.number = (first + index as i64) as u64;
-        }
-
+        check_import_capacity(&mut op, &candidate).await?;
         insert_import(&mut op, &candidate).await?;
-        let result = (summary, op.versions.clone());
-        if let Some(key) = key {
-            sqlx::query(
-                "UPDATE operation_keys SET result=$4 WHERE workspace_id=$1 AND actor=$2 AND key=$3",
-            )
-            .bind(workspace)
-            .bind(actor)
-            .bind(key)
-            .bind(serde_json::to_value(&result)?)
-            .execute(&mut *op.tx)
-            .await?;
+        let result = (summary, op.response_versions());
+        if let Some(key) = &key {
+            op.save_key_result(key, serde_json::to_value(&result)?)
+                .await?;
         }
 
         op.tx.commit().await?;
@@ -211,18 +141,79 @@ impl Store {
     }
 }
 
+/// An empty workspace holding only the current members, which the transfer
+/// is imported into and validated against, plus member ids by lowercase email.
+async fn member_candidate(op: &mut Operation<'_>) -> Result<(Workspace, BTreeMap<String, Uuid>)> {
+    let rows = sqlx::query("SELECT m.user_id,m.role,m.version,u.email FROM workspace_members m JOIN users u ON u.id=m.user_id WHERE m.workspace_id=$1 ORDER BY m.user_id FOR SHARE OF m")
+        .bind(op.workspace_id)
+        .fetch_all(&mut *op.tx)
+        .await?;
+
+    let mut candidate = Workspace::new("Import".into(), op.actor)?;
+    candidate.id = op.workspace_id;
+    candidate.members.clear();
+    let mut by_email = BTreeMap::new();
+    for row in rows {
+        let user_id = row.try_get("user_id")?;
+        by_email.insert(row.try_get::<String, _>("email")?.to_lowercase(), user_id);
+        candidate.members.push(Member {
+            user_id,
+            role: serde_json::from_value(Value::String(row.try_get("role")?))?,
+            version: row.try_get("version")?,
+        });
+    }
+    Ok((candidate, by_email))
+}
+
+/// Each table must fit what it already holds plus the incoming rows.
+async fn check_import_capacity(op: &mut Operation<'_>, candidate: &Workspace) -> Result<()> {
+    let capacities = [
+        ("activity", candidate.activity.len(), 50000),
+        ("comments", candidate.comments.len(), 20000),
+        ("issues", candidate.issues.len(), 5000),
+        ("labels", candidate.labels.len(), 1000),
+        ("milestones", candidate.milestones.len(), 5000),
+        ("projects", candidate.projects.len(), 1000),
+        ("saved_views", candidate.views.len(), 5000),
+        ("sprints", candidate.sprints.len(), 2000),
+        ("teams", candidate.teams.len(), 200),
+        ("time_entries", candidate.time_entries.len(), 20000),
+    ];
+    for (table, incoming, maximum) in capacities {
+        if incoming > 0 {
+            op.capacity(table, maximum - incoming as i64 + 1).await?;
+        }
+    }
+    Ok(())
+}
+
 async fn insert_import(op: &mut Operation<'_>, w: &Workspace) -> Result<()> {
+    insert_planning(op, w).await?;
+    insert_issues(op, w).await?;
+    for issue in &w.issues {
+        insert_issue_relations(op, w.id, issue).await?;
+        schedule_imported_reminder(op, w, issue).await?;
+    }
+    insert_records(op, w).await?;
+    op.activity("workspace_imported", None, vec![]).await?;
+    Ok(())
+}
+
+async fn insert_planning(op: &mut Operation<'_>, w: &Workspace) -> Result<()> {
     for team in &w.teams {
         sqlx::query(
-            "INSERT INTO teams(id,workspace_id,name,archive_after_days) VALUES($1,$2,$3,$4)",
+            "INSERT INTO teams(id,workspace_id,name,key,archive_after_days,icon,color) VALUES($1,$2,$3,$4,$5,$6,$7)",
         )
         .bind(team.id)
         .bind(w.id)
         .bind(&team.name)
+        .bind(&team.key)
         .bind(team.archive_after_days.map(i64::from))
+        .bind(&team.icon)
+        .bind(&team.color)
         .execute(&mut *op.tx)
         .await?;
-        op.created(team.id);
+        op.created("teams", team.id);
         for user in &team.members {
             sqlx::query("INSERT INTO team_members(workspace_id,team_id,user_id) VALUES($1,$2,$3)")
                 .bind(w.id)
@@ -242,7 +233,7 @@ async fn insert_import(op: &mut Operation<'_>, w: &Workspace) -> Result<()> {
                 .bind(stage.position)
                 .execute(&mut *op.tx)
                 .await?;
-            op.created(stage.id);
+            op.created("stages", stage.id);
         }
     }
 
@@ -254,7 +245,7 @@ async fn insert_import(op: &mut Operation<'_>, w: &Workspace) -> Result<()> {
             .bind(&label.color)
             .execute(&mut *op.tx)
             .await?;
-        op.created(label.id);
+        op.created("labels", label.id);
     }
 
     for project in &w.projects {
@@ -265,7 +256,7 @@ async fn insert_import(op: &mut Operation<'_>, w: &Workspace) -> Result<()> {
             .bind(&project.description)
             .execute(&mut *op.tx)
             .await?;
-        op.created(project.id);
+        op.created("projects", project.id);
         for team in &project.team_ids {
             sqlx::query(
                 "INSERT INTO project_teams(workspace_id,project_id,team_id) VALUES($1,$2,$3)",
@@ -287,11 +278,11 @@ async fn insert_import(op: &mut Operation<'_>, w: &Workspace) -> Result<()> {
             .bind(milestone.deadline)
             .execute(&mut *op.tx)
             .await?;
-        op.created(milestone.id);
+        op.created("milestones", milestone.id);
     }
 
     for sprint in &w.sprints {
-        sqlx::query("INSERT INTO sprints(id,workspace_id,team_id,name,goal,starts_at,ends_at,state) VALUES($1,$2,$3,$4,$5,$6,$7,$8)")
+        sqlx::query("INSERT INTO sprints(id,workspace_id,team_id,number,name,goal,starts_at,ends_at,state) VALUES($1,$2,$3,(SELECT COALESCE(max(number),0)+1 FROM sprints WHERE workspace_id=$2 AND team_id=$3),$4,$5,$6,$7,$8)")
             .bind(sprint.id)
             .bind(w.id)
             .bind(sprint.team_id)
@@ -302,7 +293,7 @@ async fn insert_import(op: &mut Operation<'_>, w: &Workspace) -> Result<()> {
             .bind(enum_text(&sprint.state))
             .execute(&mut *op.tx)
             .await?;
-        op.created(sprint.id);
+        op.created("sprints", sprint.id);
         if let Some(outcome) = &sprint.outcome {
             sqlx::query("INSERT INTO sprint_outcomes(workspace_id,sprint_id,total,completed,effort) VALUES($1,$2,$3,$4,$5)")
                 .bind(w.id)
@@ -315,6 +306,10 @@ async fn insert_import(op: &mut Operation<'_>, w: &Workspace) -> Result<()> {
         }
     }
 
+    Ok(())
+}
+
+async fn insert_issues(op: &mut Operation<'_>, w: &Workspace) -> Result<()> {
     for issue in &w.issues {
         sqlx::query("INSERT INTO issues(id,workspace_id,number,title,description,team_id,stage_id,assignee,priority,estimate,deadline,project_id,milestone_id,sprint_id,parent_id,position,deleted_at,archived_at,done_at,created_at,updated_at,created_by) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,(SELECT id FROM users WHERE id=$22))")
             .bind(issue.id)
@@ -342,72 +337,98 @@ async fn insert_import(op: &mut Operation<'_>, w: &Workspace) -> Result<()> {
             .bind(issue.created_by)
             .execute(&mut *op.tx)
             .await?;
-        op.created(issue.id);
+        op.created("issues", issue.id);
     }
 
-    for issue in &w.issues {
-        for label in &issue.labels {
-            sqlx::query(
-                "INSERT INTO issue_labels(workspace_id,issue_id,label_id) VALUES($1,$2,$3)",
-            )
-            .bind(w.id)
+    Ok(())
+}
+
+/// Labels, dependencies, followers and source links of one imported issue.
+async fn insert_issue_relations(
+    op: &mut Operation<'_>,
+    workspace: Uuid,
+    issue: &Issue,
+) -> Result<()> {
+    for label in &issue.labels {
+        sqlx::query("INSERT INTO issue_labels(workspace_id,issue_id,label_id) VALUES($1,$2,$3)")
+            .bind(workspace)
             .bind(issue.id)
             .bind(label)
             .execute(&mut *op.tx)
             .await?;
-        }
+    }
 
-        for dependency in &issue.dependencies {
-            sqlx::query("INSERT INTO issue_dependencies(workspace_id,issue_id,dependency_id) VALUES($1,$2,$3)").bind(w.id).bind(issue.id).bind(dependency).execute(&mut *op.tx).await?;
-        }
+    for dependency in &issue.dependencies {
+        sqlx::query(
+            "INSERT INTO issue_dependencies(workspace_id,issue_id,dependency_id) VALUES($1,$2,$3)",
+        )
+        .bind(workspace)
+        .bind(issue.id)
+        .bind(dependency)
+        .execute(&mut *op.tx)
+        .await?;
+    }
 
-        for user in &issue.followers {
-            sqlx::query(
-                "INSERT INTO issue_followers(workspace_id,issue_id,user_id) VALUES($1,$2,$3)",
-            )
-            .bind(w.id)
+    for user in &issue.followers {
+        sqlx::query("INSERT INTO issue_followers(workspace_id,issue_id,user_id) VALUES($1,$2,$3)")
+            .bind(workspace)
             .bind(issue.id)
             .bind(user)
             .execute(&mut *op.tx)
             .await?;
-        }
-
-        for link in &issue.source_links {
-            sqlx::query("INSERT INTO source_links(id,workspace_id,issue_id,url,title) VALUES($1,$2,$3,$4,$5)")
-                .bind(Uuid::new_v4())
-                .bind(w.id)
-                .bind(issue.id)
-                .bind(&link.url)
-                .bind(&link.title)
-                .execute(&mut *op.tx)
-                .await?;
-        }
-
-        let done = w.teams.iter().flat_map(|t| &t.stages).any(|s| {
-            s.id == issue.stage_id && matches!(s.kind, StageKind::Done | StageKind::Cancelled)
-        });
-
-        if issue.deleted_at.is_none()
-            && !done
-            && let Some(deadline) = issue.deadline
-        {
-            let reminder = crate::jobs::Reminder {
-                workspace_id: w.id,
-                issue_id: issue.id,
-                generation: 1,
-            };
-
-            let job = NewJob {
-                id: format!("reminder:{}:{}:1", w.id, issue.id),
-                job: crate::jobs::Job::Reminder(reminder),
-                due_at: (deadline - chrono::Duration::hours(24)).timestamp(),
-                max_attempts: None,
-            };
-
-            Outbox::insert(&mut op.tx, &job).await?;
-        }
     }
 
+    for link in &issue.source_links {
+        sqlx::query(
+            "INSERT INTO source_links(id,workspace_id,issue_id,url,title) VALUES($1,$2,$3,$4,$5)",
+        )
+        .bind(Uuid::new_v4())
+        .bind(workspace)
+        .bind(issue.id)
+        .bind(&link.url)
+        .bind(&link.title)
+        .execute(&mut *op.tx)
+        .await?;
+    }
+
+    Ok(())
+}
+
+/// Queues the first deadline reminder for an open imported issue with a deadline.
+async fn schedule_imported_reminder(
+    op: &mut Operation<'_>,
+    w: &Workspace,
+    issue: &Issue,
+) -> Result<()> {
+    let done = w.teams.iter().flat_map(|t| &t.stages).any(|s| {
+        s.id == issue.stage_id && matches!(s.kind, StageKind::Done | StageKind::Cancelled)
+    });
+
+    if issue.deleted_at.is_none()
+        && !done
+        && let Some(deadline) = issue.deadline
+    {
+        let reminder = crate::jobs::Reminder {
+            workspace_id: w.id,
+            issue_id: issue.id,
+            generation: 1,
+        };
+
+        let job = NewJob {
+            id: format!("reminder:{}:{}:1", w.id, issue.id),
+            job: crate::jobs::Job::Reminder(reminder),
+            due_at: Some((deadline - chrono::Duration::hours(24)).timestamp()),
+            max_attempts: None,
+        };
+
+        Outbox::insert(&mut op.tx, &job).await?;
+    }
+
+    Ok(())
+}
+
+/// Comments, time entries, views and activity, minus the trailing import event.
+async fn insert_records(op: &mut Operation<'_>, w: &Workspace) -> Result<()> {
     for comment in &w.comments {
         sqlx::query("INSERT INTO comments(id,workspace_id,issue_id,author,body,created_at,edited_at) VALUES($1,$2,$3,$4,$5,$6,$7)")
             .bind(comment.id)
@@ -419,7 +440,7 @@ async fn insert_import(op: &mut Operation<'_>, w: &Workspace) -> Result<()> {
             .bind(comment.edited_at)
             .execute(&mut *op.tx)
             .await?;
-        op.created(comment.id);
+        op.created("comments", comment.id);
         for user in &comment.mentions {
             sqlx::query(
                 "INSERT INTO comment_mentions(workspace_id,comment_id,user_id) VALUES($1,$2,$3)",
@@ -443,7 +464,7 @@ async fn insert_import(op: &mut Operation<'_>, w: &Workspace) -> Result<()> {
             .bind(entry.logged_at)
             .execute(&mut *op.tx)
             .await?;
-        op.created(entry.id);
+        op.created("time_entries", entry.id);
     }
 
     for view in &w.views {
@@ -456,7 +477,7 @@ async fn insert_import(op: &mut Operation<'_>, w: &Workspace) -> Result<()> {
             .bind(serde_json::to_value(&view.filter)?)
             .execute(&mut *op.tx)
             .await?;
-        op.created(view.id);
+        op.created("saved_views", view.id);
     }
 
     for event in w.activity.iter().take(w.activity.len().saturating_sub(1)) {
@@ -471,8 +492,6 @@ async fn insert_import(op: &mut Operation<'_>, w: &Workspace) -> Result<()> {
             .execute(&mut *op.tx)
             .await?;
     }
-
-    op.activity("workspace_imported", None, vec![]).await?;
 
     Ok(())
 }
@@ -535,7 +554,7 @@ mod tests {
             &store,
             source,
             user,
-            json!({"type":"create_team","name":"Infra","members":[user]}),
+            json!({"type":"create_team","name":"Infra", "key": "INF","members":[user]}),
         )
         .await;
 
@@ -614,7 +633,7 @@ mod tests {
             &store,
             target,
             user,
-            json!({"type":"create_team","name":"Existing","members":[user]}),
+            json!({"type":"create_team","name":"Existing", "key": "EXI","members":[user]}),
         )
         .await;
 
@@ -714,8 +733,17 @@ mod tests {
 
         let child = imported.issues.iter().find(|i| i.title == "Child").unwrap();
         assert_ne!(parent.id, first);
-        assert_eq!(parent.number, 2);
-        assert_eq!(child.number, 3);
+        // Imported teams are new, so issues keep their numbers and the team its key.
+        assert_eq!(parent.number, 1);
+        assert_eq!(child.number, 2);
+        assert_eq!(
+            imported
+                .teams
+                .iter()
+                .map(|t| t.key.as_str())
+                .collect::<Vec<_>>(),
+            ["EXI", "INF"]
+        );
         assert_eq!(child.parent_id, Some(parent.id));
         assert_eq!(child.dependencies, vec![parent.id]);
         assert_eq!(child.blocked_count, 1);
@@ -741,14 +769,13 @@ mod tests {
                 .is_err()
         );
 
-        let counter: i64 =
-            sqlx::query_scalar("SELECT next_issue_number FROM workspaces WHERE id=$1")
-                .bind(target)
-                .fetch_one(&store.pool)
-                .await
-                .unwrap();
+        let teams: i64 = sqlx::query_scalar("SELECT count(*) FROM teams WHERE workspace_id=$1")
+            .bind(target)
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
 
-        let mut invalid = transfer;
+        let mut invalid = transfer.clone();
         invalid.comments[0].mentions = vec![user, user];
         assert!(
             store
@@ -763,13 +790,13 @@ mod tests {
                 .is_err()
         );
 
-        let after: i64 = sqlx::query_scalar("SELECT next_issue_number FROM workspaces WHERE id=$1")
+        let after: i64 = sqlx::query_scalar("SELECT count(*) FROM teams WHERE workspace_id=$1")
             .bind(target)
             .fetch_one(&store.pool)
             .await
             .unwrap();
 
-        assert_eq!(after, counter);
+        assert_eq!(after, teams);
         let jobs_after: i64 = sqlx::query_scalar(
             "SELECT count(*) FROM jobs WHERE kind='reminder' AND payload->>'workspace_id'=$1",
         )
@@ -795,6 +822,22 @@ mod tests {
                 .len(),
             3
         );
+
+        // A second copy finds its key taken and numbers its issues under the free variant.
+        store
+            .import_transfer(target, user, transfer, BTreeMap::new(), None)
+            .await
+            .unwrap();
+        let again = store.export_transfer(target, user).await.unwrap();
+        let copy = again.teams.iter().find(|t| t.key == "INF2").unwrap();
+        let mut numbers: Vec<_> = again
+            .issues
+            .iter()
+            .filter(|i| i.team_id == copy.id)
+            .map(|i| i.number)
+            .collect();
+        numbers.sort_unstable();
+        assert_eq!(numbers, [1, 2]);
 
         store.pool.close().await;
         db.cleanup().await;

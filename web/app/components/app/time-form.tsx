@@ -70,7 +70,7 @@ export function TimeForm({
       />
       <DatePicker label={t("field.date")} value={when} onChange={setWhen} clearable={false} />
       {error && (
-        <p role="alert" className="text-xs text-destructive">
+        <p role="alert" className=" text-destructive">
           {error}
         </p>
       )}

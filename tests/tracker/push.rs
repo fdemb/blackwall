@@ -32,7 +32,7 @@ impl Fixture {
             prepare(&mut data);
         }
         let (url, server) = mock_server(mock.clone()).await;
-        let base = format!("/api/workspaces/{workspace}/trackers/connections");
+        let base = format!("/internal-api/workspaces/{workspace}/trackers/connections");
         let mut body = json!({"provider":"openproject","name":"Push","base_url":url,"token":TOKEN,
             "projects":[{"project_id":"42","team_id":team}]});
         body.as_object_mut()
@@ -69,7 +69,7 @@ impl Fixture {
             &self.app,
             &self.owner,
             "POST",
-            &format!("/api/workspaces/{}/commands", self.workspace),
+            &format!("/internal-api/workspaces/{}/commands", self.workspace),
             Some(json!({"expected_versions":{issue["id"].as_str().unwrap():issue["version"]},"command":command})),
         )
         .await;
@@ -189,6 +189,103 @@ async fn local_edits_coalesce_into_one_patch_without_echo() {
 }
 
 #[tokio::test]
+async fn deleting_a_stage_pushes_the_replacement_status() {
+    // Package 7 is Closed remotely, so the status push below is a real change.
+    let f = Fixture::with(json!({}), |data| data.closed_first = true).await;
+    let (status, value) = call(
+        &f.app,
+        &f.owner,
+        "POST",
+        &format!("/internal-api/workspaces/{}/commands", f.workspace),
+        Some(json!({"command":{"type":"create_stage","team_id":f.team,"name":"New","kind":"active","position":0}})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{value}");
+    let new = f.stage("New").await;
+    let in_progress = f.stage("In progress").await;
+    let issue = f.first().await;
+    // No remote status is named New, so this move has nothing to send.
+    f.run(json!({"type":"move_issue","id":issue["id"],"stage_id":new}))
+        .await;
+    drain(&f.store).await;
+    assert!(f.outbox().await.is_empty());
+    let sent = f.mock.data.lock().await.patches.len();
+
+    let (status, value) = call(
+        &f.app,
+        &f.owner,
+        "POST",
+        &format!("/internal-api/workspaces/{}/commands", f.workspace),
+        Some(json!({"command":{"type":"delete_stage","team_id":f.team,"id":new,"replacement":in_progress}})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{value}");
+    let queued = f.outbox().await;
+    assert_eq!(queued.len(), 1);
+    assert_eq!(queued[0].0, ["status"]);
+
+    drain(&f.store).await;
+    let data = f.mock.data.lock().await;
+    assert_eq!(data.patches.len(), sent + 1);
+    assert_eq!(
+        data.patches[sent]["_links"]["status"]["href"],
+        "/api/v3/statuses/1"
+    );
+    drop(data);
+    assert!(f.outbox().await.is_empty());
+    assert_eq!(f.first().await["stage_id"], json!(in_progress));
+    f.cleanup().await;
+}
+
+#[tokio::test]
+async fn sync_push_edits_and_comments_queue_tracker_pushes() {
+    let f = Fixture::new().await;
+    let issue = f.first().await;
+    let at = "2026-10-08T12:00:00Z";
+    let mutations = json!([
+        {"id":1,"name":"update_issue","at":at,
+            "args":{"id":issue["id"],"patch":{"title":"Pushed title"}}},
+        {"id":2,"name":"add_comment","at":at,
+            "args":{"id":Uuid::new_v4(),"issue_id":issue["id"],"body":"Pushed comment","mentions":[],"attachments":[]}},
+    ]);
+    let (status, value) = call(
+        &f.app,
+        &f.owner,
+        "POST",
+        &format!("/internal-api/workspaces/{}/sync/push", f.workspace),
+        Some(json!({"client_id":Uuid::new_v4(),"mutations":mutations})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{value}");
+    assert_eq!(
+        value["results"],
+        json!([{"id":1,"status":"applied"},{"id":2,"status":"applied"}])
+    );
+    let queued: Vec<(String, Vec<String>)> =
+        sqlx::query_as("SELECT kind,fields FROM tracker_outbox ORDER BY kind")
+            .fetch_all(&f.store.pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        queued,
+        [
+            ("comment".to_owned(), vec![]),
+            ("fields".to_owned(), vec!["title".to_owned()])
+        ]
+    );
+
+    drain(&f.store).await;
+    let data = f.mock.data.lock().await;
+    assert_eq!(data.patches.len(), 1);
+    assert_eq!(data.patches[0]["subject"], "Pushed title");
+    assert_eq!(data.comments.len(), 1);
+    assert_eq!(data.comments[0]["comment"]["raw"], "Pushed comment");
+    drop(data);
+    assert!(f.outbox().await.is_empty());
+    f.cleanup().await;
+}
+
+#[tokio::test]
 async fn disabled_exports_and_imports_queue_nothing() {
     let f = Fixture::new().await;
     let off = json!({"import":true,"export":false});
@@ -208,7 +305,7 @@ async fn disabled_exports_and_imports_queue_nothing() {
         &f.app,
         &f.owner,
         "POST",
-        &format!("/api/workspaces/{}/commands", f.workspace),
+        &format!("/internal-api/workspaces/{}/commands", f.workspace),
         Some(json!({"expected_versions":{},"command":{"type":"add_comment","issue_id":issue["id"],"body":"Local only","mentions":[]}})),
     )
     .await;
@@ -346,7 +443,7 @@ async fn comments_post_activities_and_record_their_remote_id() {
         &f.app,
         &f.owner,
         "POST",
-        &format!("/api/workspaces/{}/commands", f.workspace),
+        &format!("/internal-api/workspaces/{}/commands", f.workspace),
         Some(json!({"expected_versions":{},"command":{"type":"add_comment","issue_id":issue["id"],"body":"Hello **remote**","mentions":[]}})),
     )
     .await;
@@ -363,7 +460,7 @@ async fn comments_post_activities_and_record_their_remote_id() {
         &f.owner,
         "GET",
         &format!(
-            "/api/workspaces/{}/comments?issue_id={}",
+            "/internal-api/workspaces/{}/comments?issue_id={}",
             f.workspace,
             issue["id"].as_str().unwrap()
         ),
@@ -389,7 +486,7 @@ impl Fixture {
             &self.app,
             &self.owner,
             "POST",
-            &format!("/api/workspaces/{}/commands", self.workspace),
+            &format!("/internal-api/workspaces/{}/commands", self.workspace),
             Some(
                 json!({"expected_versions":{issue["id"].as_str().unwrap():issue["version"]},
                 "command":{"type":"update_issue","id":issue["id"],"patch":{"title":title}}}),

@@ -5,6 +5,7 @@ import {
   ArrowUpDown,
   Bell,
   Building2,
+  KeySquare,
   ChevronsUpDown,
   KeyRound,
   Plug,
@@ -26,6 +27,7 @@ import {
 } from "~/components/ui/menu";
 import { Kbd } from "~/components/ui/tooltip";
 import { OfflineBanner } from "~/components/app/offline-banner";
+import { RejectedBanner } from "~/components/app/rejected-banner";
 import { linkClass } from "~/components/app/sidebar";
 import { lastAppPath } from "~/lib/settings-nav";
 import { useI18n, type Key } from "~/lib/i18n";
@@ -50,20 +52,10 @@ export default function SettingsLayout() {
   const ctx = useOutletContext<WorkspaceOutlet>();
   const { ws, canAdmin } = useWorkspace();
   const { pathname } = useLocation();
-  const base = `/${ws.id}/settings`;
-  const back = lastAppPath(ws.id);
+  const base = `/${ws.slug}/settings`;
+  const back = lastAppPath(ws.slug);
 
   const groups: Group[] = [
-    {
-      id: "account",
-      label: t("nav.account"),
-      items: [
-        { path: "profile", label: "account.profile", icon: UserRound },
-        { path: "preferences", label: "account.preferences", icon: SlidersHorizontal },
-        { path: "notifications", label: "account.alerts", icon: Bell },
-        { path: "security", label: "account.security", icon: KeyRound },
-      ],
-    },
     {
       id: "workspace",
       label: ws.name,
@@ -76,6 +68,17 @@ export default function SettingsLayout() {
           ? [{ path: "integrations", label: "settings.integrations", icon: Plug } as const]
           : []),
         { path: "data", label: "settings.data", icon: ArrowUpDown },
+      ],
+    },
+    {
+      id: "account",
+      label: t("nav.account"),
+      items: [
+        { path: "profile", label: "account.profile", icon: UserRound },
+        { path: "preferences", label: "account.preferences", icon: SlidersHorizontal },
+        { path: "notifications", label: "account.alerts", icon: Bell },
+        { path: "security", label: "account.security", icon: KeyRound },
+        { path: "tokens", label: "account.tokens", icon: KeySquare },
       ],
     },
   ];
@@ -115,7 +118,7 @@ export default function SettingsLayout() {
         <div className="p-2">
           <Link
             to={back}
-            className="flex h-8 items-center gap-2 rounded-md px-2 text-[13px] font-medium text-muted-foreground outline-none transition-colors hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/60"
+            className="flex h-8 items-center gap-2 rounded-md px-2  font-medium text-muted-foreground outline-none transition-colors hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/60"
           >
             <ArrowLeft className="size-4 shrink-0" />
             <span className="flex-1 truncate">{t("settings.back")}</span>
@@ -127,7 +130,7 @@ export default function SettingsLayout() {
             <div key={g.id} role="group" aria-labelledby={`settings-${g.id}`}>
               <h2
                 id={`settings-${g.id}`}
-                className="mb-1 truncate px-2 text-xs font-medium text-muted-foreground"
+                className="mb-1 truncate px-2  font-medium text-muted-foreground"
               >
                 {g.label}
               </h2>
@@ -160,7 +163,7 @@ export default function SettingsLayout() {
             <Button
               variant="ghost"
               aria-label={t("settings.sections")}
-              className="h-8 min-w-0 gap-1.5 px-2 text-sm font-semibold"
+              className="h-8 min-w-0 gap-1.5 px-2  font-semibold"
             >
               {current && <current.icon className="text-muted-foreground" />}
               <span className="truncate">{current ? t(current.label) : t("nav.settings")}</span>
@@ -174,7 +177,7 @@ export default function SettingsLayout() {
               >
                 {groups.map((g) => (
                   <MenuSection key={g.id}>
-                    <Header className="truncate px-2 pb-1 pt-2 text-xs font-medium text-muted-foreground">
+                    <Header className="truncate px-2 pb-1 pt-2  font-medium text-muted-foreground">
                       {g.label}
                     </Header>
                     {g.items.map((i) => (
@@ -190,6 +193,7 @@ export default function SettingsLayout() {
           </MenuTrigger>
         </div>
         <OfflineBanner />
+        <RejectedBanner />
         <div className="min-h-0 flex-1 overflow-y-auto">
           <div className="mx-auto w-full max-w-3xl px-4 pb-16 pt-6 sm:px-6 md:pt-10">
             <Outlet context={ctx} />

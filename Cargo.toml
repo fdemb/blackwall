@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 axum = { version = "0.8", features = ["multipart"] }
 tokio = { version = "1", features = ["full"] }
+tokio-stream = "0.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "postgres", "migrate", "macros", "uuid", "chrono", "json"] }
@@ -22,7 +23,7 @@ pulldown-cmark = "0.13"
 ammonia = "4"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 hmac = "0.12"
-tower-http = { version = "0.7.1", features = ["fs"] }
+tower-http = { version = "0.7.1", features = ["fs", "compression-gzip", "cors"] }
 base64 = "0.22"
 dotenvy = "0.15.7"
 lettre = { version = "0.11", default-features = false, features = ["builder", "smtp-transport", "pool", "hostname", "tokio1", "tokio1-rustls-tls"] }
@@ -31,6 +32,7 @@ lettre = { version = "0.11", default-features = false, features = ["builder", "s
 tokio = { version = "1", features = ["test-util"] }
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
+serde_urlencoded = "0.7"
 
 [profile.release]
 lto = "thin"
@@ -43,3 +45,6 @@ incremental = false
 [profile.test]
 debug = 0
 incremental = false
+
+[lints.clippy]
+cognitive_complexity = "warn"

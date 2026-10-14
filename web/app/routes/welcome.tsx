@@ -6,18 +6,19 @@ import { Button } from "~/components/ui/button";
 import { FormError, TextField } from "~/components/ui/field";
 import { Logo } from "~/components/app/logo";
 import { LanguageToggle } from "~/components/app/preferences";
-import { auth, workspaces } from "~/lib/api";
+import { workspaces } from "~/lib/api";
 import { writeLastWs } from "~/lib/auth-guard";
 import { useI18n } from "~/lib/i18n";
 import { useSession } from "~/lib/session";
 import { useDocumentTitle } from "~/lib/title";
 import type { WorkspaceSummary } from "~/lib/types";
 import { formText } from "~/lib/utils";
+import { isWorkspaceSlug, slugInput, workspaceSlug } from "~/lib/identifiers";
 
 export default function Welcome() {
   const { t } = useI18n();
   const nav = useNavigate();
-  const { profile } = useSession();
+  const { profile, logout } = useSession();
   const { revalidate } = useRevalidator();
   const { workspaces: list } = useOutletContext<{ workspaces: WorkspaceSummary[] }>();
   const [params] = useSearchParams();
@@ -27,7 +28,12 @@ export default function Welcome() {
     params.get("workspace") || params.get("token") ? "join" : "create",
   );
   const [busy, setBusy] = useState(false);
-  const creation = useRef<{ name: string; key: string } | null>(null);
+  const [name, setName] = useState("");
+  // The slug follows the name until edited by hand.
+  const [slug, setSlug] = useState<string | null>(null);
+  const shownSlug = slug ?? workspaceSlug(name);
+  const slugError = shownSlug && !isWorkspaceSlug(shownSlug) ? t("workspace.slugInvalid") : "";
+  const creation = useRef<{ name: string; slug: string; key: string } | null>(null);
   useDocumentTitle(t("workspace.newOrJoin"));
   return (
     <div className="relative grid min-h-dvh place-items-center overflow-hidden px-4 py-10">
@@ -37,15 +43,7 @@ export default function Welcome() {
       />
       <div className="absolute right-4 top-4 flex items-center gap-1">
         <LanguageToggle />
-        <Button
-          variant="ghost"
-          size="sm"
-          onPress={() =>
-            auth.logout().finally(() => {
-              location.href = "/login";
-            })
-          }
-        >
+        <Button variant="ghost" size="sm" onPress={() => logout()}>
           {t("nav.signOut")}
         </Button>
       </div>
@@ -67,20 +65,18 @@ export default function Welcome() {
             setError("");
             try {
               if (mode === "create") {
-                const name = f.get("name");
-                if (typeof name !== "string") throw new Error(t("error.generic"));
-                if (creation.current?.name !== name)
-                  creation.current = { name, key: crypto.randomUUID() };
-                const r = await workspaces.create(name, creation.current.key);
+                if (creation.current?.name !== name || creation.current.slug !== shownSlug)
+                  creation.current = { name, slug: shownSlug, key: crypto.randomUUID() };
+                const r = await workspaces.create(name, shownSlug, creation.current.key);
                 writeLastWs(r.workspace.id);
                 await revalidate();
-                await nav(`/${r.workspace.id}/settings/teams`);
+                await nav(`/${r.workspace.slug}/settings/teams`);
               } else {
                 const id = formText(f, "id").trim();
-                await workspaces.accept(id, formText(f, "token").trim());
+                const r = await workspaces.accept(id, formText(f, "token").trim());
                 writeLastWs(id);
                 await revalidate();
-                await nav(`/${id}/my-issues`);
+                await nav(`/${r.workspace.slug}/my-issues`);
               }
             } catch (err) {
               setError((err as Error).message);
@@ -89,15 +85,30 @@ export default function Welcome() {
           }}
         >
           {mode === "create" ? (
-            <TextField
-              name="name"
-              label={t("workspace.name")}
-              placeholder={t("workspace.namePlaceholder")}
-              autoComplete="off"
-              spellCheck="false"
-              autoFocus
-              isRequired
-            />
+            <>
+              <TextField
+                name="name"
+                label={t("workspace.name")}
+                placeholder={t("workspace.namePlaceholder")}
+                value={name}
+                onChange={setName}
+                autoComplete="off"
+                spellCheck="false"
+                autoFocus
+                isRequired
+              />
+              <TextField
+                name="slug"
+                label={t("workspace.slug")}
+                description={t("workspace.slugHint", { slug: shownSlug })}
+                error={slugError}
+                value={shownSlug}
+                onChange={(value) => setSlug(slugInput(value))}
+                autoComplete="off"
+                spellCheck="false"
+                isRequired
+              />
+            </>
           ) : (
             <>
               <TextField
@@ -121,7 +132,13 @@ export default function Welcome() {
             </>
           )}
           <FormError>{error}</FormError>
-          <Button type="submit" variant="primary" size="lg" isPending={busy}>
+          <Button
+            type="submit"
+            variant="primary"
+            size="lg"
+            isPending={busy}
+            isDisabled={mode === "create" && Boolean(slugError)}
+          >
             {busy && <Loader2 aria-hidden className="animate-spin" />}
             {busy
               ? mode === "create"

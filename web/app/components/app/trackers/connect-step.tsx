@@ -71,7 +71,7 @@ export function ConnectStep({
         spellCheck="false"
         isDisabled={pending}
       />
-      {!connection && <p className="text-xs text-muted-foreground">{t("tracker.connectHint")}</p>}
+      {!connection && <p className="text-sm text-muted-foreground">{t("tracker.connectHint")}</p>}
     </div>
   );
 }

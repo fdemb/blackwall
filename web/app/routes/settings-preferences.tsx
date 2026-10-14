@@ -59,7 +59,7 @@ export default function Preferences() {
         >
           <span>
             <span className="block font-medium">{t("account.shortcuts")}</span>
-            <span className="mt-0.5 block max-w-prose text-xs text-muted-foreground">
+            <span className="mt-0.5 block max-w-prose  text-muted-foreground">
               {t("account.shortcutsSub")}
             </span>
           </span>

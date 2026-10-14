@@ -5,7 +5,7 @@ export async function clientLoader() {
   const { list } = await landing();
   const last = readLastWs();
   const target = list.find((w) => w.id === last) ?? list[0];
-  throw redirect(target ? `/${target.id}/my-issues` : "/welcome");
+  throw redirect(target ? `/${target.slug}/my-issues` : "/welcome");
 }
 
 export default function Home() {

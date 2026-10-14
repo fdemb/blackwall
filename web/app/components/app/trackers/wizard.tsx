@@ -52,7 +52,7 @@ export function TrackerWizard({
   editing: TrackerConnection | null;
   close: () => void;
 }) {
-  const { ws, members, run } = useWorkspace();
+  const { ws, members, run, confirmed } = useWorkspace();
   const { t } = useI18n();
   const toast = useToast();
   const client = useQueryClient();
@@ -182,6 +182,8 @@ export function TrackerWizard({
       );
       // Created stages stay in the draft, so a retry after a failed save doesn't create them again.
       setDraft((old) => ({ ...old, projects }));
+      // Stages created above are replica edits; the save may name them only once the server has them.
+      await confirmed(projects);
       const result = await trackerApi.update(ws.id, connection.id, {
         projects,
         people_mapping: draft.people,
@@ -212,47 +214,18 @@ export function TrackerWizard({
         else go(WIZARD_STEPS[index + 1]!);
       }}
     >
-      <nav aria-label={t("tracker.wizard.steps")}>
-        <ol className="flex flex-wrap gap-1">
-          {WIZARD_STEPS.map((target, at) => {
-            const current = target === step;
-            const done = at < index;
-            return (
-              <li key={target}>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  aria-current={current ? "step" : undefined}
-                  isDisabled={
-                    pending || (!current && !canVisit(target, draft, Boolean(connection)))
-                  }
-                  onPress={() => go(target)}
-                  className={cn(
-                    "gap-1.5 text-muted-foreground",
-                    current && "bg-accent text-accent-foreground",
-                  )}
-                >
-                  <span
-                    aria-hidden
-                    className={cn(
-                      "flex size-4 items-center justify-center rounded-full border border-border text-[10px] tabular-nums",
-                      (current || done) && "border-primary-solid",
-                    )}
-                  >
-                    {done ? <Check className="size-2.5" /> : at + 1}
-                  </span>
-                  {t(`tracker.step.${target}`)}
-                </Button>
-              </li>
-            );
-          })}
-        </ol>
-      </nav>
-      <h3 ref={heading} tabIndex={-1} className="-mb-2 text-[13px] font-medium outline-none">
+      <StepNav
+        step={step}
+        isDisabled={(target) =>
+          pending || (target !== step && !canVisit(target, draft, Boolean(connection)))
+        }
+        go={go}
+      />
+      <h3 ref={heading} tabIndex={-1} className="-mb-2 font-medium outline-none">
         {t(`tracker.step.${step}`)}
       </h3>
       <div className="min-h-48">
-        {step === "connect" && (
+        {step === "connect" ? (
           <ConnectStep
             {...props}
             providers={providers.data ?? []}
@@ -260,50 +233,147 @@ export function TrackerWizard({
             kind={provider?.kind ?? null}
             setKind={setKind}
           />
+        ) : (
+          <StepContent step={step} props={props} />
         )}
-        {step === "projects" && <ProjectsStep {...props} />}
-        {step === "statuses" && <StatusesStep {...props} />}
-        {step === "people" && <PeopleStep {...props} />}
-        {step === "fields" && <FieldsStep {...props} />}
-        {step === "review" && <ReviewStep {...props} />}
       </div>
-      {stale ? (
-        <div
-          role="alert"
-          className="flex flex-wrap items-center gap-3 text-[13px] text-destructive"
-        >
-          <p>{t("tracker.wizard.changed")}</p>
-          <Button size="sm" onPress={reload}>
-            {t("tracker.wizard.reload")}
-          </Button>
-        </div>
-      ) : (
-        <FormError>{problem || error || (missing ? t(missing.error) : "")}</FormError>
-      )}
-      <div className="flex items-center justify-between gap-2 border-t border-border pt-4">
-        <Button variant="ghost" onPress={close} isDisabled={pending}>
-          {t("action.cancel")}
-        </Button>
-        <div className="flex gap-2">
-          {index > 0 && (
-            <Button isDisabled={pending} onPress={() => go(WIZARD_STEPS[index - 1]!)}>
-              {t("tracker.wizard.back")}
-            </Button>
-          )}
-          <Button
-            type="submit"
-            variant="primary"
-            isPending={pending}
-            isDisabled={!provider || Boolean(missing) || (last && Boolean(stale))}
-          >
-            {last
-              ? t("tracker.wizard.save")
-              : step === "connect" && !connection
-                ? t("tracker.wizard.connect")
-                : t("tracker.wizard.next")}
-          </Button>
-        </div>
-      </div>
+      <WizardMessage
+        stale={Boolean(stale)}
+        reload={reload}
+        messages={[problem, error, missing && t(missing.error)]}
+      />
+      <WizardFooter
+        index={index}
+        pending={pending}
+        isDisabled={!provider || Boolean(missing) || (last && Boolean(stale))}
+        submitLabel={t(submitKey(step, Boolean(connection)))}
+        back={() => go(WIZARD_STEPS[index - 1]!)}
+        close={close}
+      />
     </Form>
+  );
+}
+
+const STEP_VIEWS = {
+  projects: ProjectsStep,
+  statuses: StatusesStep,
+  people: PeopleStep,
+  fields: FieldsStep,
+  review: ReviewStep,
+} satisfies Record<Exclude<WizardStep, "connect">, (props: StepProps) => unknown>;
+
+function StepContent({ step, props }: { step: Exclude<WizardStep, "connect">; props: StepProps }) {
+  const View = STEP_VIEWS[step];
+  return <View {...props} />;
+}
+
+function WizardMessage({
+  stale,
+  reload,
+  messages,
+}: {
+  stale: boolean;
+  reload: () => void;
+  /** In priority order; the first non-empty one is shown. */
+  messages: (string | null | undefined)[];
+}) {
+  const { t } = useI18n();
+  if (!stale) return <FormError>{messages.find(Boolean) ?? ""}</FormError>;
+  return (
+    <div role="alert" className="flex flex-wrap items-center gap-3 text-destructive">
+      <p>{t("tracker.wizard.changed")}</p>
+      <Button size="sm" onPress={reload}>
+        {t("tracker.wizard.reload")}
+      </Button>
+    </div>
+  );
+}
+
+function submitKey(step: WizardStep, connected: boolean) {
+  if (step === "review") return "tracker.wizard.save";
+  return step === "connect" && !connected ? "tracker.wizard.connect" : "tracker.wizard.next";
+}
+
+function StepNav({
+  step,
+  isDisabled,
+  go,
+}: {
+  step: WizardStep;
+  isDisabled: (target: WizardStep) => boolean;
+  go: (target: WizardStep) => void;
+}) {
+  const { t } = useI18n();
+  const index = WIZARD_STEPS.indexOf(step);
+  return (
+    <nav aria-label={t("tracker.wizard.steps")}>
+      <ol className="flex flex-wrap gap-1">
+        {WIZARD_STEPS.map((target, at) => {
+          const current = target === step;
+          const done = at < index;
+          return (
+            <li key={target}>
+              <Button
+                variant="ghost"
+                size="sm"
+                aria-current={current ? "step" : undefined}
+                isDisabled={isDisabled(target)}
+                onPress={() => go(target)}
+                className={cn(
+                  "gap-1.5 text-muted-foreground",
+                  current && "bg-accent text-accent-foreground",
+                )}
+              >
+                <span
+                  aria-hidden
+                  className={cn(
+                    "flex size-4 items-center justify-center rounded-full border border-border text-[10px] tabular-nums",
+                    (current || done) && "border-primary-solid",
+                  )}
+                >
+                  {done ? <Check className="size-2.5" /> : at + 1}
+                </span>
+                {t(`tracker.step.${target}`)}
+              </Button>
+            </li>
+          );
+        })}
+      </ol>
+    </nav>
+  );
+}
+
+function WizardFooter({
+  index,
+  pending,
+  isDisabled,
+  submitLabel,
+  back,
+  close,
+}: {
+  index: number;
+  pending: boolean;
+  isDisabled: boolean;
+  submitLabel: string;
+  back: () => void;
+  close: () => void;
+}) {
+  const { t } = useI18n();
+  return (
+    <div className="flex items-center justify-between gap-2 border-t border-border pt-4">
+      <Button variant="ghost" onPress={close} isDisabled={pending}>
+        {t("action.cancel")}
+      </Button>
+      <div className="flex gap-2">
+        {index > 0 && (
+          <Button isDisabled={pending} onPress={back}>
+            {t("tracker.wizard.back")}
+          </Button>
+        )}
+        <Button type="submit" variant="primary" isPending={pending} isDisabled={isDisabled}>
+          {submitLabel}
+        </Button>
+      </div>
+    </div>
   );
 }

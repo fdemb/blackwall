@@ -85,23 +85,23 @@ fn connection(row: sqlx::postgres::PgRow) -> Result<Connection> {
 pub fn router() -> Router<Store> {
     Router::new()
         .route(
-            "/api/workspaces/{workspace}/trackers/providers",
+            "/internal-api/workspaces/{workspace}/trackers/providers",
             get(providers),
         )
         .route(
-            "/api/workspaces/{workspace}/trackers/connections",
+            "/internal-api/workspaces/{workspace}/trackers/connections",
             get(list).post(create),
         )
         .route(
-            "/api/workspaces/{workspace}/trackers/connections/{id}",
+            "/internal-api/workspaces/{workspace}/trackers/connections/{id}",
             axum::routing::patch(update).delete(delete),
         )
         .route(
-            "/api/workspaces/{workspace}/trackers/connections/{id}/refresh",
+            "/internal-api/workspaces/{workspace}/trackers/connections/{id}/refresh",
             post(refresh),
         )
         .route(
-            "/api/workspaces/{workspace}/trackers/connections/{id}/sync",
+            "/internal-api/workspaces/{workspace}/trackers/connections/{id}/sync",
             post(sync),
         )
 }
@@ -331,6 +331,57 @@ async fn validate_people(
     Ok(())
 }
 
+/// The requested URL, which cannot change once the connection imported issues.
+async fn updated_url(
+    conn: &mut PgConnection,
+    id: Uuid,
+    provider: ProviderKind,
+    requested: Option<String>,
+    previous: &str,
+) -> Result<String> {
+    let url = validate_url(requested.as_deref().unwrap_or(previous))?;
+    if url == previous {
+        return Ok(url);
+    }
+    let imported: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM issues WHERE tracker->>'connection_id'=$1)",
+    )
+    .bind(id.to_string())
+    .fetch_one(&mut *conn)
+    .await?;
+    if imported {
+        return Err(Error::Conflict(format!(
+            "{} URL cannot change after import; create a new connection for another instance",
+            provider.name()
+        )));
+    }
+    Ok(url)
+}
+
+/// The requested people mapping, normalized and checked against workspace
+/// membership when it differs from the stored one.
+async fn updated_people(
+    conn: &mut PgConnection,
+    workspace: Uuid,
+    requested: Option<BTreeMap<String, Uuid>>,
+    previous: &BTreeMap<String, Uuid>,
+) -> Result<BTreeMap<String, Uuid>> {
+    let Some(requested) = requested else {
+        return Ok(previous.clone());
+    };
+    let people = normalize_people(requested)?;
+    if &people != previous {
+        validate_people(conn, workspace, &people).await?;
+    }
+    Ok(people)
+}
+
+fn next_generation(generation: i64) -> Result<i64> {
+    generation.checked_add(1).ok_or_else(|| {
+        Error::Conflict("tracker generation exhausted; create a new connection".into())
+    })
+}
+
 async fn configure(
     store: Store,
     actor: Actor,
@@ -357,21 +408,7 @@ async fn configure(
     let name = config.name.unwrap_or(previous_name.clone());
     crate::domain::text(&name, 200)?;
     let previous_url: String = row.try_get("base_url")?;
-    let url = validate_url(&config.base_url.unwrap_or(previous_url.clone()))?;
-    if url != previous_url {
-        let imported: bool = sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM issues WHERE tracker->>'connection_id'=$1)",
-        )
-        .bind(id.to_string())
-        .fetch_one(&mut *tx)
-        .await?;
-        if imported {
-            return Err(Error::Conflict(format!(
-                "{} URL cannot change after import; create a new connection for another instance",
-                provider.name()
-            )));
-        }
-    }
+    let url = updated_url(&mut tx, id, provider, config.base_url, &previous_url).await?;
     let previous_token: String = row.try_get("token")?;
     let token = config.token.unwrap_or(previous_token.clone());
     if token.is_empty() || token.len() > 4096 || token.chars().any(char::is_control) {
@@ -391,14 +428,9 @@ async fn configure(
     }
     let previous_people: BTreeMap<String, Uuid> =
         serde_json::from_value(row.try_get("people_mapping")?)?;
-    let people = match config.people_mapping {
-        Some(people) => normalize_people(people)?,
-        None => previous_people.clone(),
-    };
+    let people =
+        updated_people(&mut tx, workspace, config.people_mapping, &previous_people).await?;
     let people_changed = people != previous_people;
-    if people_changed {
-        validate_people(&mut tx, workspace, &people).await?;
-    }
     let previous_enabled: bool = row.try_get("enabled")?;
     let enabled = config.enabled.unwrap_or(previous_enabled);
     let scan_changed = created
@@ -409,12 +441,7 @@ async fn configure(
         || people_changed
         || options.imports_changed(&previous_options);
     if scan_changed {
-        let generation = row
-            .try_get::<i64, _>("generation")?
-            .checked_add(1)
-            .ok_or_else(|| {
-                Error::Conflict("tracker generation exhausted; create a new connection".into())
-            })?;
+        let generation = next_generation(row.try_get("generation")?)?;
         sqlx::query("UPDATE tracker_connections SET name=$3,base_url=$4,token=$5,enabled=$6,projects=$7,people_mapping=$9,generation=$10,options=$11,checkpoint=$8,next_run_at=clock_timestamp(),status='pending',last_error='',push_error=NULL,remote_user_id=CASE WHEN base_url=$4 AND token=$5 THEN remote_user_id END,incremental_supported=true WHERE workspace_id=$1 AND id=$2")
             .bind(workspace).bind(id).bind(name).bind(url).bind(token).bind(enabled).bind(json!(projects))
             .bind(provider.checkpoint(false)).bind(json!(people)).bind(generation).bind(json!(options))

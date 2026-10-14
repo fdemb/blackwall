@@ -1,248 +1,237 @@
-import { createContext, useCallback, useContext, useMemo, useState, type ReactNode } from "react";
-import { useIsMutating, useQuery, useQueryClient, useSuspenseQueries } from "@tanstack/react-query";
-import { lower, useLiveQuery } from "@tanstack/react-db";
-import { ApiError } from "./api";
-import { createCommandRunner } from "./commands";
-import { workspaceDb, type WorkspaceDb } from "./db";
-import { keys, refreshWorkspace, reportQuery, workspaceQuery } from "./query-client";
-import { changeFeedQuery } from "./change-feed";
-import { useSession } from "./session";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+  type ReactNode,
+} from "react";
 import { useToast } from "~/components/ui/toast";
+import { EngineProvider, useEngine, useSyncStatus, useView } from "../sync/react";
+import { OutdatedError, type EngineStatus, type SyncEngine } from "../sync/engine";
+import { NetworkError, UnavailableError } from "../sync/transport";
+import { createdLabel } from "../sync/mutators";
+import { issueRef } from "../sync/derived";
+import { byDisplayName, byExpiryDesc, byName, byPosition, bySprintStart, byUserId } from "./order";
+import { useSession } from "./session";
+import type { Command, EntityVersions, IssueInput, Workspace } from "./types";
+import {
+  uploadFile,
+  OnlineRequiredError,
+  runCommand,
+  uuidsIn,
+  watchRejections,
+  watchOutdated,
+  whenConfirmed,
+} from "./workspace-commands";
 import { useI18n } from "./i18n";
-import type {
-  Command,
-  EntityVersions,
-  Id,
-  IssueInput,
-  MemberProfile,
-  Report,
-  Role,
-  Stage,
-  Team,
-  Workspace,
-} from "./types";
 
-interface Ctx {
-  ws: Workspace;
-  /** The workspace's TanStack DB collections. */
-  db: WorkspaceDb;
-  members: MemberProfile[];
-  report: Report;
-  role: Role;
-  canWrite: boolean;
-  canAdmin: boolean;
-  me: Id;
-  member: (id: Id | null | undefined) => MemberProfile | undefined;
-  team: (id: Id) => Team | undefined;
-  stage: (id: Id) => Stage | undefined;
-  /**
-   * Sends a command. Its local effect shows at once and rolls back if the server refuses.
-   * `quiet` skips the error toast, for forms that show the failure beside their own controls.
-   */
-  run: (
-    command: Command,
-    opts?: { quiet?: boolean; expectedVersions?: EntityVersions },
-  ) => Promise<Id | null>;
-  /** Refetches everything, after changes the feed can't describe such as imports. */
-  reload: () => Promise<void>;
-  /** Number of writes waiting on the server. */
-  pending: number;
-  /** True while the last background refresh failed, so the data on screen may be old. */
-  offline: boolean;
-  retrySync: () => void;
-  upload: (issueId: Id, file: File, commentId?: Id) => Promise<void>;
-  unread: number;
-  create: {
-    open: boolean;
-    defaults: Partial<IssueInput>;
-    show: (defaults?: Partial<IssueInput>) => void;
-    hide: () => void;
-  };
+export interface RunOptions {
+  quiet?: boolean;
+  // Older editors still capture versions. Sync writes use field-level last-writer-wins.
+  expectedVersions?: EntityVersions;
 }
-const WorkspaceCtx = createContext<Ctx | null>(null);
-
-/** Workspace records from the collections, in the order the API lists them. */
-function useWorkspaceRecords(db: WorkspaceDb) {
-  // One round-trip shape, fetched in parallel instead of two serial suspense queries.
-  const [{ data: wsData }, { data: report }] = useSuspenseQueries({
-    queries: [workspaceQuery(db.id), reportQuery(db.id)],
-  });
-  const name = wsData.workspace.name;
-  const teams = useLiveQuery({ query: (q) => q.from({ t: db.teams }).orderBy(({ t }) => t.name) });
-  const labels = useLiveQuery({
-    query: (q) => q.from({ l: db.labels }).orderBy(({ l }) => l.name),
-  });
-  const projects = useLiveQuery({
-    query: (q) => q.from({ p: db.projects }).orderBy(({ p }) => p.name),
-  });
-  const milestones = useLiveQuery({
-    query: (q) => q.from({ m: db.milestones }).orderBy(({ m }) => m.name),
-  });
-  const sprints = useLiveQuery({
-    query: (q) => q.from({ s: db.sprints }).orderBy(({ s }) => s.starts_at),
-  });
-  const views = useLiveQuery({ query: (q) => q.from({ v: db.views }).orderBy(({ v }) => v.name) });
-  const invitations = useLiveQuery({
-    query: (q) => q.from({ i: db.invitations }).orderBy(({ i }) => i.expires_at, "desc"),
-  });
-  const alerts = useLiveQuery({ query: (q) => q.from({ a: db.alert_preferences }) });
-  const integrations = useLiveQuery({
-    query: (q) => q.from({ i: db.integrations }).orderBy(({ i }) => i.name),
-  });
-  const members = useLiveQuery({
-    query: (q) => q.from({ m: db.members }).orderBy(({ m }) => lower(m.display_name)),
-  });
-  const ws = useMemo<Workspace>(
-    () => ({
-      id: db.id,
-      name,
-      members: (members.data ?? []).map((m) => ({
-        user_id: m.id,
-        role: m.role,
-        version: m.version,
-      })),
-      teams: teams.data ?? [],
-      labels: labels.data ?? [],
-      projects: projects.data ?? [],
-      milestones: milestones.data ?? [],
-      sprints: sprints.data ?? [],
-      views: views.data ?? [],
-      invitations: invitations.data ?? [],
-      alert_preferences: alerts.data ?? [],
-      integrations: integrations.data ?? [],
-    }),
-    [
-      db.id,
-      name,
-      members.data,
-      teams.data,
-      labels.data,
-      projects.data,
-      milestones.data,
-      sprints.data,
-      views.data,
-      invitations.data,
-      alerts.data,
-      integrations.data,
-    ],
-  );
-  return { ws, members: members.data ?? [], report };
+export interface UploadOptions {
+  commentId?: string;
+  // Callers that report a batch's failures themselves stay quiet, so each failure is not toasted twice.
+  quiet?: boolean;
 }
 
-export function WorkspaceProvider({ id, children }: { id: Id; children: ReactNode }) {
+/** Why edits can't reach the server right now, or null when sync is healthy. */
+export type SyncProblem = "offline" | "unreachable" | "blocked" | "error" | null;
+
+function syncProblem(status: EngineStatus): SyncProblem {
+  const error = status.lastError;
+  if (!status.online) return "offline";
+  if (status.blocked) return "blocked";
+  if (error instanceof NetworkError || error instanceof UnavailableError) return "unreachable";
+  return error && !(error instanceof OutdatedError) ? "error" : null;
+}
+
+function useWorkspaceValue() {
+  const engine = useEngine();
   const { profile } = useSession();
   const toast = useToast();
   const { t } = useI18n();
-  const client = useQueryClient();
-  const db = workspaceDb(id, client);
-  const { ws, members, report } = useWorkspaceRecords(db);
-  const feed = useQuery(changeFeedQuery(client, db));
-  const feedError = feed.isError;
-  const feedRefetch = feed.refetch;
-  const pending = useIsMutating({ mutationKey: keys.commands(id) });
-  const runner = useMemo(
-    () => createCommandRunner(client, db, profile.id),
-    [client, db, profile.id],
+  const status = useSyncStatus();
+  const records = useView(
+    (store) => {
+      const row = store.all("workspace")[0];
+      if (!row) throw new Error("Workspace replica missing");
+      const members = store
+        .all("members")
+        .map((member) => ({ ...member, team_ids: [...member.team_ids] }))
+        .sort(byDisplayName);
+      const ws: Workspace = {
+        id: row.id,
+        name: row.name,
+        slug: row.slug,
+        members: members
+          .map(({ id, role, version }) => ({ user_id: id, role, version }))
+          .sort(byUserId),
+        teams: store
+          .all("teams")
+          .map((team) => ({
+            ...team,
+            members: [...team.members],
+            stages: [...team.stages].sort(byPosition),
+          }))
+          .sort(byName),
+        labels: [...store.all("labels")].sort(byName),
+        projects: store
+          .all("projects")
+          .map((project) => ({ ...project, team_ids: [...project.team_ids] }))
+          .sort(byName),
+        milestones: [...store.all("milestones")].sort(byName),
+        sprints: [...store.all("sprints")].sort(bySprintStart),
+        invitations: [...store.all("invitations")].sort(byExpiryDesc),
+        views: [...store.all("views")].sort(byName),
+        alert_preferences: [...store.all("alert_preferences")].sort(byUserId),
+        integrations: [...store.all("integrations")].sort(byName),
+      };
+      return { ws, members };
+    },
+    [
+      "workspace",
+      "members",
+      "teams",
+      "labels",
+      "projects",
+      "milestones",
+      "sprints",
+      "invitations",
+      "views",
+      "alert_preferences",
+      "integrations",
+    ],
+    [],
   );
-  const [createState, setCreate] = useState<{ open: boolean; defaults: Partial<IssueInput> }>({
+  const { ws, members } = records;
+  const role = members.find((member) => member.id === profile.id)?.role ?? "viewer";
+  const unread = useView(
+    (store) =>
+      store.all("notifications").filter((notification) => notification.read_at === null).length,
+    ["notifications"],
+    [],
+  );
+  useEffect(
+    () =>
+      watchRejections(engine, (rejection) => {
+        const name = createdLabel(rejection.command);
+        toast.error(
+          name === null
+            ? rejection.message
+            : t("error.createRejected", { name, message: rejection.message }),
+        );
+      }),
+    [engine, toast, t],
+  );
+  useEffect(
+    () => watchOutdated(engine, () => toast.error(t("error.outdated"))),
+    [engine, toast, t],
+  );
+  const describeError = useCallback(
+    (error: unknown) => {
+      if (error instanceof OutdatedError) return t("error.outdated");
+      if (error instanceof OnlineRequiredError) return t("error.onlineRequired");
+      return error instanceof Error ? error.message : String(error);
+    },
+    [t],
+  );
+
+  const run = useCallback(
+    async (command: Command, opts: RunOptions = {}) => {
+      try {
+        return await runCommand(engine, command);
+      } catch (error) {
+        // Synced edits return before the server answers, so their rejections arrive only as engine
+        // events. Anything thrown here (admission, online commands) has no event and is shown now.
+        if (!opts.quiet) toast.error(describeError(error));
+        throw error instanceof OutdatedError ? new OutdatedError(describeError(error)) : error;
+      }
+    },
+    [engine, toast, describeError],
+  );
+  const upload = useCallback(
+    async (issueId: string, file: File, opts: UploadOptions = {}) => {
+      try {
+        return await uploadFile(engine, ws.id, issueId, file, opts.commentId);
+      } catch (error) {
+        if (!opts.quiet) toast.error(describeError(error));
+        throw error instanceof OutdatedError ? new OutdatedError(describeError(error)) : error;
+      }
+    },
+    [engine, ws.id, toast, describeError],
+  );
+  // REST writes that send record ids wait here until the server has those records.
+  const confirmed = useCallback((body: unknown) => whenConfirmed(engine, uuidsIn(body)), [engine]);
+  const [createState, setCreateState] = useState<{ open: boolean; defaults: Partial<IssueInput> }>({
     open: false,
     defaults: {},
   });
-  const role = ws.members.find((m) => m.user_id === profile.id)?.role ?? "viewer";
-
-  const reload = useCallback(() => refreshWorkspace(client, id), [client, id]);
-
-  /** The optimistic effect is already rolled back; refetch in case the server moved on. */
-  const fail = useCallback(
-    (e: unknown, quiet?: boolean) => {
-      void reload().catch(() => undefined);
-      const err = !(e instanceof ApiError)
-        ? new Error(t("error.network"))
-        : e.status === 409
-          ? new ApiError(t("error.conflict"), 409)
-          : new ApiError(e.message || t("error.generic"), e.status);
-      if (!quiet) toast.error(err.message);
-      return err;
-    },
-    [reload, t, toast],
+  const show = useCallback(
+    (defaults: Partial<IssueInput> = {}) => setCreateState({ open: true, defaults }),
+    [],
   );
-
-  const run = useCallback<Ctx["run"]>(
-    (command, opts) => {
-      return runner.command(command, opts?.expectedVersions).then(
-        (res) => res.result.id,
-        (e: unknown) => {
-          throw fail(e, opts?.quiet);
-        },
-      );
-    },
-    [runner, fail],
-  );
-
-  const upload = useCallback<Ctx["upload"]>(
-    (issueId, file, commentId) =>
-      runner.upload(issueId, file, commentId).then(
-        () => undefined,
-        (e: unknown) => {
-          const err = fail(e, true);
-          toast.error(`${file.name}: ${err.message}`);
-          throw err;
-        },
-      ),
-    [runner, fail, toast],
-  );
-
-  const value = useMemo<Ctx>(() => {
-    const stages = new Map(ws.teams.flatMap((tm) => tm.stages.map((s) => [s.id, s] as const)));
-    const people = new Map(members.map((m) => [m.id, m]));
-    return {
-      ws,
-      db,
-      members,
-      report,
-      role,
-      canWrite: role !== "viewer",
-      canAdmin: role === "owner" || role === "admin",
-      me: profile.id,
-      member: (uid) => (uid ? people.get(uid) : undefined),
-      team: (tid) => ws.teams.find((tm) => tm.id === tid),
-      stage: (sid) => stages.get(sid),
-      run,
-      reload,
-      pending,
-      offline: feedError,
-      retrySync: () => void feedRefetch(),
-      upload,
-      unread: report.inbox_unread,
-      create: {
-        ...createState,
-        show: (defaults = {}) => {
-          if (role !== "viewer") setCreate({ open: true, defaults });
-        },
-        hide: () => setCreate({ open: false, defaults: {} }),
-      },
-    };
-  }, [
+  const hide = useCallback(() => setCreateState((state) => ({ ...state, open: false })), []);
+  const create = useMemo(() => ({ ...createState, show, hide }), [createState, show, hide]);
+  const resolveRejection = useCallback((id: number) => engine.resolveRejection(id), [engine]);
+  // For links built from an id alone, read when the link is followed.
+  const issueRefOf = useCallback((id: string) => issueRef(engine.store, id), [engine]);
+  const retrySync = useCallback(async () => {
+    await engine.start();
+    engine.unblock();
+    await engine.pull();
+  }, [engine]);
+  return {
     ws,
-    db,
     members,
-    report,
     role,
-    profile.id,
+    canWrite: role !== "viewer",
+    canAdmin: role === "owner" || role === "admin",
+    me: profile.id,
+    member: (id: string | null | undefined) => members.find((member) => member.id === id),
+    team: (id: string) => ws.teams.find((team) => team.id === id),
+    issueRef: issueRefOf,
+    stage: (id: string) => ws.teams.flatMap((team) => team.stages).find((stage) => stage.id === id),
+    unread,
+    pending: status.pending,
+    rejected: status.rejected.length,
+    unresolved: status.unresolved,
+    resolveRejection,
+    offline: !status.online,
+    syncProblem: syncProblem(status),
+    syncError: status.lastError,
+    retrySync,
+    reload: retrySync,
     run,
-    reload,
-    pending,
-    feedError,
-    feedRefetch,
     upload,
-    createState,
-  ]);
-
-  return <WorkspaceCtx value={value}>{children}</WorkspaceCtx>;
+    confirmed,
+    create,
+  };
 }
 
+const WorkspaceContext = createContext<ReturnType<typeof useWorkspaceValue> | null>(null);
+export function WorkspaceProvider({
+  engine,
+  children,
+}: {
+  engine: SyncEngine;
+  children: ReactNode;
+}) {
+  return (
+    <EngineProvider engine={engine}>
+      <WorkspaceState>{children}</WorkspaceState>
+    </EngineProvider>
+  );
+}
+function WorkspaceState({ children }: { children: ReactNode }) {
+  const value = useWorkspaceValue();
+  return <WorkspaceContext value={value}>{children}</WorkspaceContext>;
+}
 export function useWorkspace() {
-  const v = useContext(WorkspaceCtx);
-  if (!v) throw new Error("WorkspaceProvider missing");
-  return v;
+  const workspace = useContext(WorkspaceContext);
+  if (!workspace) throw new Error("WorkspaceProvider missing");
+  return workspace;
 }

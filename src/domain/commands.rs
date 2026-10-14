@@ -4,9 +4,17 @@ use super::*;
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Command {
     CreateTeam {
+        id: Option<Uuid>,
         name: String,
+        /// Prefixes the team's issue numbers, as in `ENG-42`. Unique in the workspace.
+        key: String,
         #[serde(default)]
         members: Vec<Uuid>,
+        /// Client-chosen ids for the default stages, in stage order
+        /// (Backlog, Todo, In progress, Done). Absent means the server
+        /// generates them.
+        #[serde(default)]
+        default_stage_ids: Option<Vec<Uuid>>,
     },
     SetTeamMembers {
         id: Uuid,
@@ -18,7 +26,13 @@ pub enum Command {
         #[serde(default = "super::default_archive_days")]
         archive_after_days: Option<u32>,
     },
+    SetTeamAppearance {
+        id: Uuid,
+        icon: String,
+        color: String,
+    },
     CreateStage {
+        id: Option<Uuid>,
         team_id: Uuid,
         name: String,
         kind: StageKind,
@@ -37,6 +51,7 @@ pub enum Command {
         replacement: Uuid,
     },
     CreateLabel {
+        id: Option<Uuid>,
         name: String,
         color: String,
     },
@@ -46,6 +61,7 @@ pub enum Command {
         color: String,
     },
     CreateProject {
+        id: Option<Uuid>,
         name: String,
         #[serde(default)]
         description: String,
@@ -58,6 +74,7 @@ pub enum Command {
         team_ids: Vec<Uuid>,
     },
     CreateMilestone {
+        id: Option<Uuid>,
         project_id: Uuid,
         name: String,
         deadline: Option<DateTime<Utc>>,
@@ -68,6 +85,7 @@ pub enum Command {
         deadline: Option<DateTime<Utc>>,
     },
     CreateSprint {
+        id: Option<Uuid>,
         team_id: Uuid,
         name: String,
         goal: String,
@@ -130,6 +148,7 @@ pub enum Command {
         attachment_id: Uuid,
     },
     AddComment {
+        id: Option<Uuid>,
         issue_id: Uuid,
         body: String,
         #[serde(default)]
@@ -151,6 +170,7 @@ pub enum Command {
         following: bool,
     },
     LogTime {
+        id: Option<Uuid>,
         issue_id: Uuid,
         minutes: u32,
         #[serde(default)]
@@ -167,6 +187,7 @@ pub enum Command {
         id: Uuid,
     },
     SaveView {
+        id: Option<Uuid>,
         name: String,
         shared: bool,
         filter: IssueFilter,
@@ -214,13 +235,20 @@ pub enum Command {
         deadline: bool,
     },
     CreateIntegration {
+        id: Option<Uuid>,
         name: String,
         webhook_url: String,
         secret: String,
+        /// Public webhook event types. Empty means every event.
+        #[serde(default)]
+        events: Vec<String>,
     },
     UpdateIntegration {
         id: Uuid,
         enabled: bool,
+        /// Replaces the subscribed event types when present.
+        #[serde(default)]
+        events: Option<Vec<String>>,
     },
     DeleteIntegration {
         id: Uuid,
@@ -235,12 +263,69 @@ pub enum Command {
     },
 }
 
+/// Commands grouped the way the store and the in-memory model split their handlers.
+pub(crate) enum CommandFamily {
+    Planning,
+    Issues,
+    Discussion,
+}
+
 impl Command {
+    /// Personal commands only touch the actor's own state, so viewers may run them.
+    pub(crate) fn is_personal(&self) -> bool {
+        matches!(
+            self,
+            Self::MarkNotificationRead { .. }
+                | Self::MarkNotificationUnread { .. }
+                | Self::MarkAllNotificationsRead
+                | Self::ConfigureAlerts { .. }
+                | Self::SaveView { shared: false, .. }
+                | Self::UpdateView { shared: false, .. }
+                | Self::DeleteView { .. }
+                | Self::Follow { .. }
+        )
+    }
+
+    pub(crate) fn family(&self) -> CommandFamily {
+        match self {
+            Self::CreateTeam { .. }
+            | Self::SetTeamMembers { .. }
+            | Self::SetTeamArchive { .. }
+            | Self::SetTeamAppearance { .. }
+            | Self::CreateStage { .. }
+            | Self::UpdateStage { .. }
+            | Self::DeleteStage { .. }
+            | Self::CreateLabel { .. }
+            | Self::UpdateLabel { .. }
+            | Self::CreateProject { .. }
+            | Self::UpdateProject { .. }
+            | Self::CreateMilestone { .. }
+            | Self::UpdateMilestone { .. }
+            | Self::CreateSprint { .. }
+            | Self::UpdateSprint { .. }
+            | Self::CompleteSprint { .. }
+            | Self::ArchiveSprint { .. } => CommandFamily::Planning,
+            Self::CreateIssue { .. }
+            | Self::UpdateIssue { .. }
+            | Self::MoveIssue { .. }
+            | Self::BulkIssues { .. }
+            | Self::DeleteIssue { .. }
+            | Self::RestoreIssue { .. }
+            | Self::ArchiveIssue { .. }
+            | Self::UnarchiveIssue { .. }
+            | Self::Follow { .. }
+            | Self::AddSourceLink { .. }
+            | Self::ImportIssues { .. } => CommandFamily::Issues,
+            _ => CommandFamily::Discussion,
+        }
+    }
+
     pub(crate) fn kind(&self) -> &'static str {
         match self {
             Self::CreateTeam { .. } => "create_team",
             Self::SetTeamMembers { .. } => "set_team_members",
             Self::SetTeamArchive { .. } => "set_team_archive",
+            Self::SetTeamAppearance { .. } => "set_team_appearance",
             Self::CreateStage { .. } => "create_stage",
             Self::UpdateStage { .. } => "update_stage",
             Self::DeleteStage { .. } => "delete_stage",

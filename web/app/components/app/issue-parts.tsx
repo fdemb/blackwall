@@ -21,7 +21,7 @@ export function TrackerBadge({ issue }: { issue: Issue }) {
         failed ? t("tracker.pushFailedShort", { provider }) : t("tracker.syncedWith", { provider })
       }
       className={cn(
-        "inline-flex shrink-0 items-center gap-1 text-[11px]",
+        "inline-flex shrink-0 items-center gap-1 text-xs",
         failed
           ? "text-[color-mix(in_oklch,var(--warning)_70%,var(--foreground))]"
           : "text-muted-foreground",
@@ -46,7 +46,7 @@ export function TrackerNotice({ issue }: { issue: Pick<Issue, "tracker"> }) {
   const error = trackerPushError(issue);
   const label = t("tracker.syncedWith", { provider });
   return (
-    <div className="mb-4 space-y-1.5 text-xs text-muted-foreground">
+    <div className="mb-4 space-y-1.5 text-sm text-muted-foreground">
       {url ? (
         <a
           href={url}
@@ -77,22 +77,23 @@ export function TrackerNotice({ issue }: { issue: Pick<Issue, "tracker"> }) {
   );
 }
 
+/** Overdue reads as an error and the last two days as a warning. */
+function deadlineTone(daysLeft: number): string {
+  if (daysLeft < 0) return "text-destructive";
+  if (daysLeft <= 2) return "text-warning";
+  return "text-muted-foreground";
+}
+
 export function DeadlineChip({ issue, className }: { issue: Issue; className?: string }) {
   const { lang, t } = useI18n();
   const { ws } = useWorkspace();
   if (!issue.deadline) return null;
   const left = daysUntil(issue.deadline);
   const done = isDone(ws, issue);
-  const tone = done
-    ? "text-muted-foreground"
-    : left < 0
-      ? "text-destructive"
-      : left <= 2
-        ? "text-warning"
-        : "text-muted-foreground";
+  const tone = done ? "text-muted-foreground" : deadlineTone(left);
   return (
     <span
-      className={cn("inline-flex items-center gap-1 text-xs tabular-nums", tone, className)}
+      className={cn("inline-flex items-center gap-1  tabular-nums", tone, className)}
       title={left < 0 && !done ? t("deadline.overdue") : undefined}
     >
       <CalendarDays className="size-3" />
@@ -153,7 +154,7 @@ export function BlockedBadge({ issue }: { issue: Issue }) {
 export function SubtaskProgress({ issue }: { issue: Issue }) {
   if (!issue.subtask_total) return null;
   return (
-    <span className="inline-flex items-center gap-1 text-xs tabular-nums text-muted-foreground">
+    <span className="inline-flex items-center gap-1  tabular-nums text-muted-foreground">
       <Link2 className="size-3" />
       {issue.subtask_completed}/{issue.subtask_total}
     </span>

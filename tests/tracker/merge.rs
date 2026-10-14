@@ -21,7 +21,7 @@ impl Fixture {
         let app = http::router(store.clone());
         let mock = Mock::default();
         let (url, server) = mock_server(mock.clone()).await;
-        let base = format!("/api/workspaces/{workspace}/trackers/connections");
+        let base = format!("/internal-api/workspaces/{workspace}/trackers/connections");
         let (status, config) = call(
             &app,
             &owner,
@@ -63,7 +63,7 @@ impl Fixture {
             &self.app,
             &self.owner,
             "POST",
-            &format!("/api/workspaces/{}/commands", self.workspace),
+            &format!("/internal-api/workspaces/{}/commands", self.workspace),
             Some(json!({"expected_versions":{issue["id"].as_str().unwrap():issue["version"]},"command":command})),
         )
         .await;

@@ -1,24 +1,41 @@
 import { reactRouter } from "@react-router/dev/vite";
 import tailwindcss from "@tailwindcss/vite";
-import { defineConfig, lazyPlugins } from "vite-plus";
+import { defineConfig, lazyPlugins, loadEnv } from "vite-plus";
 
-export default defineConfig({
-  fmt: {},
-  lint: {
-    plugins: ["react", "react-perf"],
-    jsPlugins: [{ name: "vite-plus", specifier: "vite-plus/oxlint-plugin" }],
-    rules: { "vite-plus/prefer-vite-plus-imports": "error" },
-    categories: {
-      correctness: "error",
+export default defineConfig(({ mode }) => {
+  // Worktrees run the API on their own port, set in the repository's .env.
+  const api = `http://${loadEnv(mode, "..", "").BIND_ADDR ?? "127.0.0.1:3000"}`;
+  return {
+    test: { globalSetup: ["./app/sync/contract/setup.ts"] },
+    fmt: {},
+    lint: {
+      plugins: ["react", "react-perf"],
+      jsPlugins: [{ name: "vite-plus", specifier: "vite-plus/oxlint-plugin" }],
+      rules: {
+        "vite-plus/prefer-vite-plus-imports": "error",
+        // Warns above 20. scripts/complexity.mjs fails the check above 30.
+        "eslint/complexity": ["warn", { max: 20 }],
+      },
+      overrides: [
+        {
+          files: ["**/*.test.ts", "**/*.test.tsx", "app/sync/testing/**", "app/sync/contract/**"],
+          rules: { "eslint/complexity": "off" },
+        },
+      ],
+      categories: {
+        correctness: "error",
+      },
+      options: { typeAware: true, typeCheck: true },
     },
-    options: { typeAware: true, typeCheck: true },
-  },
-  plugins: lazyPlugins(() => [tailwindcss(), reactRouter()]),
-  resolve: { tsconfigPaths: true },
-  server: {
-    proxy: {
-      "/api": { target: "http://127.0.0.1:3000", changeOrigin: false },
-      "/health": { target: "http://127.0.0.1:3000", changeOrigin: false },
+    plugins: lazyPlugins(() => [tailwindcss(), reactRouter()]),
+    resolve: { tsconfigPaths: true },
+    server: {
+      proxy: {
+        "/internal-api": { target: api, changeOrigin: false },
+        "/api": { target: api, changeOrigin: false },
+        "/mcp": { target: api, changeOrigin: false },
+        "/health": { target: api, changeOrigin: false },
+      },
     },
-  },
+  };
 });

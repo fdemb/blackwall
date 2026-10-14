@@ -37,3 +37,49 @@ jobs:
       - run: ./scripts/check.sh
       - run: cargo build --locked
       - run: python3 scripts/smoke.py
+  build:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    env:
+      CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+      CC_aarch64_unknown_linux_gnu: aarch64-linux-gnu-gcc
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: web/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
+      - run: rustup target add aarch64-unknown-linux-gnu
+      - run: cargo build --locked --release --target aarch64-unknown-linux-gnu
+      - run: cd web && pnpm install --frozen-lockfile && pnpm run build
+      - run: |
+          mkdir release
+          cp target/aarch64-unknown-linux-gnu/release/blackwall release/
+          cp -r web/build/client release/web
+          tar -czf blackwall.tar.gz -C release .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: blackwall-aarch64
+          path: blackwall.tar.gz
+          retention-days: 7
+  deploy:
+    needs: [check, build]
+    runs-on: [self-hosted, deploy]
+    environment:
+      name: production
+      url: https://blackwall.example.com
+    concurrency:
+      group: production
+      cancel-in-progress: false
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: blackwall-aarch64
+          path: ${{ runner.temp }}/release
+      - run: sudo /usr/local/sbin/blackwall-deploy "$RUNNER_TEMP/release/blackwall.tar.gz" "$GITHUB_SHA"

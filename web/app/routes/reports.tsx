@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router";
 import { BarChart3, Pencil, Trash2 } from "lucide-react";
@@ -11,44 +11,26 @@ import { ConfirmDialog } from "~/components/app/confirm";
 import { Card, EmptyState, Page, PageHeader, Scroll } from "~/components/app/page";
 import { ProgressBar } from "~/components/app/progress";
 import { TimeForm } from "~/components/app/time-form";
-import { formatMinutes, fullDate, issueKey } from "~/lib/format";
+import { formatMinutes, fullDate } from "~/lib/format";
 import { useI18n } from "~/lib/i18n";
 import { useIssues, useTimeEntries } from "~/lib/queries";
-import { reportQuery } from "~/lib/query-client";
+import { reportQuery, watchReportChanges } from "~/lib/query-client";
 import { QueryStatus } from "~/components/app/query-status";
 import { useWorkspace } from "~/lib/workspace";
-import type { TimeEntry } from "~/lib/types";
+import { useEngine } from "~/sync/react";
+import type { Report, TimeEntry } from "~/lib/types";
 
 export default function Reports() {
   const { t, lang } = useI18n();
-  const { ws, member } = useWorkspace();
+  const { ws } = useWorkspace();
   // Time entries only load when the tab is open, so the overview never pays for them.
   const [tab, setTab] = useState("overview");
-  const query = useQuery(reportQuery(ws.id));
+  const engine = useEngine();
+  // Only this page reads the server report, so only it fetches and refreshes it.
+  const query = useQuery({ ...reportQuery(ws.id), refetchOnMount: "always" });
+  useEffect(() => watchReportChanges(engine.store, ws.id), [engine, ws.id]);
   const report = query.data;
   const error = query.isError && !report ? query.error.message || t("reports.loadFailed") : "";
-
-  const nameOf = useMemo(
-    () => ({
-      people: (id: string) => member(id)?.display_name ?? "?",
-      teams: (id: string) => ws.teams.find((x) => x.id === id)?.name ?? "?",
-      projects: (id: string) => ws.projects.find((x) => x.id === id)?.name ?? "?",
-      issues: (id: string) => {
-        const i = report?.issues.find((x) => x.id === id);
-        return i ? `${issueKey(i.number)} ${i.title}` : "?";
-      },
-    }),
-    [ws, member, report],
-  );
-
-  // Single pass for the header numbers instead of three separate reductions.
-  const stats = useMemo(() => {
-    let completed = 0;
-    let open = 0;
-    for (const d of report?.delivery ?? []) completed += d.completed;
-    for (const tm of report?.teams ?? []) open += tm.open_issues;
-    return { completed, open };
-  }, [report]);
 
   return (
     <Page>
@@ -83,116 +65,7 @@ export default function Reports() {
             ) : !report ? (
               <div className="h-40 animate-pulse rounded-xl bg-muted" />
             ) : (
-              <>
-                <div className="grid gap-3 sm:grid-cols-3">
-                  <Stat
-                    label={t("reports.totalTime")}
-                    value={formatMinutes(report.total_minutes)}
-                  />
-                  <Stat
-                    label={t("reports.delivered")}
-                    value={String(stats.completed)}
-                    hint={t("reports.last30")}
-                  />
-                  <Stat label={t("reports.openIssues")} value={String(stats.open)} />
-                </div>
-                <div className="grid gap-4 lg:grid-cols-2">
-                  <Card className="p-4">
-                    <h2 className="mb-3 text-[13px] font-semibold">{t("reports.delivery")}</h2>
-                    {report.delivery.length === 0 ? (
-                      <p className="text-[13px] text-muted-foreground">{t("reports.noDelivery")}</p>
-                    ) : (
-                      <Columns
-                        title={t("reports.delivery")}
-                        data={report.delivery.map((d) => ({ date: d.date, value: d.completed }))}
-                        label={(d, v) => `${d}: ${t("reports.completed", { n: v })}`}
-                      />
-                    )}
-                  </Card>
-                  <Card className="p-4">
-                    <h2 className="mb-3 text-[13px] font-semibold">{t("reports.workload")}</h2>
-                    {report.people.length === 0 ? (
-                      <p className="text-[13px] text-muted-foreground">{t("reports.none")}</p>
-                    ) : (
-                      <ul className="space-y-3">
-                        {report.people.map((p) => {
-                          const m = member(p.id);
-                          return (
-                            <li key={p.id} className="flex items-center gap-3 text-[13px]">
-                              <Avatar name={m?.display_name ?? "?"} src={m?.avatar_url} size={22} />
-                              <span className="min-w-0 flex-1 truncate">
-                                {m?.display_name ?? "?"}
-                              </span>
-                              <span className="tabular-nums text-muted-foreground">
-                                {t("reports.openCount", { n: p.open_issues })}
-                              </span>
-                              <span className="w-16 text-right tabular-nums text-muted-foreground">
-                                {p.effort} {t("estimate.unit")}
-                              </span>
-                            </li>
-                          );
-                        })}
-                      </ul>
-                    )}
-                  </Card>
-                  <Card className="p-4">
-                    <h2 className="mb-3 text-[13px] font-semibold">{t("reports.sprints")}</h2>
-                    {report.sprints.length === 0 ? (
-                      <p className="text-[13px] text-muted-foreground">{t("reports.none")}</p>
-                    ) : (
-                      <ul className="space-y-3">
-                        {report.sprints.map((s) => {
-                          const sp = ws.sprints.find((x) => x.id === s.id);
-                          return (
-                            <li key={s.id} className="text-[13px]">
-                              <div className="mb-1 flex justify-between">
-                                <span className="font-medium">{sp?.name ?? "?"}</span>
-                                <span className="tabular-nums text-muted-foreground">
-                                  {s.completed}/{s.total} · {s.effort} {t("estimate.unit")}
-                                </span>
-                              </div>
-                              <ProgressBar value={s.completed} total={s.total} label={sp?.name} />
-                            </li>
-                          );
-                        })}
-                      </ul>
-                    )}
-                  </Card>
-                  <Card className="p-4">
-                    <h2 className="mb-3 text-[13px] font-semibold">{t("reports.timeBy")}</h2>
-                    <Tabs>
-                      <TabList aria-label={t("reports.timeBy")}>
-                        <Tab id="teams">{t("nav.teams")}</Tab>
-                        <Tab id="projects">{t("nav.projects")}</Tab>
-                        <Tab id="people">{t("nav.people")}</Tab>
-                        <Tab id="issues">{t("nav.issues")}</Tab>
-                      </TabList>
-                      {(["teams", "projects", "people", "issues"] as const).map((k) => (
-                        <TabPanel key={k} id={k}>
-                          {report[k].filter((r) => r.minutes > 0).length === 0 ? (
-                            <p className="text-[13px] text-muted-foreground">
-                              {t("reports.noTime")}
-                            </p>
-                          ) : (
-                            <BarList
-                              rows={[...report[k]]
-                                .filter((r) => r.minutes > 0)
-                                .sort((a, b) => b.minutes - a.minutes)
-                                .slice(0, 8)
-                                .map((r) => ({
-                                  id: r.id,
-                                  label: nameOf[k](r.id),
-                                  value: r.minutes,
-                                }))}
-                              format={formatMinutes}
-                            />
-                          )}
-                        </TabPanel>
-                      ))}
-                    </Tabs>
-                  </Card>
-                </div>
-              </>
+              <Overview report={report} />
             )}
           </TabPanel>
           <TabPanel id="time" className="p-4">
@@ -204,12 +77,167 @@ export default function Reports() {
   );
 }
 
+function Overview({ report }: { report: Report }) {
+  const { t } = useI18n();
+  // Single pass for the header numbers instead of three separate reductions.
+  const stats = useMemo(() => {
+    let completed = 0;
+    let open = 0;
+    for (const d of report.delivery) completed += d.completed;
+    for (const tm of report.teams) open += tm.open_issues;
+    return { completed, open };
+  }, [report]);
+  return (
+    <>
+      <div className="grid gap-3 sm:grid-cols-3">
+        <Stat label={t("reports.totalTime")} value={formatMinutes(report.total_minutes)} />
+        <Stat
+          label={t("reports.delivered")}
+          value={String(stats.completed)}
+          hint={t("reports.allTime")}
+        />
+        <Stat label={t("reports.openIssues")} value={String(stats.open)} />
+      </div>
+      <div className="grid gap-4 lg:grid-cols-2">
+        <ReportCard title={t("reports.delivery")}>
+          {report.delivery.length === 0 ? (
+            <p className=" text-muted-foreground">{t("reports.noDelivery")}</p>
+          ) : (
+            <Columns
+              title={t("reports.delivery")}
+              data={report.delivery.map((d) => ({ date: d.date, value: d.completed }))}
+              label={(d, v) => `${d}: ${t("reports.completed", { n: v })}`}
+            />
+          )}
+        </ReportCard>
+        <ReportCard title={t("reports.workload")}>
+          <Workload people={report.people} />
+        </ReportCard>
+        <ReportCard title={t("reports.sprints")}>
+          <SprintOutcomes sprints={report.sprints} />
+        </ReportCard>
+        <ReportCard title={t("reports.timeBy")}>
+          <TimeBy report={report} />
+        </ReportCard>
+      </div>
+    </>
+  );
+}
+
+function ReportCard({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <Card className="p-4">
+      <h2 className="mb-3  font-semibold">{title}</h2>
+      {children}
+    </Card>
+  );
+}
+
+function Workload({ people }: { people: Report["people"] }) {
+  const { t } = useI18n();
+  const { member } = useWorkspace();
+  if (people.length === 0) return <p className=" text-muted-foreground">{t("reports.none")}</p>;
+  return (
+    <ul className="space-y-3">
+      {people.map((p) => {
+        const name = member(p.id)?.display_name ?? "?";
+        return (
+          <li key={p.id} className="flex items-center gap-3 ">
+            <Avatar name={name} src={member(p.id)?.avatar_url} size={22} />
+            <span className="min-w-0 flex-1 truncate">{name}</span>
+            <span className="tabular-nums text-muted-foreground">
+              {t("reports.openCount", { n: p.open_issues })}
+            </span>
+            <span className="w-16 text-right tabular-nums text-muted-foreground">
+              {p.effort} {t("estimate.unit")}
+            </span>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
+function SprintOutcomes({ sprints }: { sprints: Report["sprints"] }) {
+  const { t } = useI18n();
+  const { ws } = useWorkspace();
+  if (sprints.length === 0) return <p className=" text-muted-foreground">{t("reports.none")}</p>;
+  return (
+    <ul className="space-y-3">
+      {sprints.map((s) => {
+        const name = ws.sprints.find((x) => x.id === s.id)?.name;
+        return (
+          <li key={s.id} className="">
+            <div className="mb-1 flex justify-between">
+              <span className="font-medium">{name ?? "?"}</span>
+              <span className="tabular-nums text-muted-foreground">
+                {s.completed}/{s.total} · {s.effort} {t("estimate.unit")}
+              </span>
+            </div>
+            <ProgressBar value={s.completed} total={s.total} label={name} />
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
+const TIME_GROUPS = ["teams", "projects", "people", "issues"] as const;
+
+/** Top eight entries with logged time, per grouping. */
+function TimeBy({ report }: { report: Report }) {
+  const { t } = useI18n();
+  const { ws, member } = useWorkspace();
+  const nameOf = useMemo(
+    () => ({
+      people: (id: string) => member(id)?.display_name ?? "?",
+      teams: (id: string) => ws.teams.find((x) => x.id === id)?.name ?? "?",
+      projects: (id: string) => ws.projects.find((x) => x.id === id)?.name ?? "?",
+      issues: (id: string) => {
+        const i = report.issues.find((x) => x.id === id);
+        return i ? `${i.key} ${i.title}` : "?";
+      },
+    }),
+    [ws, member, report],
+  );
+  return (
+    <Tabs>
+      <TabList aria-label={t("reports.timeBy")}>
+        <Tab id="teams">{t("nav.teams")}</Tab>
+        <Tab id="projects">{t("nav.projects")}</Tab>
+        <Tab id="people">{t("nav.people")}</Tab>
+        <Tab id="issues">{t("nav.issues")}</Tab>
+      </TabList>
+      {TIME_GROUPS.map((k) => {
+        const rows = report[k].filter((r) => r.minutes > 0);
+        return (
+          <TabPanel key={k} id={k}>
+            {rows.length === 0 ? (
+              <p className=" text-muted-foreground">{t("reports.noTime")}</p>
+            ) : (
+              <BarList
+                rows={rows
+                  .sort((a, b) => b.minutes - a.minutes)
+                  .slice(0, 8)
+                  .map((r) => ({ id: r.id, label: nameOf[k](r.id), value: r.minutes }))}
+                format={formatMinutes}
+              />
+            )}
+          </TabPanel>
+        );
+      })}
+    </Tabs>
+  );
+}
+
 function Stat({ label, value, hint }: { label: string; value: string; hint?: string }) {
   return (
     <Card className="p-4">
-      <p className="text-xs text-muted-foreground">{label}</p>
+      <p className="flex items-baseline justify-between gap-2 text-muted-foreground">
+        {label}
+        {hint && <span className="text-[12px] text-muted-foreground/80">{hint}</span>}
+      </p>
       <p className="mt-1 text-2xl font-semibold tabular-nums tracking-tight">{value}</p>
-      {hint && <p className="text-xs text-muted-foreground">{hint}</p>}
     </Card>
   );
 }
@@ -237,9 +265,9 @@ function TimeLog({ lang }: { lang: string }) {
     <Card>
       <QueryStatus query={query} />
       <div className="overflow-x-auto">
-        <table className="w-full min-w-[40rem] text-[13px]">
+        <table className="w-full min-w-[40rem] ">
           <thead>
-            <tr className="border-b border-border text-left text-xs text-muted-foreground">
+            <tr className="border-b border-border text-left  text-muted-foreground">
               <th className="px-4 py-2 font-medium">{t("field.date")}</th>
               <th className="px-2 py-2 font-medium">{t("nav.people")}</th>
               <th className="px-2 py-2 font-medium">{t("field.issue")}</th>
@@ -268,10 +296,8 @@ function TimeLog({ lang }: { lang: string }) {
                   </td>
                   <td className="max-w-56 truncate px-2 py-2">
                     {issue ? (
-                      <Link to={`/${ws.id}/issue/${issue.id}`} className="hover:underline">
-                        <span className="tabular-nums text-muted-foreground">
-                          {issueKey(issue.number)}
-                        </span>{" "}
+                      <Link to={`/${ws.slug}/issue/${issue.ref}`} className="hover:underline">
+                        <span className="tabular-nums text-muted-foreground">{issue.key}</span>{" "}
                         {issue.title}
                       </Link>
                     ) : (

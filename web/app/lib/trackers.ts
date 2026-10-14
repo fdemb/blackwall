@@ -14,7 +14,7 @@ import type {
   TrackerStatus,
 } from "./types";
 
-const base = (ws: Id) => `/api/workspaces/${ws}/trackers`;
+const base = (ws: Id) => `/internal-api/workspaces/${ws}/trackers`;
 const connections = (ws: Id) => `${base(ws)}/connections`;
 
 export const trackerApi = {

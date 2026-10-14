@@ -51,12 +51,12 @@ export function TrackerSettings() {
       }
     >
       {query.isPending ? (
-        <p role="status" className="px-4 py-5 text-[13px] text-muted-foreground">
+        <p role="status" className="px-4 py-5 text-muted-foreground">
           {t("action.loading")}
         </p>
       ) : null}
       {query.isError ? (
-        <div role="alert" className="px-4 py-4 text-[13px]">
+        <div role="alert" className="px-4 py-4">
           <p>{t("tracker.loadError")}</p>
           <Button size="sm" variant="ghost" onPress={() => void query.refetch()}>
             {t("tracker.retry")}
@@ -141,19 +141,19 @@ function ConnectionRow({
       await refresh();
     });
   return (
-    <li className="space-y-2 py-3 text-[13px]">
+    <li className="space-y-2 py-3">
       <div className="flex flex-wrap items-center gap-3">
         <div className="min-w-0 flex-1 basis-48">
           <p className="flex items-center gap-2">
             <span className="font-medium">{connection.name}</span>
-            <span className="text-xs text-muted-foreground">
+            <span className="text-sm text-muted-foreground">
               {trackerProviderName(connection.provider)}
             </span>
             <Badge tone={STATUS_TONE[connection.status]}>
               {t(`tracker.status.${connection.status}`)}
             </Badge>
           </p>
-          <p className="break-all text-xs text-muted-foreground">
+          <p className="break-all text-sm text-muted-foreground">
             {connection.base_url} · {t("tracker.synced")}:{" "}
             {connection.last_synced_at
               ? fullDate(connection.last_synced_at, lang)
@@ -199,22 +199,22 @@ function ConnectionRow({
         </Button>
       </div>
       {connection.last_error ? (
-        <p className="break-words text-xs text-destructive">
+        <p className="break-words text-sm text-destructive">
           {t("tracker.error")}: {connection.last_error}
         </p>
       ) : null}
       {connection.push_error ? (
-        <p className="break-words text-xs text-destructive">
+        <p className="break-words text-sm text-destructive">
           {t("tracker.pushError", { message: connection.push_error })}
         </p>
       ) : null}
       {connection.pending_pushes ? (
-        <p className="text-xs text-muted-foreground">
+        <p className="text-sm text-muted-foreground">
           {t("tracker.pendingPushes", { count: connection.pending_pushes })}
         </p>
       ) : null}
       {connection.projects.length === 0 ? (
-        <p className="text-xs text-muted-foreground">{t("tracker.unfinished")}</p>
+        <p className="text-sm text-muted-foreground">{t("tracker.unfinished")}</p>
       ) : null}
       <FormError>{error}</FormError>
     </li>

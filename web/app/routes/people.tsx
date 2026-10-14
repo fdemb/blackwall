@@ -9,13 +9,14 @@ import { EmptyState, Page, PageHeader, Scroll } from "~/components/app/page";
 import { useI18n } from "~/lib/i18n";
 import { useIssues } from "~/lib/queries";
 import { useWorkspace } from "~/lib/workspace";
+import { OPEN } from "~/lib/filters";
 import type { Id } from "~/lib/types";
 
 export default function People() {
   const { t, lang } = useI18n();
   const { ws, members } = useWorkspace();
   const [q, setQ] = useState("");
-  const open = useIssues({ open: true });
+  const open = useIssues({ where: [OPEN] });
   const openCount = useMemo(() => {
     const counts = new Map<Id, number>();
     for (const i of open.items)
@@ -28,11 +29,7 @@ export default function People() {
     .sort((a, b) => a.display_name.localeCompare(b.display_name, lang));
   return (
     <Page>
-      <PageHeader
-        title={t("nav.people")}
-        icon={<Users className="size-4 text-muted-foreground" />}
-        subtitle={t("count.members", { count: members.length })}
-      >
+      <PageHeader title={t("nav.people")} icon={<Users className="size-4 text-muted-foreground" />}>
         <div className="px-4 pb-2">
           <SearchField
             aria-label={t("action.search")}
@@ -56,7 +53,7 @@ export default function People() {
           <>
             <div
               aria-hidden
-              className="flex h-8 items-center gap-3 border-b border-border px-4 text-xs text-muted-foreground"
+              className="flex h-8 items-center gap-3 border-b border-border px-4  text-muted-foreground"
             >
               <span className="flex-1 pl-10">{t("field.name")}</span>
               <span className="hidden w-48 md:block">{t("nav.teams")}</span>
@@ -71,18 +68,18 @@ export default function People() {
                 return (
                   <li key={m.id}>
                     <Link
-                      to={`/${ws.id}/people/${m.id}`}
+                      to={`/${ws.slug}/people/${m.id}`}
                       className="flex min-h-12 items-center gap-3 px-4 py-2 outline-none transition-colors hover:bg-muted/60 focus-visible:bg-muted/60 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/60"
                     >
                       <Avatar name={m.display_name} src={m.avatar_url} size={28} />
                       <div className="min-w-0 flex-1">
-                        <p className="truncate text-[13px] font-medium">{m.display_name}</p>
-                        <p className="truncate text-xs text-muted-foreground">{m.email}</p>
+                        <p className="truncate  font-medium">{m.display_name}</p>
+                        <p className="truncate  text-muted-foreground">{m.email}</p>
                       </div>
-                      <span className="hidden w-48 truncate text-[13px] text-muted-foreground md:block">
+                      <span className="hidden w-48 truncate  text-muted-foreground md:block">
                         {teams.join(", ") || "–"}
                       </span>
-                      <span className="hidden w-24 text-right text-[13px] tabular-nums text-muted-foreground sm:block">
+                      <span className="hidden w-24 text-right  tabular-nums text-muted-foreground sm:block">
                         {count}
                       </span>
                       <span className="flex w-20 justify-end">

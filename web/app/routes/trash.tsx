@@ -3,12 +3,11 @@ import { RotateCcw, Trash2 } from "lucide-react";
 import { Link } from "react-router";
 import { Button } from "~/components/ui/button";
 import { EmptyState, Page, PageHeader, Scroll } from "~/components/app/page";
-import { expectedVersions } from "~/lib/entity-versions";
-import { collectPages, workspaces } from "~/lib/api";
+import { bulkIssueCommands } from "~/lib/bulk-issues";
 import { useIssues } from "~/lib/queries";
 import { QueryStatus } from "~/components/app/query-status";
 import { relativeTime } from "~/lib/format";
-import { IssueKey, issueKeyLength } from "~/components/app/issue-key";
+import { IssueKey, useIssueKeyWidth } from "~/components/app/issue-key";
 import { useI18n } from "~/lib/i18n";
 import { useWorkspace } from "~/lib/workspace";
 import { useToast } from "~/components/ui/toast";
@@ -19,27 +18,21 @@ export default function Trash() {
   const toast = useToast();
   const query = useIssues({ trash: true, sort: "updated" });
   const issues = query.items;
-  const keyLength = issueKeyLength(issues);
+  const keyWidth = useIssueKeyWidth(issues);
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
-  // The server accepts at most 500 issues per bulk command, so a large Trash is restored in batches.
   const restoreAll = async () => {
-    setProgress({ done: 0, total: issues.length });
+    // Snapshot: built before the first await, so later view changes do not affect this run.
+    const commands = bulkIssueCommands(issues, "restore");
+    const total = commands.reduce((sum, command) => sum + command.ids.length, 0);
+    setProgress({ done: 0, total });
     try {
-      const all = await collectPages((offset) => workspaces.issues(ws.id, { trash: true }, offset));
-      const ids = all.map((issue) => issue.id);
-      for (let at = 0; at < ids.length; at += 500) {
-        await run(
-          { type: "bulk_issues", ids: ids.slice(at, at + 500), action: "restore" },
-          {
-            expectedVersions: expectedVersions(
-              ids.slice(at, at + 500),
-              Object.fromEntries(all.map((issue) => [issue.id, issue.version])),
-            ),
-          },
-        );
-        setProgress({ done: Math.min(at + 500, ids.length), total: ids.length });
+      let done = 0;
+      for (const command of commands) {
+        await run(command);
+        done += command.ids.length;
+        setProgress({ done, total });
       }
-      toast.show(t("trash.restoredN", { n: ids.length }));
+      toast.show(t("trash.restoredN", { count: total }));
     } catch {
       /* the failed batch already showed its error; the rest stay in Trash */
     }
@@ -50,7 +43,6 @@ export default function Trash() {
       <PageHeader
         title={t("nav.trash")}
         icon={<Trash2 className="size-4 text-muted-foreground" />}
-        subtitle={t("trash.sub")}
         actions={
           canWrite &&
           issues.length > 0 && (
@@ -79,16 +71,16 @@ export default function Trash() {
             {issues.map((i) => (
               <li
                 key={i.id}
-                className="flex min-h-11 items-center gap-3 border-b border-border/70 px-4 py-1 text-[13px]"
+                className="flex min-h-11 items-center gap-3 border-b border-border/70 px-4 py-1 "
               >
-                <IssueKey number={i.number} length={keyLength} className="text-muted-foreground" />
+                <IssueKey value={i.key} width={keyWidth} className="text-muted-foreground" />
                 <Link
-                  to={`/${ws.id}/issue/${i.id}`}
+                  to={`/${ws.slug}/issue/${i.ref}`}
                   className="min-w-0 flex-1 truncate text-muted-foreground line-through hover:text-foreground"
                 >
                   {i.title}
                 </Link>
-                <span className="hidden text-xs text-muted-foreground sm:inline">
+                <span className="hidden  text-muted-foreground sm:inline">
                   {i.deleted_at && t("trash.deleted", { when: relativeTime(i.deleted_at, lang) })}
                 </span>
                 {canWrite && (

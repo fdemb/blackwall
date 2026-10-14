@@ -76,7 +76,7 @@ export default function Register() {
           {busy ? t("auth.creating") : t("auth.register")}
         </Button>
       </Form>
-      <p className="mt-5 text-[13px] text-muted-foreground">
+      <p className="mt-5  text-muted-foreground">
         {t("auth.haveAccount")}{" "}
         <Link to="/login" className="font-medium text-primary hover:underline">
           {t("auth.login")}

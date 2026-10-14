@@ -22,23 +22,23 @@ import {
   UserCog,
   Building2,
 } from "lucide-react";
-import { Avatar } from "~/components/ui/avatar";
 import { Button } from "~/components/ui/button";
 import { Kbd } from "~/components/ui/tooltip";
 import { Menu, MenuItem, MenuPopover, MenuSeparator, MenuTrigger } from "~/components/ui/menu";
-import { auth } from "~/lib/api";
 import { LAST_WS } from "~/lib/auth-guard";
 import { useI18n } from "~/lib/i18n";
+import { sprintPath, teamPath } from "~/lib/last-view";
 import { useSession } from "~/lib/session";
 import { useWorkspace } from "~/lib/workspace";
 import { cn } from "~/lib/utils";
-import type { WorkspaceSummary } from "~/lib/types";
+import type { Team, WorkspaceSummary } from "~/lib/types";
+import { TeamIcon } from "./team-icon";
 import { Logo } from "./logo";
 import { ThemeToggle } from "./preferences";
 
 export const linkClass = ({ isActive }: { isActive: boolean }) =>
   cn(
-    "flex h-7 items-center gap-2 rounded-md px-2 text-[13px] font-medium text-muted-foreground outline-none transition-colors hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/60 [&_svg]:size-4 [&_svg]:shrink-0",
+    "flex h-7 items-center gap-2 rounded-md px-2  font-medium text-muted-foreground outline-none transition-colors hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/60 [&_svg]:size-4 [&_svg]:shrink-0",
     isActive && "bg-accent text-accent-foreground hover:bg-accent",
   );
 
@@ -52,9 +52,9 @@ export function Sidebar({
   const { t } = useI18n();
   const nav = useNavigate();
   const { ws, unread, create, canWrite } = useWorkspace();
-  const { profile } = useSession();
+  const { profile, logout } = useSession();
   const { workspaces } = useOutletContext<{ workspaces: WorkspaceSummary[] }>();
-  const base = `/${ws.id}`;
+  const base = `/${ws.slug}`;
   const myTeams = ws.teams.filter((tm) => tm.members.includes(profile.id));
   const otherTeams = ws.teams.filter((tm) => !tm.members.includes(profile.id));
 
@@ -70,7 +70,7 @@ export function Sidebar({
         <MenuTrigger>
           <Button
             variant="ghost"
-            className="h-8 min-w-0 flex-1 justify-start gap-2 px-1.5 text-sm font-semibold"
+            className="h-8 min-w-0 flex-1 justify-start gap-2 px-1.5  font-semibold"
           >
             <Logo size={20} />
             <span className="truncate">{ws.name}</span>
@@ -80,22 +80,19 @@ export function Sidebar({
             <Menu
               onAction={(k) => {
                 if (k === "new") void nav("/welcome");
-                else if (k === "signout")
-                  void auth.logout().finally(() => {
-                    sessionStorage.clear();
-                    location.href = "/login";
-                  });
+                else if (k === "signout") void logout();
                 else if (k === "account") void nav(`${base}/settings/profile`);
                 else if (k === "settings") void nav(`${base}/settings/general`);
                 else if (String(k).startsWith("ws:")) {
-                  const id = String(k).slice(3);
-                  localStorage.setItem(LAST_WS, id);
-                  void nav(`/${id}/my-issues`);
+                  const target = workspaces.find((w) => w.id === String(k).slice(3));
+                  if (!target) return;
+                  localStorage.setItem(LAST_WS, target.id);
+                  void nav(`/${target.slug}/my-issues`);
                 }
               }}
             >
               <MenuItem id="hdr" isDisabled textValue={profile.email}>
-                <span className="truncate text-xs text-muted-foreground">{profile.email}</span>
+                <span className="truncate text-muted-foreground">{profile.email}</span>
               </MenuItem>
               <MenuSeparator />
               {workspaces.map((w) => (
@@ -178,12 +175,12 @@ export function Sidebar({
 
         <Section title={t("nav.teams")}>
           {[...myTeams, ...otherTeams].map((tm) => (
-            <TeamLinks key={tm.id} id={tm.id} name={tm.name} base={base} />
+            <TeamLinks key={tm.id} team={tm} base={base} />
           ))}
           {ws.teams.length === 0 && (
             <Link
               to={`${base}/settings/teams`}
-              className="block px-2 py-1 text-xs text-muted-foreground hover:text-foreground"
+              className="block px-2 py-1  text-muted-foreground hover:text-foreground"
             >
               {t("team.createFirst")}
             </Link>
@@ -203,37 +200,40 @@ export function Sidebar({
       </div>
 
       <div className="flex items-center gap-0.5 border-t border-border p-2">
-        <NavLink
-          to={`${base}/settings/profile`}
-          className={(s) => cn(linkClass(s), "min-w-0 flex-1")}
-        >
-          <Avatar name={profile.display_name} src={profile.avatar_url} size={18} />
-          <span className="truncate">{profile.display_name}</span>
-        </NavLink>
-        <NavLink
-          to={`${base}/archive`}
-          aria-label={t("nav.archive")}
-          className={(s) => cn(linkClass(s), "size-7 justify-center px-0")}
-        >
+        <FooterLink to={`${base}/archive`} label={t("nav.archive")}>
           <Archive aria-hidden />
-        </NavLink>
-        <NavLink
-          to={`${base}/trash`}
-          aria-label={t("nav.trash")}
-          className={(s) => cn(linkClass(s), "size-7 justify-center px-0")}
-        >
+        </FooterLink>
+        <FooterLink to={`${base}/trash`} label={t("nav.trash")}>
           <Trash2 aria-hidden />
-        </NavLink>
-        <NavLink
-          to={`${base}/settings/general`}
-          aria-label={t("nav.settings")}
-          className={(s) => cn(linkClass(s), "size-7 justify-center px-0")}
-        >
+        </FooterLink>
+        <FooterLink to={`${base}/settings/general`} label={t("nav.settings")}>
           <Settings aria-hidden />
-        </NavLink>
+        </FooterLink>
         <ThemeToggle />
       </div>
     </nav>
+  );
+}
+
+/** An icon-only footer link. `title` names it for pointer users, like the sprint board links. */
+function FooterLink({
+  to,
+  label,
+  children,
+}: {
+  to: string;
+  label: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <NavLink
+      to={to}
+      aria-label={label}
+      title={label}
+      className={(s) => cn(linkClass(s), "size-7 justify-center px-0")}
+    >
+      {children}
+    </NavLink>
   );
 }
 
@@ -245,7 +245,7 @@ function Section({ title, children }: { title: string; children: React.ReactNode
         <Button
           slot="trigger"
           variant="ghost"
-          className="mb-0.5 h-6 w-full justify-start gap-1 px-2 text-xs font-medium text-muted-foreground"
+          className="mb-0.5 h-6 w-full justify-start gap-1 px-2  font-medium text-muted-foreground"
         >
           {title}
           <ChevronRight
@@ -261,29 +261,33 @@ function Section({ title, children }: { title: string; children: React.ReactNode
   );
 }
 
-function TeamLinks({ id, name, base }: { id: string; name: string; base: string }) {
+function TeamLinks({ team, base }: { team: Team; base: string }) {
+  const { id, key, name } = team;
   const { t } = useI18n();
   const { pathname } = useLocation();
   const { ws } = useWorkspace();
   // null follows the route (open while you're inside the team). Once clicked, the choice sticks.
   const [open, setOpen] = useState<boolean | null>(null);
-  const inTeam = pathname.startsWith(`${base}/team/${id}`);
+  // Keys vary in length, so match whole segments: team/EN must not claim team/ENG.
+  const teamBase = `${base}/team/${key}`;
+  const inTeam = pathname === teamBase || pathname.startsWith(`${teamBase}/`);
   const isOpen = open ?? inTeam;
-  const sprints = `${base}/team/${id}/sprints`;
+  const sprints = `${teamBase}/sprints`;
   const onSprints = pathname.startsWith(sprints);
   const active = ws.sprints.find((s) => s.team_id === id && s.state === "active");
-  const onActive = !!active && pathname === `${sprints}/${active.id}`;
+  // The active sprint's board and its plan both count as the sprint.
+  const onActive =
+    !!active &&
+    (pathname === `${sprints}/${active.id}` || pathname.startsWith(`${sprints}/${active.id}/`));
   return (
     <div>
       <button
         type="button"
         aria-expanded={isOpen}
         onClick={() => setOpen(!isOpen)}
-        className="flex h-7 w-full items-center gap-2 rounded-md px-2 text-[13px] font-medium text-muted-foreground outline-none hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/60"
+        className="flex h-7 w-full items-center gap-2 rounded-md px-2  font-medium text-muted-foreground outline-none hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/60"
       >
-        <span className="grid size-4 place-items-center rounded bg-accent text-[10px] font-bold text-accent-foreground">
-          {name[0]?.toUpperCase()}
-        </span>
+        <TeamIcon team={team} />
         <span className="truncate">{name}</span>
         <ChevronRight
           aria-hidden
@@ -292,7 +296,10 @@ function TeamLinks({ id, name, base }: { id: string; name: string; base: string 
       </button>
       {isOpen && (
         <div className="ml-4 mt-0.5 space-y-0.5 border-l border-border pl-2">
-          <Link to={`${base}/team/${id}`} className={linkClass({ isActive: inTeam && !onSprints })}>
+          <Link
+            to={teamPath(ws.slug, key)}
+            className={linkClass({ isActive: inTeam && !onSprints })}
+          >
             {t("team.issues")}
           </Link>
           <Link to={sprints} className={linkClass({ isActive: onSprints && !onActive })}>
@@ -300,7 +307,7 @@ function TeamLinks({ id, name, base }: { id: string; name: string; base: string 
           </Link>
           {active && (
             <Link
-              to={`${sprints}/${active.id}`}
+              to={sprintPath(ws.slug, key, active)}
               aria-current={onActive ? "page" : undefined}
               className={linkClass({ isActive: onActive })}
             >

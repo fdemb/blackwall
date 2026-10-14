@@ -16,10 +16,7 @@ pub(crate) async fn create(
     i: &mut Issue,
     origin: Origin<'_>,
 ) -> Result<()> {
-    i.number = sqlx::query_scalar::<_,i64>("UPDATE workspaces SET next_issue_number=next_issue_number+1 WHERE id=$1 RETURNING next_issue_number-1")
-            .bind(workspace)
-            .fetch_one(&mut *conn)
-            .await? as u64;
+    i.number = next_number(conn, workspace, i.team_id).await?;
     i.position = sqlx::query_scalar("SELECT COALESCE(max(position),-1024)+1024 FROM issues WHERE workspace_id=$1 AND team_id=$2 AND stage_id=$3 AND deleted_at IS NULL")
             .bind(workspace)
             .bind(i.team_id)
@@ -27,6 +24,25 @@ pub(crate) async fn create(
             .fetch_one(&mut *conn)
             .await?;
     insert(conn, workspace, i, origin).await
+}
+
+/// The team's highest issue number plus one, the same rule the sync client
+/// predicts with. Locking the team row serializes creations in the team until commit.
+async fn next_number(conn: &mut PgConnection, workspace: Uuid, team: Uuid) -> Result<u64> {
+    sqlx::query("SELECT 1 FROM teams WHERE workspace_id=$1 AND id=$2 FOR NO KEY UPDATE")
+        .bind(workspace)
+        .bind(team)
+        .fetch_optional(&mut *conn)
+        .await?
+        .ok_or(Error::NotFound)?;
+    let number: i64 = sqlx::query_scalar(
+        "SELECT COALESCE(max(number),0)+1 FROM issues WHERE workspace_id=$1 AND team_id=$2",
+    )
+    .bind(workspace)
+    .bind(team)
+    .fetch_one(&mut *conn)
+    .await?;
+    Ok(number as u64)
 }
 
 pub(crate) struct CreationBatch {
@@ -41,6 +57,12 @@ impl CreationBatch {
             *position = (*position).max(issue.position);
         }
     }
+
+    /// Gives an issue moving into the batch's team the team's next number.
+    pub(crate) fn renumber(&mut self, issue: &mut Issue) {
+        issue.number = self.next_number;
+        self.next_number += 1;
+    }
 }
 
 /// The caller holds the workspace graph lock for the entire allocation and writes.
@@ -48,10 +70,8 @@ pub(crate) async fn allocate_creations(
     conn: &mut PgConnection,
     workspace: Uuid,
     team: Uuid,
-    count: i64,
 ) -> Result<CreationBatch> {
-    let next_number: i64 = sqlx::query_scalar("UPDATE workspaces SET next_issue_number=next_issue_number+$2 WHERE id=$1 RETURNING next_issue_number-$2")
-        .bind(workspace).bind(count).fetch_one(&mut *conn).await?;
+    let next_number = next_number(conn, workspace, team).await?;
     let rows = sqlx::query("SELECT stage_id,max(position) AS position FROM issues WHERE workspace_id=$1 AND team_id=$2 AND deleted_at IS NULL GROUP BY stage_id")
         .bind(workspace).bind(team).fetch_all(&mut *conn).await?;
     let mut positions = BTreeMap::new();
@@ -59,7 +79,7 @@ pub(crate) async fn allocate_creations(
         positions.insert(row.try_get("stage_id")?, row.try_get("position")?);
     }
     Ok(CreationBatch {
-        next_number: next_number as u64,
+        next_number,
         positions,
     })
 }
@@ -151,7 +171,7 @@ async fn save_fields(
 ) -> Result<()> {
     let source = source_value(origin)?;
     let remote = matches!(origin, Origin::Remote(_));
-    sqlx::query("UPDATE issues SET title=$3,description=$4,team_id=$16,stage_id=$5,assignee=$6,priority=$7,estimate=$8,deadline=$9,project_id=$10,milestone_id=$11,sprint_id=$12,parent_id=$13,position=$14,deleted_at=$15,updated_at=now(),tracker=CASE WHEN $21 THEN $17 ELSE tracker END,archived_at=$18,done_at=$19,version=version+CASE WHEN $20 THEN 1 ELSE 0 END WHERE workspace_id=$1 AND id=$2")
+    sqlx::query("UPDATE issues SET title=$3,description=$4,team_id=$16,stage_id=$5,assignee=$6,priority=$7,estimate=$8,deadline=$9,project_id=$10,milestone_id=$11,sprint_id=$12,parent_id=$13,position=$14,deleted_at=$15,updated_at=now(),tracker=CASE WHEN $21 THEN $17 ELSE tracker END,archived_at=$18,done_at=$19,version=version+CASE WHEN $20 THEN 1 ELSE 0 END,number=$22 WHERE workspace_id=$1 AND id=$2")
             .bind(workspace)
             .bind(i.id)
             .bind(&i.title)
@@ -173,6 +193,7 @@ async fn save_fields(
             .bind(i.done_at)
             .bind(increment_version)
             .bind(remote)
+            .bind(i.number as i64)
             .execute(&mut *conn)
             .await?;
 
@@ -259,7 +280,7 @@ async fn schedule_reminder_with_stage(
                     issue_id: id,
                     generation,
                 }),
-                due_at: (deadline - chrono::Duration::hours(24)).timestamp(),
+                due_at: Some((deadline - chrono::Duration::hours(24)).timestamp()),
                 max_attempts: None,
             },
         )
@@ -304,28 +325,6 @@ async fn became_completed_with_stages(
     Ok(done && !was_done)
 }
 
-pub(crate) fn changed_fields(before: &Issue, after: &Issue) -> Vec<String> {
-    [
-        ("title", before.title != after.title),
-        ("description", before.description != after.description),
-        ("stage", before.stage_id != after.stage_id),
-        ("assignee", before.assignee != after.assignee),
-        ("priority", before.priority != after.priority),
-        ("labels", before.labels != after.labels),
-        ("estimate", before.estimate != after.estimate),
-        ("deadline", before.deadline != after.deadline),
-        ("project", before.project_id != after.project_id),
-        ("milestone", before.milestone_id != after.milestone_id),
-        ("sprint", before.sprint_id != after.sprint_id),
-        ("parent", before.parent_id != after.parent_id),
-        ("dependencies", before.dependencies != after.dependencies),
-    ]
-    .into_iter()
-    .filter(|(_, changed)| *changed)
-    .map(|(name, _)| name.to_owned())
-    .collect()
-}
-
 /// The action determines which effects a caller explicitly requests.
 pub(crate) enum IssueEffects {
     Create,
@@ -353,6 +352,14 @@ pub(crate) async fn issue_effects(
 struct Integration {
     id: Uuid,
     url: String,
+    /// Subscribed public event types; empty means all.
+    events: Vec<String>,
+}
+
+impl Integration {
+    fn wants(&self, event: &str) -> bool {
+        self.events.is_empty() || self.events.iter().any(|e| e == event)
+    }
 }
 
 /// The member that tracker activity is attributed to: the workspace's first owner.
@@ -410,12 +417,7 @@ async fn issue_effects_with_context(
     effects: IssueEffects,
     context: Option<&PageEffects>,
 ) -> Result<()> {
-    if before.is_none_or(|old| {
-        old.deadline != after.deadline
-            || old.stage_id != after.stage_id
-            || old.assignee != after.assignee
-            || old.deleted_at != after.deleted_at
-    }) {
+    if affects_reminder(before, after) {
         let completed = match context {
             Some(context) => {
                 Some(stage_completed(conn, after.stage_id, Some(&context.stages)).await?)
@@ -443,21 +445,8 @@ async fn issue_effects_with_context(
         .await?;
     }
 
-    if matches!(effects, IssueEffects::Create | IssueEffects::Update)
-        && before.is_none_or(|old| old.assignee != after.assignee)
-        && let Some(user) = after.assignee
-        && user != actor
-    {
-        notify(
-            conn,
-            workspace,
-            user,
-            Some(after.id),
-            AlertKind::Assignment,
-            after.title.clone(),
-            format!("assignment:{}:{}", after.id, Uuid::new_v4()),
-        )
-        .await?;
+    if matches!(effects, IssueEffects::Create | IssueEffects::Update) {
+        notify_new_assignee(conn, workspace, actor, before, after).await?;
     }
 
     if matches!(effects, IssueEffects::Update) || (remote && before.is_some()) {
@@ -482,6 +471,42 @@ async fn issue_effects_with_context(
     Ok(())
 }
 
+/// The deadline reminder depends on the deadline, stage, assignee and trash state.
+fn affects_reminder(before: Option<&Issue>, after: &Issue) -> bool {
+    before.is_none_or(|old| {
+        old.deadline != after.deadline
+            || old.stage_id != after.stage_id
+            || old.assignee != after.assignee
+            || old.deleted_at != after.deleted_at
+    })
+}
+
+/// Alerts a newly assigned user, unless they assigned themselves.
+async fn notify_new_assignee(
+    conn: &mut PgConnection,
+    workspace: Uuid,
+    actor: Uuid,
+    before: Option<&Issue>,
+    after: &Issue,
+) -> Result<()> {
+    if before.is_some_and(|old| old.assignee == after.assignee) {
+        return Ok(());
+    }
+    let Some(user) = after.assignee.filter(|user| *user != actor) else {
+        return Ok(());
+    };
+    notify(
+        conn,
+        workspace,
+        user,
+        Some(after.id),
+        AlertKind::Assignment,
+        after.title.clone(),
+        format!("assignment:{}:{}", after.id, Uuid::new_v4()),
+    )
+    .await
+}
+
 pub(crate) async fn activity(
     conn: &mut PgConnection,
     workspace: Uuid,
@@ -494,16 +519,18 @@ pub(crate) async fn activity(
 }
 
 async fn integrations(conn: &mut PgConnection, workspace: Uuid) -> Result<Vec<Integration>> {
-    let rows =
-        sqlx::query("SELECT id,webhook_url FROM integrations WHERE workspace_id=$1 AND enabled")
-            .bind(workspace)
-            .fetch_all(conn)
-            .await?;
+    let rows = sqlx::query(
+        "SELECT id,webhook_url,events FROM integrations WHERE workspace_id=$1 AND enabled",
+    )
+    .bind(workspace)
+    .fetch_all(conn)
+    .await?;
     rows.into_iter()
         .map(|row| {
             Ok(Integration {
                 id: row.try_get("id")?,
                 url: row.try_get("webhook_url")?,
+                events: row.try_get("events")?,
             })
         })
         .collect()
@@ -525,9 +552,14 @@ async fn activity_with_integrations(
         entity_id: issue,
         at: Utc::now(),
         fields,
+        via: None,
     };
-    sqlx::query("INSERT INTO activity(id,workspace_id,actor,action,entity_id,at,fields) VALUES($1,$2,$3,$4,$5,$6,$7)")
-        .bind(event.id).bind(workspace).bind(actor).bind(action).bind(issue).bind(event.at).bind(serde_json::to_value(&event.fields)?).execute(&mut *conn).await?;
+    let via: Option<serde_json::Value> = sqlx::query_scalar("INSERT INTO activity(id,workspace_id,actor,action,entity_id,at,fields) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING via")
+        .bind(event.id).bind(workspace).bind(actor).bind(action).bind(issue).bind(event.at).bind(serde_json::to_value(&event.fields)?).fetch_one(&mut *conn).await?;
+    // Only public events leave the workspace; see `WEBHOOK_EVENTS`.
+    let Some((kind, entity_type)) = crate::domain::webhook_event(action) else {
+        return Ok(());
+    };
     let loaded;
     let integrations = if let Some(cached) = cached {
         cached
@@ -535,7 +567,22 @@ async fn activity_with_integrations(
         loaded = integrations(conn, workspace).await?;
         &loaded
     };
-    for integration in integrations {
+    let mut payload = serde_json::json!({
+        "id": event.id,
+        "type": kind,
+        "workspace_id": workspace,
+        "occurred_at": event.at,
+        "actor_id": actor,
+        "entity_type": entity_type,
+        "entity_id": issue,
+    });
+    if !event.fields.is_empty() {
+        payload["fields"] = serde_json::json!(event.fields);
+    }
+    if let Some(via) = via {
+        payload["via"] = via;
+    }
+    for integration in integrations.iter().filter(|i| i.wants(kind)) {
         let id = integration.id;
         Outbox::insert(
             conn,
@@ -545,7 +592,7 @@ async fn activity_with_integrations(
                     workspace_id: workspace,
                     integration_id: id,
                     url: integration.url.clone(),
-                    event: serde_json::json!({"workspace_id":workspace,"activity":event}),
+                    event: payload.clone(),
                 }),
             ),
         )

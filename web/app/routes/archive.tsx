@@ -3,11 +3,10 @@ import { Archive, ArchiveRestore } from "lucide-react";
 import { Link } from "react-router";
 import { Button } from "~/components/ui/button";
 import { EmptyState, Page, PageHeader, Scroll } from "~/components/app/page";
-import { expectedVersions } from "~/lib/entity-versions";
-import { collectPages, workspaces } from "~/lib/api";
+import { bulkIssueCommands } from "~/lib/bulk-issues";
 import { useIssues } from "~/lib/queries";
 import { QueryStatus } from "~/components/app/query-status";
-import { issueKey, relativeTime } from "~/lib/format";
+import { relativeTime } from "~/lib/format";
 import { useI18n } from "~/lib/i18n";
 import { useWorkspace } from "~/lib/workspace";
 import { useToast } from "~/components/ui/toast";
@@ -19,27 +18,19 @@ export default function ArchivePage() {
   const query = useIssues({ archived: true, sort: "updated" });
   const issues = query.items;
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
-  // The server accepts at most 500 issues per bulk command, so a large archive is restored in batches.
   const unarchiveAll = async () => {
-    setProgress({ done: 0, total: issues.length });
+    // Snapshot: built before the first await, so later view changes do not affect this run.
+    const commands = bulkIssueCommands(issues, "unarchive");
+    const total = commands.reduce((sum, command) => sum + command.ids.length, 0);
+    setProgress({ done: 0, total });
     try {
-      const all = await collectPages((offset) =>
-        workspaces.issues(ws.id, { archived: true }, offset),
-      );
-      const ids = all.map((issue) => issue.id);
-      for (let at = 0; at < ids.length; at += 500) {
-        await run(
-          { type: "bulk_issues", ids: ids.slice(at, at + 500), action: "unarchive" },
-          {
-            expectedVersions: expectedVersions(
-              ids.slice(at, at + 500),
-              Object.fromEntries(all.map((issue) => [issue.id, issue.version])),
-            ),
-          },
-        );
-        setProgress({ done: Math.min(at + 500, ids.length), total: ids.length });
+      let done = 0;
+      for (const command of commands) {
+        await run(command);
+        done += command.ids.length;
+        setProgress({ done, total });
       }
-      toast.show(t("archive.unarchivedN", { n: ids.length }));
+      toast.show(t("archive.unarchivedN", { count: total }));
     } catch {
       /* the failed batch already showed its error; the rest stay archived */
     }
@@ -50,7 +41,6 @@ export default function ArchivePage() {
       <PageHeader
         title={t("nav.archive")}
         icon={<Archive className="size-4 text-muted-foreground" />}
-        subtitle={t("archive.sub")}
         actions={
           canWrite &&
           issues.length > 0 && (
@@ -79,18 +69,16 @@ export default function ArchivePage() {
             {issues.map((i) => (
               <li
                 key={i.id}
-                className="flex min-h-11 items-center gap-3 border-b border-border/70 px-4 py-1 text-[13px]"
+                className="flex min-h-11 items-center gap-3 border-b border-border/70 px-4 py-1 "
               >
-                <span className="w-14 tabular-nums text-muted-foreground">
-                  {issueKey(i.number)}
-                </span>
+                <span className="w-14 tabular-nums text-muted-foreground">{i.key}</span>
                 <Link
-                  to={`/${ws.id}/issue/${i.id}`}
+                  to={`/${ws.slug}/issue/${i.ref}`}
                   className="min-w-0 flex-1 truncate hover:text-foreground"
                 >
                   {i.title}
                 </Link>
-                <span className="hidden text-xs text-muted-foreground sm:inline">
+                <span className="hidden  text-muted-foreground sm:inline">
                   {i.archived_at &&
                     t("archive.archived", { when: relativeTime(i.archived_at, lang) })}
                 </span>

@@ -65,6 +65,11 @@ export function HydrateFallback() {
 export default function App() {
   const navigate = useNavigate();
   useEffect(() => watchSystemTheme(), []);
+  useEffect(() => {
+    // Caches the app shell so a reload can reopen the local replicas while offline.
+    if (import.meta.env.PROD && window.isSecureContext && "serviceWorker" in navigator)
+      navigator.serviceWorker.register("/sw.js").catch(() => {});
+  }, []);
   return (
     <QueryClientProvider client={queryClient}>
       <RouterProvider navigate={navigate} useHref={useHref}>
@@ -91,7 +96,7 @@ export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {
       ? error.message
       : t("error.unknown");
   const action =
-    "inline-flex h-9 items-center rounded-md px-3 text-[13px] font-medium outline-none focus-visible:ring-2 focus-visible:ring-ring/60";
+    "inline-flex h-9 items-center rounded-md px-3  font-medium outline-none focus-visible:ring-2 focus-visible:ring-ring/60";
   return (
     <div role="alert" className="grid h-dvh place-items-center p-6 text-center">
       <div>

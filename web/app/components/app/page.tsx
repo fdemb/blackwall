@@ -1,7 +1,9 @@
 import { Link } from "react-router";
 import { Separator } from "~/components/ui/separator";
 import { useDocumentTitle } from "~/lib/title";
+import { teamPath } from "~/lib/last-view";
 import type { Team } from "~/lib/types";
+import { TeamIcon } from "./team-icon";
 import { cn } from "~/lib/utils";
 
 export function Page({ children, className }: { children: React.ReactNode; className?: string }) {
@@ -11,7 +13,6 @@ export function Page({ children, className }: { children: React.ReactNode; class
 export function PageHeader({
   title,
   icon,
-  subtitle,
   heading,
   nav,
   actions,
@@ -19,8 +20,7 @@ export function PageHeader({
 }: {
   title: React.ReactNode;
   icon?: React.ReactNode;
-  subtitle?: React.ReactNode;
-  /** Replaces the icon, title and subtitle. `title` still names the document. */
+  /** Replaces the icon, title. `title` still names the document. */
   heading?: React.ReactNode;
   /** Sits between the heading and the actions, wrapping to its own line when they don't fit. */
   nav?: React.ReactNode;
@@ -34,14 +34,7 @@ export function PageHeader({
         {heading ?? (
           <>
             {icon}
-            <h1 className="truncate text-balance text-[15px] font-semibold tracking-tight">
-              {title}
-            </h1>
-            {subtitle && (
-              <span className="hidden truncate text-[13px] text-muted-foreground sm:block">
-                {subtitle}
-              </span>
-            )}
+            <h1 className="truncate text-balance font-medium">{title}</h1>
           </>
         )}
         {nav}
@@ -66,7 +59,7 @@ export function PageHeading({
   parent?: { to: string; label: string };
 }) {
   return (
-    <h1 className="mr-2 flex min-w-0 items-center gap-2 text-[13px]">
+    <h1 className="mr-2 flex min-w-0 items-center gap-2 ">
       {parent && (
         <>
           <PageCrumb to={parent.to}>{parent.label}</PageCrumb>
@@ -82,18 +75,28 @@ export function PageHeading({
 
 export function PageCrumb({ to, children }: { to: string; children: React.ReactNode }) {
   return (
-    <Link
-      to={to}
-      className="truncate text-[13px] text-muted-foreground hover:text-foreground hover:underline"
-    >
+    <Link to={to} className="truncate  text-muted-foreground hover:text-foreground hover:underline">
       {children}
     </Link>
   );
 }
 
 /** The team a page belongs to, as shown at the start of the header. */
-export function TeamCrumb({ team, wsId }: { team: Pick<Team, "id" | "name">; wsId: string }) {
-  return <PageCrumb to={`/${wsId}/team/${team.id}`}>{team.name}</PageCrumb>;
+export function TeamCrumb({
+  team,
+  wsSlug,
+}: {
+  team: Pick<Team, "key" | "name" | "icon" | "color">;
+  wsSlug: string;
+}) {
+  return (
+    <PageCrumb to={teamPath(wsSlug, team.key)}>
+      <span className="inline-flex items-center gap-1.5">
+        <TeamIcon team={team} />
+        {team.name}
+      </span>
+    </PageCrumb>
+  );
 }
 
 export function EmptyState({
@@ -115,7 +118,7 @@ export function EmptyState({
         </div>
       )}
       <h2 className="text-[15px] font-semibold tracking-tight">{title}</h2>
-      {description && <p className="mt-1 text-[13px] text-muted-foreground">{description}</p>}
+      {description && <p className="mt-1  text-muted-foreground">{description}</p>}
       {action && <div className="mt-4">{action}</div>}
     </div>
   );

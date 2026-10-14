@@ -34,7 +34,7 @@ export function SelectItem({
       textValue={props.textValue ?? (typeof children === "string" ? children : undefined)}
       className={composeRenderProps(className, (c) =>
         cn(
-          "flex cursor-default items-center gap-2 rounded-md px-2 py-1.5 text-[13px] outline-none focus:bg-accent focus:text-accent-foreground disabled:opacity-50",
+          "flex cursor-default items-center gap-2 rounded-md px-2 py-1.5  outline-none focus:bg-accent focus:text-accent-foreground disabled:opacity-50",
           c,
         ),
       )}

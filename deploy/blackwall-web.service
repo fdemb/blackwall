@@ -1,0 +1,20 @@
+[Unit]
+Description=Blackwall HTTP server
+After=network-online.target postgresql.service
+Wants=network-online.target
+Requires=postgresql.service
+ConditionPathExists=/opt/blackwall/current/blackwall
+
+[Service]
+User=blackwall
+Group=blackwall
+EnvironmentFile=/etc/blackwall/blackwall.env
+Environment=WEB_DIR=/opt/blackwall/current/web
+WorkingDirectory=/opt/blackwall/current
+ExecStart=/opt/blackwall/current/blackwall serve
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=multi-user.target

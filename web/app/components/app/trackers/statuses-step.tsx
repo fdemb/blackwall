@@ -19,7 +19,7 @@ export function StatusesStep({ draft, update, connection, pending }: StepProps) 
   const provider = trackerProviderName(connection?.provider ?? "");
   return (
     <div className="space-y-4">
-      <p className="text-xs text-muted-foreground">
+      <p className="text-sm text-muted-foreground">
         {t("tracker.statusesHint", { provider })} {t("tracker.automaticStages", { provider })}
       </p>
       <Discovery
@@ -28,7 +28,7 @@ export function StatusesStep({ draft, update, connection, pending }: StepProps) 
         empty={t("tracker.noStatuses")}
       />
       {draft.projects.length === 0 && (
-        <p className="text-xs text-muted-foreground">{t("tracker.noMappedProjects")}</p>
+        <p className="text-sm text-muted-foreground">{t("tracker.noMappedProjects")}</p>
       )}
       {draft.projects.map((mapping) => {
         const team = ws.teams.find((team) => team.id === mapping.team_id);
@@ -36,7 +36,7 @@ export function StatusesStep({ draft, update, connection, pending }: StepProps) 
         const project = names.get(mapping.project_id) ?? mapping.project_id;
         return (
           <section key={mapping.project_id} className="space-y-2">
-            <h3 className="text-[13px] font-medium">
+            <h3 className="font-medium">
               {project} <span className="text-muted-foreground">→ {team.name}</span>
             </h3>
             <div className="grid gap-x-4 gap-y-2 sm:grid-cols-2">

@@ -1,9 +1,10 @@
 import { useState } from "react";
 import { Form } from "react-aria-components";
-import { Eye, Pencil, RotateCcw, Trash2, Users } from "lucide-react";
+import { Eye, MoreHorizontal, Pencil, RotateCcw, Trash2, Users } from "lucide-react";
 import { Navigate, useNavigate, useParams } from "react-router";
 import { Button } from "~/components/ui/button";
 import { Dialog, useDialogDirty } from "~/components/ui/dialog";
+import { Menu, MenuItem, MenuPopover, MenuTrigger } from "~/components/ui/menu";
 import { TextField } from "~/components/ui/field";
 import { Switch } from "~/components/ui/toggles";
 import { useToast } from "~/components/ui/toast";
@@ -43,7 +44,6 @@ function ViewPage({ view }: { view: SavedView }) {
       icon={<Eye className="size-4 text-muted-foreground" />}
       state={state}
       saveable={false}
-      subtitle={changed ? t("view.unsaved") : undefined}
       actions={
         <>
           {view.shared && (
@@ -89,16 +89,23 @@ function ViewPage({ view }: { view: SavedView }) {
             </>
           )}
           {canEdit && (
-            <Button variant="ghost" size="sm" onPress={() => setEditing(true)}>
-              <Pencil />
-              {t("view.rename")}
-            </Button>
-          )}
-          {canEdit && (
-            <Button variant="ghost" size="sm" onPress={() => setDeleting(true)}>
-              <Trash2 />
-              {t("view.delete")}
-            </Button>
+            <MenuTrigger>
+              <Button variant="ghost" size="icon" aria-label={t("action.more")}>
+                <MoreHorizontal />
+              </Button>
+              <MenuPopover placement="bottom end">
+                <Menu onAction={(k) => (k === "delete" ? setDeleting(true) : setEditing(true))}>
+                  <MenuItem id="edit">
+                    <Pencil />
+                    {t("view.rename")}
+                  </MenuItem>
+                  <MenuItem id="delete">
+                    <Trash2 />
+                    {t("view.delete")}
+                  </MenuItem>
+                </Menu>
+              </MenuPopover>
+            </MenuTrigger>
           )}
           <Dialog title={t("view.rename")} size="sm" isOpen={editing} onOpenChange={setEditing}>
             {(close) => <EditViewForm view={view} close={close} />}
@@ -146,7 +153,7 @@ function EditViewForm({ view, close }: { view: SavedView; close: () => void }) {
         </Switch>
       )}
       {error && (
-        <p role="alert" className="text-xs text-destructive">
+        <p role="alert" className=" text-destructive">
           {error}
         </p>
       )}

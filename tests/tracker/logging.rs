@@ -39,7 +39,7 @@ async fn debug_logs_follow_tracker_without_credentials_or_imported_content() {
             remote.assignee_id = Some(10);
         }
         let (url, server) = mock_server(mock).await;
-        let base = format!("/api/workspaces/{workspace}/trackers/connections");
+        let base = format!("/internal-api/workspaces/{workspace}/trackers/connections");
         let (status, config) = call(
             &app,
             &owner,

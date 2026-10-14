@@ -481,8 +481,11 @@ async fn setup(store: &Store, owner: &Session) -> (Uuid, Uuid, Uuid) {
                 workspace,
                 owner.profile.id,
                 Command::CreateTeam {
+                    id: None,
                     name: name.into(),
+                    key: name.replace("Team ", "T"),
                     members: vec![],
+                    default_stage_ids: None,
                 },
                 BTreeMap::new(),
                 None,
@@ -517,7 +520,7 @@ async fn issues(app: &Router, user: &Session, workspace: Uuid) -> Vec<Value> {
         app,
         user,
         "GET",
-        &format!("/api/workspaces/{workspace}/issues"),
+        &format!("/internal-api/workspaces/{workspace}/issues"),
         None,
     )
     .await;
@@ -534,7 +537,7 @@ async fn paginated_sync_is_idempotent_and_reconciles_project_and_team_moves() {
     let app = http::router(store.clone());
     let mock = Mock::default();
     let (url, server) = mock_server(mock.clone()).await;
-    let base = format!("/api/workspaces/{workspace}/trackers/connections");
+    let base = format!("/internal-api/workspaces/{workspace}/trackers/connections");
     let (status, config) = call(
         &app,
         &owner,
@@ -611,7 +614,7 @@ async fn paginated_sync_is_idempotent_and_reconciles_project_and_team_moves() {
 
     // Synced issues are editable; an unchanged remote keeps the local edit.
     let command = json!({"type":"update_issue","id":first_id,"patch":{"title":"Local change"}});
-    let (status, value) = call(&app, &owner, "POST", &format!("/api/workspaces/{workspace}/commands"), Some(json!({"expected_versions":{first_id.as_str().unwrap():first_version},"command":command}))).await;
+    let (status, value) = call(&app, &owner, "POST", &format!("/internal-api/workspaces/{workspace}/commands"), Some(json!({"expected_versions":{first_id.as_str().unwrap():first_version},"command":command}))).await;
     assert_eq!(status, StatusCode::OK, "{value}");
     call(&app, &owner, "POST", &format!("{action}/sync"), None).await;
     drain(&store).await;
@@ -621,15 +624,63 @@ async fn paginated_sync_is_idempotent_and_reconciles_project_and_team_moves() {
         "Local change"
     );
 
+    // Team B's first issue takes the number the moved package has in team A.
+    let command = json!({"type":"create_issue","input":{"team_id":b,"title":"Local in B"}});
+    let (status, value) = call(
+        &app,
+        &owner,
+        "POST",
+        &format!("/internal-api/workspaces/{workspace}/commands"),
+        Some(json!({"command":command})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{value}");
+    let local_in_b = value["result"]["id"].clone();
     mock.data.lock().await.moved = true;
     call(&app, &owner, "POST", &format!("{action}/sync"), None).await;
     drain(&store).await;
     let moved = issues(&app, &owner, workspace).await;
-    assert_eq!(moved.len(), 2);
+    assert_eq!(moved.len(), 3);
+    let local_number = moved.iter().find(|i| i["id"] == local_in_b).unwrap()["number"].clone();
     let moved = moved.iter().find(|i| i["id"] == first_id).unwrap();
     assert_eq!(moved["title"], "Moved package");
     assert_eq!(moved["team_id"], b.to_string());
     assert_eq!(moved["tracker"]["project_id"], "43");
+    // Renumbering uses the allocator of local creation, the team's highest number plus one.
+    assert_eq!(
+        moved["number"],
+        local_number.as_u64().unwrap() + 1,
+        "numbers count per team"
+    );
+    // Keys have no aliases: the new key resolves and the old one stops resolving.
+    let key = |team: Uuid| {
+        sqlx::query_scalar::<_, String>("SELECT key FROM teams WHERE id=$1")
+            .bind(team)
+            .fetch_one(&store.pool)
+    };
+    let (key_a, key_b) = (key(a).await.unwrap(), key(b).await.unwrap());
+    let number = |issue: &Value| issue["number"].as_u64().unwrap();
+    assert_eq!(
+        store
+            .issue_by_key(workspace, owner.profile.id, &key_b, number(moved))
+            .await
+            .unwrap()
+            .to_string(),
+        first_id.as_str().unwrap()
+    );
+    assert!(matches!(
+        store
+            .issue_by_key(workspace, owner.profile.id, &key_a, number(first))
+            .await,
+        Err(blackwall::error::Error::NotFound)
+    ));
+    sqlx::query(
+        "WITH f AS (DELETE FROM issue_followers WHERE issue_id=$1) DELETE FROM issues WHERE id=$1",
+    )
+    .bind(Uuid::parse_str(local_in_b.as_str().unwrap()).unwrap())
+    .execute(&store.pool)
+    .await
+    .unwrap();
 
     let (status, _) = call(
         &app,
@@ -707,7 +758,7 @@ async fn cached_settings_stay_responsive_and_config_changes_fence_slow_remote_pa
     let app = http::router(store.clone());
     let mock = Mock::default();
     let (url, server) = mock_server(mock.clone()).await;
-    let base = format!("/api/workspaces/{workspace}/trackers/connections");
+    let base = format!("/internal-api/workspaces/{workspace}/trackers/connections");
     let (status, _) = call(&app, &outsider, "GET", &base, None).await;
     assert_eq!(status, StatusCode::FORBIDDEN);
     let (status, _) = call(
@@ -812,7 +863,7 @@ async fn worker_schedules_due_connections_despite_frequent_wakeups() {
     let (workspace, team, _) = setup(&store, &owner).await;
     let app = http::router(store.clone());
     let (url, server) = mock_server(Mock::default()).await;
-    let base = format!("/api/workspaces/{workspace}/trackers/connections");
+    let base = format!("/internal-api/workspaces/{workspace}/trackers/connections");
     let (status, connection) = call(
         &app,
         &owner,
@@ -918,7 +969,7 @@ async fn scheduler_recovers_exhausted_jobs_without_duplicate_active_connection_w
     let app = http::router(store.clone());
     let mock = Mock::default();
     let (url, server) = mock_server(mock).await;
-    let base = format!("/api/workspaces/{workspace}/trackers/connections");
+    let base = format!("/internal-api/workspaces/{workspace}/trackers/connections");
     let (status, config) = call(&app, &owner, "POST", &base, Some(json!({"provider":"openproject","name":"Recoverable OP","base_url":url,"token":TOKEN,"projects":[{"project_id":"42","team_id":team}]}))).await;
     assert_eq!(status, StatusCode::CREATED, "{config}");
     let id = Uuid::parse_str(config["id"].as_str().unwrap()).unwrap();
@@ -971,7 +1022,7 @@ async fn record_failure_rechecks_ownership_after_waiting_for_connection_lock() {
     let owner = account(&store).await;
     let (workspace, team, _) = setup(&store, &owner).await;
     let app = http::router(store.clone());
-    let base = format!("/api/workspaces/{workspace}/trackers/connections");
+    let base = format!("/internal-api/workspaces/{workspace}/trackers/connections");
     let (status, config) = call(&app, &owner, "POST", &base, Some(json!({"provider":"openproject","name":"Failure race","base_url":"http://127.0.0.1:3000","token":TOKEN,"projects":[{"project_id":"42","team_id":team}]}))).await;
     assert_eq!(status, StatusCode::CREATED, "{config}");
     tracker::schedule(&store).await.unwrap();
@@ -1045,7 +1096,7 @@ async fn capacity_stops_new_imports_but_existing_work_packages_still_update() {
     let app = http::router(store.clone());
     let mock = Mock::default();
     let (url, server) = mock_server(mock.clone()).await;
-    let base = format!("/api/workspaces/{workspace}/trackers/connections");
+    let base = format!("/internal-api/workspaces/{workspace}/trackers/connections");
     let (status, config) = call(&app, &owner, "POST", &base, Some(json!({"provider":"openproject","name":"Capacity test","base_url":url,"token":TOKEN,"projects":[{"project_id":"42","team_id":team},{"project_id":"43","team_id":other_team}]}))).await;
     assert_eq!(status, StatusCode::CREATED, "{config}");
     let action = format!("{base}/{}", config["id"].as_str().unwrap());
@@ -1057,11 +1108,6 @@ async fn capacity_stops_new_imports_but_existing_work_packages_still_update() {
             .await
             .unwrap();
     sqlx::query("INSERT INTO issues(id,workspace_id,number,title,description,team_id,stage_id,priority,position,created_at,updated_at) SELECT gen_random_uuid(),$1,n,'Filler','',$2,$3,'none',n*1024,clock_timestamp(),clock_timestamp() FROM generate_series(3,5000) n").bind(workspace).bind(team).bind(stage).execute(&store.pool).await.unwrap();
-    sqlx::query("UPDATE workspaces SET next_issue_number=5001 WHERE id=$1")
-        .bind(workspace)
-        .execute(&store.pool)
-        .await
-        .unwrap();
     mock.data.lock().await.moved = true;
     call(&app, &owner, "POST", &format!("{action}/sync"), None).await;
     drain(&store).await;
@@ -1131,7 +1177,7 @@ async fn local_cards_can_rebalance_between_read_only_imported_cards() {
     let mock = Mock::default();
     mock.data.lock().await.same_stage = true;
     let (url, server) = mock_server(mock).await;
-    let base = format!("/api/workspaces/{workspace}/trackers/connections");
+    let base = format!("/internal-api/workspaces/{workspace}/trackers/connections");
     let (status, config) = call(&app, &owner, "POST", &base, Some(json!({"provider":"openproject","name":"Mixed board","base_url":url,"token":TOKEN,"projects":[{"project_id":"42","team_id":team}]}))).await;
     assert_eq!(status, StatusCode::CREATED, "{config}");
     drain(&store).await;
@@ -1228,7 +1274,7 @@ async fn people_match_by_email_and_overrides_and_migrated_statuses_reconcile() {
         data.author_id = Some(10);
     }
     let (url, server) = mock_server(mock.clone()).await;
-    let base = format!("/api/workspaces/{workspace}/trackers/connections");
+    let base = format!("/internal-api/workspaces/{workspace}/trackers/connections");
     let (status, config) = call(
         &app,
         &owner,
@@ -1270,6 +1316,7 @@ async fn people_match_by_email_and_overrides_and_migrated_statuses_reconcile() {
             workspace,
             owner.profile.id,
             Command::CreateStage {
+                id: None,
                 team_id: team,
                 name: "Closed".into(),
                 kind: blackwall::domain::StageKind::Done,
@@ -1394,7 +1441,7 @@ async fn mirrored_done_issues_archive_and_reopening_unarchives() {
     let app = http::router(store.clone());
     let mock = Mock::default();
     let (url, server) = mock_server(mock.clone()).await;
-    let base = format!("/api/workspaces/{workspace}/trackers/connections");
+    let base = format!("/internal-api/workspaces/{workspace}/trackers/connections");
     let (status, config) = call(
         &app,
         &owner,
@@ -1466,7 +1513,7 @@ async fn mirrored_done_issues_archive_and_reopening_unarchives() {
         &app,
         &owner,
         "GET",
-        &format!("/api/workspaces/{workspace}/issues?archived=true"),
+        &format!("/internal-api/workspaces/{workspace}/issues?archived=true"),
         None,
     )
     .await;
@@ -1506,7 +1553,7 @@ async fn corrupt_checkpoint_does_not_block_other_connections() {
     let owner = account(&store).await;
     let (workspace, team, other_team) = setup(&store, &owner).await;
     let app = http::router(store.clone());
-    let base = format!("/api/workspaces/{workspace}/trackers/connections");
+    let base = format!("/internal-api/workspaces/{workspace}/trackers/connections");
     let url = "http://127.0.0.1:9";
     let (status, healthy) = call(&app, &owner, "POST", &base, Some(json!({"provider":"openproject","name":"Healthy","base_url":url,"token":TOKEN,"projects":[{"project_id":"42","team_id":team}]}))).await;
     assert_eq!(status, StatusCode::CREATED, "{healthy}");
@@ -1568,7 +1615,7 @@ async fn providers_describe_options_and_connections_validate_them() {
         &app,
         &owner,
         "GET",
-        &format!("/api/workspaces/{workspace}/trackers/providers"),
+        &format!("/internal-api/workspaces/{workspace}/trackers/providers"),
         None,
     )
     .await;
@@ -1584,7 +1631,7 @@ async fn providers_describe_options_and_connections_validate_them() {
         json!({"import":true,"export":false})
     );
     assert_eq!(providers[0]["defaults"], providers[0]["fields"]);
-    let base = format!("/api/workspaces/{workspace}/trackers/connections");
+    let base = format!("/internal-api/workspaces/{workspace}/trackers/connections");
     let input = json!({"name":"Options","base_url":"http://127.0.0.1:9","token":TOKEN});
     let (status, _) = call(&app, &owner, "POST", &base, Some(input.clone())).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "provider is required");

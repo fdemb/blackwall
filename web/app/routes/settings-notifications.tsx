@@ -9,20 +9,37 @@ import { cn } from "~/lib/utils";
 
 const KINDS = ["assignment", "reply", "change", "mention", "deadline"] as const;
 
+type Prefs = Record<(typeof KINDS)[number], boolean>;
+
+const STATUS_LABEL = {
+  saving: "account.alertsSaving",
+  saved: "account.alertsSaved",
+  failed: "account.alertsFailed",
+} as const;
+
+/** This workspace's choices, falling back to the profile defaults; mentions default on. */
+function storedAlerts(
+  mine: Partial<Prefs> | undefined,
+  defaults: { assignments: boolean; replies: boolean; changes: boolean; deadlines: boolean },
+): Prefs {
+  return {
+    assignment: mine?.assignment ?? defaults.assignments,
+    reply: mine?.reply ?? defaults.replies,
+    change: mine?.change ?? defaults.changes,
+    mention: mine?.mention ?? true,
+    deadline: mine?.deadline ?? defaults.deadlines,
+  };
+}
+
 export default function Notifications() {
   const { t } = useI18n();
   const toast = useToast();
   const { profile, saveProfile } = useSession();
   const { ws, me, run } = useWorkspace();
-  const mine = ws.alert_preferences.find((p) => p.user_id === me);
-  const stored = {
-    assignment: mine?.assignment ?? profile.alerts.assignments,
-    reply: mine?.reply ?? profile.alerts.replies,
-    change: mine?.change ?? profile.alerts.changes,
-    mention: mine?.mention ?? true,
-    deadline: mine?.deadline ?? profile.alerts.deadlines,
-  };
-  type Prefs = typeof stored;
+  const stored = storedAlerts(
+    ws.alert_preferences.find((p) => p.user_id === me),
+    profile.alerts,
+  );
   const storedRef = useRef(stored);
   useEffect(() => {
     storedRef.current = stored;
@@ -73,18 +90,9 @@ export default function Notifications() {
         actions={
           <p
             role="status"
-            className={cn(
-              "text-xs",
-              status === "failed" ? "text-destructive" : "text-muted-foreground",
-            )}
+            className={cn("", status === "failed" ? "text-destructive" : "text-muted-foreground")}
           >
-            {status === "saving"
-              ? t("account.alertsSaving")
-              : status === "saved"
-                ? t("account.alertsSaved")
-                : status === "failed"
-                  ? t("account.alertsFailed")
-                  : ""}
+            {status === "idle" ? "" : t(STATUS_LABEL[status])}
           </p>
         }
       >
@@ -98,9 +106,7 @@ export default function Notifications() {
             >
               <span>
                 <span className="block font-medium">{t(`alert.${k}`)}</span>
-                <span className="mt-0.5 block text-xs text-muted-foreground">
-                  {t(`alert.${k}Sub`)}
-                </span>
+                <span className="mt-0.5 block  text-muted-foreground">{t(`alert.${k}Sub`)}</span>
               </span>
             </Switch>
           ))}

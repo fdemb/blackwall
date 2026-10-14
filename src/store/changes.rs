@@ -1,15 +1,11 @@
 use super::{
-    reads::{ISSUE_JSON, MEMBER_JSON, collection_select, push_visibility},
+    reads::{ISSUE_JSON, MEMBER_JSON, SYNC_ISSUE_JSON, collection_select, push_visibility},
     *,
 };
 use serde_json::Value;
 use sqlx::QueryBuilder;
 
-/// Most changes one feed response may carry. Past this, the client reloads instead.
-const FEED_LIMIT: i64 = 1000;
-
-/// One changed record. `record` holds its current state in the shape the list endpoints return,
-/// or null when it was deleted or the caller can no longer see it.
+/// One changed record in the requested REST or sync shape, or null when deleted or invisible.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
 pub struct Change {
     /// `workspace`, `members`, `issues`, or a workspace collection name such as `teams`.
@@ -17,16 +13,6 @@ pub struct Change {
     pub id: Uuid,
     #[serde(default)]
     pub record: Option<Value>,
-}
-
-#[derive(Debug, serde::Serialize, utoipa::ToSchema)]
-pub struct ChangeFeed {
-    /// Pass back as `since` on the next request.
-    pub cursor: String,
-    /// True when the changes since the cursor are unavailable. Reload everything, then continue
-    /// from the returned cursor.
-    pub reset: bool,
-    pub changes: Vec<Change>,
 }
 
 /// Records written by the current transaction that the actor may see, without their contents.
@@ -38,7 +24,7 @@ pub(super) async fn pending(
     let rows: Vec<(String, Uuid)> = sqlx::query_as(
         "SELECT DISTINCT entity,entity_id FROM changes \
          WHERE workspace_id=$1 AND txid=pg_current_xact_id_if_assigned()::text::bigint \
-         AND (user_id IS NULL OR user_id=$2) ORDER BY entity,entity_id",
+         AND (user_id IS NULL OR user_id=$2) AND entity <> 'roles' ORDER BY entity,entity_id",
     )
     .bind(workspace)
     .bind(actor)
@@ -58,22 +44,60 @@ fn refs(rows: Vec<(String, Uuid)>) -> Vec<Change> {
         .collect()
 }
 
+#[derive(Clone, Copy)]
+pub(super) enum RecordShape {
+    Rest,
+    Sync,
+}
+
+/// The same selection and visibility rules serve command responses and sync reads.
+pub(super) fn select(
+    workspace: Uuid,
+    actor: Uuid,
+    kind: &str,
+    shape: RecordShape,
+) -> Result<QueryBuilder<'static, Postgres>> {
+    let mut q = match kind {
+        "workspace" => QueryBuilder::<Postgres>::new(
+            "SELECT w.id,jsonb_build_object('id',w.id,'name',w.name,'slug',w.slug,'version',w.version) \
+             FROM workspaces w WHERE w.id=",
+        ),
+        "members" => QueryBuilder::new(format!(
+            "SELECT u.id,{MEMBER_JSON} FROM workspace_members m JOIN users u ON u.id=m.user_id \
+             WHERE m.workspace_id="
+        )),
+        "issues" => {
+            let expression = match shape {
+                RecordShape::Rest => ISSUE_JSON,
+                RecordShape::Sync => SYNC_ISSUE_JSON,
+            };
+            QueryBuilder::new(format!(
+                "SELECT i.id,{expression} FROM issues i WHERE i.workspace_id="
+            ))
+        }
+        kind => {
+            let (table, expression, _) = collection_select(kind)?;
+            QueryBuilder::new(format!(
+                "SELECT t.{},{expression} FROM {table} WHERE t.workspace_id=",
+                key_column(kind)
+            ))
+        }
+    };
+    q.push_bind(workspace);
+    if !matches!(kind, "workspace" | "members" | "issues") {
+        push_visibility(&mut q, kind, actor);
+    }
+    Ok(q)
+}
+
 /// Fills each change with the record's current state as the actor sees it.
 pub(super) async fn render(
     conn: &mut PgConnection,
     workspace: Uuid,
     actor: Uuid,
     changes: &mut [Change],
+    shape: RecordShape,
 ) -> Result<()> {
-    let role: Option<String> = sqlx::query_scalar(
-        "SELECT role FROM workspace_members WHERE workspace_id=$1 AND user_id=$2",
-    )
-    .bind(workspace)
-    .bind(actor)
-    .fetch_optional(&mut *conn)
-    .await?;
-    let admin = matches!(role.as_deref(), Some("owner" | "admin"));
-
     let mut kinds: BTreeMap<String, Vec<Uuid>> = BTreeMap::new();
     for change in changes.iter() {
         kinds
@@ -84,37 +108,13 @@ pub(super) async fn render(
 
     let mut records: BTreeMap<(String, Uuid), Value> = BTreeMap::new();
     for (kind, ids) in kinds {
-        let mut q = match kind.as_str() {
-            "workspace" => QueryBuilder::<Postgres>::new(
-                "SELECT w.id,jsonb_build_object('id',w.id,'name',w.name,'version',w.version) \
-                 FROM workspaces w WHERE w.id=",
-            ),
-            "members" => QueryBuilder::new(format!(
-                "SELECT u.id,{MEMBER_JSON} FROM workspace_members m JOIN users u ON u.id=m.user_id \
-                 WHERE m.workspace_id="
-            )),
-            "issues" => QueryBuilder::new(format!(
-                "SELECT i.id,{ISSUE_JSON} FROM issues i WHERE i.workspace_id="
-            )),
-            "invitations" | "integrations" if !admin => continue,
-            kind => {
-                let (table, expression, _) = collection_select(kind)?;
-                QueryBuilder::new(format!(
-                    "SELECT t.{},{expression} FROM {table} WHERE t.workspace_id=",
-                    key_column(kind)
-                ))
-            }
-        };
-        q.push_bind(workspace);
+        let mut q = select(workspace, actor, &kind, shape)?;
 
         match kind.as_str() {
             "workspace" => q.push(" AND w.id=ANY("),
             "members" => q.push(" AND u.id=ANY("),
             "issues" => q.push(" AND i.id=ANY("),
-            kind => {
-                push_visibility(&mut q, kind, actor);
-                q.push(format!(" AND t.{}=ANY(", key_column(kind)))
-            }
+            kind => q.push(format!(" AND t.{}=ANY(", key_column(kind))),
         };
         q.push_bind(ids).push(")");
 
@@ -143,66 +143,6 @@ fn key_column(kind: &str) -> &'static str {
 }
 
 impl Store {
-    /// Records changed since `since`. Without `since`, returns only a starting cursor: take it
-    /// before loading anything, so changes made during the load are not missed.
-    pub async fn changes(
-        &self,
-        workspace: Uuid,
-        actor: Uuid,
-        since: Option<&str>,
-    ) -> Result<ChangeFeed> {
-        let mut conn = self.pool.acquire().await?;
-        reads::authorize(&mut conn, workspace, actor).await?;
-
-        // Every transaction that has not committed yet has a txid at or above xmin.
-        let (cursor, xmax, horizon): (i64, i64, i64) = sqlx::query_as(
-            "SELECT pg_snapshot_xmin(pg_current_snapshot())::text::bigint,\
-             pg_snapshot_xmax(pg_current_snapshot())::text::bigint,\
-             (SELECT txid FROM change_horizon)",
-        )
-        .fetch_one(&mut *conn)
-        .await?;
-
-        let feed = |reset, changes| ChangeFeed {
-            cursor: cursor.to_string(),
-            reset,
-            changes,
-        };
-
-        let Some(since) = since else {
-            return Ok(feed(false, Vec::new()));
-        };
-        let since: i64 = since
-            .parse()
-            .ok()
-            .filter(|since| (0..=xmax).contains(since))
-            .ok_or_else(|| Error::BadRequest("since must be a cursor from this server".into()))?;
-        if since < horizon {
-            return Ok(feed(true, Vec::new()));
-        }
-
-        let rows: Vec<(String, Uuid)> = sqlx::query_as(
-            "SELECT DISTINCT entity,entity_id FROM changes \
-             WHERE workspace_id=$1 AND txid>=$2 AND (user_id IS NULL OR user_id=$3) \
-             ORDER BY entity,entity_id LIMIT $4",
-        )
-        .bind(workspace)
-        .bind(since)
-        .bind(actor)
-        .bind(FEED_LIMIT + 1)
-        .fetch_all(&mut *conn)
-        .await?;
-
-        if rows.len() as i64 > FEED_LIMIT {
-            return Ok(feed(true, Vec::new()));
-        }
-
-        let mut changes = refs(rows);
-        render(&mut conn, workspace, actor, &mut changes).await?;
-
-        Ok(feed(false, changes))
-    }
-
     /// Deletes change rows older than the retention period. Clients whose cursor predates them
     /// get `reset` and reload.
     pub async fn prune_changes(&self, retention_days: i32) -> Result<u64> {

@@ -2,7 +2,7 @@
 //! tracker jobs send them (see `push`). Tracker writes never reach these functions, so imports
 //! cannot echo back.
 use super::{TrackerField, TrackerOptions, runner};
-use crate::{domain::Issue, error::Result, store::persistence};
+use crate::{domain::Issue, error::Result};
 use sqlx::PgConnection;
 use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
@@ -41,7 +41,7 @@ pub(crate) async fn enqueue_fields(
     let Some(link) = &after.tracker else {
         return Ok(());
     };
-    let changed = persistence::changed_fields(before, after);
+    let changed = before.changed_fields(after);
     let candidates: Vec<TrackerField> = FIELDS
         .iter()
         .filter(|(name, _)| changed.iter().any(|field| field == name))

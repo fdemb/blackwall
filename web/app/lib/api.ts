@@ -1,24 +1,13 @@
 import { safeGet, safeSet } from "./storage";
 import type {
-  Command,
+  ApiToken,
   ImportSummary,
-  Issue,
-  IssueFilter,
-  MemberProfile,
   Profile,
   Report,
   WorkspaceSummary,
-  ChangeFeed,
   CommandResult,
   EntityVersions,
-  PageResult,
-  WorkspaceResources,
 } from "./types";
-
-export interface SearchResult {
-  issues: Issue[];
-  people: MemberProfile[];
-}
 
 export class ApiError extends Error {
   constructor(
@@ -31,6 +20,9 @@ export class ApiError extends Error {
 
 const CSRF_KEY = "bw-csrf:v1";
 let csrf = safeGet("session", CSRF_KEY) ?? "";
+export function getCsrf(): string {
+  return csrf;
+}
 export function setCsrf(token: string) {
   csrf = token;
   safeSet("session", CSRF_KEY, token);
@@ -72,81 +64,63 @@ export async function api<T>(
 }
 
 export const auth = {
-  me: () => api<Profile>("/api/me"),
+  me: () => api<Profile & { session_id: string }>("/internal-api/me"),
   login: (email: string, password: string) =>
-    api<{ csrf_token: string; profile: Profile }>("/api/auth/login", {
+    api<{ csrf_token: string; profile: Profile }>("/internal-api/auth/login", {
       method: "POST",
       body: { email, password },
     }),
   register: (email: string, password: string, display_name: string) =>
-    api<{ csrf_token: string; profile: Profile }>("/api/auth/register", {
+    api<{ csrf_token: string; profile: Profile }>("/internal-api/auth/register", {
       method: "POST",
       body: { email, password, display_name },
     }),
-  logout: () => api<null>("/api/auth/logout", { method: "POST" }),
+  logout: () => api<null>("/internal-api/auth/logout", { method: "POST" }),
   requestReset: (email: string) =>
-    api<null>("/api/auth/reset-request", { method: "POST", body: { email } }),
+    api<null>("/internal-api/auth/reset-request", { method: "POST", body: { email } }),
   reset: (token: string, password: string) =>
-    api<null>("/api/auth/reset", { method: "POST", body: { token, password } }),
+    api<null>("/internal-api/auth/reset", { method: "POST", body: { token, password } }),
   changePassword: (current_password: string, new_password: string) =>
-    api<null>("/api/auth/password", { method: "POST", body: { current_password, new_password } }),
+    api<null>("/internal-api/auth/password", {
+      method: "POST",
+      body: { current_password, new_password },
+    }),
   editProfile: (profile: Omit<Profile, "id" | "email">) =>
-    api<Profile>("/api/me", { method: "PATCH", body: profile }),
+    api<Profile>("/internal-api/me", { method: "PATCH", body: profile }),
+};
+
+export const tokens = {
+  list: () => api<ApiToken[]>("/internal-api/me/tokens"),
+  create: (body: {
+    name: string;
+    access: ApiToken["access"];
+    workspace_ids?: string[];
+    expires_in_days?: number;
+  }) => api<ApiToken & { secret: string }>("/internal-api/me/tokens", { method: "POST", body }),
+  revoke: (id: string) => api<null>(`/internal-api/me/tokens/${id}`, { method: "DELETE" }),
 };
 
 export const workspaces = {
-  list: () => api<WorkspaceSummary[]>("/api/workspaces"),
-  create: (name: string, idempotency_key: string = crypto.randomUUID()) =>
-    api<{ workspace: WorkspaceSummary }>("/api/workspaces", {
+  list: () => api<WorkspaceSummary[]>("/internal-api/workspaces"),
+  create: (name: string, slug: string, idempotency_key: string = crypto.randomUUID()) =>
+    api<{ workspace: WorkspaceSummary }>("/internal-api/workspaces", {
       method: "POST",
-      body: { name, idempotency_key },
+      body: { name, slug, idempotency_key },
     }),
-  get: (id: string) => api<{ workspace: WorkspaceSummary }>(`/api/workspaces/${id}`),
-  members: (id: string) => api<MemberProfile[]>(`/api/workspaces/${id}/members`),
-  resource: <K extends keyof WorkspaceResources>(
-    id: string,
-    resource: K,
-    params: Record<string, string | number> = {},
-  ) =>
-    api<PageResult<WorkspaceResources[K]>>(
-      `/api/workspaces/${id}/${resource}?${new URLSearchParams(Object.entries({ limit: 200, ...params }).map(([k, v]) => [k, String(v)]))}`,
-    ),
-  issues: (id: string, filter: IssueFilter = {}, offset = 0, limit = 100) =>
-    api<PageResult<Issue>>(
-      `/api/workspaces/${id}/issues?${filterQuery(filter)}&limit=${limit}&offset=${offset}`,
-    ),
-  issue: (id: string, issueId: string) => api<Issue>(`/api/workspaces/${id}/issues/${issueId}`),
-  command: (
-    id: string,
-    expected_versions: EntityVersions,
-    command: Command,
-    idempotency_key: string = crypto.randomUUID(),
-  ) =>
-    api<CommandResult>(`/api/workspaces/${id}/commands`, {
-      method: "POST",
-      body: { expected_versions, idempotency_key, command },
-    }),
-  search: (id: string, q: string) =>
-    api<SearchResult>(`/api/workspaces/${id}/search?q=${encodeURIComponent(q)}`),
-  report: (id: string) => api<Report>(`/api/workspaces/${id}/report`),
-  /** Omit `since` to get a starting cursor; take it before loading records. */
-  changes: (id: string, since?: string) =>
-    api<ChangeFeed>(
-      `/api/workspaces/${id}/changes${since === undefined ? "" : `?since=${encodeURIComponent(since)}`}`,
-    ),
+  report: (id: string) => api<Report>(`/internal-api/workspaces/${id}/report`),
   accept: (id: string, token: string) =>
-    api<{ workspace: WorkspaceSummary }>(`/api/workspaces/${id}/invitations/accept`, {
+    api<{ workspace: WorkspaceSummary }>(`/internal-api/workspaces/${id}/invitations/accept`, {
       method: "POST",
       body: { token },
     }),
-  export: (id: string) => api<unknown>(`/api/workspaces/${id}/export`),
+  export: (id: string) => api<unknown>(`/internal-api/workspaces/${id}/export`),
   import: (
     id: string,
     body: { issues?: unknown[]; transfer?: unknown },
     idempotency_key: string = crypto.randomUUID(),
   ) =>
     api<{ versions: EntityVersions; summary: ImportSummary | null }>(
-      `/api/workspaces/${id}/import`,
+      `/internal-api/workspaces/${id}/import`,
       {
         method: "POST",
         body: { expected_versions: {}, idempotency_key, ...body },
@@ -155,47 +129,26 @@ export const workspaces = {
   upload: (
     id: string,
     issueId: string,
-    expected_versions: EntityVersions,
+    expected_versions: EntityVersions | undefined,
     file: File,
     commentId?: string,
     idempotency_key: string = crypto.randomUUID(),
   ) => {
     const form = new FormData();
-    form.append("expected_versions", JSON.stringify(expected_versions));
+    if (expected_versions !== undefined)
+      form.append("expected_versions", JSON.stringify(expected_versions));
     form.append("idempotency_key", idempotency_key);
     if (commentId) form.append("comment_id", commentId);
     form.append("file", file);
-    return api<CommandResult>(`/api/workspaces/${id}/issues/${issueId}/attachments`, {
+    return api<CommandResult>(`/internal-api/workspaces/${id}/issues/${issueId}/attachments`, {
       method: "POST",
       body: form,
     });
   },
 };
 
-export async function collectPages<T>(
-  read: (offset: number) => Promise<PageResult<T>>,
-): Promise<T[]> {
-  const items: T[] = [];
-  let offset = 0;
-  while (true) {
-    const page = await read(offset);
-    items.push(...page.items);
-    if (!page.has_more) return items;
-    if (page.next_offset === null || page.next_offset <= offset)
-      throw new Error("Invalid pagination offset");
-    offset = page.next_offset;
-  }
-}
-
 export function markdown(text: string) {
-  return api<{ html: string }>("/api/markdown", { method: "POST", body: { text } }).then(
+  return api<{ html: string }>("/internal-api/markdown", { method: "POST", body: { text } }).then(
     (r) => r.html,
   );
-}
-
-export function filterQuery(filter: IssueFilter) {
-  const params = new URLSearchParams();
-  for (const [k, v] of Object.entries(filter))
-    if (v !== undefined && v !== "" && v !== false) params.set(k, String(v));
-  return params.toString();
 }

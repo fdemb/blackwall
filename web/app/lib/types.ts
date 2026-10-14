@@ -1,3 +1,5 @@
+import type { TEAM_COLORS, TEAM_ICONS } from "./teams";
+
 export type Id = string;
 export type Role = "owner" | "admin" | "member" | "viewer";
 export type StageKind = "backlog" | "planned" | "active" | "done" | "cancelled";
@@ -10,6 +12,9 @@ export type IssueGroup = "stage" | "priority" | "assignee" | "none";
 export type Language = "en" | "pl";
 export type Theme = "light" | "dark" | "system";
 
+export type TeamIcon = (typeof TEAM_ICONS)[number];
+export type TeamColor = (typeof TEAM_COLORS)[number];
+
 export interface Stage {
   id: Id;
   version: number;
@@ -21,10 +26,14 @@ export interface Team {
   id: Id;
   version: number;
   name: string;
+  /** Prefixes the team's issue numbers, as in `ENG-42`. Unique in the workspace. */
+  key: string;
   members: Id[];
   stages: Stage[];
   /** Days after Done before auto-archive. Null means never. */
   archive_after_days: number | null;
+  icon: TeamIcon;
+  color: TeamColor;
 }
 export interface Label {
   id: Id;
@@ -50,6 +59,8 @@ export interface Sprint {
   id: Id;
   version: number;
   team_id: Id;
+  /** Counts up per team. Null until the server confirms a create. */
+  number: number | null;
   name: string;
   goal: string;
   starts_at: string;
@@ -154,7 +165,15 @@ export interface Issue {
   blocked_count: number;
   subtask_total: number;
   subtask_completed: number;
+  /**
+   * Counts up per team. A locally created issue carries the client's
+   * prediction until the pull brings the server's.
+   */
   number: number;
+  /** The team key and number, as in `ENG-42`. Derived on the client. */
+  key: string;
+  /** What URLs name the issue by: its confirmed key, or its id until the server confirms it. */
+  ref: string;
   title: string;
   description: string;
   team_id: Id;
@@ -163,18 +182,18 @@ export interface Issue {
   /** Null for synced issues without a mapped author and issues created before creators were stored. */
   created_by: Id | null;
   priority: Priority;
-  labels: Id[];
+  labels: readonly Id[];
   estimate: number | null;
   deadline: string | null;
   project_id: Id | null;
   milestone_id: Id | null;
   sprint_id: Id | null;
   parent_id: Id | null;
-  dependencies: Id[];
+  dependencies: readonly Id[];
   position: number;
-  followers: Id[];
-  attachments: Attachment[];
-  source_links: SourceLink[];
+  followers: readonly Id[];
+  attachments: readonly Attachment[];
+  source_links: readonly SourceLink[];
   deleted_at: string | null;
   archived_at: string | null;
   done_at: string | null;
@@ -187,16 +206,24 @@ export interface Comment {
   issue_id: Id;
   author: Id;
   body: string;
-  mentions: Id[];
-  attachments: Attachment[];
+  mentions: readonly Id[];
+  attachments: readonly Attachment[];
   created_at: string;
   edited_at: string | null;
   /** Set on comments imported from an issue tracker; older servers omit it. */
   tracker?: CommentTracker | null;
+  /** The API token that wrote the comment for its author, if one did. */
+  via?: Via | null;
 }
 export interface CommentTracker {
   provider: string;
   author_name?: string | null;
+}
+/** The personal access token behind a write: an integration or agent acting for the actor. */
+export interface Via {
+  kind: "api" | "mcp";
+  token_id: Id;
+  name: string;
 }
 export interface TimeEntry {
   id: Id;
@@ -215,27 +242,43 @@ export interface Invitation {
   expires_at: string;
   state: InvitationState;
 }
+export type FilterField =
+  | "assignee"
+  | "created_by"
+  | "team_id"
+  | "stage_id"
+  | "stage_kind"
+  | "priority"
+  | "labels"
+  | "project_id"
+  | "sprint_id"
+  | "parent_id"
+  | "dependencies"
+  | "estimate"
+  | "deadline"
+  | "created_at"
+  | "updated_at";
+export type FilterOp = "is" | "is_not" | "lt" | "lte" | "gt" | "gte";
+/** Strings or null; null is an empty field. See docs/filters.md for each field's values. */
+export type FilterValue = string | null;
+export interface FilterClause {
+  field: FilterField;
+  op: FilterOp;
+  values: readonly FilterValue[];
+}
 export interface IssueFilter {
-  assignee?: Id;
-  created_by?: Id;
-  team_id?: Id;
-  stage_id?: Id;
-  priority?: Priority;
-  label_id?: Id;
-  sprint_id?: Id;
-  project_id?: Id;
-  due_before?: string;
+  /** Clauses ANDed together. */
+  where?: readonly FilterClause[];
   search?: string;
   trash?: boolean;
   archived?: boolean;
-  parent_id?: Id;
-  dependency_id?: Id;
   ids?: string;
-  no_sprint?: boolean;
-  open?: boolean;
   sort?: IssueSort;
-  unassigned?: boolean;
   group_by?: IssueGroup;
+  /** Paging cursor for ungrouped Updated pages. Stored as given. */
+  after?: string;
+  /** Record shape. The server defaults it to full. */
+  projection?: "full" | "summary";
 }
 export interface SavedView {
   id: Id;
@@ -271,19 +314,33 @@ export interface Integration {
   webhook_url: string;
   enabled: boolean;
 }
+/** A personal access token for /api/v1 and /mcp. The secret is only returned at creation. */
+export interface ApiToken {
+  id: Id;
+  name: string;
+  prefix: string;
+  access: "read" | "comment" | "write";
+  workspace_ids: Id[] | null;
+  created_at: string;
+  expires_at: string | null;
+  last_used_at: string | null;
+}
 export interface Activity {
   id: Id;
   actor: Id;
   action: string;
   entity_id: Id | null;
   at: string;
-  fields?: string[];
+  fields?: readonly string[];
+  via?: Via | null;
 }
 
-/** Workspace records loaded once and kept current. Issues and their discussion load per page. */
+/** Workspace metadata assembled from the current replica view. */
 export interface Workspace {
   id: Id;
   name: string;
+  /** Names the workspace in app URLs. */
+  slug: string;
   members: { user_id: Id; role: Role; version: number }[];
   teams: Team[];
   labels: Label[];
@@ -298,6 +355,8 @@ export interface Workspace {
 export interface WorkspaceSummary {
   id: Id;
   name: string;
+  /** Names the workspace in app URLs. */
+  slug: string;
   version: number;
 }
 export interface MemberProfile {
@@ -346,7 +405,7 @@ export interface Report {
   label_counts: Record<Id, number>;
   project_stats: ProjectStats[];
   total_minutes: number;
-  issues: (Total & { number: number; title: string })[];
+  issues: (Total & { number: number; key: string; title: string })[];
   people: Total[];
   teams: Total[];
   projects: Total[];
@@ -354,6 +413,7 @@ export interface Report {
   delivery: { date: string; completed: number }[];
 }
 export interface IssueInput {
+  id?: Id;
   title: string;
   description?: string;
   team_id: Id;
@@ -392,20 +452,29 @@ export interface IssuePatch {
   dependencies?: Id[];
 }
 export type Command =
-  | { type: "create_team"; name: string; members: Id[] }
+  | {
+      type: "create_team";
+      id?: Id;
+      name: string;
+      key: string;
+      members: Id[];
+      default_stage_ids?: Id[];
+    }
   | { type: "set_team_members"; id: Id; members: Id[] }
   | { type: "set_team_archive"; id: Id; archive_after_days: number | null }
-  | { type: "create_stage"; team_id: Id; name: string; kind: StageKind; position: number }
+  | { type: "set_team_appearance"; id: Id; icon: TeamIcon; color: TeamColor }
+  | { type: "create_stage"; id?: Id; team_id: Id; name: string; kind: StageKind; position: number }
   | { type: "update_stage"; team_id: Id; id: Id; name: string; kind: StageKind; position: number }
   | { type: "delete_stage"; team_id: Id; id: Id; replacement: Id }
-  | { type: "create_label"; name: string; color: string }
+  | { type: "create_label"; id?: Id; name: string; color: string }
   | { type: "update_label"; id: Id; name: string; color: string }
-  | { type: "create_project"; name: string; description: string; team_ids: Id[] }
+  | { type: "create_project"; id?: Id; name: string; description: string; team_ids: Id[] }
   | { type: "update_project"; id: Id; name: string; description: string; team_ids: Id[] }
-  | { type: "create_milestone"; project_id: Id; name: string; deadline: string | null }
+  | { type: "create_milestone"; id?: Id; project_id: Id; name: string; deadline: string | null }
   | { type: "update_milestone"; id: Id; name: string; deadline: string | null }
   | {
       type: "create_sprint";
+      id?: Id;
       team_id: Id;
       name: string;
       goal: string;
@@ -436,14 +505,21 @@ export type Command =
   | { type: "archive_issue"; id: Id }
   | { type: "unarchive_issue"; id: Id }
   | { type: "remove_attachment"; issue_id: Id; attachment_id: Id }
-  | { type: "add_comment"; issue_id: Id; body: string; mentions: Id[]; attachments: Attachment[] }
+  | {
+      type: "add_comment";
+      id?: Id;
+      issue_id: Id;
+      body: string;
+      mentions: Id[];
+      attachments: Attachment[];
+    }
   | { type: "edit_comment"; id: Id; body: string; mentions: Id[] }
   | { type: "delete_comment"; id: Id }
   | { type: "follow"; issue_id: Id; following: boolean }
-  | { type: "log_time"; issue_id: Id; minutes: number; note: string; logged_at: string }
+  | { type: "log_time"; id?: Id; issue_id: Id; minutes: number; note: string; logged_at: string }
   | { type: "update_time"; id: Id; minutes: number; note: string; logged_at: string }
   | { type: "delete_time"; id: Id }
-  | { type: "save_view"; name: string; shared: boolean; filter: IssueFilter }
+  | { type: "save_view"; id?: Id; name: string; shared: boolean; filter: IssueFilter }
   | { type: "update_view"; id: Id; name: string; shared: boolean; filter: IssueFilter }
   | { type: "delete_view"; id: Id }
   | { type: "invite"; email: string; role: Role; token_hash: string }
@@ -462,48 +538,14 @@ export type Command =
       mention: boolean;
       deadline: boolean;
     }
-  | { type: "create_integration"; name: string; webhook_url: string; secret: string }
+  | { type: "create_integration"; id?: Id; name: string; webhook_url: string; secret: string }
   | { type: "update_integration"; id: Id; enabled: boolean }
   | { type: "delete_integration"; id: Id }
   | { type: "add_source_link"; issue_id: Id; url: string; title: string }
   | { type: "import_issues"; issues: IssueInput[] };
 
 export type EntityVersions = Record<Id, number>;
-export interface PageResult<T> {
-  items: T[];
-  has_more: boolean;
-  next_offset: number | null;
-}
-/** A changed record in the shape its list endpoint returns. `null` means deleted or no longer visible. */
-export interface Change {
-  entity: "workspace" | "members" | "issues" | keyof WorkspaceResources;
-  id: Id;
-  record: unknown;
-}
 export interface CommandResult {
   result: { id: Id | null };
   versions: EntityVersions;
-  /** Every record the command changed, including side effects such as a parent's subtask counts. */
-  changes: Change[];
-}
-/** When `reset` is true, reload everything and continue from `cursor`. */
-export interface ChangeFeed {
-  cursor: string;
-  reset: boolean;
-  changes: Change[];
-}
-export interface WorkspaceResources {
-  teams: Team;
-  labels: Label;
-  projects: Project;
-  milestones: Milestone;
-  sprints: Sprint;
-  views: SavedView;
-  notifications: Notification;
-  alert_preferences: AlertPrefsWs;
-  invitations: Invitation;
-  integrations: Integration;
-  activity: Activity;
-  comments: Comment;
-  time_entries: TimeEntry;
 }

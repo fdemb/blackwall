@@ -2,7 +2,6 @@ use crate::{
     error::{Error, Result},
     jobs::{Job, PAYLOAD_VERSION},
 };
-use chrono::Utc;
 use sqlx::{PgConnection, PgPool, Row, postgres::PgListener};
 use std::sync::Arc;
 use tokio::sync::Notify;
@@ -15,7 +14,9 @@ pub struct NewJob {
     /// Compatibility key, independent of the queue's UUID identity.
     pub id: String,
     pub job: Job,
-    pub due_at: i64,
+    /// Unix seconds. `None` makes the job due at the database's current time,
+    /// so a skewed application clock can't delay it.
+    pub due_at: Option<i64>,
     pub max_attempts: Option<i32>,
 }
 
@@ -24,7 +25,7 @@ impl NewJob {
         Self {
             id: id.into(),
             job,
-            due_at: Utc::now().timestamp(),
+            due_at: None,
             max_attempts: None,
         }
     }
@@ -51,6 +52,52 @@ pub struct Claim {
 pub struct Outbox {
     pool: PgPool,
     ready: Arc<Notify>,
+}
+
+/// Running jobs whose lease expired with attempts left. Binds `$1` queue, `$2` limit.
+const EXPIRED_JOBS: &str = "SELECT id FROM jobs WHERE queue=$1 AND state='running' AND \
+    lease_expires_at<=clock_timestamp() AND attempts<max_attempts \
+    ORDER BY lease_expires_at,id FOR UPDATE SKIP LOCKED LIMIT $2";
+
+/// Pending jobs that are due. Binds `$1` queue, `$2` limit.
+const DUE_JOBS: &str = "SELECT id FROM jobs WHERE queue=$1 AND state='pending' AND \
+    run_at<=clock_timestamp() AND attempts<max_attempts \
+    ORDER BY run_at,id FOR UPDATE SKIP LOCKED LIMIT $2";
+
+/// Leases the jobs `picked` selects under a fresh claim token.
+async fn take_jobs(
+    tx: &mut PgConnection,
+    picked: &str,
+    queue: &str,
+    limit: i64,
+) -> Result<Vec<Claim>> {
+    let rows = sqlx::query(&format!(
+        "WITH picked AS ({picked}) UPDATE jobs SET state='running',\
+        claim_token=gen_random_uuid(),\
+        lease_expires_at=clock_timestamp()+make_interval(secs=>$3::double precision),\
+        attempts=attempts+1,updated_at=clock_timestamp() FROM picked \
+        WHERE jobs.id=picked.id RETURNING jobs.id,kind,queue,payload,\
+        payload_version,attempts,max_attempts,claim_token"
+    ))
+    .bind(queue)
+    .bind(limit)
+    .bind(LEASE_SECONDS as f64)
+    .fetch_all(&mut *tx)
+    .await?;
+    rows.into_iter()
+        .map(|row| {
+            Ok(Claim {
+                id: row.try_get("id")?,
+                kind: row.try_get("kind")?,
+                queue: row.try_get("queue")?,
+                payload: row.try_get::<serde_json::Value, _>("payload")?.to_string(),
+                payload_version: row.try_get("payload_version")?,
+                attempts: row.try_get("attempts")?,
+                max_attempts: row.try_get("max_attempts")?,
+                token: row.try_get("claim_token")?,
+            })
+        })
+        .collect()
 }
 
 impl Outbox {
@@ -81,12 +128,12 @@ impl Outbox {
         let sql = match job.max_attempts {
             Some(_) => {
                 "INSERT INTO jobs(id,kind,payload_version,payload,queue,run_at,\
-                dedup_key,max_attempts) VALUES($1,$2,$3,$4,$5,to_timestamp($6),$7,$8) ON \
+                dedup_key,max_attempts) VALUES($1,$2,$3,$4,$5,COALESCE(to_timestamp($6),clock_timestamp()),$7,$8) ON \
                 CONFLICT DO NOTHING"
             }
             None => {
                 "INSERT INTO jobs(id,kind,payload_version,payload,queue,run_at,\
-                dedup_key) VALUES($1,$2,$3,$4,$5,to_timestamp($6),$7) ON \
+                dedup_key) VALUES($1,$2,$3,$4,$5,COALESCE(to_timestamp($6),clock_timestamp()),$7) ON \
                 CONFLICT DO NOTHING"
             }
         };
@@ -96,7 +143,7 @@ impl Outbox {
             .bind(PAYLOAD_VERSION)
             .bind(serde_json::from_str::<serde_json::Value>(&payload)?)
             .bind(job.job.queue())
-            .bind(job.due_at as f64)
+            .bind(job.due_at.map(|seconds| seconds as f64))
             .bind(&job.id);
         if let Some(max_attempts) = job.max_attempts {
             query = query.bind(max_attempts);
@@ -141,62 +188,13 @@ impl Outbox {
         .execute(&mut *tx)
         .await?;
 
+        // Expired leases first, so abandoned work is retried before new work.
         let limit = slots.min(256) as i64;
-
-        let mut rows = sqlx::query(
-            "WITH expired AS (SELECT id FROM jobs WHERE queue=$1 AND \
-            state='running' AND lease_expires_at<=clock_timestamp() AND \
-            attempts<max_attempts ORDER BY lease_expires_at,id FOR UPDATE \
-            SKIP LOCKED LIMIT $2) UPDATE jobs SET state='running',\
-            claim_token=gen_random_uuid(),\
-            lease_expires_at=clock_timestamp()+make_interval(secs=>$3::double \
-            precision),attempts=attempts+1,updated_at=clock_timestamp() FROM \
-            expired WHERE jobs.id=expired.id RETURNING jobs.id,kind,queue,\
-            payload,payload_version,attempts,max_attempts,claim_token",
-        )
-        .bind(queue)
-        .bind(limit)
-        .bind(LEASE_SECONDS as f64)
-        .fetch_all(&mut *tx)
-        .await?;
-
-        let remaining = limit - rows.len() as i64;
+        let mut claims = take_jobs(&mut tx, EXPIRED_JOBS, queue, limit).await?;
+        let remaining = limit - claims.len() as i64;
         if remaining > 0 {
-            let pending = sqlx::query(
-                "WITH due AS (SELECT id FROM jobs WHERE queue=$1 AND \
-                state='pending' AND run_at<=clock_timestamp() AND \
-                attempts<max_attempts ORDER BY run_at,id FOR UPDATE SKIP \
-                LOCKED LIMIT $2) UPDATE jobs SET state='running',\
-                claim_token=gen_random_uuid(),\
-                lease_expires_at=clock_timestamp()+make_interval(secs=>$3::\
-                double precision),attempts=attempts+1,\
-                updated_at=clock_timestamp() FROM due WHERE jobs.id=due.id \
-                RETURNING jobs.id,kind,queue,payload,payload_version,\
-                attempts,max_attempts,claim_token",
-            )
-            .bind(queue)
-            .bind(remaining)
-            .bind(LEASE_SECONDS as f64)
-            .fetch_all(&mut *tx)
-            .await?;
-            rows.extend(pending);
+            claims.extend(take_jobs(&mut tx, DUE_JOBS, queue, remaining).await?);
         }
-
-        let claims = rows
-            .into_iter()
-            .map(|row| {
-                Ok(Claim {
-                    id: row.try_get("id")?,
-                    kind: row.try_get("kind")?,
-                    queue: row.try_get("queue")?,
-                    payload: row.try_get::<serde_json::Value, _>("payload")?.to_string(),
-                    payload_version: row.try_get("payload_version")?,
-                    attempts: row.try_get("attempts")?,
-                    max_attempts: row.try_get("max_attempts")?,
-                    token: row.try_get("claim_token")?,
-                })
-            })
-            .collect::<Result<Vec<_>>>()?;
         tx.commit().await?;
 
         Ok(claims)

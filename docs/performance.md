@@ -12,13 +12,13 @@ Issue lists select a bounded page of IDs before building their JSON records. Sea
 
 ## Read contracts
 
-Existing issue lists, issue details, change-feed records, and exports retain their full shapes by default. The frontend's offline collection continues to use full records.
+Existing issue lists, issue details, change-feed records, and exports retain their full shapes by default.
 
 For a lighter list response, request `projection=summary`. Summary includes issue scalar fields, tracker link metadata, labels, and blocker/subtask counts. It omits `description`, `dependencies`, `followers`, `attachments`, and `source_links`. Do not replace a complete offline issue record with a summary.
 
 Ungrouped `sort=updated` lists return `next_cursor` when another page exists. Pass that token as `after` with `offset=0` to continue. Cursors use descending update times and ascending UUIDs, preserve ties, and validate their version, workspace, and filter scope. The projection and page size can change without invalidating the cursor. Filters cannot. Existing `offset` and `next_offset` pagination remains available.
 
-Cursor pagination is not a snapshot. An issue updated between pages can move ahead of the cursor. Consumers needing a complete synchronized collection should continue using the existing change-feed loading protocol.
+Cursor pagination is not a snapshot. An issue updated between pages can move ahead of the cursor. Consumers that need a complete synchronized copy should use the sync protocol in [sync engine](sync.md).
 
 ## Measurement
 

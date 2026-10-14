@@ -31,7 +31,8 @@ import { Avatar } from "~/components/ui/avatar";
 import { Button } from "~/components/ui/button";
 import { ConfirmDialog } from "~/components/app/confirm";
 import { useToast } from "~/components/ui/toast";
-import { Markdown, MarkdownEditor, mentionsIn } from "~/components/app/markdown";
+import { Markdown, mentionsIn } from "~/components/app/markdown";
+import { MarkdownEditor } from "~/components/app/editor/rich-editor";
 import { formatMinutes, MAX_UPLOAD, relativeTime } from "~/lib/format";
 import { useI18n, isTranslationKey, type Key } from "~/lib/i18n";
 import { usePending } from "~/lib/use-pending";
@@ -116,7 +117,7 @@ export function Timeline({ issue }: { issue: Issue }) {
       )}
       {items.length > 0 && (
         // The line sits behind the list. Event dots ride on it and comment cards cover it.
-        <ol className="relative space-y-3 before:absolute before:inset-y-3 before:left-3.5 before:w-px before:-translate-x-1/2 before:bg-border">
+        <ol className="relative space-y-2 before:absolute before:inset-y-3 before:left-3.5 before:w-px before:-translate-x-1/2 before:bg-border">
           {hidden > 0 && (
             <li className="relative flex items-center gap-3">
               <TimelineDot>
@@ -185,7 +186,7 @@ function EventItem({ event, entries }: { event: Activity; entries: Map<Id, TimeE
   // A single-field change shows that field's icon; several fields fall back to the generic edit icon.
   const Icon = (fields.length === 1 ? fields[0].icon : meta?.icon) ?? Pencil;
   return (
-    <li className="relative flex items-center gap-3 text-xs text-muted-foreground">
+    <li className="relative flex min-h-7 items-center gap-3 text-sm text-muted-foreground">
       <TimelineDot className={cn(event.action === "issue_completed" && "text-success")}>
         <Icon />
       </TimelineDot>
@@ -193,8 +194,13 @@ function EventItem({ event, entries }: { event: Activity; entries: Map<Id, TimeE
         <span className="font-medium text-foreground">
           {member(event.actor)?.display_name ?? t("person.unknown")}
         </span>{" "}
-        {label} ·{" "}
-        <time dateTime={event.at} title={new Date(event.at).toLocaleString(lang)}>
+        {event.via && <>{t("timeline.via", { name: event.via.name })} </>}
+        {label}{" "}
+        <time
+          dateTime={event.at}
+          title={new Date(event.at).toLocaleString(lang)}
+          className="text-muted-foreground/70"
+        >
           {relativeTime(event.at, lang)}
         </time>
       </span>
@@ -232,7 +238,7 @@ function CommentItem({ comment: c }: { comment: Comment }) {
   };
   return (
     // The avatar takes the timeline dot's slot, so it sits on the line and the card lines up with event text.
-    <li className="group relative flex gap-3">
+    <li className="group relative flex gap-3 py-1">
       <span className="flex w-7 shrink-0 justify-center pt-[7px]">
         <Avatar
           name={m?.display_name ?? "?"}
@@ -242,22 +248,22 @@ function CommentItem({ comment: c }: { comment: Comment }) {
         />
       </span>
       <div className="min-w-0 flex-1 rounded-lg border border-border bg-card shadow-xs">
-        <div className="flex h-9 items-center gap-1.5 pl-3.5 pr-1 text-[13px]">
+        <div className="flex h-9 items-center gap-1.5 pl-3.5 pr-1">
           <Link
-            to={`/${ws.id}/people/${c.author}`}
-            className="truncate font-semibold hover:underline"
+            to={`/${ws.slug}/people/${c.author}`}
+            className="truncate font-medium hover:underline"
           >
             {m?.display_name ?? t("person.unknown")}
           </Link>
           <time
             dateTime={c.created_at}
             title={new Date(c.created_at).toLocaleString(lang)}
-            className="shrink-0 text-xs text-muted-foreground"
+            className="shrink-0 text-sm text-muted-foreground"
           >
             {relativeTime(c.created_at, lang)}
           </time>
           {c.tracker?.provider && (
-            <span className="min-w-0 truncate text-xs text-muted-foreground">
+            <span className="min-w-0 truncate text-sm text-muted-foreground">
               {c.tracker.author_name
                 ? t("tracker.commentVia", {
                     provider: trackerProviderName(c.tracker.provider),
@@ -268,8 +274,13 @@ function CommentItem({ comment: c }: { comment: Comment }) {
                   })}
             </span>
           )}
+          {c.via && (
+            <span className="truncate text-sm text-muted-foreground">
+              {t("timeline.via", { name: c.via.name })}
+            </span>
+          )}
           {c.edited_at && (
-            <span className="shrink-0 text-xs text-muted-foreground">· {t("comment.edited")}</span>
+            <span className="shrink-0 text-sm text-muted-foreground">· {t("comment.edited")}</span>
           )}
           {(mine || canAdmin) && editBody === null && (
             <span className={cn("ml-auto flex", revealOnHover)}>
@@ -314,7 +325,7 @@ function CommentItem({ comment: c }: { comment: Comment }) {
                 value={editBody}
                 onChange={setEditBody}
                 autoFocus
-                minRows={3}
+                className="min-h-16"
                 onSubmit={save}
               />
               <ConfirmDialog
@@ -358,7 +369,7 @@ function CommentItem({ comment: c }: { comment: Comment }) {
 
 function Composer({ issue, hasItems }: { issue: Issue; hasItems: boolean }) {
   const { t } = useI18n();
-  const { members, run, upload, canWrite } = useWorkspace();
+  const { members, run, upload, canWrite, offline } = useWorkspace();
   const toast = useToast();
   const [body, setBody] = useState("");
   const [files, setFiles] = useState<File[]>([]);
@@ -370,7 +381,9 @@ function Composer({ issue, hasItems }: { issue: Issue; hasItems: boolean }) {
 
   const uploadAll = async (commentId: Id, list: File[]) => {
     const failed: File[] = [];
-    await Promise.all(list.map((f) => upload(issue.id, f, commentId).catch(() => failed.push(f))));
+    await Promise.all(
+      list.map((f) => upload(issue.id, f, { commentId, quiet: true }).catch(() => failed.push(f))),
+    );
     setRetry(failed.length ? { commentId, files: failed } : null);
     return failed;
   };
@@ -421,7 +434,7 @@ function Composer({ issue, hasItems }: { issue: Issue; hasItems: boolean }) {
         value={body}
         onChange={setBody}
         placeholder={t("comment.placeholder")}
-        minRows={3}
+        className="min-h-16"
         onSubmit={post}
       />
       {files.length > 0 && (
@@ -429,7 +442,7 @@ function Composer({ issue, hasItems }: { issue: Issue; hasItems: boolean }) {
           {files.map((f, i) => (
             <li
               key={i}
-              className="inline-flex items-center gap-1.5 rounded-md border border-border bg-muted px-2 py-1 text-xs"
+              className="inline-flex items-center gap-1.5 rounded-md border border-border bg-muted px-2 py-1 "
             >
               <Paperclip className="size-3" />
               {f.name}
@@ -446,20 +459,20 @@ function Composer({ issue, hasItems }: { issue: Issue; hasItems: boolean }) {
         </ul>
       )}
       {error && (
-        <p role="alert" className="text-xs text-destructive">
+        <p role="alert" className=" text-destructive">
           {error}
         </p>
       )}
       {retry && (
         <div
           role="alert"
-          className="flex flex-wrap items-center gap-2 rounded-md border border-destructive/40 px-3 py-2 text-xs"
+          className="flex flex-wrap items-center gap-2 rounded-md border border-destructive/40 px-3 py-2 "
         >
           <span className="flex-1">
-            {t("attachments.retryNote", { n: retry.files.length })}{" "}
+            {t("attachments.retryNote", { count: retry.files.length })}{" "}
             {retry.files.map((f) => f.name).join(", ")}
           </span>
-          <Button size="sm" variant="secondary" isDisabled={busy} onPress={retryUpload}>
+          <Button size="sm" variant="secondary" isDisabled={busy || offline} onPress={retryUpload}>
             {t("attachments.retry")}
           </Button>
           <Button size="sm" variant="ghost" onPress={() => setRetry(null)}>
@@ -469,13 +482,13 @@ function Composer({ issue, hasItems }: { issue: Issue; hasItems: boolean }) {
       )}
       <div className="flex items-center justify-between">
         <FileTrigger allowsMultiple onSelect={addFiles}>
-          <Button variant="ghost" size="sm" isDisabled={busy}>
+          <Button variant="ghost" size="sm" isDisabled={busy || offline}>
             <Paperclip />
             {t("attachments.add")}
           </Button>
         </FileTrigger>
         <div className="flex items-center gap-2">
-          <span className="hidden text-xs text-muted-foreground sm:block">
+          <span className="hidden  text-muted-foreground sm:block">
             {t("comment.hint", { key: modKey })}
           </span>
           <Button variant="primary" isDisabled={!body.trim() || busy} onPress={post}>

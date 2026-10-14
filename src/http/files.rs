@@ -4,7 +4,7 @@ use axum::{body::Bytes, extract::Multipart, http::HeaderMap};
 
 #[utoipa::path(
     post,
-    path = "/api/workspaces/{id}/issues/{issue}/attachments",
+    path = "/internal-api/workspaces/{id}/issues/{issue}/attachments",
     params(("id" = Uuid, Path), ("issue" = Uuid, Path)),
     responses((status = 200, body = CommandResponse)),
     description = "Multipart file up to 5 MiB, expected_versions JSON map, optional idempotency_key and comment_id."
@@ -20,68 +20,27 @@ pub(super) async fn upload(
     let mut comment_id = None;
     let mut key = None;
 
-    while let Some(field) = multipart
-        .next_field()
-        .await
-        .map_err(|e| Error::BadRequest(e.to_string()))?
-    {
+    let bad = |e: axum::extract::multipart::MultipartError| Error::BadRequest(e.to_string());
+    while let Some(field) = multipart.next_field().await.map_err(bad)? {
         match field.name() {
             Some("expected_versions") => {
-                let value = field
-                    .text()
-                    .await
-                    .map_err(|e| Error::BadRequest(e.to_string()))?;
+                let value = field.text().await.map_err(bad)?;
                 expected = serde_json::from_str(&value)
                     .map_err(|_| Error::BadRequest("invalid expected_versions JSON".into()))?;
             }
-            Some("idempotency_key") => {
-                key = Some(
-                    field
-                        .text()
-                        .await
-                        .map_err(|e| Error::BadRequest(e.to_string()))?,
-                );
-            }
+            Some("idempotency_key") => key = Some(field.text().await.map_err(bad)?),
             Some("comment_id") => {
                 comment_id = Some(
                     field
                         .text()
                         .await
-                        .map_err(|e| Error::BadRequest(e.to_string()))?
+                        .map_err(bad)?
                         .parse::<Uuid>()
                         .map_err(|_| Error::BadRequest("invalid comment_id".into()))?,
                 );
             }
             Some("file") if uploaded.is_none() => {
-                let filename = field
-                    .file_name()
-                    .unwrap_or("attachment")
-                    .rsplit(['/', '\\'])
-                    .next()
-                    .unwrap_or("attachment")
-                    .chars()
-                    .filter(|c| !c.is_control())
-                    .take(200)
-                    .collect::<String>();
-                let content_type = field
-                    .content_type()
-                    .unwrap_or("application/octet-stream")
-                    .to_owned();
-                let bytes = field
-                    .bytes()
-                    .await
-                    .map_err(|e| Error::BadRequest(e.to_string()))?;
-                if bytes.len() > 5 * 1024 * 1024 {
-                    return Err(Error::BadRequest("attachment limit is 5 MiB".into()));
-                }
-                uploaded = Some(NewAttachment {
-                    id: Uuid::new_v4(),
-                    issue_id: issue,
-                    uploader_id: actor.profile.id,
-                    filename,
-                    content_type,
-                    bytes: bytes.to_vec(),
-                });
+                uploaded = Some(read_file(field, issue, actor.profile.id).await?);
             }
             _ => {
                 return Err(Error::BadRequest(
@@ -118,6 +77,43 @@ pub(super) async fn upload(
     ))
 }
 
+/// Reads the file part, keeping the base filename without control characters.
+async fn read_file(
+    field: axum::extract::multipart::Field<'_>,
+    issue: Uuid,
+    uploader: Uuid,
+) -> Result<NewAttachment> {
+    let filename = field
+        .file_name()
+        .unwrap_or("attachment")
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or("attachment")
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(200)
+        .collect::<String>();
+    let content_type = field
+        .content_type()
+        .unwrap_or("application/octet-stream")
+        .to_owned();
+    let bytes = field
+        .bytes()
+        .await
+        .map_err(|e| Error::BadRequest(e.to_string()))?;
+    if bytes.len() > 5 * 1024 * 1024 {
+        return Err(Error::BadRequest("attachment limit is 5 MiB".into()));
+    }
+    Ok(NewAttachment {
+        id: Uuid::new_v4(),
+        issue_id: issue,
+        uploader_id: uploader,
+        filename,
+        content_type,
+        bytes: bytes.to_vec(),
+    })
+}
+
 #[utoipa::path(
     get,
     path = "/api/workspaces/{id}/attachments/{attachment}",
@@ -132,6 +128,16 @@ pub(super) async fn download(
     actor: Actor,
     Path((id, attachment)): Path<(Uuid, Uuid)>,
 ) -> Result<Response> {
+    attachment_response(&store, id, actor.profile.id, attachment).await
+}
+
+/// The attachment's bytes, if `user` belongs to the workspace and its issue is not trashed.
+pub(crate) async fn attachment_response(
+    store: &Store,
+    id: Uuid,
+    user: Uuid,
+    attachment: Uuid,
+) -> Result<Response> {
     let row = sqlx::query(
         "SELECT a.filename, a.bytes FROM attachments a \
          JOIN issues i ON i.id = a.issue_id \
@@ -141,7 +147,7 @@ pub(super) async fn download(
     )
     .bind(id)
     .bind(attachment)
-    .bind(actor.profile.id)
+    .bind(user)
     .fetch_optional(&store.pool)
     .await?
     .ok_or(Error::NotFound)?;
@@ -170,7 +176,7 @@ pub(super) async fn download(
 
 #[utoipa::path(
     get,
-    path = "/api/workspaces/{id}/export",
+    path = "/internal-api/workspaces/{id}/export",
     params(("id" = Uuid, Path)),
     responses((status = 200, body = crate::exchange::Transfer))
 )]
@@ -184,7 +190,7 @@ pub(super) async fn export(
 
 #[utoipa::path(
     post,
-    path = "/api/workspaces/{id}/import",
+    path = "/internal-api/workspaces/{id}/import",
     params(("id" = Uuid, Path)),
     request_body = ImportRequest,
     responses((status = 200, body = ImportResponse))
@@ -202,7 +208,7 @@ pub(super) async fn import(
                     id,
                     actor.profile.id,
                     Command::ImportIssues { issues },
-                    input.expected_versions,
+                    input.expected_versions.unwrap_or_default(),
                     input.idempotency_key,
                     None,
                 )
@@ -218,7 +224,7 @@ pub(super) async fn import(
                     id,
                     actor.profile.id,
                     transfer,
-                    input.expected_versions,
+                    input.expected_versions.unwrap_or_default(),
                     input.idempotency_key,
                 )
                 .await?;
@@ -339,7 +345,7 @@ pub(super) async fn incoming(
 
     let result = OperationResult {
         result: CommandResult { id: entity },
-        versions: op.versions,
+        versions: op.response_versions(),
         changes: Vec::new(),
     };
     sqlx::query(

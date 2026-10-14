@@ -45,7 +45,7 @@ impl Fixture {
             &self.app,
             &self.owner,
             "POST",
-            &format!("/api/workspaces/{}/commands", self.workspace),
+            &format!("/internal-api/workspaces/{}/commands", self.workspace),
             Some(json!({"expected_versions":{},"command":{"type":"add_comment","issue_id":issue["id"],"body":body,"mentions":[]}})),
         )
         .await;
@@ -182,7 +182,10 @@ async fn enabling_import_brings_history_silently_then_new_comments_notify() {
         &f.app,
         &f.owner,
         "GET",
-        &format!("/api/workspaces/{}/comments?issue_id={issue}", f.workspace),
+        &format!(
+            "/internal-api/workspaces/{}/comments?issue_id={issue}",
+            f.workspace
+        ),
         None,
     )
     .await;
@@ -279,7 +282,7 @@ async fn edited_comments_resent_after_a_lost_response_adopt_the_original_copy() 
         &f.app,
         &f.owner,
         "POST",
-        &format!("/api/workspaces/{}/commands", f.workspace),
+        &format!("/internal-api/workspaces/{}/commands", f.workspace),
         Some(json!({"expected_versions":{comment.to_string():version},"command":{"type":"edit_comment","id":comment,"body":"Edited","mentions":[]}})),
     )
     .await;
@@ -496,7 +499,7 @@ async fn trashed_issues_import_comments_only_after_restore() {
         &f.app,
         &f.owner,
         "POST",
-        &format!("/api/workspaces/{}/commands", f.workspace),
+        &format!("/internal-api/workspaces/{}/commands", f.workspace),
         Some(json!({"expected_versions":{id.as_str().unwrap():version},"command":{"type":"restore_issue","id":id}})),
     )
     .await;

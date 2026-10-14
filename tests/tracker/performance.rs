@@ -28,7 +28,7 @@ impl Fixture {
             remote.bulk_count = bulk_count;
         }
         let (url, server) = mock_server(mock.clone()).await;
-        let base = format!("/api/workspaces/{workspace}/trackers/connections");
+        let base = format!("/internal-api/workspaces/{workspace}/trackers/connections");
         let (status, config) = call(
             &app,
             &owner,

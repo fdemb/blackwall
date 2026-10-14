@@ -22,7 +22,7 @@ export function ReviewStep({ draft, connection, provider }: StepProps) {
       .join(", ") || t("tracker.nothing");
   const overrides = Object.keys(draft.people).length;
   return (
-    <div className="space-y-4 text-[13px]">
+    <div className="space-y-4">
       <dl className="grid grid-cols-[minmax(0,10rem)_1fr] gap-x-4 gap-y-2">
         <dt className="text-muted-foreground">{t("tracker.connection")}</dt>
         <dd className="min-w-0 break-all">
@@ -63,7 +63,7 @@ export function ReviewStep({ draft, connection, provider }: StepProps) {
         <dt className="text-muted-foreground">{t("tracker.send", { provider: name })}</dt>
         <dd>{fields("export")}</dd>
       </dl>
-      <p className="text-xs text-muted-foreground">
+      <p className="text-sm text-muted-foreground">
         {t("tracker.review.hint", { provider: name })}
       </p>
     </div>

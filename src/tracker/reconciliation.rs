@@ -40,7 +40,7 @@ pub(super) async fn apply_page(
     let lookups = Lookups::load(conn, import, items).await?;
     let mut local = Local::lock(conn, &lookups.import, items).await?;
     let parents = Parents::plan(conn, &lookups.import, &local, items).await?;
-    let mut allocation = allocate(conn, &lookups.import, local.new_count).await?;
+    let mut allocation = allocate(conn, &lookups.import, &local).await?;
     let mut writes = Writes::default();
     let mut progress = CommentProgress::default();
     let listed_at = Utc::now();
@@ -301,6 +301,10 @@ impl<'a> Lookups<'a> {
                 after.done_at = None;
                 after.archived_at = None;
             }
+            // Backlog work has no sprint.
+            if destination.kind == "backlog" && after.stage_id == destination.id {
+                after.sprint_id = None;
+            }
         }
         after.parent_id = parents.wanted.get(&id).copied().flatten();
         // A parent skipped for a cycle stays unapplied in the baseline, so a later scan retries it.
@@ -429,6 +433,8 @@ struct Local {
     ids: BTreeMap<String, Uuid>,
     /// Issues the page creates.
     new_count: i64,
+    /// Imported issues that move into the mapping's team, which need its numbers.
+    moved_count: usize,
     /// Imported children of the page's items, scanned earlier.
     dependents: Vec<Issue>,
     /// Local fields waiting in the outbox, per issue. Imports keep those local values
@@ -490,10 +496,15 @@ impl Local {
             .map(|issue| issue.id)
             .collect();
         let pending = outbox::pending_fields(conn, &local_ids).await?;
+        let moved_count = existing
+            .values()
+            .filter(|issue| issue.team_id != import.mapping.team_id)
+            .count();
         Ok(Self {
             existing,
             ids,
             new_count,
+            moved_count,
             dependents,
             pending,
         })
@@ -666,35 +677,37 @@ fn without_bookkeeping(link: &Option<TrackerLink>) -> Option<TrackerLink> {
 }
 
 /// Reserves numbers and positions for the page's new issues within the workspace's issue
-/// capacity.
+/// capacity, and numbers for issues moving into the mapping's team.
 async fn allocate(
     conn: &mut PgConnection,
     import: &PageImport<'_>,
-    count: i64,
+    local: &Local,
 ) -> Result<Option<CreationBatch>> {
-    if count == 0 {
+    let count = local.new_count;
+    if count > 0 {
+        let capacity_error = format!(
+            "{} import stopped: workspace issue capacity reached (5000); reduce project mappings. Existing issues remain unchanged",
+            import.provider.name()
+        );
+        let mut stored = None;
+        persistence::capacity(
+            conn,
+            import.workspace,
+            "issues",
+            5000,
+            &mut stored,
+            &capacity_error,
+        )
+        .await?;
+        if stored.unwrap_or_default() + count > 5000 {
+            return Err(Error::BadRequest(capacity_error));
+        }
+    } else if local.moved_count == 0 {
         return Ok(None);
-    }
-    let capacity_error = format!(
-        "{} import stopped: workspace issue capacity reached (5000); reduce project mappings. Existing issues remain unchanged",
-        import.provider.name()
-    );
-    let mut stored = None;
-    persistence::capacity(
-        conn,
-        import.workspace,
-        "issues",
-        5000,
-        &mut stored,
-        &capacity_error,
-    )
-    .await?;
-    if stored.unwrap_or_default() + count > 5000 {
-        return Err(Error::BadRequest(capacity_error));
     }
     let team = import.mapping.team_id;
     Ok(Some(
-        persistence::allocate_creations(conn, import.workspace, team, count).await?,
+        persistence::allocate_creations(conn, import.workspace, team).await?,
     ))
 }
 
@@ -713,7 +726,7 @@ impl Reconciled {
     fn new(before: Option<Issue>, after: Issue, source: TrackerLink) -> Self {
         let mut fields = before
             .as_ref()
-            .map(|old| persistence::changed_fields(old, &after))
+            .map(|old| old.changed_fields(&after))
             .unwrap_or_default();
         if let Some(old) = &before {
             if old.team_id != after.team_id {
@@ -766,7 +779,14 @@ impl Writes {
             changed,
         } = reconciled;
         if changed {
-            if before.is_some() {
+            if let Some(old) = &before {
+                // Numbers are unique per team.
+                if old.team_id != after.team_id {
+                    allocation
+                        .as_mut()
+                        .ok_or_else(|| Error::Internal("missing import allocation".into()))?
+                        .renumber(&mut after);
+                }
                 persistence::save(
                     conn,
                     import.workspace,
@@ -841,7 +861,7 @@ impl Writes {
             persistence::Origin::Remote(&source),
         )
         .await?;
-        let fields = persistence::changed_fields(&old, &after);
+        let fields = old.changed_fields(&after);
         tracing::debug!(issue_id = %after.id, changed = true, fields = ?fields,
             "Tracker child linked in page transaction");
         self.changes.push((Some(old), after, fields));

@@ -6,11 +6,13 @@ import { TextField } from "~/components/ui/field";
 import { useToast } from "~/components/ui/toast";
 import { SettingsPage, SettingsRow, SettingsSection } from "~/components/app/settings";
 import { auth } from "~/lib/api";
+import { useSession } from "~/lib/session";
 import { useI18n } from "~/lib/i18n";
 
 export default function Security() {
   const { t } = useI18n();
   const toast = useToast();
+  const { logout } = useSession();
   const [error, setError] = useState("");
   return (
     <SettingsPage title={t("account.security")} description={t("account.securitySub")}>
@@ -55,15 +57,7 @@ export default function Security() {
       </SettingsSection>
       <SettingsSection>
         <SettingsRow label={t("nav.signOut")} description={t("account.signOutSub")}>
-          <Button
-            variant="secondary"
-            onPress={() =>
-              auth.logout().finally(() => {
-                sessionStorage.clear();
-                location.href = "/login";
-              })
-            }
-          >
+          <Button variant="secondary" onPress={() => logout()}>
             <LogOut />
             {t("nav.signOut")}
           </Button>

@@ -34,7 +34,7 @@ export function Discovery({
       await client.invalidateQueries({ queryKey: trackerKey(ws.id) });
     });
   return (
-    <div className="space-y-2 text-xs text-muted-foreground">
+    <div className="space-y-2 text-sm text-muted-foreground">
       <div className="flex flex-wrap items-center gap-2">
         {running ? (
           <p role="status" className="flex flex-1 items-center gap-1.5">

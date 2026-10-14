@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+# Install a CI release archive, migrate, switch, and roll back if it fails its health check.
+# Usage (as root): blackwall-deploy <archive.tar.gz> <commit-sha>
+set -euo pipefail
+
+archive=${1:?usage: blackwall-deploy <archive.tar.gz> <commit-sha>}
+commit=${2:?usage: blackwall-deploy <archive.tar.gz> <commit-sha>}
+[[ $commit =~ ^[0-9a-f]{40}$ ]] || { echo "commit must be a full SHA" >&2; exit 2; }
+
+root=/opt/blackwall
+env_file=/etc/blackwall/blackwall.env
+release=$root/releases/$commit
+previous=$(readlink -f "$root/current" || true)
+
+if [[ ! -d $release ]]; then
+    rm -rf "$release.tmp"
+    mkdir -p "$release.tmp"
+    tar -xzf "$archive" -C "$release.tmp" --no-same-owner --no-same-permissions
+    test -x "$release.tmp/blackwall"
+    test -f "$release.tmp/web/index.html"
+    mv "$release.tmp" "$release"
+fi
+
+bind=$(sed -n 's/^BIND_ADDR=//p' "$env_file")
+health_url="http://${bind:-127.0.0.1:3000}/health"
+
+run_as_app() {
+    (set -a; . "$env_file"; set +a; exec runuser -u blackwall -- "$@")
+}
+
+activate() {
+    ln -sfn "$1" "$root/current.new"
+    mv -T "$root/current.new" "$root/current"
+    systemctl restart blackwall-web blackwall-worker
+}
+
+healthy() {
+    for _ in $(seq 30); do
+        if curl -fsS --max-time 2 "$health_url" >/dev/null 2>&1 \
+            && systemctl is-active --quiet blackwall-worker; then
+            return 0
+        fi
+        sleep 1
+    done
+    return 1
+}
+
+echo "migrating with $commit"
+run_as_app "$release/blackwall" migrate
+
+echo "switching to $commit"
+activate "$release"
+if ! healthy; then
+    journalctl -u blackwall-web -u blackwall-worker -n 50 --no-pager || true
+    if [[ -n $previous && $previous != "$release" ]]; then
+        echo "health check failed; rolling back to $(basename "$previous")" >&2
+        echo "migrations from $commit stay applied" >&2
+        activate "$previous"
+    fi
+    exit 1
+fi
+
+# Keep the five newest releases plus whatever is current.
+current=$(readlink -f "$root/current")
+ls -1dt "$root"/releases/*/ | tail -n +6 | while read -r dir; do
+    dir=${dir%/}
+    [[ $dir == "$current" || $dir == *.tmp ]] || rm -rf "$dir"
+done
+
+echo "deployed $commit"

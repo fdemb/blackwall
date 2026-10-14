@@ -161,96 +161,19 @@ async fn send(
         tracing::debug!(issue_id = %row.issue, "Tracker push dropped: issue no longer linked");
         return discard(store, row).await;
     };
-    let push = match row.comment {
-        Some(comment) => {
-            if !metadata.options.get(TrackerField::Comments).export {
-                return discard(store, row).await;
-            }
-            let body: Option<String> = sqlx::query_scalar(
-                "SELECT body FROM comments WHERE workspace_id=$1 AND id=$2 AND tracker IS NULL",
-            )
-            .bind(connection.workspace)
-            .bind(comment)
-            .fetch_optional(&store.pool)
-            .await?;
-            let Some(body) = body else {
-                return discard(store, row).await;
-            };
-            Push::Comment {
-                remote_id: local.link.remote_id.clone(),
-                body,
-            }
-        }
-        None => {
-            let fields = row
-                .fields
-                .iter()
-                .filter_map(|key| TrackerField::parse(key))
-                .filter(|field| metadata.options.get(*field).export)
-                .filter_map(|field| map_field(field, &local, connection, metadata))
-                .collect::<Vec<_>>();
-            if fields.is_empty() {
-                return discard(store, row).await;
-            }
-            Push::Fields {
-                remote_id: local.link.remote_id.clone(),
-                fields,
-            }
-        }
+    let Some(push) = prepare(store, connection, metadata, row, &local).await? else {
+        return discard(store, row).await;
     };
-    let started = Instant::now();
-    let outcome = bounded(deadline, async {
-        match &push {
-            Push::Comment { remote_id, body } => {
-                send_comment(store, connection, row, &push, remote_id, body).await
-            }
-            Push::Fields { .. } => connection.provider.push(&connection.endpoint, &push).await,
-        }
-    })
-    .await;
-    tracing::debug!(issue_id = %row.issue, comment = row.comment.is_some(), elapsed_ms = started.elapsed().as_millis(),
-        outcome = ?outcome.as_ref().map_err(failure_message), "Tracker push sent");
-    match outcome {
+    match transmit(store, connection, row, &push, deadline).await {
         Ok(PushOutcome::Applied {
             comment_id,
             status_id,
         }) => {
-            if let (Some(comment), Some(remote_id)) = (row.comment, comment_id) {
-                sqlx::query("UPDATE comments SET tracker=$3 WHERE workspace_id=$1 AND id=$2")
-                    .bind(connection.workspace)
-                    .bind(comment)
-                    .bind(comments::link(
-                        connection.provider,
-                        connection.id,
-                        &remote_id,
-                        None,
-                    ))
-                    .execute(&store.pool)
-                    .await?;
-            }
-            reachable(store, connection).await?;
-            let fields = match &push {
-                Push::Fields { fields, .. } => fields.as_slice(),
-                Push::Comment { .. } => &[],
+            let applied = Applied {
+                comment_id,
+                status_id,
             };
-            let status_name = status_id.and_then(|id| {
-                metadata
-                    .statuses
-                    .iter()
-                    .find(|status| status.id == id)
-                    .map(|status| status.name.clone())
-            });
-            finish(store, row, None, false, |link| {
-                if let Some(name) = status_name {
-                    link.status_name = name;
-                }
-                if let Some(baseline) = &mut link.baseline {
-                    for field in fields {
-                        sent(baseline, field, &local);
-                    }
-                }
-            })
-            .await
+            record_applied(store, connection, metadata, row, &push, &local, applied).await
         }
         Ok(PushOutcome::Rejected(message)) => {
             reachable(store, connection).await?;
@@ -270,6 +193,116 @@ async fn send(
             Ok(Sent::Retry)
         }
     }
+}
+
+/// Sends the push within the batch deadline.
+async fn transmit(
+    store: &Store,
+    connection: &Connection<'_>,
+    row: &Queued,
+    push: &Push,
+    deadline: Instant,
+) -> Result<PushOutcome> {
+    let started = Instant::now();
+    let outcome = bounded(deadline, async {
+        match push {
+            Push::Comment { remote_id, body } => {
+                send_comment(store, connection, row, push, remote_id, body).await
+            }
+            Push::Fields { .. } => connection.provider.push(&connection.endpoint, push).await,
+        }
+    })
+    .await;
+    tracing::debug!(issue_id = %row.issue, comment = row.comment.is_some(), elapsed_ms = started.elapsed().as_millis(),
+        outcome = ?outcome.as_ref().map_err(failure_message), "Tracker push sent");
+    outcome
+}
+
+/// What the row sends, or None when nothing is left to send: comment export is off,
+/// the comment is gone or already linked, or no queued field exports.
+async fn prepare(
+    store: &Store,
+    connection: &Connection<'_>,
+    metadata: &Metadata,
+    row: &Queued,
+    local: &Local,
+) -> Result<Option<Push>> {
+    let remote_id = local.link.remote_id.clone();
+    let Some(comment) = row.comment else {
+        let fields = row
+            .fields
+            .iter()
+            .filter_map(|key| TrackerField::parse(key))
+            .filter(|field| metadata.options.get(*field).export)
+            .filter_map(|field| map_field(field, local, connection, metadata))
+            .collect::<Vec<_>>();
+        return Ok((!fields.is_empty()).then_some(Push::Fields { remote_id, fields }));
+    };
+    if !metadata.options.get(TrackerField::Comments).export {
+        return Ok(None);
+    }
+    let body: Option<String> = sqlx::query_scalar(
+        "SELECT body FROM comments WHERE workspace_id=$1 AND id=$2 AND tracker IS NULL",
+    )
+    .bind(connection.workspace)
+    .bind(comment)
+    .fetch_optional(&store.pool)
+    .await?;
+    Ok(body.map(|body| Push::Comment { remote_id, body }))
+}
+
+/// The remote identities an applied push reported.
+struct Applied {
+    comment_id: Option<String>,
+    status_id: Option<String>,
+}
+
+/// Links a sent comment, moves the baseline to the sent values and removes the row.
+async fn record_applied(
+    store: &Store,
+    connection: &Connection<'_>,
+    metadata: &Metadata,
+    row: &Queued,
+    push: &Push,
+    local: &Local,
+    applied: Applied,
+) -> Result<Sent> {
+    if let (Some(comment), Some(remote_id)) = (row.comment, applied.comment_id) {
+        sqlx::query("UPDATE comments SET tracker=$3 WHERE workspace_id=$1 AND id=$2")
+            .bind(connection.workspace)
+            .bind(comment)
+            .bind(comments::link(
+                connection.provider,
+                connection.id,
+                &remote_id,
+                None,
+            ))
+            .execute(&store.pool)
+            .await?;
+    }
+    reachable(store, connection).await?;
+    let fields = match push {
+        Push::Fields { fields, .. } => fields.as_slice(),
+        Push::Comment { .. } => &[],
+    };
+    let status_name = applied.status_id.and_then(|id| {
+        metadata
+            .statuses
+            .iter()
+            .find(|status| status.id == id)
+            .map(|status| status.name.clone())
+    });
+    finish(store, row, None, false, |link| {
+        if let Some(name) = status_name {
+            link.status_name = name;
+        }
+        if let Some(baseline) = &mut link.baseline {
+            for field in fields {
+                sent(baseline, field, local);
+            }
+        }
+    })
+    .await
 }
 
 /// Sends a comment at most once. The row records the post, in its own statement, before

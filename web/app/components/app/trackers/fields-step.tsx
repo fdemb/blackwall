@@ -16,10 +16,10 @@ export function FieldsStep({ draft, update, connection, provider, pending }: Ste
   };
   return (
     <div className="space-y-3">
-      <p className="text-xs text-muted-foreground">{t("tracker.fieldsHint", { provider: name })}</p>
-      <table className="w-full text-[13px]">
+      <p className="text-sm text-muted-foreground">{t("tracker.fieldsHint", { provider: name })}</p>
+      <table className="w-full">
         <thead>
-          <tr className="border-b border-border text-left text-xs text-muted-foreground">
+          <tr className="border-b border-border text-left text-sm text-muted-foreground">
             <th className="py-2 pr-3 font-normal">{t("tracker.field")}</th>
             {DIRECTIONS.map((key) => (
               <th key={key} className="w-36 py-2 font-normal">
@@ -38,7 +38,7 @@ export function FieldsStep({ draft, update, connection, provider, pending }: Ste
               <tr key={field} className="border-b border-border/70 align-top last:border-0">
                 <td className="py-2 pr-3">
                   <p>{label}</p>
-                  <p className="text-xs text-muted-foreground">
+                  <p className="text-sm text-muted-foreground">
                     {t(`tracker.field.${field}.hint`)}
                     {unsupported && ` ${t(unsupported, { provider: name })}`}
                   </p>

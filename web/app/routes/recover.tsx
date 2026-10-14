@@ -69,7 +69,7 @@ export default function Recover() {
             {busy ? t("auth.sending") : t("auth.sendLink")}
           </Button>
         </Form>
-        <p className="mt-5 flex justify-between text-[13px]">
+        <p className="mt-5 flex justify-between ">
           <Link to="/login" className="text-muted-foreground hover:text-foreground hover:underline">
             {t("auth.backToLogin")}
           </Link>
@@ -137,7 +137,7 @@ export default function Recover() {
           {busy ? t("auth.updating") : t("auth.resetPassword")}
         </Button>
       </Form>
-      <div className="mt-5 flex flex-wrap justify-between gap-2 text-[13px] text-muted-foreground">
+      <div className="mt-5 flex flex-wrap justify-between gap-2  text-muted-foreground">
         {email && (
           <button
             type="button"

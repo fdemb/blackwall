@@ -19,7 +19,7 @@ export function Tip({
         {...props}
         className={composeRenderProps(props.className, (c) =>
           cn(
-            "z-50 rounded-md bg-foreground px-2 py-1 text-xs font-medium text-background shadow-md entering:animate-in entering:fade-in-0 entering:zoom-in-95 exiting:animate-out exiting:fade-out-0",
+            "z-50 rounded-md bg-foreground px-2 py-1  font-medium text-background shadow-md entering:animate-in entering:fade-in-0 entering:zoom-in-95 exiting:animate-out exiting:fade-out-0",
             c,
           ),
         )}

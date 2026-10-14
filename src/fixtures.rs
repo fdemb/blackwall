@@ -43,7 +43,7 @@ pub async fn load(store: &Store, name: &str) -> Result<()> {
                     issue_id,
                     generation: 1,
                 }),
-                due_at,
+                due_at: Some(due_at),
                 max_attempts: None,
             },
         )

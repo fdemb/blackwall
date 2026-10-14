@@ -4,6 +4,7 @@ import { Menu as MenuIcon } from "lucide-react";
 import { ModalOverlay, Modal, Dialog as RACDialog } from "react-aria-components";
 import { Button } from "~/components/ui/button";
 import { OfflineBanner } from "~/components/app/offline-banner";
+import { RejectedBanner } from "~/components/app/rejected-banner";
 import { Sidebar } from "~/components/app/sidebar";
 import { rememberAppPath } from "~/lib/settings-nav";
 import { useI18n } from "~/lib/i18n";
@@ -19,7 +20,7 @@ export default function AppShell() {
   const [drawer, setDrawer] = useState(false);
 
   // Settings sends you back to the page you came from.
-  useEffect(() => rememberAppPath(ws.id, pathname + search), [ws.id, pathname, search]);
+  useEffect(() => rememberAppPath(ws.slug, pathname + search), [ws.slug, pathname, search]);
 
   return (
     <div className="flex h-dvh overflow-hidden">
@@ -60,9 +61,10 @@ export default function AppShell() {
           >
             <MenuIcon />
           </Button>
-          <span className="ml-1 truncate text-sm font-semibold">{ws.name}</span>
+          <span className="ml-1 truncate  font-semibold">{ws.name}</span>
         </div>
         <OfflineBanner />
+        <RejectedBanner />
         <Outlet context={ctx} />
       </main>
     </div>

@@ -7,6 +7,7 @@ import { EmptyState, PageCrumb } from "~/components/app/page";
 import { useQueueState, Workbench } from "~/components/app/workbench";
 import { useI18n } from "~/lib/i18n";
 import { useWorkspace } from "~/lib/workspace";
+import { whereIs } from "~/lib/filters";
 import type { IssueFilter } from "~/lib/types";
 
 type PersonTab = "assigned" | "created";
@@ -22,14 +23,13 @@ export default function Person() {
   if (!m) return <Navigate to={`/${wsId}/people`} replace />;
   const tab: PersonTab = params.get("tab") === "created" ? "created" : "assigned";
   const role = ws.members.find((x) => x.user_id === m.id)?.role;
-  const base: IssueFilter =
-    tab === "created"
-      ? { created_by: m.id }
-      : // "Unassigned" from the other tab would otherwise empty this one.
-        { assignee: m.id, unassigned: undefined };
+  // The scope clause replaces any assignee clause carried over from the other tab.
+  const base: IssueFilter = {
+    where: [tab === "created" ? whereIs("created_by", m.id) : whereIs("assignee", m.id)],
+  };
   const heading = (
-    <div className="mr-2 flex min-w-0 items-center gap-2 text-[13px]">
-      <PageCrumb to={`/${ws.id}/people`}>{t("nav.people")}</PageCrumb>
+    <div className="mr-2 flex min-w-0 items-center gap-2 ">
+      <PageCrumb to={`/${ws.slug}/people`}>{t("nav.people")}</PageCrumb>
       <span aria-hidden="true" className="text-muted-foreground/50">
         /
       </span>

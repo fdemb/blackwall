@@ -10,15 +10,19 @@ import { EmptyState } from "~/components/app/page";
 import { SettingsBlock, SettingsPage, SettingsSection } from "~/components/app/settings";
 import { MultiMemberPicker } from "~/components/app/pickers";
 import { StageIcon } from "~/components/app/icons";
+import { TeamAppearancePicker, TeamIcon } from "~/components/app/team-icon";
 import { STAGE_KINDS } from "~/lib/format";
 import { useI18n } from "~/lib/i18n";
 import { usePending } from "~/lib/use-pending";
+import { useIssueCount } from "~/lib/stats";
 import { useWorkspace } from "~/lib/workspace";
+import { freeTeamKey, isTeamKey, teamKey, teamKeyInput } from "~/lib/identifiers";
 import type { Id, Stage, StageKind, Team } from "~/lib/types";
 
 export default function Teams() {
   const { t } = useI18n();
-  const { ws, canAdmin, canWrite, create, report } = useWorkspace();
+  const { ws, canAdmin, canWrite, create } = useWorkspace();
+  const issueCount = useIssueCount();
   const [creating, setCreating] = useState(false);
   return (
     <SettingsPage
@@ -33,12 +37,12 @@ export default function Teams() {
         )
       }
     >
-      {ws.teams.length > 0 && report.issue_count === 0 && canWrite && (
+      {ws.teams.length > 0 && issueCount === 0 && canWrite && (
         <SettingsBlock>
           <div className="flex flex-wrap items-center gap-3 rounded-lg bg-accent/50 px-4 py-3">
             <div className="min-w-0 flex-1">
-              <h2 className="text-[13px] font-semibold">{t("setup.issueTitle")}</h2>
-              <p className="text-xs text-muted-foreground">{t("setup.issueSub")}</p>
+              <h2 className=" font-semibold">{t("setup.issueTitle")}</h2>
+              <p className=" text-muted-foreground">{t("setup.issueSub")}</p>
             </div>
             <Button
               variant="primary"
@@ -78,18 +82,32 @@ export default function Teams() {
 
 function CreateTeam({ close }: { close: () => void }) {
   const { t } = useI18n();
-  const { run, me } = useWorkspace();
+  const { run, me, ws } = useWorkspace();
   const [name, setName] = useState("");
+  // The key follows the name until edited by hand.
+  const [key, setKey] = useState<string | null>(null);
   const [members, setMembers] = useState<Id[]>([me]);
   const { pending, error, guard } = usePending();
   useDialogDirty(name !== "");
+  const taken = new Set(ws.teams.map((team) => team.key));
+  const shownKey = key ?? freeTeamKey(teamKey(name), taken);
+  const keyError = !shownKey
+    ? ""
+    : !isTeamKey(shownKey)
+      ? t("team.keyInvalid")
+      : taken.has(shownKey)
+        ? t("team.keyTaken")
+        : "";
   return (
     <Form
       className="flex flex-col gap-4"
       onSubmit={(e) => {
         e.preventDefault();
         void guard(async () => {
-          await run({ type: "create_team", name: name.trim(), members }, { quiet: true });
+          await run(
+            { type: "create_team", name: name.trim(), key: shownKey, members },
+            { quiet: true },
+          );
           close();
         });
       }}
@@ -102,10 +120,18 @@ function CreateTeam({ close }: { close: () => void }) {
         isRequired
         placeholder={t("team.namePlaceholder")}
       />
+      <TextField
+        label={t("team.key")}
+        description={shownKey ? t("team.keyHint", { example: `${shownKey}-1` }) : undefined}
+        error={keyError}
+        value={shownKey}
+        onChange={(value) => setKey(teamKeyInput(value))}
+        autoComplete="off"
+        spellCheck="false"
+        isRequired
+      />
       <div>
-        <span className="mb-1 block text-xs font-medium text-muted-foreground">
-          {t("nav.people")}
-        </span>
+        <span className="mb-1 block  font-medium text-muted-foreground">{t("nav.people")}</span>
         <MultiMemberPicker value={members} onChange={setMembers} />
       </div>
       <FormError>{error}</FormError>
@@ -113,7 +139,11 @@ function CreateTeam({ close }: { close: () => void }) {
         <Button variant="ghost" onPress={close}>
           {t("action.cancel")}
         </Button>
-        <Button type="submit" variant="primary" isDisabled={!name.trim() || pending}>
+        <Button
+          type="submit"
+          variant="primary"
+          isDisabled={!name.trim() || !shownKey || Boolean(keyError) || pending}
+        >
           {pending ? t("action.saving") : t("action.save")}
         </Button>
       </div>
@@ -149,7 +179,22 @@ function TeamSection({ team }: { team: Team }) {
     });
   return (
     <SettingsSection
-      title={team.name}
+      title={
+        <span className="flex items-center gap-2">
+          {canAdmin ? (
+            <TeamAppearancePicker
+              team={team}
+              onChange={(appearance) =>
+                run({ type: "set_team_appearance", id: team.id, ...appearance }).catch(() => {})
+              }
+            />
+          ) : (
+            <TeamIcon team={team} className="size-6" />
+          )}
+          <span className="truncate">{team.name}</span>
+          <span className="font-normal tabular-nums text-muted-foreground">{team.key}</span>
+        </span>
+      }
       actions={
         canAdmin && (
           <div className="w-56">
@@ -165,7 +210,7 @@ function TeamSection({ team }: { team: Team }) {
     >
       <div className="px-4 py-4 sm:px-5 sm:py-5">
         <div className="mb-2 flex items-center">
-          <h3 className="text-xs font-medium text-muted-foreground">{t("teams.workflow")}</h3>
+          <h3 className=" font-medium text-muted-foreground">{t("teams.workflow")}</h3>
           {canAdmin && (
             <Button variant="ghost" size="sm" className="ml-auto" onPress={() => setAdding(true)}>
               <Plus />
@@ -303,7 +348,7 @@ function StageRow({
       )}
       <span
         role="status"
-        className={`w-16 text-xs ${status === "failed" ? "text-destructive" : "text-muted-foreground"}`}
+        className={`w-16  ${status === "failed" ? "text-destructive" : "text-muted-foreground"}`}
       >
         {status === "saving"
           ? t("action.saving")
@@ -348,8 +393,8 @@ function TeamArchive({ team }: { team: Team }) {
   };
   return (
     <div className="mt-4 border-t border-border pt-3">
-      <h3 className="text-xs font-medium text-muted-foreground">{t("team.archive")}</h3>
-      <p className="mt-0.5 text-xs text-muted-foreground">{t("team.archiveSub")}</p>
+      <h3 className=" font-medium text-muted-foreground">{t("team.archive")}</h3>
+      <p className="mt-0.5  text-muted-foreground">{t("team.archiveSub")}</p>
       <div className="mt-2 flex flex-wrap items-center gap-3">
         <Checkbox
           isSelected={never}
@@ -362,7 +407,7 @@ function TeamArchive({ team }: { team: Team }) {
           {t("team.archiveNever")}
         </Checkbox>
         {!never && (
-          <label className="flex items-center gap-2 text-[13px]">
+          <label className="flex items-center gap-2 ">
             <Input
               aria-label={t("team.archiveDays")}
               type="number"
@@ -380,7 +425,7 @@ function TeamArchive({ team }: { team: Team }) {
         )}
         <span
           role="status"
-          className={`text-xs ${status === "failed" ? "text-destructive" : "text-muted-foreground"}`}
+          className={` ${status === "failed" ? "text-destructive" : "text-muted-foreground"}`}
         >
           {status === "saving"
             ? t("action.saving")

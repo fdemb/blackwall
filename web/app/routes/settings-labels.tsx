@@ -5,24 +5,26 @@ import { Button } from "~/components/ui/button";
 import { Dialog, useDialogDirty } from "~/components/ui/dialog";
 import { FormError, TextField } from "~/components/ui/field";
 import { SettingsList, SettingsPage, SettingsSection } from "~/components/app/settings";
-import { LabelDot } from "~/components/app/pickers";
+import { LABEL_COLORS, LabelDot } from "~/components/app/pickers";
 import { useI18n, type Key } from "~/lib/i18n";
 import { usePending } from "~/lib/use-pending";
+import { useLabelCounts } from "~/lib/stats";
 import { useWorkspace } from "~/lib/workspace";
 import type { Label } from "~/lib/types";
 
-const COLORS: [string, Key][] = [
-  ["#7c3aed", "color.violet"],
-  ["#a78bfa", "color.lavender"],
-  ["#ec4899", "color.pink"],
-  ["#ef4444", "color.red"],
-  ["#f97316", "color.orange"],
-  ["#eab308", "color.yellow"],
-  ["#22c55e", "color.green"],
-  ["#14b8a6", "color.teal"],
-  ["#0ea5e9", "color.blue"],
-  ["#64748b", "color.slate"],
+const COLOR_NAMES: Key[] = [
+  "color.violet",
+  "color.lavender",
+  "color.pink",
+  "color.red",
+  "color.orange",
+  "color.yellow",
+  "color.green",
+  "color.teal",
+  "color.blue",
+  "color.slate",
 ];
+const COLORS: [string, Key][] = LABEL_COLORS.map((c, i) => [c, COLOR_NAMES[i]]);
 
 /** A radio group, so arrow keys move between colors and a screen reader hears each color's name. */
 function ColorPicker({ value, onChange }: { value: string; onChange: (c: string) => void }) {
@@ -58,7 +60,8 @@ function ColorPicker({ value, onChange }: { value: string; onChange: (c: string)
 
 export default function Labels() {
   const { t } = useI18n();
-  const { ws, run, canWrite, report } = useWorkspace();
+  const { ws, run, canWrite } = useWorkspace();
+  const labelCounts = useLabelCounts();
   const [name, setName] = useState("");
   const [color, setColor] = useState(COLORS[0][0]);
   const [editing, setEditing] = useState<Label | null>(null);
@@ -97,20 +100,18 @@ export default function Labels() {
       )}
       <SettingsSection title={canWrite ? t("settings.labels") : undefined}>
         {ws.labels.length === 0 ? (
-          <p className="flex items-center gap-2 px-4 py-4 text-[13px] text-muted-foreground sm:px-5">
+          <p className="flex items-center gap-2 px-4 py-4  text-muted-foreground sm:px-5">
             <Tag className="size-4" />
             {t("labels.empty")}
           </p>
         ) : (
           <SettingsList>
             {ws.labels.map((l) => (
-              <li key={l.id} className="flex min-h-11 items-center gap-2.5 py-1.5 text-[13px]">
+              <li key={l.id} className="flex min-h-11 items-center gap-2.5 py-1.5 ">
                 <LabelDot color={l.color} className="size-2.5" />
                 <span className="min-w-0 flex-1 truncate">{l.name}</span>
-                <span className="text-xs tabular-nums text-muted-foreground">
-                  {t("labels.used", {
-                    n: report.label_counts[l.id] ?? 0,
-                  })}
+                <span className=" tabular-nums text-muted-foreground">
+                  {t("count.issues", { count: labelCounts[l.id] ?? 0 })}
                 </span>
                 {canWrite && (
                   <Button

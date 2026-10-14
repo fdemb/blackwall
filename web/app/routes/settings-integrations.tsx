@@ -17,7 +17,7 @@ import { TrackerSettings } from "~/components/app/trackers/tracker-settings";
 
 export default function Integrations() {
   const { t } = useI18n();
-  const { ws, run, canAdmin } = useWorkspace();
+  const { ws, run, canAdmin, offline } = useWorkspace();
   const toast = useToast();
   const [open, setOpen] = useState(false);
   const [removing, setRemoving] = useState<Integration | null>(null);
@@ -41,25 +41,26 @@ export default function Integrations() {
     ? endpoint(ws.integrations[0])
     : `${origin}/api/workspaces/${ws.id}/integrations/<id>/webhook`;
   return (
-    <SettingsPage
-      title={t("settings.integrations")}
-      description={t("integrations.sub")}
-      actions={
-        <Button variant="primary" size="sm" onPress={() => setOpen(true)}>
-          <Plus />
-          {t("integrations.add")}
-        </Button>
-      }
-    >
+    <SettingsPage title={t("settings.integrations")} description={t("integrations.sub")}>
       <TrackerSettings />
-      <SettingsSection title={t("integrations.webhooks")}>
+      <SettingsSection
+        title={t("integrations.webhooks")}
+        actions={
+          ws.integrations.length > 0 && (
+            <Button size="sm" isDisabled={offline} onPress={() => setOpen(true)}>
+              <Plus />
+              {t("integrations.add")}
+            </Button>
+          )
+        }
+      >
         {ws.integrations.length === 0 ? (
           <EmptyState
             icon={<Plug />}
             title={t("integrations.emptyTitle")}
             description={t("integrations.emptySub")}
             action={
-              <Button variant="primary" onPress={() => setOpen(true)}>
+              <Button variant="primary" isDisabled={offline} onPress={() => setOpen(true)}>
                 {t("integrations.add")}
               </Button>
             }
@@ -67,10 +68,10 @@ export default function Integrations() {
         ) : (
           <SettingsList>
             {ws.integrations.map((i) => (
-              <li key={i.id} className="flex flex-wrap items-center gap-3 py-3 text-[13px]">
+              <li key={i.id} className="flex flex-wrap items-center gap-3 py-3 ">
                 <div className="min-w-0 flex-1 basis-60">
                   <p className="font-medium">{i.name}</p>
-                  <p className="truncate text-xs text-muted-foreground">{i.webhook_url}</p>
+                  <p className="truncate  text-muted-foreground">{i.webhook_url}</p>
                   <div className="mt-1 flex items-center gap-1">
                     <code
                       className="min-w-0 flex-1 truncate font-mono text-[11px] text-muted-foreground"
@@ -111,11 +112,11 @@ export default function Integrations() {
       </SettingsSection>
       <SettingsSection title={t("integrations.setup")}>
         <div className="px-4 py-4 sm:px-5 sm:py-5">
-          <div className="max-w-prose space-y-2 text-[13px] text-muted-foreground">
+          <div className="max-w-prose space-y-2  text-muted-foreground">
             <p>{t("integrations.setupOut")}</p>
             <p>{t("integrations.setupIn")}</p>
           </div>
-          <p className="mt-4 text-xs font-medium">{t("integrations.example")}</p>
+          <p className="mt-4  font-medium">{t("integrations.example")}</p>
           <pre className="mt-1.5 overflow-x-auto rounded-lg bg-muted p-3 font-mono text-[11px] leading-5">{`body='{"delivery_id":"<uuid>","issue_id":"<issue uuid>","url":"https://git.example/pr/7","title":"Fix login"}'
 sig=$(printf '%s' "$body" | openssl dgst -sha256 -hmac "$SECRET" | sed 's/^.* //')
 curl -X POST "${sample}" \\
@@ -141,7 +142,7 @@ curl -X POST "${sample}" \\
 
 function IntegrationForm({ close }: { close: () => void }) {
   const { t } = useI18n();
-  const { run } = useWorkspace();
+  const { run, offline } = useWorkspace();
   const { pending, error, guard } = usePending();
   const [name, setName] = useState("");
   const [url, setUrl] = useState("");
@@ -202,7 +203,7 @@ function IntegrationForm({ close }: { close: () => void }) {
         <Button
           type="submit"
           variant="primary"
-          isDisabled={!name.trim() || !url.trim() || secret.length < 16}
+          isDisabled={!name.trim() || !url.trim() || secret.length < 16 || offline}
           isPending={pending}
         >
           {pending && <Loader2 aria-hidden className="animate-spin" />}

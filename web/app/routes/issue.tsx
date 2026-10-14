@@ -20,21 +20,22 @@ import { ConfirmDialog } from "~/components/app/confirm";
 import { SaveStatus } from "~/components/app/save-status";
 import { Menu, MenuItem, MenuPopover, MenuTrigger } from "~/components/ui/menu";
 import { useToast } from "~/components/ui/toast";
+import { Tip } from "~/components/ui/tooltip";
 import { IssuePicker } from "~/components/app/issue-picker";
 import { AssigneePicker, PriorityPicker, StagePicker } from "~/components/app/pickers";
 import { EmptyState, Page, TeamCrumb } from "~/components/app/page";
-import { issueKey } from "~/lib/format";
 import { IssueKey } from "~/components/app/issue-key";
 import { isDoneOnly } from "~/lib/filters";
 import { useDocumentTitle } from "~/lib/title";
+import { teamPath } from "~/lib/last-view";
 import { useI18n } from "~/lib/i18n";
-import { useIssueDetail, type IssueDetail } from "~/lib/queries";
+import { useIssueDetail, useIssueRef, type IssueDetail } from "~/lib/queries";
 import { QueryStatus } from "~/components/app/query-status";
 import { useWorkspace } from "~/lib/workspace";
 import { cn } from "~/lib/utils";
 import { TrackerNotice } from "~/components/app/issue-parts";
-import type { Id, Issue, IssuePatch } from "~/lib/types";
-import { Properties } from "~/components/app/issue-properties";
+import type { Id, Issue } from "~/lib/types";
+import { CoreProperties, Properties, useIssuePatch } from "~/components/app/issue-properties";
 import {
   TitleField,
   Description,
@@ -47,17 +48,25 @@ import {
 import { Timeline } from "~/components/app/issue-timeline";
 import { revealOnHover } from "~/components/app/issue-section";
 
+/**
+ * The URL names the issue by its id until the server confirms its number, then by its key. Once
+ * the issue is confirmed, an id URL, or a key typed in another case, is replaced with the key.
+ */
 export default function IssuePage() {
-  const { issueId, ws: wsId } = useParams();
+  const { issueKey: issueRef = "" } = useParams();
   const { ws } = useWorkspace();
   const location = useLocation();
-  const inInbox = location.pathname.startsWith(`/${ws.id}/inbox/`);
-  const detail = useIssueDetail(issueId!);
+  const inInbox = location.pathname.startsWith(`/${ws.slug}/inbox/`);
+  const detail = useIssueDetail(useIssueRef(issueRef) ?? "");
   const issue = detail.issue;
+  if (issue && issue.ref !== issueRef)
+    return (
+      <Navigate to={location.pathname.replace(/[^/]+$/, issue.ref) + location.search} replace />
+    );
   if (detail.missing)
     return (
       <Navigate
-        to={inInbox ? `/${ws.id}/inbox${location.search}` : `/${ws.id}/my-issues`}
+        to={inInbox ? `/${ws.slug}/inbox${location.search}` : `/${ws.slug}/my-issues`}
         replace
       />
     );
@@ -67,77 +76,51 @@ export default function IssuePage() {
         <QueryStatus query={{ ...detail, hasMore: false, loadMore: detail.retry }} />
       </Page>
     );
-  if (issue.deleted_at) return <DeletedIssue issue={issue} wsId={wsId!} />;
-  if (issue.archived_at) return <ArchivedBanner issue={issue} wsId={wsId!} />;
+  if (issue.deleted_at) return <RecoverableIssue issue={issue} wsSlug={ws.slug} state="deleted" />;
+  if (issue.archived_at)
+    return <RecoverableIssue issue={issue} wsSlug={ws.slug} state="archived" />;
   return <IssueView key={issue.id} issue={issue} detail={detail} />;
 }
 
-/** A link to an archived issue says which issue it was and offers the way back. */
-function ArchivedBanner({ issue, wsId }: { issue: Issue; wsId: string }) {
+/** A link to an archived or trashed issue says which issue it was and offers the way back. */
+function RecoverableIssue({
+  issue,
+  wsSlug,
+  state,
+}: {
+  issue: Issue;
+  wsSlug: string;
+  state: "archived" | "deleted";
+}) {
   const { t } = useI18n();
   const { run, canWrite } = useWorkspace();
   const toast = useToast();
-  useDocumentTitle(`${issueKey(issue.number)} ${issue.title}`);
+  useDocumentTitle(`${issue.key} ${issue.title}`);
+  const archived = state === "archived";
+  const subtitle = canWrite ? t(archived ? "issue.archivedSub" : "issue.deletedSub") : "";
+  const recover = () =>
+    run({ type: archived ? "unarchive_issue" : "restore_issue", id: issue.id })
+      .then(() => toast.show(t(archived ? "issue.unarchived" : "issue.restored")))
+      .catch(() => {});
   return (
     <Page>
       <EmptyState
-        icon={<Archive />}
-        title={`${issueKey(issue.number)} ${issue.title}`}
-        description={`${t("issue.archived")}. ${canWrite ? t("issue.archivedSub") : ""}`.trim()}
+        icon={archived ? <Archive /> : <Trash2 />}
+        title={`${issue.key} ${issue.title}`}
+        description={`${t(archived ? "issue.archived" : "issue.deleted")}. ${subtitle}`.trim()}
         action={
           <div className="flex items-center gap-3">
             {canWrite && (
-              <Button
-                variant="primary"
-                onPress={() =>
-                  run({ type: "unarchive_issue", id: issue.id })
-                    .then(() => toast.show(t("issue.unarchived")))
-                    .catch(() => {})
-                }
-              >
+              <Button variant="primary" onPress={recover}>
                 <ArchiveRestore />
-                {t("issue.unarchive")}
+                {t(archived ? "issue.unarchive" : "issue.restore")}
               </Button>
             )}
-            <Link className="text-primary hover:underline" to={`/${wsId}/archive`}>
-              {t("nav.archive")}
-            </Link>
-          </div>
-        }
-      />
-    </Page>
-  );
-}
-
-/** A link to a trashed issue still says which issue it was and offers the way back. */
-function DeletedIssue({ issue, wsId }: { issue: Issue; wsId: string }) {
-  const { t } = useI18n();
-  const { run, canWrite } = useWorkspace();
-  const toast = useToast();
-  useDocumentTitle(`${issueKey(issue.number)} ${issue.title}`);
-  return (
-    <Page>
-      <EmptyState
-        icon={<Trash2 />}
-        title={`${issueKey(issue.number)} ${issue.title}`}
-        description={`${t("issue.deleted")}. ${canWrite ? t("issue.deletedSub") : ""}`.trim()}
-        action={
-          <div className="flex items-center gap-3">
-            {canWrite && (
-              <Button
-                variant="primary"
-                onPress={() =>
-                  run({ type: "restore_issue", id: issue.id })
-                    .then(() => toast.show(t("issue.restored")))
-                    .catch(() => {})
-                }
-              >
-                <ArchiveRestore />
-                {t("issue.restore")}
-              </Button>
-            )}
-            <Link className="text-primary hover:underline" to={`/${wsId}/trash`}>
-              {t("nav.trash")}
+            <Link
+              className="text-primary hover:underline"
+              to={`/${wsSlug}/${archived ? "archive" : "trash"}`}
+            >
+              {t(archived ? "nav.archive" : "nav.trash")}
             </Link>
           </div>
         }
@@ -152,18 +135,10 @@ function IssueView({ issue, detail }: { issue: Issue; detail: IssueDetail }) {
   const location = useLocation();
   const toast = useToast();
   const { ws, me, run, team, canWrite } = useWorkspace();
-  const inInbox = location.pathname.startsWith(`/${ws.id}/inbox/`);
+  const inInbox = location.pathname.startsWith(`/${ws.slug}/inbox/`);
   const tm = team(issue.team_id);
-  useDocumentTitle(`${issueKey(issue.number)} ${issue.title}`);
-  // Resolves to whether the save landed, so editors can keep a draft that didn't.
-  const patch = (p: IssuePatch, version = issue.version) =>
-    run(
-      { type: "update_issue", id: issue.id, patch: p },
-      { expectedVersions: { [issue.id]: version } },
-    ).then(
-      () => true,
-      () => false,
-    );
+  useDocumentTitle(`${issue.key} ${issue.title}`);
+  const patch = useIssuePatch(issue);
   const following = issue.followers.includes(me);
   const subs = detail.children.filter((i) => !i.deleted_at);
   const parent = detail.parent;
@@ -176,209 +151,87 @@ function IssueView({ issue, detail }: { issue: Issue; detail: IssueDetail }) {
   // Go back to wherever the issue was opened from. A fresh tab has no history, so use the team list.
   const goBack = () =>
     inInbox
-      ? nav(`/${ws.id}/inbox${location.search}`, { preventScrollReset: true })
+      ? nav(`/${ws.slug}/inbox${location.search}`, { preventScrollReset: true })
       : location.key === "default"
-        ? nav(`/${ws.id}/team/${issue.team_id}`)
+        ? nav(teamPath(ws.slug, tm?.key ?? ""))
         : nav(-1);
-  const chip = "h-7 w-auto rounded-full border border-border px-2.5";
 
   return (
-    <Page className="@container/issue min-w-0 overflow-hidden">
-      <header className="flex h-12 shrink-0 items-center gap-2 border-b border-border px-4">
-        <Button
-          variant="ghost"
-          size="icon"
-          aria-label={t("action.back")}
-          className="-ml-1"
-          onPress={goBack}
-        >
-          <ChevronLeft />
-        </Button>
-        {tm && (
-          <>
-            <TeamCrumb team={tm} wsId={ws.id} />
-            <span aria-hidden="true" className="text-muted-foreground/50">
-              /
-            </span>
-          </>
-        )}
-        <IssueKey number={issue.number} className="text-[13px] font-medium" />
-        <div className="ml-auto flex items-center gap-1">
-          <SaveStatus />
-          <Button
-            variant="ghost"
-            size="sm"
-            onPress={() =>
-              run({ type: "follow", issue_id: issue.id, following: !following }).catch(() => {})
-            }
-          >
-            {following ? <BellOff /> : <Bell />}
-            {following ? t("issue.unfollow") : t("issue.follow")}
+    <Page className="@container/issue min-w-0 flex-row overflow-hidden">
+      <div className="flex min-w-0 flex-1 flex-col">
+        <header className="flex h-12 shrink-0 items-center gap-1.5 border-b border-border px-3">
+          <Button variant="ghost" size="icon" aria-label={t("action.back")} onPress={goBack}>
+            <ChevronLeft />
           </Button>
-          <MenuTrigger>
-            <Button variant="ghost" size="icon-lg" aria-label={t("action.more")}>
-              <MoreHorizontal />
-            </Button>
-            <MenuPopover placement="bottom end">
-              <Menu
-                onAction={(k) => {
-                  if (k === "copy")
-                    void navigator.clipboard
-                      .writeText(window.location.href)
-                      .then(() => toast.show(t("issue.linkCopied")));
-                  if (k === "delete") setConfirm(true);
-                  if (k === "archive")
-                    void run({ type: "archive_issue", id: issue.id }, { quiet: true }).then(() => {
-                      toast.show(t("bulk.archived", { n: 1 }), {
-                        label: t("action.undo"),
-                        run: () =>
-                          void run({ type: "unarchive_issue", id: issue.id }).catch(() => {}),
-                      });
-                      void goBack();
-                    });
-                }}
+          <div className="flex min-w-0 items-center gap-1.5">
+            {tm && (
+              <>
+                <TeamCrumb team={tm} wsSlug={ws.slug} />
+                <ChevronRight
+                  aria-hidden="true"
+                  className="size-3.5 shrink-0 text-muted-foreground/60"
+                />
+              </>
+            )}
+            <IssueKey value={issue.key} className="font-medium" />
+          </div>
+          <div className="ml-auto flex items-center gap-1">
+            <SaveStatus />
+            <Tip label={following ? t("issue.unfollow") : t("issue.follow")}>
+              <Button
+                variant="ghost"
+                size="icon-lg"
+                aria-label={following ? t("issue.unfollow") : t("issue.follow")}
+                aria-pressed={following}
+                className={cn(following && "text-primary")}
+                onPress={() =>
+                  run({ type: "follow", issue_id: issue.id, following: !following }).catch(() => {})
+                }
               >
-                <MenuItem id="copy">
-                  <Link2 />
-                  {t("issue.copyLink")}
-                </MenuItem>
-                {canWrite && isDoneOnly(ws, issue) && (
-                  <MenuItem id="archive">
-                    <Archive />
-                    {t("action.archive")}
-                  </MenuItem>
-                )}
-                {canWrite && (
-                  <MenuItem id="delete">
-                    <Trash2 />
-                    {t("action.delete")}
-                  </MenuItem>
-                )}
-              </Menu>
-            </MenuPopover>
-          </MenuTrigger>
-        </div>
-      </header>
+                {following ? <BellOff /> : <Bell />}
+              </Button>
+            </Tip>
+            <IssueMenu
+              issue={issue}
+              canWrite={canWrite}
+              onDelete={() => setConfirm(true)}
+              onArchived={goBack}
+            />
+          </div>
+        </header>
 
-      <div className="flex min-h-0 flex-1">
-        <div className="min-w-0 flex-1 overflow-y-auto">
-          <div className="mx-auto max-w-3xl px-6 py-8">
+        <div className="min-h-0 flex-1 overflow-y-auto">
+          <div className="mx-auto w-full max-w-[46rem] px-5 py-6 @min-[48rem]/issue:px-10 @min-[48rem]/issue:py-10">
             <h1 className="sr-only">
-              {t("issue.titleHeading", { key: issueKey(issue.number), title: issue.title })}
+              {t("issue.titleHeading", { key: issue.key, title: issue.title })}
             </h1>
             <TrackerNotice issue={issue} />
-            <div className="space-y-3">
-              {parent && (
-                <div className="group flex items-center gap-1 text-xs text-muted-foreground">
-                  <Link
-                    to={`/${ws.id}/issue/${parent.id}`}
-                    className="inline-flex min-w-0 items-center gap-1.5 hover:text-foreground"
-                  >
-                    <IssueKey number={parent.number} />
-                    <span className="truncate">{parent.title}</span>
-                  </Link>
-                  {canWrite && (
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className={cn("size-5", revealOnHover)}
-                      aria-label={t("issue.removeParent")}
-                      onPress={() => patch({ clear_parent: true })}
-                    >
-                      <X className="size-3" />
-                    </Button>
-                  )}
-                </div>
-              )}
-              <TitleField issue={issue} onSave={(title, version) => patch({ title }, version)} />
-              <div className="flex flex-wrap items-center gap-1.5">
-                <StagePicker
-                  variant="ghost"
-                  className="w-auto"
-                  triggerClassName={chip}
-                  isDisabled={!canWrite}
-                  teamId={issue.team_id}
-                  value={issue.stage_id}
-                  onChange={(id) => patch({ stage_id: id })}
-                />
-                <PriorityPicker
-                  variant="ghost"
-                  className="w-auto"
-                  triggerClassName={chip}
-                  isDisabled={!canWrite}
-                  value={issue.priority}
-                  onChange={(priority) => patch({ priority })}
-                />
-                <AssigneePicker
-                  variant="ghost"
-                  className="w-auto"
-                  triggerClassName={chip}
-                  isDisabled={!canWrite}
-                  teamId={issue.team_id}
-                  value={issue.assignee}
-                  onChange={(id) => patch(id ? { assignee: id } : { clear_assignee: true })}
-                />
-              </div>
-            </div>
-            <Disclosure className="mt-4 rounded-lg border border-border @min-[64rem]/issue:hidden">
-              {({ isExpanded }) => (
-                <>
-                  <Heading>
-                    <Button
-                      slot="trigger"
-                      variant="ghost"
-                      className="h-9 w-full justify-start px-3"
-                    >
-                      {t("issue.allProperties")}
-                      <ChevronRight
-                        className={cn(
-                          "ml-auto size-3.5 transition-transform",
-                          isExpanded && "rotate-90",
-                        )}
-                      />
-                    </Button>
-                  </Heading>
-                  <DisclosurePanel>
-                    <div className="space-y-1 border-t border-border p-2">
-                      <Properties
-                        issue={issue}
-                        hasParent={Boolean(parent)}
-                        excludeIds={subs.map((s) => s.id)}
-                      />
-                    </div>
-                  </DisclosurePanel>
-                </>
-              )}
-            </Disclosure>
+            {parent && (
+              <ParentLink
+                parent={parent}
+                canWrite={canWrite}
+                onRemove={() => patch({ clear_parent: true })}
+              />
+            )}
+            <TitleField issue={issue} onSave={(title, version) => patch({ title }, version)} />
+            <TriageChips issue={issue} canWrite={canWrite} />
+            <CollapsedProperties issue={issue} hasParent={Boolean(parent)} subs={subs} />
 
-            <div className="mt-6 space-y-8">
+            <div className="mt-4 space-y-8">
               <div className="space-y-2">
                 <Description
                   issue={issue}
                   onSave={(description, version) => patch({ description }, version)}
                 />
                 {canWrite && (
-                  <div className="flex flex-wrap gap-1">
-                    {!subs.length && !addingSubtask && (
-                      <Button variant="ghost" size="sm" onPress={() => setAddingSubtask(true)}>
-                        <Plus />
-                        {t("issue.addSubtask")}
-                      </Button>
-                    )}
-                    {!blockers.length && !blocking.length && (
-                      <IssuePicker
-                        exclude={[issue.id, ...issue.dependencies]}
-                        onPick={addBlocker}
-                        trigger={
-                          <Button variant="ghost" size="sm">
-                            <Lock />
-                            {t("issue.addBlocker")}
-                          </Button>
-                        }
-                      />
-                    )}
-                    {!issue.attachments.length && <AttachButton uploader={uploader} />}
-                  </div>
+                  <QuickActions
+                    issue={issue}
+                    canAddSubtask={!subs.length && !addingSubtask}
+                    canAddBlocker={!blockers.length && !blocking.length}
+                    onAddSubtask={() => setAddingSubtask(true)}
+                    onAddBlocker={addBlocker}
+                    uploader={uploader}
+                  />
                 )}
               </div>
               {(subs.length > 0 || addingSubtask) && (
@@ -402,18 +255,24 @@ function IssueView({ issue, detail }: { issue: Issue; detail: IssueDetail }) {
             </div>
           </div>
         </div>
+      </div>
 
-        <aside
-          aria-label={t("issue.properties")}
-          className="hidden w-72 shrink-0 space-y-1 overflow-y-auto border-l border-border p-4 @min-[64rem]/issue:block"
-        >
+      <aside
+        aria-label={t("issue.properties")}
+        className="hidden w-[19.5rem] shrink-0 flex-col border-l border-border @min-[64rem]/issue:flex"
+      >
+        <div className="flex h-12 shrink-0 items-center border-b border-border px-5 text-sm font-medium text-muted-foreground">
+          {t("issue.properties")}
+        </div>
+        <div className="min-h-0 flex-1 overflow-y-auto px-3 py-4">
+          <CoreProperties issue={issue} />
           <Properties
             issue={issue}
             hasParent={Boolean(parent)}
             excludeIds={subs.map((s) => s.id)}
           />
-        </aside>
-      </div>
+        </div>
+      </aside>
 
       <ConfirmDialog
         title={t("issue.deleteTitle")}
@@ -430,5 +289,212 @@ function IssueView({ issue, detail }: { issue: Issue; detail: IssueDetail }) {
         }}
       />
     </Page>
+  );
+}
+
+/** Status, priority and assignee as chips under the title, for widths without the side panel. */
+function TriageChips({ issue, canWrite }: { issue: Issue; canWrite: boolean }) {
+  const patch = useIssuePatch(issue);
+  const chip = "h-7 w-auto rounded-md border border-border bg-card px-2 shadow-xs";
+  return (
+    <div className="mt-3 flex flex-wrap items-center gap-1.5 @min-[64rem]/issue:hidden">
+      <StagePicker
+        variant="ghost"
+        className="w-auto"
+        triggerClassName={chip}
+        isDisabled={!canWrite}
+        teamId={issue.team_id}
+        value={issue.stage_id}
+        onChange={(id) => patch({ stage_id: id })}
+      />
+      <PriorityPicker
+        variant="ghost"
+        className="w-auto"
+        triggerClassName={chip}
+        isDisabled={!canWrite}
+        value={issue.priority}
+        onChange={(priority) => patch({ priority })}
+      />
+      <AssigneePicker
+        variant="ghost"
+        className="w-auto"
+        triggerClassName={chip}
+        isDisabled={!canWrite}
+        teamId={issue.team_id}
+        value={issue.assignee}
+        onChange={(id) => patch(id ? { assignee: id } : { clear_assignee: true })}
+      />
+    </div>
+  );
+}
+
+function IssueMenu({
+  issue,
+  canWrite,
+  onDelete,
+  onArchived,
+}: {
+  issue: Issue;
+  canWrite: boolean;
+  onDelete: () => void;
+  onArchived: () => unknown;
+}) {
+  const { t } = useI18n();
+  const toast = useToast();
+  const { ws, run } = useWorkspace();
+  const archive = () =>
+    run({ type: "archive_issue", id: issue.id }, { quiet: true }).then(() => {
+      toast.show(t("bulk.archived", { count: 1 }), {
+        label: t("action.undo"),
+        run: () => void run({ type: "unarchive_issue", id: issue.id }).catch(() => {}),
+      });
+      void onArchived();
+    });
+  return (
+    <MenuTrigger>
+      <Button variant="ghost" size="icon-lg" aria-label={t("action.more")}>
+        <MoreHorizontal />
+      </Button>
+      <MenuPopover placement="bottom end">
+        <Menu
+          onAction={(k) => {
+            if (k === "copy")
+              void navigator.clipboard
+                .writeText(window.location.href)
+                .then(() => toast.show(t("issue.linkCopied")));
+            if (k === "delete") onDelete();
+            if (k === "archive") void archive();
+          }}
+        >
+          <MenuItem id="copy">
+            <Link2 />
+            {t("issue.copyLink")}
+          </MenuItem>
+          {canWrite && isDoneOnly(ws, issue) && (
+            <MenuItem id="archive">
+              <Archive />
+              {t("action.archive")}
+            </MenuItem>
+          )}
+          {canWrite && (
+            <MenuItem id="delete">
+              <Trash2 />
+              {t("action.delete")}
+            </MenuItem>
+          )}
+        </Menu>
+      </MenuPopover>
+    </MenuTrigger>
+  );
+}
+
+function ParentLink({
+  parent,
+  canWrite,
+  onRemove,
+}: {
+  parent: Issue;
+  canWrite: boolean;
+  onRemove: () => void;
+}) {
+  const { t } = useI18n();
+  const { ws } = useWorkspace();
+  return (
+    <div className="group mb-2 flex items-center gap-1 text-sm text-muted-foreground">
+      <Link
+        to={`/${ws.slug}/issue/${parent.ref}`}
+        className="inline-flex min-w-0 items-center gap-1.5 rounded-md hover:text-foreground"
+      >
+        <IssueKey value={parent.key} />
+        <span className="truncate">{parent.title}</span>
+      </Link>
+      {canWrite && (
+        <Button
+          variant="ghost"
+          size="icon"
+          className={cn("size-5", revealOnHover)}
+          aria-label={t("issue.removeParent")}
+          onPress={onRemove}
+        >
+          <X className="size-3" />
+        </Button>
+      )}
+    </div>
+  );
+}
+
+/** The property list behind a disclosure, for widths without the side panel. */
+function CollapsedProperties({
+  issue,
+  hasParent,
+  subs,
+}: {
+  issue: Issue;
+  hasParent: boolean;
+  subs: Issue[];
+}) {
+  const { t } = useI18n();
+  return (
+    <Disclosure className="mt-3 rounded-lg border border-border @min-[64rem]/issue:hidden">
+      {({ isExpanded }) => (
+        <>
+          <Heading>
+            <Button slot="trigger" variant="ghost" className="h-9 w-full justify-start px-3">
+              {t("issue.allProperties")}
+              <ChevronRight
+                className={cn("ml-auto size-3.5 transition-transform", isExpanded && "rotate-90")}
+              />
+            </Button>
+          </Heading>
+          <DisclosurePanel>
+            <div className="border-t border-border px-2 py-3">
+              <Properties issue={issue} hasParent={hasParent} excludeIds={subs.map((s) => s.id)} />
+            </div>
+          </DisclosurePanel>
+        </>
+      )}
+    </Disclosure>
+  );
+}
+
+/** Shortcuts for sections that are empty, so they don't take space until used. */
+function QuickActions({
+  issue,
+  canAddSubtask,
+  canAddBlocker,
+  onAddSubtask,
+  onAddBlocker,
+  uploader,
+}: {
+  issue: Issue;
+  canAddSubtask: boolean;
+  canAddBlocker: boolean;
+  onAddSubtask: () => void;
+  onAddBlocker: (id: Id) => unknown;
+  uploader: ReturnType<typeof useUploader>;
+}) {
+  const { t } = useI18n();
+  return (
+    <div className="flex flex-wrap gap-1">
+      {canAddSubtask && (
+        <Button variant="ghost" size="sm" onPress={onAddSubtask}>
+          <Plus />
+          {t("issue.addSubtask")}
+        </Button>
+      )}
+      {canAddBlocker && (
+        <IssuePicker
+          exclude={[issue.id, ...issue.dependencies]}
+          onPick={onAddBlocker}
+          trigger={
+            <Button variant="ghost" size="sm">
+              <Lock />
+              {t("issue.addBlocker")}
+            </Button>
+          }
+        />
+      )}
+      {!issue.attachments.length && <AttachButton uploader={uploader} />}
+    </div>
   );
 }

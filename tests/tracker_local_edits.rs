@@ -45,8 +45,11 @@ impl Fixture {
                 workspace,
                 owner.profile.id,
                 Command::CreateTeam {
+                    id: None,
                     name: "Team".into(),
+                    key: "TEAM".into(),
                     members: vec![],
+                    default_stage_ids: None,
                 },
                 BTreeMap::new(),
                 None,
@@ -185,6 +188,7 @@ async fn local_edits_moves_relations_links_and_attachment_removal_succeed_on_syn
             })),
         },
         Command::AddComment {
+            id: None,
             issue_id: f.imported,
             body: "Local discussion".into(),
             mentions: vec![],
@@ -195,6 +199,7 @@ async fn local_edits_moves_relations_links_and_attachment_removal_succeed_on_syn
             following: true,
         },
         Command::LogTime {
+            id: None,
             issue_id: f.imported,
             minutes: 30,
             note: "Local work".into(),
@@ -288,7 +293,7 @@ async fn admin_stage_migration_moves_imported_and_local_issues_atomically() {
                 None
             )
             .await,
-        Err(Error::Conflict(_))
+        Err(Error::Stale(_))
     ));
     assert_eq!(f.versions().await, before);
     let projects: serde_json::Value =

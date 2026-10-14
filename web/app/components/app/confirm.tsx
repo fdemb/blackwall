@@ -58,7 +58,7 @@ function ConfirmBody({
   return (
     <div className="space-y-3">
       {error && (
-        <p role="alert" className="text-xs text-destructive">
+        <p role="alert" className=" text-destructive">
           {error}
         </p>
       )}

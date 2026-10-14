@@ -42,8 +42,11 @@ async fn setup() -> (
             workspace,
             owner.profile.id,
             Command::CreateTeam {
+                id: None,
                 name: "Team".into(),
+                key: "TEA".into(),
                 members: vec![],
+                default_stage_ids: None,
             },
             BTreeMap::new(),
             None,
@@ -148,10 +151,11 @@ async fn search_union_preserves_fulltext_substring_numbers_and_literal_character
 }
 
 #[tokio::test]
-async fn summary_is_opt_in_and_full_detail_and_changefeed_keep_complete_records() {
+async fn summary_is_opt_in_and_full_detail_and_pull_keeps_complete_records() {
     let (db, store, owner, workspace, team) = setup().await;
+    let client = Uuid::new_v4();
     let cursor = store
-        .changes(workspace, owner.profile.id, None)
+        .sync_pull(workspace, owner.profile.id, client, None)
         .await
         .unwrap()
         .cursor;
@@ -205,7 +209,7 @@ async fn summary_is_opt_in_and_full_detail_and_changefeed_keep_complete_records(
             .is_empty()
     );
     let feed = store
-        .changes(workspace, owner.profile.id, Some(&cursor))
+        .sync_pull(workspace, owner.profile.id, client, Some(&cursor))
         .await
         .unwrap();
     let changed = feed
@@ -226,7 +230,7 @@ async fn summary_is_opt_in_and_full_detail_and_changefeed_keep_complete_records(
         .oneshot(
             Request::builder()
                 .uri(format!(
-                    "/api/workspaces/{workspace}/issues?projection=summary&sort=updated&limit=1"
+                    "/internal-api/workspaces/{workspace}/issues?projection=summary&sort=updated&limit=1"
                 ))
                 .header("Authorization", format!("Bearer {}", owner.token))
                 .body(Body::empty())
@@ -272,12 +276,7 @@ async fn search_and_updated_indexes_support_the_query_predicates() {
     .fetch_one(&store.pool)
     .await
     .unwrap();
-    assert!(
-        number
-            .to_string()
-            .contains("issues_workspace_id_number_key"),
-        "{number}"
-    );
+    assert!(number.to_string().contains("issues_number"), "{number}");
     let updated:Value=sqlx::query_scalar("EXPLAIN (FORMAT JSON) SELECT id FROM issues WHERE workspace_id=$1 AND deleted_at IS NULL AND archived_at IS NULL AND updated_at<=now()-interval '1 hour' AND (updated_at<now()-interval '1 hour' OR (updated_at=now()-interval '1 hour' AND id>$2)) ORDER BY updated_at DESC,id LIMIT 50")
         .bind(workspace).bind(Uuid::nil()).fetch_one(&store.pool).await.unwrap();
     assert!(

@@ -2,8 +2,8 @@ use crate::{
     error::{Error, Result},
     store::{Claim, LEASE_SECONDS, Outbox, Store},
 };
-use sqlx::{Postgres, Transaction};
-use std::{collections::HashMap, time::Duration};
+use sqlx::{Postgres, Transaction, postgres::PgListener};
+use std::{collections::HashMap, ops::ControlFlow, time::Duration};
 use tokio::{sync::watch, task::JoinSet};
 
 mod delivery;
@@ -18,21 +18,13 @@ const EMAIL_TIMEOUT: Duration = Duration::from_secs(45);
 const WEBHOOK_TIMEOUT: Duration = Duration::from_secs(45);
 const DATABASE_TIMEOUT: Duration = Duration::from_secs(45);
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum DeliveryError {
+    #[error("{0}")]
     Permanent(&'static str),
+    #[error("{0}")]
     Transient(&'static str),
 }
-
-impl std::fmt::Display for DeliveryError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Permanent(message) | Self::Transient(message) => f.write_str(message),
-        }
-    }
-}
-
-impl std::error::Error for DeliveryError {}
 
 #[derive(Clone, Debug)]
 pub struct WorkerConfig {
@@ -153,6 +145,9 @@ pub async fn run(store: Store, mailer: Mailer, shutdown: watch::Receiver<bool>) 
     run_with_config(store, mailer, shutdown, WorkerConfig::from_env()?).await
 }
 
+const QUEUES: [&str; 4] = ["email", "webhook", "database", "tracker"];
+const MAINTENANCE_INTERVAL: Duration = Duration::from_secs(300);
+
 /// Delivery is at least once. Aborted I/O may already have reached the destination.
 pub async fn run_with_config(
     store: Store,
@@ -167,122 +162,12 @@ pub async fn run_with_config(
         shutdown.clone(),
         config.poll_interval,
     ));
-
-    let mut tasks = JoinSet::new();
-    let mut active = [0_usize; 4];
-    let mut task_queues = HashMap::new();
-    let queues = ["email", "webhook", "database", "tracker"];
-
-    let limits = [
-        if mailer.enabled() {
-            config.email_concurrency
-        } else {
-            0
-        },
-        config.webhook_concurrency,
-        config.database_concurrency,
-        config.tracker_concurrency,
-    ];
-
     if !mailer.enabled() {
         tracing::info!("email queue paused until SMTP or development spool is configured");
     }
 
-    let mut maintenance_at = tokio::time::Instant::now();
-    let mut schedule_at = tokio::time::Instant::now();
-
-    loop {
-        if *shutdown.borrow() {
-            break;
-        }
-
-        if schedule_at <= tokio::time::Instant::now() {
-            schedule_at = tokio::time::Instant::now() + config.poll_interval;
-
-            if let Err(error) = crate::tracker::schedule(&store).await {
-                tracing::warn!(
-                    error = %crate::tracker::failure_message(&error),
-                    "Tracker scheduling failed"
-                );
-            }
-        }
-        for index in 0..queues.len() {
-            if *shutdown.borrow() {
-                break;
-            }
-
-            match store
-                .outbox
-                .claim(queues[index], limits[index].saturating_sub(active[index]))
-                .await
-            {
-                Ok(claims) => {
-                    for claim in claims {
-                        active[index] += 1;
-
-                        let store = store.clone();
-                        let mailer = mailer.clone();
-                        let handle =
-                            tasks.spawn(async move { execute(&store, &mailer, &claim).await });
-
-                        task_queues.insert(handle.id(), index);
-                    }
-                }
-                Err(error) => {
-                    tracing::error!(queue = queues[index], error = %error, "queue claim failed")
-                }
-            }
-        }
-
-        if *shutdown.borrow() {
-            break;
-        }
-
-        if maintenance_at <= tokio::time::Instant::now() {
-            if let Err(error) =
-                maintenance(&store, config.retention_days, config.failed_retention_days).await
-            {
-                tracing::warn!(error = %error, "queue maintenance failed");
-            }
-
-            maintenance_at = tokio::time::Instant::now() + Duration::from_secs(300);
-        }
-
-        let deadline = schedule_at
-            .min(maintenance_at)
-            .min(tokio::time::Instant::now() + config.poll_interval);
-
-        tokio::select! {
-            biased;
-            _ = stopped(&mut shutdown) => break,
-            finished = tasks.join_next_with_id(), if !tasks.is_empty() => {
-                match finished {
-                    Some(Ok((id, result))) => {
-                        let index = task_queues.remove(&id).expect("tracked worker task");
-                        active[index] -= 1;
-
-                        if let Err(error) = result {
-                            tracing::warn!(
-                                queue = queues[index],
-                                error = %error,
-                                "queue result could not be recorded; lease will expire"
-                            );
-                        }
-                    }
-                    Some(Err(error)) => {
-                        if let Some(index) = task_queues.remove(&error.id()) {
-                            active[index] -= 1;
-                        }
-
-                        tracing::error!(error = %error, "job task panicked; claim will expire");
-                    }
-                    None => {}
-                }
-            },
-            _ = store.outbox.wait() => {},
-            _ = tokio::time::sleep_until(deadline) => {},
-        }
-    }
+    let mut worker = Worker::new(store, mailer, config);
+    worker.run(&mut shutdown).await;
 
     listener.abort();
     if let Err(error) = listener.await
@@ -291,85 +176,236 @@ pub async fn run_with_config(
         tracing::warn!(error = %error, "queue listener stopped");
     }
 
-    if let Err(error) = tokio::time::timeout(config.drain_timeout, async {
-        while let Some(result) = tasks.join_next().await {
-            match result {
-                Ok(Ok(())) => {}
-                Ok(Err(error)) => {
-                    tracing::warn!(error = %error, "draining job left a recoverable lease");
-                }
-                Err(error) => {
-                    tracing::warn!(error = %error, "draining job left a recoverable lease");
-                }
-            }
-        }
-    })
-    .await
-    {
-        tasks.abort_all();
-        while tasks.join_next().await.is_some() {}
-        tracing::warn!(
-            error = %error,
-            "worker drain deadline reached; unfinished leases will expire"
-        );
-    }
-
+    worker.drain().await;
     Ok(())
 }
 
-async fn listen(outbox: Outbox, mut shutdown: watch::Receiver<bool>, poll: Duration) {
-    loop {
-        if *shutdown.borrow() {
+type TaskOutcome = std::result::Result<(tokio::task::Id, Result<()>), tokio::task::JoinError>;
+
+/// Claims jobs per queue up to each queue's concurrency and tracks the running tasks.
+struct Worker {
+    store: Store,
+    mailer: Mailer,
+    config: WorkerConfig,
+    tasks: JoinSet<Result<()>>,
+    /// Running tasks per queue, indexed like `QUEUES`.
+    active: [usize; 4],
+    limits: [usize; 4],
+    task_queues: HashMap<tokio::task::Id, usize>,
+    schedule_at: tokio::time::Instant,
+    maintenance_at: tokio::time::Instant,
+}
+
+impl Worker {
+    fn new(store: Store, mailer: Mailer, config: WorkerConfig) -> Self {
+        let email = if mailer.enabled() {
+            config.email_concurrency
+        } else {
+            0
+        };
+        let limits = [
+            email,
+            config.webhook_concurrency,
+            config.database_concurrency,
+            config.tracker_concurrency,
+        ];
+        let now = tokio::time::Instant::now();
+        Self {
+            store,
+            mailer,
+            config,
+            tasks: JoinSet::new(),
+            active: [0; 4],
+            limits,
+            task_queues: HashMap::new(),
+            schedule_at: now,
+            maintenance_at: now,
+        }
+    }
+
+    /// Queues due tracker scans once per poll interval.
+    async fn run(&mut self, shutdown: &mut watch::Receiver<bool>) {
+        while !*shutdown.borrow() {
+            self.schedule_trackers().await;
+            self.claim_jobs(shutdown).await;
+            if *shutdown.borrow() {
+                break;
+            }
+            self.maintain().await;
+
+            let deadline = self.next_wake();
+            tokio::select! {
+                biased;
+                _ = stopped(shutdown) => break,
+                finished = self.tasks.join_next_with_id(), if !self.tasks.is_empty() => {
+                    self.finished(finished);
+                },
+                _ = self.store.outbox.wait() => {},
+                _ = tokio::time::sleep_until(deadline) => {},
+            }
+        }
+    }
+
+    async fn schedule_trackers(&mut self) {
+        if self.schedule_at > tokio::time::Instant::now() {
             return;
         }
+        self.schedule_at = tokio::time::Instant::now() + self.config.poll_interval;
+        if let Err(error) = crate::tracker::schedule(&self.store).await {
+            tracing::warn!(
+                error = %crate::tracker::failure_message(&error),
+                "Tracker scheduling failed"
+            );
+        }
+    }
 
-        let mut listener = tokio::select! {
-            _ = stopped(&mut shutdown) => return,
-            result = outbox.listen() => match result {
-                Ok(listener) => listener,
-                Err(error) => {
-                    tracing::warn!(error = %error, "queue listen failed; retrying");
-                    outbox.ready();
-
-                    tokio::select! {
-                        _ = stopped(&mut shutdown) => return,
-                        _ = tokio::time::sleep(poll) => {}
+    async fn claim_jobs(&mut self, shutdown: &watch::Receiver<bool>) {
+        for (index, queue) in QUEUES.iter().enumerate() {
+            if *shutdown.borrow() {
+                return;
+            }
+            let free = self.limits[index].saturating_sub(self.active[index]);
+            match self.store.outbox.claim(queue, free).await {
+                Ok(claims) => {
+                    for claim in claims {
+                        self.spawn(index, claim);
                     }
-
-                    continue;
+                }
+                Err(error) => {
+                    tracing::error!(queue = *queue, error = %error, "queue claim failed")
                 }
             }
-        };
+        }
+    }
 
+    fn spawn(&mut self, index: usize, claim: Claim) {
+        self.active[index] += 1;
+        let store = self.store.clone();
+        let mailer = self.mailer.clone();
+        let handle = self
+            .tasks
+            .spawn(async move { execute(&store, &mailer, &claim).await });
+        self.task_queues.insert(handle.id(), index);
+    }
+
+    async fn maintain(&mut self) {
+        if self.maintenance_at > tokio::time::Instant::now() {
+            return;
+        }
+        if let Err(error) = maintenance(
+            &self.store,
+            self.config.retention_days,
+            self.config.failed_retention_days,
+        )
+        .await
+        {
+            tracing::warn!(error = %error, "queue maintenance failed");
+        }
+        self.maintenance_at = tokio::time::Instant::now() + MAINTENANCE_INTERVAL;
+    }
+
+    fn next_wake(&self) -> tokio::time::Instant {
+        self.schedule_at
+            .min(self.maintenance_at)
+            .min(tokio::time::Instant::now() + self.config.poll_interval)
+    }
+
+    /// Frees the finished task's queue slot. A failed result keeps its lease,
+    /// which expires so another worker retries the job.
+    fn finished(&mut self, finished: Option<TaskOutcome>) {
+        match finished {
+            Some(Ok((id, result))) => {
+                let index = self.task_queues.remove(&id).expect("tracked worker task");
+                self.active[index] -= 1;
+                if let Err(error) = result {
+                    tracing::warn!(
+                        queue = QUEUES[index],
+                        error = %error,
+                        "queue result could not be recorded; lease will expire"
+                    );
+                }
+            }
+            Some(Err(error)) => {
+                if let Some(index) = self.task_queues.remove(&error.id()) {
+                    self.active[index] -= 1;
+                }
+                tracing::error!(error = %error, "job task panicked; claim will expire");
+            }
+            None => {}
+        }
+    }
+
+    /// Waits for running jobs up to the drain timeout, then aborts the rest.
+    async fn drain(mut self) {
+        let tasks = &mut self.tasks;
+        let drained = tokio::time::timeout(self.config.drain_timeout, async {
+            while let Some(result) = tasks.join_next().await {
+                let error = match result {
+                    Ok(Ok(())) => continue,
+                    Ok(Err(error)) => error.to_string(),
+                    Err(error) => error.to_string(),
+                };
+                tracing::warn!(error = %error, "draining job left a recoverable lease");
+            }
+        })
+        .await;
+        if let Err(error) = drained {
+            self.tasks.abort_all();
+            while self.tasks.join_next().await.is_some() {}
+            tracing::warn!(
+                error = %error,
+                "worker drain deadline reached; unfinished leases will expire"
+            );
+        }
+    }
+}
+
+async fn listen(outbox: Outbox, mut shutdown: watch::Receiver<bool>, poll: Duration) {
+    while !*shutdown.borrow() {
+        let connected = tokio::select! {
+            _ = stopped(&mut shutdown) => return,
+            result = outbox.listen() => result,
+        };
+        match connected {
+            Ok(listener) => {
+                outbox.ready();
+                if relay(&outbox, listener, &mut shutdown).await.is_break() {
+                    return;
+                }
+            }
+            Err(error) => {
+                tracing::warn!(error = %error, "queue listen failed; retrying");
+                outbox.ready();
+            }
+        }
+
+        tokio::select! {
+            _ = stopped(&mut shutdown) => return,
+            _ = tokio::time::sleep(poll) => {}
+        }
+    }
+}
+
+/// Wakes the worker on every notification until the connection drops. Breaks
+/// on shutdown.
+async fn relay(
+    outbox: &Outbox,
+    mut listener: PgListener,
+    shutdown: &mut watch::Receiver<bool>,
+) -> ControlFlow<()> {
+    loop {
+        let notification = tokio::select! {
+            _ = stopped(shutdown) => return ControlFlow::Break(()),
+            notification = listener.try_recv() => notification,
+        };
         outbox.ready();
 
-        loop {
-            tokio::select! {
-                _ = stopped(&mut shutdown) => return,
-                notification = listener.try_recv() => {
-                    outbox.ready();
-
-                    match notification {
-                        Ok(Some(_)) => {}
-                        Ok(None) => {
-                            tokio::select! {
-                                _ = stopped(&mut shutdown) => return,
-                                _ = tokio::time::sleep(poll) => {}
-                            }
-
-                            break;
-                        }
-                        Err(error) => {
-                            tracing::warn!(error = %error, "queue notification failed; reconnecting");
-                            tokio::select! {
-                                _ = stopped(&mut shutdown) => return,
-                                _ = tokio::time::sleep(poll) => {}
-                            }
-
-                            break;
-                        }
-                    }
-                }
+        match notification {
+            Ok(Some(_)) => {}
+            Ok(None) => return ControlFlow::Continue(()),
+            Err(error) => {
+                tracing::warn!(error = %error, "queue notification failed; reconnecting");
+                return ControlFlow::Continue(());
             }
         }
     }
@@ -420,102 +456,28 @@ pub async fn execute_with_renew_interval(
     renew_interval: Duration,
 ) -> Result<()> {
     let started = tokio::time::Instant::now();
-    let result = if claim.payload_version != PAYLOAD_VERSION {
-        Err(DeliveryError::Permanent("unsupported job payload version"))
+    let attempt = if claim.payload_version != PAYLOAD_VERSION {
+        Attempt::Finished(Err(DeliveryError::Permanent(
+            "unsupported job payload version",
+        )))
     } else {
         match Job::decode(&claim.kind, &claim.payload) {
             Err(error) => {
                 tracing::warn!(job = %claim.id, error = %error, "invalid job kind or payload");
-                Err(DeliveryError::Permanent("invalid job kind or payload"))
+                Attempt::Finished(Err(DeliveryError::Permanent("invalid job kind or payload")))
             }
-            Ok(job) if job.queue() != claim.queue => {
-                Err(DeliveryError::Permanent("job kind does not match queue"))
-            }
-            Ok(Job::Tracker(job)) => {
-                let work = tokio::time::timeout(
-                    Duration::from_secs(75),
-                    crate::tracker::execute(store, claim, &job),
-                );
-                let Some(result) =
-                    run_with_renewal(&store.outbox, claim, work, renew_interval).await
-                else {
-                    return Ok(());
-                };
-                match result {
-                    Ok(Ok(())) => return Ok(()),
-                    failed => {
-                        let message = match &failed {
-                            Ok(Err(error)) => crate::tracker::failure_message(error),
-                            _ => "Tracker job timed out; retry scheduled".into(),
-                        };
-                        tracing::warn!(job = %claim.id, error = %message, "Tracker job failed");
-                        if let Err(error) =
-                            crate::tracker::record_failure(store, claim, &job, &message).await
-                        {
-                            tracing::warn!(
-                                job = %claim.id,
-                                error = %error,
-                                "Tracker job failure could not be recorded"
-                            );
-                        }
-                        Err(DeliveryError::Transient("tracker job failed"))
-                    }
-                }
-            }
+            Ok(job) if job.queue() != claim.queue => Attempt::Finished(Err(
+                DeliveryError::Permanent("job kind does not match queue"),
+            )),
+            Ok(Job::Tracker(job)) => run_tracker(store, claim, &job, renew_interval).await,
             Ok(Job::Reminder(reminder)) => {
-                let work = tokio::time::timeout(
-                    DATABASE_TIMEOUT,
-                    execute_reminder(store, claim, &reminder),
-                );
-                let Some(result) =
-                    run_with_renewal(&store.outbox, claim, work, renew_interval).await
-                else {
-                    return Ok(());
-                };
-
-                match result {
-                    Ok(Ok(())) => {
-                        tracing::info!(
-                            job = %claim.id,
-                            kind = %claim.kind,
-                            attempt = claim.attempts,
-                            elapsed_ms = started.elapsed().as_millis() as u64,
-                            "database job attempt finished"
-                        );
-
-                        return Ok(());
-                    }
-                    Ok(Err(error)) => {
-                        tracing::warn!(job = %claim.id, error = %error, "reminder transaction failed");
-                        Err(DeliveryError::Transient("reminder transaction failed"))
-                    }
-                    Err(error) => {
-                        tracing::warn!(job = %claim.id, error = %error, "reminder transaction timed out");
-                        Err(DeliveryError::Transient("reminder transaction timed out"))
-                    }
-                }
+                run_reminder(store, claim, &reminder, renew_interval, started).await
             }
-            Ok(job) => {
-                let timeout = match job {
-                    Job::Email(_) => EMAIL_TIMEOUT,
-                    _ => WEBHOOK_TIMEOUT,
-                };
-                let id = claim.id.to_string();
-                let work = tokio::time::timeout(timeout, job.deliver(store, mailer, &id));
-                let Some(result) =
-                    run_with_renewal(&store.outbox, claim, work, renew_interval).await
-                else {
-                    return Ok(());
-                };
-                match result {
-                    Ok(result) => result,
-                    Err(error) => {
-                        tracing::warn!(job = %claim.id, error = %error, "delivery timed out");
-                        Err(DeliveryError::Transient("delivery timed out"))
-                    }
-                }
-            }
+            Ok(job) => run_delivery(store, mailer, claim, job, renew_interval).await,
         }
+    };
+    let Attempt::Finished(result) = attempt else {
+        return Ok(());
     };
 
     let accepted = match result {
@@ -534,6 +496,98 @@ pub async fn execute_with_renew_interval(
     );
 
     Ok(())
+}
+
+/// How one job attempt ended.
+enum Attempt {
+    /// The job completed its own claim, or the lease was lost; nothing to record.
+    Settled,
+    /// The outcome to record against the claim.
+    Finished(std::result::Result<(), DeliveryError>),
+}
+
+/// A successful tracker job completes its own claim; failures are recorded on the connection.
+async fn run_tracker(
+    store: &Store,
+    claim: &Claim,
+    job: &crate::tracker::TrackerJob,
+    renew_interval: Duration,
+) -> Attempt {
+    let work = tokio::time::timeout(
+        Duration::from_secs(75),
+        crate::tracker::execute(store, claim, job),
+    );
+    let message = match run_with_renewal(&store.outbox, claim, work, renew_interval).await {
+        None | Some(Ok(Ok(()))) => return Attempt::Settled,
+        Some(Ok(Err(error))) => crate::tracker::failure_message(&error),
+        Some(Err(_)) => "Tracker job timed out; retry scheduled".into(),
+    };
+    tracing::warn!(job = %claim.id, error = %message, "Tracker job failed");
+    if let Err(error) = crate::tracker::record_failure(store, claim, job, &message).await {
+        tracing::warn!(
+            job = %claim.id,
+            error = %error,
+            "Tracker job failure could not be recorded"
+        );
+    }
+    Attempt::Finished(Err(DeliveryError::Transient("tracker job failed")))
+}
+
+/// A successful reminder completes its claim in its own transaction.
+async fn run_reminder(
+    store: &Store,
+    claim: &Claim,
+    reminder: &Reminder,
+    renew_interval: Duration,
+    started: tokio::time::Instant,
+) -> Attempt {
+    let work = tokio::time::timeout(DATABASE_TIMEOUT, execute_reminder(store, claim, reminder));
+    let failure = match run_with_renewal(&store.outbox, claim, work, renew_interval).await {
+        None => return Attempt::Settled,
+        Some(Ok(Ok(()))) => {
+            tracing::info!(
+                job = %claim.id,
+                kind = %claim.kind,
+                attempt = claim.attempts,
+                elapsed_ms = started.elapsed().as_millis() as u64,
+                "database job attempt finished"
+            );
+            return Attempt::Settled;
+        }
+        Some(Ok(Err(error))) => {
+            tracing::warn!(job = %claim.id, error = %error, "reminder transaction failed");
+            "reminder transaction failed"
+        }
+        Some(Err(error)) => {
+            tracing::warn!(job = %claim.id, error = %error, "reminder transaction timed out");
+            "reminder transaction timed out"
+        }
+    };
+    Attempt::Finished(Err(DeliveryError::Transient(failure)))
+}
+
+/// Email and webhook delivery, within the kind's timeout.
+async fn run_delivery(
+    store: &Store,
+    mailer: &Mailer,
+    claim: &Claim,
+    job: Job,
+    renew_interval: Duration,
+) -> Attempt {
+    let timeout = match job {
+        Job::Email(_) => EMAIL_TIMEOUT,
+        _ => WEBHOOK_TIMEOUT,
+    };
+    let id = claim.id.to_string();
+    let work = tokio::time::timeout(timeout, job.deliver(store, mailer, &id));
+    match run_with_renewal(&store.outbox, claim, work, renew_interval).await {
+        None => Attempt::Settled,
+        Some(Ok(result)) => Attempt::Finished(result),
+        Some(Err(error)) => {
+            tracing::warn!(job = %claim.id, error = %error, "delivery timed out");
+            Attempt::Finished(Err(DeliveryError::Transient("delivery timed out")))
+        }
+    }
 }
 
 async fn run_with_renewal<'a, T>(
@@ -701,6 +755,12 @@ async fn sweep(store: &Store, retention_days: i32, failed_retention_days: i32) -
     .await?;
     drain(deadline, 10000, store.clone(), |s| async move {
         s.prune_changes(retention_days).await
+    })
+    .await?;
+    // Idle sync clients go after the sessions they belong to; a pruned
+    // client cannot still have a live replica.
+    drain(deadline, 1000, store.clone(), |s| async move {
+        s.prune_sync_clients().await
     })
     .await?;
 

@@ -2,13 +2,13 @@ use crate::{
     auth::{self, *},
     domain::*,
     error::{Error, Result},
-    store::{ChangeFeed, CollectionQuery, OperationResult, Store},
+    store::{CollectionQuery, OperationResult, Store},
 };
 use axum::{
     Json, Router,
     extract::Request,
     extract::{DefaultBodyLimit, FromRequestParts, Path, Query, State},
-    http::{HeaderValue, StatusCode, header, request::Parts},
+    http::{HeaderMap, HeaderValue, StatusCode, header, request::Parts},
     middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -22,10 +22,15 @@ use utoipa::OpenApi;
 use uuid::Uuid;
 
 mod files;
+pub(crate) use files::attachment_response;
 use files::{download, export, import, incoming, upload};
+mod sync;
+use sync::{bootstrap, events, pull, push, scope};
 
 pub struct Actor {
     pub profile: Profile,
+    /// Non-secret replica name from the session row. Never a credential.
+    pub session_id: Uuid,
     pub token: String,
 }
 
@@ -64,8 +69,10 @@ impl FromRequestParts<Store> for Actor {
             }
         }
 
+        let (profile, session_id) = store.authenticate(token).await?;
         Ok(Self {
-            profile: store.authenticate(token).await?,
+            profile,
+            session_id,
             token: token.into(),
         })
     }
@@ -86,6 +93,8 @@ fn constant_eq(left: &[u8], right: &[u8]) -> bool {
 pub struct WorkspaceSummary {
     pub id: Uuid,
     pub name: String,
+    /// Names the workspace in app URLs. Unique across the server.
+    pub slug: String,
     pub version: i64,
 }
 
@@ -97,13 +106,15 @@ pub struct WorkspaceResponse {
 #[derive(Deserialize, utoipa::ToSchema)]
 pub struct CreateWorkspace {
     pub name: String,
+    /// Lowercase letters, digits and single hyphens, at most 48 bytes.
+    pub slug: String,
     pub idempotency_key: Option<String>,
 }
 
 #[derive(Deserialize, utoipa::ToSchema)]
 pub struct CommandRequest {
     #[serde(default)]
-    pub expected_versions: BTreeMap<Uuid, i64>,
+    pub expected_versions: Option<BTreeMap<Uuid, i64>>,
     pub idempotency_key: Option<String>,
     pub command: Command,
 }
@@ -118,7 +129,7 @@ pub struct AcceptInvitation {
 #[derive(Deserialize, utoipa::ToSchema)]
 pub struct ImportRequest {
     #[serde(default)]
-    pub expected_versions: BTreeMap<Uuid, i64>,
+    pub expected_versions: Option<BTreeMap<Uuid, i64>>,
     pub idempotency_key: Option<String>,
     pub issues: Option<Vec<IssueInput>>,
     pub transfer: Option<crate::exchange::Transfer>,
@@ -156,7 +167,7 @@ pub struct SearchResult {
     pub people: Vec<MemberProfile>,
 }
 
-#[derive(Serialize, utoipa::ToSchema)]
+#[derive(Serialize, Deserialize, utoipa::ToSchema)]
 pub struct MemberProfile {
     pub role: Role,
     pub version: i64,
@@ -198,47 +209,72 @@ pub fn router(store: Store) -> Router {
 pub fn router_with_web(store: Store, web_dir: std::path::PathBuf) -> Router {
     Router::new()
         .merge(crate::tracker::router())
+        .merge(crate::api::router(store.clone()))
         .route("/health", get(health))
-        .route("/api/schema.json", get(schema))
-        .route("/api/auth/register", post(register))
-        .route("/api/auth/login", post(login))
-        .route("/api/auth/logout", post(logout))
-        .route("/api/auth/password", post(change_password))
-        .route("/api/auth/reset-request", post(reset_request))
-        .route("/api/auth/reset", post(reset_password))
-        .route("/api/me", get(me).patch(edit_profile))
-        .route("/api/workspaces", get(workspaces).post(create_workspace))
-        .route("/api/workspaces/{id}", get(workspace))
-        .route("/api/workspaces/{id}/commands", post(command))
-        .route("/api/workspaces/{id}/issues", get(issues))
-        .route("/api/workspaces/{id}/issues/{issue}", get(issue_detail))
-        .route("/api/workspaces/{id}/members", get(members))
-        .route("/api/workspaces/{id}/search", get(search))
-        .route("/api/workspaces/{id}/report", get(report))
-        .route("/api/workspaces/{id}/changes", get(changes))
-        .route("/api/workspaces/{id}/{collection}", get(collection))
+        .route("/internal-api/schema.json", get(schema))
+        .route("/internal-api/auth/register", post(register))
+        .route("/internal-api/auth/login", post(login))
+        .route("/internal-api/auth/logout", post(logout))
+        .route("/internal-api/auth/password", post(change_password))
+        .route("/internal-api/auth/reset-request", post(reset_request))
+        .route("/internal-api/auth/reset", post(reset_password))
+        .route("/internal-api/me", get(me).patch(edit_profile))
         .route(
-            "/api/workspaces/{id}/invitations/accept",
+            "/internal-api/me/tokens",
+            get(crate::api::tokens::list).post(crate::api::tokens::create),
+        )
+        .route(
+            "/internal-api/me/tokens/{token}",
+            axum::routing::delete(crate::api::tokens::revoke),
+        )
+        .route(
+            "/internal-api/workspaces",
+            get(workspaces).post(create_workspace),
+        )
+        .route("/internal-api/workspaces/{id}", get(workspace))
+        .route("/internal-api/workspaces/{id}/commands", post(command))
+        .route("/internal-api/workspaces/{id}/sync/push", post(push))
+        .route("/internal-api/workspaces/{id}/sync/pull", get(pull))
+        .route(
+            "/internal-api/workspaces/{id}/sync/bootstrap",
+            get(bootstrap).layer(tower_http::compression::CompressionLayer::new().gzip(true)),
+        )
+        .route("/internal-api/workspaces/{id}/sync/scope", get(scope))
+        .route("/internal-api/workspaces/{id}/sync/events", get(events))
+        .route("/internal-api/workspaces/{id}/issues", get(issues))
+        .route(
+            "/internal-api/workspaces/{id}/issues/{issue}",
+            get(issue_detail),
+        )
+        .route("/internal-api/workspaces/{id}/members", get(members))
+        .route("/internal-api/workspaces/{id}/search", get(search))
+        .route("/internal-api/workspaces/{id}/report", get(report))
+        .route(
+            "/internal-api/workspaces/{id}/{collection}",
+            get(collection),
+        )
+        .route(
+            "/internal-api/workspaces/{id}/invitations/accept",
             post(accept_invitation),
         )
         .route(
-            "/api/workspaces/{id}/issues/{issue}/attachments",
+            "/internal-api/workspaces/{id}/issues/{issue}/attachments",
             post(upload),
         )
         .route(
             "/api/workspaces/{id}/attachments/{attachment}",
             get(download),
         )
-        .route("/api/workspaces/{id}/export", get(export))
+        .route("/internal-api/workspaces/{id}/export", get(export))
         .route(
-            "/api/workspaces/{id}/import",
+            "/internal-api/workspaces/{id}/import",
             post(import).layer(DefaultBodyLimit::max(20 * 1024 * 1024)),
         )
         .route(
             "/api/workspaces/{id}/integrations/{integration}/webhook",
             post(incoming),
         )
-        .route("/api/markdown", post(markdown))
+        .route("/internal-api/markdown", post(markdown))
         .fallback_service(crate::web::service(web_dir))
         .layer(DefaultBodyLimit::max(6 * 1024 * 1024))
         .layer(middleware::from_fn(security_headers))
@@ -246,32 +282,42 @@ pub fn router_with_web(store: Store, web_dir: std::path::PathBuf) -> Router {
         .with_state(store)
 }
 
+/// Whether the request carries an `Origin` other than this host. Requests
+/// without an `Origin` come from non-browser clients and are not cross-origin.
+pub(crate) fn cross_origin(headers: &HeaderMap) -> bool {
+    let Some(origin) = headers.get(header::ORIGIN) else {
+        return false;
+    };
+    let origin = origin
+        .to_str()
+        .ok()
+        .and_then(|s| reqwest::Url::parse(s).ok());
+    let host = headers.get(header::HOST).and_then(|s| s.to_str().ok());
+    let origin_host = origin.as_ref().and_then(|url| {
+        url.host_str().map(|host| {
+            if let Some(port) = url.port() {
+                format!("{host}:{port}")
+            } else {
+                host.to_owned()
+            }
+        })
+    });
+    host.is_none() || origin_host.as_deref() != host
+}
+
 async fn security_headers(request: Request, next: Next) -> Response {
-    if !matches!(
-        *request.method(),
-        axum::http::Method::GET | axum::http::Method::HEAD | axum::http::Method::OPTIONS
-    ) && let Some(origin) = request.headers().get(header::ORIGIN)
+    // Cookie-authenticated routes refuse cross-origin writes. The token-only
+    // public API and MCP endpoint apply their own CORS and origin rules.
+    let path = request.uri().path();
+    let token_only = path.starts_with("/api/v1/") || path == "/mcp";
+    if !token_only
+        && !matches!(
+            *request.method(),
+            axum::http::Method::GET | axum::http::Method::HEAD | axum::http::Method::OPTIONS
+        )
+        && cross_origin(request.headers())
     {
-        let origin = origin
-            .to_str()
-            .ok()
-            .and_then(|s| reqwest::Url::parse(s).ok());
-        let host = request
-            .headers()
-            .get(header::HOST)
-            .and_then(|s| s.to_str().ok());
-        let origin_host = origin.as_ref().and_then(|url| {
-            url.host_str().map(|host| {
-                if let Some(port) = url.port() {
-                    format!("{host}:{port}")
-                } else {
-                    host.to_owned()
-                }
-            })
-        });
-        if host.is_none() || origin_host.as_deref() != host {
-            return Error::Forbidden.into_response();
-        }
+        return Error::Forbidden.into_response();
     }
 
     let mut response = next.run(request).await;
@@ -321,7 +367,7 @@ async fn auth_rate_limit(request: Request, next: Next) -> Response {
 
     static LIMIT: OnceLock<Mutex<HashMap<String, (i64, u32)>>> = OnceLock::new();
 
-    if request.uri().path().starts_with("/api/auth/")
+    if request.uri().path().starts_with("/internal-api/auth/")
         && request.method() == axum::http::Method::POST
     {
         let ip = request
@@ -378,7 +424,7 @@ fn session_response(session: Session) -> Result<Response> {
 
 #[utoipa::path(
     post,
-    path = "/api/auth/register",
+    path = "/internal-api/auth/register",
     request_body = Register,
     responses(
         (status = 200, body = Session),
@@ -391,7 +437,7 @@ async fn register(State(store): State<Store>, Json(input): Json<Register>) -> Re
 
 #[utoipa::path(
     post,
-    path = "/api/auth/login",
+    path = "/internal-api/auth/login",
     request_body = Login,
     responses(
         (status = 200, body = Session),
@@ -404,7 +450,7 @@ async fn login(State(store): State<Store>, Json(input): Json<Login>) -> Result<R
 
 #[utoipa::path(
     post,
-    path = "/api/auth/logout",
+    path = "/internal-api/auth/logout",
     responses((status = 204))
 )]
 async fn logout(State(store): State<Store>, actor: Actor) -> Result<Response> {
@@ -421,15 +467,26 @@ async fn logout(State(store): State<Store>, actor: Actor) -> Result<Response> {
     Ok(response)
 }
 
+#[derive(Serialize, utoipa::ToSchema)]
+pub struct MeResponse {
+    #[serde(flatten)]
+    pub profile: Profile,
+    pub session_id: Uuid,
+}
+
 #[utoipa::path(
     get,
-    path = "/api/me",
-    responses((status = 200, body = Profile))
+    path = "/internal-api/me",
+    responses((status = 200, body = MeResponse))
 )]
 async fn me(actor: Actor) -> Result<Response> {
     let csrf = HeaderValue::from_str(&auth::csrf(&actor.token))
         .map_err(|e| Error::Internal(e.to_string()))?;
-    let mut response = Json(actor.profile).into_response();
+    let mut response = Json(MeResponse {
+        profile: actor.profile,
+        session_id: actor.session_id,
+    })
+    .into_response();
     response.headers_mut().insert("x-csrf-token", csrf);
 
     Ok(response)
@@ -437,7 +494,7 @@ async fn me(actor: Actor) -> Result<Response> {
 
 #[utoipa::path(
     patch,
-    path = "/api/me",
+    path = "/internal-api/me",
     request_body = ProfileEdit,
     responses((status = 200, body = Profile))
 )]
@@ -451,7 +508,7 @@ async fn edit_profile(
 
 #[utoipa::path(
     post,
-    path = "/api/auth/password",
+    path = "/internal-api/auth/password",
     request_body = PasswordChange,
     responses((status = 204))
 )]
@@ -467,7 +524,7 @@ async fn change_password(
 
 #[utoipa::path(
     post,
-    path = "/api/auth/reset-request",
+    path = "/internal-api/auth/reset-request",
     request_body = ResetRequest,
     responses((status = 202))
 )]
@@ -482,7 +539,7 @@ async fn reset_request(
 
 #[utoipa::path(
     post,
-    path = "/api/auth/reset",
+    path = "/internal-api/auth/reset",
     request_body = ResetPassword,
     responses((status = 204))
 )]
@@ -510,7 +567,7 @@ async fn health(State(store): State<Store>) -> Result<Json<Health>> {
 
 #[utoipa::path(
     get,
-    path = "/api/workspaces",
+    path = "/internal-api/workspaces",
     responses((status = 200, body = Vec<WorkspaceSummary>))
 )]
 async fn workspaces(State(store): State<Store>, actor: Actor) -> Result<Json<Vec<Value>>> {
@@ -519,7 +576,7 @@ async fn workspaces(State(store): State<Store>, actor: Actor) -> Result<Json<Vec
 
 #[utoipa::path(
     post,
-    path = "/api/workspaces",
+    path = "/internal-api/workspaces",
     request_body = CreateWorkspace,
     responses((status = 200, body = WorkspaceResponse))
 )]
@@ -530,14 +587,19 @@ async fn create_workspace(
 ) -> Result<Json<Value>> {
     Ok(Json(json!({
         "workspace": store
-            .create_workspace_with_key(input.name, actor.profile.id, input.idempotency_key)
+            .create_workspace_with_key(
+                input.name,
+                input.slug,
+                actor.profile.id,
+                input.idempotency_key
+            )
             .await?
     })))
 }
 
 #[utoipa::path(
     get,
-    path = "/api/workspaces/{id}",
+    path = "/internal-api/workspaces/{id}",
     params(("id" = Uuid, Path)),
     responses((status = 200, body = WorkspaceResponse))
 )]
@@ -551,7 +613,7 @@ async fn workspace(
 
 #[utoipa::path(
     post,
-    path = "/api/workspaces/{id}/commands",
+    path = "/internal-api/workspaces/{id}/commands",
     params(("id" = Uuid, Path)),
     request_body = CommandRequest,
     responses(
@@ -580,7 +642,7 @@ async fn command(
                 id,
                 actor.profile.id,
                 input.command,
-                input.expected_versions,
+                input.expected_versions.unwrap_or_default(),
                 input.idempotency_key,
                 None,
             )
@@ -590,7 +652,7 @@ async fn command(
 
 #[utoipa::path(
     get,
-    path = "/api/workspaces/{id}/issues",
+    path = "/internal-api/workspaces/{id}/issues",
     params(("id" = Uuid, Path), IssueFilter, PageQuery),
     responses((status = 200, body = Value))
 )]
@@ -610,7 +672,7 @@ async fn issues(
 
 #[utoipa::path(
     get,
-    path = "/api/workspaces/{id}/issues/{issue}",
+    path = "/internal-api/workspaces/{id}/issues/{issue}",
     params(
         ("id" = Uuid, Path),
         ("issue" = Uuid, Path)
@@ -625,36 +687,9 @@ async fn issue_detail(
     Ok(Json(store.get_issue(id, actor.profile.id, issue).await?))
 }
 
-#[derive(Deserialize, utoipa::IntoParams)]
-#[into_params(parameter_in = Query)]
-pub struct ChangesQuery {
-    /// Cursor from the previous response. Omit to get a starting cursor.
-    pub since: Option<String>,
-}
-
 #[utoipa::path(
     get,
-    path = "/api/workspaces/{id}/changes",
-    params(("id" = Uuid, Path), ChangesQuery),
-    responses((status = 200, body = ChangeFeed)),
-    description = "Records changed since a cursor, in the same shape as the list endpoints. Request a cursor before loading records, then poll with it. Changes may repeat. A null record was deleted or is no longer visible. When `reset` is true, reload everything and continue from the returned cursor."
-)]
-async fn changes(
-    State(store): State<Store>,
-    actor: Actor,
-    Path(id): Path<Uuid>,
-    Query(input): Query<ChangesQuery>,
-) -> Result<Json<ChangeFeed>> {
-    Ok(Json(
-        store
-            .changes(id, actor.profile.id, input.since.as_deref())
-            .await?,
-    ))
-}
-
-#[utoipa::path(
-    get,
-    path = "/api/workspaces/{id}/{collection}",
+    path = "/internal-api/workspaces/{id}/{collection}",
     params(("id" = Uuid, Path), ("collection" = String, Path), PageQuery),
     responses((status = 200, body = Value)),
     description = "Paginated teams, labels, projects, milestones, sprints, views, notifications, alert_preferences, invitations, integrations, activity, comments or time_entries. Private records are restricted to their owner or workspace administrators."
@@ -684,7 +719,7 @@ async fn collection(
 
 #[utoipa::path(
     get,
-    path = "/api/workspaces/{id}/members",
+    path = "/internal-api/workspaces/{id}/members",
     params(("id" = Uuid, Path)),
     responses((status = 200, body = Vec<MemberProfile>))
 )]
@@ -700,7 +735,7 @@ async fn members(
 
 #[utoipa::path(
     get,
-    path = "/api/workspaces/{id}/search",
+    path = "/internal-api/workspaces/{id}/search",
     params(
         ("id" = Uuid, Path),
         ("q" = String, Query)
@@ -764,7 +799,7 @@ async fn search(
 
 #[utoipa::path(
     get,
-    path = "/api/workspaces/{id}/report",
+    path = "/internal-api/workspaces/{id}/report",
     params(("id" = Uuid, Path)),
     responses((status = 200, body = Value))
 )]
@@ -778,7 +813,7 @@ async fn report(
 
 #[utoipa::path(
     post,
-    path = "/api/workspaces/{id}/invitations/accept",
+    path = "/internal-api/workspaces/{id}/invitations/accept",
     params(("id" = Uuid, Path)),
     request_body = AcceptInvitation,
     responses((status = 200, body = WorkspaceResponse))
@@ -798,7 +833,7 @@ async fn accept_invitation(
 
 #[utoipa::path(
     post,
-    path = "/api/markdown",
+    path = "/internal-api/markdown",
     request_body = MarkdownRequest,
     responses((status = 200, body = MarkdownResponse))
 )]
@@ -840,12 +875,16 @@ async fn markdown(
         create_workspace,
         workspace,
         command,
+        sync::push,
+        sync::pull,
+        sync::bootstrap,
+        sync::scope,
+        sync::events,
         issues,
         issue_detail,
         members,
         search,
         report,
-        changes,
         collection,
         accept_invitation,
         markdown,
@@ -853,22 +892,35 @@ async fn markdown(
         files::download,
         files::export,
         files::import,
-        files::incoming
+        files::incoming,
+        crate::api::tokens::list,
+        crate::api::tokens::create,
+        crate::api::tokens::revoke
     ),
     components(schemas(
         CommandRequest,
         CommandResponse,
-        ChangeFeed,
+        crate::store::Change,
         Command,
         WorkspaceResponse,
         Workspace,
         IssueFilter,
+        crate::domain::FilterClause,
+        MeResponse,
+        crate::store::PushRequest,
+        crate::store::PushResponse,
+        crate::store::SyncMutation,
+        crate::store::MutationResult,
+        crate::store::MutationError,
+        crate::store::MutationStatus,
+        crate::store::PullResponse,
+        crate::store::ScopeResponse,
         crate::error::ErrorBody
     )),
     info(
-        title = "Blackwall API",
+        title = "Blackwall internal API",
         version = "0.1.0",
-        description = "Workspace-scoped work management. Commands require versions of affected entities. Authenticate with Authorization: Bearer <token> or the HttpOnly session cookie plus X-CSRF-Token for mutations."
+        description = "The web app's own API. It may change without notice; integrations should use /api/v1 (see /api/v1/openapi.json). Workspace-scoped work management. Commands require versions of affected entities. Authenticate with Authorization: Bearer <token> or the HttpOnly session cookie plus X-CSRF-Token for mutations."
     )
 )]
 pub struct ApiDoc;

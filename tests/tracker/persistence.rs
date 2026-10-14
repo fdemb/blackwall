@@ -11,7 +11,7 @@ async fn tracker_persists_reminders_changes_and_completion_atomically() {
     let app = http::router(store.clone());
     let mock = Mock::default();
     let (url, server) = mock_server(mock.clone()).await;
-    let base = format!("/api/workspaces/{workspace}/trackers/connections");
+    let base = format!("/internal-api/workspaces/{workspace}/trackers/connections");
     let (_, config) = call(
         &app,
         &owner,
@@ -60,7 +60,7 @@ async fn tracker_persists_reminders_changes_and_completion_atomically() {
         .unwrap(),
         1
     );
-    assert_eq!(sqlx::query_scalar::<_, i64>("SELECT count(*) FROM jobs WHERE queue='webhook' AND payload->'event'->'activity'->>'action'='issue_completed'")
+    assert_eq!(sqlx::query_scalar::<_, i64>("SELECT count(*) FROM jobs WHERE queue='webhook' AND payload->'event'->>'type'='issue.completed'")
         .fetch_one(&store.pool).await.unwrap(), 1);
     sqlx::query("INSERT INTO issue_followers(workspace_id,issue_id,user_id) VALUES($1,$2,$3)")
         .bind(workspace)
@@ -251,7 +251,7 @@ async fn remote_parent_id_is_recorded_and_linked_locally() {
     let mock = Mock::default();
     mock.data.lock().await.parents.insert(8, 7);
     let (url, server) = mock_server(mock.clone()).await;
-    let base = format!("/api/workspaces/{workspace}/trackers/connections");
+    let base = format!("/internal-api/workspaces/{workspace}/trackers/connections");
     let (status, config) = call(
         &app,
         &owner,
@@ -343,7 +343,7 @@ async fn remote_parent_id_changes_and_removals_rewrite_once() {
     let mock = Mock::default();
     mock.data.lock().await.parents.insert(8, 7);
     let (url, server) = mock_server(mock.clone()).await;
-    let base = format!("/api/workspaces/{workspace}/trackers/connections");
+    let base = format!("/internal-api/workspaces/{workspace}/trackers/connections");
     let (status, config) = call(
         &app,
         &owner,
@@ -457,7 +457,7 @@ async fn empty_mapping_scan_finishes_and_invalid_checkpoint_never_fetches_unfilt
     let app = http::router(store.clone());
     let mock = Mock::default();
     let (url, server) = mock_server(mock.clone()).await;
-    let base = format!("/api/workspaces/{workspace}/trackers/connections");
+    let base = format!("/internal-api/workspaces/{workspace}/trackers/connections");
     let (status, config) = call(
         &app,
         &owner,

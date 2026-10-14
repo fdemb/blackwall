@@ -71,7 +71,7 @@ async fn command(
         app,
         owner,
         "POST",
-        &format!("/api/workspaces/{workspace}/commands"),
+        &format!("/internal-api/workspaces/{workspace}/commands"),
         Some(json!({
             "command": command,
             "expected_versions": versions,
@@ -92,8 +92,8 @@ async fn workspace(app: &axum::Router, owner: &Session, name: &str) -> Uuid {
         app,
         owner,
         "POST",
-        "/api/workspaces",
-        Some(json!({"name": name})),
+        "/internal-api/workspaces",
+        Some(json!({"name": name, "slug": Uuid::new_v4().to_string()})),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{result}");
@@ -119,7 +119,7 @@ async fn independent_writes_stale_versions_atomic_bulk_and_idempotency() {
         &app,
         &owner,
         ws,
-        json!({"type": "create_team", "name": "Team", "members": [owner.profile.id]}),
+        json!({"type": "create_team", "name": "Team", "key": "TEA", "members": [owner.profile.id]}),
     )
     .await;
     let first = created(
@@ -251,26 +251,46 @@ async fn parallel_number_allocation_and_database_tenant_constraints() {
         &app,
         &owner,
         ws,
-        json!({"type": "create_team", "name": "Team", "members": []}),
+        json!({"type": "create_team", "name": "Team", "key": "TEA", "members": []}),
     )
     .await;
     let foreign_team = created(
         &app,
         &owner,
         other,
-        json!({"type": "create_team", "name": "Foreign", "members": []}),
+        json!({"type": "create_team", "name": "Foreign", "key": "FOR", "members": []}),
     )
     .await;
+    let second = created(
+        &app,
+        &owner,
+        ws,
+        json!({"type": "create_team", "name": "Second", "key": "SEC", "members": []}),
+    )
+    .await;
+    let taken = command(
+        &app,
+        &owner,
+        ws,
+        json!({"type": "create_team", "name": "Again", "key": "TEA", "members": []}),
+        json!({}),
+        None,
+    )
+    .await;
+    assert_eq!(taken.0, StatusCode::CONFLICT, "{}", taken.1);
 
     let mut tasks = tokio::task::JoinSet::new();
     for n in 0..16 {
+        let team = if n % 2 == 0 { team } else { second };
         let app = app.clone();
         let token = owner.token.clone();
         let profile = owner.profile.clone();
+        let session_id = owner.session_id;
         tasks.spawn(async move {
             let owner = Session {
                 token,
                 profile,
+                session_id,
                 csrf_token: String::new(),
             };
 
@@ -292,14 +312,18 @@ async fn parallel_number_allocation_and_database_tenant_constraints() {
         ids.push(result.unwrap());
     }
 
-    let numbers: Vec<i64> = sqlx::query_scalar(
-        "SELECT number::bigint FROM issues WHERE workspace_id=$1 ORDER BY number",
-    )
-    .bind(ws)
-    .fetch_all(&store.pool)
-    .await
-    .unwrap();
-    assert_eq!(numbers, (1..=16).collect::<Vec<_>>());
+    // Each team counts from 1 on its own, even when creates interleave.
+    for team in [team, second] {
+        let numbers: Vec<i64> = sqlx::query_scalar(
+            "SELECT number::bigint FROM issues WHERE workspace_id=$1 AND team_id=$2 ORDER BY number",
+        )
+        .bind(ws)
+        .bind(team)
+        .fetch_all(&store.pool)
+        .await
+        .unwrap();
+        assert_eq!(numbers, (1..=8).collect::<Vec<_>>());
+    }
 
     let invalid = sqlx::query("UPDATE issues SET team_id=$1 WHERE id=$2")
         .bind(foreign_team)
@@ -312,9 +336,9 @@ async fn parallel_number_allocation_and_database_tenant_constraints() {
     );
 
     let duplicate =
-        sqlx::query("UPDATE issues SET number=(SELECT number FROM issues WHERE id=$1) WHERE id=$2")
-            .bind(ids[0])
-            .bind(ids[1])
+        sqlx::query("UPDATE issues SET number=1 WHERE workspace_id=$1 AND team_id=$2 AND number=2")
+            .bind(ws)
+            .bind(team)
             .execute(&store.pool)
             .await
             .unwrap_err();
@@ -349,7 +373,7 @@ async fn revocation_waits_for_membership_lock_and_blocks_later_writes() {
         &app,
         &owner,
         ws,
-        json!({"type": "create_team", "name": "Team", "members": []}),
+        json!({"type": "create_team", "name": "Team", "key": "TEA", "members": []}),
     )
     .await;
 
@@ -441,7 +465,7 @@ async fn superseded_running_reminders_skip_inbox_and_current_generation_deduplic
         &app,
         &owner,
         ws,
-        json!({"type": "create_team", "name": "Team", "members": [owner.profile.id]}),
+        json!({"type": "create_team", "name": "Team", "key": "TEA", "members": [owner.profile.id]}),
     )
     .await;
 
@@ -786,12 +810,6 @@ async fn representative_workspace_lists_reports_and_indexed_board_plan() {
     .await
     .unwrap();
 
-    sqlx::query("UPDATE workspaces SET next_issue_number=5001 WHERE id=$1")
-        .bind(ws)
-        .execute(&store.pool)
-        .await
-        .unwrap();
-
     sqlx::query("ANALYZE issues")
         .execute(&store.pool)
         .await
@@ -856,17 +874,23 @@ async fn workspace_creation_retries_are_actor_scoped_and_atomic() {
     let owner = account(&store, "owner").await;
     let other = account(&store, "other").await;
 
-    let payload = json!({"name": "One workspace", "idempotency_key": "ambiguous-create"});
+    let payload = json!({"name": "One workspace", "slug": "one-workspace", "idempotency_key": "ambiguous-create"});
 
     let (a, b) = tokio::join!(
         call(
             &app,
             &owner,
             "POST",
-            "/api/workspaces",
+            "/internal-api/workspaces",
             Some(payload.clone())
         ),
-        call(&app, &owner, "POST", "/api/workspaces", Some(payload)),
+        call(
+            &app,
+            &owner,
+            "POST",
+            "/internal-api/workspaces",
+            Some(payload)
+        ),
     );
     assert_eq!(a.0, StatusCode::OK, "{}", a.1);
     assert_eq!(a, b);
@@ -875,18 +899,37 @@ async fn workspace_creation_retries_are_actor_scoped_and_atomic() {
         &app,
         &owner,
         "POST",
-        "/api/workspaces",
-        Some(json!({"name": "Another name", "idempotency_key": "ambiguous-create"})),
+        "/internal-api/workspaces",
+        Some(json!({"name": "Another name", "slug": "another-name", "idempotency_key": "ambiguous-create"})),
     )
     .await;
     assert_eq!(mismatch.0, StatusCode::CONFLICT, "{}", mismatch.1);
+
+    let taken = call(
+        &app,
+        &owner,
+        "POST",
+        "/internal-api/workspaces",
+        Some(json!({"name": "Copy", "slug": "one-workspace", "idempotency_key": "taken-slug"})),
+    )
+    .await;
+    assert_eq!(taken.0, StatusCode::CONFLICT, "{}", taken.1);
+    let reserved = call(
+        &app,
+        &owner,
+        "POST",
+        "/internal-api/workspaces",
+        Some(json!({"name": "Login", "slug": "login"})),
+    )
+    .await;
+    assert_eq!(reserved.0, StatusCode::BAD_REQUEST, "{}", reserved.1);
 
     let other = call(
         &app,
         &other,
         "POST",
-        "/api/workspaces",
-        Some(json!({"name": "Another actor", "idempotency_key": "ambiguous-create"})),
+        "/internal-api/workspaces",
+        Some(json!({"name": "Another actor", "slug": "another-actor", "idempotency_key": "ambiguous-create"})),
     )
     .await;
     assert_eq!(other.0, StatusCode::OK, "{}", other.1);
@@ -921,4 +964,284 @@ async fn non_postgres_urls_are_rejected() {
     ] {
         assert!(Store::connect(url).await.is_err(), "accepted {url}");
     }
+}
+
+/// The record for an entity, or None when the change set does not mention it.
+fn record<'a>(changes: &'a Value, entity: &str, id: &str) -> Option<&'a Value> {
+    changes
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["entity"] == entity && c["id"] == id)
+        .map(|c| &c["record"])
+}
+
+#[tokio::test]
+async fn idempotent_finish_child_replay_reports_current_records() {
+    let database = support::TestDatabase::new().await;
+    let store = Store::connect(&database.url).await.unwrap();
+    let app = router(store.clone());
+    let owner = account(&store, "owner").await;
+    let ws = workspace(&app, &owner, "Finish replay").await;
+
+    let (status, result) = command(
+        &app,
+        &owner,
+        ws,
+        json!({"type": "create_team", "name": "Ops", "key": "OPS", "members": [owner.profile.id]}),
+        json!({}),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+    let team = id(&result["result"]["id"]);
+    let stages = record(&result["changes"], "teams", &team.to_string()).unwrap()["stages"]
+        .as_array()
+        .unwrap()
+        .clone();
+    let done = stages.iter().find(|s| s["kind"] == "done").unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    let parent = created(
+        &app,
+        &owner,
+        ws,
+        json!({"type": "create_issue", "input": {"team_id": team, "title": "Parent"}}),
+    )
+    .await;
+
+    // Counts are read through REST; creating a child changes only the child.
+    let (status, result) = command(
+        &app,
+        &owner,
+        ws,
+        json!({"type": "create_issue", "input": {"team_id": team, "title": "Child", "parent_id": parent}}),
+        json!({}),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+    let child = id(&result["result"]["id"]);
+    assert!(record(&result["changes"], "issues", &parent.to_string()).is_none());
+    let (status, parent_record) = call(
+        &app,
+        &owner,
+        "GET",
+        &format!("/internal-api/workspaces/{ws}/issues/{parent}"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(parent_record["subtask_total"], 1);
+    assert_eq!(parent_record["subtask_completed"], 0);
+    let child_version =
+        record(&result["changes"], "issues", &child.to_string()).unwrap()["version"].clone();
+
+    let (status, result) = command(
+        &app,
+        &owner,
+        ws,
+        json!({"type": "create_issue", "input": {"team_id": team, "title": "Blocked", "dependencies": [child]}}),
+        json!({}),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+    let blocked = id(&result["result"]["id"]);
+    assert_eq!(
+        record(&result["changes"], "issues", &blocked.to_string()).unwrap()["blocked_count"],
+        1
+    );
+
+    // Finishing returns the child in its new stage. Replay the same key later.
+    let move_child =
+        json!({"type": "move_issue", "id": child, "stage_id": done, "before_id": null});
+    let finish_versions = json!({ child.to_string(): child_version });
+    let (status, result) = command(
+        &app,
+        &owner,
+        ws,
+        move_child.clone(),
+        finish_versions.clone(),
+        Some("finish-child"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+    assert_eq!(
+        record(&result["changes"], "issues", &child.to_string()).unwrap()["stage_id"],
+        done
+    );
+    for (issue, count, value) in [
+        (parent, "subtask_completed", 1),
+        (blocked, "blocked_count", 0),
+    ] {
+        assert!(record(&result["changes"], "issues", &issue.to_string()).is_none());
+        let (status, detail) = call(
+            &app,
+            &owner,
+            "GET",
+            &format!("/internal-api/workspaces/{ws}/issues/{issue}"),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(detail[count], value);
+    }
+    let updated = created(
+        &app,
+        &owner,
+        ws,
+        json!({"type": "update_issue", "id": parent, "patch": {"title": "Parent edited after finish"}}),
+    )
+    .await;
+    assert_eq!(updated, parent);
+    let changes_before: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM changes WHERE workspace_id = $1")
+            .bind(ws)
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+
+    // A replayed command reports the records as they are now.
+    let (status, replay) = command(
+        &app,
+        &owner,
+        ws,
+        move_child,
+        finish_versions,
+        Some("finish-child"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{replay}");
+    assert_eq!(
+        record(&replay["changes"], "issues", &child.to_string()).unwrap()["stage_id"],
+        done
+    );
+    assert!(record(&replay["changes"], "issues", &parent.to_string()).is_none());
+    assert!(record(&replay["changes"], "issues", &blocked.to_string()).is_none());
+    let (status, detail) = call(
+        &app,
+        &owner,
+        "GET",
+        &format!("/internal-api/workspaces/{ws}/issues/{parent}"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(detail["subtask_completed"], 1);
+    assert_eq!(detail["title"], "Parent edited after finish");
+    let (status, detail) = call(
+        &app,
+        &owner,
+        "GET",
+        &format!("/internal-api/workspaces/{ws}/issues/{blocked}"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(detail["blocked_count"], 0);
+    let changes_after: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM changes WHERE workspace_id = $1")
+            .bind(ws)
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+    assert_eq!(changes_after, changes_before);
+
+    drop(app);
+    store.pool.close().await;
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn backlog_issues_stay_out_of_sprints() {
+    let database = support::TestDatabase::new().await;
+    let store = Store::connect(&database.url).await.unwrap();
+    let app = router(store.clone());
+    let owner = account(&store, "owner").await;
+    let ws = workspace(&app, &owner, "Backlog and sprints").await;
+    let team = created(
+        &app,
+        &owner,
+        ws,
+        json!({"type": "create_team", "name": "Team", "key": "TEA", "members": [owner.profile.id]}),
+    )
+    .await;
+    let stage = |kind: &'static str| {
+        sqlx::query_scalar::<_, Uuid>("SELECT id FROM stages WHERE team_id=$1 AND kind=$2")
+            .bind(team)
+            .bind(kind)
+            .fetch_one(&store.pool)
+    };
+    let (backlog, todo) = (
+        stage("backlog").await.unwrap(),
+        stage("planned").await.unwrap(),
+    );
+    let sprint = created(
+        &app,
+        &owner,
+        ws,
+        json!({"type": "create_sprint", "team_id": team, "name": "One", "goal": "", "starts_at": "2030-01-01T00:00:00Z", "ends_at": "2030-01-15T00:00:00Z"}),
+    )
+    .await;
+    let placement = |issue: Uuid| {
+        let pool = store.pool.clone();
+        async move {
+            let row = sqlx::query("SELECT stage_id,sprint_id FROM issues WHERE id=$1")
+                .bind(issue)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+            (
+                row.get::<Uuid, _>("stage_id"),
+                row.get::<Option<Uuid>, _>("sprint_id"),
+            )
+        }
+    };
+    let ok = async |cmd: Value| {
+        let (status, result) = command(&app, &owner, ws, cmd, json!({}), None).await;
+        assert_eq!(status, StatusCode::OK, "{result}");
+    };
+
+    // The team's first stage is Backlog, so sprint work defaults to Todo instead.
+    let issue = created(
+        &app,
+        &owner,
+        ws,
+        json!({"type": "create_issue", "input": {"team_id": team, "title": "Planned", "sprint_id": sprint}}),
+    )
+    .await;
+    assert_eq!(placement(issue).await, (todo, Some(sprint)));
+
+    // A named backlog stage wins over the sprint.
+    let named = created(
+        &app,
+        &owner,
+        ws,
+        json!({"type": "create_issue", "input": {"team_id": team, "title": "Later", "stage_id": backlog, "sprint_id": sprint}}),
+    )
+    .await;
+    assert_eq!(placement(named).await, (backlog, None));
+
+    ok(json!({"type": "update_issue", "id": issue, "patch": {"stage_id": backlog}})).await;
+    assert_eq!(placement(issue).await, (backlog, None));
+
+    ok(json!({"type": "update_issue", "id": issue, "patch": {"sprint_id": sprint}})).await;
+    assert_eq!(placement(issue).await, (todo, Some(sprint)));
+
+    ok(json!({"type": "move_issue", "id": issue, "stage_id": backlog, "before_id": null})).await;
+    assert_eq!(placement(issue).await, (backlog, None));
+
+    // Turning a stage into a backlog stage takes its issues out of their sprints.
+    ok(json!({"type": "update_issue", "id": issue, "patch": {"sprint_id": sprint}})).await;
+    let before = version(&store, issue).await;
+    ok(json!({"type": "update_stage", "team_id": team, "id": todo, "name": "Todo", "kind": "backlog", "position": 1})).await;
+    assert_eq!(placement(issue).await, (todo, None));
+    assert_eq!(version(&store, issue).await, before + 1);
+
+    drop(app);
+    store.pool.close().await;
+    database.cleanup().await;
 }

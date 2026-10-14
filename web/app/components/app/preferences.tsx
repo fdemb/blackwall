@@ -1,6 +1,7 @@
 import { Languages, Monitor, Moon, Sun } from "lucide-react";
 import { Button } from "~/components/ui/button";
 import { Menu, MenuItem, MenuPopover, MenuTrigger } from "~/components/ui/menu";
+import { Tip } from "~/components/ui/tooltip";
 import { useI18n } from "~/lib/i18n";
 import { applyTheme } from "~/lib/theme";
 import { useSession } from "~/lib/session";
@@ -32,9 +33,11 @@ export function ThemeToggle() {
   const Icon = THEME_ICONS[profile.theme];
   return (
     <MenuTrigger>
-      <Button variant="ghost" size="icon" aria-label={t("pref.theme")}>
-        <Icon />
-      </Button>
+      <Tip label={t("pref.theme")} placement="top">
+        <Button variant="ghost" size="icon" aria-label={t("pref.theme")}>
+          <Icon />
+        </Button>
+      </Tip>
       <MenuPopover placement="top end">
         <Menu
           selectionMode="single"

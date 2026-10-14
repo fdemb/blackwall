@@ -18,7 +18,7 @@ async fn create(
     url: &str,
     projects: Value,
 ) -> String {
-    let base = format!("/api/workspaces/{workspace}/trackers/connections");
+    let base = format!("/internal-api/workspaces/{workspace}/trackers/connections");
     let (status, config) = call(
         app,
         owner,
@@ -224,7 +224,7 @@ async fn parent_in_unmapped_project_links_after_mapping() {
 }
 
 #[tokio::test]
-async fn reparenting_moves_link_and_marks_old_and_new_parents() {
+async fn reparenting_moves_link_and_marks_only_the_child() {
     let db = support::TestDatabase::new().await;
     let store = Store::connect(&db.url).await.unwrap();
     let owner = account(&store).await;
@@ -273,11 +273,19 @@ async fn reparenting_moves_link_and_marks_old_and_new_parents() {
     .fetch_all(&store.pool)
     .await
     .unwrap();
-    for wp in [8, 9, 7] {
-        assert!(
-            marked.contains(&issue_id(&list, wp)),
-            "change feed must mark the child and both parents"
-        );
+    assert_eq!(marked, vec![child]);
+    for (wp, total) in [(7, 0), (9, 1)] {
+        let parent = issue_id(&list, wp);
+        let (status, detail) = call(
+            &app,
+            &owner,
+            "GET",
+            &format!("/internal-api/workspaces/{workspace}/issues/{parent}"),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(detail["subtask_total"], total);
     }
     server.abort();
     store.pool.close().await;
@@ -612,7 +620,7 @@ async fn local_issues_can_use_imported_parents() {
         &app,
         &owner,
         "POST",
-        &format!("/api/workspaces/{workspace}/commands"),
+        &format!("/internal-api/workspaces/{workspace}/commands"),
         Some(json!({"expected_versions":{},"command":{"type":"create_issue","input":{"team_id":team_id,"stage_id":stage_id,"title":"Local","parent_id":imported,"dependencies":[imported]}}})),
     )
     .await;
@@ -754,7 +762,7 @@ async fn reparent(app: &Router, owner: &Session, workspace: Uuid, child: &Value,
         app,
         owner,
         "POST",
-        &format!("/api/workspaces/{workspace}/commands"),
+        &format!("/internal-api/workspaces/{workspace}/commands"),
         Some(
             json!({"expected_versions":{child["id"].as_str().unwrap():child["version"]},
             "command":{"type":"update_issue","id":child["id"],"patch":patch}}),
@@ -827,7 +835,7 @@ async fn late_parent_advances_the_baseline_while_parent_import_is_off() {
     // Single-item pages: child 7 arrives before its parent 8.
     mock.data.lock().await.parents.insert(7, 8);
     let (url, server) = mock_server(mock.clone()).await;
-    let base = format!("/api/workspaces/{workspace}/trackers/connections");
+    let base = format!("/internal-api/workspaces/{workspace}/trackers/connections");
     let mut options = import_only();
     options["parent"] = json!({"import":false,"export":false});
     let (status, config) = call(

@@ -5,14 +5,14 @@ import { Download, FileText, Loader2, Lock, Paperclip, Plus, X } from "lucide-re
 import { Avatar } from "~/components/ui/avatar";
 import { Button } from "~/components/ui/button";
 import { Input } from "~/components/ui/field";
-import { ConfirmDialog } from "~/components/app/confirm";
 import { useToast } from "~/components/ui/toast";
-import { Markdown, MarkdownEditor } from "~/components/app/markdown";
+import { Markdown } from "~/components/app/markdown";
+import { MarkdownEditor } from "~/components/app/editor/rich-editor";
 import { IssuePicker } from "~/components/app/issue-picker";
 import { StageIcon } from "~/components/app/icons";
 import { isDone, stageOf } from "~/lib/filters";
 import { bytes, MAX_UPLOAD } from "~/lib/format";
-import { IssueKey, issueKeyLength } from "~/components/app/issue-key";
+import { IssueKey, useIssueKeyWidth } from "~/components/app/issue-key";
 import { useI18n } from "~/lib/i18n";
 import { usePending } from "~/lib/use-pending";
 import { useWorkspace } from "~/lib/workspace";
@@ -89,9 +89,13 @@ export function TitleField({
   );
 }
 
-/** Descriptions that failed to save, by issue, so reopening the editor brings the text back. */
+/** Descriptions that failed to save, by issue, so coming back to the issue brings the text back. */
 const failedDrafts = new Map<Id, string>();
 
+/**
+ * Always-editable description. Edits save when focus leaves the editor, on Ctrl/Cmd+Enter, and
+ * when the page closes. A failed save keeps the text in place.
+ */
 export function Description({
   issue,
   onSave,
@@ -101,12 +105,12 @@ export function Description({
 }) {
   const { t } = useI18n();
   const { canWrite } = useWorkspace();
-  // null while not editing.
+  // Unsaved text, or null while the editor shows what the server has.
   const [draft, setDraft] = useState<string | null>(failedDrafts.get(issue.id) ?? null);
-  const [saving, setSaving] = useState(false);
-  const [discarding, setDiscarding] = useState(false);
   const busy = useRef(false);
+  // The version the draft was started from. Retries and follow-up edits move it to the latest.
   const baseVersion = useRef(issue.version);
+  const rebase = useRef(failedDrafts.has(issue.id));
   const box = useRef<HTMLDivElement>(null);
   const latest = useRef({ draft, saved: issue.description, version: issue.version, onSave });
   useEffect(() => {
@@ -114,33 +118,31 @@ export function Description({
   });
   const dirty = draft !== null && draft !== issue.description;
 
-  // The editor closes only once the server has the text. A failed save leaves it open with the draft intact.
+  const edit = (md: string) => {
+    if (latest.current.draft === null) baseVersion.current = issue.version;
+    latest.current.draft = md;
+    setDraft(md);
+  };
   const commit = async () => {
     const { draft: d, saved, onSave: save } = latest.current;
     if (d === null || busy.current) return;
     if (d === saved) {
       failedDrafts.delete(issue.id);
+      latest.current.draft = null;
       return setDraft(null);
     }
     busy.current = true;
-    setSaving(true);
-    if (failedDrafts.has(issue.id)) baseVersion.current = latest.current.version;
+    if (rebase.current) baseVersion.current = latest.current.version;
     const ok = await save(d, baseVersion.current);
     busy.current = false;
-    setSaving(false);
-    if (ok) {
-      failedDrafts.delete(issue.id);
+    rebase.current = !ok || latest.current.draft !== d;
+    if (!ok) return void failedDrafts.set(issue.id, d);
+    failedDrafts.delete(issue.id);
+    // Text typed while the save was in flight stays as the next draft.
+    if (latest.current.draft === d) {
       latest.current.draft = null;
       setDraft(null);
-    } else {
-      failedDrafts.set(issue.id, d);
     }
-  };
-  const cancel = () => (dirty ? setDiscarding(true) : setDraft(null));
-  const discard = () => {
-    failedDrafts.delete(issue.id);
-    latest.current.draft = null;
-    setDraft(null);
   };
   // Leaving the page mid-edit saves the draft, and keeps it for next time if that fails.
   useEffect(
@@ -160,93 +162,35 @@ export function Description({
     return () => removeEventListener("beforeunload", warn);
   }, [dirty]);
 
-  if (draft !== null)
+  if (!canWrite)
     return (
-      <div
-        ref={box}
-        className="space-y-2"
-        onBlur={() =>
-          setTimeout(() => {
-            // Save when focus leaves the editor for the page. Ignore window switches and the mention menu.
-            // Safari doesn't focus clicked buttons, so a pointer still over the editor means a click inside it.
-            const el = document.activeElement;
-            if (
-              !box.current ||
-              !document.hasFocus() ||
-              box.current.contains(el) ||
-              box.current.matches(":hover") ||
-              el?.closest("[role=menu], [role=dialog], [role=alertdialog]")
-            )
-              return;
-            void commit();
-          })
-        }
-        onKeyDown={(e) => {
-          if (e.key === "Escape") {
-            e.stopPropagation();
-            cancel();
-          }
-        }}
-      >
-        <MarkdownEditor
-          label={t("field.description")}
-          value={draft}
-          onChange={setDraft}
-          autoFocus
-          minRows={8}
-          onSubmit={() => void commit()}
-        />
-        <div className="flex justify-end gap-2">
-          <Button variant="ghost" onPress={cancel}>
-            {t("action.cancel")}
-          </Button>
-          <Button variant="primary" isDisabled={saving} onPress={() => void commit()}>
-            {saving ? t("action.saving") : t("action.save")}
-          </Button>
-        </div>
-        <ConfirmDialog
-          title={t("draft.discardTitle")}
-          description={t("draft.discardSub")}
-          confirmLabel={t("draft.discard")}
-          isOpen={discarding}
-          onOpenChange={setDiscarding}
-          onConfirm={async () => discard()}
-        />
+      <div className="min-h-16 py-2">
+        <Markdown text={issue.description} empty={t("issue.noDescription")} />
       </div>
     );
-  // Kept a div (not a <button>) because rendered Markdown can contain links,
-  // which must not live inside a button. Space opens the editor like Enter does.
   return (
     <div
-      role={canWrite ? "button" : undefined}
-      tabIndex={canWrite ? 0 : undefined}
-      aria-label={canWrite ? t("issue.editDescription") : undefined}
-      onClick={(e) => {
-        // Let people follow links and select text without opening the editor.
-        if (
-          !canWrite ||
-          (e.target instanceof Element && e.target.closest("a")) ||
-          getSelection()?.isCollapsed === false
-        )
-          return;
-        baseVersion.current = issue.version;
-        setDraft(issue.description);
+      ref={box}
+      className="-mx-1 min-h-16 rounded-md px-1 py-2"
+      onBlur={(e) => {
+        // Focus moving to the editor's own toolbar or menus is still editing.
+        if (box.current?.contains(e.relatedTarget) || !document.hasFocus()) return;
+        void commit();
       }}
       onKeyDown={(e) => {
-        if (canWrite && (e.key === "Enter" || e.key === " ")) {
-          e.preventDefault();
-          baseVersion.current = issue.version;
-          setDraft(issue.description);
-        }
+        if (e.key !== "Escape" || e.defaultPrevented) return;
+        e.stopPropagation();
+        (document.activeElement as HTMLElement | null)?.blur();
       }}
-      className={cn(
-        "-mx-3 min-h-16 rounded-lg px-3 py-2 outline-none",
-        canWrite && "cursor-text hover:bg-muted/50 focus-visible:ring-2 focus-visible:ring-ring/50",
-      )}
     >
-      <Markdown
-        text={issue.description}
-        empty={canWrite ? t("issue.addDescription") : t("issue.noDescription")}
+      <MarkdownEditor
+        label={t("field.description")}
+        value={draft ?? issue.description}
+        onChange={edit}
+        placeholder={t("issue.addDescription")}
+        appearance="plain"
+        className="min-h-24"
+        onSubmit={() => void commit()}
       />
     </div>
   );
@@ -255,23 +199,23 @@ export function Description({
 function IssueRow({
   issue,
   trailing,
-  keyLength,
+  keyWidth,
 }: {
   issue: Issue;
   trailing?: React.ReactNode;
-  keyLength: number;
+  keyWidth: string | undefined;
 }) {
   const { ws, member } = useWorkspace();
   const st = stageOf(ws, issue);
   const assignee = member(issue.assignee);
   return (
-    <li className="group flex h-9 items-center gap-2.5 px-3 text-[13px] hover:bg-muted/60">
+    <li className="group flex h-9 items-center gap-2.5 px-3  hover:bg-muted/60">
       <Link
-        to={`/${ws.id}/issue/${issue.id}`}
+        to={`/${ws.slug}/issue/${issue.ref}`}
         className="flex min-w-0 flex-1 items-center gap-2.5 self-stretch"
       >
         {st && <StageIcon kind={st.kind} />}
-        <IssueKey number={issue.number} length={keyLength} className="text-muted-foreground" />
+        <IssueKey value={issue.key} width={keyWidth} className="text-muted-foreground" />
         <span className={cn("truncate", isDone(ws, issue) && "text-muted-foreground line-through")}>
           {issue.title}
         </span>
@@ -300,7 +244,7 @@ export function Subtasks({
   const [title, setTitle] = useState("");
   const { pending, guard } = usePending();
   const done = subs.filter((s) => isDone(ws, s)).length;
-  const keyLength = issueKeyLength(subs);
+  const keyWidth = useIssueKeyWidth(subs);
   // The title is cleared only after the issue exists. If the request fails it stays for another try.
   const submit = () =>
     guard(async () => {
@@ -326,7 +270,7 @@ export function Subtasks({
       title={t("issue.subtasks")}
       action={
         subs.length > 0 && (
-          <span className="text-xs tabular-nums text-muted-foreground">
+          <span className=" tabular-nums text-muted-foreground">
             {done}/{subs.length}
           </span>
         )
@@ -342,7 +286,7 @@ export function Subtasks({
       )}
       <ul className="divide-y divide-border/70 rounded-lg border border-border">
         {subs.map((s) => (
-          <IssueRow key={s.id} issue={s} keyLength={keyLength} />
+          <IssueRow key={s.id} issue={s} keyWidth={keyWidth} />
         ))}
         {canWrite && (
           <li>
@@ -372,7 +316,7 @@ export function Subtasks({
               <button
                 type="button"
                 onClick={() => setAdding(true)}
-                className="flex h-9 w-full items-center gap-2 px-3 text-[13px] text-muted-foreground hover:bg-muted/60 hover:text-foreground"
+                className="flex h-9 w-full items-center gap-2 px-3  text-muted-foreground hover:bg-muted/60 hover:text-foreground"
               >
                 <Plus className="size-3.5" />
                 {t("issue.addSubtask")}
@@ -398,7 +342,7 @@ export function Dependencies({
 }) {
   const { t } = useI18n();
   const { run, canWrite } = useWorkspace();
-  const keyLength = issueKeyLength([...blockers, ...blocking]);
+  const keyWidth = useIssueKeyWidth([...blockers, ...blocking]);
   const remove = (id: Id) =>
     run({
       type: "update_issue",
@@ -408,13 +352,13 @@ export function Dependencies({
   const group = (title: string, list: Issue[], removable: boolean) =>
     list.length > 0 && (
       <div>
-        <h3 className="mb-1 text-xs text-muted-foreground">{title}</h3>
+        <h3 className="mb-1  text-muted-foreground">{title}</h3>
         <ul className="divide-y divide-border/70 rounded-lg border border-border">
           {list.map((b) => (
             <IssueRow
               key={b.id}
               issue={b}
-              keyLength={keyLength}
+              keyWidth={keyWidth}
               trailing={
                 removable &&
                 canWrite && (
@@ -490,9 +434,10 @@ type Uploader = ReturnType<typeof useUploader>;
 
 export function AttachButton({ uploader }: { uploader: Uploader }) {
   const { t } = useI18n();
+  const { offline } = useWorkspace();
   return (
     <FileTrigger allowsMultiple onSelect={(list) => void uploader.pick(list)}>
-      <Button variant="ghost" size="sm" isDisabled={uploader.busy}>
+      <Button variant="ghost" size="sm" isDisabled={uploader.busy || offline}>
         {uploader.busy ? <Loader2 aria-hidden className="animate-spin" /> : <Paperclip />}
         {uploader.busy ? t("attachments.uploading") : t("attachments.add")}
       </Button>
@@ -511,7 +456,7 @@ export function AttachmentChip({
 }) {
   const { t } = useI18n();
   return (
-    <li className="group flex items-center gap-2 rounded-lg border border-border bg-card px-2.5 py-1.5 text-[13px]">
+    <li className="group flex items-center gap-2 rounded-lg border border-border bg-card px-2.5 py-1.5 ">
       <FileText className="size-4 shrink-0 text-muted-foreground" />
       <a
         href={attachmentUrl(wsId, a.id)}
@@ -520,7 +465,7 @@ export function AttachmentChip({
       >
         {a.name}
       </a>
-      <span className="text-xs text-muted-foreground">{bytes(a.size)}</span>
+      <span className=" text-muted-foreground">{bytes(a.size)}</span>
       <a
         href={attachmentUrl(wsId, a.id)}
         download={a.name}

@@ -1,4 +1,5 @@
 use super::*;
+use crate::domain::{validate_email, validate_url};
 use crate::jobs::{Email, Grant, Job};
 use std::collections::BTreeSet;
 
@@ -8,688 +9,121 @@ impl Operation<'_> {
         command: Command,
         upload: Option<NewAttachment>,
     ) -> Result<Option<Uuid>> {
-        let now = Utc::now();
-        let result = match command {
+        let id = match command {
             Command::AddAttachment {
                 issue_id,
                 attachment,
             } => {
                 self.touch("issues", issue_id).await?;
-                self.reject_archived_issue(issue_id).await?;
-                self.discussion_issue(issue_id).await?;
+                self.attachment_issue(issue_id).await?;
                 self.insert_attachment(issue_id, None, attachment, upload)
                     .await?;
-                Some(issue_id)
+                issue_id
             }
-
             Command::AttachCommentFile {
                 comment_id,
                 attachment,
             } => {
-                let row = self
-                    .discussion_record("comments", "author", comment_id)
+                self.attach_comment_file(comment_id, attachment, upload)
                     .await?;
-                self.author_or_admin(row.try_get("author")?)?;
-                let issue_id = row.try_get("issue_id")?;
-                self.discussion_issue(issue_id).await?;
-                self.touch("comments", comment_id).await?;
-                self.insert_attachment(issue_id, Some(comment_id), attachment, upload)
-                    .await?;
-                Some(comment_id)
+                comment_id
             }
-
             Command::RemoveAttachment {
                 issue_id,
                 attachment_id,
             } => {
-                self.touch("issues", issue_id).await?;
-                self.reject_archived_issue(issue_id).await?;
-                self.discussion_issue(issue_id).await?;
-
-                let deleted = sqlx::query(
-                    "DELETE FROM attachments WHERE workspace_id=$1 AND issue_id=$2 AND \
-                    id=$3 AND comment_id IS NULL",
-                )
-                .bind(self.workspace_id)
-                .bind(issue_id)
-                .bind(attachment_id)
-                .execute(&mut *self.tx)
-                .await?;
-                if deleted.rows_affected() == 0 {
-                    return Err(Error::NotFound);
-                }
-
-                Some(issue_id)
+                self.remove_attachment(issue_id, attachment_id).await?;
+                issue_id
             }
-
             Command::AddComment {
+                id,
                 issue_id,
                 body,
                 mentions,
                 attachments,
             } => {
-                self.discussion_issue(issue_id).await?;
-                crate::domain::text(&body, 100_000)?;
-                let mentions: BTreeSet<_> = mentions.into_iter().collect();
-
-                for user in &mentions {
-                    self.member(*user).await?;
-                }
-
-                self.capacity("comments", 20_000).await?;
-                let id = Uuid::new_v4();
-
-                sqlx::query(
-                    "INSERT INTO comments(id,workspace_id,issue_id,author,body,\
-                    created_at) VALUES($1,$2,$3,$4,$5,$6)",
-                )
-                .bind(id)
-                .bind(self.workspace_id)
-                .bind(issue_id)
-                .bind(self.actor)
-                .bind(&body)
-                .bind(now)
-                .execute(&mut *self.tx)
-                .await?;
-                for user in &mentions {
-                    sqlx::query(
-                        "INSERT INTO comment_mentions(workspace_id,comment_id,user_id) \
-                        VALUES($1,$2,$3)",
-                    )
-                    .bind(self.workspace_id)
-                    .bind(id)
-                    .bind(user)
-                    .execute(&mut *self.tx)
-                    .await?;
-                }
-
-                for attachment in attachments {
-                    let changed = sqlx::query(
-                        "UPDATE attachments SET comment_id=$1 WHERE workspace_id=$2 AND \
-                        issue_id=$3 AND id=$4 AND uploader_id=$5 AND comment_id IS NULL",
-                    )
-                    .bind(id)
-                    .bind(self.workspace_id)
-                    .bind(issue_id)
-                    .bind(attachment.id)
-                    .bind(self.actor)
-                    .execute(&mut *self.tx)
-                    .await?;
-                    if changed.rows_affected() != 1 {
-                        return Err(Error::BadRequest(
-                            "attachment must be uploaded to this issue first".into(),
-                        ));
-                    }
-                }
-
-                let followers: Vec<Uuid> = sqlx::query_scalar(
-                    "SELECT user_id FROM issue_followers WHERE workspace_id=$1 AND \
-                    issue_id=$2 AND user_id<>$3 ORDER BY user_id",
-                )
-                .bind(self.workspace_id)
-                .bind(issue_id)
-                .bind(self.actor)
-                .fetch_all(&mut *self.tx)
-                .await?;
-                for user in followers {
-                    self.notify(
-                        user,
-                        Some(issue_id),
-                        AlertKind::Reply,
-                        body.clone(),
-                        format!("reply:{id}:{user}"),
-                    )
-                    .await?;
-                }
-
-                for user in mentions {
-                    if user != self.actor {
-                        self.notify(
-                            user,
-                            Some(issue_id),
-                            AlertKind::Mention,
-                            body.clone(),
-                            format!("mention:{id}:{user}"),
-                        )
-                        .await?;
-                    }
-                }
-
-                crate::tracker::enqueue_comment(&mut self.tx, self.workspace_id, issue_id, id)
-                    .await?;
-                self.created(id);
-
-                Some(id)
+                self.add_comment(id, issue_id, body, mentions, attachments)
+                    .await?
             }
-
             Command::EditComment { id, body, mentions } => {
-                crate::domain::text(&body, 100_000)?;
-
-                let row = self.discussion_record("comments", "author", id).await?;
-                self.author_or_admin(row.try_get("author")?)?;
-                let mentions: BTreeSet<_> = mentions.into_iter().collect();
-
-                for user in &mentions {
-                    self.member(*user).await?;
-                }
-
-                self.touch("comments", id).await?;
-
-                sqlx::query(
-                    "UPDATE comments SET body=$3,edited_at=$4 WHERE workspace_id=$1 AND \
-                        id=$2",
-                )
-                .bind(self.workspace_id)
-                .bind(id)
-                .bind(body)
-                .bind(now)
-                .execute(&mut *self.tx)
-                .await?;
-
-                sqlx::query("DELETE FROM comment_mentions WHERE workspace_id=$1 AND comment_id=$2")
-                    .bind(self.workspace_id)
-                    .bind(id)
-                    .execute(&mut *self.tx)
-                    .await?;
-                for user in mentions {
-                    sqlx::query(
-                        "INSERT INTO comment_mentions(workspace_id,comment_id,user_id) \
-                        VALUES($1,$2,$3)",
-                    )
-                    .bind(self.workspace_id)
-                    .bind(id)
-                    .bind(user)
-                    .execute(&mut *self.tx)
-                    .await?;
-                }
-
-                Some(id)
+                self.edit_comment(id, body, mentions).await?;
+                id
             }
-
             Command::DeleteComment { id } => {
-                let row = self.discussion_record("comments", "author", id).await?;
-                self.author_or_admin(row.try_get("author")?)?;
-                self.touch("comments", id).await?;
-
-                sqlx::query("DELETE FROM comments WHERE workspace_id=$1 AND id=$2")
-                    .bind(self.workspace_id)
-                    .bind(id)
-                    .execute(&mut *self.tx)
-                    .await?;
-                Some(id)
+                self.delete_authored("comments", "author", id).await?;
+                id
             }
-
             Command::LogTime {
+                id,
                 issue_id,
                 minutes,
                 note,
                 logged_at,
             } => {
-                self.discussion_issue(issue_id).await?;
-                validate_time(minutes, &note)?;
-                self.capacity("time_entries", 20_000).await?;
-                let id = Uuid::new_v4();
-
-                sqlx::query(
-                    "INSERT INTO time_entries(id,workspace_id,issue_id,user_id,minutes,\
-                    note,logged_at) VALUES($1,$2,$3,$4,$5,$6,$7)",
-                )
-                .bind(id)
-                .bind(self.workspace_id)
-                .bind(issue_id)
-                .bind(self.actor)
-                .bind(minutes as i64)
-                .bind(note)
-                .bind(logged_at)
-                .execute(&mut *self.tx)
-                .await?;
-                self.created(id);
-
-                Some(id)
+                self.log_time(id, issue_id, minutes, note, logged_at)
+                    .await?
             }
-
             Command::UpdateTime {
                 id,
                 minutes,
                 note,
                 logged_at,
             } => {
-                validate_time(minutes, &note)?;
-
-                let row = self
-                    .discussion_record("time_entries", "user_id", id)
-                    .await?;
-                self.author_or_admin(row.try_get("user_id")?)?;
-                self.touch("time_entries", id).await?;
-
-                sqlx::query(
-                    "UPDATE time_entries SET minutes=$3,note=$4,logged_at=$5 WHERE \
-                    workspace_id=$1 AND id=$2",
-                )
-                .bind(self.workspace_id)
-                .bind(id)
-                .bind(minutes as i64)
-                .bind(note)
-                .bind(logged_at)
-                .execute(&mut *self.tx)
-                .await?;
-                Some(id)
+                self.update_time(id, minutes, note, logged_at).await?;
+                id
             }
-
             Command::DeleteTime { id } => {
-                let row = self
-                    .discussion_record("time_entries", "user_id", id)
-                    .await?;
-                self.author_or_admin(row.try_get("user_id")?)?;
-                self.touch("time_entries", id).await?;
-
-                sqlx::query("DELETE FROM time_entries WHERE workspace_id=$1 AND id=$2")
-                    .bind(self.workspace_id)
-                    .bind(id)
-                    .execute(&mut *self.tx)
-                    .await?;
-                Some(id)
+                self.delete_authored("time_entries", "user_id", id).await?;
+                id
             }
-
             Command::SaveView {
+                id,
                 name,
                 shared,
                 filter,
-            } => {
-                crate::domain::text(&name, 200)?;
-                self.capacity("saved_views", 5_000).await?;
-                let id = Uuid::new_v4();
-
-                sqlx::query(
-                    "INSERT INTO saved_views(id,workspace_id,owner,name,shared,filter) \
-                    VALUES($1,$2,$3,$4,$5,$6)",
-                )
-                .bind(id)
-                .bind(self.workspace_id)
-                .bind(self.actor)
-                .bind(name)
-                .bind(shared)
-                .bind(serde_json::to_value(filter)?)
-                .execute(&mut *self.tx)
-                .await?;
-                self.created(id);
-
-                Some(id)
-            }
-
+            } => self.save_view(id, name, shared, filter).await?,
             Command::UpdateView {
                 id,
                 name,
                 shared,
                 filter,
             } => {
-                crate::domain::text(&name, 200)?;
-
-                let owner: Uuid = sqlx::query_scalar(
-                    "SELECT owner FROM saved_views WHERE workspace_id=$1 AND id=$2 FOR \
-                        UPDATE",
-                )
-                .bind(self.workspace_id)
-                .bind(id)
-                .fetch_optional(&mut *self.tx)
-                .await?
-                .ok_or(Error::NotFound)?;
-                self.author_or_admin(owner)?;
-
-                if shared && self.role == Role::Viewer {
-                    return Err(Error::Forbidden);
-                }
-
-                self.touch("saved_views", id).await?;
-
-                sqlx::query(
-                    "UPDATE saved_views SET name=$3,shared=$4,filter=$5 WHERE \
-                    workspace_id=$1 AND id=$2",
-                )
-                .bind(self.workspace_id)
-                .bind(id)
-                .bind(name)
-                .bind(shared)
-                .bind(serde_json::to_value(filter)?)
-                .execute(&mut *self.tx)
-                .await?;
-                Some(id)
+                self.update_view(id, name, shared, filter).await?;
+                id
             }
-
             Command::DeleteView { id } => {
-                let owner: Uuid = sqlx::query_scalar(
-                    "SELECT owner FROM saved_views WHERE workspace_id=$1 AND id=$2 FOR \
-                        UPDATE",
-                )
-                .bind(self.workspace_id)
-                .bind(id)
-                .fetch_optional(&mut *self.tx)
-                .await?
-                .ok_or(Error::NotFound)?;
-                self.author_or_admin(owner)?;
-                self.touch("saved_views", id).await?;
-
-                sqlx::query("DELETE FROM saved_views WHERE workspace_id=$1 AND id=$2")
-                    .bind(self.workspace_id)
-                    .bind(id)
-                    .execute(&mut *self.tx)
-                    .await?;
-                Some(id)
+                self.delete_view(id).await?;
+                id
             }
-
-            Command::Invite { email, role, .. } => {
-                self.admin()?;
-
-                if role == Role::Owner && self.role != Role::Owner {
-                    return Err(Error::Forbidden);
-                }
-                validate_email(&email)?;
-                let email = email.to_lowercase();
-                self.discussion_lock(&format!("invitation:{email}")).await?;
-
-                sqlx::query(
-                    "UPDATE invitations SET state='expired',token_hash='',\
-                    version=version+1 WHERE workspace_id=$1 AND lower(email)=$2 AND \
-                    state='pending' AND expires_at<=$3",
-                )
-                .bind(self.workspace_id)
-                .bind(&email)
-                .bind(now)
-                .execute(&mut *self.tx)
-                .await?;
-
-                let pending: bool = sqlx::query_scalar(
-                    "SELECT EXISTS(SELECT 1 FROM invitations WHERE workspace_id=$1 AND \
-                    lower(email)=$2 AND state='pending')",
-                )
-                .bind(self.workspace_id)
-                .bind(&email)
-                .fetch_one(&mut *self.tx)
-                .await?;
-                if pending {
-                    return Err(Error::Conflict("invitation already pending".into()));
-                }
-
-                self.capacity("invitations", 5_000).await?;
-                let id = Uuid::new_v4();
-                let token = crate::auth::token();
-                let hash = crate::auth::hash(&token);
-
-                sqlx::query(
-                    "INSERT INTO invitations(id,workspace_id,email,role,token_hash,\
-                    expires_at,state) VALUES($1,$2,$3,$4,$5,$6,'pending')",
-                )
-                .bind(id)
-                .bind(self.workspace_id)
-                .bind(&email)
-                .bind(enum_text(&role))
-                .bind(&hash)
-                .bind(now + chrono::Duration::days(7))
-                .execute(&mut *self.tx)
-                .await?;
-                self.invitation_email(id, email, token, hash).await?;
-
-                self.created(id);
-
-                Some(id)
-            }
-
+            Command::Invite { email, role, .. } => self.invite(email, role).await?,
             Command::ResendInvitation { id, .. } => {
-                self.admin()?;
-
-                let email: String = sqlx::query_scalar(
-                    "SELECT email FROM invitations WHERE workspace_id=$1 AND id=$2",
-                )
-                .bind(self.workspace_id)
-                .bind(id)
-                .fetch_optional(&mut *self.tx)
-                .await?
-                .ok_or(Error::NotFound)?;
-                self.discussion_lock(&format!("invitation:{email}")).await?;
-                self.touch("invitations", id).await?;
-
-                let row = sqlx::query(
-                    "SELECT email,state,role FROM invitations WHERE workspace_id=$1 AND \
-                        id=$2",
-                )
-                .bind(self.workspace_id)
-                .bind(id)
-                .fetch_one(&mut *self.tx)
-                .await?;
-
-                if matches!(row.get::<&str, _>("state"), "accepted" | "cancelled") {
-                    return Err(Error::Conflict("invitation is no longer pending".into()));
-                }
-
-                if row.get::<&str, _>("role") == "owner" && self.role != Role::Owner {
-                    return Err(Error::Forbidden);
-                }
-
-                let other: bool = sqlx::query_scalar(
-                    "SELECT EXISTS(SELECT 1 FROM invitations WHERE workspace_id=$1 AND \
-                    lower(email)=lower($2) AND state='pending' AND id<>$3 AND \
-                    expires_at>$4)",
-                )
-                .bind(self.workspace_id)
-                .bind(&email)
-                .bind(id)
-                .bind(now)
-                .fetch_one(&mut *self.tx)
-                .await?;
-                if other {
-                    return Err(Error::Conflict("invitation already pending".into()));
-                }
-
-                sqlx::query(
-                    "UPDATE invitations SET state='expired',token_hash='',\
-                    version=version+1 WHERE workspace_id=$1 AND lower(email)=lower($2) \
-                    AND state='pending' AND id<>$3 AND expires_at<=$4",
-                )
-                .bind(self.workspace_id)
-                .bind(&email)
-                .bind(id)
-                .bind(now)
-                .execute(&mut *self.tx)
-                .await?;
-
-                let token = crate::auth::token();
-                let hash = crate::auth::hash(&token);
-
-                sqlx::query(
-                    "UPDATE invitations SET token_hash=$3,expires_at=$4,state='pending' \
-                    WHERE workspace_id=$1 AND id=$2",
-                )
-                .bind(self.workspace_id)
-                .bind(id)
-                .bind(&hash)
-                .bind(now + chrono::Duration::days(7))
-                .execute(&mut *self.tx)
-                .await?;
-                self.invitation_email(id, email, token, hash).await?;
-
-                Some(id)
+                self.resend_invitation(id).await?;
+                id
             }
-
             Command::CancelInvitation { id } => {
-                self.admin()?;
-                self.touch("invitations", id).await?;
-
-                let state: String = sqlx::query_scalar(
-                    "SELECT state FROM invitations WHERE workspace_id=$1 AND id=$2",
-                )
-                .bind(self.workspace_id)
-                .bind(id)
-                .fetch_one(&mut *self.tx)
-                .await?;
-
-                if state == "accepted" {
-                    return Err(Error::Conflict("invitation already accepted".into()));
-                }
-
-                sqlx::query(
-                    "UPDATE invitations SET state='cancelled',token_hash='' WHERE \
-                    workspace_id=$1 AND id=$2",
-                )
-                .bind(self.workspace_id)
-                .bind(id)
-                .execute(&mut *self.tx)
-                .await?;
-                Some(id)
+                self.cancel_invitation(id).await?;
+                id
             }
-
             Command::SetRole { user_id, role } => {
-                self.admin()?;
-                let old = self.member_role(user_id).await?;
-
-                if (old == "owner" || role == Role::Owner) && self.role != Role::Owner {
-                    return Err(Error::Forbidden);
-                }
-
-                if old == "owner" && role != Role::Owner {
-                    self.retain_owner().await?;
-                }
-
-                self.touch("workspace_members", user_id).await?;
-
-                sqlx::query(
-                    "UPDATE workspace_members SET role=$3 WHERE workspace_id=$1 AND \
-                        user_id=$2",
-                )
-                .bind(self.workspace_id)
-                .bind(user_id)
-                .bind(enum_text(&role))
-                .execute(&mut *self.tx)
-                .await?;
-
-                Some(user_id)
+                self.set_role(user_id, role).await?;
+                user_id
             }
-
             Command::RemoveMember { user_id } => {
-                self.admin()?;
-
-                if self.member_role(user_id).await? == "owner" {
-                    if self.role != Role::Owner {
-                        return Err(Error::Forbidden);
-                    }
-
-                    self.retain_owner().await?;
-                }
-
-                self.touch("workspace_members", user_id).await?;
-                self.lock_graph().await?;
-
-                sqlx::query(
-                    "SELECT id FROM issues WHERE workspace_id=$1 AND (assignee=$2 OR \
-                    EXISTS(SELECT 1 FROM issue_followers f WHERE f.workspace_id=$1 AND \
-                    f.issue_id=issues.id AND f.user_id=$2)) ORDER BY id FOR UPDATE",
-                )
-                .bind(self.workspace_id)
-                .bind(user_id)
-                .fetch_all(&mut *self.tx)
-                .await?;
-
-                let changed = sqlx::query(
-                    "UPDATE issues SET assignee=CASE WHEN assignee=$2 THEN NULL ELSE \
-                    assignee END,version=version+1,updated_at=$3 WHERE workspace_id=$1 \
-                    AND (assignee=$2 OR EXISTS(SELECT 1 FROM issue_followers f WHERE \
-                    f.workspace_id=$1 AND f.issue_id=issues.id AND f.user_id=$2)) \
-                    RETURNING id,version",
-                )
-                .bind(self.workspace_id)
-                .bind(user_id)
-                .bind(now)
-                .fetch_all(&mut *self.tx)
-                .await?;
-                for row in changed {
-                    self.versions
-                        .insert(row.try_get("id")?, row.try_get("version")?);
-                }
-
-                sqlx::query(
-                    "SELECT id FROM teams WHERE workspace_id=$1 AND EXISTS(SELECT 1 FROM \
-                    team_members m WHERE m.workspace_id=$1 AND m.team_id=teams.id AND \
-                    m.user_id=$2) ORDER BY id FOR UPDATE",
-                )
-                .bind(self.workspace_id)
-                .bind(user_id)
-                .fetch_all(&mut *self.tx)
-                .await?;
-
-                let changed = sqlx::query(
-                    "UPDATE teams SET version=version+1 WHERE workspace_id=$1 AND \
-                    EXISTS(SELECT 1 FROM team_members m WHERE m.workspace_id=$1 AND \
-                    m.team_id=teams.id AND m.user_id=$2) RETURNING id,version",
-                )
-                .bind(self.workspace_id)
-                .bind(user_id)
-                .fetch_all(&mut *self.tx)
-                .await?;
-                for row in changed {
-                    self.versions
-                        .insert(row.try_get("id")?, row.try_get("version")?);
-                }
-
-                sqlx::query("DELETE FROM workspace_members WHERE workspace_id=$1 AND user_id=$2")
-                    .bind(self.workspace_id)
-                    .bind(user_id)
-                    .execute(&mut *self.tx)
-                    .await?;
-                Some(user_id)
+                self.remove_member(user_id).await?;
+                user_id
             }
-
             Command::MarkNotificationRead { id } => {
-                self.own_notification(id).await?;
-                self.touch("notifications", id).await?;
-
-                sqlx::query("UPDATE notifications SET read_at=$3 WHERE workspace_id=$1 AND id=$2")
-                    .bind(self.workspace_id)
-                    .bind(id)
-                    .bind(now)
-                    .execute(&mut *self.tx)
-                    .await?;
-                Some(id)
+                self.set_notification_read(id, Some(Utc::now())).await?;
+                id
             }
-
             Command::MarkNotificationUnread { id } => {
-                self.own_notification(id).await?;
-                self.touch("notifications", id).await?;
-
-                sqlx::query(
-                    "UPDATE notifications SET read_at=NULL WHERE workspace_id=$1 AND id=$2",
-                )
-                .bind(self.workspace_id)
-                .bind(id)
-                .execute(&mut *self.tx)
-                .await?;
-
-                Some(id)
+                self.set_notification_read(id, None).await?;
+                id
             }
-
             Command::MarkAllNotificationsRead => {
-                let ids: Vec<Uuid> = sqlx::query_scalar(
-                    "SELECT id FROM notifications WHERE workspace_id=$1 AND user_id=$2 \
-                    AND read_at IS NULL ORDER BY id FOR UPDATE",
-                )
-                .bind(self.workspace_id)
-                .bind(self.actor)
-                .fetch_all(&mut *self.tx)
-                .await?;
-                for id in ids {
-                    self.touch("notifications", id).await?;
-
-                    sqlx::query(
-                        "UPDATE notifications SET read_at=$3 WHERE workspace_id=$1 AND id=$2",
-                    )
-                    .bind(self.workspace_id)
-                    .bind(id)
-                    .bind(now)
-                    .execute(&mut *self.tx)
-                    .await?;
-                }
-
-                None
+                self.mark_all_notifications_read().await?;
+                return Ok(None);
             }
-
             Command::ConfigureAlerts {
                 assignment,
                 reply,
@@ -697,94 +131,31 @@ impl Operation<'_> {
                 mention,
                 deadline,
             } => {
-                self.discussion_lock(&format!("preferences:{}", self.actor))
+                self.configure_alerts([assignment, reply, change, mention, deadline])
                     .await?;
-
-                let exists: bool = sqlx::query_scalar(
-                    "SELECT EXISTS(SELECT 1 FROM alert_preferences WHERE workspace_id=$1 \
-                    AND user_id=$2)",
-                )
-                .bind(self.workspace_id)
-                .bind(self.actor)
-                .fetch_one(&mut *self.tx)
-                .await?;
-                if exists {
-                    self.touch("alert_preferences", self.actor).await?;
-                } else {
-                    self.created(self.actor);
-                }
-
-                sqlx::query(
-                    "INSERT INTO alert_preferences(workspace_id,user_id,assignment,reply,\
-                    change,mention,deadline) VALUES($1,$2,$3,$4,$5,$6,$7) ON \
-                    CONFLICT(workspace_id,user_id) DO UPDATE SET \
-                    assignment=EXCLUDED.assignment,reply=EXCLUDED.reply,\
-                    change=EXCLUDED.change,mention=EXCLUDED.mention,\
-                    deadline=EXCLUDED.deadline",
-                )
-                .bind(self.workspace_id)
-                .bind(self.actor)
-                .bind(assignment)
-                .bind(reply)
-                .bind(change)
-                .bind(mention)
-                .bind(deadline)
-                .execute(&mut *self.tx)
-                .await?;
-                None
+                return Ok(None);
             }
-
             Command::CreateIntegration {
+                id,
                 name,
                 webhook_url,
                 secret,
+                events,
             } => {
-                self.admin()?;
-                crate::domain::text(&name, 200)?;
-                validate_url(&webhook_url)?;
-                crate::domain::text(&secret, 4096)?;
-                self.capacity("integrations", 100).await?;
-                let id = Uuid::new_v4();
-
-                sqlx::query(
-                    "INSERT INTO integrations(id,workspace_id,name,webhook_url,secret) \
-                    VALUES($1,$2,$3,$4,$5)",
-                )
-                .bind(id)
-                .bind(self.workspace_id)
-                .bind(name)
-                .bind(webhook_url)
-                .bind(secret)
-                .execute(&mut *self.tx)
-                .await?;
-                self.created(id);
-
-                Some(id)
+                self.create_integration(id, name, webhook_url, secret, events)
+                    .await?
             }
-
-            Command::UpdateIntegration { id, enabled } => {
-                self.admin()?;
-                self.touch("integrations", id).await?;
-
-                sqlx::query("UPDATE integrations SET enabled=$3 WHERE workspace_id=$1 AND id=$2")
-                    .bind(self.workspace_id)
-                    .bind(id)
-                    .bind(enabled)
-                    .execute(&mut *self.tx)
-                    .await?;
-                Some(id)
+            Command::UpdateIntegration {
+                id,
+                enabled,
+                events,
+            } => {
+                self.update_integration(id, enabled, events).await?;
+                id
             }
-
             Command::DeleteIntegration { id } => {
-                self.admin()?;
-                self.touch("integrations", id).await?;
-
-                sqlx::query("DELETE FROM integrations WHERE workspace_id=$1 AND id=$2")
-                    .bind(self.workspace_id)
-                    .bind(id)
-                    .execute(&mut *self.tx)
-                    .await?;
-                Some(id)
+                self.delete_integration(id).await?;
+                id
             }
             _ => {
                 return Err(Error::Internal(
@@ -793,7 +164,753 @@ impl Operation<'_> {
             }
         };
 
-        Ok(result)
+        Ok(Some(id))
+    }
+
+    /// Deletes a comment or time entry. Only its author or an admin may.
+    async fn delete_authored(&mut self, table: &str, author: &str, id: Uuid) -> Result<()> {
+        let row = self.discussion_record(table, author, id).await?;
+        self.author_or_admin(row.try_get(author)?)?;
+        self.touch_locked(table, id, row.try_get("version")?)
+            .await?;
+        self.delete_row(table, id).await
+    }
+
+    async fn delete_view(&mut self, id: Uuid) -> Result<()> {
+        self.lock_own_view(id).await?;
+        self.touch("saved_views", id).await?;
+        self.delete_row("saved_views", id).await
+    }
+
+    async fn update_integration(
+        &mut self,
+        id: Uuid,
+        enabled: bool,
+        events: Option<Vec<String>>,
+    ) -> Result<()> {
+        self.admin()?;
+        if let Some(events) = &events {
+            crate::domain::validate_webhook_events(events)?;
+        }
+        self.touch("integrations", id).await?;
+        sqlx::query(
+            "UPDATE integrations SET enabled=$3,events=COALESCE($4,events) \
+             WHERE workspace_id=$1 AND id=$2",
+        )
+        .bind(self.workspace_id)
+        .bind(id)
+        .bind(enabled)
+        .bind(events)
+        .execute(&mut *self.tx)
+        .await?;
+        Ok(())
+    }
+
+    async fn delete_integration(&mut self, id: Uuid) -> Result<()> {
+        self.admin()?;
+        self.touch("integrations", id).await?;
+        self.delete_row("integrations", id).await
+    }
+
+    /// Deletes one row of a workspace-scoped table the caller already locked.
+    async fn delete_row(&mut self, table: &str, id: Uuid) -> Result<()> {
+        assert!(matches!(
+            table,
+            "comments" | "time_entries" | "saved_views" | "integrations"
+        ));
+        sqlx::query(&format!(
+            "DELETE FROM {table} WHERE workspace_id=$1 AND id=$2"
+        ))
+        .bind(self.workspace_id)
+        .bind(id)
+        .execute(&mut *self.tx)
+        .await?;
+        Ok(())
+    }
+
+    async fn attach_comment_file(
+        &mut self,
+        comment_id: Uuid,
+        attachment: Attachment,
+        upload: Option<NewAttachment>,
+    ) -> Result<()> {
+        let row = self
+            .discussion_record("comments", "author", comment_id)
+            .await?;
+        self.author_or_admin(row.try_get("author")?)?;
+        let issue_id = row.try_get("issue_id")?;
+        self.discussion_issue(issue_id).await?;
+        self.touch_locked("comments", comment_id, row.try_get("version")?)
+            .await?;
+        self.insert_attachment(issue_id, Some(comment_id), attachment, upload)
+            .await
+    }
+
+    async fn remove_attachment(&mut self, issue_id: Uuid, attachment_id: Uuid) -> Result<()> {
+        self.touch("issues", issue_id).await?;
+        self.attachment_issue(issue_id).await?;
+
+        let deleted = sqlx::query(
+            "DELETE FROM attachments WHERE workspace_id=$1 AND issue_id=$2 AND \
+            id=$3 AND comment_id IS NULL",
+        )
+        .bind(self.workspace_id)
+        .bind(issue_id)
+        .bind(attachment_id)
+        .execute(&mut *self.tx)
+        .await?;
+        if deleted.rows_affected() == 0 {
+            return Err(Error::NotFound);
+        }
+        Ok(())
+    }
+
+    async fn add_comment(
+        &mut self,
+        id: Option<Uuid>,
+        issue_id: Uuid,
+        body: String,
+        mentions: Vec<Uuid>,
+        attachments: Vec<Attachment>,
+    ) -> Result<Uuid> {
+        self.discussion_issue(issue_id).await?;
+        crate::domain::text(&body, 100_000)?;
+        let mentions: BTreeSet<_> = mentions.into_iter().collect();
+        for user in &mentions {
+            self.member(*user).await?;
+        }
+
+        self.capacity("comments", 20_000).await?;
+        let id = self.reserve_client_id(id).await?;
+        sqlx::query(
+            "INSERT INTO comments(id,workspace_id,issue_id,author,body,\
+            created_at) VALUES($1,$2,$3,$4,$5,$6)",
+        )
+        .bind(id)
+        .bind(self.workspace_id)
+        .bind(issue_id)
+        .bind(self.actor)
+        .bind(&body)
+        .bind(Utc::now())
+        .execute(&mut *self.tx)
+        .await
+        .map_err(id_conflict)?;
+        self.insert_mentions(id, &mentions).await?;
+        for attachment in attachments {
+            self.claim_comment_attachment(id, issue_id, attachment.id)
+                .await?;
+        }
+
+        self.notify_comment(id, issue_id, &body, mentions).await?;
+        crate::tracker::enqueue_comment(&mut self.tx, self.workspace_id, issue_id, id).await?;
+        self.created("comments", id);
+        Ok(id)
+    }
+
+    async fn insert_mentions(&mut self, comment_id: Uuid, mentions: &BTreeSet<Uuid>) -> Result<()> {
+        for user in mentions {
+            sqlx::query(
+                "INSERT INTO comment_mentions(workspace_id,comment_id,user_id) \
+                VALUES($1,$2,$3)",
+            )
+            .bind(self.workspace_id)
+            .bind(comment_id)
+            .bind(user)
+            .execute(&mut *self.tx)
+            .await?;
+        }
+        Ok(())
+    }
+
+    /// Moves an attachment the actor uploaded to the issue onto the comment.
+    async fn claim_comment_attachment(
+        &mut self,
+        comment_id: Uuid,
+        issue_id: Uuid,
+        attachment_id: Uuid,
+    ) -> Result<()> {
+        let changed = sqlx::query(
+            "UPDATE attachments SET comment_id=$1 WHERE workspace_id=$2 AND \
+            issue_id=$3 AND id=$4 AND uploader_id=$5 AND comment_id IS NULL",
+        )
+        .bind(comment_id)
+        .bind(self.workspace_id)
+        .bind(issue_id)
+        .bind(attachment_id)
+        .bind(self.actor)
+        .execute(&mut *self.tx)
+        .await?;
+        if changed.rows_affected() != 1 {
+            return Err(Error::BadRequest(
+                "attachment must be uploaded to this issue first".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Replies go to the issue's followers, mentions to the mentioned users,
+    /// never to the author.
+    async fn notify_comment(
+        &mut self,
+        id: Uuid,
+        issue_id: Uuid,
+        body: &str,
+        mentions: BTreeSet<Uuid>,
+    ) -> Result<()> {
+        let followers: Vec<Uuid> = sqlx::query_scalar(
+            "SELECT user_id FROM issue_followers WHERE workspace_id=$1 AND \
+            issue_id=$2 AND user_id<>$3 ORDER BY user_id",
+        )
+        .bind(self.workspace_id)
+        .bind(issue_id)
+        .bind(self.actor)
+        .fetch_all(&mut *self.tx)
+        .await?;
+        for user in followers {
+            self.notify(
+                user,
+                Some(issue_id),
+                AlertKind::Reply,
+                body.to_owned(),
+                format!("reply:{id}:{user}"),
+            )
+            .await?;
+        }
+
+        let actor = self.actor;
+        for user in mentions.into_iter().filter(|user| *user != actor) {
+            self.notify(
+                user,
+                Some(issue_id),
+                AlertKind::Mention,
+                body.to_owned(),
+                format!("mention:{id}:{user}"),
+            )
+            .await?;
+        }
+        Ok(())
+    }
+
+    async fn edit_comment(&mut self, id: Uuid, body: String, mentions: Vec<Uuid>) -> Result<()> {
+        crate::domain::text(&body, 100_000)?;
+
+        let row = self.discussion_record("comments", "author", id).await?;
+        self.author_or_admin(row.try_get("author")?)?;
+        let mentions: BTreeSet<_> = mentions.into_iter().collect();
+        for user in &mentions {
+            self.member(*user).await?;
+        }
+        self.touch_locked("comments", id, row.try_get("version")?)
+            .await?;
+
+        sqlx::query("UPDATE comments SET body=$3,edited_at=$4 WHERE workspace_id=$1 AND id=$2")
+            .bind(self.workspace_id)
+            .bind(id)
+            .bind(body)
+            .bind(Utc::now())
+            .execute(&mut *self.tx)
+            .await?;
+        sqlx::query("DELETE FROM comment_mentions WHERE workspace_id=$1 AND comment_id=$2")
+            .bind(self.workspace_id)
+            .bind(id)
+            .execute(&mut *self.tx)
+            .await?;
+        self.insert_mentions(id, &mentions).await
+    }
+
+    async fn log_time(
+        &mut self,
+        id: Option<Uuid>,
+        issue_id: Uuid,
+        minutes: u32,
+        note: String,
+        logged_at: DateTime<Utc>,
+    ) -> Result<Uuid> {
+        self.discussion_issue(issue_id).await?;
+        validate_time(minutes, &note)?;
+        crate::domain::timestamp(logged_at)?;
+        self.capacity("time_entries", 20_000).await?;
+        let id = self.reserve_client_id(id).await?;
+
+        sqlx::query(
+            "INSERT INTO time_entries(id,workspace_id,issue_id,user_id,minutes,\
+            note,logged_at) VALUES($1,$2,$3,$4,$5,$6,$7)",
+        )
+        .bind(id)
+        .bind(self.workspace_id)
+        .bind(issue_id)
+        .bind(self.actor)
+        .bind(minutes as i64)
+        .bind(note)
+        .bind(logged_at)
+        .execute(&mut *self.tx)
+        .await
+        .map_err(id_conflict)?;
+        self.created("time_entries", id);
+        Ok(id)
+    }
+
+    async fn update_time(
+        &mut self,
+        id: Uuid,
+        minutes: u32,
+        note: String,
+        logged_at: DateTime<Utc>,
+    ) -> Result<()> {
+        validate_time(minutes, &note)?;
+        crate::domain::timestamp(logged_at)?;
+
+        let row = self
+            .discussion_record("time_entries", "user_id", id)
+            .await?;
+        self.author_or_admin(row.try_get("user_id")?)?;
+        self.touch_locked("time_entries", id, row.try_get("version")?)
+            .await?;
+
+        sqlx::query(
+            "UPDATE time_entries SET minutes=$3,note=$4,logged_at=$5 WHERE \
+            workspace_id=$1 AND id=$2",
+        )
+        .bind(self.workspace_id)
+        .bind(id)
+        .bind(minutes as i64)
+        .bind(note)
+        .bind(logged_at)
+        .execute(&mut *self.tx)
+        .await?;
+        Ok(())
+    }
+
+    async fn save_view(
+        &mut self,
+        id: Option<Uuid>,
+        name: String,
+        shared: bool,
+        filter: IssueFilter,
+    ) -> Result<Uuid> {
+        crate::domain::text(&name, 200)?;
+        filter.validate()?;
+        self.capacity("saved_views", 5_000).await?;
+        let id = self.reserve_client_id(id).await?;
+
+        sqlx::query(
+            "INSERT INTO saved_views(id,workspace_id,owner,name,shared,filter) \
+            VALUES($1,$2,$3,$4,$5,$6)",
+        )
+        .bind(id)
+        .bind(self.workspace_id)
+        .bind(self.actor)
+        .bind(name)
+        .bind(shared)
+        .bind(serde_json::to_value(filter)?)
+        .execute(&mut *self.tx)
+        .await
+        .map_err(id_conflict)?;
+        self.created("saved_views", id);
+        Ok(id)
+    }
+
+    /// Locks the view and requires its owner or an admin.
+    async fn lock_own_view(&mut self, id: Uuid) -> Result<()> {
+        let owner: Uuid = sqlx::query_scalar(
+            "SELECT owner FROM saved_views WHERE workspace_id=$1 AND id=$2 FOR UPDATE",
+        )
+        .bind(self.workspace_id)
+        .bind(id)
+        .fetch_optional(&mut *self.tx)
+        .await?
+        .ok_or(Error::NotFound)?;
+        self.author_or_admin(owner)
+    }
+
+    async fn update_view(
+        &mut self,
+        id: Uuid,
+        name: String,
+        shared: bool,
+        filter: IssueFilter,
+    ) -> Result<()> {
+        crate::domain::text(&name, 200)?;
+        filter.validate()?;
+        self.lock_own_view(id).await?;
+        if shared && self.role == Role::Viewer {
+            return Err(Error::Forbidden);
+        }
+        self.touch("saved_views", id).await?;
+
+        sqlx::query(
+            "UPDATE saved_views SET name=$3,shared=$4,filter=$5 WHERE \
+            workspace_id=$1 AND id=$2",
+        )
+        .bind(self.workspace_id)
+        .bind(id)
+        .bind(name)
+        .bind(shared)
+        .bind(serde_json::to_value(filter)?)
+        .execute(&mut *self.tx)
+        .await?;
+        Ok(())
+    }
+
+    async fn invite(&mut self, email: String, role: Role) -> Result<Uuid> {
+        self.admin()?;
+        if role == Role::Owner && self.role != Role::Owner {
+            return Err(Error::Forbidden);
+        }
+        validate_email(&email)?;
+        let email = email.to_lowercase();
+        self.discussion_lock(&format!("invitation:{email}")).await?;
+
+        let now = Utc::now();
+        sqlx::query(
+            "UPDATE invitations SET state='expired',token_hash='',\
+            version=version+1 WHERE workspace_id=$1 AND lower(email)=$2 AND \
+            state='pending' AND expires_at<=$3",
+        )
+        .bind(self.workspace_id)
+        .bind(&email)
+        .bind(now)
+        .execute(&mut *self.tx)
+        .await?;
+
+        let pending: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM invitations WHERE workspace_id=$1 AND \
+            lower(email)=$2 AND state='pending')",
+        )
+        .bind(self.workspace_id)
+        .bind(&email)
+        .fetch_one(&mut *self.tx)
+        .await?;
+        if pending {
+            return Err(Error::Conflict("invitation already pending".into()));
+        }
+
+        self.capacity("invitations", 5_000).await?;
+        let id = Uuid::new_v4();
+        let token = crate::auth::token();
+        let hash = crate::auth::hash(&token);
+        sqlx::query(
+            "INSERT INTO invitations(id,workspace_id,email,role,token_hash,\
+            expires_at,state) VALUES($1,$2,$3,$4,$5,$6,'pending')",
+        )
+        .bind(id)
+        .bind(self.workspace_id)
+        .bind(&email)
+        .bind(enum_text(&role))
+        .bind(&hash)
+        .bind(now + chrono::Duration::days(7))
+        .execute(&mut *self.tx)
+        .await?;
+        self.invitation_email(id, email, token, hash).await?;
+        self.created("invitations", id);
+        Ok(id)
+    }
+
+    async fn resend_invitation(&mut self, id: Uuid) -> Result<()> {
+        self.admin()?;
+
+        let email: String =
+            sqlx::query_scalar("SELECT email FROM invitations WHERE workspace_id=$1 AND id=$2")
+                .bind(self.workspace_id)
+                .bind(id)
+                .fetch_optional(&mut *self.tx)
+                .await?
+                .ok_or(Error::NotFound)?;
+        self.discussion_lock(&format!("invitation:{email}")).await?;
+        self.touch("invitations", id).await?;
+
+        let row = sqlx::query("SELECT state,role FROM invitations WHERE workspace_id=$1 AND id=$2")
+            .bind(self.workspace_id)
+            .bind(id)
+            .fetch_one(&mut *self.tx)
+            .await?;
+        if matches!(row.get::<&str, _>("state"), "accepted" | "cancelled") {
+            return Err(Error::Conflict("invitation is no longer pending".into()));
+        }
+        if row.get::<&str, _>("role") == "owner" && self.role != Role::Owner {
+            return Err(Error::Forbidden);
+        }
+
+        let now = Utc::now();
+        let other: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM invitations WHERE workspace_id=$1 AND \
+            lower(email)=lower($2) AND state='pending' AND id<>$3 AND \
+            expires_at>$4)",
+        )
+        .bind(self.workspace_id)
+        .bind(&email)
+        .bind(id)
+        .bind(now)
+        .fetch_one(&mut *self.tx)
+        .await?;
+        if other {
+            return Err(Error::Conflict("invitation already pending".into()));
+        }
+
+        sqlx::query(
+            "UPDATE invitations SET state='expired',token_hash='',\
+            version=version+1 WHERE workspace_id=$1 AND lower(email)=lower($2) \
+            AND state='pending' AND id<>$3 AND expires_at<=$4",
+        )
+        .bind(self.workspace_id)
+        .bind(&email)
+        .bind(id)
+        .bind(now)
+        .execute(&mut *self.tx)
+        .await?;
+
+        let token = crate::auth::token();
+        let hash = crate::auth::hash(&token);
+        sqlx::query(
+            "UPDATE invitations SET token_hash=$3,expires_at=$4,state='pending' \
+            WHERE workspace_id=$1 AND id=$2",
+        )
+        .bind(self.workspace_id)
+        .bind(id)
+        .bind(&hash)
+        .bind(now + chrono::Duration::days(7))
+        .execute(&mut *self.tx)
+        .await?;
+        self.invitation_email(id, email, token, hash).await
+    }
+
+    async fn cancel_invitation(&mut self, id: Uuid) -> Result<()> {
+        self.admin()?;
+        self.touch("invitations", id).await?;
+
+        let state: String =
+            sqlx::query_scalar("SELECT state FROM invitations WHERE workspace_id=$1 AND id=$2")
+                .bind(self.workspace_id)
+                .bind(id)
+                .fetch_one(&mut *self.tx)
+                .await?;
+        if state == "accepted" {
+            return Err(Error::Conflict("invitation already accepted".into()));
+        }
+
+        sqlx::query(
+            "UPDATE invitations SET state='cancelled',token_hash='' WHERE \
+            workspace_id=$1 AND id=$2",
+        )
+        .bind(self.workspace_id)
+        .bind(id)
+        .execute(&mut *self.tx)
+        .await?;
+        Ok(())
+    }
+
+    async fn set_role(&mut self, user_id: Uuid, role: Role) -> Result<()> {
+        self.admin()?;
+        let old = self.member_role(user_id).await?;
+        if (old == "owner" || role == Role::Owner) && self.role != Role::Owner {
+            return Err(Error::Forbidden);
+        }
+        if old == "owner" && role != Role::Owner {
+            self.retain_owner().await?;
+        }
+
+        self.touch("workspace_members", user_id).await?;
+        sqlx::query("UPDATE workspace_members SET role=$3 WHERE workspace_id=$1 AND user_id=$2")
+            .bind(self.workspace_id)
+            .bind(user_id)
+            .bind(enum_text(&role))
+            .execute(&mut *self.tx)
+            .await?;
+        Ok(())
+    }
+
+    async fn remove_member(&mut self, user_id: Uuid) -> Result<()> {
+        self.admin()?;
+        if self.member_role(user_id).await? == "owner" {
+            if self.role != Role::Owner {
+                return Err(Error::Forbidden);
+            }
+            self.retain_owner().await?;
+        }
+
+        self.touch("workspace_members", user_id).await?;
+        self.lock_graph().await?;
+        self.release_member_issues(user_id).await?;
+        self.release_member_teams(user_id).await?;
+
+        sqlx::query("DELETE FROM workspace_members WHERE workspace_id=$1 AND user_id=$2")
+            .bind(self.workspace_id)
+            .bind(user_id)
+            .execute(&mut *self.tx)
+            .await?;
+        Ok(())
+    }
+
+    /// Unassigns the leaving member and bumps every issue they assigned or
+    /// followed; the follower rows go with the membership.
+    async fn release_member_issues(&mut self, user_id: Uuid) -> Result<()> {
+        sqlx::query(
+            "SELECT id FROM issues WHERE workspace_id=$1 AND (assignee=$2 OR \
+            EXISTS(SELECT 1 FROM issue_followers f WHERE f.workspace_id=$1 AND \
+            f.issue_id=issues.id AND f.user_id=$2)) ORDER BY id FOR UPDATE",
+        )
+        .bind(self.workspace_id)
+        .bind(user_id)
+        .fetch_all(&mut *self.tx)
+        .await?;
+
+        let changed = sqlx::query(
+            "UPDATE issues SET assignee=CASE WHEN assignee=$2 THEN NULL ELSE \
+            assignee END,version=version+1,updated_at=$3 WHERE workspace_id=$1 \
+            AND (assignee=$2 OR EXISTS(SELECT 1 FROM issue_followers f WHERE \
+            f.workspace_id=$1 AND f.issue_id=issues.id AND f.user_id=$2)) \
+            RETURNING id,version",
+        )
+        .bind(self.workspace_id)
+        .bind(user_id)
+        .bind(Utc::now())
+        .fetch_all(&mut *self.tx)
+        .await?;
+        self.record_versions("issues", changed)
+    }
+
+    /// Bumps every team the leaving member belonged to.
+    async fn release_member_teams(&mut self, user_id: Uuid) -> Result<()> {
+        sqlx::query(
+            "SELECT id FROM teams WHERE workspace_id=$1 AND EXISTS(SELECT 1 FROM \
+            team_members m WHERE m.workspace_id=$1 AND m.team_id=teams.id AND \
+            m.user_id=$2) ORDER BY id FOR UPDATE",
+        )
+        .bind(self.workspace_id)
+        .bind(user_id)
+        .fetch_all(&mut *self.tx)
+        .await?;
+
+        let changed = sqlx::query(
+            "UPDATE teams SET version=version+1 WHERE workspace_id=$1 AND \
+            EXISTS(SELECT 1 FROM team_members m WHERE m.workspace_id=$1 AND \
+            m.team_id=teams.id AND m.user_id=$2) RETURNING id,version",
+        )
+        .bind(self.workspace_id)
+        .bind(user_id)
+        .fetch_all(&mut *self.tx)
+        .await?;
+        self.record_versions("teams", changed)
+    }
+
+    fn record_versions(&mut self, table: &str, rows: Vec<sqlx::postgres::PgRow>) -> Result<()> {
+        for row in rows {
+            let id: Uuid = row.try_get("id")?;
+            let version: i64 = row.try_get("version")?;
+            self.versions.insert((table.to_owned(), id), version);
+        }
+        Ok(())
+    }
+
+    async fn set_notification_read(
+        &mut self,
+        id: Uuid,
+        read_at: Option<DateTime<Utc>>,
+    ) -> Result<()> {
+        self.own_notification(id).await?;
+        self.touch("notifications", id).await?;
+        sqlx::query("UPDATE notifications SET read_at=$3 WHERE workspace_id=$1 AND id=$2")
+            .bind(self.workspace_id)
+            .bind(id)
+            .bind(read_at)
+            .execute(&mut *self.tx)
+            .await?;
+        Ok(())
+    }
+
+    async fn mark_all_notifications_read(&mut self) -> Result<()> {
+        let ids: Vec<Uuid> = sqlx::query_scalar(
+            "SELECT id FROM notifications WHERE workspace_id=$1 AND user_id=$2 \
+            AND read_at IS NULL ORDER BY id FOR UPDATE",
+        )
+        .bind(self.workspace_id)
+        .bind(self.actor)
+        .fetch_all(&mut *self.tx)
+        .await?;
+        let now = Utc::now();
+        for id in ids {
+            self.touch("notifications", id).await?;
+            sqlx::query("UPDATE notifications SET read_at=$3 WHERE workspace_id=$1 AND id=$2")
+                .bind(self.workspace_id)
+                .bind(id)
+                .bind(now)
+                .execute(&mut *self.tx)
+                .await?;
+        }
+        Ok(())
+    }
+
+    /// `alerts` holds the assignment, reply, change, mention and deadline flags.
+    async fn configure_alerts(&mut self, alerts: [bool; 5]) -> Result<()> {
+        self.discussion_lock(&format!("preferences:{}", self.actor))
+            .await?;
+
+        let exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM alert_preferences WHERE workspace_id=$1 \
+            AND user_id=$2)",
+        )
+        .bind(self.workspace_id)
+        .bind(self.actor)
+        .fetch_one(&mut *self.tx)
+        .await?;
+        if exists {
+            self.touch("alert_preferences", self.actor).await?;
+        } else {
+            self.created("alert_preferences", self.actor);
+        }
+
+        let [assignment, reply, change, mention, deadline] = alerts;
+        sqlx::query(
+            "INSERT INTO alert_preferences(workspace_id,user_id,assignment,reply,\
+            change,mention,deadline) VALUES($1,$2,$3,$4,$5,$6,$7) ON \
+            CONFLICT(workspace_id,user_id) DO UPDATE SET \
+            assignment=EXCLUDED.assignment,reply=EXCLUDED.reply,\
+            change=EXCLUDED.change,mention=EXCLUDED.mention,\
+            deadline=EXCLUDED.deadline",
+        )
+        .bind(self.workspace_id)
+        .bind(self.actor)
+        .bind(assignment)
+        .bind(reply)
+        .bind(change)
+        .bind(mention)
+        .bind(deadline)
+        .execute(&mut *self.tx)
+        .await?;
+        Ok(())
+    }
+
+    async fn create_integration(
+        &mut self,
+        id: Option<Uuid>,
+        name: String,
+        webhook_url: String,
+        secret: String,
+        events: Vec<String>,
+    ) -> Result<Uuid> {
+        self.admin()?;
+        crate::domain::text(&name, 200)?;
+        validate_url(&webhook_url)?;
+        crate::domain::text(&secret, 4096)?;
+        crate::domain::validate_webhook_events(&events)?;
+        self.capacity("integrations", 100).await?;
+        let id = self.reserve_client_id(id).await?;
+
+        sqlx::query(
+            "INSERT INTO integrations(id,workspace_id,name,webhook_url,secret,events) \
+            VALUES($1,$2,$3,$4,$5,$6)",
+        )
+        .bind(id)
+        .bind(self.workspace_id)
+        .bind(name)
+        .bind(webhook_url)
+        .bind(secret)
+        .bind(events)
+        .execute(&mut *self.tx)
+        .await
+        .map_err(id_conflict)?;
+        self.created("integrations", id);
+        Ok(id)
     }
 
     fn author_or_admin(&self, author: Uuid) -> Result<()> {
@@ -817,9 +934,10 @@ impl Operation<'_> {
         Ok(())
     }
 
-    async fn reject_archived_issue(&mut self, id: Uuid) -> Result<()> {
-        let archived: bool = sqlx::query_scalar(
-            "SELECT archived_at IS NOT NULL FROM issues WHERE workspace_id=$1 AND id=$2",
+    // Attachment callers have already locked and touched the issue.
+    async fn attachment_issue(&mut self, id: Uuid) -> Result<()> {
+        let (archived, deleted): (bool, bool) = sqlx::query_as(
+            "SELECT archived_at IS NOT NULL,deleted_at IS NOT NULL FROM issues WHERE workspace_id=$1 AND id=$2",
         )
         .bind(self.workspace_id)
         .bind(id)
@@ -828,6 +946,9 @@ impl Operation<'_> {
         .ok_or(Error::NotFound)?;
         if archived {
             return Err(Error::Conflict("issue is archived".into()));
+        }
+        if deleted {
+            return Err(Error::NotFound);
         }
         Ok(())
     }
@@ -844,7 +965,7 @@ impl Operation<'_> {
         ));
 
         sqlx::query(&format!(
-            "SELECT issue_id,{author} FROM {table} WHERE workspace_id=$1 AND id=$2 FOR UPDATE"
+            "SELECT issue_id,{author},version FROM {table} WHERE workspace_id=$1 AND id=$2 FOR UPDATE"
         ))
         .bind(self.workspace_id)
         .bind(id)
@@ -1043,28 +1164,6 @@ fn validate_time(minutes: u32, note: &str) -> Result<()> {
     Ok(())
 }
 
-fn validate_email(email: &str) -> Result<()> {
-    if email.len() > 254
-        || email.contains(char::is_whitespace)
-        || !email
-            .split_once('@')
-            .is_some_and(|(local, domain)| !local.is_empty() && domain.contains('.'))
-    {
-        return Err(Error::BadRequest("invalid email".into()));
-    }
-    Ok(())
-}
-
-fn validate_url(url: &str) -> Result<()> {
-    if url.len() > 2000
-        || !(url.starts_with("https://") || url.starts_with("http://"))
-        || url.contains(char::is_whitespace)
-    {
-        return Err(Error::BadRequest("HTTP or HTTPS URL required".into()));
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1122,7 +1221,7 @@ mod tests {
             &store,
             workspace,
             owner,
-            json!({"type":"create_team","name":"Team"}),
+            json!({"type":"create_team","name":"Team", "key": "TEA"}),
             BTreeMap::new(),
         )
         .await
@@ -1180,7 +1279,7 @@ mod tests {
                 BTreeMap::from([(comment, 1)])
             )
             .await,
-            Err(Error::Conflict(_))
+            Err(Error::Stale(_))
         ));
 
         let body: String = sqlx::query_scalar("SELECT body FROM comments WHERE id=$1")
@@ -1255,7 +1354,7 @@ mod tests {
                 BTreeMap::from([(issue, 1)])
             )
             .await,
-            Err(Error::Conflict(_))
+            Err(Error::Stale(_))
         ));
         let exists: bool =
             sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM attachments WHERE id=$1)")
@@ -1304,6 +1403,49 @@ mod tests {
         )
         .await
         .unwrap();
+        // Authorization still precedes stale-version checks when reusing the locked row.
+        for (target, action) in [
+            (
+                comment,
+                json!({"type":"edit_comment","id":comment,"body":"Unauthorized"}),
+            ),
+            (comment, json!({"type":"delete_comment","id":comment})),
+            (
+                comment,
+                json!({"type":"attach_comment_file","comment_id":comment,"attachment":{
+                    "id":Uuid::new_v4(),"name":"file.txt","content_type":"text/plain","size":1
+                }}),
+            ),
+            (
+                time,
+                json!({"type":"update_time","id":time,"minutes":1,"note":"Unauthorized","logged_at":Utc::now()}),
+            ),
+            (time, json!({"type":"delete_time","id":time})),
+        ] {
+            assert!(matches!(
+                command(
+                    &store,
+                    workspace,
+                    member,
+                    action.clone(),
+                    BTreeMap::from([(target, 0)])
+                )
+                .await,
+                Err(Error::Forbidden)
+            ));
+            assert!(matches!(
+                command(
+                    &store,
+                    workspace,
+                    owner,
+                    action,
+                    BTreeMap::from([(target, 0)])
+                )
+                .await,
+                Err(Error::Stale(_))
+            ));
+        }
+
         let member_comment = command(
             &store,
             workspace,

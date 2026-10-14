@@ -17,26 +17,28 @@ import { useI18n } from "~/lib/i18n";
 import { usePending } from "~/lib/use-pending";
 import { useIssues } from "~/lib/queries";
 import { QueryStatus } from "~/components/app/query-status";
+import { useProjectStats } from "~/lib/stats";
 import { useWorkspace } from "~/lib/workspace";
 import { ProjectForm } from "./projects";
-import type { Milestone } from "~/lib/types";
+import { effectiveFilter, isNarrowed, whereIs } from "~/lib/filters";
+import type { IssueFilter, Milestone } from "~/lib/types";
 
 export default function ProjectPage() {
   const { t, lang } = useI18n();
   const { projectId, ws: wsId } = useParams();
-  const { ws, canWrite, create, report } = useWorkspace();
+  const { ws, canWrite, create } = useWorkspace();
+  const projectStats = useProjectStats();
   const [editing, setEditing] = useState(false);
   const [milestoneForm, setMilestoneForm] = useState<Milestone | "new" | null>(null);
   const { filter, setFilter } = useQueueState();
-  const query = useIssues({ ...filter, project_id: projectId });
+  const base: IssueFilter = { where: [whereIs("project_id", projectId ?? "")] };
+  const query = useIssues(effectiveFilter(filter, base), Boolean(projectId));
   const project = ws.projects.find((p) => p.id === projectId);
   if (!project) return <Navigate to={`/${wsId}/projects`} replace />;
-  const stats = report.project_stats.find((stats) => stats.id === project.id);
+  const stats = projectStats.get(project.id);
   const total = stats?.total ?? 0;
   const shown = query.items;
-  const narrowed = Object.keys(filter).some(
-    (k) => k !== "sort" && filter[k as keyof typeof filter],
-  );
+  const narrowed = isNarrowed(filter);
   const done = stats?.completed ?? 0;
   const milestones = ws.milestones
     .filter((m) => m.project_id === project.id)
@@ -52,7 +54,7 @@ export default function ProjectPage() {
       <PageHeader
         title={project.name}
         heading={
-          <PageHeading parent={{ to: `/${ws.id}/projects`, label: t("nav.projects") }}>
+          <PageHeading parent={{ to: `/${ws.slug}/projects`, label: t("nav.projects") }}>
             {project.name}
           </PageHeading>
         }
@@ -91,6 +93,7 @@ export default function ProjectPage() {
                   filter={filter}
                   onChange={setFilter}
                   hide={["project_id", "team_id", "sprint_id"]}
+                  scope={base}
                   saveable={false}
                 />
               </div>
@@ -117,9 +120,9 @@ export default function ProjectPage() {
           </div>
           <aside className="space-y-6 lg:order-2">
             <section>
-              <h2 className="mb-2 text-[13px] font-semibold">{t("project.progress")}</h2>
+              <h2 className="mb-2  font-semibold">{t("project.progress")}</h2>
               <ProgressBar value={done} total={total} label={t("project.progress")} />
-              <p className="mt-1.5 text-xs tabular-nums text-muted-foreground">
+              <p className="mt-1.5  tabular-nums text-muted-foreground">
                 {t("project.doneOf", { done, total: total })}
               </p>
               <ul className="mt-3 space-y-2">
@@ -128,7 +131,7 @@ export default function ProjectPage() {
                   const count = teamStats?.total ?? 0;
                   const d = teamStats?.completed ?? 0;
                   return (
-                    <li key={tm.id} className="text-xs">
+                    <li key={tm.id} className="">
                       <div className="mb-1 flex justify-between">
                         <span className="font-medium">{tm.name}</span>
                         <span className="tabular-nums text-muted-foreground">
@@ -143,7 +146,7 @@ export default function ProjectPage() {
             </section>
             <section>
               <div className="mb-2 flex items-center">
-                <h2 className="text-[13px] font-semibold">{t("project.milestones")}</h2>
+                <h2 className=" font-semibold">{t("project.milestones")}</h2>
                 {canWrite && (
                   <Button
                     variant="ghost"
@@ -157,7 +160,7 @@ export default function ProjectPage() {
                 )}
               </div>
               {milestones.length === 0 ? (
-                <p className="text-[13px] text-muted-foreground">{t("milestone.empty")}</p>
+                <p className=" text-muted-foreground">{t("milestone.empty")}</p>
               ) : (
                 <ul className="space-y-2">
                   {milestones.map((m) => {
@@ -167,7 +170,7 @@ export default function ProjectPage() {
                     const late = m.deadline && daysUntil(m.deadline) < 0 && d < count;
                     return (
                       <li key={m.id} className="rounded-lg border border-border bg-card p-3">
-                        <div className="flex items-center gap-2 text-[13px] font-medium">
+                        <div className="flex items-center gap-2  font-medium">
                           <Flag className="size-3.5 shrink-0 text-primary" />
                           <span className="min-w-0 flex-1 truncate">{m.name}</span>
                           {late && <Badge tone="danger">{t("deadline.overdue")}</Badge>}
@@ -184,13 +187,13 @@ export default function ProjectPage() {
                           )}
                         </div>
                         {m.deadline && (
-                          <p className="mt-0.5 flex items-center gap-1 text-xs text-muted-foreground">
+                          <p className="mt-0.5 flex items-center gap-1  text-muted-foreground">
                             <CalendarDays className="size-3" />
                             {fullDate(m.deadline, lang)}
                           </p>
                         )}
                         <ProgressBar value={d} total={count} label={m.name} className="mt-2 h-1" />
-                        <p className="mt-1 text-xs tabular-nums text-muted-foreground">
+                        <p className="mt-1  tabular-nums text-muted-foreground">
                           {d}/{count}
                         </p>
                       </li>
@@ -265,7 +268,7 @@ function MilestoneForm({
       <TextField label={t("field.name")} value={name} onChange={setName} autoFocus isRequired />
       <DatePicker label={t("field.deadline")} value={deadline} onChange={setDeadline} />
       {error && (
-        <p role="alert" className="text-xs text-destructive">
+        <p role="alert" className=" text-destructive">
           {error}
         </p>
       )}

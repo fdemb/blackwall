@@ -19,7 +19,7 @@ export function PeopleStep({ draft, update, connection, pending }: StepProps) {
   }));
   return (
     <div className="space-y-3">
-      <p className="text-xs text-muted-foreground">{t("tracker.peopleHint")}</p>
+      <p className="text-sm text-muted-foreground">{t("tracker.peopleHint")}</p>
       <Discovery
         connection={connection}
         hasItems={people.length > 0}
@@ -53,7 +53,7 @@ export function PeopleStep({ draft, update, connection, pending }: StepProps) {
         </div>
       )}
       {hidden.length > 0 && (
-        <p className="text-xs text-muted-foreground">
+        <p className="text-sm text-muted-foreground">
           {t("tracker.hiddenEmails", {
             provider,
             names: hidden.map((person) => person.name).join(", "),

@@ -42,13 +42,13 @@ Private-network installations are supported. The Blackwall worker must be able t
 
 Each work package has a stable identity consisting of its connection ID and remote ID. Moving a work package between mapped projects changes its destination team without creating another issue. Once a connection has imported issues, its URL cannot change. Create a new connection for another installation to avoid mixing work packages with overlapping IDs. A workspace can have up to 20 connections, and a connection's provider cannot change.
 
-**Statuses.** A status with an explicit mapping uses that stage. Otherwise, it maps to the destination team's stage with a matching name (case-insensitive). Failing that, closed statuses use a done stage and open statuses a backlog stage. The first stage is the final fallback. Changing the destination team clears that project's stage overrides in the wizard. **Create stage on save** creates a stage with the remote status name through Blackwall's stage command and saves its ID in the mapping. An existing stage with the same name is reused. Closed statuses create done stages; New, Open, and Backlog statuses create backlog stages; other open statuses create active stages. If saving fails after stage creation, the stage remains and the wizard retains its ID for retry. Deleting a stage moves its issues, synced ones included, to the replacement stage and rewrites explicit mappings that pointed to it.
+**Statuses.** A status with an explicit mapping uses that stage. Otherwise, it maps to the destination team's stage with a matching name (case-insensitive). Failing that, closed statuses use a done stage and open statuses a backlog stage. The first stage is the final fallback. Changing the destination team clears that project's stage overrides in the wizard. **Create stage on save** creates a stage with the remote status name through Blackwall's stage command and saves its ID in the mapping. An existing stage with the same name is reused. Closed statuses create done stages; New, Open, and Backlog statuses create backlog stages; other open statuses create active stages. If saving fails after stage creation, the stage remains and the wizard retains its ID for retry. Deleting a stage moves its issues, synced ones included, to the replacement stage and rewrites explicit mappings that pointed to it. When status export is on, the move queues a status push for each synced issue, like a local stage change.
 
 **People.** Assignees match workspace members by email, ignoring case and surrounding whitespace. Connection-wide `people_mapping` overrides map remote email addresses to member IDs. These overrides do not create or invite users. Hidden emails, people outside the workspace, and unmatched people leave the issue unassigned. Work package authors become the issue creator by the same rules when the issue is first imported; an unmatched author leaves the creator empty.
 
 **Priority.** Priority names map to Blackwall's low, normal, high, or urgent values; unknown names map to none.
 
-Entering a done stage through an import starts the done clock used by auto-archiving. Leaving it clears the clock and unarchives the issue. A team change clears the issue's project, milestone, and sprint, which belong to the previous team.
+Entering a done stage through an import starts the done clock used by auto-archiving. Leaving it clears the clock and unarchives the issue. Entering a backlog stage takes the issue out of its sprint, as backlog issues have no sprint. A team change clears the issue's project, milestone, and sprint, which belong to the previous team. A team change also gives the issue the next number in its new team, because numbers count per team. The number comes from the same rule as a local creation, the team's highest number plus one. Issue keys have no aliases, so the old key, such as `ENG-2`, stops resolving and a later issue in the old team can reuse it if it was the team's highest number.
 
 ## How merging works
 
@@ -62,7 +62,7 @@ Each synced issue stores a baseline: the remote values last imported or successf
 
 The baseline then moves to the current remote value. Because the baseline stores mapped values, changing a status mapping, a project's team, or a people override counts as a remote change. The next scan reapplies the new mapping to issues whose remote value would now map differently, even where they were edited locally.
 
-Status and team move together, because stages belong to teams. Team placement has no toggle: it follows remote project moves and project-to-team mapping changes even when status import is off. A local move to another team holds until the work package's status or project changes remotely, or its mapping changes; then the issue returns to the mapped team and stage.
+Status and team move together, because stages belong to teams. Team placement has no toggle: it follows remote project moves and project-to-team mapping changes even when status import is off.
 
 Locally trashed issues keep every local value. Scans only update their link and baseline. Restoring an issue from the trash does not reapply remote values that arrived meanwhile; later remote changes apply as usual.
 
@@ -80,7 +80,7 @@ Local changes to a synced issue queue in a per-connection outbox in the same tra
 | Change stage, by edit, board move, or bulk edit | status |
 | Add a comment | a new comment |
 
-Everything else stays local: deleting, restoring, archiving, team moves, priority, parent, labels, estimates, projects, milestones, sprints, dependencies, attachments, source links, and comment edits or deletions. A team move that also changes the stage sends the stage like any other stage change.
+Everything else stays local: deleting, restoring, archiving, priority, parent, labels, estimates, projects, milestones, sprints, dependencies, attachments, source links, and comment edits or deletions.
 
 An issue has at most one pending field change. Further edits add field names to it. The outbox stores field names, not values: the push reads the current local values when it is sent. Several quick edits therefore become one request carrying the latest values. Comments queue one entry each.
 
@@ -161,16 +161,16 @@ Logs include connection and job IDs, scan resources and page numbers, response s
 
 ## API
 
-All routes are scoped to a workspace and require owner or administrator access:
+Connections are managed through the app's internal routes, which are scoped to a workspace and require owner or administrator access. The public API (`/api/v1`) and MCP server do not manage connections. Their issues carry a `tracker` object with the link's public fields (`provider`, `connection_id`, `remote_id`, `project_id`, `parent_remote_id`, `status_name`, `url`, `push_error`), and their comments a `tracker` object naming the remote comment. Writes through them, like sync push and the app's commands, queue changes for sending.
 
 ```text
-GET    /api/workspaces/{workspace_id}/trackers/providers
-GET    /api/workspaces/{workspace_id}/trackers/connections
-POST   /api/workspaces/{workspace_id}/trackers/connections
-PATCH  /api/workspaces/{workspace_id}/trackers/connections/{connection_id}
-DELETE /api/workspaces/{workspace_id}/trackers/connections/{connection_id}
-POST   /api/workspaces/{workspace_id}/trackers/connections/{connection_id}/refresh
-POST   /api/workspaces/{workspace_id}/trackers/connections/{connection_id}/sync
+GET    /internal-api/workspaces/{workspace_id}/trackers/providers
+GET    /internal-api/workspaces/{workspace_id}/trackers/connections
+POST   /internal-api/workspaces/{workspace_id}/trackers/connections
+PATCH  /internal-api/workspaces/{workspace_id}/trackers/connections/{connection_id}
+DELETE /internal-api/workspaces/{workspace_id}/trackers/connections/{connection_id}
+POST   /internal-api/workspaces/{workspace_id}/trackers/connections/{connection_id}/refresh
+POST   /internal-api/workspaces/{workspace_id}/trackers/connections/{connection_id}/sync
 ```
 
 `GET /trackers/providers` lists the registered providers. `fields` holds the supported directions per field, and `defaults` the options of new connections (abbreviated here):

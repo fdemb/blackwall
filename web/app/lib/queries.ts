@@ -1,252 +1,204 @@
-import { useMemo } from "react";
-import {
-  caseWhen,
-  eq,
-  ilike,
-  inArray,
-  isNull,
-  lte,
-  not,
-  or,
-  useLiveQuery,
-  type InitialQueryBuilder,
-} from "@tanstack/react-db";
-import type { WorkspaceDb } from "./db";
-import { useWorkspace } from "./workspace";
-import type { Id, Issue, IssueFilter, Team } from "./types";
+import { useEngine, useScope, useSyncStatus, useView } from "../sync/react";
+import { withCounts, type CountedIssue } from "../sync/derived";
+import { teamNumber, type SyncStore } from "../sync/store";
+import { parseIssueKey } from "./identifiers";
+import { shallowEqual } from "../sync/selection";
+import type { IssueFilter } from "./types";
+import { filterIssues } from "./issue-filter";
+import { byAtDesc, byCreatedAsc, byCreatedDesc, byLoggedDesc } from "./order";
 
-export interface ListState<T> {
-  items: T[];
-  /** True until the rows first arrive. */
+export interface PaginationState {
   loading: boolean;
-  error: string;
-  /** Collections hold every row, so there is never a next page. Kept for list chrome. */
+  error: string | null;
   hasMore: boolean;
-  loadMore: () => void;
-  retry: () => void;
+  retry: () => Promise<void>;
+  loadMore: () => Promise<void>;
 }
-export type PaginationState = Omit<ListState<unknown>, "items">;
-
-function listState<T>(
-  live: { data: T[] | undefined; isLoading: boolean; isError: boolean },
-  retry: () => unknown,
-  enabled = true,
-): ListState<T> {
-  return {
-    items: live.data ?? [],
-    loading: enabled && live.isLoading,
-    error: live.isError ? "Unable to load data" : "",
-    hasMore: false,
-    loadMore: () => undefined,
-    retry: () => void retry(),
-  };
+export interface ListState<T> extends PaginationState {
+  items: T[];
 }
 
-const LIKE_ESCAPE_RE = /[\\%_]/g;
-const escapeLike = (text: string) => text.replace(LIKE_ESCAPE_RE, (c) => `\\${c}`);
-const ISSUE_NUMBER_RE = /^(?:#|bw-)?(\d+)$/i;
-
-/** Stages whose issues still need work, so `open` stays a plain membership test. */
-export function openStageIds(teams: Team[]) {
-  return teams.flatMap((t) =>
-    t.stages.filter((s) => s.kind !== "done" && s.kind !== "cancelled").map((s) => s.id),
-  );
+const counts = new WeakMap<SyncStore, Map<string, CountedIssue>>();
+export function countedIssue(store: SyncStore, id: string): CountedIssue | undefined {
+  const issue = store.get("issues", id);
+  if (!issue) {
+    counts.get(store)?.delete(id);
+    return undefined;
+  }
+  let cache = counts.get(store);
+  if (!cache) {
+    cache = new Map();
+    counts.set(store, cache);
+  }
+  const next = withCounts(store, issue);
+  const previous = cache.get(id);
+  if (previous && shallowEqual(previous, next)) return previous;
+  cache.set(id, next);
+  return next;
 }
 
 /**
- * The live-query form of the API's issue filter, over the local issue collection.
- * Search matches title and description, or the issue number.
+ * The issue a URL names: an id, or a key such as `ENG-42` in any case. Keys resolve only among
+ * numbers the server confirmed, never against a local prediction.
  */
-export function issueQuery(
-  q: InitialQueryBuilder,
-  issues: WorkspaceDb["issues"],
-  f: IssueFilter,
-  openStages: Id[],
-) {
-  let query = q
-    .from({ i: issues })
-    .where(({ i }) =>
-      f.trash
-        ? not(isNull(i.deleted_at))
-        : f.archived
-          ? not(isNull(i.archived_at))
-          : isNull(i.deleted_at),
-    );
-  // Archived rows hide by default; trash shows deleted whatever the archive flag says.
-  if (!f.trash && !f.archived) query = query.where(({ i }) => isNull(i.archived_at));
-  const equal = {
-    assignee: f.assignee,
-    created_by: f.created_by,
-    team_id: f.team_id,
-    stage_id: f.stage_id,
-    priority: f.priority,
-    sprint_id: f.sprint_id,
-    project_id: f.project_id,
-    parent_id: f.parent_id,
-  } as const;
-  for (const [field, value] of Object.entries(equal) as [keyof typeof equal, string | undefined][])
-    if (value) query = query.where(({ i }) => eq(i[field], value));
-  if (f.unassigned) query = query.where(({ i }) => isNull(i.assignee));
-  if (f.no_sprint) query = query.where(({ i }) => isNull(i.sprint_id));
-  if (f.label_id) {
-    const label = f.label_id;
-    query = query.where(({ i }) => inArray(label, i.labels));
-  }
-  if (f.dependency_id) {
-    const dependency = f.dependency_id;
-    query = query.where(({ i }) => inArray(dependency, i.dependencies));
-  }
-  if (f.ids !== undefined) {
-    const ids = f.ids.split(",").filter(Boolean);
-    query = query.where(({ i }) => inArray(i.id, ids));
-  }
-  if (f.open) query = query.where(({ i }) => inArray(i.stage_id, openStages));
-  if (f.due_before) {
-    const due = new Date(f.due_before).toISOString();
-    query = query.where(({ i }) => lte(i.deadline, due));
-  }
-  const search = f.search?.trim();
-  if (search) {
-    const pattern = `%${escapeLike(search)}%`;
-    const number = ISSUE_NUMBER_RE.exec(search)?.[1];
-    query = query.where(({ i }) =>
-      number
-        ? or(ilike(i.title, pattern), ilike(i.description, pattern), eq(i.number, Number(number)))
-        : or(ilike(i.title, pattern), ilike(i.description, pattern)),
-    );
-  }
-  switch (f.sort ?? "position") {
-    case "deadline":
-      return query
-        .orderBy(({ i }) => i.deadline, { direction: "asc", nulls: "last" })
-        .orderBy(({ i }) => i.position);
-    case "updated":
-      return query.orderBy(({ i }) => i.updated_at, "desc");
-    case "priority":
-      return query
-        .orderBy(
-          ({ i }) =>
-            caseWhen(
-              eq(i.priority, "urgent"),
-              4,
-              eq(i.priority, "high"),
-              3,
-              eq(i.priority, "normal"),
-              2,
-              eq(i.priority, "low"),
-              1,
-              0,
-            ),
-          "desc",
-        )
-        .orderBy(({ i }) => i.position);
-    default:
-      return query.orderBy(({ i }) => i.position).orderBy(({ i }) => i.number);
-  }
+export function resolveIssue(store: SyncStore, ref: string): string | undefined {
+  const key = parseIssueKey(ref);
+  if (!key) return store.get("issues", ref)?.id;
+  const team = store.all("teams").find((t) => t.key === key.team);
+  const number = team && teamNumber(team.id, key.number);
+  return number && store.baseByIndex("issues", "team_number", number)[0]?.id;
 }
 
-export function useIssues(filter: IssueFilter = {}, enabled = true): ListState<Issue> {
-  const { db, ws, me } = useWorkspace();
-  const resolved = filter.assignee === "me" ? { ...filter, assignee: me } : filter;
-  const open = useMemo(() => openStageIds(ws.teams), [ws.teams]);
-  const live = useLiveQuery({
-    query: (q) => (enabled ? issueQuery(q, db.issues, resolved, open) : undefined),
-  });
-  return listState(
-    live as { data: Issue[] | undefined; isLoading: boolean; isError: boolean },
-    () => db.issues.utils.refetch(),
-    enabled,
-  );
+export function useIssueRef(ref: string): string | undefined {
+  return useView((store) => resolveIssue(store, ref), ["issues", "teams"], [ref]);
 }
 
-/** The member's notifications, newest first. */
-export function useNotifications(unreadOnly = false) {
-  const { db } = useWorkspace();
-  const live = useLiveQuery({
-    query: (q) => {
-      const all = q.from({ n: db.notifications });
-      return (unreadOnly ? all.where(({ n }) => isNull(n.read_at)) : all).orderBy(
-        ({ n }) => n.created_at,
-        "desc",
-      );
-    },
-  });
-  return listState(live, () => db.notifications.utils.refetch());
+// A scope list loads on its own schedule, so its loading state comes from the scope, not the bootstrap.
+function scopeState<T>(
+  list: ListState<T>,
+  scope: { loading: boolean; error: Error | null },
+): ListState<T> {
+  return { ...list, loading: scope.loading, error: scope.error?.message ?? null };
 }
 
-/** An issue's comments, oldest first. Loading them loads only that issue's. */
-export function useComments(issueId: Id) {
-  const { db } = useWorkspace();
-  const live = useLiveQuery({
-    query: (q) =>
-      q
-        .from({ c: db.comments })
-        .where(({ c }) => eq(c.issue_id, issueId))
-        .orderBy(({ c }) => c.created_at),
-  });
-  return listState(live, () => db.comments.utils.refetch());
-}
-
-/** Time entries, newest first: one issue's, or the whole workspace's. */
-export function useTimeEntries(issueId?: Id) {
-  const { db } = useWorkspace();
-  const live = useLiveQuery({
-    query: (q) => {
-      const from = q.from({ e: db.time_entries });
-      return (issueId ? from.where(({ e }) => eq(e.issue_id, issueId)) : from).orderBy(
-        ({ e }) => e.logged_at,
-        "desc",
-      );
-    },
-  });
-  return listState(live, () => db.time_entries.utils.refetch());
-}
-
-/** History of one record, newest first. */
-export function useActivity(entityId: Id) {
-  const { db } = useWorkspace();
-  const live = useLiveQuery({
-    query: (q) =>
-      q
-        .from({ a: db.activity })
-        .where(({ a }) => eq(a.entity_id, entityId))
-        .orderBy(({ a }) => a.at, "desc"),
-  });
-  return listState(live, () => db.activity.utils.refetch());
-}
-
-/** An issue with its relatives, from the local issue collection. */
-export function useIssueDetail(issueId: Id) {
-  const { db } = useWorkspace();
-  const live = useLiveQuery({
-    query: (q) =>
-      q
-        .from({ i: db.issues })
-        .where(({ i }) => eq(i.id, issueId))
-        .findOne(),
-  });
-  const issue = live.data as Issue | undefined;
-  const related = issue
-    ? [...new Set([issue.parent_id, ...issue.dependencies])].filter((id): id is Id => id !== null)
-    : [];
-  const children = useIssues({ parent_id: issueId });
-  const dependents = useIssues({ dependency_id: issueId });
-  const references = useIssues({ ids: related.join(",") }, related.length > 0);
-  const lookup = useMemo(
-    () => new Map(references.items.map((i) => [i.id, i] as const)),
-    [references.items],
-  );
+function useListState<T>(items: T[], error: string | null = null): ListState<T> {
+  const engine = useEngine();
+  const status = useSyncStatus();
+  const retry = () => engine.pull();
   return {
-    issue,
-    loading: live.isLoading,
-    error: live.isError ? "Unable to load issue" : "",
-    // Trash is in the collection too, so a missing row means the issue doesn't exist.
-    missing: live.isReady && !issue,
-    retry: () => void db.issues.utils.refetch(),
-    children: children.items,
-    dependents: dependents.items,
-    parent: issue?.parent_id ? lookup.get(issue.parent_id) : undefined,
-    blockers: issue?.dependencies.flatMap((id) => lookup.get(id) ?? []) ?? [],
+    items,
+    loading: status.phase !== "ready",
+    error,
+    hasMore: false,
+    retry,
+    loadMore: retry,
   };
 }
-export type IssueDetail = ReturnType<typeof useIssueDetail>;
+
+/** `limit` keeps the first matches before counting them. */
+export function useIssues(
+  filter: IssueFilter = {},
+  enabled = true,
+  limit?: number,
+): ListState<CountedIssue> {
+  const selection = useView(
+    (store) => {
+      try {
+        if (!enabled) return [];
+        return filterIssues(store, filter, limit).flatMap(
+          (issue) => countedIssue(store, issue.id) ?? [],
+        );
+      } catch (error) {
+        return error instanceof Error ? error.message : String(error);
+      }
+    },
+    ["issues", "teams"],
+    [JSON.stringify(filter), enabled, limit],
+  );
+  return useListState(
+    typeof selection === "string" ? [] : selection,
+    typeof selection === "string" ? selection : null,
+  );
+}
+
+export function useNotifications(unreadOnly = false) {
+  const items = useView(
+    (store) =>
+      store
+        .all("notifications")
+        .filter((notification) => !unreadOnly || notification.read_at === null)
+        .sort(byCreatedDesc),
+    ["notifications"],
+    [unreadOnly],
+  );
+  return useListState(items);
+}
+
+export function useComments(issueId: string) {
+  const scope = useScope({ entity: "comments", issueId });
+  const items = useView(
+    (store) => [...store.byIndex("comments", "issue_id", issueId)].sort(byCreatedAsc),
+    ["comments"],
+    [issueId],
+  );
+  return scopeState(useListState(items), scope);
+}
+
+export function useTimeEntries(issueId?: string) {
+  const items = useView(
+    (store) =>
+      [
+        ...(issueId
+          ? store.byIndex("time_entries", "issue_id", issueId)
+          : store.all("time_entries")),
+      ].sort(byLoggedDesc),
+    ["time_entries"],
+    [issueId],
+  );
+  return useListState(items);
+}
+
+export function useActivity(entityId: string) {
+  const scope = useScope({ entity: "activity", entityId });
+  const items = useView(
+    (store) => [...store.byIndex("activity", "entity_id", entityId)].sort(byAtDesc),
+    ["activity"],
+    [entityId],
+  );
+  return scopeState(useListState(items), scope);
+}
+
+export interface IssueDetail extends Omit<PaginationState, "hasMore" | "loadMore"> {
+  issue: CountedIssue | undefined;
+  parent: CountedIssue | undefined;
+  children: CountedIssue[];
+  dependents: CountedIssue[];
+  blockers: CountedIssue[];
+  missing: boolean;
+}
+export function useIssueDetail(issueId: string): IssueDetail {
+  const issue = useView((store) => countedIssue(store, issueId), ["issues", "teams"], [issueId]);
+  const parent = useView(
+    (store) => {
+      const parentId = store.get("issues", issueId)?.parent_id;
+      return parentId ? countedIssue(store, parentId) : undefined;
+    },
+    ["issues", "teams"],
+    [issueId],
+  );
+  const children = useView(
+    (store) =>
+      store
+        .byIndex("issues", "parent_id", issueId)
+        .flatMap((row) => countedIssue(store, row.id) ?? []),
+    ["issues", "teams"],
+    [issueId],
+  );
+  const dependents = useView(
+    (store) =>
+      store
+        .byIndex("issues", "dependency", issueId)
+        .flatMap((row) => countedIssue(store, row.id) ?? []),
+    ["issues", "teams"],
+    [issueId],
+  );
+  const blockers = useView(
+    (store) =>
+      store.get("issues", issueId)?.dependencies.flatMap((id) => countedIssue(store, id) ?? []) ??
+      [],
+    ["issues", "teams"],
+    [issueId],
+  );
+  const state = useListState([]);
+  return {
+    issue,
+    parent,
+    children,
+    dependents,
+    blockers,
+    loading: state.loading,
+    error: state.error,
+    retry: state.retry,
+    missing: !state.loading && !issue,
+  };
+}

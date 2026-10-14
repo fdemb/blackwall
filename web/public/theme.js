@@ -1,6 +1,6 @@
 (function () {
   try {
-    var theme = localStorage.getItem("bw-theme") || "system";
+    var theme = localStorage.getItem("bw-theme:v1") || "system";
     var dark =
       theme === "dark" ||
       (theme === "system" && matchMedia("(prefers-color-scheme: dark)").matches);

@@ -42,61 +42,72 @@ pub(super) async fn schedule_due(tx: &mut PgConnection, only: Option<Uuid>) -> R
                 continue;
             }
         };
-        let scheduled: Result<()> = async {
-            let mut savepoint = tx.begin().await?;
-            if !row.try_get::<bool, _>("scan_due")? {
-                Outbox::insert(&mut savepoint, &tracker_job(id, row.try_get("generation")?, true))
-                    .await?;
-                savepoint.commit().await?;
-                return Ok(());
-            }
-            let provider = ProviderKind::parse(row.try_get("provider")?)?;
-            let incremental = row.try_get::<bool, _>("incremental_supported")?
-                && !row.try_get::<bool, _>("local_mapping_changed")?;
-            let poll = Poll {
-                idle: row.try_get::<String, _>("status")? == "idle",
-                now: Utc::now(),
-                discover: !row.try_get::<bool, _>("mapped")? || row.try_get::<bool, _>("discover")?,
-                since: row
-                    .try_get::<Option<DateTime<Utc>>, _>("poll_watermark")?
-                    .filter(|_| incremental),
-            };
-            let checkpoint = provider.poll(row.try_get("checkpoint")?, poll)?;
-            if !Outbox::insert(&mut savepoint, &tracker_job(id, row.try_get("generation")?, false))
-                .await?
-            {
-                // A push queued meanwhile holds the connection's job slot; scan next tick.
-                return Ok(());
-            }
-            sqlx::query("UPDATE tracker_connections SET checkpoint=$2,next_run_at=clock_timestamp()+interval '5 minutes' WHERE id=$1").bind(id).bind(checkpoint).execute(&mut *savepoint).await?;
-            savepoint.commit().await?;
-            Ok(())
-        }
-        .await;
-        if let Err(error) = scheduled {
-            match &error {
-                Error::Json(_) => {
-                    tracing::warn!(connection_id = %id, "Tracker scheduling failed for connection: invalid checkpoint")
-                }
-                _ => {
-                    tracing::warn!(connection_id = %id, error = %error, "Tracker scheduling failed for connection")
-                }
-            }
-            let marked: Result<()> = async {
-                let mut savepoint = tx.begin().await?;
-                sqlx::query("UPDATE tracker_connections SET status='error',last_error=$2,next_run_at=clock_timestamp()+interval '5 minutes' WHERE id=$1").bind(id).bind("Tracker state is invalid; use Sync now to restart").execute(&mut *savepoint).await?;
-                savepoint.commit().await?;
-                Ok(())
-            }
-            .await;
-            if let Err(error) = marked {
-                tracing::warn!(connection_id = %id, error = %error, "Tracker scheduling failed to mark connection error");
-            }
-        } else {
-            scheduled_count += 1;
+        match schedule_connection(tx, id, &row).await {
+            Ok(()) => scheduled_count += 1,
+            Err(error) => mark_schedule_failure(tx, id, &error).await,
         }
     }
     Ok(scheduled_count)
+}
+
+/// Queues one job in a savepoint, so a bad row cannot abort the batch.
+async fn schedule_connection(
+    tx: &mut PgConnection,
+    id: Uuid,
+    row: &sqlx::postgres::PgRow,
+) -> Result<()> {
+    let mut savepoint = tx.begin().await?;
+    let generation = row.try_get("generation")?;
+    if !row.try_get::<bool, _>("scan_due")? {
+        Outbox::insert(&mut savepoint, &tracker_job(id, generation, true)).await?;
+        savepoint.commit().await?;
+        return Ok(());
+    }
+    let checkpoint = next_checkpoint(row)?;
+    if !Outbox::insert(&mut savepoint, &tracker_job(id, generation, false)).await? {
+        // A push queued meanwhile holds the connection's job slot; scan next tick.
+        return Ok(());
+    }
+    sqlx::query("UPDATE tracker_connections SET checkpoint=$2,next_run_at=clock_timestamp()+interval '5 minutes' WHERE id=$1").bind(id).bind(checkpoint).execute(&mut *savepoint).await?;
+    savepoint.commit().await?;
+    Ok(())
+}
+
+/// The provider's next checkpoint for a due scan.
+fn next_checkpoint(row: &sqlx::postgres::PgRow) -> Result<Value> {
+    let provider = ProviderKind::parse(row.try_get("provider")?)?;
+    let incremental = row.try_get::<bool, _>("incremental_supported")?
+        && !row.try_get::<bool, _>("local_mapping_changed")?;
+    let poll = Poll {
+        idle: row.try_get::<String, _>("status")? == "idle",
+        now: Utc::now(),
+        discover: !row.try_get::<bool, _>("mapped")? || row.try_get::<bool, _>("discover")?,
+        since: row
+            .try_get::<Option<DateTime<Utc>>, _>("poll_watermark")?
+            .filter(|_| incremental),
+    };
+    provider.poll(row.try_get("checkpoint")?, poll)
+}
+
+async fn mark_schedule_failure(tx: &mut PgConnection, id: Uuid, error: &Error) {
+    match error {
+        Error::Json(_) => {
+            tracing::warn!(connection_id = %id, "Tracker scheduling failed for connection: invalid checkpoint")
+        }
+        _ => {
+            tracing::warn!(connection_id = %id, error = %error, "Tracker scheduling failed for connection")
+        }
+    }
+    let marked: Result<()> = async {
+        let mut savepoint = tx.begin().await?;
+        sqlx::query("UPDATE tracker_connections SET status='error',last_error=$2,next_run_at=clock_timestamp()+interval '5 minutes' WHERE id=$1").bind(id).bind("Tracker state is invalid; use Sync now to restart").execute(&mut *savepoint).await?;
+        savepoint.commit().await?;
+        Ok(())
+    }
+    .await;
+    if let Err(error) = marked {
+        tracing::warn!(connection_id = %id, error = %error, "Tracker scheduling failed to mark connection error");
+    }
 }
 
 /// Comment fetching stops this long after the job started; unfetched items are fetched
@@ -329,9 +340,10 @@ async fn restart_unfiltered(
 /// Only our own static messages or numeric HTTP statuses reach status metadata.
 pub fn failure_message(error: &Error) -> String {
     match error {
-        Error::Internal(message) | Error::BadRequest(message) | Error::Conflict(message) => {
-            message.clone()
-        }
+        Error::Internal(message)
+        | Error::BadRequest(message)
+        | Error::Conflict(message)
+        | Error::Stale(message) => message.clone(),
         _ => "Tracker database write failed; check destination team/stage configuration".into(),
     }
 }

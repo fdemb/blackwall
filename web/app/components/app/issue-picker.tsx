@@ -11,8 +11,7 @@ import {
 import { Search } from "lucide-react";
 import { Popover } from "~/components/ui/popover";
 import { stageOf } from "~/lib/filters";
-import { issueKey } from "~/lib/format";
-import { IssueKey, issueKeyLength } from "./issue-key";
+import { IssueKey, useIssueKeyWidth } from "./issue-key";
 import { useI18n } from "~/lib/i18n";
 import { useIssues } from "~/lib/queries";
 import { QueryStatus } from "./query-status";
@@ -36,7 +35,7 @@ export function IssuePicker({
   const query = useIssues({ search: q, sort: "updated" }, open);
   const excluded = new Set(exclude);
   const results = query.items.filter((i) => !excluded.has(i.id)).slice(0, 30);
-  const keyLength = issueKeyLength(results);
+  const keyWidth = useIssueKeyWidth(results);
   return (
     <DialogTrigger
       onOpenChange={(o) => {
@@ -57,20 +56,20 @@ export function IssuePicker({
                 <Search aria-hidden className="size-3.5 text-muted-foreground" />
                 <Input
                   placeholder={t("issue.findPlaceholder")}
-                  className="h-9 flex-1 bg-transparent text-[13px] outline-none placeholder:text-muted-foreground/70 [&::-webkit-search-cancel-button]:hidden"
+                  className="h-9 flex-1 bg-transparent  outline-none placeholder:text-muted-foreground/70 [&::-webkit-search-cancel-button]:hidden"
                 />
               </SearchField>
               <Menu
                 aria-label={t("issue.find")}
                 items={results}
-                dependencies={[keyLength]}
+                dependencies={[keyWidth]}
                 onAction={(k) => {
                   onPick(String(k));
                   close();
                 }}
                 className="max-h-64 overflow-auto overscroll-contain p-1 outline-none"
                 renderEmptyState={() => (
-                  <p className="px-3 py-4 text-center text-xs text-muted-foreground">
+                  <p className="px-3 py-4 text-center  text-muted-foreground">
                     {t("search.empty")}
                   </p>
                 )}
@@ -80,15 +79,11 @@ export function IssuePicker({
                   return (
                     <MenuItem
                       id={i.id}
-                      textValue={`${issueKey(i.number)} ${i.title}`}
-                      className="flex cursor-default items-center gap-2 rounded-md px-2 py-1.5 text-[13px] outline-none focus:bg-accent"
+                      textValue={`${i.key} ${i.title}`}
+                      className="flex cursor-default items-center gap-2 rounded-md px-2 py-1.5  outline-none focus:bg-accent"
                     >
                       {s && <StageIcon kind={s.kind} />}
-                      <IssueKey
-                        number={i.number}
-                        length={keyLength}
-                        className="text-muted-foreground"
-                      />
+                      <IssueKey value={i.key} width={keyWidth} className="text-muted-foreground" />
                       <span className="truncate">{i.title}</span>
                     </MenuItem>
                   );

@@ -83,7 +83,7 @@ async fn tracker_upgrade_converts_connections_links_jobs_and_discovery_pages() {
     let mock = Mock::default();
     mock.data.lock().await.parents.insert(8, 7);
     let (url, server) = mock_server(mock.clone()).await;
-    let base = format!("/api/workspaces/{workspace}/trackers/connections");
+    let base = format!("/internal-api/workspaces/{workspace}/trackers/connections");
     let (status, config) = call(
         &app,
         &owner,
@@ -211,7 +211,7 @@ async fn legacy_unmapped_checkpoint_restarts_discovery_on_upgrade() {
     let app = http::router(store.clone());
     let mock = Mock::default();
     let (url, server) = mock_server(mock.clone()).await;
-    let base = format!("/api/workspaces/{workspace}/trackers/connections");
+    let base = format!("/internal-api/workspaces/{workspace}/trackers/connections");
     let (status, config) = call(
         &app,
         &owner,

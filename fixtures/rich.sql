@@ -1,11 +1,11 @@
 INSERT INTO users(id,email,password_hash,profile) VALUES
 ('20000000-0000-0000-0000-000000000001','owner@example.com','__FIXTURE_PASSWORD_HASH__','{"id":"20000000-0000-0000-0000-000000000001","email":"owner@example.com","display_name":"Fixture owner","avatar_url":null,"contact":"","language":"en","theme":"system","alerts":{"assignments":true,"replies":true,"changes":true,"deadlines":true}}'),
 ('20000000-0000-0000-0000-000000000002','member@example.com','__FIXTURE_PASSWORD_HASH__','{"id":"20000000-0000-0000-0000-000000000002","email":"member@example.com","display_name":"Fixture member","avatar_url":null,"contact":"","language":"pl","theme":"dark","alerts":{"assignments":true,"replies":true,"changes":true,"deadlines":true}}');
-INSERT INTO workspaces(id,name,next_issue_number) VALUES('20000000-0000-0000-0000-000000000010','Release planning',4);
+INSERT INTO workspaces(id,name,slug) VALUES('20000000-0000-0000-0000-000000000010','Release planning','release-planning');
 INSERT INTO workspace_members(workspace_id,user_id,role) VALUES
 ('20000000-0000-0000-0000-000000000010','20000000-0000-0000-0000-000000000001','owner'),
 ('20000000-0000-0000-0000-000000000010','20000000-0000-0000-0000-000000000002','member');
-INSERT INTO teams(id,workspace_id,name) VALUES('20000000-0000-0000-0000-000000000020','20000000-0000-0000-0000-000000000010','Platform');
+INSERT INTO teams(id,workspace_id,name,key) VALUES('20000000-0000-0000-0000-000000000020','20000000-0000-0000-0000-000000000010','Platform','PLA');
 INSERT INTO team_members(workspace_id,team_id,user_id) SELECT workspace_id,'20000000-0000-0000-0000-000000000020',user_id FROM workspace_members WHERE workspace_id='20000000-0000-0000-0000-000000000010';
 INSERT INTO stages(id,workspace_id,team_id,name,kind,position) VALUES
 ('20000000-0000-0000-0000-000000000021','20000000-0000-0000-0000-000000000010','20000000-0000-0000-0000-000000000020','Backlog','backlog',1000),
@@ -16,9 +16,9 @@ INSERT INTO labels(id,workspace_id,name,color) VALUES('20000000-0000-0000-0000-0
 INSERT INTO projects(id,workspace_id,name,description) VALUES('20000000-0000-0000-0000-000000000040','20000000-0000-0000-0000-000000000010','Public release','Ship the PostgreSQL backend');
 INSERT INTO project_teams(workspace_id,project_id,team_id) VALUES('20000000-0000-0000-0000-000000000010','20000000-0000-0000-0000-000000000040','20000000-0000-0000-0000-000000000020');
 INSERT INTO milestones(id,workspace_id,project_id,name,deadline) VALUES('20000000-0000-0000-0000-000000000041','20000000-0000-0000-0000-000000000010','20000000-0000-0000-0000-000000000040','Beta','2030-01-15T12:00:00Z');
-INSERT INTO sprints(id,workspace_id,team_id,name,goal,starts_at,ends_at,state) VALUES
-('20000000-0000-0000-0000-000000000050','20000000-0000-0000-0000-000000000010','20000000-0000-0000-0000-000000000020','Release sprint','Verify the beta','2030-01-01T00:00:00Z','2030-01-15T00:00:00Z','active'),
-('20000000-0000-0000-0000-000000000051','20000000-0000-0000-0000-000000000010','20000000-0000-0000-0000-000000000020','Previous sprint','Prepare the schema','2029-12-15T00:00:00Z','2030-01-01T00:00:00Z','completed');
+INSERT INTO sprints(id,workspace_id,team_id,number,name,goal,starts_at,ends_at,state) VALUES
+('20000000-0000-0000-0000-000000000050','20000000-0000-0000-0000-000000000010','20000000-0000-0000-0000-000000000020',2,'Release sprint','Verify the beta','2030-01-01T00:00:00Z','2030-01-15T00:00:00Z','active'),
+('20000000-0000-0000-0000-000000000051','20000000-0000-0000-0000-000000000010','20000000-0000-0000-0000-000000000020',1,'Previous sprint','Prepare the schema','2029-12-15T00:00:00Z','2030-01-01T00:00:00Z','completed');
 INSERT INTO sprint_outcomes(workspace_id,sprint_id,total,completed,effort) VALUES('20000000-0000-0000-0000-000000000010','20000000-0000-0000-0000-000000000051',1,1,3);
 INSERT INTO issues(id,workspace_id,number,title,description,team_id,stage_id,assignee,priority,estimate,deadline,project_id,milestone_id,sprint_id,parent_id,position,deleted_at,created_at,updated_at) VALUES
 ('20000000-0000-0000-0000-000000000060','20000000-0000-0000-0000-000000000010',1,'Define the schema','Review tenant constraints','20000000-0000-0000-0000-000000000020','20000000-0000-0000-0000-000000000024','20000000-0000-0000-0000-000000000001','normal',3,NULL,'20000000-0000-0000-0000-000000000040',NULL,'20000000-0000-0000-0000-000000000051',NULL,1000,NULL,'2029-12-20T10:00:00Z','2029-12-28T10:00:00Z'),

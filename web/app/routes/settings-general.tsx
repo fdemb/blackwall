@@ -5,13 +5,15 @@ import { Button } from "~/components/ui/button";
 import { useToast } from "~/components/ui/toast";
 import { SettingsPage, SettingsSection } from "~/components/app/settings";
 import { useI18n } from "~/lib/i18n";
+import { useIssueCount } from "~/lib/stats";
 import { useWorkspace } from "~/lib/workspace";
 
 export default function General() {
   const { t } = useI18n();
   const toast = useToast();
-  const { ws, role, report } = useWorkspace();
-  const base = `/${ws.id}/settings`;
+  const { ws, role } = useWorkspace();
+  const issueCount = useIssueCount();
+  const base = `/${ws.slug}/settings`;
   const copyId = () =>
     navigator.clipboard.writeText(ws.id).then(
       () => toast.show(t("action.copied")),
@@ -21,18 +23,18 @@ export default function General() {
     [t("settings.members"), ws.members.length, `${base}/members`],
     [t("nav.teams"), ws.teams.length, `${base}/teams`],
     [t("nav.projects"), ws.projects.length],
-    [t("nav.issues"), report.issue_count],
+    [t("nav.issues"), issueCount],
   ];
   return (
     <SettingsPage title={t("settings.general")} description={t("settings.generalSub")}>
       <SettingsSection>
-        <dl className="divide-y divide-border text-[13px]">
+        <dl className="divide-y divide-border ">
           <Row label={t("field.name")}>
             <span className="font-medium">{ws.name}</span>
           </Row>
           <Row label={t("workspace.id")}>
             <span className="flex min-w-0 items-center gap-1">
-              <code className="truncate font-mono text-xs text-muted-foreground">{ws.id}</code>
+              <code className="truncate font-mono  text-muted-foreground">{ws.id}</code>
               <Button
                 variant="ghost"
                 size="icon"
@@ -49,7 +51,7 @@ export default function General() {
         </dl>
       </SettingsSection>
       <SettingsSection title={t("settings.contents")}>
-        <dl className="divide-y divide-border text-[13px]">
+        <dl className="divide-y divide-border ">
           {counts.map(([label, n, to]) => (
             <Row key={label} label={label}>
               {to ? (

@@ -11,6 +11,7 @@ import { EmptyState, Page, PageHeader, Scroll } from "~/components/app/page";
 import { ProgressBar } from "~/components/app/progress";
 import { useI18n } from "~/lib/i18n";
 import { usePending } from "~/lib/use-pending";
+import { useProjectStats } from "~/lib/stats";
 import { useWorkspace } from "~/lib/workspace";
 import type { Id, Project } from "~/lib/types";
 
@@ -18,12 +19,13 @@ type ProjectSort = "name" | "progress" | "recent";
 
 export default function Projects() {
   const { t } = useI18n();
-  const { ws, canWrite, report } = useWorkspace();
+  const { ws, canWrite } = useWorkspace();
+  const projectStats = useProjectStats();
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState("");
   const [sort, setSort] = useState<ProjectSort>("name");
   const rows = ws.projects.map((p) => {
-    const stats = report.project_stats.find((stats) => stats.id === p.id);
+    const stats = projectStats.get(p.id);
     const total = stats?.total ?? 0;
     const done = stats?.completed ?? 0;
     const touched = stats?.updated_at ? +new Date(stats.updated_at) : 0;
@@ -113,22 +115,22 @@ export default function Projects() {
               return (
                 <li key={p.id}>
                   <Link
-                    to={`/${ws.id}/projects/${p.id}`}
+                    to={`/${ws.slug}/projects/${p.id}`}
                     className="group block rounded-xl border border-border bg-card p-4 shadow-xs outline-none transition-colors hover:border-primary/40 hover:shadow-md focus-visible:ring-2 focus-visible:ring-ring/60"
                   >
                     <h2 className="font-semibold tracking-tight group-hover:text-primary">
                       {p.name}
                     </h2>
-                    <p className="mt-1 line-clamp-2 min-h-10 text-[13px] text-muted-foreground">
+                    <p className="mt-1 line-clamp-2 min-h-10  text-muted-foreground">
                       {p.description || t("project.noDescription")}
                     </p>
-                    <div className="mt-3 flex items-center gap-3 text-xs text-muted-foreground">
+                    <div className="mt-3 flex items-center gap-3  text-muted-foreground">
                       <ProgressBar value={done} total={total} className="flex-1" label={p.name} />
                       <span className="tabular-nums">
                         {done}/{total}
                       </span>
                     </div>
-                    <p className="mt-2 truncate text-xs text-muted-foreground">
+                    <p className="mt-2 truncate  text-muted-foreground">
                       {p.team_ids
                         .map((id) => ws.teams.find((x) => x.id === id)?.name)
                         .filter(Boolean)
@@ -189,9 +191,7 @@ export function ProjectForm({ project, close }: { project?: Project; close: () =
         rows={3}
       />
       <fieldset>
-        <legend className="mb-1.5 text-xs font-medium text-muted-foreground">
-          {t("project.teams")}
-        </legend>
+        <legend className="mb-1.5  font-medium text-muted-foreground">{t("project.teams")}</legend>
         <div className="flex flex-col gap-2">
           {ws.teams.map((tm) => (
             <Checkbox
@@ -203,12 +203,12 @@ export function ProjectForm({ project, close }: { project?: Project; close: () =
             </Checkbox>
           ))}
           {ws.teams.length === 0 && (
-            <p className="text-xs text-muted-foreground">{t("project.noTeams")}</p>
+            <p className=" text-muted-foreground">{t("project.noTeams")}</p>
           )}
         </div>
       </fieldset>
       {error && (
-        <p role="alert" className="text-xs text-destructive">
+        <p role="alert" className=" text-destructive">
           {error}
         </p>
       )}

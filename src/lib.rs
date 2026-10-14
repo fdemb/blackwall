@@ -1,3 +1,4 @@
+pub mod api;
 pub mod auth;
 pub mod domain;
 pub mod error;
@@ -5,7 +6,9 @@ pub mod exchange;
 pub mod fixtures;
 pub mod http;
 pub mod jobs;
+pub mod mcp;
 pub mod store;
+pub mod sync_events;
 pub mod tracker;
 pub mod web;
 

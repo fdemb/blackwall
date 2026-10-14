@@ -5,7 +5,9 @@ import {
   GridListHeader,
   GridListItem,
   GridListSection,
+  Link,
   ListLayout,
+  useDragAndDrop,
   Virtualizer,
   type Selection,
 } from "react-aria-components";
@@ -15,23 +17,18 @@ import { Checkbox } from "~/components/ui/toggles";
 import { Menu, MenuItem, MenuPopover, MenuTrigger, MenuSeparator } from "~/components/ui/menu";
 import { Avatar } from "~/components/ui/avatar";
 import { useToast } from "~/components/ui/toast";
+import { ISSUE_DRAG_TYPE, issueDragItem, readDraggedIssues } from "./board";
 import { ConfirmDialog } from "./confirm";
+import { AssigneeMenu, DeadlineMenu, KeyButton, LabelLinks, PriorityMenu } from "./issue-menus";
 import { cn } from "~/lib/utils";
 import { PRIORITIES } from "~/lib/format";
-import { IssueKey, issueKeyLength } from "./issue-key";
+import { useIssueKeyWidth } from "./issue-key";
 import { stageOf, isDoneOnly } from "~/lib/filters";
 import { useI18n } from "~/lib/i18n";
 import { useWorkspace } from "~/lib/workspace";
 import type { Id, Issue, IssueGroup, IssuePatch } from "~/lib/types";
 import { PriorityIcon, StageIcon } from "./icons";
-import {
-  AssigneeAvatar,
-  BlockedBadge,
-  DeadlineChip,
-  LabelChips,
-  SubtaskProgress,
-  TrackerBadge,
-} from "./issue-parts";
+import { BlockedBadge, SubtaskProgress, TrackerBadge } from "./issue-parts";
 
 export type GroupBy = IssueGroup;
 
@@ -108,31 +105,19 @@ export function IssueList({
   emptyState,
   selectable = true,
   fill = false,
-}: {
-  issues: Issue[];
-  groupBy?: GroupBy;
-  showTeam?: boolean;
-  emptyState?: React.ReactNode;
-  selectable?: boolean;
-  fill?: boolean;
-}) {
-  if (fill)
-    return (
-      <FillIssueList
-        issues={issues}
-        groupBy={groupBy}
-        showTeam={showTeam}
-        emptyState={emptyState}
-        selectable={selectable}
-      />
-    );
+  selectionBar,
+  onDropIssues,
+}: IssueListProps & { fill?: boolean }) {
+  const List = fill ? FillIssueList : PlainIssueList;
   return (
-    <PlainIssueList
+    <List
       issues={issues}
       groupBy={groupBy}
       showTeam={showTeam}
       emptyState={emptyState}
       selectable={selectable}
+      selectionBar={selectionBar}
+      onDropIssues={onDropIssues}
     />
   );
 }
@@ -143,6 +128,13 @@ interface IssueListProps {
   showTeam?: boolean;
   emptyState?: React.ReactNode;
   selectable?: boolean;
+  /** Replaces the floating bulk bar, for pages with more than one list. Gets the selected ids. */
+  selectionBar?: (ids: Id[], clear: () => void) => React.ReactNode;
+  /**
+   * Makes rows draggable and the list a drop target for issues dragged from another list. The
+   * list keeps no order of its own, so a drop lands on the list, not between rows.
+   */
+  onDropIssues?: (ids: Id[]) => void;
 }
 
 /** Grows with its content. For dialogs, drawers and short lists. */
@@ -152,9 +144,21 @@ export function PlainIssueList({
   showTeam,
   emptyState,
   selectable = true,
+  selectionBar,
+  onDropIssues,
 }: IssueListProps) {
-  const { grid, bar } = useIssueGrid({ issues, groupBy, showTeam, selectable, fill: false });
-  if (issues.length === 0) return <>{emptyState}</>;
+  const { grid, bar } = useIssueGrid({
+    issues,
+    groupBy,
+    showTeam,
+    emptyState,
+    selectable,
+    selectionBar,
+    onDropIssues,
+    fill: false,
+  });
+  // A drop target stays on screen when empty, with the empty state inside it.
+  if (issues.length === 0 && !onDropIssues) return <>{emptyState}</>;
   return (
     <>
       {grid}
@@ -170,14 +174,29 @@ export function FillIssueList({
   showTeam,
   emptyState,
   selectable = true,
+  selectionBar,
+  onDropIssues,
 }: IssueListProps) {
-  const { grid, bar } = useIssueGrid({ issues, groupBy, showTeam, selectable, fill: true });
-  if (issues.length === 0) return <>{emptyState}</>;
+  const { grid, bar } = useIssueGrid({
+    issues,
+    groupBy,
+    showTeam,
+    emptyState,
+    selectable,
+    selectionBar,
+    onDropIssues,
+    fill: true,
+  });
+  if (issues.length === 0 && !onDropIssues) return <>{emptyState}</>;
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <Virtualizer layout={ListLayout} layoutOptions={LAYOUT_OPTIONS}>
-        {grid}
-      </Virtualizer>
+      {issues.length === 0 ? (
+        grid
+      ) : (
+        <Virtualizer layout={ListLayout} layoutOptions={LAYOUT_OPTIONS}>
+          {grid}
+        </Virtualizer>
+      )}
       {bar}
     </div>
   );
@@ -187,13 +206,18 @@ function useIssueGrid({
   issues,
   groupBy,
   showTeam,
+  emptyState,
   selectable,
+  selectionBar,
+  onDropIssues,
   fill,
 }: Required<Pick<IssueListProps, "issues" | "groupBy" | "selectable">> &
-  Pick<IssueListProps, "showTeam"> & { fill: boolean }) {
+  Pick<IssueListProps, "showTeam" | "emptyState" | "selectionBar" | "onDropIssues"> & {
+    fill: boolean;
+  }) {
   const { t } = useI18n();
   const groups = useGroups(issues, groupBy);
-  const keyLength = issueKeyLength(issues);
+  const keyWidth = useIssueKeyWidth(issues);
   const [selected, setSelected] = useState<Set<Id>>(() => new Set());
   const { canWrite } = useWorkspace();
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
@@ -210,6 +234,20 @@ function useIssueGrid({
     () => new Set([...selected].filter((id) => visible.has(id))),
     [selected, visible],
   );
+
+  const { dragAndDropHooks } = useDragAndDrop({
+    isDisabled: !canSelect,
+    // Dragging a selected row carries the whole selection.
+    getItems: (keys) =>
+      [...keys].filter((k) => visible.has(String(k))).map((k) => issueDragItem(String(k), "list")),
+    acceptedDragTypes: [ISSUE_DRAG_TYPE],
+    // Rows refuse, so the drop falls through to the list. Drops from this list itself never count.
+    getDropOperation: (target) => (target.type === "root" ? "move" : "cancel"),
+    onRootDrop: async (e) => {
+      const { ids } = await readDraggedIssues(e.items);
+      if (ids.length) onDropIssues?.(ids);
+    },
+  });
 
   const toggle = (id: string) =>
     setCollapsed((c) => {
@@ -228,10 +266,17 @@ function useIssueGrid({
       onSelectionChange={(s: Selection) =>
         setSelected(new Set(s === "all" ? visible : ([...s] as Id[])))
       }
-      className={cn("outline-none", fill ? "min-h-0 flex-1 overflow-y-auto" : "pb-24")}
+      dragAndDropHooks={onDropIssues ? dragAndDropHooks : undefined}
+      renderEmptyState={() => emptyState}
+      className={cn(
+        "outline-none transition-colors drop-target:bg-accent/40 drop-target:ring-2 drop-target:ring-inset drop-target:ring-primary/40",
+        fill && "min-h-0 flex-1 overflow-y-auto",
+        // Room for the bulk bar, which floats over the end of the list.
+        !fill && !selectionBar && visibleSelected.size > 0 && "pb-24",
+      )}
     >
       {groupBy === "none" ? (
-        <IssueRows items={issues} showTeam={showTeam} canSelect={canSelect} keyLength={keyLength} />
+        <IssueRows items={issues} showTeam={showTeam} canSelect={canSelect} keyWidth={keyWidth} />
       ) : (
         groups.map((g) => {
           const isCollapsed = collapsed.has(g.id);
@@ -242,7 +287,7 @@ function useIssueGrid({
                   type="button"
                   onClick={() => toggle(g.id)}
                   aria-expanded={!isCollapsed}
-                  className="flex h-9 w-full items-center gap-2 border-b border-border bg-muted/40 px-4 text-left text-[13px] font-medium outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/60"
+                  className="flex h-9 w-full items-center gap-2 border-b border-border bg-muted/40 px-4 text-left  font-medium outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/60"
                 >
                   <ChevronDown
                     aria-hidden
@@ -253,14 +298,12 @@ function useIssueGrid({
                   />
                   {g.icon}
                   {g.title}
-                  <span className="text-xs tabular-nums text-muted-foreground">
-                    {g.items.length}
-                  </span>
+                  <span className=" tabular-nums text-muted-foreground">{g.items.length}</span>
                 </button>
               </GridListHeader>
               <IssueRows
                 items={isCollapsed ? [] : g.items}
-                keyLength={keyLength}
+                keyWidth={keyWidth}
                 showTeam={showTeam}
                 canSelect={canSelect}
               />
@@ -271,8 +314,11 @@ function useIssueGrid({
     </GridList>
   );
 
-  const bar = (
-    <BulkBar issues={issues} selected={visibleSelected} clear={() => setSelected(new Set())} />
+  const clear = () => setSelected(new Set());
+  const bar = selectionBar ? (
+    selectionBar([...visibleSelected], clear)
+  ) : (
+    <BulkBar issues={issues} selected={visibleSelected} clear={clear} />
   );
   return { grid, bar };
 }
@@ -282,17 +328,17 @@ function IssueRows({
   items,
   showTeam,
   canSelect,
-  keyLength,
+  keyWidth,
 }: {
   items: Issue[];
   showTeam?: boolean;
   canSelect?: boolean;
-  keyLength: number;
+  keyWidth: string | undefined;
 }) {
   return (
-    <Collection items={items} dependencies={[keyLength, showTeam, canSelect]}>
+    <Collection items={items} dependencies={[keyWidth, showTeam, canSelect]}>
       {(issue) => (
-        <IssueRow issue={issue} showTeam={showTeam} canSelect={canSelect} keyLength={keyLength} />
+        <IssueRow issue={issue} showTeam={showTeam} canSelect={canSelect} keyWidth={keyWidth} />
       )}
     </Collection>
   );
@@ -302,30 +348,27 @@ export function IssueRow({
   issue,
   showTeam,
   canSelect,
-  keyLength,
+  keyWidth,
 }: {
   issue: Issue;
   showTeam?: boolean;
   canSelect?: boolean;
-  keyLength?: number;
+  keyWidth?: string;
 }) {
-  const { ws, run, canWrite } = useWorkspace();
+  const { ws, canWrite } = useWorkspace();
   const stage = stageOf(ws, issue);
   const project = ws.projects.find((p) => p.id === issue.project_id);
+  const locked = !canWrite;
   return (
     <GridListItem
       id={issue.id}
       textValue={issue.title}
-      href={`/${ws.id}/issue/${issue.id}`}
-      className="group flex h-10 cursor-default items-center gap-2.5 border-b border-border/70 px-4 text-[13px] outline-none hover:bg-muted/60 focus-visible:bg-muted/60 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/60 selected:bg-accent/60"
+      href={`/${ws.slug}/issue/${issue.ref}`}
+      className="group flex h-10 cursor-default items-center gap-2.5 border-b border-border/70 px-4  outline-none hover:bg-muted/60 focus-visible:bg-muted/60 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/60 selected:bg-accent/60"
     >
       {canSelect && <RowSelectBox />}
-      <PriorityMenu
-        issue={issue}
-        disabled={!canWrite}
-        run={(patch) => run({ type: "update_issue", id: issue.id, patch })}
-      />
-      <IssueKey number={issue.number} length={keyLength} className="text-muted-foreground" />
+      <PriorityMenu issue={issue} isDisabled={locked} className="-ml-1" />
+      <KeyButton issue={issue} width={keyWidth} />
       {stage && (
         <span title={stage.name}>
           <StageIcon kind={stage.kind} />
@@ -334,20 +377,25 @@ export function IssueRow({
       <span className="min-w-0 flex-1 truncate font-medium">{issue.title}</span>
       <TrackerBadge issue={issue} />
       <BlockedBadge issue={issue} />
-      <SubtaskProgress issue={issue} />
+      <span className="hidden sm:block">
+        <SubtaskProgress issue={issue} />
+      </span>
       <span className="hidden md:block">
-        <LabelChips issue={issue} />
+        <LabelLinks issue={issue} className="flex-nowrap" />
       </span>
       {showTeam && <TeamCell issue={issue} />}
       {project && (
-        <span className="hidden max-w-32 truncate text-xs text-muted-foreground xl:block">
+        <Link
+          href={`/${ws.slug}/projects/${project.id}`}
+          className="hidden max-w-32 cursor-default truncate rounded-sm text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/60 xl:block"
+        >
           {project.name}
-        </span>
+        </Link>
       )}
-      <span className="w-20 text-right">
-        <DeadlineChip issue={issue} className="justify-end" />
+      <span className="flex justify-end sm:w-20">
+        <DeadlineMenu issue={issue} isDisabled={locked} />
       </span>
-      <AssigneeAvatar issue={issue} />
+      <AssigneeMenu issue={issue} isDisabled={locked} />
     </GridListItem>
   );
 }
@@ -369,46 +417,7 @@ export function TeamCell({ issue }: { issue: Issue }) {
   const { team } = useWorkspace();
   const name = team(issue.team_id)?.name;
   if (!name) return null;
-  return <span className="hidden text-xs text-muted-foreground lg:block">{name}</span>;
-}
-
-function PriorityMenu({
-  issue,
-  disabled,
-  run,
-}: {
-  issue: Issue;
-  disabled: boolean;
-  run: (p: IssuePatch) => Promise<unknown>;
-}) {
-  const { t } = useI18n();
-  return (
-    <MenuTrigger>
-      <Button
-        variant="ghost"
-        size="icon"
-        isDisabled={disabled}
-        aria-label={t("field.priority")}
-        className="-ml-1 size-6"
-      >
-        <PriorityIcon priority={issue.priority} />
-      </Button>
-      <MenuPopover placement="bottom start">
-        <Menu
-          selectionMode="single"
-          selectedKeys={[issue.priority]}
-          onAction={(k) => run({ priority: k as never }).catch(() => {})}
-        >
-          {PRIORITIES.map((p) => (
-            <MenuItem key={p} id={p} textValue={t(`priority.${p}`)}>
-              <PriorityIcon priority={p} />
-              {t(`priority.${p}`)}
-            </MenuItem>
-          ))}
-        </Menu>
-      </MenuPopover>
-    </MenuTrigger>
-  );
+  return <span className="hidden  text-muted-foreground lg:block">{name}</span>;
 }
 
 function BulkBar({
@@ -437,11 +446,11 @@ function BulkBar({
   const remove = async () => {
     await run({ type: "bulk_issues", ids, action: "delete" }, { quiet: true });
     clear();
-    toast.show(t("bulk.deleted", { n: ids.length }), {
+    toast.show(t("bulk.deleted", { count: ids.length }), {
       label: t("action.undo"),
       run: () =>
         void run({ type: "bulk_issues", ids, action: "restore" })
-          .then(() => toast.show(t("bulk.restored", { n: ids.length })))
+          .then(() => toast.show(t("bulk.restored", { count: ids.length })))
           .catch(() => {}),
     });
   };
@@ -453,11 +462,11 @@ function BulkBar({
   const archive = async () => {
     await run({ type: "bulk_issues", ids, action: "archive" }, { quiet: true });
     clear();
-    toast.show(t("bulk.archived", { n: ids.length }), {
+    toast.show(t("bulk.archived", { count: ids.length }), {
       label: t("action.undo"),
       run: () =>
         void run({ type: "bulk_issues", ids, action: "unarchive" })
-          .then(() => toast.show(t("bulk.unarchived", { n: ids.length })))
+          .then(() => toast.show(t("bulk.unarchived", { count: ids.length })))
           .catch(() => {}),
     });
   };
@@ -467,9 +476,7 @@ function BulkBar({
       aria-label={t("bulk.toolbar")}
       className="fixed bottom-4 left-1/2 z-40 flex max-w-[calc(100vw-1.5rem)] -translate-x-1/2 animate-in flex-wrap items-center justify-center gap-1 rounded-xl border border-border bg-popover p-1.5 shadow-xl slide-in-from-bottom-4 fade-in-0 sm:bottom-6"
     >
-      <span className="px-2.5 text-[13px] font-medium">
-        {t("bulk.selected", { n: ids.length })}
-      </span>
+      <span className="px-2.5  font-medium">{t("bulk.selected", { n: ids.length })}</span>
       <MenuTrigger>
         <Button variant="ghost" size="sm">
           {t("field.stage")}
@@ -479,7 +486,7 @@ function BulkBar({
             onAction={(k) => update({ stage_id: k as Id })}
             items={same ? (team?.stages ?? []) : []}
             renderEmptyState={() => (
-              <p className="px-2 py-1.5 text-xs text-muted-foreground">{t("bulk.sameTeam")}</p>
+              <p className="px-2 py-1.5  text-muted-foreground">{t("bulk.sameTeam")}</p>
             )}
           >
             {(s) => (
@@ -546,7 +553,7 @@ function BulkBar({
         <X aria-hidden />
       </Button>
       <ConfirmDialog
-        title={t("bulk.deleteTitle", { n: ids.length })}
+        title={t("bulk.deleteTitle", { count: ids.length })}
         description={t("bulk.deleteSub")}
         isOpen={confirm}
         onOpenChange={setConfirm}

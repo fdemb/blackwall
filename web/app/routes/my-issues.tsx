@@ -5,6 +5,7 @@ import { Workbench } from "~/components/app/workbench";
 import { EmptyState } from "~/components/app/page";
 import { useI18n } from "~/lib/i18n";
 import { useWorkspace } from "~/lib/workspace";
+import { whereIs } from "~/lib/filters";
 import { CheckCheck } from "lucide-react";
 
 export default function MyIssues() {
@@ -26,7 +27,7 @@ export default function MyIssues() {
     <Workbench
       title={t("nav.myIssues")}
       icon={<UserRound className="size-4 text-muted-foreground" />}
-      base={tab === "assigned" ? { assignee: me } : {}}
+      base={tab === "assigned" ? { where: [whereIs("assignee", me)] } : {}}
       extraFilter={tab === "following" ? (i) => i.followers.includes(me) : undefined}
       hide={tab === "assigned" ? ["assignee"] : []}
       saveable={tab === "assigned"}

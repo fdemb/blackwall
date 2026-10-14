@@ -62,7 +62,7 @@ function inspect(name: string, parsed: unknown): Preview | null {
 
 export default function Data() {
   const { t } = useI18n();
-  const { ws, canWrite, canAdmin, reload } = useWorkspace();
+  const { ws, canWrite, canAdmin, reload, confirmed, offline } = useWorkspace();
   const toast = useToast();
   const [busy, setBusy] = useState(false);
   const importKey = useRef(crypto.randomUUID());
@@ -98,7 +98,7 @@ export default function Data() {
     setResult(undefined);
   };
   return (
-    <SettingsPage title={t("settings.data")}>
+    <SettingsPage title={t("settings.data")} description={t("settings.dataSub")}>
       <SettingsSection title={t("data.export")} description={t("data.exportSub")}>
         <div className="px-4 py-4 sm:px-5 sm:py-5">
           <Button variant="secondary" isDisabled={busy} onPress={exportAll}>
@@ -111,6 +111,7 @@ export default function Data() {
         <SettingsSection title={t("data.import")} description={t("data.importSub")}>
           <div className="px-4 py-4 sm:px-5 sm:py-5">
             <DropZone
+              isDisabled={offline}
               className="flex flex-col items-center gap-2 rounded-xl border border-dashed border-input px-6 py-10 text-center transition-colors drop-target:border-primary drop-target:bg-accent/50"
               onDrop={async (e) => {
                 for (const item of e.items)
@@ -121,14 +122,16 @@ export default function Data() {
               }}
             >
               <FileUp className="size-5 text-muted-foreground" />
-              <Text slot="label" className="text-[13px] text-muted-foreground">
+              <Text slot="label" className=" text-muted-foreground">
                 {t("data.drop")}
               </Text>
               <FileTrigger
                 acceptedFileTypes={["application/json", ".json"]}
                 onSelect={(l) => l?.[0] && void choose(l[0])}
               >
-                <Button variant="secondary">{t("data.choose")}</Button>
+                <Button variant="secondary" isDisabled={offline}>
+                  {t("data.choose")}
+                </Button>
               </FileTrigger>
             </DropZone>
           </div>
@@ -155,6 +158,7 @@ export default function Data() {
               allowed={preview.kind === "issues" || canAdmin}
               onCancel={close}
               onImport={async () => {
+                await confirmed(preview.body);
                 const res = await workspaces.import(ws.id, preview.body, importKey.current);
                 await reload().catch(() => undefined);
                 setResult(res.summary);
@@ -180,14 +184,15 @@ function Review({
   onImport: () => Promise<void>;
 }) {
   const { t } = useI18n();
+  const { offline } = useWorkspace();
   const { pending, error, guard } = usePending();
   return (
     <div className="space-y-4">
       <div>
-        <p className="text-[13px] font-medium">
+        <p className=" font-medium">
           {t(preview.kind === "transfer" ? "data.kindTransfer" : "data.kindIssues")}
         </p>
-        <dl className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1 text-[13px]">
+        <dl className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1 ">
           {preview.counts.map(([label, n]) => (
             <div key={label} className="flex justify-between border-b border-border/60 py-1">
               <dt className="text-muted-foreground">{t(label)}</dt>
@@ -197,7 +202,7 @@ function Review({
         </dl>
       </div>
       {!allowed && (
-        <p role="alert" className="text-[13px] text-destructive">
+        <p role="alert" className=" text-destructive">
           {t("data.adminOnly")}
         </p>
       )}
@@ -208,7 +213,7 @@ function Review({
         </Button>
         <Button
           variant="primary"
-          isDisabled={!allowed || pending}
+          isDisabled={!allowed || pending || offline}
           onPress={() => void guard(onImport)}
         >
           {pending ? t("data.importing") : t("data.confirm")}
@@ -223,7 +228,7 @@ function Finished({ summary, onDone }: { summary: ImportSummary | null; onDone: 
   const fallback = summary?.identities.filter((i) => i.fallback).length ?? 0;
   const matched = (summary?.identities.length ?? 0) - fallback;
   return (
-    <div className="space-y-3 text-[13px]">
+    <div className="space-y-3 ">
       {summary ? (
         <>
           <p>

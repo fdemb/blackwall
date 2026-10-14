@@ -39,6 +39,8 @@ Fixtures use `fixture-password-123`. The empty fixture account is `empty@example
 
 There is no converter for old development databases.
 
+Run `./scripts/worktree.sh init` in a linked git worktree. It writes a `.env` with its own database and HTTP port, reuses the main checkout's Compose services and Rust build cache, builds the frontend, and applies migrations. `FIXTURE=rich` loads a fixture into a new database. In the worktree, `pnpm run dev` proxies to that port and `./scripts/database.sh reset` resets only that database. Run `./scripts/worktree.sh drop` before removing the worktree.
+
 Checked SQL compiles offline using the committed `.sqlx` metadata. After changing a checked query, regenerate its metadata against a migrated PostgreSQL database:
 
 ```sh
@@ -47,11 +49,13 @@ SQLX_OFFLINE=false SQLX_OFFLINE_DIR=.sqlx DATABASE_URL=postgres://blackwall:blac
 
 ## API
 
-`GET /api/schema.json` exposes OpenAPI generated from Rust types. API clients use `Authorization: Bearer <session token>`. The browser uses an HttpOnly, SameSite=Strict cookie. Cookie mutations require `X-CSRF-Token`, returned at login and by `GET /api/me`.
+Integrations, scripts and AI agents use the public API at `/api/v1` and the MCP server at `/mcp`, authenticated with personal access tokens. See [public API](docs/api.md); `GET /api/v1/openapi.json` describes it.
 
-Workspace creation accepts an optional `idempotency_key`, scoped to the authenticated user. The frontend keeps this key across an ambiguous creation failure.
+The rest of this section covers `/internal-api`, the web app's own API, which can change without notice. `GET /internal-api/schema.json` exposes OpenAPI generated from Rust types. Its clients use `Authorization: Bearer <session token>`. The browser uses an HttpOnly, SameSite=Strict cookie. Cookie mutations require `X-CSRF-Token`, returned at login and by `GET /internal-api/me`.
 
-Commands carry versions for the entities they edit. Creates usually use an empty map. For example:
+Workspace creation takes a `slug`, the workspace's name in app URLs: lowercase letters, digits and single hyphens, at most 48 bytes, unique across the server. It accepts an optional `idempotency_key`, scoped to the authenticated user. The frontend keeps this key across an ambiguous creation failure.
+
+Commands optionally carry versions for the entities they edit. Omit `expected_versions` for last-writer-wins. For example:
 
 ```json
 {
@@ -60,18 +64,27 @@ Commands carry versions for the entities they edit. Creates usually use an empty
   "command": {
     "type": "create_team",
     "name": "Infrastructure",
+    "key": "INF",
     "members": []
   }
 }
 ```
 
-Send commands to `POST /api/workspaces/{id}/commands`. Responses contain `result`, a UUID-to-version `versions` map, and `changes`: every record the command changed that the caller can see, including side effects such as a parent's subtask counts, a dependent's blocker count, or a member's team list. Each change is `{entity,id,record}`, where `record` has the shape its list endpoint returns and `null` means deleted or no longer visible. A replayed idempotent command reports those records as they are now. Issue edits require the issue's current version. Bulk edits require every affected issue's version. HTTP 409 means a stale version or conflicting idempotency key; fetch the affected entities before retrying. Idempotency keys are optional strings scoped to the workspace and actor. Reusing a key with the same request returns the recorded result.
+Send commands to `POST /internal-api/workspaces/{id}/commands`. Responses contain `result`, a UUID-to-version `versions` map, and `changes`: every record the command changed that the caller can see, including side effects such as a member's team list. Count changes alone do not return parents or dependents. Each change is `{entity,id,record}`, where `record` has the shape its list endpoint returns and `null` means deleted or no longer visible. A replayed idempotent command reports those records as they are now. Issue edits may include the issue's current version; bulk edits may include every affected issue's version. A sent version that is stale returns HTTP 409; fetch the affected entities before retrying. Idempotency keys are optional strings scoped to the workspace and actor. Reusing a key with the same request returns the recorded result.
 
-`GET /api/workspaces/{id}` returns workspace metadata. Read work through `/issues`, `/issues/{issue}`, `/teams`, `/projects`, and the other feature collections. Collections return `{items,has_more,next_offset}` with `limit` and `offset`. The default limit is 100 and the maximum is 200. `/members` returns an array. Comments and time entries accept `issue_id`; activity accepts `entity_id`.
+Sync clients push ordered mutations to `POST /internal-api/workspaces/{id}/sync/push` with a client-chosen `client_id` UUID. Each entry is `{id, name, args, at}`; `name` plus `args` form a command run without version preconditions. A request holds 1 to 100 mutations with strictly increasing positive ids; gaps are fine and replays dedupe by id. Responses return `last_mutation_id` and per-mutation `applied`, `duplicate` or `rejected` outcomes; business errors reject one mutation while transient failures stop the batch with HTTP 503. `GET /internal-api/me` and the login/register responses include a non-secret `session_id` naming the replica; it never authenticates anything.
 
-`GET /api/workspaces/{id}/changes?since=<cursor>` returns `{cursor,reset,changes}` for records changed by anyone since the cursor, in the same format. Request it without `since` before loading records, then poll with the returned cursor. Changes can repeat, so apply them by version. When `reset` is true, either the cursor predates the retained history (`JOBS_RETENTION_DAYS`) or more than 1,000 records changed. Reload everything and continue from the returned cursor. Database triggers record changes from every write path, including imports, jobs, and invitation acceptance.
+`GET /internal-api/workspaces/{id}` returns workspace metadata. Read work through `/issues`, `/issues/{issue}`, `/teams`, `/projects`, and the other feature collections. Collections return `{items,has_more,next_offset}` with `limit` and `offset`. The default limit is 100 and the maximum is 200. `/members` returns an array. Comments and time entries accept `issue_id`; activity accepts `entity_id`.
 
-Uploads send `expected_versions` as multipart JSON alongside the file. Imports send `expected_versions` and `issues` or `transfer`. A create-only import accepts `{}`.
+`GET /internal-api/workspaces/{id}/sync/pull?client_id=<uuid>&cursor=<cursor>` returns `{cursor,more,reset,last_mutation_id,changes}` with records in list shapes except issue counts, and `null` for deleted or invisible rows. The cursor is an opaque PostgreSQL snapshot in `xmin:xmax:xip` text form. Omit `cursor` for a starting cursor. Pages hold 1,000 distinct records cut at transaction boundaries after scanning at most about 20,000 change rows; `more` pages and resets report `last_mutation_id` null, and only a final page reports it. When `reset` is true, bootstrap again from the returned cursor. Database triggers record changes from every write path, including imports, jobs, and invitation acceptance.
+
+`GET /internal-api/workspaces/{id}/sync/bootstrap?client_id=<uuid>` streams `application/x-ndjson` from one repeatable-read snapshot. The header carries `cursor`, `last_mutation_id` and `schema`; each record line is `{entity,record}`. The final `{end:true,records:<count>}` confirms completion; discard a stream without it. `Accept-Encoding: gzip` enables gzip. Bootstrap includes all always-loaded entities, including trashed and archived issues, with pull's visibility rules. Sync issues omit `blocked_count`, `subtask_total` and `subtask_completed`; REST reads and command responses keep them.
+
+`GET /internal-api/workspaces/{id}/sync/scope?client_id=<uuid>&entity=comments&issue_id=<uuid>` returns `{records:[...]}` for one issue. `entity=activity&entity_id=<uuid>` loads one entity's history. Both read all scope records from one repeatable-read snapshot. Bootstrap and scope reject non-members with 403 and invalid or mismatched client ids with 400. Scope also rejects unknown entities and missing or malformed scope ids with 400.
+
+`GET /internal-api/workspaces/{id}/sync/events?client_id=<uuid>` streams `text/event-stream` pokes. Each poke is `event: poke` with `data: {}`, sent once on connect and once per committing workspace transaction, coalesced to one per 250 ms with keep-alive comments every 15 seconds. Each stream ends after 30 minutes; clients reconnect. Non-members get 403 and invalid or mismatched client ids get 400.
+
+Uploads may send `expected_versions` as multipart JSON alongside the file. Imports may send `expected_versions` with `issues` or `transfer`. Creates (`create_team`, `create_stage`, `create_label`, `create_project`, `create_milestone`, `create_sprint`, `create_issue` through `IssueInput`, `add_comment`, `log_time`, `save_view`, `create_integration`) accept an optional client-chosen `id`, so offline clients can reference records before the server confirms them. Reusing an existing id returns 409; the nil UUID returns 400.
 
 The API includes membership and invitations, workflows, labels, issue relations, projects, milestones, sprint carryover, saved views, comments, uploads, inbox preferences, time corrections, reports, search, bulk actions, trash, activity, JSON transfer, signed webhooks, and account recovery.
 
@@ -98,7 +111,7 @@ Set `SMTP_URL`, such as `smtps://user:password@smtp.example.com` or `smtp://smtp
 
 For local mail, set `SMTP_URL=smtp://127.0.0.1:1025` and read Mailpit at `http://127.0.0.1:8025`. Alternatively, set `DEV_MAIL_DIR=./dev-mail` to write private JSON files with mode 0600. `DEV_MAIL_DIR` and `SMTP_URL` are mutually exclusive. Keep the directory private.
 
-Outgoing integration requests use `Idempotency-Key` and `X-Blackwall-Signature: sha256=<hex HMAC-SHA256>`. Incoming source links use `POST /api/workspaces/{id}/integrations/{integration}/webhook`, signed over the exact request body:
+Outgoing integration requests carry a minimal typed event (see [webhooks](docs/api.md#webhooks)) with `X-Blackwall-Event`, `Idempotency-Key` and `X-Blackwall-Signature: sha256=<hex HMAC-SHA256>`. Incoming source links use `POST /api/workspaces/{id}/integrations/{integration}/webhook`, signed over the exact request body:
 
 ```json
 {
@@ -124,6 +137,16 @@ python3 scripts/smoke.py
 ```
 
 `check.sh` runs formatting, Clippy, Rust tests, and frontend checks. The smoke script runs real HTTP, applies migrations twice, restarts the server, and exercises expired job lease recovery. It requires `psql` or the local Compose PostgreSQL service. No browser verification is required. See [verification](docs/verification.md) for coverage and limits.
+
+## Deploy
+
+Every push to `main` deploys to `deploy-host`, an aarch64 Debian 13 host reachable only over Tailscale. After `check` passes, the `build` job cross-compiles the release binary and bundles it with the frontend. A self-hosted runner on the host then runs the `deploy` job. The runner only makes outbound connections to GitHub, so the host accepts no inbound traffic from the internet.
+
+`deploy` passes the archive to `/usr/local/sbin/blackwall-deploy`, the one command the runner may run with sudo. The script unpacks the archive into `/opt/blackwall/releases/<sha>`, runs `blackwall migrate`, points `/opt/blackwall/current` at the release, and restarts `blackwall-web` and `blackwall-worker`. If `/health` or the worker is down after 30 seconds, it switches back to the previous release; migrations stay applied. It keeps the five newest releases.
+
+PostgreSQL 17 runs natively, and the `blackwall` system user connects with peer authentication. The `svc:blackwall` Tailscale service publishes the app at `https://blackwall.example.com` inside the tailnet only. Service hosts must be tagged nodes; `deploy-host` has `tag:deploy`, and an admin approved it as the service's host. Configuration lives in `/etc/blackwall/blackwall.env`; mail stays queued until you set `SMTP_URL` and `SMTP_FROM` there.
+
+`deploy/bootstrap.sh` sets up the host and can be rerun. Copy `deploy/` to the host and run it as root. Add `RUNNER_TOKEN` from `gh api -X POST repos/fdemb/blackwall-rust/actions/runners/registration-token --jq .token` to register the runner too. To redeploy a commit, rerun its `deploy` job in GitHub Actions. To roll back by hand, run `blackwall-deploy` with an older archive, or repoint `current` and restart both services.
 
 ## Current limits
 

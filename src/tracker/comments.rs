@@ -45,6 +45,24 @@ pub(super) async fn fetch(
     scan: DateTime<Utc>,
     deadline: tokio::time::Instant,
 ) -> Result<BTreeMap<String, Option<Vec<RemoteComment>>>> {
+    let links = progress(store, connection, items).await?;
+    let mut fetched = BTreeMap::new();
+    for item in due(items, &links, scan).into_iter().take(MAX_FETCHES) {
+        if tokio::time::Instant::now() >= deadline {
+            tracing::debug!(
+                listed = fetched.len(),
+                "Tracker comment fetching reached its deadline"
+            );
+            break;
+        }
+        let comments = list(provider, endpoint, &item.id, deadline).await;
+        fetched.insert(item.id.clone(), comments);
+    }
+    Ok(fetched)
+}
+
+/// The comment import progress of the items' links.
+async fn progress(store: &Store, connection: Uuid, items: &[RemoteIssue]) -> Result<Progress> {
     let ids: Vec<&str> = items.iter().map(|item| item.id.as_str()).collect();
     let rows: Vec<(serde_json::Value, bool)> = sqlx::query_as("SELECT tracker,deleted_at IS NOT NULL FROM issues WHERE tracker->>'connection_id'=$1 AND tracker->>'remote_id'=ANY($2)")
         .bind(connection.to_string()).bind(&ids).fetch_all(&store.pool).await?;
@@ -58,37 +76,33 @@ pub(super) async fn fetch(
         });
         links.insert(link.remote_id, progress);
     }
-    let mut fetched = BTreeMap::new();
-    for item in due(items, &links, scan).into_iter().take(MAX_FETCHES) {
-        if tokio::time::Instant::now() >= deadline {
-            tracing::debug!(
-                listed = fetched.len(),
-                "Tracker comment fetching reached its deadline"
-            );
-            break;
+    Ok(links)
+}
+
+/// One item's comments, or None when the listing fails or times out.
+async fn list(
+    provider: ProviderKind,
+    endpoint: &Endpoint<'_>,
+    remote_id: &str,
+    deadline: tokio::time::Instant,
+) -> Option<Vec<RemoteComment>> {
+    let limit = deadline.min(tokio::time::Instant::now() + LISTING_TIMEOUT);
+    match tokio::time::timeout_at(limit, provider.comments(endpoint, remote_id)).await {
+        Ok(Ok(Ok(comments))) => Some(comments),
+        Ok(Ok(Err(outcome))) => {
+            tracing::debug!(remote_id, outcome = ?outcome, "Tracker comments skipped for an item");
+            None
         }
-        let limit = deadline.min(tokio::time::Instant::now() + LISTING_TIMEOUT);
-        let listing = tokio::time::timeout_at(limit, provider.comments(endpoint, &item.id)).await;
-        let comments = match listing {
-            Ok(Ok(Ok(comments))) => Some(comments),
-            Ok(Ok(Err(outcome))) => {
-                tracing::debug!(remote_id = %item.id, outcome = ?outcome,
-                    "Tracker comments skipped for an item");
-                None
-            }
-            Ok(Err(error)) => {
-                tracing::debug!(remote_id = %item.id, error = %super::failure_message(&error),
-                    "Tracker comments skipped for an item");
-                None
-            }
-            Err(_) => {
-                tracing::debug!(remote_id = %item.id, "Tracker comment listing timed out");
-                None
-            }
-        };
-        fetched.insert(item.id.clone(), comments);
+        Ok(Err(error)) => {
+            tracing::debug!(remote_id, error = %super::failure_message(&error),
+                "Tracker comments skipped for an item");
+            None
+        }
+        Err(_) => {
+            tracing::debug!(remote_id, "Tracker comment listing timed out");
+            None
+        }
     }
-    Ok(fetched)
 }
 
 /// Comment import progress of a link: whether history was imported, the remote
@@ -151,6 +165,49 @@ pub(super) async fn import(
     if incoming.is_empty() {
         return Ok(incomplete);
     }
+    let mut incoming = unlinked(conn, workspace, connection, incoming, &mut incomplete).await?;
+    if incoming.is_empty() {
+        return Ok(incomplete);
+    }
+    let room = room(conn, workspace).await?;
+    if incoming.len() > room {
+        tracing::debug!(
+            skipped = incoming.len() - room,
+            "Tracker comments skipped: workspace comment capacity reached"
+        );
+        incomplete.extend(incoming.drain(room..).map(|item| item.issue));
+    }
+    if incoming.is_empty() {
+        return Ok(incomplete);
+    }
+    let actor = persistence::tracker_actor(conn, workspace).await?;
+    let ids: Vec<Uuid> = incoming.iter().map(|_| Uuid::new_v4()).collect();
+    let inserted = insert(
+        conn, workspace, connection, provider, actor, &ids, &incoming,
+    )
+    .await?;
+    tracing::debug!(
+        inserted = inserted.len(),
+        "Tracker comments imported in page transaction"
+    );
+    let notify: Vec<(Uuid, &Incoming)> = ids
+        .into_iter()
+        .zip(&incoming)
+        .filter(|(id, item)| !item.silent && inserted.contains(id))
+        .collect();
+    notify_followers(conn, workspace, actor, &notify).await?;
+    Ok(incomplete)
+}
+
+/// The comments not linked yet, without the ones held back for a comment push that may
+/// have reached the provider; their issues go to `incomplete`.
+async fn unlinked<'a>(
+    conn: &mut PgConnection,
+    workspace: Uuid,
+    connection: Uuid,
+    incoming: Vec<Incoming<'a>>,
+    incomplete: &mut BTreeSet<Uuid>,
+) -> Result<Vec<Incoming<'a>>> {
     let remote_ids: Vec<&str> = incoming
         .iter()
         .map(|item| item.comment.id.as_str())
@@ -162,27 +219,26 @@ pub(super) async fn import(
     // The account that sent each uncertain push; when unknown, every comment on the issue waits.
     let uncertain: Vec<(Uuid, Option<String>)> = sqlx::query_as("SELECT issue_id,sent_account FROM tracker_outbox WHERE connection_id=$1 AND kind='comment' AND sent_at IS NOT NULL AND issue_id=ANY($2)")
         .bind(connection).bind(&issues).fetch_all(&mut *conn).await?;
-    let mut held = 0;
-    let mut incoming: Vec<_> = incoming
+    let (held, incoming): (Vec<_>, Vec<_>) = incoming
         .into_iter()
         .filter(|item| !known.contains(&item.comment.id))
-        .filter(|item| {
-            let hold = uncertain.iter().any(|(issue, account)| {
+        .partition(|item| {
+            uncertain.iter().any(|(issue, account)| {
                 *issue == item.issue && (account.is_none() || item.comment.author_id == *account)
-            });
-            if hold {
-                held += 1;
-                incomplete.insert(item.issue);
-            }
-            !hold
-        })
-        .collect();
-    if held > 0 {
-        tracing::debug!(held, "Tracker comments held back until their push resolves");
+            })
+        });
+    if !held.is_empty() {
+        tracing::debug!(
+            held = held.len(),
+            "Tracker comments held back until their push resolves"
+        );
+        incomplete.extend(held.iter().map(|item| item.issue));
     }
-    if incoming.is_empty() {
-        return Ok(incomplete);
-    }
+    Ok(incoming)
+}
+
+/// How many more comments the workspace holds.
+async fn room(conn: &mut PgConnection, workspace: Uuid) -> Result<usize> {
     let mut count = None;
     let room = match persistence::capacity(
         conn,
@@ -198,19 +254,19 @@ pub(super) async fn import(
         Err(Error::BadRequest(_)) => 0,
         Err(error) => return Err(error),
     };
-    let room = room.max(0) as usize;
-    if incoming.len() > room {
-        tracing::debug!(
-            skipped = incoming.len() - room,
-            "Tracker comments skipped: workspace comment capacity reached"
-        );
-        incomplete.extend(incoming.drain(room..).map(|item| item.issue));
-    }
-    if incoming.is_empty() {
-        return Ok(incomplete);
-    }
-    let actor = persistence::tracker_actor(conn, workspace).await?;
-    let ids: Vec<Uuid> = incoming.iter().map(|_| Uuid::new_v4()).collect();
+    Ok(room.max(0) as usize)
+}
+
+/// Inserts the comments under `ids` and returns the ones inserted.
+async fn insert(
+    conn: &mut PgConnection,
+    workspace: Uuid,
+    connection: Uuid,
+    provider: ProviderKind,
+    actor: Uuid,
+    ids: &[Uuid],
+    incoming: &[Incoming<'_>],
+) -> Result<BTreeSet<Uuid>> {
     let issues: Vec<Uuid> = incoming.iter().map(|item| item.issue).collect();
     let authors: Vec<Uuid> = incoming
         .iter()
@@ -235,20 +291,9 @@ pub(super) async fn import(
             )
         })
         .collect();
-    let inserted: BTreeSet<Uuid> = sqlx::query_scalar("INSERT INTO comments(id,workspace_id,issue_id,author,body,created_at,tracker) SELECT input.id,$1,input.issue_id,input.author,input.body,input.created_at,input.tracker FROM unnest($2::uuid[],$3::uuid[],$4::uuid[],$5::text[],$6::timestamptz[],$7::jsonb[]) AS input(id,issue_id,author,body,created_at,tracker) ON CONFLICT((tracker->>'connection_id'),(tracker->>'remote_id')) WHERE tracker IS NOT NULL DO NOTHING RETURNING id")
-        .bind(workspace).bind(&ids).bind(&issues).bind(&authors).bind(&bodies).bind(&created).bind(&trackers)
-        .fetch_all(&mut *conn).await?.into_iter().collect();
-    tracing::debug!(
-        inserted = inserted.len(),
-        "Tracker comments imported in page transaction"
-    );
-    let notify: Vec<(Uuid, &Incoming)> = ids
-        .into_iter()
-        .zip(&incoming)
-        .filter(|(id, item)| !item.silent && inserted.contains(id))
-        .collect();
-    notify_followers(conn, workspace, actor, &notify).await?;
-    Ok(incomplete)
+    Ok(sqlx::query_scalar("INSERT INTO comments(id,workspace_id,issue_id,author,body,created_at,tracker) SELECT input.id,$1,input.issue_id,input.author,input.body,input.created_at,input.tracker FROM unnest($2::uuid[],$3::uuid[],$4::uuid[],$5::text[],$6::timestamptz[],$7::jsonb[]) AS input(id,issue_id,author,body,created_at,tracker) ON CONFLICT((tracker->>'connection_id'),(tracker->>'remote_id')) WHERE tracker IS NOT NULL DO NOTHING RETURNING id")
+        .bind(workspace).bind(ids).bind(&issues).bind(&authors).bind(&bodies).bind(&created).bind(&trackers)
+        .fetch_all(&mut *conn).await?.into_iter().collect())
 }
 
 /// Comment tracker metadata; `author_name` is set for imported comments.
