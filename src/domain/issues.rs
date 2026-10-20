@@ -33,22 +33,59 @@ pub struct SourceLink {
     pub title: String,
 }
 
+/// Links an issue to the remote item it was imported from.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
-pub struct OpenProjectSource {
+pub struct TrackerLink {
+    pub provider: String,
     pub connection_id: Uuid,
-    pub work_package_id: i64,
-    pub project_id: i64,
+    pub remote_id: String,
+    pub project_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub parent_work_package_id: Option<i64>,
+    pub parent_remote_id: Option<String>,
+    /// Last seen remote status name, for display.
     pub status_name: String,
     pub url: String,
-    pub unavailable: bool,
+    /// The remote item as last imported or pushed, for the three-way merge.
+    /// None for links created before the merge: the remote wins once.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(ignore)]
+    pub baseline: Option<Baseline>,
+    /// Last failed outbound push, cleared on success.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub push_error: Option<String>,
+    /// The remote modification time when every comment was last imported; None when the
+    /// provider omits it and while comment import is off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(ignore)]
+    pub comments_at: Option<DateTime<Utc>>,
+    /// Comment history was imported completely once, silently; later comments notify.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[schema(ignore)]
+    pub comments_imported: bool,
+    /// When comments were last listed, successfully or not; listings go stalest first.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(ignore)]
+    pub comments_tried_at: Option<DateTime<Utc>>,
+}
+
+/// Remote field values projected onto local IDs through the connection's mappings,
+/// so mapping changes count as remote changes and unresolved parents stay `None`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Baseline {
+    pub title: String,
+    pub description: String,
+    pub team_id: Uuid,
+    pub stage_id: Uuid,
+    pub assignee: Option<Uuid>,
+    pub priority: Priority,
+    pub deadline: Option<DateTime<Utc>>,
+    pub parent_id: Option<Uuid>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct Issue {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub openproject: Option<OpenProjectSource>,
+    pub tracker: Option<TrackerLink>,
     #[serde(default)]
     pub blocked_count: u64,
     #[serde(default)]
@@ -64,7 +101,7 @@ pub struct Issue {
     pub team_id: Uuid,
     pub stage_id: Uuid,
     pub assignee: Option<Uuid>,
-    /// None for OpenProject issues and for issues logged before creators were stored.
+    /// None for synced issues without a mapped author and for issues logged before creators were stored.
     #[serde(default)]
     pub created_by: Option<Uuid>,
     pub priority: Priority,

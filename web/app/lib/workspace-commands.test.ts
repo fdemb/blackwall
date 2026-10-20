@@ -310,7 +310,7 @@ describe("confirmation for REST writes", () => {
     ).toEqual([id(1), id(2), id(3)]);
   });
 
-  it("an OpenProject mapping waits for a stage created offline, so its REST save never sees an unknown stage", async () => {
+  it("a tracker mapping waits for a stage created offline, so its REST save never sees an unknown stage", async () => {
     const { engine } = await fixture();
     engine.stop();
     const stage = await runCommand(engine, {
@@ -321,10 +321,7 @@ describe("confirmation for REST writes", () => {
       position: 4,
     });
     const body = {
-      name: "OpenProject",
-      base_url: "https://openproject.example.test",
-      token: "review-token",
-      projects: [{ project_id: 1, team_id: id(1), stage_mapping: { "10": stage } }],
+      projects: [{ project_id: "1", team_id: id(1), stage_mapping: { "10": stage } }],
       people_mapping: {},
     };
     let pendingWhenSent = -1;

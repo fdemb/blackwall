@@ -190,7 +190,7 @@ describe("create_team", () => {
     });
     expect(store.replayErrors().get(defaulted)).toBeUndefined();
     const expected = {
-      openproject: null,
+      tracker: null,
       id: "issue-pending",
       version: 1,
       number: 1,
@@ -680,9 +680,9 @@ describe("update_stage", () => {
     rejects("update_stage", { ...base, team_id: TEAM_OTHER, id: STAGE_ACTIVE }, 404, "not found");
   });
 
-  it("fails workflow when the new kind leaves unfinished dependencies", () => {
-    // issue-cancelled gains an unfinished dependency; entering done then
-    // strands it, as the server's global check would report.
+  it("admits a new kind that leaves dependents blocked", () => {
+    // Stage changes move no issue, so issue-cancelled entering done with an
+    // unfinished dependency is left blocked, as the server does.
     const store = seedStore(OWNER);
     store.applyBase([
       {
@@ -694,7 +694,6 @@ describe("update_stage", () => {
         },
       },
     ]);
-    const before = beforeAll(store);
     const id = mutate(store, "update_stage", {
       team_id: TEAM,
       id: STAGE_CANCELLED,
@@ -702,11 +701,7 @@ describe("update_stage", () => {
       kind: "done",
       position: 3,
     });
-    expect(store.replayErrors().get(id)?.status).toBe(409);
-    expect(store.replayErrors().get(id)?.message).toBe(
-      "workflow would leave an issue with unfinished dependencies",
-    );
-    expectSame(store, before);
+    expect(store.replayErrors().get(id)).toBeUndefined();
   });
 
   it("admits done to backlog when an active issue depends into the stage", () => {
@@ -738,24 +733,6 @@ describe("update_stage", () => {
       ),
     });
     twice("update_stage", args, OWNER, setup);
-  });
-
-  it("rejects backlog to active when the stage holds unfinished dependencies", () => {
-    // issue-x sits in backlog depending on the unfinished issue-y; entering
-    // active strands it, and the server reports 409 before restamping.
-    const args = { team_id: TEAM, id: STAGE_BACKLOG, name: "Backlog", kind: "active", position: 0 };
-    admitsRejects(
-      "update_stage",
-      args,
-      409,
-      "workflow would leave an issue with unfinished dependencies",
-    );
-    rejects(
-      "update_stage",
-      args,
-      409,
-      "workflow would leave an issue with unfinished dependencies",
-    );
   });
 
   it("requires owner or admin", () => {
@@ -912,7 +889,7 @@ describe("delete_stage", () => {
     rejects("delete_stage", { ...base, team_id: "team-ghost" }, 404, "not found");
   });
 
-  it("fails workflow when the move leaves unfinished dependencies", () => {
+  it("admits a replacement that leaves moved dependents blocked", () => {
     const store = seedStore(OWNER);
     store.applyBase([
       {
@@ -924,17 +901,13 @@ describe("delete_stage", () => {
         },
       },
     ]);
-    const before = beforeAll(store);
     const id = mutate(store, "delete_stage", {
       team_id: TEAM,
       id: STAGE_CANCELLED,
       replacement: STAGE_DONE,
     });
-    expect(store.replayErrors().get(id)?.status).toBe(409);
-    expect(store.replayErrors().get(id)?.message).toBe(
-      "workflow would leave an issue with unfinished dependencies",
-    );
-    expectSame(store, before);
+    expect(store.replayErrors().get(id)).toBeUndefined();
+    expect(store.get("issues", "issue-cancelled")?.stage_id).toBe(STAGE_DONE);
   });
 
   it("requires owner or admin", () => {

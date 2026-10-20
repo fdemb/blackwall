@@ -52,12 +52,13 @@ impl Store {
         for issue in &mut issues {
             issue.attachments.clear();
             // Transfers copy issues, not server-owned connection identity or credentials.
-            issue.openproject = None;
+            issue.tracker = None;
         }
 
         let mut comments: Vec<Comment> = records(&mut tx, workspace, actor, "comments").await?;
         for comment in &mut comments {
             comment.attachments.clear();
+            comment.tracker = None;
         }
 
         let result = Transfer {
@@ -88,13 +89,9 @@ impl Store {
         expected: BTreeMap<Uuid, i64>,
         key: Option<String>,
     ) -> Result<(ImportSummary, BTreeMap<Uuid, i64>)> {
-        if transfer
-            .issues
-            .iter()
-            .any(|issue| issue.openproject.is_some())
-        {
+        if transfer.issues.iter().any(|issue| issue.tracker.is_some()) {
             return Err(Error::BadRequest(
-                "OpenProject source metadata cannot be imported through transfers".into(),
+                "tracker links cannot be imported through transfers".into(),
             ));
         }
         let request = serde_json::json!({

@@ -108,6 +108,8 @@ export const addComment: Mutator<ArgsOf<"add_comment">> = (tx, args, ctx) => {
     edited_at: null,
     // The app writes without a token, so nothing acts for the author.
     via: previous?.via ?? null,
+    // Set by the server once the comment reaches an issue tracker.
+    tracker: previous?.tracker ?? null,
   });
 };
 

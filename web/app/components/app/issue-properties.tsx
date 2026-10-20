@@ -19,7 +19,6 @@ import { useI18n } from "~/lib/i18n";
 import { useTimeEntries } from "~/lib/queries";
 import { useWorkspace } from "~/lib/workspace";
 import { cn } from "~/lib/utils";
-import { issueCapabilities } from "~/lib/ownership";
 import type { Id, Issue, IssuePatch, TimeEntry } from "~/lib/types";
 import { revealOnHover } from "./issue-section";
 
@@ -39,8 +38,7 @@ export function useIssuePatch(issue: Issue) {
 /** Status, priority and assignee as property rows. The side panel shows these above the rest. */
 export function CoreProperties({ issue }: { issue: Issue }) {
   const { t } = useI18n();
-  const { canWrite: workspaceCanWrite } = useWorkspace();
-  const canWrite = workspaceCanWrite && issueCapabilities(issue).edit;
+  const { canWrite } = useWorkspace();
   const patch = useIssuePatch(issue);
   return (
     <PropGroup>
@@ -84,8 +82,7 @@ export function Properties({
   excludeIds: Id[];
 }) {
   const { t, lang } = useI18n();
-  const { ws, canWrite: workspaceCanWrite, member } = useWorkspace();
-  const canWrite = workspaceCanWrite && issueCapabilities(issue).edit;
+  const { ws, canWrite, member } = useWorkspace();
   const patch = useIssuePatch(issue);
   const projectMilestones = ws.milestones.filter((m) => m.project_id === issue.project_id);
   const sprints = ws.sprints.filter(

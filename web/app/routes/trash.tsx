@@ -5,7 +5,6 @@ import { Button } from "~/components/ui/button";
 import { EmptyState, Page, PageHeader, Scroll } from "~/components/app/page";
 import { bulkIssueCommands } from "~/lib/bulk-issues";
 import { useIssues } from "~/lib/queries";
-import { issueCapabilities } from "~/lib/ownership";
 import { QueryStatus } from "~/components/app/query-status";
 import { relativeTime } from "~/lib/format";
 import { IssueKey, useIssueKeyWidth } from "~/components/app/issue-key";
@@ -23,11 +22,7 @@ export default function Trash() {
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
   const restoreAll = async () => {
     // Snapshot: built before the first await, so later view changes do not affect this run.
-    const commands = bulkIssueCommands(
-      issues,
-      "restore",
-      (issue) => issueCapabilities(issue).restore,
-    );
+    const commands = bulkIssueCommands(issues, "restore");
     const total = commands.reduce((sum, command) => sum + command.ids.length, 0);
     setProgress({ done: 0, total });
     try {
@@ -50,7 +45,7 @@ export default function Trash() {
         icon={<Trash2 className="size-4 text-muted-foreground" />}
         actions={
           canWrite &&
-          issues.some((issue) => issueCapabilities(issue).restore) && (
+          issues.length > 0 && (
             <Button
               variant="ghost"
               size="sm"
@@ -88,7 +83,7 @@ export default function Trash() {
                 <span className="hidden  text-muted-foreground sm:inline">
                   {i.deleted_at && t("trash.deleted", { when: relativeTime(i.deleted_at, lang) })}
                 </span>
-                {canWrite && issueCapabilities(i).restore && (
+                {canWrite && (
                   <Button
                     variant="secondary"
                     size="sm"

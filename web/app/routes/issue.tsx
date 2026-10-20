@@ -33,8 +33,7 @@ import { useIssueDetail, useIssueRef, type IssueDetail } from "~/lib/queries";
 import { QueryStatus } from "~/components/app/query-status";
 import { useWorkspace } from "~/lib/workspace";
 import { cn } from "~/lib/utils";
-import { issueCapabilities } from "~/lib/ownership";
-import { OpenProjectNotice } from "~/components/app/issue-parts";
+import { TrackerNotice } from "~/components/app/issue-parts";
 import type { Id, Issue } from "~/lib/types";
 import { CoreProperties, Properties, useIssuePatch } from "~/components/app/issue-properties";
 import {
@@ -94,12 +93,10 @@ function RecoverableIssue({
   state: "archived" | "deleted";
 }) {
   const { t } = useI18n();
-  const { run, canWrite: workspaceCanWrite } = useWorkspace();
+  const { run, canWrite } = useWorkspace();
   const toast = useToast();
   useDocumentTitle(`${issue.key} ${issue.title}`);
   const archived = state === "archived";
-  // Imported issues can be unarchived but not restored from the trash.
-  const canWrite = workspaceCanWrite && (archived || issueCapabilities(issue).edit);
   const subtitle = canWrite ? t(archived ? "issue.archivedSub" : "issue.deletedSub") : "";
   const recover = () =>
     run({ type: archived ? "unarchive_issue" : "restore_issue", id: issue.id })
@@ -137,8 +134,7 @@ function IssueView({ issue, detail }: { issue: Issue; detail: IssueDetail }) {
   const nav = useNavigate();
   const location = useLocation();
   const toast = useToast();
-  const { ws, me, run, team, canWrite: workspaceCanWrite } = useWorkspace();
-  const canWrite = workspaceCanWrite && issueCapabilities(issue).edit;
+  const { ws, me, run, team, canWrite } = useWorkspace();
   const inInbox = location.pathname.startsWith(`/${ws.slug}/inbox/`);
   const tm = team(issue.team_id);
   useDocumentTitle(`${issue.key} ${issue.title}`);
@@ -209,7 +205,7 @@ function IssueView({ issue, detail }: { issue: Issue; detail: IssueDetail }) {
             <h1 className="sr-only">
               {t("issue.titleHeading", { key: issue.key, title: issue.title })}
             </h1>
-            <OpenProjectNotice issue={issue} />
+            <TrackerNotice issue={issue} />
             {parent && (
               <ParentLink
                 parent={parent}
@@ -235,10 +231,6 @@ function IssueView({ issue, detail }: { issue: Issue; detail: IssueDetail }) {
                   />
                 )}
               </div>
-              {!canWrite &&
-                workspaceCanWrite &&
-                issueCapabilities(issue).add_attachment &&
-                !issue.attachments.length && <AttachButton uploader={uploader} />}
               {(subs.length > 0 || addingSubtask) && (
                 <Subtasks
                   issue={issue}

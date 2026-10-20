@@ -125,6 +125,7 @@ describe("add_comment", () => {
       created_at: AT,
       edited_at: null,
       via: null,
+      tracker: null,
     });
     twice("add_comment", args);
   });
@@ -148,6 +149,7 @@ describe("add_comment", () => {
       created_at: AT,
       edited_at: null,
       via: null,
+      tracker: null,
     });
   });
 
@@ -213,6 +215,7 @@ describe("add_comment", () => {
       created_at: AT,
       edited_at: null,
       via: null,
+      tracker: null,
     });
     expect(store.get("issues", "issue-attached")).toEqual({ ...before, attachments: [] });
     const once = beforeAll(store);

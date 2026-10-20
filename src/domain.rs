@@ -173,9 +173,22 @@ pub struct Comment {
     pub attachments: Vec<Attachment>,
     pub created_at: DateTime<Utc>,
     pub edited_at: Option<DateTime<Utc>>,
+    /// Set on comments sent to or imported from an issue tracker.
+    #[serde(default)]
+    pub tracker: Option<CommentTracker>,
     /// The token that wrote the comment for its author, if one did.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub via: Option<Via>,
+}
+
+/// The remote comment a local comment corresponds to.
+#[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
+pub struct CommentTracker {
+    pub provider: String,
+    pub connection_id: Uuid,
+    pub remote_id: String,
+    /// The remote author's name when no member maps to them; None for sent comments.
+    pub author_name: Option<String>,
 }
 
 /// The personal access token a write went through. The actor is still the token's user;
@@ -1579,5 +1592,46 @@ mod tests {
         .unwrap();
 
         assert_eq!(w.report(owner).unwrap().delivery.len(), 1);
+
+        // Reopening the blocker leaves the done dependent blocked, still editable and
+        // exportable.
+        let todo = w.teams[0].stages[1].id;
+        w.apply(
+            owner,
+            Command::MoveIssue {
+                id: blocker,
+                stage_id: todo,
+                before_id: None,
+            },
+            now,
+        )
+        .unwrap();
+        w.apply(
+            owner,
+            Command::UpdateIssue {
+                id,
+                patch: IssuePatch {
+                    title: Some("Renew again".into()),
+                    ..Default::default()
+                },
+            },
+            now,
+        )
+        .unwrap();
+        w.validate_imported().unwrap();
+        let active = w.teams[0].stages[2].id;
+        assert!(
+            w.apply(
+                owner,
+                Command::MoveIssue {
+                    id,
+                    stage_id: active,
+                    before_id: None
+                },
+                now
+            )
+            .is_err(),
+            "entering another started stage waits for the blocker"
+        );
     }
 }

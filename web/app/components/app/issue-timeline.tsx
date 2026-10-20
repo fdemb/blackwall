@@ -41,6 +41,7 @@ import { QueryStatus } from "~/components/app/query-status";
 import { useWorkspace } from "~/lib/workspace";
 import { cn } from "~/lib/utils";
 import type { Activity, Comment, Id, Issue, TimeEntry } from "~/lib/types";
+import { trackerProviderName } from "~/lib/trackers";
 import { Section, revealOnHover } from "./issue-section";
 import { AttachmentChip } from "./issue-content";
 
@@ -261,6 +262,18 @@ function CommentItem({ comment: c }: { comment: Comment }) {
           >
             {relativeTime(c.created_at, lang)}
           </time>
+          {c.tracker?.provider && (
+            <span className="min-w-0 truncate text-sm text-muted-foreground">
+              {c.tracker.author_name
+                ? t("tracker.commentVia", {
+                    provider: trackerProviderName(c.tracker.provider),
+                    name: c.tracker.author_name,
+                  })
+                : t("tracker.commentViaProvider", {
+                    provider: trackerProviderName(c.tracker.provider),
+                  })}
+            </span>
+          )}
           {c.via && (
             <span className="truncate text-sm text-muted-foreground">
               {t("timeline.via", { name: c.via.name })}

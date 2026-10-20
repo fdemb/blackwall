@@ -329,7 +329,6 @@ pub(super) async fn incoming(
         url: input.url,
         title: input.title,
     };
-    op.authorize_issue_ownership(&command).await?;
     let version: i64 =
         sqlx::query_scalar("SELECT version FROM issues WHERE workspace_id=$1 AND id=$2 FOR UPDATE")
             .bind(id)

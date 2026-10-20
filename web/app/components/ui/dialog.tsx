@@ -1,4 +1,4 @@
-import { createContext, use, useEffect, useState } from "react";
+import { createContext, use, useEffect, useMemo, useState } from "react";
 import {
   Modal,
   ModalOverlay,
@@ -30,6 +30,23 @@ export function useDialogDirty(dirty: boolean) {
   }, [dirty, set]);
 }
 
+const BusyCtx = createContext<{ busy: boolean; set: (busy: boolean) => void }>({
+  busy: false,
+  set: () => {},
+});
+
+/**
+ * While true, nothing dismisses the dialog: not the backdrop, Escape, nor the close button. For forms
+ * whose request must finish before the dialog goes away.
+ */
+export function useDialogBusy(busy: boolean) {
+  const { set } = use(BusyCtx);
+  useEffect(() => {
+    set(busy);
+    return () => set(false);
+  }, [busy, set]);
+}
+
 interface DialogProps extends Omit<ModalOverlayProps, "children"> {
   title: string;
   description?: string;
@@ -45,6 +62,7 @@ const CloseCtx = createContext<() => void>(() => {});
 /** Composable close button; reads `close` from context so it can live anywhere inside a Dialog. */
 export function DialogClose({ className, children, ...props }: ButtonProps) {
   const close = use(CloseCtx);
+  const { busy } = use(BusyCtx);
   const { t } = useI18n();
   return (
     <Button
@@ -52,6 +70,7 @@ export function DialogClose({ className, children, ...props }: ButtonProps) {
       size="icon"
       aria-label={t("action.close")}
       {...props}
+      isDisabled={busy || props.isDisabled}
       onPress={close}
       className={cn("-mr-2 -mt-1", className)}
     >
@@ -71,11 +90,14 @@ export function Dialog({
   ...props
 }: DialogProps) {
   const [dirty, setDirty] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const busyCtx = useMemo(() => ({ busy, set: setBusy }), [busy]);
   return (
     <ModalOverlay
       isDismissable={!dirty}
       isKeyboardDismissDisabled={dirty}
       {...props}
+      {...(busy ? { isDismissable: false, isKeyboardDismissDisabled: true } : {})}
       className={composeRenderProps(className, (c) =>
         cn(
           "fixed inset-0 z-50 flex justify-center bg-black/40 p-4 backdrop-blur-[2px] entering:animate-in entering:fade-in-0 exiting:animate-out exiting:fade-out-0",
@@ -95,20 +117,22 @@ export function Dialog({
         <RACDialog className="flex max-h-[85vh] flex-col outline-none">
           {({ close }) => (
             <DirtyCtx value={setDirty}>
-              <CloseCtx value={close}>
-                <div className="flex items-start justify-between gap-4 px-5 pb-1 pt-4">
-                  <div>
-                    <Heading slot="title" className="text-[15px] font-semibold tracking-tight">
-                      {title}
-                    </Heading>
-                    {description && <p className="mt-0.5  text-muted-foreground">{description}</p>}
+              <BusyCtx value={busyCtx}>
+                <CloseCtx value={close}>
+                  <div className="flex items-start justify-between gap-4 px-5 pb-1 pt-4">
+                    <div>
+                      <Heading slot="title" className="text-[15px] font-semibold tracking-tight">
+                        {title}
+                      </Heading>
+                      {description && <p className="mt-0.5 text-muted-foreground">{description}</p>}
+                    </div>
+                    {!hideClose && <DialogClose />}
                   </div>
-                  {!hideClose && <DialogClose />}
-                </div>
-                <div className="overflow-auto overscroll-contain px-5 pb-5 pt-3">
-                  {typeof children === "function" ? children(close) : children}
-                </div>
-              </CloseCtx>
+                  <div className="overflow-auto overscroll-contain px-5 pb-5 pt-3">
+                    {typeof children === "function" ? children(close) : children}
+                  </div>
+                </CloseCtx>
+              </BusyCtx>
             </DirtyCtx>
           )}
         </RACDialog>

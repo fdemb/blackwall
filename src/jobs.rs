@@ -31,7 +31,7 @@ pub struct WorkerConfig {
     pub email_concurrency: usize,
     pub webhook_concurrency: usize,
     pub database_concurrency: usize,
-    pub openproject_concurrency: usize,
+    pub tracker_concurrency: usize,
     pub poll_interval: Duration,
     pub drain_timeout: Duration,
     pub retention_days: i32,
@@ -44,7 +44,7 @@ impl Default for WorkerConfig {
             email_concurrency: 4,
             webhook_concurrency: 4,
             database_concurrency: 2,
-            openproject_concurrency: 2,
+            tracker_concurrency: 2,
             poll_interval: Duration::from_secs(5),
             drain_timeout: Duration::from_secs(50),
             retention_days: 30,
@@ -76,12 +76,7 @@ impl WorkerConfig {
                 1,
                 16,
             )? as usize,
-            openproject_concurrency: setting(
-                "JOBS_OPENPROJECT_CONCURRENCY",
-                default.openproject_concurrency as u64,
-                1,
-                4,
-            )? as usize,
+            tracker_concurrency: setting(tracker_concurrency_variable(), 2, 1, 4)? as usize,
             poll_interval: Duration::from_millis(setting("JOBS_POLL_MS", 5000, 50, 5000)?),
             drain_timeout: Duration::from_secs(setting("JOBS_DRAIN_SECONDS", 50, 1, 120)?),
             retention_days: setting("JOBS_RETENTION_DAYS", 30, 1, 3650)? as i32,
@@ -98,9 +93,9 @@ impl WorkerConfig {
             || self.email_concurrency > 32
             || self.webhook_concurrency > 32
             || self.database_concurrency > 16
-            || self.openproject_concurrency == 0
-            || self.openproject_concurrency > 4
-            || pool_size < self.database_concurrency + self.openproject_concurrency + 3
+            || self.tracker_concurrency == 0
+            || self.tracker_concurrency > 4
+            || pool_size < self.database_concurrency + self.tracker_concurrency + 3
             || self.poll_interval.is_zero()
             || self.poll_interval > Duration::from_secs(5)
             || self.drain_timeout.is_zero()
@@ -114,6 +109,17 @@ impl WorkerConfig {
         }
 
         Ok(())
+    }
+}
+
+/// `JOBS_OPENPROJECT_CONCURRENCY` remains an alias from before trackers other than OpenProject.
+fn tracker_concurrency_variable() -> &'static str {
+    if std::env::var_os("JOBS_TRACKER_CONCURRENCY").is_none()
+        && std::env::var_os("JOBS_OPENPROJECT_CONCURRENCY").is_some()
+    {
+        "JOBS_OPENPROJECT_CONCURRENCY"
+    } else {
+        "JOBS_TRACKER_CONCURRENCY"
     }
 }
 
@@ -139,7 +145,7 @@ pub async fn run(store: Store, mailer: Mailer, shutdown: watch::Receiver<bool>) 
     run_with_config(store, mailer, shutdown, WorkerConfig::from_env()?).await
 }
 
-const QUEUES: [&str; 4] = ["email", "webhook", "database", "openproject"];
+const QUEUES: [&str; 4] = ["email", "webhook", "database", "tracker"];
 const MAINTENANCE_INTERVAL: Duration = Duration::from_secs(300);
 
 /// Delivery is at least once. Aborted I/O may already have reached the destination.
@@ -201,7 +207,7 @@ impl Worker {
             email,
             config.webhook_concurrency,
             config.database_concurrency,
-            config.openproject_concurrency,
+            config.tracker_concurrency,
         ];
         let now = tokio::time::Instant::now();
         Self {
@@ -217,10 +223,10 @@ impl Worker {
         }
     }
 
-    /// Queues due OpenProject scans once per poll interval.
+    /// Queues due tracker scans once per poll interval.
     async fn run(&mut self, shutdown: &mut watch::Receiver<bool>) {
         while !*shutdown.borrow() {
-            self.schedule_openproject().await;
+            self.schedule_trackers().await;
             self.claim_jobs(shutdown).await;
             if *shutdown.borrow() {
                 break;
@@ -240,15 +246,15 @@ impl Worker {
         }
     }
 
-    async fn schedule_openproject(&mut self) {
+    async fn schedule_trackers(&mut self) {
         if self.schedule_at > tokio::time::Instant::now() {
             return;
         }
         self.schedule_at = tokio::time::Instant::now() + self.config.poll_interval;
-        if let Err(error) = crate::openproject::schedule(&self.store).await {
+        if let Err(error) = crate::tracker::schedule(&self.store).await {
             tracing::warn!(
-                error = %crate::openproject::failure_message(&error),
-                "OpenProject scheduling failed"
+                error = %crate::tracker::failure_message(&error),
+                "Tracker scheduling failed"
             );
         }
     }
@@ -411,8 +417,8 @@ async fn stopped(shutdown: &mut watch::Receiver<bool>) {
 
 /// Executes currently due work once, preserving missing-SMTP pause behavior.
 pub async fn tick(store: &Store, mailer: &Mailer) -> Result<()> {
-    crate::openproject::schedule(store).await?;
-    for queue in ["database", "webhook", "email", "openproject"] {
+    crate::tracker::schedule(store).await?;
+    for queue in ["database", "webhook", "email", "tracker"] {
         if queue == "email" && !mailer.enabled() {
             continue;
         }
@@ -463,7 +469,7 @@ pub async fn execute_with_renew_interval(
             Ok(job) if job.queue() != claim.queue => Attempt::Finished(Err(
                 DeliveryError::Permanent("job kind does not match queue"),
             )),
-            Ok(Job::OpenProject(job)) => run_openproject(store, claim, &job, renew_interval).await,
+            Ok(Job::Tracker(job)) => run_tracker(store, claim, &job, renew_interval).await,
             Ok(Job::Reminder(reminder)) => {
                 run_reminder(store, claim, &reminder, renew_interval, started).await
             }
@@ -500,31 +506,31 @@ enum Attempt {
     Finished(std::result::Result<(), DeliveryError>),
 }
 
-/// A successful scan completes its own claim; failures are recorded on the connection.
-async fn run_openproject(
+/// A successful tracker job completes its own claim; failures are recorded on the connection.
+async fn run_tracker(
     store: &Store,
     claim: &Claim,
-    job: &crate::openproject::SyncJob,
+    job: &crate::tracker::TrackerJob,
     renew_interval: Duration,
 ) -> Attempt {
     let work = tokio::time::timeout(
         Duration::from_secs(75),
-        crate::openproject::execute(store, claim, job),
+        crate::tracker::execute(store, claim, job),
     );
     let message = match run_with_renewal(&store.outbox, claim, work, renew_interval).await {
         None | Some(Ok(Ok(()))) => return Attempt::Settled,
-        Some(Ok(Err(error))) => crate::openproject::failure_message(&error),
-        Some(Err(_)) => "OpenProject sync timed out; retry scheduled".into(),
+        Some(Ok(Err(error))) => crate::tracker::failure_message(&error),
+        Some(Err(_)) => "Tracker job timed out; retry scheduled".into(),
     };
-    tracing::warn!(job = %claim.id, error = %message, "OpenProject sync failed");
-    if let Err(error) = crate::openproject::record_failure(store, claim, job, &message).await {
+    tracing::warn!(job = %claim.id, error = %message, "Tracker job failed");
+    if let Err(error) = crate::tracker::record_failure(store, claim, job, &message).await {
         tracing::warn!(
             job = %claim.id,
             error = %error,
-            "OpenProject failure could not be recorded"
+            "Tracker job failure could not be recorded"
         );
     }
-    Attempt::Finished(Err(DeliveryError::Transient("OpenProject sync failed")))
+    Attempt::Finished(Err(DeliveryError::Transient("tracker job failed")))
 }
 
 /// A successful reminder completes its claim in its own transaction.

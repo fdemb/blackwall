@@ -1,23 +1,8 @@
 import { describe, expect, it } from "vite-plus/test";
 import { BULK_ISSUE_LIMIT, bulkIssueCommands } from "./bulk-issues";
-import { issueCapabilities } from "./ownership";
-import type { OpenProjectIssue } from "./types";
 
-const openproject: OpenProjectIssue = {
-  connection_id: "connection-a",
-  project_id: 7,
-  work_package_id: 12,
-  status_name: "Closed",
-  url: "https://op.example/work_packages/12",
-  unavailable: false,
-};
-
-// Odd ids come from OpenProject, whose ownership policy doesn't allow restoring them.
 const issues = (count: number) =>
-  Array.from({ length: count }, (_, index) => ({
-    id: `issue-${index}`,
-    openproject: index % 2 === 0 ? null : openproject,
-  }));
+  Array.from({ length: count }, (_, index) => ({ id: `issue-${index}`, even: index % 2 === 0 }));
 
 describe("bulkIssueCommands", () => {
   it("splits ids into commands of at most 500", () => {
@@ -36,40 +21,15 @@ describe("bulkIssueCommands", () => {
     expect(commands[0]?.ids).toHaveLength(BULK_ISSUE_LIMIT);
   });
 
-  it("filters by capability before batching", () => {
-    const commands = bulkIssueCommands(
-      issues(1200),
-      "restore",
-      (issue) => issueCapabilities(issue).restore,
-    );
+  it("filters before batching", () => {
+    const commands = bulkIssueCommands(issues(1200), "restore", (issue) => issue.even);
 
     expect(commands.map((command) => command.ids.length)).toEqual([500, 100]);
     expect(commands.flatMap((command) => command.ids)).toEqual(
       issues(1200)
-        .filter((issue) => issue.openproject === null)
+        .filter((issue) => issue.even)
         .map((issue) => issue.id),
     );
-  });
-
-  it("skips imported issues before batching unarchive commands", () => {
-    const archived = issues(1200);
-    const commands = bulkIssueCommands(
-      archived,
-      "unarchive",
-      (issue) => issueCapabilities(issue).edit,
-    );
-    expect(commands.map((command) => command.ids.length)).toEqual([500, 100]);
-    expect(commands.every((command) => command.action === "unarchive")).toBe(true);
-    expect(commands.flatMap((command) => command.ids)).toEqual(
-      archived.filter((issue) => issue.openproject === null).map((issue) => issue.id),
-    );
-    expect(
-      bulkIssueCommands(
-        archived.filter((issue) => issue.openproject !== null),
-        "unarchive",
-        (issue) => issueCapabilities(issue).edit,
-      ),
-    ).toEqual([]);
   });
 
   it("returns no commands when nothing is included", () => {

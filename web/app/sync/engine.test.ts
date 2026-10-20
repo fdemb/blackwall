@@ -1082,6 +1082,57 @@ describe("sync engine", () => {
     },
   );
 
+  it.each(["memory", "indexeddb"])(
+    "re-bootstraps a schema 4 replica with OpenProject-era shapes and keeps its outbox with %s",
+    async (backend) => {
+      const f = fixture(
+        backend === "memory"
+          ? new MemoryReplicaStorage()
+          : new IndexedDBReplicaStorage({ indexedDB: new IDBFactory() }),
+      );
+      // Schema 4 issues carried `openproject`, and comments had no `tracker`.
+      const { tracker: _, ...current } = f.authoritativeIssue(ISSUE);
+      const old = await f.storage.open({
+        sessionId: SESSION,
+        workspaceId: f.workspace.id,
+        schema: 4,
+      });
+      await old.writeBootstrap({
+        cursor: "1:1:",
+        lastMutationId: 0,
+        serverSchema: 4,
+        records: { issues: [{ ...current, openproject: null }] },
+        entities: ["issues"],
+      });
+      await old.writeScope({
+        scope: { entity: "comments", issueId: ISSUE },
+        records: [{ id: id(80), issue_id: ISSUE, body: "Old", created_at: f.server.now() }],
+      });
+      await old.appendMutation(() => ({
+        name: "update_issue",
+        args: { id: ISSUE, patch: { title: "Queued before upgrade" } },
+        at: f.server.now(),
+      }));
+      const before = await old.load();
+      old.close();
+
+      await f.engine.open();
+      expect(f.engine.store.all("issues")).toHaveLength(0);
+      const reset = await f.disk();
+      expect(reset.meta).toMatchObject({ schema: SCHEMA, cursor: null });
+      expect(reset.scopes).toEqual([]);
+      expect(reset.outbox).toEqual(before.outbox);
+      await f.engine.start();
+      await until(
+        () => f.engine.status.get().phase === "ready" && f.engine.status.get().pending === 0,
+      );
+      const issue = f.engine.store.get("issues", ISSUE);
+      expect(issue).toEqual(f.authoritativeIssue(ISSUE));
+      expect(issue).toMatchObject({ title: "Queued before upgrade", tracker: null });
+      expect(issue).not.toHaveProperty("openproject");
+    },
+  );
+
   it("surfaces protocol errors once and stops retrying that request kind", async () => {
     const f = fixture();
     await f.ready();

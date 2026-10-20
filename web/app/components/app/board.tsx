@@ -12,11 +12,10 @@ import { Plus } from "lucide-react";
 import { Button } from "~/components/ui/button";
 import { cn } from "~/lib/utils";
 import { useIssueKeyWidth } from "./issue-key";
-import { issueCapabilities } from "~/lib/ownership";
 import { useI18n } from "~/lib/i18n";
 import { useWorkspace } from "~/lib/workspace";
 import type { Id, Issue } from "~/lib/types";
-import { BlockedBadge, SubtaskProgress, OpenProjectBadge } from "./issue-parts";
+import { BlockedBadge, SubtaskProgress, TrackerBadge } from "./issue-parts";
 import {
   AssigneeMenu,
   DeadlineMenu,
@@ -105,10 +104,7 @@ export function DndColumn({
   );
   const { dragAndDropHooks } = useDragAndDrop({
     isDisabled: !canWrite || !canDrop,
-    getItems: (keys) =>
-      [...keys]
-        .filter((k) => issues.some((issue) => issue.id === k && issueCapabilities(issue).move))
-        .map((k) => issueDragItem(String(k), id)),
+    getItems: (keys) => [...keys].map((k) => issueDragItem(String(k), id)),
     acceptedDragTypes: [ISSUE_DRAG_TYPE],
     getDropOperation: () => "move",
     onInsert: async (e) => {
@@ -117,9 +113,7 @@ export function DndColumn({
     },
     onReorder: (e) =>
       onDrop(
-        issues
-          .filter((issue) => e.keys.has(issue.id) && issueCapabilities(issue).move)
-          .map((issue) => issue.id),
+        issues.filter((issue) => e.keys.has(issue.id)).map((issue) => issue.id),
         beforeFor(e.target),
         id,
       ),
@@ -194,7 +188,7 @@ export function ReadOnlyColumn(props: Omit<DndColumnProps, "canDrop">) {
  */
 export function BoardCard({ issue, keyWidth }: { issue: Issue; keyWidth?: string }) {
   const { ws, canWrite } = useWorkspace();
-  const locked = !canWrite || !issueCapabilities(issue).edit;
+  const locked = !canWrite;
   return (
     <GridListItem
       id={issue.id}
@@ -204,7 +198,7 @@ export function BoardCard({ issue, keyWidth }: { issue: Issue; keyWidth?: string
     >
       <div className="flex h-5 items-center gap-1.5 text-muted-foreground">
         <KeyButton issue={issue} width={keyWidth} />
-        <OpenProjectBadge issue={issue} />
+        <TrackerBadge issue={issue} />
         <BlockedBadge issue={issue} />
         <AssigneeMenu issue={issue} isDisabled={locked} className="-mr-0.5 ml-auto" />
       </div>

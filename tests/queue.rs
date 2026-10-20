@@ -852,22 +852,14 @@ async fn concurrent_maintenance_skips_while_lock_is_held() {
 
 #[tokio::test]
 async fn aborted_maintenance_releases_the_lock() {
-    // A dedicated session: pooled probes could reuse the leaked session
-    // itself, where try_lock reentrantly succeeds and hides the leak.
+    // Reads pg_locks instead of trying the lock: a probe holding it, however briefly,
+    // makes a concurrent maintenance run skip, and a try_lock on the leaked session
+    // itself would succeed reentrantly and hide the leak.
     async fn lock_free(probe: &mut sqlx::postgres::PgConnection) -> bool {
-        if sqlx::query_scalar::<_, bool>("SELECT pg_try_advisory_lock(728192404)")
+        !sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM pg_locks WHERE locktype='advisory' AND database=(SELECT oid FROM pg_database WHERE datname=current_database()) AND classid=0 AND objid=728192404 AND objsubid=1 AND granted)")
             .fetch_one(&mut *probe)
             .await
             .unwrap()
-        {
-            sqlx::query("SELECT pg_advisory_unlock(728192404)")
-                .execute(&mut *probe)
-                .await
-                .unwrap();
-            true
-        } else {
-            false
-        }
     }
 
     let db = support::TestDatabase::new().await;

@@ -8,7 +8,7 @@ The sync layer is rewritten. The engine, the server protocol and the UI port are
 
 All five phases are done. Session cleanup, online-only gating, and schema recovery are wired into the engine and the UI. `web/app/lib/workspace-engine.ts` supplies browser locks and channels when both APIs exist. One leader per session/workspace replica owns sync network work, and followers receive its changes and connection status. Each tab sends its own online-only REST commands. Without either browser API, each tab runs as a lone leader.
 
-Leaving a workspace retires its engine until the shared outbox drains, then closes it and releases leadership. Returning before close reclaims the engine. Logout and session replacement close engines and delete the affected replicas. A newer IndexedDB layout stops older tabs and asks them to reload while preserving their readable view. Database deletion still ends workspace access. Bulk unarchive skips imported issues.
+Leaving a workspace retires its engine until the shared outbox drains, then closes it and releases leadership. Returning before close reclaims the engine. Logout and session replacement close engines and delete the affected replicas. A newer IndexedDB layout stops older tabs and asks them to reload while preserving their readable view. Database deletion still ends workspace access.
 
 Tests cover app lifecycle across tabs, shared-database engine coordination, schema upgrades and deletion, real-server prediction contracts, and convergence in both independent-replica and tab modes. No implementation work remains from these phases.
 
@@ -20,7 +20,7 @@ These were decided before the rewrite. Don't revisit them while implementing.
 2. Concurrent edits resolve last-writer-wins per field. Sync mutations carry no version preconditions.
 3. A replica lives for one login session. Logout, an expired session, or a session from a different login deletes it.
 4. The UI doesn't change. Markup, styling, copy and interaction stay as they are. Code that fetches or reads data changes to call the engine.
-5. No off-the-shelf sync or local-database libraries. That rules out TanStack DB, Replicache, Zero, ElectricSQL, PowerSync, RxDB, Dexie and similar. Raw IndexedDB is fine, and so is a thin promise wrapper such as `idb`. TanStack Query stays for server reads outside the replica, such as reports and OpenProject settings.
+5. No off-the-shelf sync or local-database libraries. That rules out TanStack DB, Replicache, Zero, ElectricSQL, PowerSync, RxDB, Dexie and similar. Raw IndexedDB is fine, and so is a thin promise wrapper such as `idb`. TanStack Query stays for server reads outside the replica, such as reports and issue tracker settings.
 6. The app isn't deployed. Change server contracts freely, without compatibility shims.
 
 ## Vocabulary
@@ -112,14 +112,14 @@ Keep the `changes` table, its triggers and `change_horizon`. They are correct an
 `GET sync/bootstrap?client_id=<uuid>` streams the whole always-loaded data set from one `REPEATABLE READ READ ONLY` transaction. The response is `application/x-ndjson`, compressed with gzip when the request's `Accept-Encoding` accepts gzip, and plain otherwise.
 
 ```
-{"cursor":"812:812:","last_mutation_id":0,"schema":3}
+{"cursor":"812:812:","last_mutation_id":0,"schema":5}
 {"entity":"teams","record":{...}}
 {"entity":"issues","record":{...}}
 ...
 {"end":true,"records":42}
 ```
 
-The header, client mutation id and every record come from the same snapshot. `schema` is the server constant `SYNC_SCHEMA`, currently 3; bump it whenever a sync record shape changes. Record lines use pull's shapes and visibility rules, including trashed and archived issues. Comments and activity are excluded.
+The header, client mutation id and every record come from the same snapshot. `schema` is the server constant `SYNC_SCHEMA`, currently 5; bump it whenever a sync record shape changes. Version 5 renamed the issue's `openproject` link to `tracker` and added `tracker` to comments. Record lines use pull's shapes and visibility rules, including trashed and archived issues. Comments and activity are excluded.
 
 The trailer counts only record lines. A failure ends the body without a trailer. The client discards any bootstrap without a trailer, and writes a completed bootstrap into a fresh base with its cursor in one IndexedDB transaction. A page reload in the middle leaves no partial replica.
 
@@ -179,7 +179,7 @@ The server handles the mutations in order. For each one, it runs one transaction
 
 The server treats `last_mutation_id` as a high-water mark, so a client must never let a later mutation reach the server before an earlier one. Only the leader pushes. It sends the outbox from its oldest entry, in id order, one request at a time, and retries a failed request with the same mutations before sending anything newer. Push carries only outbox mutations. Online-only commands use the REST command endpoint after the issuing tab sees its replica's outbox drain.
 
-- Business errors are `BadRequest`, `NotFound`, `Conflict` and `Forbidden` from the command, malformed `name`/`args`, and database errors with SQLSTATE class `22` (data exception) or `23` (integrity constraint, including the ownership conflict the REST mapper turns into 409).
+- Business errors are `BadRequest`, `NotFound`, `Conflict` and `Forbidden` from the command, malformed `name`/`args`, and database errors with SQLSTATE class `22` (data exception) or `23` (integrity constraint).
 - A transient failure, such as a lost database connection, stops the batch and returns 503 with the results committed so far. Losing membership mid-batch stops it with 403 instead. The client retries the same batch with backoff. Because the server dedupes by id, retries are safe.
 
 ```json
@@ -251,7 +251,7 @@ One mutator per command in the `Command` union in `web/app/lib/types.ts`, with t
 - Deterministic. Read the time from `at`, never from `Date.now()`. Generate ids before the mutation is created and pass them in `args`, never inside the mutator. Replays must produce the same result.
 - A pending mutation may carry `local`: data captured at admission, stored with the mutation and never sent. Replay uses it where re-deriving would change the command's meaning, such as the notifications "mark all read" applied to.
 - Idempotent in effect: set values, never toggle or increment. Running a mutation twice locally must give the same view as running it once.
-- Check what the client can know: the actor's role, the ownership policy in `web/app/lib/ownership.ts` for OpenProject-imported issues, and references to records that exist. A failed check throws before the mutation enters the outbox, and the UI shows the error right away.
+- Check what the client can know: the actor's role and references to records that exist. Issues synced with an issue tracker are edited like any other. A failed check throws before the mutation enters the outbox, and the UI shows the error right away.
 - Predict only what the client can compute. Server-only values such as sprint numbers, notifications, activity rows and positions for `move_issue` with no `before_id` either take placeholders or are left for the server. The pull corrects them.
 - Commands with server-generated secrets or bulk server work don't get mutators. See online-only operations below.
 
@@ -296,11 +296,11 @@ A bootstrap also drops loaded comment and activity scopes; the engine reloads th
 
 ### Online-only operations
 
-Some commands aren't queued offline: `invite`, `resend_invitation`, `create_integration` because of its secret, `set_role`, `remove_member`, `import_issues`, file uploads, import, export, workspace creation, and OpenProject settings.
+Some commands aren't queued offline: `invite`, `resend_invitation`, `create_integration` because of its secret, `set_role`, `remove_member`, `import_issues`, file uploads, import, export, workspace creation, and issue tracker settings.
 
 - `invite`, `resend_invitation`, `create_integration`, `set_role`, `remove_member`, and `import_issues` use `POST /internal-api/workspaces/{id}/commands` with a per-call `idempotency_key`. The tab that issued the command sends it after its replica's outbox drains. If a protocol error keeps the outbox from draining, the command fails and asks for a reload instead of waiting. Transient failures retry the same key and command body with backoff. These commands never allocate mutation ids or enter the outbox. Push carries only outbox mutations.
 - Their effects arrive through the next pull. The REST command pokes the leader's event stream even when a follower sends it.
-- Uploads, export, workspace creation, and OpenProject settings use their own REST endpoints.
+- Uploads, export, workspace creation, and issue tracker settings use their own REST endpoints.
 - The UI disables them while offline.
 - An upload targets an issue or comment that must already be confirmed. It waits until no outbox mutation creates its target.
 
@@ -309,7 +309,7 @@ Some commands aren't queued offline: `invite`, `resend_invitation`, `create_inte
 - Reports stay a server read through TanStack Query. Refetch after a pull that touched issues or time entries, debounced. Offline, show the last result.
 - `inbox_unread` and issue counts come from the replica.
 - Issue search, people search and the command palette search the replica: title, description, issue number and key for issues. Local search splits text into runs of letters, marks and digits, so it can differ from the server's full-text search on punctuation-heavy text such as URLs and file paths.
-- OpenProject connection settings stay a TanStack Query read.
+- Issue tracker connection settings stay a TanStack Query read. The wizard waits until stages it created through the outbox are confirmed before saving mappings that name them.
 
 ### React bindings
 

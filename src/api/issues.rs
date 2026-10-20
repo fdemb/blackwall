@@ -4,12 +4,45 @@ use super::directory::{
 use super::resources::{Versioned, list_collection, one, record};
 use super::*;
 use crate::domain::{
-    Activity, Attachment, Comment, FilterClause, Issue, IssueFilter, IssueInput, IssuePatch,
-    IssueSort, OpenProjectSource, Priority, SourceLink, Via, deserialize_where,
+    Activity, Attachment, Comment, CommentTracker, FilterClause, Issue, IssueFilter, IssueInput,
+    IssuePatch, IssueSort, Priority, SourceLink, TrackerLink, Via, deserialize_where,
 };
 use crate::store::CollectionQuery;
 use axum::extract::{Path, Query};
 use chrono::{DateTime, Utc};
+
+/// The remote item a synced issue links to, without sync bookkeeping.
+#[derive(Serialize, utoipa::ToSchema)]
+pub struct ApiTrackerLink {
+    /// Such as `openproject`.
+    pub provider: String,
+    pub connection_id: Uuid,
+    pub remote_id: String,
+    pub project_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_remote_id: Option<String>,
+    /// Last seen remote status name.
+    pub status_name: String,
+    pub url: String,
+    /// Why the last change could not be sent to the tracker; cleared on success.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub push_error: Option<String>,
+}
+
+impl From<TrackerLink> for ApiTrackerLink {
+    fn from(link: TrackerLink) -> Self {
+        Self {
+            provider: link.provider,
+            connection_id: link.connection_id,
+            remote_id: link.remote_id,
+            project_id: link.project_id,
+            parent_remote_id: link.parent_remote_id,
+            status_name: link.status_name,
+            url: link.url,
+            push_error: link.push_error,
+        }
+    }
+}
 
 /// An issue with the records it points at named, so callers need no second lookup.
 #[derive(Serialize, utoipa::ToSchema)]
@@ -25,7 +58,7 @@ pub struct ApiIssue {
     pub team: TeamRef,
     pub stage: StageRef,
     pub assignee: Option<Person>,
-    /// Null for OpenProject issues and for issues logged before creators were stored.
+    /// Null for synced issues without a mapped author and for issues logged before creators were stored.
     pub created_by: Option<Person>,
     /// The token that created the issue for `created_by`, if one did.
     pub created_via: Option<Via>,
@@ -46,8 +79,9 @@ pub struct ApiIssue {
     pub followers: Vec<Person>,
     pub attachments: Vec<Attachment>,
     pub source_links: Vec<SourceLink>,
+    /// The issue tracker item this issue syncs with, if any.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub openproject: Option<OpenProjectSource>,
+    pub tracker: Option<ApiTrackerLink>,
     /// Board order within the stage.
     pub position: i64,
     pub version: i64,
@@ -139,7 +173,7 @@ pub async fn render(store: &Store, scope: Scope, issues: Vec<Issue>) -> Result<V
             subtask_completed: i.subtask_completed,
             attachments: i.attachments,
             source_links: i.source_links,
-            openproject: i.openproject,
+            tracker: i.tracker.map(ApiTrackerLink::from),
             position: i.position,
             version: i.version,
             archived_at: i.archived_at,
@@ -748,6 +782,9 @@ pub struct ApiComment {
     pub attachments: Vec<Attachment>,
     pub created_at: DateTime<Utc>,
     pub edited_at: Option<DateTime<Utc>>,
+    /// The issue tracker comment this one was sent to or imported from, if any.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tracker: Option<CommentTracker>,
     pub version: i64,
 }
 
@@ -782,6 +819,7 @@ async fn render_comments(
             attachments: c.attachments,
             created_at: c.created_at,
             edited_at: c.edited_at,
+            tracker: c.tracker,
             version: c.version,
         })
         .collect())

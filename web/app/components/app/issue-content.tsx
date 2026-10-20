@@ -17,7 +17,6 @@ import { useI18n } from "~/lib/i18n";
 import { usePending } from "~/lib/use-pending";
 import { useWorkspace } from "~/lib/workspace";
 import { cn } from "~/lib/utils";
-import { issueCapabilities } from "~/lib/ownership";
 import type { Id, Issue } from "~/lib/types";
 import { Section, revealOnHover } from "./issue-section";
 
@@ -32,8 +31,7 @@ export function TitleField({
   onSave: (title: string, version: number) => void;
 }) {
   const { t } = useI18n();
-  const { canWrite: workspaceCanWrite } = useWorkspace();
-  const canWrite = workspaceCanWrite && issueCapabilities(issue).edit;
+  const { canWrite } = useWorkspace();
   const [title, setTitle] = useState(issue.title);
   const baseVersion = useRef(issue.version);
   const ref = useRef<HTMLTextAreaElement>(null);
@@ -109,8 +107,7 @@ export function Description({
   onSave: (description: string) => Promise<boolean>;
 }) {
   const { t } = useI18n();
-  const { canWrite: workspaceCanWrite } = useWorkspace();
-  const canWrite = workspaceCanWrite && issueCapabilities(issue).edit;
+  const { canWrite } = useWorkspace();
   // Unsaved text, or null while the editor shows what the store has.
   const [draft, setDraft] = useState<string | null>(failedDrafts.get(issue.id) ?? null);
   const saving = useRef(false);
@@ -254,8 +251,7 @@ export function Subtasks({
   setAdding: (v: boolean) => void;
 }) {
   const { t } = useI18n();
-  const { ws, run, canWrite: workspaceCanWrite } = useWorkspace();
-  const canWrite = workspaceCanWrite && issueCapabilities(issue).edit;
+  const { ws, run, canWrite } = useWorkspace();
   const [title, setTitle] = useState("");
   const { pending, guard } = usePending();
   const done = subs.filter((s) => isDone(ws, s)).length;
@@ -356,8 +352,7 @@ export function Dependencies({
   onAdd: (id: Id) => void;
 }) {
   const { t } = useI18n();
-  const { run, canWrite: workspaceCanWrite } = useWorkspace();
-  const canWrite = workspaceCanWrite && issueCapabilities(issue).edit;
+  const { run, canWrite } = useWorkspace();
   const keyWidth = useIssueKeyWidth([...blockers, ...blocking]);
   const remove = (id: Id) =>
     run({
@@ -506,16 +501,12 @@ export function AttachmentChip({
 
 export function Attachments({ issue, uploader }: { issue: Issue; uploader: Uploader }) {
   const { t } = useI18n();
-  const { ws, run, canWrite: workspaceCanWrite } = useWorkspace();
-  const canWrite = workspaceCanWrite && issueCapabilities(issue).remove_attachment;
+  const { ws, run, canWrite } = useWorkspace();
   return (
     <Section
       title={t("issue.attachments")}
       icon={<Paperclip className="size-3.5 text-muted-foreground" />}
-      action={
-        workspaceCanWrite &&
-        issueCapabilities(issue).add_attachment && <AttachButton uploader={uploader} />
-      }
+      action={canWrite && <AttachButton uploader={uploader} />}
     >
       <ul className="grid gap-1.5 sm:grid-cols-2">
         {issue.attachments.map((a) => (

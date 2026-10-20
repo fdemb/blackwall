@@ -361,9 +361,9 @@ impl Operation<'_> {
             return Err(Error::BadRequest("invalid replacement stage".into()));
         }
 
-        // Sync locks its connection before the issue graph.
-        let mappings = self.lock_stage_mappings(id).await?;
+        // Tracker pages lock the issue graph before their connection.
         self.lock_graph().await?;
+        let mappings = self.lock_stage_mappings(id).await?;
         self.lock_team(team_id, true).await?;
         let stages = sqlx::query("SELECT id,kind FROM stages WHERE workspace_id=$1 AND team_id=$2 AND id=ANY($3) ORDER BY id FOR UPDATE")
             .bind(self.workspace_id)
@@ -388,9 +388,20 @@ impl Operation<'_> {
         for (issue_id, _) in &issues {
             self.touch("issues", *issue_id).await?;
         }
+        let synced = self.synced_stage_issues(id).await?;
         self.move_stage_issues(id, replacement).await?;
         self.replace_stage_mappings(mappings, id, replacement)
             .await?;
+        // The move skips `issue_effects`, so queue the status pushes it would. After the
+        // mapping rewrite, which cancels pending tracker jobs, so the wake-up survives.
+        for before in synced {
+            let after = Issue {
+                stage_id: replacement,
+                ..before.clone()
+            };
+            crate::tracker::enqueue_fields(&mut self.tx, self.workspace_id, &before, &after)
+                .await?;
+        }
         sqlx::query("DELETE FROM stages WHERE workspace_id=$1 AND id=$2")
             .bind(self.workspace_id)
             .bind(id)
@@ -401,12 +412,21 @@ impl Operation<'_> {
             .await
     }
 
-    /// Moves every issue to `replacement`, flagged as a stage migration for the change triggers.
-    async fn move_stage_issues(&mut self, id: Uuid, replacement: Uuid) -> Result<()> {
-        sqlx::query("SELECT set_config('blackwall.stage_migration', $1, true)")
-            .bind(serde_json::json!({"workspace_id": self.workspace_id, "from": id, "to": replacement}).to_string())
-            .execute(&mut *self.tx)
+    /// Live tracker-linked issues in the stage, read before it is replaced.
+    async fn synced_stage_issues(&mut self, stage_id: Uuid) -> Result<Vec<Issue>> {
+        let ids: Vec<Uuid> = sqlx::query_scalar("SELECT id FROM issues WHERE workspace_id=$1 AND stage_id=$2 AND tracker IS NOT NULL AND deleted_at IS NULL ORDER BY id")
+            .bind(self.workspace_id)
+            .bind(stage_id)
+            .fetch_all(&mut *self.tx)
             .await?;
+        let mut issues = Vec::with_capacity(ids.len());
+        for id in ids {
+            issues.push(reads::issue_on(&mut self.tx, self.workspace_id, id, false).await?);
+        }
+        Ok(issues)
+    }
+
+    async fn move_stage_issues(&mut self, id: Uuid, replacement: Uuid) -> Result<()> {
         sqlx::query(
             "UPDATE issues SET stage_id=$3,updated_at=now() WHERE workspace_id=$1 AND stage_id=$2",
         )
@@ -415,16 +435,13 @@ impl Operation<'_> {
         .bind(replacement)
         .execute(&mut *self.tx)
         .await?;
-        sqlx::query("SELECT set_config('blackwall.stage_migration', '', true)")
-            .execute(&mut *self.tx)
-            .await?;
         Ok(())
     }
 
-    /// Issues in `stage` moved from kind `previous` to `next`: check the
-    /// workflow, keep the Done-entry clock for auto-archive (Done only, not
-    /// cancelled), take backlog work out of sprints, reschedule reminders and
-    /// record newly completed issues.
+    /// Issues in `stage` moved from kind `previous` to `next`: keep the
+    /// Done-entry clock for auto-archive (Done only, not cancelled), take
+    /// backlog work out of sprints, reschedule reminders and record newly
+    /// completed issues.
     async fn after_stage_kind_change(
         &mut self,
         stage: Uuid,
@@ -432,7 +449,6 @@ impl Operation<'_> {
         previous: &str,
         next: &str,
     ) -> Result<()> {
-        self.validate_workflow().await?;
         if next == "done" {
             sqlx::query("UPDATE issues SET done_at=COALESCE(done_at,now()),updated_at=now() WHERE workspace_id=$1 AND stage_id=$2 AND archived_at IS NULL AND done_at IS NULL")
                 .bind(self.workspace_id)
@@ -717,8 +733,8 @@ impl Operation<'_> {
     async fn lock_stage_mappings(
         &mut self,
         stage: Uuid,
-    ) -> Result<Vec<(Uuid, Vec<crate::openproject::Mapping>)>> {
-        let rows = sqlx::query("SELECT id,projects FROM openproject_connections WHERE workspace_id=$1 AND EXISTS(SELECT 1 FROM jsonb_array_elements(projects) mapping, jsonb_each_text(COALESCE(mapping->'stage_mapping','{}'::jsonb)) entry WHERE entry.value=$2) ORDER BY id FOR UPDATE")
+    ) -> Result<Vec<(Uuid, Vec<crate::tracker::Mapping>)>> {
+        let rows = sqlx::query("SELECT id,projects FROM tracker_connections WHERE workspace_id=$1 AND EXISTS(SELECT 1 FROM jsonb_array_elements(projects) mapping, jsonb_each_text(COALESCE(mapping->'stage_mapping','{}'::jsonb)) entry WHERE entry.value=$2) ORDER BY id FOR NO KEY UPDATE")
             .bind(self.workspace_id).bind(stage.to_string()).fetch_all(&mut *self.tx).await?;
         rows.into_iter()
             .map(|row| {
@@ -732,7 +748,7 @@ impl Operation<'_> {
 
     async fn replace_stage_mappings(
         &mut self,
-        mappings: Vec<(Uuid, Vec<crate::openproject::Mapping>)>,
+        mappings: Vec<(Uuid, Vec<crate::tracker::Mapping>)>,
         previous: Uuid,
         replacement: Uuid,
     ) -> Result<()> {
@@ -745,10 +761,10 @@ impl Operation<'_> {
                 }
             }
             // Fence pages fetched with the previous mapping; the pagination cursor remains valid.
-            sqlx::query("UPDATE openproject_connections SET projects=$3,generation=generation+1,next_run_at=clock_timestamp(),status='pending',last_error='' WHERE workspace_id=$1 AND id=$2")
+            sqlx::query("UPDATE tracker_connections SET projects=$3,generation=generation+1,next_run_at=clock_timestamp(),status='pending',last_error='',push_error=NULL WHERE workspace_id=$1 AND id=$2")
                 .bind(self.workspace_id).bind(connection).bind(serde_json::to_value(projects)?)
                 .execute(&mut *self.tx).await?;
-            sqlx::query("UPDATE jobs SET state='cancelled',finished_at=clock_timestamp(),updated_at=clock_timestamp() WHERE queue='openproject' AND state='pending' AND payload->>'connection_id'=$1")
+            sqlx::query("UPDATE jobs SET state='cancelled',finished_at=clock_timestamp(),updated_at=clock_timestamp() WHERE queue='tracker' AND state='pending' AND payload->>'connection_id'=$1")
                 .bind(connection.to_string()).execute(&mut *self.tx).await?;
         }
         Ok(())

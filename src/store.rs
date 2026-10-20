@@ -11,7 +11,6 @@ use uuid::Uuid;
 mod changes;
 mod discussion;
 mod issues;
-pub mod ownership;
 pub(crate) mod persistence;
 mod planning;
 mod queue;
@@ -76,7 +75,7 @@ impl StoreConfig {
 pub struct Store {
     pub pool: PgPool,
     pub outbox: Outbox,
-    pub(crate) openproject_client: reqwest::Client,
+    pub(crate) tracker_client: reqwest::Client,
     pub(crate) bootstrap_permits: Arc<Semaphore>,
     pub(crate) bootstrap_permit_wait: Duration,
     pub(crate) bootstrap_send_timeout: Duration,
@@ -211,7 +210,7 @@ impl Operation<'_> {
                  OR EXISTS(SELECT 1 FROM workspaces WHERE id = ANY($1)) \
                  OR EXISTS(SELECT 1 FROM activity WHERE id = ANY($1)) \
                  OR EXISTS(SELECT 1 FROM source_links WHERE id = ANY($1)) \
-                 OR EXISTS(SELECT 1 FROM openproject_connections WHERE id = ANY($1))",
+                 OR EXISTS(SELECT 1 FROM tracker_connections WHERE id = ANY($1))",
             )
             .bind(&ordered)
             .fetch_one(&mut *self.tx)
@@ -278,7 +277,7 @@ impl Store {
 
         Ok(Self {
             outbox: Outbox::new(pool.clone()),
-            openproject_client: crate::openproject::http_client()?,
+            tracker_client: crate::tracker::http_client()?,
             bootstrap_permits: Arc::new(Semaphore::new(sync::bootstrap_permits(
                 config.max_connections,
             ))),
@@ -584,7 +583,7 @@ impl Operation<'_> {
     }
 
     /// Runs one command inside this already-open operation: the viewer rule,
-    /// ownership check, dispatch and activity row. Shared by the REST command
+    /// dispatch and activity row. Shared by the REST command
     /// endpoint and sync push, so both enforce identical semantics.
     pub(crate) async fn run_command(
         &mut self,
@@ -594,8 +593,6 @@ impl Operation<'_> {
         if self.role == Role::Viewer && !command.is_personal() {
             return Err(Error::Forbidden);
         }
-
-        self.authorize_issue_ownership(&command).await?;
 
         let action = command.kind();
         let id = match command.family() {

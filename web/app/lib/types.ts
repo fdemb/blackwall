@@ -78,56 +78,88 @@ export interface SourceLink {
   url: string;
   title: string;
 }
-export interface OpenProjectIssue {
+export interface TrackerLink {
+  provider: TrackerProviderKind;
   connection_id: Id;
-  work_package_id: number;
-  project_id: number;
-  parent_work_package_id?: number | null;
+  remote_id: string;
+  project_id: string;
+  parent_remote_id?: string | null;
   status_name: string;
   url: string;
-  unavailable: boolean;
+  push_error?: string | null;
 }
-export interface OpenProjectMapping {
-  project_id: number;
+export type TrackerProviderKind = "openproject";
+export type TrackerField =
+  | "status"
+  | "title"
+  | "description"
+  | "assignee"
+  | "due_date"
+  | "priority"
+  | "parent"
+  | "comments";
+export interface TrackerDirection {
+  import: boolean;
+  export: boolean;
+}
+export type TrackerOptions = Partial<Record<TrackerField, TrackerDirection>>;
+export interface TrackerProvider {
+  kind: TrackerProviderKind;
+  name: string;
+  /** Directions the provider supports. */
+  fields: TrackerOptions;
+  /** Options for new connections. */
+  defaults: TrackerOptions;
+}
+export interface TrackerMapping {
+  project_id: string;
   team_id: Id;
   stage_mapping?: Record<string, Id>;
 }
-export interface OpenProjectStatus {
-  id: number;
+export interface TrackerStatus {
+  id: string;
   name: string;
   is_closed: boolean;
 }
-export interface OpenProjectPerson {
-  id: number;
+export interface TrackerPerson {
+  id: string;
   name: string;
   email: string | null;
 }
-export interface OpenProjectConnection {
+export interface TrackerConnection {
   id: Id;
+  provider: TrackerProviderKind;
   name: string;
   base_url: string;
   enabled: boolean;
   generation: number;
-  projects: OpenProjectMapping[];
-  cached_projects: { id: number; name: string }[];
-  cached_statuses: OpenProjectStatus[];
-  cached_people: OpenProjectPerson[];
+  options: TrackerOptions;
+  projects: TrackerMapping[];
+  cached_projects: { id: string; name: string }[];
+  cached_statuses: TrackerStatus[];
+  cached_people: TrackerPerson[];
   people_mapping: Record<string, Id>;
   status: "pending" | "syncing" | "idle" | "error";
   last_error: string;
   last_checked_at: string | null;
   last_synced_at: string | null;
+  /** Local changes waiting to be sent; older servers omit it. */
+  pending_pushes?: number;
+  /** Why waiting changes can't be sent (credentials or permissions); older servers omit it. */
+  push_error?: string | null;
 }
-export interface OpenProjectConnectionInput {
+export interface TrackerConnectionInput {
+  provider: TrackerProviderKind;
   name: string;
   base_url: string;
   token: string;
   enabled?: boolean;
-  projects?: OpenProjectMapping[];
+  options?: TrackerOptions;
+  projects?: TrackerMapping[];
   people_mapping?: Record<string, Id>;
 }
 export interface Issue {
-  openproject?: OpenProjectIssue | null;
+  tracker?: TrackerLink | null;
   id: Id;
   version: number;
   blocked_count: number;
@@ -147,7 +179,7 @@ export interface Issue {
   team_id: Id;
   stage_id: Id;
   assignee: Id | null;
-  /** Null for OpenProject issues and issues created before creators were stored. */
+  /** Null for synced issues without a mapped author and issues created before creators were stored. */
   created_by: Id | null;
   priority: Priority;
   labels: readonly Id[];
@@ -178,8 +210,14 @@ export interface Comment {
   attachments: readonly Attachment[];
   created_at: string;
   edited_at: string | null;
+  /** Set on comments imported from an issue tracker; older servers omit it. */
+  tracker?: CommentTracker | null;
   /** The API token that wrote the comment for its author, if one did. */
   via?: Via | null;
+}
+export interface CommentTracker {
+  provider: string;
+  author_name?: string | null;
 }
 /** The personal access token behind a write: an integration or agent acting for the actor. */
 export interface Via {

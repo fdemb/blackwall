@@ -9,7 +9,6 @@ import {
   checkTeamAppearance,
   checkText,
   checkTimestamp,
-  checkWorkflow,
   dedupeSortUuids,
   requireAdmin,
   requireMember,
@@ -243,9 +242,6 @@ export const updateStage: Mutator<ArgsOf<"update_stage">> = (tx, args, ctx) => {
   );
   tx.put("teams", next);
   if (previous === args.kind) return;
-  // The server validates the touched stage before restamping the Done-entry
-  // clock, independent of the restamp writes, which cannot change the outcome.
-  checkWorkflow(tx, [args.id]);
   restampStage(tx, args.id, previous, args.kind, ctx.at);
 };
 
@@ -265,17 +261,12 @@ export const deleteStage: Mutator<ArgsOf<"delete_stage">> = (tx, args, ctx) => {
     throw new MutationError(400, "invalid replacement stage");
   }
   if (next === undefined) throw new MutationError(400, "invalid replacement stage");
-  const affected: string[] = [];
   for (const issue of tx.byIndex("issues", "stage_id", args.id)) {
     tx.put("issues", { ...issue, stage_id: args.replacement, updated_at: ctx.at });
-    affected.push(issue.id);
   }
   const nextTeam = copyTeam(team);
   nextTeam.stages = nextTeam.stages.filter((stage) => stage.id !== args.id);
   tx.put("teams", nextTeam);
-  // The server validates the touched stage and the moved issues before
-  // restamping the Done-entry clock, independent of the restamp writes.
-  checkWorkflow(tx, [args.id, ...affected]);
   restampStage(tx, args.replacement, previous, next, ctx.at);
 };
 

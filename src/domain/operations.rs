@@ -15,7 +15,7 @@ fn find_mut<T>(items: &mut [T], matches: impl Fn(&T) -> bool) -> Result<&mut T> 
 
 impl Workspace {
     /// A client-chosen id is taken when any collection already uses it.
-    /// Source links carry no id in the model and OpenProject connections are
+    /// Source links carry no id in the model and tracker connections are
     /// not modeled; both are still covered by the SQL check.
     fn id_taken(&self, id: Uuid) -> bool {
         self.id == id
@@ -102,6 +102,14 @@ impl Workspace {
         self.issues
             .iter()
             .find(|i| i.id == id && i.deleted_at.is_none())
+            .ok_or(Error::NotFound)
+    }
+
+    /// Like `issue`, including trashed issues.
+    fn any_issue(&self, id: Uuid) -> Result<&Issue> {
+        self.issues
+            .iter()
+            .find(|i| i.id == id)
             .ok_or(Error::NotFound)
     }
 
@@ -233,15 +241,15 @@ impl Workspace {
         Ok(())
     }
 
-    fn validate_issue(&self, issue: &Issue) -> Result<()> {
+    /// `before` is the stored issue; None when creating.
+    fn validate_issue(&self, issue: &Issue, before: Option<&Issue>) -> Result<()> {
         text(&issue.title, 500)?;
         optional_timestamp(issue.deadline)?;
         if issue.description.len() > 100_000 {
             return Err(Error::BadRequest("description too long".into()));
         }
 
-        let stage = self
-            .team(issue.team_id)?
+        self.team(issue.team_id)?
             .stages
             .iter()
             .find(|s| s.id == issue.stage_id)
@@ -260,14 +268,7 @@ impl Workspace {
         self.validate_issue_project(issue)?;
         self.validate_issue_sprint(issue)?;
 
-        let starting =
-            issue.deleted_at.is_none() && matches!(stage.kind, StageKind::Active | StageKind::Done);
-        for dep in &issue.dependencies {
-            let dependency = self.issue(*dep)?;
-            if starting && !self.done(dependency) {
-                return Err(Error::Conflict("issue has unfinished dependencies".into()));
-            }
-        }
+        self.check_dependencies(issue, before)?;
         if let Some(parent) = issue.parent_id {
             self.issue(parent)?;
         }
@@ -278,6 +279,34 @@ impl Workspace {
         self.check_relation_cycle(issue, issue.dependencies.clone(), |i| {
             i.dependencies.clone()
         })
+    }
+
+    /// Dependencies gate entering an active or done stage, and new dependencies of a
+    /// started issue. Ones that reopen later leave the issue blocked, not invalid.
+    pub(super) fn check_dependencies(&self, issue: &Issue, before: Option<&Issue>) -> Result<()> {
+        let started = issue.deleted_at.is_none()
+            && self.team(issue.team_id)?.stages.iter().any(|s| {
+                s.id == issue.stage_id && matches!(s.kind, StageKind::Active | StageKind::Done)
+            });
+        let entered = before.is_none_or(|old| old.stage_id != issue.stage_id);
+        for dep in &issue.dependencies {
+            let added = before.is_none_or(|old| !old.dependencies.contains(dep));
+            // New dependencies must be live; kept ones may have been trashed since.
+            let dependency = if added {
+                self.issue(*dep)?
+            } else {
+                self.any_issue(*dep)?
+            };
+            // As `blocked_count` counts them: live and not done or cancelled.
+            if started
+                && (added || entered)
+                && dependency.deleted_at.is_none()
+                && !self.done(dependency)
+            {
+                return Err(Error::Conflict("issue has unfinished dependencies".into()));
+            }
+        }
+        Ok(())
     }
 
     fn validate_issue_project(&self, issue: &Issue) -> Result<()> {
@@ -345,7 +374,7 @@ impl Workspace {
                 return Err(Error::BadRequest("issue relations contain a cycle".into()));
             }
             if seen.insert(id) {
-                todo.extend(next(self.issue(id)?));
+                todo.extend(next(self.any_issue(id)?));
             }
         }
         Ok(())
@@ -366,7 +395,6 @@ impl Workspace {
         for team in &mut copy.teams {
             team.stages.sort_by_key(|s| (s.position, s.id));
         }
-        copy.check_workflow()?;
 
         let completed: Vec<_> = copy
             .issues
@@ -400,37 +428,11 @@ impl Workspace {
         Ok(result)
     }
 
-    fn check_workflow(&self) -> Result<()> {
-        for issue in self.issues.iter().filter(|i| i.deleted_at.is_none()) {
-            let stage = self
-                .team(issue.team_id)?
-                .stages
-                .iter()
-                .find(|s| s.id == issue.stage_id)
-                .ok_or(Error::BadRequest("unknown stage".into()))?;
-            if matches!(stage.kind, StageKind::Active | StageKind::Done)
-                && issue.dependencies.iter().any(|id| {
-                    self.issues
-                        .iter()
-                        .find(|i| i.id == *id)
-                        .is_none_or(|i| i.deleted_at.is_some() || !self.done(i))
-                })
-            {
-                return Err(Error::Conflict(
-                    "workflow would leave an issue with unfinished dependencies".into(),
-                ));
-            }
-        }
-
-        Ok(())
-    }
-
     pub fn validate_imported(&self) -> Result<()> {
         self.check_limits()?;
         text(&self.name, 200)?;
         self.validate_imported_planning()?;
         self.validate_imported_issues()?;
-        self.check_workflow()?;
         self.validate_imported_records()
     }
 
@@ -507,7 +509,7 @@ impl Workspace {
         }
 
         for issue in &self.issues {
-            check.validate_issue(issue)?;
+            check.validate_issue(issue, Some(issue))?;
             optional_timestamp(issue.deleted_at)?;
             optional_timestamp(issue.archived_at)?;
             optional_timestamp(issue.done_at)?;

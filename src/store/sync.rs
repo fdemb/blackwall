@@ -170,12 +170,6 @@ fn rejection(error: &Error) -> MutationError {
         Error::NotFound => (404, error.to_string()),
         Error::Conflict(message) | Error::Stale(message) => (409, message.clone()),
         Error::Json(error) => (400, error.to_string()),
-        Error::Database(sqlx::Error::Database(db))
-            if db.code().as_deref() == Some("23514")
-                && db.constraint() == Some(super::ownership::OWNERSHIP_CONSTRAINT) =>
-        {
-            (409, super::ownership::OWNERSHIP_MESSAGE.to_owned())
-        }
         Error::Database(_)
         | Error::Internal(_)
         | Error::Unauthorized
@@ -942,7 +936,7 @@ impl Store {
 }
 
 /// Bump whenever a sync record shape changes.
-pub const SYNC_SCHEMA: u32 = 4;
+pub const SYNC_SCHEMA: u32 = 5;
 
 /// How long a bootstrap waits for a concurrency permit before answering 503.
 pub const BOOTSTRAP_PERMIT_WAIT: std::time::Duration = std::time::Duration::from_secs(5);

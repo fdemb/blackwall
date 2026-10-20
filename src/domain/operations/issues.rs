@@ -99,7 +99,7 @@ impl Workspace {
         before_id: Option<Uuid>,
         now: DateTime<Utc>,
     ) -> Result<bool> {
-        let original = self.issue(id)?;
+        let original = self.issue(id)?.clone();
         let (team_id, original_stage) = (original.team_id, original.stage_id);
         if original.archived_at.is_some() {
             return Err(Error::Conflict("issue is archived".into()));
@@ -112,6 +112,9 @@ impl Workspace {
             .ok_or(Error::BadRequest("stage belongs to another team".into()))?;
         let target_is_done = matches!(target.kind, StageKind::Done);
         let target_is_backlog = matches!(target.kind, StageKind::Backlog);
+        let mut moved = original.clone();
+        moved.stage_id = stage_id;
+        self.check_dependencies(&moved, Some(&original))?;
 
         let mut ids: Vec<_> = self
             .issues
@@ -189,7 +192,7 @@ impl Workspace {
         };
 
         let mut issue = Issue {
-            openproject: None,
+            tracker: None,
             blocked_count: 0,
             subtask_total: 0,
             subtask_completed: 0,
@@ -235,7 +238,7 @@ impl Workspace {
             .iter()
             .filter(|i| i.team_id == issue.team_id && i.stage_id == issue.stage_id)
             .count() as i64;
-        self.validate_issue(&issue)?;
+        self.validate_issue(&issue, None)?;
         self.refresh_done_at(&mut issue, now);
 
         let id = issue.id;
@@ -264,10 +267,11 @@ impl Workspace {
         actor: Uuid,
         now: DateTime<Utc>,
     ) -> Result<()> {
-        let mut i = self.issue(id)?.clone();
-        if i.archived_at.is_some() {
+        let old = self.issue(id)?.clone();
+        if old.archived_at.is_some() {
             return Err(Error::Conflict("issue is archived".into()));
         }
+        let mut i = old.clone();
         let (old_assignee, old_stage) = (i.assignee, i.stage_id);
 
         i.apply_patch(p);
@@ -275,7 +279,7 @@ impl Workspace {
         self.fit_sprint(&mut i, entered_stage)?;
 
         i.updated_at = now;
-        self.validate_issue(&i)?;
+        self.validate_issue(&i, Some(&old))?;
         self.refresh_done_at(&mut i, now);
 
         if i.assignee != old_assignee
@@ -333,6 +337,7 @@ impl Workspace {
             .ok_or(Error::NotFound)?
             .clone();
 
+        let old = issue.clone();
         issue.deleted_at = None;
         issue.updated_at = now;
         if issue.sprint_id.is_some_and(|id| {
@@ -343,7 +348,7 @@ impl Workspace {
             issue.sprint_id = None
         }
 
-        self.validate_issue(&issue)?;
+        self.validate_issue(&issue, Some(&old))?;
         *find_mut(&mut self.issues, |i| i.id == id)? = issue;
 
         Ok(())

@@ -3,7 +3,6 @@ import type { Id } from "../../lib/types";
 import { normalize } from "../records";
 import type { SyncIssue } from "../records";
 import type { SyncStore } from "../store";
-import { OWNERSHIP_MESSAGE } from "./common";
 import {
   ADMIN,
   AT,
@@ -108,7 +107,7 @@ describe("create_issue", () => {
     mutate(store, "create_issue", { input: { id: "issue-new", title: "New", team_id: TEAM } });
     expect(store.get("issues", "issue-new")).toEqual(
       normalize("issues", {
-        openproject: null,
+        tracker: null,
         id: "issue-new",
         version: 1,
         // The team's issues, including trash and archive, go up to 15.
@@ -309,22 +308,12 @@ describe("create_issue", () => {
       "sprint is unavailable for this team",
     );
     rejects("create_issue", { input: { ...base, parent_id: "issue-ghost" } }, 404, "not found");
-    // An OpenProject parent fails the ownership check before validation sees it.
-    rejects("create_issue", { input: { ...base, parent_id: "issue-op" } }, 409, OWNERSHIP_MESSAGE);
     rejects("create_issue", { input: { ...base, parent_id: "issue-deleted" } }, 404, "not found");
     rejects(
       "create_issue",
       { input: { ...base, dependencies: ["issue-ghost"] } },
       404,
       "not found",
-    );
-    // Likewise, an OpenProject dependency is rejected as an ownership target;
-    // the validation rule below only runs when ownership passes.
-    rejects(
-      "create_issue",
-      { input: { ...base, dependencies: ["issue-op"] } },
-      409,
-      OWNERSHIP_MESSAGE,
     );
     rejects(
       "create_issue",
@@ -340,7 +329,18 @@ describe("create_issue", () => {
     );
   });
 
-  it("enforces viewer and ownership rules", () => {
+  it("accepts tracker-linked issues as parents and dependencies", () => {
+    const store = seedStore();
+    mutate(store, "create_issue", {
+      input: { id: "issue-new", title: "New", team_id: TEAM, parent_id: "issue-op" },
+    });
+    mutate(store, "update_issue", { id: "issue-2", patch: { dependencies: ["issue-op-done"] } });
+    expect(store.replayErrors().size).toBe(0);
+    expect(live(store, "issue-new").parent_id).toBe("issue-op");
+    expect(live(store, "issue-2").dependencies).toEqual(["issue-op-done"]);
+  });
+
+  it("enforces viewer rules", () => {
     rejects(
       "create_issue",
       { input: { id: "x", title: "T", team_id: TEAM } },
@@ -354,18 +354,6 @@ describe("create_issue", () => {
       403,
       "permission denied",
       GHOST,
-    );
-    rejects(
-      "create_issue",
-      { input: { id: "x", title: "T", team_id: TEAM, parent_id: "issue-op" } },
-      409,
-      OWNERSHIP_MESSAGE,
-    );
-    rejects(
-      "create_issue",
-      { input: { id: "x", title: "T", team_id: TEAM, dependencies: ["issue-op"] } },
-      409,
-      OWNERSHIP_MESSAGE,
     );
   });
 });
@@ -500,12 +488,6 @@ describe("update_issue", () => {
     );
     rejects(
       "update_issue",
-      { id: "issue-2", patch: { parent_id: "issue-op" } },
-      409,
-      OWNERSHIP_MESSAGE,
-    );
-    rejects(
-      "update_issue",
       { id: "issue-2", patch: { dependencies: ["issue-ghost"] } },
       404,
       "not found",
@@ -524,12 +506,6 @@ describe("update_issue", () => {
     );
     rejects(
       "update_issue",
-      { id: "issue-2", patch: { dependencies: ["issue-op"] } },
-      409,
-      OWNERSHIP_MESSAGE,
-    );
-    rejects(
-      "update_issue",
       { id: "issue-2", patch: { dependencies: ["issue-1"] } },
       409,
       "issue has unfinished dependencies",
@@ -542,7 +518,16 @@ describe("update_issue", () => {
     );
   });
 
-  it("enforces viewer and ownership rules", () => {
+  it("edits tracker-linked issues and keeps their link", () => {
+    const store = seedStore();
+    const before = live(store, "issue-op");
+    mutate(store, "update_issue", { id: "issue-op", patch: { title: "Local title" } });
+    expect(store.replayErrors().size).toBe(0);
+    expect(live(store, "issue-op").title).toBe("Local title");
+    expect(live(store, "issue-op").tracker).toEqual(before.tracker);
+  });
+
+  it("enforces viewer rules", () => {
     rejects(
       "update_issue",
       { id: "issue-2", patch: { title: "T" } },
@@ -556,19 +541,6 @@ describe("update_issue", () => {
       403,
       "permission denied",
       GHOST,
-    );
-    rejects("update_issue", { id: "issue-op", patch: { title: "T" } }, 409, OWNERSHIP_MESSAGE);
-    rejects(
-      "update_issue",
-      { id: "issue-2", patch: { parent_id: "issue-op" } },
-      409,
-      OWNERSHIP_MESSAGE,
-    );
-    rejects(
-      "update_issue",
-      { id: "issue-2", patch: { dependencies: ["issue-3", "issue-op"] } },
-      409,
-      OWNERSHIP_MESSAGE,
     );
   });
 });
@@ -673,7 +645,7 @@ describe("move_issue", () => {
     );
   });
 
-  it("enforces viewer and ownership rules", () => {
+  it("enforces viewer rules", () => {
     rejects(
       "move_issue",
       { id: "issue-2", stage_id: STAGE_DONE, before_id: null },
@@ -687,12 +659,6 @@ describe("move_issue", () => {
       403,
       "permission denied",
       GHOST,
-    );
-    rejects(
-      "move_issue",
-      { id: "issue-op", stage_id: STAGE_DONE, before_id: null },
-      409,
-      OWNERSHIP_MESSAGE,
     );
   });
 });
@@ -787,12 +753,10 @@ describe("delete_issue / restore_issue", () => {
     admitsRejects("restore_issue", { id: "issue-1" }, 400, "issue is not deleted");
   });
 
-  it("enforces viewer and ownership rules", () => {
+  it("enforces viewer rules", () => {
     rejects("delete_issue", { id: "issue-2" }, 403, "permission denied", VIEWER);
     rejects("restore_issue", { id: "issue-deleted" }, 403, "permission denied", VIEWER);
     rejects("delete_issue", { id: "issue-2" }, 403, "permission denied", GHOST);
-    rejects("delete_issue", { id: "issue-op" }, 409, OWNERSHIP_MESSAGE);
-    rejects("restore_issue", { id: "issue-op" }, 409, OWNERSHIP_MESSAGE);
   });
 });
 
@@ -807,22 +771,15 @@ describe("archive_issue / unarchive_issue", () => {
     expectRecord(store, "issue-3", { ...before, archived_at: null, done_at: AT, updated_at: AT });
   });
 
-  it("rejects imported issues: persistence owns imported rows", () => {
-    admitsRejects("archive_issue", { id: "issue-op-done" }, 409, OWNERSHIP_MESSAGE);
-    rejects("archive_issue", { id: "issue-op-done" }, 409, OWNERSHIP_MESSAGE);
-    const archived = seedStore();
-    archived.applyBase([
-      {
-        entity: "issues",
-        id: "issue-op-done",
-        record: { ...(archived.get("issues", "issue-op-done") as SyncIssue), archived_at: AT },
-      },
-    ]);
-    const before = snapshotIssues(archived);
-    const id = mutate(archived, "unarchive_issue", { id: "issue-op-done" });
-    expect(archived.replayErrors().get(id)?.status).toBe(409);
-    expect(archived.replayErrors().get(id)?.message).toBe(OWNERSHIP_MESSAGE);
-    expect(snapshotIssues(archived)).toEqual(before);
+  it("archives and unarchives imported issues like local ones", () => {
+    const store = seedStore();
+    const before = live(store, "issue-op-done");
+    mutate(store, "archive_issue", { id: "issue-op-done" });
+    expect(store.replayErrors().size).toBe(0);
+    expectRecord(store, "issue-op-done", { ...before, archived_at: AT, updated_at: AT });
+    mutate(store, "unarchive_issue", { id: "issue-op-done" });
+    expect(store.replayErrors().size).toBe(0);
+    expect(live(store, "issue-op-done").archived_at).toBeNull();
   });
 
   it("is idempotent in effect", () => {
@@ -926,7 +883,7 @@ describe("bulk_issues", () => {
     admitsRejects("bulk_issues", { ids: ["issue-deleted"], action: "delete" }, 404, "not found");
   });
 
-  it("enforces viewer and ownership rules", () => {
+  it("enforces viewer rules", () => {
     rejects(
       "bulk_issues",
       { ids: ["issue-1"], action: "delete" },
@@ -935,18 +892,6 @@ describe("bulk_issues", () => {
       VIEWER,
     );
     rejects("bulk_issues", { ids: ["issue-1"], action: "delete" }, 403, "permission denied", GHOST);
-    rejects(
-      "bulk_issues",
-      { ids: ["issue-1", "issue-op"], action: "delete" },
-      409,
-      OWNERSHIP_MESSAGE,
-    );
-    rejects(
-      "bulk_issues",
-      { ids: ["issue-2"], action: { update: { parent_id: "issue-op" } } },
-      409,
-      OWNERSHIP_MESSAGE,
-    );
   });
 });
 
@@ -1026,11 +971,10 @@ describe("add_source_link", () => {
     rejects("add_source_link", { ...base, issue_id: "issue-archived" }, 409, "issue is archived");
   });
 
-  it("enforces viewer and ownership rules", () => {
+  it("enforces viewer rules", () => {
     const base = { url: "https://example.com/a", title: "A" };
     rejects("add_source_link", { ...base, issue_id: "issue-2" }, 403, "permission denied", VIEWER);
     rejects("add_source_link", { ...base, issue_id: "issue-2" }, 403, "permission denied", GHOST);
-    rejects("add_source_link", { ...base, issue_id: "issue-op" }, 409, OWNERSHIP_MESSAGE);
   });
 });
 
@@ -1077,16 +1021,10 @@ describe("remove_attachment", () => {
     twice("remove_attachment", { issue_id: "issue-attached", attachment_id: "att-1" });
   });
 
-  it("enforces viewer and ownership rules", () => {
+  it("enforces viewer rules", () => {
     const args = { issue_id: "issue-attached", attachment_id: "att-1" };
     rejects("remove_attachment", args, 403, "permission denied", VIEWER);
     rejects("remove_attachment", args, 403, "permission denied", GHOST);
-    rejects(
-      "remove_attachment",
-      { issue_id: "issue-op", attachment_id: "att-1" },
-      409,
-      OWNERSHIP_MESSAGE,
-    );
   });
 });
 
@@ -1107,7 +1045,7 @@ describe("team and stage references", () => {
 });
 
 describe("review findings", () => {
-  it("F1: deleting a completed dependency fails workflow so a later rename succeeds", () => {
+  it("F1: deleting a completed dependency leaves the dependent editable", () => {
     const store = seedStore();
     // Active A depends on completed B (issue-3 is done).
     mutate(store, "create_issue", {
@@ -1119,21 +1057,44 @@ describe("review findings", () => {
         dependencies: ["issue-3"],
       },
     });
-    expect(store.replayErrors().size).toBe(0);
-    const beforeDelete = snapshotIssues(store);
     const deleteId = mutate(store, "delete_issue", { id: "issue-3" });
-    expect(store.replayErrors().get(deleteId)?.status).toBe(409);
-    expect(store.replayErrors().get(deleteId)?.message).toBe(
-      "workflow would leave an issue with unfinished dependencies",
-    );
-    expect(snapshotIssues(store)).toEqual(beforeDelete);
-    // The server rejects the deletion, so the rename applies.
+    expect(store.replayErrors().get(deleteId)).toBeUndefined();
     const renameId = mutate(store, "update_issue", {
       id: "issue-f1-a",
       patch: { title: "Valid rename" },
     });
     expect(store.replayErrors().get(renameId)).toBeUndefined();
     expect(live(store, "issue-f1-a").title).toBe("Valid rename");
+  });
+
+  it("reopening a dependency leaves the dependent blocked but editable", () => {
+    const store = seedStore();
+    mutate(store, "create_issue", {
+      input: {
+        id: "issue-blocked",
+        title: "Blocked",
+        team_id: TEAM,
+        stage_id: STAGE_ACTIVE,
+        dependencies: ["issue-3"],
+      },
+    });
+    const reopen = mutate(store, "move_issue", {
+      id: "issue-3",
+      stage_id: STAGE_BACKLOG,
+      before_id: null,
+    });
+    expect(store.replayErrors().get(reopen)).toBeUndefined();
+    const rename = mutate(store, "update_issue", {
+      id: "issue-blocked",
+      patch: { title: "Renamed" },
+    });
+    expect(store.replayErrors().get(rename)).toBeUndefined();
+    const finish = mutate(store, "move_issue", {
+      id: "issue-blocked",
+      stage_id: STAGE_DONE,
+      before_id: null,
+    });
+    expect(store.replayErrors().get(finish)?.message).toBe("issue has unfinished dependencies");
   });
 
   it("F2: replay over a base already containing the effect is a no-op", () => {
@@ -1301,11 +1262,6 @@ describe("review findings", () => {
     expect(followed.replayErrors().size).toBe(0);
     // UUID byte order: admin < member < owner.
     expect(live(followed, "issue-followed").followers).toEqual([ADMIN, MEMBER, OWNER]);
-  });
-
-  it("F9: imported issues reject archive and unarchive with 409", () => {
-    admitsRejects("archive_issue", { id: "issue-op-done" }, 409, OWNERSHIP_MESSAGE);
-    rejects("archive_issue", { id: "issue-op-done" }, 409, OWNERSHIP_MESSAGE);
   });
 
   it("F10: source-link validation runs before the issue lookup", () => {

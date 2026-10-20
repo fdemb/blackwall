@@ -1208,9 +1208,9 @@ async fn client_ids_conflict_with_workspace_activity_source_link_and_connection_
     assert_eq!(status, StatusCode::CONFLICT, "{result}");
     assert_eq!(result["error"], "id already exists");
 
-    // So are OpenProject connection ids.
+    // So are tracker connection ids.
     let connection = Uuid::new_v4();
-    sqlx::query("INSERT INTO openproject_connections(id, workspace_id, name, base_url, token) VALUES($1, $2, 'Legacy', 'https://example.invalid', 'secret')")
+    sqlx::query("INSERT INTO tracker_connections(id, workspace_id, provider, options, name, base_url, token) VALUES($1, $2, 'openproject', '{}', 'Legacy', 'https://example.invalid', 'secret')")
         .bind(connection)
         .bind(ws)
         .execute(&store.pool)

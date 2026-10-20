@@ -172,7 +172,7 @@ function sprints(): Sprint[] {
 
 function issue(id: string, overrides: Partial<SyncIssue> = {}): SyncIssue {
   return {
-    openproject: null,
+    tracker: null,
     id,
     version: 1,
     number: 1,
@@ -244,24 +244,24 @@ function issues(): SyncIssue[] {
       stage_id: STAGE_DONE,
       done_at: NOW,
       position: 2048,
-      openproject: {
+      tracker: {
+        provider: "openproject",
         connection_id: "conn-1",
-        work_package_id: 9,
-        project_id: 9,
+        remote_id: "9",
+        project_id: "9",
         status_name: "Closed",
         url: "https://op.example.com/work_packages/9",
-        unavailable: false,
       },
     }),
     issue("issue-op", {
       number: 7,
-      openproject: {
+      tracker: {
+        provider: "openproject",
         connection_id: "conn-1",
-        work_package_id: 7,
-        project_id: 9,
+        remote_id: "7",
+        project_id: "9",
         status_name: "New",
         url: "https://op.example.com/work_packages/7",
-        unavailable: false,
       },
       position: 5120,
     }),

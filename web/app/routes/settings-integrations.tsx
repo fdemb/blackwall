@@ -13,7 +13,7 @@ import { usePending } from "~/lib/use-pending";
 import { useWorkspace } from "~/lib/workspace";
 import { useToast } from "~/components/ui/toast";
 import type { Integration } from "~/lib/types";
-import { OpenProjectSettings } from "~/components/app/openproject-settings";
+import { TrackerSettings } from "~/components/app/trackers/tracker-settings";
 
 export default function Integrations() {
   const { t } = useI18n();
@@ -42,9 +42,9 @@ export default function Integrations() {
     : `${origin}/api/workspaces/${ws.id}/integrations/<id>/webhook`;
   return (
     <SettingsPage title={t("settings.integrations")} description={t("integrations.sub")}>
-      <OpenProjectSettings />
+      <TrackerSettings />
       <SettingsSection
-        title={t("openproject.webhooks")}
+        title={t("integrations.webhooks")}
         actions={
           ws.integrations.length > 0 && (
             <Button size="sm" isDisabled={offline} onPress={() => setOpen(true)}>

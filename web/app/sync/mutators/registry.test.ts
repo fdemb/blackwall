@@ -396,7 +396,7 @@ describe("mutator registry", () => {
     const replayed = store.get("issues", "issue-round");
     expect(replayed).toEqual(
       normalize("issues", {
-        openproject: null,
+        tracker: null,
         id: "issue-round",
         version: 1,
         number: 16,

@@ -4,11 +4,8 @@ import type { SyncIssue } from "../records";
 import type { DeepReadonly, Tx } from "../store";
 import type { ArgsOf, Mutator, MutatorContext } from "./common";
 import {
-  checkImportedForSave,
-  checkOwnership,
   checkSourceUrl,
   checkText,
-  checkWorkflow,
   dedupeSortUuids,
   checkCapacity,
   requireIssue,
@@ -173,7 +170,6 @@ export const createIssue: Mutator<ArgsOf<"create_issue">> = (tx, args, ctx) => {
   checkCapacity(tx, "issues", 5000, ctx, args.input.id);
   const input = args.input;
   const id = reserveClientId(tx, input.id, ctx);
-  checkOwnership(tx, { type: "create_issue", input });
   const stageId = resolveStage(tx, input.team_id, input.stage_id);
   const next = issueFromInput(input, id, stageId, ctx);
   fitSprint(tx, next, input.stage_id !== null && input.stage_id !== undefined);
@@ -193,7 +189,6 @@ export const createIssue: Mutator<ArgsOf<"create_issue">> = (tx, args, ctx) => {
   next.position = createPosition(tx, next.team_id, next.stage_id, id);
   validateIssue(tx, next, null);
   tx.put("issues", next);
-  checkWorkflow(tx, [id]);
 };
 
 function issueFromInput(
@@ -203,7 +198,7 @@ function issueFromInput(
   ctx: MutatorContext,
 ): SyncIssue {
   return {
-    openproject: null,
+    tracker: null,
     id,
     version: 1,
     number: 0,
@@ -245,7 +240,7 @@ function patchIssue(
   if (current.archived_at !== null) throw new MutationError(409, "issue is archived");
   const next = patchedIssue(current, patch);
   fitSprint(tx, next, next.stage_id !== current.stage_id);
-  validateIssue(tx, next, current.sprint_id);
+  validateIssue(tx, next, current);
   if (next.stage_id !== current.stage_id) {
     next.done_at = doneAt(tx, next.team_id, next.stage_id, current.done_at, ctx.at);
   }
@@ -284,19 +279,11 @@ function setOrClear<T>(current: T | null, value: T | null | undefined, clear?: b
 
 export const updateIssue: Mutator<ArgsOf<"update_issue">> = (tx, args, ctx) => {
   requireRole(tx, ctx.actor, "update_issue", args);
-  checkOwnership(tx, { type: "update_issue", id: args.id, patch: args.patch });
   patchIssue(tx, args.id, args.patch, ctx);
-  checkWorkflow(tx, [args.id]);
 };
 
 export const moveIssue: Mutator<ArgsOf<"move_issue">> = (tx, args, ctx) => {
   requireRole(tx, ctx.actor, "move_issue", args);
-  checkOwnership(tx, {
-    type: "move_issue",
-    id: args.id,
-    stage_id: args.stage_id,
-    before_id: args.before_id,
-  });
   const current = requireLiveIssue(tx, args.id);
   if (current.archived_at !== null) throw new MutationError(409, "issue is archived");
   const team = tx.get("teams", current.team_id);
@@ -306,14 +293,13 @@ export const moveIssue: Mutator<ArgsOf<"move_issue">> = (tx, args, ctx) => {
   const next = copyIssue(current);
   next.stage_id = args.stage_id;
   fitSprint(tx, next, true);
-  validateIssue(tx, next, current.sprint_id);
+  validateIssue(tx, next, current);
   next.position = orderPosition(tx, current, args.stage_id, args.before_id ?? null);
   if (next.stage_id !== current.stage_id) {
     next.done_at = doneAt(tx, next.team_id, next.stage_id, current.done_at, ctx.at);
   }
   next.updated_at = ctx.at;
   tx.put("issues", next);
-  checkWorkflow(tx, [args.id]);
 };
 
 /** Shared by `delete_issue` and the bulk delete action. Archived issues can be deleted. */
@@ -333,9 +319,7 @@ function deleteIssueById(tx: Tx, id: string, ctx: MutatorContext): void {
 
 export const deleteIssue: Mutator<ArgsOf<"delete_issue">> = (tx, args, ctx) => {
   requireRole(tx, ctx.actor, "delete_issue", args);
-  checkOwnership(tx, { type: "delete_issue", id: args.id });
   deleteIssueById(tx, args.id, ctx);
-  checkWorkflow(tx, [args.id]);
 };
 
 /** Shared by `restore_issue` and the bulk restore action. Restoring revalidates references. */
@@ -347,16 +331,14 @@ function restoreIssueById(tx: Tx, id: string, ctx: MutatorContext): void {
   }
   const next = copyIssue(current);
   next.deleted_at = null;
-  validateIssue(tx, next, current.sprint_id);
+  validateIssue(tx, next, current);
   next.updated_at = ctx.at;
   tx.put("issues", next);
 }
 
 export const restoreIssue: Mutator<ArgsOf<"restore_issue">> = (tx, args, ctx) => {
   requireRole(tx, ctx.actor, "restore_issue", args);
-  checkOwnership(tx, { type: "restore_issue", id: args.id });
   restoreIssueById(tx, args.id, ctx);
-  checkWorkflow(tx, [args.id]);
 };
 
 /** Shared by `archive_issue` and the bulk archive action. Only done-stage issues archive. */
@@ -370,7 +352,6 @@ function archiveIssueById(tx: Tx, id: string, ctx: MutatorContext): void {
   if (stageKindOf(tx, current.team_id, current.stage_id) !== "done") {
     throw new MutationError(400, "only issues in a Done stage can be archived");
   }
-  checkImportedForSave(current);
   update(tx, "issues", id, (issue) => {
     const next = copyIssue(issue);
     next.archived_at = ctx.at;
@@ -382,7 +363,6 @@ function archiveIssueById(tx: Tx, id: string, ctx: MutatorContext): void {
 export const archiveIssue: Mutator<ArgsOf<"archive_issue">> = (tx, args, ctx) => {
   requireRole(tx, ctx.actor, "archive_issue", args);
   archiveIssueById(tx, args.id, ctx);
-  checkWorkflow(tx, [args.id]);
 };
 
 /** Shared by `unarchive_issue` and the bulk unarchive action. Unarchiving restarts the done clock. */
@@ -393,7 +373,6 @@ function unarchiveIssueById(tx: Tx, id: string, ctx: MutatorContext): void {
     if (ctx.mode === "replay") return;
     throw new MutationError(400, "issue is not archived");
   }
-  checkImportedForSave(current);
   const next = copyIssue(current);
   next.archived_at = null;
   next.done_at = doneAt(tx, next.team_id, next.stage_id, null, ctx.at);
@@ -404,12 +383,10 @@ function unarchiveIssueById(tx: Tx, id: string, ctx: MutatorContext): void {
 export const unarchiveIssue: Mutator<ArgsOf<"unarchive_issue">> = (tx, args, ctx) => {
   requireRole(tx, ctx.actor, "unarchive_issue", args);
   unarchiveIssueById(tx, args.id, ctx);
-  checkWorkflow(tx, [args.id]);
 };
 
 export const bulkIssues: Mutator<ArgsOf<"bulk_issues">> = (tx, args, ctx) => {
   requireRole(tx, ctx.actor, "bulk_issues", args);
-  checkOwnership(tx, { type: "bulk_issues", ids: args.ids, action: args.action });
   if (args.ids.length === 0 || args.ids.length > 500) {
     throw new MutationError(400, "select 1 to 500 issues");
   }
@@ -428,7 +405,6 @@ export const bulkIssues: Mutator<ArgsOf<"bulk_issues">> = (tx, args, ctx) => {
       patchIssue(tx, id, action.update, ctx);
     }
   }
-  checkWorkflow(tx, sorted);
 };
 
 export const followIssue: Mutator<ArgsOf<"follow">> = (tx, args, ctx) => {
@@ -443,17 +419,10 @@ export const followIssue: Mutator<ArgsOf<"follow">> = (tx, args, ctx) => {
       : dedupeSortUuids(issue.followers.filter((follower: Id) => follower !== ctx.actor));
     return next;
   });
-  checkWorkflow(tx, [args.issue_id]);
 };
 
 export const addSourceLink: Mutator<ArgsOf<"add_source_link">> = (tx, args, ctx) => {
   requireRole(tx, ctx.actor, "add_source_link", args);
-  checkOwnership(tx, {
-    type: "add_source_link",
-    issue_id: args.issue_id,
-    url: args.url,
-    title: args.title,
-  });
   // The server validates title and URL before the issue lookup.
   checkText(args.title, 500);
   checkSourceUrl(args.url);
@@ -468,16 +437,10 @@ export const addSourceLink: Mutator<ArgsOf<"add_source_link">> = (tx, args, ctx)
     next.source_links = [...issue.source_links, { url: args.url, title: args.title }];
     return next;
   });
-  checkWorkflow(tx, [args.issue_id]);
 };
 
 export const removeAttachment: Mutator<ArgsOf<"remove_attachment">> = (tx, args, ctx) => {
   requireRole(tx, ctx.actor, "remove_attachment", args);
-  checkOwnership(tx, {
-    type: "remove_attachment",
-    issue_id: args.issue_id,
-    attachment_id: args.attachment_id,
-  });
   // Order mirrors the server: archived is rejected before deleted is noticed.
   const current = requireIssue(tx, args.issue_id);
   if (current.archived_at !== null) throw new MutationError(409, "issue is archived");
@@ -493,5 +456,4 @@ export const removeAttachment: Mutator<ArgsOf<"remove_attachment">> = (tx, args,
     );
     return next;
   });
-  checkWorkflow(tx, [args.issue_id]);
 };

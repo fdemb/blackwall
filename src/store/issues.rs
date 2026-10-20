@@ -24,29 +24,12 @@ impl Operation<'_> {
         .await
     }
 
-    pub(super) async fn validate_workflow(&mut self) -> Result<()> {
-        let affected: Vec<Uuid> = self.versions.keys().map(|(_, id)| *id).collect();
-
-        let bad: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM issues i JOIN stages s ON s.id=i.stage_id WHERE i.workspace_id=$1 AND i.deleted_at IS NULL AND s.kind IN ('active','done') AND (i.id=ANY($2) OR i.stage_id=ANY($2) OR EXISTS(SELECT 1 FROM issue_dependencies d WHERE d.issue_id=i.id AND d.dependency_id=ANY($2))) AND EXISTS(SELECT 1 FROM issue_dependencies d JOIN issues other ON other.id=d.dependency_id JOIN stages os ON os.id=other.stage_id WHERE d.issue_id=i.id AND (other.deleted_at IS NOT NULL OR os.kind NOT IN ('done','cancelled'))))")
-            .bind(self.workspace_id)
-            .bind(&affected)
-            .fetch_one(&mut *self.tx)
-            .await?;
-
-        if bad {
-            return Err(Error::Conflict(
-                "workflow would leave an issue with unfinished dependencies".into(),
-            ));
-        }
-
-        Ok(())
-    }
-
     pub(super) async fn schedule_reminder(&mut self, id: Uuid) -> Result<()> {
         persistence::schedule_reminder(&mut self.tx, self.workspace_id, id).await
     }
 
-    async fn validate_issue_sql(&mut self, i: &Issue) -> Result<()> {
+    /// `before` is the stored issue; None when creating.
+    async fn validate_issue_sql(&mut self, i: &Issue, before: Option<&Issue>) -> Result<()> {
         crate::domain::text(&i.title, 500)?;
         crate::domain::optional_timestamp(i.deadline)?;
 
@@ -68,9 +51,21 @@ impl Operation<'_> {
         if let Some(sprint) = i.sprint_id {
             self.validate_issue_sprint(i, sprint, &kind).await?;
         }
-        let blocking = i.deleted_at.is_none() && matches!(kind.as_str(), "active" | "done");
+        // Dependencies gate entering an active or done stage, and new dependencies of a
+        // started issue. Ones that reopen later leave the issue blocked, not invalid.
+        let started = i.deleted_at.is_none() && matches!(kind.as_str(), "active" | "done");
+        let entered = before.is_none_or(|old| old.stage_id != i.stage_id);
         for dep in i.dependencies.iter().copied().collect::<BTreeSet<_>>() {
-            self.validate_dependency(i, dep, blocking).await?;
+            let added = before.is_none_or(|old| !old.dependencies.contains(&dep));
+            if added {
+                self.validate_dependency(i, dep).await?;
+            }
+            if started && (added || entered) && self.unfinished(dep).await? {
+                return Err(Error::Conflict("issue has unfinished dependencies".into()));
+            }
+            if added {
+                self.reject_dependency_cycle(i, dep).await?;
+            }
         }
         if let Some(parent) = i.parent_id {
             self.validate_parent(i, parent).await?;
@@ -151,38 +146,22 @@ impl Operation<'_> {
         Ok(())
     }
 
-    /// `blocking` is set when the issue sits in an active or done stage, which
-    /// requires every dependency to be finished.
-    async fn validate_dependency(&mut self, i: &Issue, dep: Uuid, blocking: bool) -> Result<()> {
-        let row = sqlx::query("SELECT i.deleted_at,i.openproject,s.kind FROM issues i JOIN stages s ON s.id=i.stage_id WHERE i.workspace_id=$1 AND i.id=$2")
-            .bind(self.workspace_id)
-            .bind(dep)
-            .fetch_optional(&mut *self.tx)
-            .await?
-            .ok_or(Error::NotFound)?;
-        if row
-            .try_get::<Option<serde_json::Value>, _>("openproject")?
-            .is_some()
-        {
-            return Err(Error::Conflict(
-                "OpenProject issues cannot be dependencies".into(),
-            ));
-        }
-        if dep == i.id
-            || row
-                .try_get::<Option<DateTime<Utc>>, _>("deleted_at")?
-                .is_some()
-        {
+    /// A new dependency must be another live issue.
+    async fn validate_dependency(&mut self, i: &Issue, dep: Uuid) -> Result<()> {
+        let deleted: Option<DateTime<Utc>> =
+            sqlx::query_scalar("SELECT deleted_at FROM issues WHERE workspace_id=$1 AND id=$2")
+                .bind(self.workspace_id)
+                .bind(dep)
+                .fetch_optional(&mut *self.tx)
+                .await?
+                .ok_or(Error::NotFound)?;
+        if dep == i.id || deleted.is_some() {
             return Err(Error::BadRequest("invalid dependency".into()));
         }
-        if blocking
-            && !matches!(
-                row.try_get::<String, _>("kind")?.as_str(),
-                "done" | "cancelled"
-            )
-        {
-            return Err(Error::Conflict("issue has unfinished dependencies".into()));
-        }
+        Ok(())
+    }
+
+    async fn reject_dependency_cycle(&mut self, i: &Issue, dep: Uuid) -> Result<()> {
         let cycle: bool = sqlx::query_scalar("WITH RECURSIVE reach(id) AS (SELECT $2::uuid UNION SELECT d.dependency_id FROM issue_dependencies d JOIN reach r ON d.issue_id=r.id WHERE d.workspace_id=$1) SELECT EXISTS(SELECT 1 FROM reach WHERE id=$3)")
             .bind(self.workspace_id)
             .bind(dep)
@@ -195,15 +174,22 @@ impl Operation<'_> {
         Ok(())
     }
 
+    /// Counts towards `blocked_count`: live and not done or cancelled.
+    async fn unfinished(&mut self, dep: Uuid) -> Result<bool> {
+        Ok(sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM issues i JOIN stages s ON s.id=i.stage_id WHERE i.workspace_id=$1 AND i.id=$2 AND i.deleted_at IS NULL AND s.kind NOT IN ('done','cancelled'))")
+            .bind(self.workspace_id)
+            .bind(dep)
+            .fetch_one(&mut *self.tx)
+            .await?)
+    }
+
     async fn validate_parent(&mut self, i: &Issue, parent: Uuid) -> Result<()> {
-        sqlx::query(
-            "SELECT id FROM issues WHERE workspace_id=$1 AND id=$2 AND deleted_at IS NULL AND openproject IS NULL",
-        )
-        .bind(self.workspace_id)
-        .bind(parent)
-        .fetch_optional(&mut *self.tx)
-        .await?
-        .ok_or(Error::NotFound)?;
+        sqlx::query("SELECT id FROM issues WHERE workspace_id=$1 AND id=$2 AND deleted_at IS NULL")
+            .bind(self.workspace_id)
+            .bind(parent)
+            .fetch_optional(&mut *self.tx)
+            .await?
+            .ok_or(Error::NotFound)?;
         let cycle: bool = sqlx::query_scalar("WITH RECURSIVE ancestors(id,parent_id) AS (SELECT id,parent_id FROM issues WHERE workspace_id=$1 AND id=$2 UNION SELECT i.id,i.parent_id FROM issues i JOIN ancestors a ON i.id=a.parent_id WHERE i.workspace_id=$1) SELECT EXISTS(SELECT 1 FROM ancestors WHERE id=$3)")
             .bind(self.workspace_id)
             .bind(parent)
@@ -268,7 +254,7 @@ impl Operation<'_> {
             &mut self.tx,
             self.workspace_id,
             i,
-            persistence::Ownership::Local,
+            persistence::Origin::Local,
         )
         .await
     }
@@ -289,7 +275,7 @@ impl Operation<'_> {
         let now = Utc::now();
         let id = self.reserve_client_id(input.id).await?;
         let mut i = Issue {
-            openproject: None,
+            tracker: None,
             blocked_count: 0,
             subtask_total: 0,
             subtask_completed: 0,
@@ -323,7 +309,7 @@ impl Operation<'_> {
         };
 
         self.fit_sprint(&mut i, input.stage_id.is_some()).await?;
-        self.validate_issue_sql(&i).await?;
+        self.validate_issue_sql(&i, None).await?;
         if self.stage_kind(i.stage_id).await? == "done" {
             i.done_at = Some(now);
         }
@@ -331,7 +317,7 @@ impl Operation<'_> {
             &mut self.tx,
             self.workspace_id,
             &mut i,
-            persistence::Ownership::Local,
+            persistence::Origin::Local,
         )
         .await
         .map_err(|error| match error {
@@ -386,7 +372,7 @@ impl Operation<'_> {
         self.fit_sprint(&mut i, entered_stage).await?;
 
         self.activity_fields.extend(old.changed_fields(&i));
-        self.validate_issue_sql(&i).await?;
+        self.validate_issue_sql(&i, Some(&old)).await?;
         if i.stage_id != old.stage_id {
             self.restamp_done(&mut i).await?;
         }
@@ -423,7 +409,7 @@ impl Operation<'_> {
             return Err(Error::BadRequest("issue is not deleted".into()));
         }
         i.deleted_at = None;
-        self.validate_issue_sql(&i).await?;
+        self.validate_issue_sql(&i, Some(&old)).await?;
         self.save_issue_fields(&i).await?;
         self.issue_effects(Some(&old), &i, persistence::IssueEffects::DeleteRestore)
             .await
@@ -528,8 +514,6 @@ impl Operation<'_> {
             _ => return Err(Error::Internal("wrong issue command dispatcher".into())),
         };
 
-        self.validate_workflow().await?;
-
         Ok(result)
     }
 
@@ -567,7 +551,7 @@ impl Operation<'_> {
         let mut i = old.clone();
         i.stage_id = stage_id;
         self.fit_sprint(&mut i, true).await?;
-        self.validate_issue_sql(&i).await?;
+        self.validate_issue_sql(&i, Some(&old)).await?;
         if old.stage_id != stage_id {
             self.restamp_done(&mut i).await?;
             self.activity_fields.push("stage".into());

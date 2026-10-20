@@ -5,8 +5,7 @@
   "scripts": {
     "dev": "react-router dev",
     "build": "react-router build",
-    "typecheck": "react-router typegen && tsc",
-    "generate:ownership": "cargo run --manifest-path ../Cargo.toml --example ownership-policy && vp fmt app/lib/ownership-policy.generated.json"
+    "typecheck": "react-router typegen && tsc"
   },
   "dependencies": {
     "@floating-ui/dom": "^1.8.0",

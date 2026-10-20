@@ -15,6 +15,7 @@ pub struct CollectionQuery {
 macro_rules! issue_json {
     () => {
         r#"(to_jsonb(i)-'workspace_id'-'reminder_generation') || jsonb_build_object(
+ 'tracker',i.tracker-'baseline'-'comments_at'-'comments_imported'-'comments_tried_at',
  'labels',COALESCE((SELECT jsonb_agg(l.label_id ORDER BY l.label_id) FROM issue_labels l WHERE l.workspace_id=i.workspace_id AND l.issue_id=i.id),'[]'::jsonb),
  'dependencies',COALESCE((SELECT jsonb_agg(d.dependency_id ORDER BY d.dependency_id) FROM issue_dependencies d WHERE d.workspace_id=i.workspace_id AND d.issue_id=i.id),'[]'::jsonb),
  'followers',COALESCE((SELECT jsonb_agg(f.user_id ORDER BY f.user_id) FROM issue_followers f WHERE f.workspace_id=i.workspace_id AND f.issue_id=i.id),'[]'::jsonb),
@@ -39,7 +40,7 @@ const ISSUE_SUMMARY_JSON: &str = r#"jsonb_build_object(
  'project_id',i.project_id,'milestone_id',i.milestone_id,'sprint_id',i.sprint_id,
  'parent_id',i.parent_id,'position',i.position,'version',i.version,
  'created_at',i.created_at,'updated_at',i.updated_at,'deleted_at',i.deleted_at,
- 'archived_at',i.archived_at,'done_at',i.done_at,'openproject',i.openproject,
+ 'archived_at',i.archived_at,'done_at',i.done_at,'tracker',i.tracker-'baseline'-'comments_at'-'comments_imported'-'comments_tried_at',
  'blocked_count',(SELECT count(*) FROM issue_dependencies d JOIN issues dependency ON dependency.id=d.dependency_id JOIN stages stage ON stage.id=dependency.stage_id WHERE d.issue_id=i.id AND dependency.deleted_at IS NULL AND stage.kind NOT IN ('done','cancelled')),
  'subtask_total',(SELECT count(*) FROM issues child WHERE child.workspace_id=i.workspace_id AND child.parent_id=i.id AND child.deleted_at IS NULL),
  'subtask_completed',(SELECT count(*) FROM issues child JOIN stages stage ON stage.id=child.stage_id WHERE child.workspace_id=i.workspace_id AND child.parent_id=i.id AND child.deleted_at IS NULL AND stage.kind IN ('done','cancelled')),

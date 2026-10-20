@@ -1024,5 +1024,6 @@ describe("incremental replay", () => {
       expect(logs[0]).toEqual(logs[1]);
     }
     expect(incremental.debug.replays).toBeLessThan(full.debug.replays / 2);
-  });
+    // Hundreds of randomized rounds take about five seconds on slower machines.
+  }, 20_000);
 });
