@@ -527,11 +527,13 @@ export type Command =
   | { type: "cancel_invitation"; id: Id }
   | { type: "set_role"; user_id: Id; role: Role }
   | { type: "remove_member"; user_id: Id }
-  | { type: "mark_notification_read"; id: Id; created_at: string }
+  // Clients older than coalesced change notifications omit `created_at` and
+  // `notifications`; their queued commands keep the old read-regardless meaning.
+  | { type: "mark_notification_read"; id: Id; created_at?: string }
   | { type: "mark_notification_unread"; id: Id }
   | {
       type: "mark_all_notifications_read";
-      notifications: { id: Id; created_at: string }[];
+      notifications?: { id: Id; created_at: string }[];
     }
   | {
       type: "configure_alerts";

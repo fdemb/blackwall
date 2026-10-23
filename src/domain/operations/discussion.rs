@@ -195,7 +195,9 @@ impl Workspace {
             }
             Command::MarkNotificationRead { id, created_at } => {
                 let notification = self.own_notification(actor, id)?;
-                if notification.read_at.is_none() && notification.created_at == created_at {
+                if notification.read_at.is_none()
+                    && created_at.is_none_or(|seen| seen == notification.created_at)
+                {
                     notification.read_at = Some(now);
                 }
                 id
@@ -208,9 +210,10 @@ impl Workspace {
                 for n in self.notifications.iter_mut().filter(|n| {
                     n.user_id == actor
                         && n.read_at.is_none()
-                        && notifications
-                            .iter()
-                            .any(|seen| seen.id == n.id && seen.created_at == n.created_at)
+                        && notifications.as_ref().is_none_or(|seen| {
+                            seen.iter()
+                                .any(|seen| seen.id == n.id && seen.created_at == n.created_at)
+                        })
                 }) {
                     n.read_at = Some(now)
                 }

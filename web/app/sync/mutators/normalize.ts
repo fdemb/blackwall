@@ -4,7 +4,7 @@ import { MutationError } from "./errors";
 
 type Field = (
   | { kind: "required" }
-  | { kind: "option"; stored?: boolean; timestamp?: boolean }
+  | { kind: "option"; stored?: boolean; timestamp?: boolean; items?: Fields }
   | { kind: "default"; value: unknown; nullable?: boolean; items?: Fields }
   | { kind: "object"; fields: Fields }
   | { kind: "array"; items: Fields }
@@ -192,9 +192,9 @@ const COMMAND_FIELDS: Record<Command["type"] | "add_attachment" | "attach_commen
   cancel_invitation: id,
   set_role: { user_id: required, role: required },
   remove_member: { user_id: required },
-  mark_notification_read: SEEN_NOTIFICATION,
+  mark_notification_read: { id: required, created_at: timestampOption },
   mark_notification_unread: id,
-  mark_all_notifications_read: { notifications: { kind: "array", items: SEEN_NOTIFICATION } },
+  mark_all_notifications_read: { notifications: { kind: "option", items: SEEN_NOTIFICATION } },
   configure_alerts: {
     assignment: required,
     reply: required,
@@ -267,6 +267,7 @@ function normalizeField(item: unknown, field: Field): unknown {
 
 function normalizeOption(item: unknown, field: Extract<Field, { kind: "option" }>): unknown {
   if (item === null || item === undefined) return field.stored ? null : undefined;
+  if (field.items) return normalizeArray(item, field.items);
   if (!field.timestamp || typeof item !== "string") return item;
   try {
     return parseTimestamp(item, true, "chrono");

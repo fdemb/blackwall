@@ -112,7 +112,7 @@ impl Fixture {
             user,
             Command::MarkNotificationRead {
                 id: id(notification),
-                created_at: created_at(notification),
+                created_at: Some(created_at(notification)),
             },
         )
         .await;
@@ -359,7 +359,7 @@ async fn marking_all_read_covers_only_what_the_reader_saw() {
     f.run(
         follower,
         Command::MarkAllNotificationsRead {
-            notifications: seen,
+            notifications: Some(seen),
         },
     )
     .await;
@@ -367,6 +367,58 @@ async fn marking_all_read_covers_only_what_the_reader_saw() {
     assert_eq!(unread(&f.notifications(follower, bumped).await).len(), 1);
     assert!(unread(&f.notifications(follower, untouched).await).is_empty());
     assert_eq!(unread(&f.notifications(follower, late).await).len(), 1);
+
+    f.cleanup().await;
+}
+
+/// A command as a client from before coalesced change notifications sends it. Its
+/// serialization is the idempotency fingerprint, so it must not change either.
+fn older_client_command(raw: Value) -> Command {
+    let command: Command = serde_json::from_value(raw.clone()).unwrap();
+    assert_eq!(serde_json::to_value(&command).unwrap(), raw);
+    command
+}
+
+#[tokio::test]
+async fn an_older_client_marking_one_read_still_reads_it() {
+    let f = Fixture::new().await;
+    let (owner, follower) = (f.owner.profile.id, f.follower.profile.id);
+    let issue = f.create_issue("Patch the firewall", f.stages[1]).await;
+    f.follow(follower, issue).await;
+    f.run(owner, description_update(issue, "one")).await;
+    let seen = f.notifications(follower, issue).await;
+    f.run(owner, description_update(issue, "one two")).await;
+
+    f.run(
+        follower,
+        older_client_command(json!({"type": "mark_notification_read", "id": id(&seen[0])})),
+    )
+    .await;
+
+    assert!(unread(&f.notifications(follower, issue).await).is_empty());
+
+    f.cleanup().await;
+}
+
+#[tokio::test]
+async fn an_older_client_marking_all_read_reads_every_unread_notification() {
+    let f = Fixture::new().await;
+    let (owner, follower) = (f.owner.profile.id, f.follower.profile.id);
+    let first = f.create_issue("Rotate keys", f.stages[1]).await;
+    let second = f.create_issue("Audit logs", f.stages[1]).await;
+    for issue in [first, second] {
+        f.follow(follower, issue).await;
+        f.run(owner, description_update(issue, "one")).await;
+    }
+
+    f.run(
+        follower,
+        older_client_command(json!({"type": "mark_all_notifications_read"})),
+    )
+    .await;
+
+    assert!(unread(&f.notifications(follower, first).await).is_empty());
+    assert!(unread(&f.notifications(follower, second).await).is_empty());
 
     f.cleanup().await;
 }

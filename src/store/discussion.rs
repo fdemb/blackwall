@@ -121,7 +121,8 @@ impl Operation<'_> {
                 id
             }
             Command::MarkAllNotificationsRead { notifications } => {
-                self.mark_notifications_read(&notifications).await?;
+                self.mark_notifications_read(notifications.as_deref())
+                    .await?;
                 return Ok(None);
             }
             Command::ConfigureAlerts {
@@ -815,9 +816,14 @@ impl Operation<'_> {
         Ok(())
     }
 
-    async fn mark_notification_read(&mut self, id: Uuid, created_at: DateTime<Utc>) -> Result<()> {
-        self.own_notification(id).await?;
-        self.mark_notifications_read(&[SeenNotification { id, created_at }])
+    async fn mark_notification_read(
+        &mut self,
+        id: Uuid,
+        created_at: Option<DateTime<Utc>>,
+    ) -> Result<()> {
+        let current = self.own_notification(id).await?;
+        let created_at = created_at.unwrap_or(current);
+        self.mark_notifications_read(Some(&[SeenNotification { id, created_at }]))
             .await
     }
 
@@ -834,15 +840,17 @@ impl Operation<'_> {
 
     /// Reads only the unread notifications whose `created_at` still matches what the reader
     /// saw. A change notification bumped since then stays unread, even after an offline delay.
-    async fn mark_notifications_read(&mut self, seen: &[SeenNotification]) -> Result<()> {
-        let (ids, created): (Vec<Uuid>, Vec<DateTime<Utc>>) =
-            seen.iter().map(|n| (n.id, n.created_at)).unzip();
+    /// `None` reads all of the actor's unread notifications.
+    async fn mark_notifications_read(&mut self, seen: Option<&[SeenNotification]>) -> Result<()> {
+        let (ids, created): (Option<Vec<Uuid>>, Option<Vec<DateTime<Utc>>>) = seen
+            .map(|seen| seen.iter().map(|n| (n.id, n.created_at)).unzip())
+            .unzip();
         let ids: Vec<Uuid> = sqlx::query_scalar(
-            "SELECT n.id FROM notifications n \
-            JOIN unnest($3::uuid[],$4::timestamptz[]) AS seen(id,created_at) \
-            ON seen.id=n.id AND seen.created_at=n.created_at \
-            WHERE n.workspace_id=$1 AND n.user_id=$2 AND n.read_at IS NULL \
-            ORDER BY n.id FOR UPDATE OF n",
+            "SELECT id FROM notifications \
+            WHERE workspace_id=$1 AND user_id=$2 AND read_at IS NULL \
+            AND ($3::uuid[] IS NULL OR (id,created_at) IN \
+            (SELECT * FROM unnest($3::uuid[],$4::timestamptz[]))) \
+            ORDER BY id FOR UPDATE",
         )
         .bind(self.workspace_id)
         .bind(self.actor)
@@ -1094,9 +1102,10 @@ impl Operation<'_> {
         Ok(())
     }
 
-    async fn own_notification(&mut self, id: Uuid) -> Result<()> {
-        sqlx::query(
-            "SELECT id FROM notifications WHERE workspace_id=$1 AND id=$2 AND \
+    /// Locks the actor's notification and returns its `created_at`.
+    async fn own_notification(&mut self, id: Uuid) -> Result<DateTime<Utc>> {
+        sqlx::query_scalar(
+            "SELECT created_at FROM notifications WHERE workspace_id=$1 AND id=$2 AND \
             user_id=$3 FOR UPDATE",
         )
         .bind(self.workspace_id)
@@ -1104,8 +1113,7 @@ impl Operation<'_> {
         .bind(self.actor)
         .fetch_optional(&mut *self.tx)
         .await?
-        .ok_or(Error::NotFound)?;
-        Ok(())
+        .ok_or(Error::NotFound)
     }
 
     async fn discussion_lock(&mut self, scope: &str) -> Result<()> {

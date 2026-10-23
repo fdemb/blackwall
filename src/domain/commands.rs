@@ -223,14 +223,18 @@ pub enum Command {
     MarkNotificationRead {
         id: Uuid,
         /// The `created_at` the reader saw. A later change keeps the notification unread.
-        created_at: DateTime<Utc>,
+        /// Clients older than coalesced change notifications omit it and read it regardless.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        created_at: Option<DateTime<Utc>>,
     },
     MarkNotificationUnread {
         id: Uuid,
     },
     MarkAllNotificationsRead {
         /// The unread notifications the reader saw. Others, and any changed since, stay unread.
-        notifications: Vec<SeenNotification>,
+        /// Clients older than coalesced change notifications omit it and read every one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        notifications: Option<Vec<SeenNotification>>,
     },
     ConfigureAlerts {
         assignment: bool,

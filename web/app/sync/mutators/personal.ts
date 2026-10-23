@@ -38,6 +38,12 @@ export const markAllNotificationsRead: Mutator<ArgsOf<"mark_all_notifications_re
   ctx,
 ) => {
   requireRole(tx, ctx.actor, "mark_all_notifications_read", args);
+  if (args.notifications === undefined) {
+    for (const notification of tx.all("notifications")) {
+      if (notification.user_id === ctx.actor) markSeenRead(tx, ctx, notification, undefined);
+    }
+    return;
+  }
   for (const seen of args.notifications) {
     const notification = tx.get("notifications", seen.id);
     if (notification?.user_id === ctx.actor) markSeenRead(tx, ctx, notification, seen.created_at);
@@ -47,16 +53,17 @@ export const markAllNotificationsRead: Mutator<ArgsOf<"mark_all_notifications_re
 /**
  * Reads the notification only while it is unread and unchanged since the
  * reader saw it, as the server does. A change notification bumped after that
- * keeps its newer `created_at` and stays unread.
+ * keeps its newer `created_at` and stays unread. Without a `created_at`, from
+ * an older client, any unread notification is read.
  */
 function markSeenRead(
   tx: Tx,
   ctx: MutatorContext,
   notification: DeepReadonly<RecordOf["notifications"]>,
-  createdAt: string,
+  createdAt: string | undefined,
 ): void {
-  if (notification.read_at !== null || notification.created_at !== parseTimestamp(createdAt))
-    return;
+  if (notification.read_at !== null) return;
+  if (createdAt !== undefined && notification.created_at !== parseTimestamp(createdAt)) return;
   tx.put("notifications", { ...notification, read_at: ctx.at });
 }
 

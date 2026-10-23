@@ -144,6 +144,14 @@ describe("mark_notification_read / mark_notification_unread", () => {
     expect(store.get("notifications", NOTIF_UNREAD)).toEqual(bumped);
   });
 
+  it("reads a notification changed since, for an older client's command without created_at", () => {
+    const store = seedStore();
+    const id = mutate(store, "mark_notification_read", { id: NOTIF_UNREAD });
+    const bumped = bump(store, NOTIF_UNREAD);
+    expect(store.replayErrors().get(id)).toBeUndefined();
+    expect(store.get("notifications", NOTIF_UNREAD)).toEqual({ ...bumped, read_at: AT });
+  });
+
   it("replays an already-read notification as a no-op but admission succeeds", () => {
     const replayed = seedStore();
     const before = beforeAll(replayed);
@@ -266,6 +274,18 @@ describe("mark_all_notifications_read", () => {
     expect(store.replayErrors().get(id)).toBeUndefined();
     expect(store.get("notifications", NOTIF_UNREAD)).toEqual(bumped);
     expect(store.get("notifications", newer.id)).toEqual(normalize("notifications", newer));
+  });
+
+  it("reads every unread notification, changed or not, for an older client's command", () => {
+    const store = seedStore();
+    const read = store.get("notifications", NOTIF_READ);
+    const other = store.get("notifications", NOTIF_OTHER);
+    const id = mutate(store, "mark_all_notifications_read", {});
+    const bumped = bump(store, NOTIF_UNREAD);
+    expect(store.replayErrors().get(id)).toBeUndefined();
+    expect(store.get("notifications", NOTIF_UNREAD)).toEqual({ ...bumped, read_at: AT });
+    expect(store.get("notifications", NOTIF_READ)).toEqual(read);
+    expect(store.get("notifications", NOTIF_OTHER)).toEqual(other);
   });
 
   it("running twice keeps the view", () => {
