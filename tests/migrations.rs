@@ -81,3 +81,100 @@ async fn slugs_and_team_keys_avoid_every_assigned_value() {
     conn.close().await.unwrap();
     database.cleanup().await;
 }
+
+#[tokio::test]
+async fn change_notifications_take_the_coalescing_key_and_release_it_on_read() {
+    let database = support::TestDatabase::new().await;
+    let mut conn = PgConnection::connect(&database.url).await.unwrap();
+    migrate_before(&mut conn, "0035").await;
+
+    let (workspace, user, team, stage, issue) = (
+        Uuid::from_u128(1),
+        Uuid::from_u128(2),
+        Uuid::from_u128(3),
+        Uuid::from_u128(4),
+        Uuid::from_u128(5),
+    );
+    let [older, newer, read] = [10, 11, 12].map(Uuid::from_u128);
+    sqlx::query("INSERT INTO workspaces(id,name,slug) VALUES($1,'W','w')")
+        .bind(workspace)
+        .execute(&mut conn)
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO users(id,email,password_hash,profile) VALUES($1,'b@example.com','x','{}')",
+    )
+    .bind(user)
+    .execute(&mut conn)
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO teams(id,workspace_id,name,key) VALUES($1,$2,'T','T')")
+        .bind(team)
+        .bind(workspace)
+        .execute(&mut conn)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO stages(id,workspace_id,team_id,name,kind,position) VALUES($1,$2,$3,'Todo','planned',0)")
+        .bind(stage)
+        .bind(workspace)
+        .bind(team)
+        .execute(&mut conn)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO issues(id,workspace_id,number,title,description,team_id,stage_id,priority,position,created_at,updated_at) VALUES($1,$2,1,'I','',$3,$4,'none',0,now(),now())")
+        .bind(issue)
+        .bind(workspace)
+        .bind(team)
+        .bind(stage)
+        .execute(&mut conn)
+        .await
+        .unwrap();
+    for (id, age, is_read) in [(older, 2, false), (newer, 1, false), (read, 0, true)] {
+        sqlx::query("INSERT INTO notifications(id,workspace_id,user_id,issue_id,kind,message,created_at,read_at,dedup_key) VALUES($1,$2,$3,$4,'change','I',now()-make_interval(mins=>$5),CASE WHEN $6 THEN now() END,'change:legacy:'||$1)")
+            .bind(id)
+            .bind(workspace)
+            .bind(user)
+            .bind(issue)
+            .bind(age)
+            .bind(is_read)
+            .execute(&mut conn)
+            .await
+            .unwrap();
+    }
+
+    sqlx::raw_sql(include_str!(
+        "../migrations/0035_notification_change_coalescing.sql"
+    ))
+    .execute(&mut conn)
+    .await
+    .unwrap();
+
+    let keys = async |conn: &mut PgConnection| -> Vec<(Uuid, String, bool)> {
+        sqlx::query_as("SELECT id,dedup_key,read_at IS NULL FROM notifications ORDER BY id")
+            .fetch_all(conn)
+            .await
+            .unwrap()
+    };
+    let stable = format!("change:{issue}:{user}");
+    assert_eq!(
+        keys(&mut conn).await,
+        [
+            (older, format!("change:legacy:{older}"), true),
+            (newer, stable.clone(), true),
+            (read, format!("change:legacy:{read}"), false),
+        ]
+    );
+
+    sqlx::query("UPDATE notifications SET read_at=now() WHERE id=$1")
+        .bind(newer)
+        .execute(&mut conn)
+        .await
+        .unwrap();
+    assert_eq!(
+        keys(&mut conn).await[1],
+        (newer, format!("{stable}:{newer}"), false)
+    );
+
+    conn.close().await.unwrap();
+    database.cleanup().await;
+}

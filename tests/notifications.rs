@@ -2,9 +2,10 @@ mod support;
 
 use blackwall::{
     auth::{Register, Session},
-    domain::{Command, IssueInput},
+    domain::{Command, IssueInput, IssuePatch},
     store::{CollectionQuery, OperationResult, Store},
 };
+use chrono::{DateTime, Utc};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use uuid::Uuid;
@@ -138,6 +139,25 @@ impl Fixture {
             .collect()
     }
 
+    async fn activity(&self, issue: Uuid) -> Vec<Value> {
+        let page = self
+            .store
+            .collection(
+                self.workspace,
+                self.owner.profile.id,
+                "activity",
+                CollectionQuery {
+                    limit: 200,
+                    offset: 0,
+                    issue_id: None,
+                    entity_id: Some(issue),
+                },
+            )
+            .await
+            .unwrap();
+        page["items"].as_array().unwrap().clone()
+    }
+
     async fn cleanup(self) {
         self.store.pool.close().await;
         self.db.cleanup().await;
@@ -152,6 +172,24 @@ async fn account(store: &Store, name: &str) -> Session {
             display_name: name.into(),
         })
         .await
+        .unwrap()
+}
+
+fn description_update(id: Uuid, text: &str) -> Command {
+    Command::UpdateIssue {
+        id,
+        patch: IssuePatch {
+            description: Some(text.into()),
+            ..Default::default()
+        },
+    }
+}
+
+fn created_at(notification: &Value) -> DateTime<Utc> {
+    notification["created_at"]
+        .as_str()
+        .unwrap()
+        .parse()
         .unwrap()
 }
 
@@ -199,6 +237,49 @@ async fn moving_between_stages_notifies_followers_but_reordering_does_not() {
 
     let after_reorder = f.notifications(follower, moved).await;
     assert!(unread(&after_reorder).is_empty(), "{after_reorder:?}");
+
+    f.cleanup().await;
+}
+
+#[tokio::test]
+async fn description_autosave_coalesces_notifications_and_activity() {
+    let f = Fixture::new().await;
+    let (owner, follower) = (f.owner.profile.id, f.follower.profile.id);
+    let issue = f.create_issue("Rotate certificates", f.stages[1]).await;
+    f.follow(follower, issue).await;
+
+    f.run(owner, description_update(issue, "one")).await;
+    let first = f.notifications(follower, issue).await;
+    assert_eq!(first.len(), 1, "{first:?}");
+
+    for text in ["one two", "one two three", "one two three four"] {
+        f.run(owner, description_update(issue, text)).await;
+    }
+
+    let coalesced = f.notifications(follower, issue).await;
+    assert_eq!(coalesced.len(), 1, "{coalesced:?}");
+    assert!(coalesced[0]["read_at"].is_null());
+    assert_eq!(coalesced[0]["id"], first[0]["id"]);
+    assert!(created_at(&coalesced[0]) > created_at(&first[0]));
+
+    let description_rows: Vec<_> = f
+        .activity(issue)
+        .await
+        .into_iter()
+        .filter(|entry| entry["action"] == "update_issue")
+        .collect();
+    assert_eq!(description_rows.len(), 1, "{description_rows:?}");
+    assert_eq!(description_rows[0]["fields"], json!(["description"]));
+
+    f.read(follower, &coalesced[0]).await;
+    f.run(owner, description_update(issue, "one two three four five"))
+        .await;
+
+    let after_read = f.notifications(follower, issue).await;
+    assert_eq!(after_read.len(), 2, "{after_read:?}");
+    let fresh = unread(&after_read);
+    assert_eq!(fresh.len(), 1, "{after_read:?}");
+    assert_ne!(fresh[0]["id"], coalesced[0]["id"]);
 
     f.cleanup().await;
 }

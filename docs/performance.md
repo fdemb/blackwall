@@ -2,7 +2,7 @@
 
 ## Changes
 
-Tracker workers reuse an HTTP client across pages. Reconciliation resolves stages, assignees, and pending local changes, locks existing imported issues, and repairs source links in batches. Unchanged issues avoid detail hydration and individual queries. New imports allocate issue numbers and stage positions together and insert complete issue rows. Shared persistence caches audit owners, stage kinds, and webhook destinations per page. Follower change notifications use one set-based insert per changed issue and still apply membership and alert preferences.
+Tracker workers reuse an HTTP client across pages. Reconciliation resolves stages, assignees, and pending local changes, locks existing imported issues, and repairs source links in batches. Unchanged issues avoid detail hydration and individual queries. New imports allocate issue numbers and stage positions together and insert complete issue rows. Shared persistence caches audit owners, stage kinds, and webhook destinations per page. Follower change notifications use one set-based upsert per changed issue, which bumps each follower's unread change notification for the issue instead of adding another, and still apply membership and alert preferences.
 
 Discovery stores each normalized page separately and publishes a cache only when its resource finishes. Work-package checkpoint updates do not read or rewrite those caches. Configuration validation checks referenced IDs in batches; name-only and no-op saves leave active scans alone.
 

@@ -132,14 +132,14 @@ async fn tracker_persists_reminders_changes_and_completion_atomically() {
         version
     );
     assert_eq!(
-        sqlx::query_scalar::<_, i64>(
-            "SELECT count(*) FROM notifications WHERE issue_id=$1 AND kind='change'"
+        sqlx::query_as::<_, (i64, i64)>(
+            "SELECT count(*),max(version) FROM notifications WHERE issue_id=$1 AND kind='change'"
         )
         .bind(issue)
         .fetch_one(&store.pool)
         .await
         .unwrap(),
-        2
+        (1, 2)
     );
     assert_eq!(
         sqlx::query_scalar::<_, i64>(
@@ -227,14 +227,14 @@ async fn tracker_persists_reminders_changes_and_completion_atomically() {
         version
     );
     assert_eq!(
-        sqlx::query_scalar::<_, i64>(
-            "SELECT count(*) FROM notifications WHERE issue_id=$1 AND kind='change'"
+        sqlx::query_as::<_, (i64, i64)>(
+            "SELECT count(*),max(version) FROM notifications WHERE issue_id=$1 AND kind='change'"
         )
         .bind(issue)
         .fetch_one(&store.pool)
         .await
         .unwrap(),
-        2
+        (1, 2)
     );
     server.abort();
     store.pool.close().await;
