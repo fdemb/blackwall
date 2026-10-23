@@ -449,7 +449,13 @@ async fn issue_effects_with_context(
         notify_new_assignee(conn, workspace, actor, before, after).await?;
     }
 
-    if matches!(effects, IssueEffects::Update) || (remote && before.is_some()) {
+    let notifies_followers = match effects {
+        IssueEffects::Update => true,
+        IssueEffects::Move => before.is_some_and(|old| old.stage_id != after.stage_id),
+        IssueEffects::Remote(_) => before.is_some(),
+        IssueEffects::Create | IssueEffects::DeleteRestore => false,
+    };
+    if notifies_followers {
         notify_changes(conn, workspace, actor, after, remote).await?;
     }
 
