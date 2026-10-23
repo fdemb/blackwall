@@ -222,11 +222,16 @@ pub enum Command {
     },
     MarkNotificationRead {
         id: Uuid,
+        /// The `created_at` the reader saw. A later change keeps the notification unread.
+        created_at: DateTime<Utc>,
     },
     MarkNotificationUnread {
         id: Uuid,
     },
-    MarkAllNotificationsRead,
+    MarkAllNotificationsRead {
+        /// The unread notifications the reader saw. Others, and any changed since, stay unread.
+        notifications: Vec<SeenNotification>,
+    },
     ConfigureAlerts {
         assignment: bool,
         reply: bool,
@@ -263,6 +268,12 @@ pub enum Command {
     },
 }
 
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, ToSchema)]
+pub struct SeenNotification {
+    pub id: Uuid,
+    pub created_at: DateTime<Utc>,
+}
+
 /// Commands grouped the way the store and the in-memory model split their handlers.
 pub(crate) enum CommandFamily {
     Planning,
@@ -277,7 +288,7 @@ impl Command {
             self,
             Self::MarkNotificationRead { .. }
                 | Self::MarkNotificationUnread { .. }
-                | Self::MarkAllNotificationsRead
+                | Self::MarkAllNotificationsRead { .. }
                 | Self::ConfigureAlerts { .. }
                 | Self::SaveView { shared: false, .. }
                 | Self::UpdateView { shared: false, .. }
@@ -373,7 +384,7 @@ impl Command {
             Self::AddSourceLink { .. } => "add_source_link",
             Self::ImportIssues { .. } => "import_issues",
             Self::MarkNotificationUnread { .. } => "mark_notification_unread",
-            Self::MarkAllNotificationsRead => "mark_all_notifications_read",
+            Self::MarkAllNotificationsRead { .. } => "mark_all_notifications_read",
         }
     }
 }

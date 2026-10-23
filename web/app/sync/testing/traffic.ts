@@ -27,6 +27,13 @@ export function convergenceCommand({
   const issues = store.all("issues").filter((row) => row.deleted_at === null);
   const target = issues.length ? pick(issues) : undefined;
   const role = store.get("members", actor)?.role;
+  const markAllRead: Command = {
+    type: "mark_all_notifications_read",
+    notifications: store
+      .all("notifications")
+      .filter((row) => row.user_id === actor && row.read_at === null)
+      .map(({ id, created_at }) => ({ id, created_at })),
+  };
   if (integer(16) === 0)
     return { type: "update_issue", id: simulationId(999999), patch: { title: text } };
   if (role === "viewer")
@@ -40,7 +47,7 @@ export function convergenceCommand({
         mention: true,
         deadline: false,
       },
-      { type: "mark_all_notifications_read" },
+      markAllRead,
     ] satisfies Command[]);
   if (!target) return { type: "create_issue", input: { team_id: team, title: text } };
   const stage = pick(store.get("teams", target.team_id)?.stages ?? []);
@@ -85,7 +92,7 @@ export function convergenceCommand({
     },
     { type: "create_label", name: text, color: "#ff0000" },
     { type: "save_view", name: text, shared: integer(2) === 0, filter: {} },
-    { type: "mark_all_notifications_read" },
+    markAllRead,
     {
       type: "configure_alerts",
       assignment: false,

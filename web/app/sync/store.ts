@@ -20,8 +20,8 @@ export interface PendingMutation {
   /**
    * Client-only data captured at admission, stored with the mutation and
    * never sent to the server. Replay uses it where re-deriving would change
-   * the command's meaning, such as the notifications "mark all read" applied
-   * to. Deep-cloned and frozen with the rest of the mutation by `setPending`.
+   * the command's meaning. Deep-cloned and frozen with the rest of the
+   * mutation by `setPending`.
    */
   local?: unknown;
 }

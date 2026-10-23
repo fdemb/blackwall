@@ -2,7 +2,7 @@ mod support;
 
 use blackwall::{
     auth::{Register, Session},
-    domain::{Command, IssueInput, IssuePatch},
+    domain::{Command, IssueInput, IssuePatch, SeenNotification},
     store::{CollectionQuery, OperationResult, Store},
 };
 use chrono::{DateTime, Utc};
@@ -108,8 +108,14 @@ impl Fixture {
     }
 
     async fn read(&self, user: Uuid, notification: &Value) {
-        let id = Uuid::parse_str(notification["id"].as_str().unwrap()).unwrap();
-        self.run(user, Command::MarkNotificationRead { id }).await;
+        self.run(
+            user,
+            Command::MarkNotificationRead {
+                id: id(notification),
+                created_at: created_at(notification),
+            },
+        )
+        .await;
     }
 
     async fn notifications(&self, user: Uuid, issue: Uuid) -> Vec<Value> {
@@ -183,6 +189,10 @@ fn description_update(id: Uuid, text: &str) -> Command {
             ..Default::default()
         },
     }
+}
+
+fn id(notification: &Value) -> Uuid {
+    Uuid::parse_str(notification["id"].as_str().unwrap()).unwrap()
 }
 
 fn created_at(notification: &Value) -> DateTime<Utc> {
@@ -280,6 +290,83 @@ async fn description_autosave_coalesces_notifications_and_activity() {
     let fresh = unread(&after_read);
     assert_eq!(fresh.len(), 1, "{after_read:?}");
     assert_ne!(fresh[0]["id"], coalesced[0]["id"]);
+
+    f.cleanup().await;
+}
+
+#[tokio::test]
+async fn reading_a_notification_before_a_newer_change_keeps_that_change_unread() {
+    let f = Fixture::new().await;
+    let (owner, follower) = (f.owner.profile.id, f.follower.profile.id);
+    let issue = f.create_issue("Patch the firewall", f.stages[1]).await;
+    f.follow(follower, issue).await;
+
+    f.run(owner, description_update(issue, "one")).await;
+    let seen = f.notifications(follower, issue).await;
+    f.run(owner, description_update(issue, "one two")).await;
+    f.run(
+        owner,
+        Command::MoveIssue {
+            id: issue,
+            stage_id: f.stages[2],
+            before_id: None,
+        },
+    )
+    .await;
+
+    f.read(follower, &seen[0]).await;
+
+    let inbox = f.notifications(follower, issue).await;
+    assert_eq!(unread(&inbox).len(), 1, "{inbox:?}");
+    assert!(created_at(unread(&inbox)[0]) > created_at(&seen[0]));
+
+    f.cleanup().await;
+}
+
+#[tokio::test]
+async fn marking_all_read_covers_only_what_the_reader_saw() {
+    let f = Fixture::new().await;
+    let (owner, follower) = (f.owner.profile.id, f.follower.profile.id);
+    let bumped = f.create_issue("Rotate keys", f.stages[1]).await;
+    let untouched = f.create_issue("Audit logs", f.stages[1]).await;
+    let late = f.create_issue("Renew certificates", f.stages[1]).await;
+    for issue in [bumped, untouched, late] {
+        f.follow(follower, issue).await;
+    }
+
+    f.run(owner, description_update(bumped, "one")).await;
+    f.run(owner, description_update(untouched, "one")).await;
+    let mut seen = Vec::new();
+    for issue in [bumped, untouched] {
+        for notification in f.notifications(follower, issue).await {
+            seen.push(SeenNotification {
+                id: id(&notification),
+                created_at: created_at(&notification),
+            });
+        }
+    }
+    f.run(
+        owner,
+        Command::MoveIssue {
+            id: bumped,
+            stage_id: f.stages[2],
+            before_id: None,
+        },
+    )
+    .await;
+    f.run(owner, description_update(late, "one")).await;
+
+    f.run(
+        follower,
+        Command::MarkAllNotificationsRead {
+            notifications: seen,
+        },
+    )
+    .await;
+
+    assert_eq!(unread(&f.notifications(follower, bumped).await).len(), 1);
+    assert!(unread(&f.notifications(follower, untouched).await).is_empty());
+    assert_eq!(unread(&f.notifications(follower, late).await).len(), 1);
 
     f.cleanup().await;
 }

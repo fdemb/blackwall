@@ -84,7 +84,15 @@ export default function Inbox() {
               <Button
                 variant="ghost"
                 size="sm"
-                onPress={() => run({ type: "mark_all_notifications_read" }).catch(() => {})}
+                onPress={() =>
+                  run({
+                    type: "mark_all_notifications_read",
+                    notifications: unreadOnly.items.map(({ id, created_at }) => ({
+                      id,
+                      created_at,
+                    })),
+                  }).catch(() => {})
+                }
               >
                 <CheckCheck />
                 {t("inbox.markAll")}
@@ -148,7 +156,11 @@ export default function Inbox() {
                       aria-current={active ? "true" : undefined}
                       onClick={() => {
                         if (!n.read_at)
-                          run({ type: "mark_notification_read", id: n.id }).catch(() => {});
+                          run({
+                            type: "mark_notification_read",
+                            id: n.id,
+                            created_at: n.created_at,
+                          }).catch(() => {});
                         if (n.issue_id)
                           void nav(`/${ws.slug}/inbox/issue/${issueRef(n.issue_id)}?${params}`, {
                             preventScrollReset: true,
@@ -201,7 +213,11 @@ export default function Inbox() {
                         run(
                           n.read_at
                             ? { type: "mark_notification_unread", id: n.id }
-                            : { type: "mark_notification_read", id: n.id },
+                            : {
+                                type: "mark_notification_read",
+                                id: n.id,
+                                created_at: n.created_at,
+                              },
                         ).catch(() => {})
                       }
                     >

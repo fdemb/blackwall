@@ -1784,7 +1784,9 @@ describe("external replica closure", () => {
     expect(events).toEqual([{ type: "accessLost" }]);
     expect(f.engine.store.all("issues")).toEqual([]);
     expect(await f.storage.list()).toEqual([]);
-    await expect(f.engine.mutate("mark_all_notifications_read", {})).rejects.toThrow("closed");
+    await expect(
+      f.engine.mutate("mark_all_notifications_read", { notifications: [] }),
+    ).rejects.toThrow("closed");
   });
 });
 

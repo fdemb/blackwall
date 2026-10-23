@@ -808,7 +808,7 @@ async fn push_viewer_personal_rules() {
             mutation(
                 2,
                 "mark_notification_read",
-                json!({"id": notification["id"]}),
+                json!({"id": notification["id"], "created_at": notification["created_at"]}),
             ),
         ],
     )

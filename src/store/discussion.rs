@@ -112,16 +112,16 @@ impl Operation<'_> {
                 self.remove_member(user_id).await?;
                 user_id
             }
-            Command::MarkNotificationRead { id } => {
-                self.set_notification_read(id, Some(Utc::now())).await?;
+            Command::MarkNotificationRead { id, created_at } => {
+                self.mark_notification_read(id, created_at).await?;
                 id
             }
             Command::MarkNotificationUnread { id } => {
-                self.set_notification_read(id, None).await?;
+                self.mark_notification_unread(id).await?;
                 id
             }
-            Command::MarkAllNotificationsRead => {
-                self.mark_all_notifications_read().await?;
+            Command::MarkAllNotificationsRead { notifications } => {
+                self.mark_notifications_read(&notifications).await?;
                 return Ok(None);
             }
             Command::ConfigureAlerts {
@@ -815,29 +815,39 @@ impl Operation<'_> {
         Ok(())
     }
 
-    async fn set_notification_read(
-        &mut self,
-        id: Uuid,
-        read_at: Option<DateTime<Utc>>,
-    ) -> Result<()> {
+    async fn mark_notification_read(&mut self, id: Uuid, created_at: DateTime<Utc>) -> Result<()> {
+        self.own_notification(id).await?;
+        self.mark_notifications_read(&[SeenNotification { id, created_at }])
+            .await
+    }
+
+    async fn mark_notification_unread(&mut self, id: Uuid) -> Result<()> {
         self.own_notification(id).await?;
         self.touch("notifications", id).await?;
-        sqlx::query("UPDATE notifications SET read_at=$3 WHERE workspace_id=$1 AND id=$2")
+        sqlx::query("UPDATE notifications SET read_at=NULL WHERE workspace_id=$1 AND id=$2")
             .bind(self.workspace_id)
             .bind(id)
-            .bind(read_at)
             .execute(&mut *self.tx)
             .await?;
         Ok(())
     }
 
-    async fn mark_all_notifications_read(&mut self) -> Result<()> {
+    /// Reads only the unread notifications whose `created_at` still matches what the reader
+    /// saw. A change notification bumped since then stays unread, even after an offline delay.
+    async fn mark_notifications_read(&mut self, seen: &[SeenNotification]) -> Result<()> {
+        let (ids, created): (Vec<Uuid>, Vec<DateTime<Utc>>) =
+            seen.iter().map(|n| (n.id, n.created_at)).unzip();
         let ids: Vec<Uuid> = sqlx::query_scalar(
-            "SELECT id FROM notifications WHERE workspace_id=$1 AND user_id=$2 \
-            AND read_at IS NULL ORDER BY id FOR UPDATE",
+            "SELECT n.id FROM notifications n \
+            JOIN unnest($3::uuid[],$4::timestamptz[]) AS seen(id,created_at) \
+            ON seen.id=n.id AND seen.created_at=n.created_at \
+            WHERE n.workspace_id=$1 AND n.user_id=$2 AND n.read_at IS NULL \
+            ORDER BY n.id FOR UPDATE OF n",
         )
         .bind(self.workspace_id)
         .bind(self.actor)
+        .bind(ids)
+        .bind(created)
         .fetch_all(&mut *self.tx)
         .await?;
         let now = Utc::now();

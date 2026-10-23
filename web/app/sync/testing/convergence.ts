@@ -1005,7 +1005,9 @@ export async function runConvergence(
       authClient.engine.useScope({ entity: "activity", entityId: simulationId(9998) });
     if (authRoute === "me") server.rotateCsrf(authClient.token);
     if (authRoute === "push" || authRoute === "me") {
-      const receipt = await authClient.engine.mutate("mark_all_notifications_read", {});
+      const receipt = await authClient.engine.mutate("mark_all_notifications_read", {
+        notifications: [],
+      });
       void receipt.settled.catch(() => undefined);
     }
     await authClient.engine.start();

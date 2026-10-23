@@ -150,7 +150,10 @@ export async function fixture(ws: string, owner: User, member: User) {
   const page = object(await request(`/internal-api/workspaces/${ws}/notifications`, owner));
   if (!Array.isArray(page.items) || !page.items.length)
     throw new Error("missing notification fixture");
-  const notification = textField(page.items[0], "id");
+  const notification = {
+    id: textField(page.items[0], "id"),
+    created_at: textField(page.items[0], "created_at"),
+  };
   const upload = async () => {
     const form = new FormData();
     form.append("file", new Blob(["contract upload"], { type: "text/plain" }), "contract.txt");
@@ -435,15 +438,17 @@ export const scenarios = {
   delete_view: { command: (f) => ({ type: "delete_view", id: f.view }) },
   cancel_invitation: { command: (f) => ({ type: "cancel_invitation", id: f.invitation }) },
   mark_notification_read: {
-    command: (f) => ({ type: "mark_notification_read", id: f.notification }),
+    command: (f) => ({ type: "mark_notification_read", ...f.notification }),
   },
   mark_notification_unread: {
     prepare: async (f) => {
-      await command(f.ws, f.owner, { type: "mark_notification_read", id: f.notification });
+      await command(f.ws, f.owner, { type: "mark_notification_read", ...f.notification });
     },
-    command: (f) => ({ type: "mark_notification_unread", id: f.notification }),
+    command: (f) => ({ type: "mark_notification_unread", id: f.notification.id }),
   },
-  mark_all_notifications_read: { command: () => ({ type: "mark_all_notifications_read" }) },
+  mark_all_notifications_read: {
+    command: (f) => ({ type: "mark_all_notifications_read", notifications: [f.notification] }),
+  },
   configure_alerts: {
     command: () => ({
       type: "configure_alerts",
