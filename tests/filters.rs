@@ -1,6 +1,7 @@
 mod support;
 
 use blackwall::{auth::Register, domain::Command, store::Store};
+use chrono::{DateTime, Duration, FixedOffset, Utc};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use uuid::Uuid;
@@ -31,6 +32,7 @@ struct Fixture {
     assigned: Uuid,
     labelled: Uuid,
     bare: Uuid,
+    due: DateTime<Utc>,
 }
 
 async fn fixture(database: &support::TestDatabase) -> Fixture {
@@ -73,11 +75,16 @@ async fn fixture(database: &support::TestDatabase) -> Fixture {
         json!({"type":"create_label","name":"Ops","color":"#000000"}),
     )
     .await;
+    let due = (Utc::now() + Duration::days(30))
+        .date_naive()
+        .and_hms_opt(12, 0, 0)
+        .unwrap()
+        .and_utc();
     let assigned = op(
         &store,
         ws,
         owner,
-        json!({"type":"create_issue","input":{"title":"Assigned urgent","team_id":team,"assignee":owner,"priority":"urgent","estimate":8,"deadline":"2026-10-20T12:00:00Z"}}),
+        json!({"type":"create_issue","input":{"title":"Assigned urgent","team_id":team,"assignee":owner,"priority":"urgent","estimate":8,"deadline":due}}),
     )
     .await;
     let labelled = op(
@@ -103,6 +110,7 @@ async fn fixture(database: &support::TestDatabase) -> Fixture {
         assigned,
         labelled,
         bare,
+        due,
     }
 }
 
@@ -236,11 +244,11 @@ async fn sql_clauses_match_the_documented_semantics() {
             vec![f.labelled],
         ),
         (
-            json!([{"field":"deadline","op":"lte","values":["2026-10-20T14:00:00+02:00"]}]),
+            json!([{"field":"deadline","op":"lte","values":[f.due.with_timezone(&FixedOffset::east_opt(2 * 3600).unwrap()).to_rfc3339()]}]),
             sorted(vec![f.assigned, f.labelled]),
         ),
         (
-            json!([{"field":"deadline","op":"gt","values":["2026-10-20T12:00:00Z"]}]),
+            json!([{"field":"deadline","op":"gt","values":[f.due.to_rfc3339()]}]),
             vec![],
         ),
         (
