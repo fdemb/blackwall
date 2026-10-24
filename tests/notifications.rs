@@ -101,6 +101,7 @@ impl Fixture {
             user,
             Command::Follow {
                 issue_id: issue,
+                user_id: None,
                 following: true,
             },
         )

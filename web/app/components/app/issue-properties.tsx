@@ -10,6 +10,7 @@ import { TimeForm } from "~/components/app/time-form";
 import {
   AssigneePicker,
   LabelsPicker,
+  MultiMemberPicker,
   NullableSelect,
   PriorityPicker,
   StagePicker,
@@ -82,7 +83,7 @@ export function Properties({
   excludeIds: Id[];
 }) {
   const { t, lang } = useI18n();
-  const { ws, canWrite, member } = useWorkspace();
+  const { ws, canWrite, member, run } = useWorkspace();
   const patch = useIssuePatch(issue);
   const projectMilestones = ws.milestones.filter((m) => m.project_id === issue.project_id);
   const sprints = ws.sprints.filter(
@@ -91,6 +92,33 @@ export function Properties({
       (s.state === "planned" || s.state === "active" || s.id === issue.sprint_id),
   );
   const followers = issue.followers.map(member).filter((m) => m !== undefined);
+  const setFollowers = (ids: Id[]) => {
+    const before = new Set(issue.followers);
+    const after = new Set(ids);
+    for (const id of after)
+      if (!before.has(id))
+        run({ type: "follow", issue_id: issue.id, following: true, user_id: id }).catch(() => {});
+    for (const id of before)
+      if (!after.has(id))
+        run({ type: "follow", issue_id: issue.id, following: false, user_id: id }).catch(() => {});
+  };
+  const followerStack = (
+    <>
+      <span className="flex -space-x-1">
+        {followers.slice(0, 5).map((m) => (
+          <Avatar
+            key={m.id}
+            name={m.display_name}
+            src={m.avatar_url}
+            size={16}
+            named
+            className="ring-2 ring-background"
+          />
+        ))}
+      </span>
+      {followers.length > 5 && <span className="tabular-nums">+{followers.length - 5}</span>}
+    </>
+  );
   return (
     <>
       <PropGroup>
@@ -211,27 +239,28 @@ export function Properties({
             <dt>{t("issue.updated")}</dt>
             <dd>{relativeTime(issue.updated_at, lang)}</dd>
           </div>
-          {followers.length > 0 && (
+          {(canWrite || followers.length > 0) && (
             <div className="flex items-center justify-between gap-2">
               <dt>{t("issue.followers")}</dt>
               <dd
-                className="flex items-center gap-1.5"
+                className="flex min-w-0 items-center gap-1.5"
                 title={followers.map((m) => m.display_name).join(", ")}
               >
-                <span className="flex -space-x-1">
-                  {followers.slice(0, 5).map((m) => (
-                    <Avatar
-                      key={m.id}
-                      name={m.display_name}
-                      src={m.avatar_url}
-                      size={16}
-                      named
-                      className="ring-2 ring-background"
-                    />
-                  ))}
-                </span>
-                {followers.length > 5 && (
-                  <span className="tabular-nums">+{followers.length - 5}</span>
+                {canWrite ? (
+                  <MultiMemberPicker
+                    value={[...issue.followers]}
+                    onChange={setFollowers}
+                    trigger={
+                      <Button
+                        variant="ghost"
+                        className="h-auto min-h-7 justify-start gap-1.5 px-2 py-1 font-normal"
+                      >
+                        {followers.length > 0 ? followerStack : t("team.pickMembers")}
+                      </Button>
+                    }
+                  />
+                ) : (
+                  followerStack
                 )}
               </dd>
             </div>

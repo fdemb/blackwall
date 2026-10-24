@@ -590,7 +590,7 @@ impl Operation<'_> {
         command: Command,
         attachment: Option<NewAttachment>,
     ) -> Result<Option<Uuid>> {
-        if self.role == Role::Viewer && !command.is_personal() {
+        if self.role == Role::Viewer && !command.is_personal(self.actor) {
             return Err(Error::Forbidden);
         }
 
@@ -625,6 +625,17 @@ impl Operation<'_> {
         .await?
         .ok_or(Error::Forbidden)?;
 
+        Ok(())
+    }
+
+    /// Subscribes `user` to the issue; repeat calls change nothing.
+    async fn add_follower(&mut self, issue: Uuid, user: Uuid) -> Result<()> {
+        sqlx::query("INSERT INTO issue_followers(workspace_id,issue_id,user_id) VALUES($1,$2,$3) ON CONFLICT DO NOTHING")
+            .bind(self.workspace_id)
+            .bind(issue)
+            .bind(user)
+            .execute(&mut *self.tx)
+            .await?;
         Ok(())
     }
 

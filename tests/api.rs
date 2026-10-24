@@ -1322,3 +1322,395 @@ async fn native_identity_and_atomic_password_recovery() {
     store.pool.close().await;
     database.cleanup().await;
 }
+
+async fn follow_fixture(
+    store: &Store,
+    app: &axum::Router,
+) -> (String, Uuid, Session, Session, Session, Session) {
+    let owner = account(store, "owner").await;
+    let assignee = account(store, "assignee").await;
+    let commenter = account(store, "commenter").await;
+    let mentioned = account(store, "mentioned").await;
+
+    let (status, value) = call(
+        app,
+        "POST",
+        "/internal-api/workspaces",
+        Some(&owner.token),
+        Some(json!({"name":"Followers","slug":"followers"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{value}");
+    let workspace = value["workspace"]["id"].as_str().unwrap().to_owned();
+
+    for user in [&assignee, &commenter, &mentioned] {
+        sqlx::query(
+            "INSERT INTO workspace_members(workspace_id,user_id,role) VALUES($1,$2,'member')",
+        )
+        .bind(Uuid::parse_str(&workspace).unwrap())
+        .bind(user.profile.id)
+        .execute(&store.pool)
+        .await
+        .unwrap();
+    }
+
+    let result = change(
+        app,
+        &owner,
+        &workspace,
+        Command::CreateTeam {
+            id: None,
+            name: "Operations".into(),
+            key: "OPE".into(),
+            members: vec![owner.profile.id],
+            default_stage_ids: None,
+        },
+    )
+    .await;
+    let team = uuid(&result["result"]["id"]);
+
+    (workspace, team, owner, assignee, commenter, mentioned)
+}
+
+fn issue_row(state: &Value, id: Uuid) -> Value {
+    state["workspace"]["issues"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|issue| issue["id"] == id.to_string())
+        .cloned()
+        .unwrap()
+}
+
+fn follower_ids(state: &Value, id: Uuid) -> Vec<Uuid> {
+    issue_row(state, id)["followers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(uuid)
+        .collect()
+}
+
+fn notified(state: &Value, issue: Uuid, kind: &str) -> bool {
+    state["workspace"]["notifications"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|n| n["issue_id"] == issue.to_string() && n["kind"] == kind)
+}
+
+#[tokio::test]
+async fn followers_follow_assignments_comments_and_mentions_on_postgres() {
+    let database = support::TestDatabase::new().await;
+    let store = Store::connect(&database.url).await.unwrap();
+    let app = router_with_web(store.clone(), std::env::temp_dir());
+    let (workspace, team, owner, assignee, commenter, mentioned) =
+        follow_fixture(&store, &app).await;
+
+    let created = change(
+        &app,
+        &owner,
+        &workspace,
+        Command::CreateIssue {
+            input: issue(team, "Rotate signing key"),
+        },
+    )
+    .await;
+    let id = uuid(&created["result"]["id"]);
+    change(
+        &app,
+        &owner,
+        &workspace,
+        Command::UpdateIssue {
+            id,
+            patch: IssuePatch {
+                assignee: Some(assignee.profile.id),
+                ..Default::default()
+            },
+        },
+    )
+    .await;
+    let state = workspace_state(&app, &assignee, &workspace).await;
+    assert!(notified(&state, id, "assignment"));
+    assert!(
+        !notified(&state, id, "change"),
+        "the assignment edit alerts the new assignee once"
+    );
+
+    change(
+        &app,
+        &owner,
+        &workspace,
+        Command::AddComment {
+            id: None,
+            issue_id: id,
+            body: "Rotating now".into(),
+            mentions: vec![],
+            attachments: vec![],
+        },
+    )
+    .await;
+    assert!(
+        notified(
+            &workspace_state(&app, &assignee, &workspace).await,
+            id,
+            "reply"
+        ),
+        "the assignee hears about a comment"
+    );
+
+    change(
+        &app,
+        &commenter,
+        &workspace,
+        Command::AddComment {
+            id: None,
+            issue_id: id,
+            body: "Thanks".into(),
+            mentions: vec![],
+            attachments: vec![],
+        },
+    )
+    .await;
+    let state = workspace_state(&app, &owner, &workspace).await;
+    assert!(follower_ids(&state, id).contains(&commenter.profile.id));
+
+    change(
+        &app,
+        &owner,
+        &workspace,
+        Command::AddComment {
+            id: None,
+            issue_id: id,
+            body: "One more".into(),
+            mentions: vec![],
+            attachments: vec![],
+        },
+    )
+    .await;
+    assert!(
+        notified(
+            &workspace_state(&app, &commenter, &workspace).await,
+            id,
+            "reply"
+        ),
+        "the earlier commenter hears about a later comment"
+    );
+
+    change(
+        &app,
+        &owner,
+        &workspace,
+        Command::AddComment {
+            id: None,
+            issue_id: id,
+            body: "Looping in".into(),
+            mentions: vec![mentioned.profile.id],
+            attachments: vec![],
+        },
+    )
+    .await;
+    let state = workspace_state(&app, &owner, &workspace).await;
+    assert!(follower_ids(&state, id).contains(&mentioned.profile.id));
+    let state = workspace_state(&app, &mentioned, &workspace).await;
+    assert!(notified(&state, id, "mention"));
+    assert!(
+        !notified(&state, id, "reply"),
+        "the mentioning comment alerts the mentioned user once"
+    );
+
+    change(
+        &app,
+        &owner,
+        &workspace,
+        Command::UpdateIssue {
+            id,
+            patch: IssuePatch {
+                title: Some("Rotate signing key today".into()),
+                ..Default::default()
+            },
+        },
+    )
+    .await;
+    assert!(
+        notified(
+            &workspace_state(&app, &mentioned, &workspace).await,
+            id,
+            "change"
+        ),
+        "the mentioned user hears about a later change"
+    );
+
+    change(
+        &app,
+        &owner,
+        &workspace,
+        Command::UpdateIssue {
+            id,
+            patch: IssuePatch {
+                clear_assignee: true,
+                ..Default::default()
+            },
+        },
+    )
+    .await;
+    let state = workspace_state(&app, &owner, &workspace).await;
+    assert!(
+        follower_ids(&state, id).contains(&assignee.profile.id),
+        "unassigning keeps the follow"
+    );
+
+    let mut input = issue(team, "Renew certificates");
+    input.assignee = Some(assignee.profile.id);
+    let created = change(&app, &owner, &workspace, Command::CreateIssue { input }).await;
+    let renewal = uuid(&created["result"]["id"]);
+    let state = workspace_state(&app, &owner, &workspace).await;
+    let mut expected = vec![owner.profile.id, assignee.profile.id];
+    expected.sort();
+    assert_eq!(
+        follower_ids(&state, renewal),
+        expected,
+        "a new issue's assignee follows it"
+    );
+
+    store.pool.close().await;
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn members_manage_other_followers_but_viewers_cannot_on_postgres() {
+    let database = support::TestDatabase::new().await;
+    let store = Store::connect(&database.url).await.unwrap();
+    let app = router_with_web(store.clone(), std::env::temp_dir());
+    let (workspace, team, owner, assignee, commenter, _) = follow_fixture(&store, &app).await;
+    let outsider = account(&store, "outsider").await;
+
+    let mut input = issue(team, "Rotate signing key");
+    input.assignee = Some(assignee.profile.id);
+    let created = change(&app, &owner, &workspace, Command::CreateIssue { input }).await;
+    let id = uuid(&created["result"]["id"]);
+
+    change(
+        &app,
+        &owner,
+        &workspace,
+        Command::Follow {
+            issue_id: id,
+            following: false,
+            user_id: Some(assignee.profile.id),
+        },
+    )
+    .await;
+    let state = workspace_state(&app, &owner, &workspace).await;
+    assert!(!follower_ids(&state, id).contains(&assignee.profile.id));
+
+    change(
+        &app,
+        &owner,
+        &workspace,
+        Command::Follow {
+            issue_id: id,
+            following: true,
+            user_id: Some(assignee.profile.id),
+        },
+    )
+    .await;
+    let state = workspace_state(&app, &owner, &workspace).await;
+    assert!(follower_ids(&state, id).contains(&assignee.profile.id));
+
+    change(
+        &app,
+        &owner,
+        &workspace,
+        Command::SetRole {
+            user_id: assignee.profile.id,
+            role: Role::Viewer,
+        },
+    )
+    .await;
+
+    let (status, value) = call(
+        &app,
+        "POST",
+        &format!("/internal-api/workspaces/{workspace}/commands"),
+        Some(&assignee.token),
+        Some(json!({
+            "expected_versions": {},
+            "command": {
+                "type": "follow",
+                "issue_id": id,
+                "following": true,
+                "user_id": commenter.profile.id
+            }
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{value}");
+
+    change(
+        &app,
+        &owner,
+        &workspace,
+        Command::Follow {
+            issue_id: id,
+            following: false,
+            user_id: Some(assignee.profile.id),
+        },
+    )
+    .await;
+    let (status, value) = call(
+        &app,
+        "POST",
+        &format!("/internal-api/workspaces/{workspace}/commands"),
+        Some(&assignee.token),
+        Some(json!({
+            "expected_versions": {},
+            "command": {"type": "follow", "issue_id": id, "following": true}
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{value}");
+    let state = workspace_state(&app, &owner, &workspace).await;
+    assert!(follower_ids(&state, id).contains(&assignee.profile.id));
+
+    let (status, value) = call(
+        &app,
+        "POST",
+        &format!("/internal-api/workspaces/{workspace}/commands"),
+        Some(&assignee.token),
+        Some(json!({
+            "expected_versions": {},
+            "command": {
+                "type": "follow",
+                "issue_id": id,
+                "following": false,
+                "user_id": assignee.profile.id
+            }
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "a viewer names themselves: {value}");
+    let state = workspace_state(&app, &owner, &workspace).await;
+    assert!(!follower_ids(&state, id).contains(&assignee.profile.id));
+
+    let (status, value) = call(
+        &app,
+        "POST",
+        &format!("/internal-api/workspaces/{workspace}/commands"),
+        Some(&owner.token),
+        Some(json!({
+            "expected_versions": {},
+            "command": {
+                "type": "follow",
+                "issue_id": id,
+                "following": true,
+                "user_id": outsider.profile.id
+            }
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{value}");
+
+    store.pool.close().await;
+    database.cleanup().await;
+}

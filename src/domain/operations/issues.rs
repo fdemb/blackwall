@@ -56,11 +56,15 @@ impl Workspace {
             Command::Follow {
                 issue_id,
                 following,
+                user_id,
             } => {
+                let user = user_id.unwrap_or(actor);
+                self.member(user)?;
                 let issue = self.issue_mut(issue_id)?;
-                issue.followers.retain(|u| *u != actor);
                 if following {
-                    issue.followers.push(actor)
+                    issue.follow(user);
+                } else {
+                    issue.followers.retain(|u| *u != user);
                 }
                 issue_id
             }
@@ -231,6 +235,9 @@ impl Workspace {
             created_at: now,
             updated_at: now,
         };
+        if let Some(user) = issue.assignee {
+            issue.follow(user);
+        }
 
         self.fit_sprint(&mut issue, input.stage_id.is_some())?;
         issue.position = self
@@ -307,6 +314,12 @@ impl Workspace {
                     now,
                 )
             }
+        }
+
+        if i.assignee != old_assignee
+            && let Some(user) = i.assignee
+        {
+            i.follow(user);
         }
 
         *self.issue_mut(id)? = i;

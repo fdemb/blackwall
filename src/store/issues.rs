@@ -307,6 +307,9 @@ impl Operation<'_> {
             created_at: now,
             updated_at: now,
         };
+        if let Some(user) = i.assignee {
+            i.follow(user);
+        }
 
         self.fit_sprint(&mut i, input.stage_id.is_some()).await?;
         self.validate_issue_sql(&i, None).await?;
@@ -327,12 +330,9 @@ impl Operation<'_> {
             error => error,
         })?;
 
-        sqlx::query("INSERT INTO issue_followers(workspace_id,issue_id,user_id) VALUES($1,$2,$3)")
-            .bind(self.workspace_id)
-            .bind(id)
-            .bind(self.actor)
-            .execute(&mut *self.tx)
-            .await?;
+        for user in &i.followers {
+            self.add_follower(id, *user).await?;
+        }
 
         self.created("issues", id);
         self.issue_effects(None, &i, persistence::IssueEffects::Create)
@@ -380,6 +380,12 @@ impl Operation<'_> {
 
         self.issue_effects(Some(&old), &i, persistence::IssueEffects::Update)
             .await?;
+
+        if i.assignee != old.assignee
+            && let Some(user) = i.assignee
+        {
+            self.add_follower(id, user).await?;
+        }
 
         Ok(())
     }
@@ -495,8 +501,9 @@ impl Operation<'_> {
             Command::Follow {
                 issue_id,
                 following,
+                user_id,
             } => {
-                self.follow_issue(issue_id, following).await?;
+                self.follow_issue(issue_id, following, user_id).await?;
                 Some(issue_id)
             }
             Command::AddSourceLink {
@@ -638,24 +645,25 @@ impl Operation<'_> {
         Ok(before_rank)
     }
 
-    async fn follow_issue(&mut self, issue_id: Uuid, following: bool) -> Result<()> {
+    async fn follow_issue(
+        &mut self,
+        issue_id: Uuid,
+        following: bool,
+        user_id: Option<Uuid>,
+    ) -> Result<()> {
+        let user = user_id.unwrap_or(self.actor);
+        self.member(user).await?;
         self.touch("issues", issue_id).await?;
         self.issue(issue_id).await?;
-        sqlx::query(
-            "DELETE FROM issue_followers WHERE workspace_id=$1 AND issue_id=$2 AND user_id=$3",
-        )
-        .bind(self.workspace_id)
-        .bind(issue_id)
-        .bind(self.actor)
-        .execute(&mut *self.tx)
-        .await?;
         if following {
+            self.add_follower(issue_id, user).await?;
+        } else {
             sqlx::query(
-                "INSERT INTO issue_followers(workspace_id,issue_id,user_id) VALUES($1,$2,$3)",
+                "DELETE FROM issue_followers WHERE workspace_id=$1 AND issue_id=$2 AND user_id=$3",
             )
             .bind(self.workspace_id)
             .bind(issue_id)
-            .bind(self.actor)
+            .bind(user)
             .execute(&mut *self.tx)
             .await?;
         }

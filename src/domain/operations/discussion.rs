@@ -341,6 +341,11 @@ impl Workspace {
             }
         }
 
+        let issue = self.issue_mut(issue_id)?;
+        for user in mentions.iter().copied().chain([actor]) {
+            issue.follow(user);
+        }
+
         self.comments.push(Comment {
             version: 1,
             id,

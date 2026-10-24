@@ -366,10 +366,13 @@ export function MultiMemberPicker({
   value,
   onChange,
   pool,
+  trigger,
 }: {
   value: Id[];
   onChange: (ids: Id[]) => void;
   pool?: Id[];
+  /** Replaces the default trigger, for places with their own look such as property rows. */
+  trigger?: React.ReactElement;
 }) {
   const { t } = useI18n();
   const { members } = useWorkspace();
@@ -381,31 +384,33 @@ export function MultiMemberPicker({
     : members;
   return (
     <DialogTrigger>
-      <Button variant="secondary" className="min-h-8 w-full justify-start px-2.5 font-normal">
-        {value.length ? (
-          <span className="flex -space-x-1">
-            {value.slice(0, 6).map((id) => {
-              const m = members.find((x) => x.id === id);
-              return m ? (
-                <Avatar
-                  key={id}
-                  name={m.display_name}
-                  src={m.avatar_url}
-                  size={18}
-                  className="ring-2 ring-card"
-                />
-              ) : null;
-            })}
-          </span>
-        ) : (
-          <span className="text-muted-foreground">{t("team.pickMembers")}</span>
-        )}
-        {value.length > 0 && (
-          <span className="text-muted-foreground">
-            {t("count.members", { count: value.length })}
-          </span>
-        )}
-      </Button>
+      {trigger ?? (
+        <Button variant="secondary" className="min-h-8 w-full justify-start px-2.5 font-normal">
+          {value.length ? (
+            <span className="flex -space-x-1">
+              {value.slice(0, 6).map((id) => {
+                const m = members.find((x) => x.id === id);
+                return m ? (
+                  <Avatar
+                    key={id}
+                    name={m.display_name}
+                    src={m.avatar_url}
+                    size={18}
+                    className="ring-2 ring-card"
+                  />
+                ) : null;
+              })}
+            </span>
+          ) : (
+            <span className="text-muted-foreground">{t("team.pickMembers")}</span>
+          )}
+          {value.length > 0 && (
+            <span className="text-muted-foreground">
+              {t("count.members", { count: value.length })}
+            </span>
+          )}
+        </Button>
+      )}
       <Popover placement="bottom start" className="min-w-56">
         <ListBox
           aria-label={t("nav.people")}

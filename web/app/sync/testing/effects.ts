@@ -131,7 +131,7 @@ function stampIssue(context: ServerEffects, key: string): void {
   )
     notify(context, tx, issue.assignee, issue.id, "assignment", issue.title);
   if (name === "update_issue" || (name === "bulk_issues" && object(args.action)))
-    for (const follower of issue.followers)
+    for (const follower of oldIssue?.followers ?? issue.followers)
       if (follower !== actor) notify(context, tx, follower, issue.id, "change", issue.title);
 }
 
@@ -180,7 +180,8 @@ function notifyCommentReaders(context: ServerEffects): void {
   const comment = tx.get("comments", id);
   const issue = comment ? tx.get("issues", comment.issue_id) : undefined;
   if (!comment || !issue) return;
-  for (const follower of issue.followers)
+  const readers = context.before.get("issues", issue.id)?.followers ?? issue.followers;
+  for (const follower of readers)
     if (follower !== actor)
       notify(context, tx, follower, issue.id, "reply", comment.body, `reply:${id}:${follower}`);
   for (const mention of comment.mentions)

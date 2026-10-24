@@ -184,7 +184,7 @@ describe("create_issue", () => {
         dependencies: ["issue-3"],
         // Done holds issue-3 at 0, issue-archived at 1024 and issue-op-done at 2048.
         position: 3072,
-        followers: [MEMBER],
+        followers: [ADMIN, MEMBER],
         done_at: AT,
         created_at: AT,
         updated_at: AT,
@@ -359,6 +359,14 @@ describe("create_issue", () => {
 });
 
 describe("update_issue", () => {
+  it("makes a new assignee a follower and keeps them after unassigning", () => {
+    const store = seedStore();
+    mutate(store, "update_issue", { id: "issue-2", patch: { assignee: ADMIN } });
+    expect(live(store, "issue-2").followers).toContain(ADMIN);
+    mutate(store, "update_issue", { id: "issue-2", patch: { clear_assignee: true } });
+    expect(live(store, "issue-2").followers).toContain(ADMIN);
+  });
+
   it("patches named fields and stamps updated_at", () => {
     const store = seedStore();
     const before = live(store, "issue-2");
@@ -929,6 +937,24 @@ describe("follow", () => {
     expect(live(imported, "issue-op").followers).toContain(MEMBER);
 
     rejects("follow", { issue_id: "issue-2", following: true }, 403, "permission denied", GHOST);
+  });
+
+  it("adds and removes another member", () => {
+    const store = seedStore();
+    mutate(store, "follow", { issue_id: "issue-2", following: true, user_id: ADMIN });
+    expect(live(store, "issue-2").followers).toEqual([ADMIN]);
+    mutate(store, "follow", { issue_id: "issue-2", following: false, user_id: ADMIN });
+    expect(live(store, "issue-2").followers).toEqual([]);
+  });
+
+  it("lets viewers change only their own follow, and only for members", () => {
+    const store = seedStore(VIEWER);
+    mutate(store, "follow", { issue_id: "issue-2", following: true, user_id: VIEWER });
+    expect(live(store, "issue-2").followers).toEqual([VIEWER]);
+    const others = { issue_id: "issue-2", following: true, user_id: MEMBER };
+    rejects("follow", others, 403, "permission denied", VIEWER);
+    const outsider = { issue_id: "issue-2", following: true, user_id: GHOST };
+    rejects("follow", outsider, 403, "permission denied");
   });
 });
 

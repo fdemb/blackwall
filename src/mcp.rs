@@ -682,8 +682,17 @@ async fn write_tool(
                 "archive_issue" => Command::ArchiveIssue { id },
                 _ => Command::UnarchiveIssue { id },
             };
+            // A trashed issue cannot be read back, so take its key before deleting it.
+            let deleted = if name == "delete_issue" {
+                Some(issues::fetch(store, scope, id).await?.key)
+            } else {
+                None
+            };
             issues::transition_issue(store, scope, id, command, WriteOptions::default()).await?;
-            Ok(json!({ "issue": issues::fetch(store, scope, id).await? }))
+            match deleted {
+                Some(key) => Ok(json!({ "deleted": key })),
+                None => Ok(json!({ "issue": issues::fetch(store, scope, id).await? })),
+            }
         }
         "add_comment" => {
             let id = issue_arg(store, scope, &mut args).await?;

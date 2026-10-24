@@ -92,8 +92,13 @@ export const addComment: Mutator<ArgsOf<"add_comment">> = (tx, args, ctx) => {
     previous?.attachments ?? [],
     args.attachments,
   );
-  if (moved.length > 0) {
-    tx.put("issues", { ...issue, attachments: remaining });
+  const followers = dedupeSortUuids([...issue.followers, ctx.actor, ...mentions]);
+  if (moved.length > 0 || followers.length !== issue.followers.length) {
+    tx.put("issues", {
+      ...issue,
+      attachments: moved.length > 0 ? remaining : issue.attachments,
+      followers,
+    });
   }
   // Replay over a base that already holds the id keeps its version and creation time.
   tx.put("comments", {
