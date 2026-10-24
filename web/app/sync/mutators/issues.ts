@@ -10,6 +10,7 @@ import {
   checkCapacity,
   requireIssue,
   requireLiveIssue,
+  requireMember,
   requireRole,
   stageKindOf,
   update,
@@ -218,7 +219,7 @@ function issueFromInput(
     parent_id: input.parent_id ?? null,
     dependencies: dedupeSortUuids(input.dependencies ?? []),
     position: 0,
-    followers: [ctx.actor],
+    followers: dedupeSortUuids([ctx.actor, ...(input.assignee ? [input.assignee] : [])]),
     attachments: [],
     source_links: [],
     deleted_at: null,
@@ -244,6 +245,8 @@ function patchIssue(
   if (next.stage_id !== current.stage_id) {
     next.done_at = doneAt(tx, next.team_id, next.stage_id, current.done_at, ctx.at);
   }
+  if (next.assignee !== current.assignee && next.assignee)
+    next.followers = dedupeSortUuids([...next.followers, next.assignee]);
   next.updated_at = ctx.at;
   tx.put("issues", next);
 }
@@ -409,14 +412,16 @@ export const bulkIssues: Mutator<ArgsOf<"bulk_issues">> = (tx, args, ctx) => {
 
 export const followIssue: Mutator<ArgsOf<"follow">> = (tx, args, ctx) => {
   requireRole(tx, ctx.actor, "follow", args);
+  const user = args.user_id ?? ctx.actor;
+  requireMember(tx, user);
   const current = requireLiveIssue(tx, args.issue_id);
-  const following = current.followers.includes(ctx.actor);
+  const following = current.followers.includes(user);
   if (following === args.following) return;
   update(tx, "issues", args.issue_id, (issue) => {
     const next = copyIssue(issue);
     next.followers = args.following
-      ? dedupeSortUuids([...issue.followers, ctx.actor])
-      : dedupeSortUuids(issue.followers.filter((follower: Id) => follower !== ctx.actor));
+      ? dedupeSortUuids([...issue.followers, user])
+      : dedupeSortUuids(issue.followers.filter((follower: Id) => follower !== user));
     return next;
   });
 };

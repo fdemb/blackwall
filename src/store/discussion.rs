@@ -314,8 +314,11 @@ impl Operation<'_> {
                 .await?;
         }
 
-        self.notify_comment(id, issue_id, &body, mentions).await?;
+        self.notify_comment(id, issue_id, &body, &mentions).await?;
         crate::tracker::enqueue_comment(&mut self.tx, self.workspace_id, issue_id, id).await?;
+        for user in mentions.iter().copied().chain([self.actor]) {
+            self.add_follower(issue_id, user).await?;
+        }
         self.created("comments", id);
         Ok(id)
     }
@@ -368,7 +371,7 @@ impl Operation<'_> {
         id: Uuid,
         issue_id: Uuid,
         body: &str,
-        mentions: BTreeSet<Uuid>,
+        mentions: &BTreeSet<Uuid>,
     ) -> Result<()> {
         let followers: Vec<Uuid> = sqlx::query_scalar(
             "SELECT user_id FROM issue_followers WHERE workspace_id=$1 AND \
@@ -391,7 +394,7 @@ impl Operation<'_> {
         }
 
         let actor = self.actor;
-        for user in mentions.into_iter().filter(|user| *user != actor) {
+        for user in mentions.iter().copied().filter(|user| *user != actor) {
             self.notify(
                 user,
                 Some(issue_id),

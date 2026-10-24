@@ -168,6 +168,9 @@ pub enum Command {
     Follow {
         issue_id: Uuid,
         following: bool,
+        /// The member whose subscription changes. Absent means the actor.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        user_id: Option<Uuid>,
     },
     LogTime {
         id: Option<Uuid>,
@@ -272,18 +275,20 @@ pub(crate) enum CommandFamily {
 
 impl Command {
     /// Personal commands only touch the actor's own state, so viewers may run them.
-    pub(crate) fn is_personal(&self) -> bool {
-        matches!(
-            self,
-            Self::MarkNotificationRead { .. }
-                | Self::MarkNotificationUnread { .. }
-                | Self::MarkAllNotificationsRead
-                | Self::ConfigureAlerts { .. }
-                | Self::SaveView { shared: false, .. }
-                | Self::UpdateView { shared: false, .. }
-                | Self::DeleteView { .. }
-                | Self::Follow { .. }
-        )
+    pub(crate) fn is_personal(&self, actor: Uuid) -> bool {
+        match self {
+            Self::Follow { user_id, .. } => user_id.is_none_or(|user| user == actor),
+            _ => matches!(
+                self,
+                Self::MarkNotificationRead { .. }
+                    | Self::MarkNotificationUnread { .. }
+                    | Self::MarkAllNotificationsRead
+                    | Self::ConfigureAlerts { .. }
+                    | Self::SaveView { shared: false, .. }
+                    | Self::UpdateView { shared: false, .. }
+                    | Self::DeleteView { .. }
+            ),
+        }
     }
 
     pub(crate) fn family(&self) -> CommandFamily {

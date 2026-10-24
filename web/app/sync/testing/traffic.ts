@@ -62,7 +62,12 @@ export function convergenceCommand({
     { type: "archive_issue", id: target.id },
     { type: "unarchive_issue", id: target.id },
     { type: "delete_issue", id: target.id },
-    { type: "follow", issue_id: target.id, following: integer(2) === 0 },
+    {
+      type: "follow",
+      issue_id: target.id,
+      following: integer(2) === 0,
+      user_id: pick([actor, owner]),
+    },
     {
       type: "add_source_link",
       issue_id: target.id,

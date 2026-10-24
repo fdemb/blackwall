@@ -158,7 +158,7 @@ const COMMAND_FIELDS: Record<Command["type"] | "add_attachment" | "attach_commen
   },
   edit_comment: { id: required, body: required, mentions: defaulted([]) },
   delete_comment: id,
-  follow: { issue_id: required, following: required },
+  follow: { issue_id: required, following: required, user_id: option },
   log_time: {
     id: option,
     issue_id: required,

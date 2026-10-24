@@ -515,7 +515,7 @@ export type Command =
     }
   | { type: "edit_comment"; id: Id; body: string; mentions: Id[] }
   | { type: "delete_comment"; id: Id }
-  | { type: "follow"; issue_id: Id; following: boolean }
+  | { type: "follow"; issue_id: Id; following: boolean; user_id?: Id | null }
   | { type: "log_time"; id?: Id; issue_id: Id; minutes: number; note: string; logged_at: string }
   | { type: "update_time"; id: Id; minutes: number; note: string; logged_at: string }
   | { type: "delete_time"; id: Id }

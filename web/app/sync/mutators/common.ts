@@ -40,21 +40,24 @@ export const NIL_UUID = "00000000-0000-0000-0000-000000000000";
 export function requireRole(tx: Tx, actor: Id, name: string, args: unknown): Role {
   const member = tx.get("members", actor);
   if (member === undefined) throw new MutationError(403, "permission denied");
-  if (member.role === "viewer" && !isPersonal(name, args)) {
+  if (member.role === "viewer" && !isPersonal(name, args, actor)) {
     throw new MutationError(403, "permission denied");
   }
   return member.role;
 }
 
-function isPersonal(name: string, args: unknown): boolean {
+function isPersonal(name: string, args: unknown, actor: Id): boolean {
   switch (name) {
     case "mark_notification_read":
     case "mark_notification_unread":
     case "mark_all_notifications_read":
     case "configure_alerts":
     case "delete_view":
-    case "follow":
       return true;
+    case "follow": {
+      const user = (args as { user_id?: Id | null }).user_id;
+      return user == null || user === actor;
+    }
     case "save_view":
     case "update_view":
       return (args as { shared?: boolean }).shared === false;

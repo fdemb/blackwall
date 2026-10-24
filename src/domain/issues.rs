@@ -137,6 +137,13 @@ pub(crate) enum SprintFit {
 }
 
 impl Issue {
+    /// Subscribes `user`; repeat calls change nothing.
+    pub(crate) fn follow(&mut self, user: Uuid) {
+        if !self.followers.contains(&user) {
+            self.followers.push(user);
+        }
+    }
+
     /// Backlog issues have no sprint. `entered_stage` says whether the edit chose
     /// the stage, which then wins over the sprint.
     pub(crate) fn sprint_fit(&self, in_backlog: bool, entered_stage: bool) -> SprintFit {

@@ -236,7 +236,9 @@ export const scenarios = {
     },
     command: (f) => ({ type: "unarchive_issue", id: f.done }),
   },
-  follow: { command: (f) => ({ type: "follow", issue_id: f.issue, following: false }) },
+  follow: {
+    command: (f) => ({ type: "follow", issue_id: f.issue, following: false, user_id: f.member.id }),
+  },
   add_source_link: {
     command: (f) => ({
       type: "add_source_link",

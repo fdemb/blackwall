@@ -109,6 +109,18 @@ function twice(name: string, args: unknown, actor: Id = MEMBER): void {
 }
 
 describe("add_comment", () => {
+  it("makes the author and mentioned members followers", () => {
+    const store = seedStore();
+    mutate(store, "add_comment", {
+      id: "comment-follow",
+      issue_id: "issue-2",
+      body: "Looping in",
+      mentions: [ADMIN],
+    });
+    const followers = store.get("issues", "issue-2")?.followers;
+    expect(followers).toContain(MEMBER);
+    expect(followers).toContain(ADMIN);
+  });
   it("materializes omitted mentions and attachments", () => {
     const args = { id: "comment-defaults", issue_id: "issue-1", body: "Defaults" };
     const store = seedStore();
@@ -217,7 +229,11 @@ describe("add_comment", () => {
       via: null,
       tracker: null,
     });
-    expect(store.get("issues", "issue-attached")).toEqual({ ...before, attachments: [] });
+    expect(store.get("issues", "issue-attached")).toEqual({
+      ...before,
+      attachments: [],
+      followers: [...new Set([...before.followers, MEMBER])].sort(),
+    });
     const once = beforeAll(store);
     mutate(store, "add_comment", args);
     expect(store.replayErrors().size).toBe(0);

@@ -197,6 +197,7 @@ async fn local_edits_moves_relations_links_and_attachment_removal_succeed_on_syn
         Command::Follow {
             issue_id: f.imported,
             following: true,
+            user_id: None,
         },
         Command::LogTime {
             id: None,

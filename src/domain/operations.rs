@@ -600,7 +600,7 @@ impl Workspace {
         command: Command,
         now: DateTime<Utc>,
     ) -> Result<CommandResult> {
-        if self.member(actor)?.role == Role::Viewer && !command.is_personal() {
+        if self.member(actor)?.role == Role::Viewer && !command.is_personal(actor) {
             return Err(Error::Forbidden);
         }
 
