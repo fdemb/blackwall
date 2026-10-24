@@ -39,7 +39,9 @@ export default function Recover() {
   if (step === "request")
     return (
       <>
-        <h1 className="text-xl font-semibold tracking-tight">{t("auth.recoverTitle")}</h1>
+        <h1 className="text-balance text-3xl font-semibold tracking-tight">
+          {t("auth.recoverTitle")}
+        </h1>
         <p className="mb-6 mt-1 text-muted-foreground">{t("auth.recoverSub")}</p>
         <Form
           className="flex flex-col gap-4"
@@ -90,7 +92,7 @@ export default function Recover() {
   return (
     <>
       <MailCheck aria-hidden className="mb-3 size-7 text-primary" />
-      <h1 className="text-xl font-semibold tracking-tight">{t("auth.checkMail")}</h1>
+      <h1 className="text-balance text-3xl font-semibold tracking-tight">{t("auth.checkMail")}</h1>
       <p className="mb-6 mt-1 text-muted-foreground">
         {email ? t("auth.checkMailSub", { email }) : t("auth.checkMailNoEmail")}
       </p>

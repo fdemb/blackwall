@@ -231,6 +231,18 @@ export const pl = {
   "auth.newPassword": "Nowe hasło",
   "auth.resetPassword": "Ustaw nowe hasło",
   "auth.resetDone": "Hasło zmienione. Możesz się zalogować.",
+  "auth.showPassword": "Pokaż hasło",
+  "auth.hidePassword": "Ukryj hasło",
+  "auth.inviteHint":
+    "Masz zaproszenie do przestrzeni? Zaloguj się lub utwórz konto, a potem wklej token z zaproszenia.",
+  "auth.pitchTitle": "Plany, zadania i dyskusje w jednym miejscu.",
+  "auth.pitchBody":
+    "Każde zadanie ma właściciela, etap i wątek. Skrzynka pokazuje, co dziś czeka na Ciebie.",
+  "auth.preview.issue1": "Przyspieszyć ładowanie tablicy w dużych zespołach",
+  "auth.preview.issue2": "Pokazać postęp sprintu na stronie projektu",
+  "auth.preview.issue3": "Przepisać listę kroków wdrożenia",
+  "auth.preview.issue4": "Poprawić strefy czasowe w przypomnieniach o terminach",
+  "auth.preview.issue5": "Eksport wpisów czasu do CSV",
 
   "welcome.title": "Witaj, {{name}}",
   "welcome.createSub": "Przestrzeń zbiera zespoły, zadania i projekty.",

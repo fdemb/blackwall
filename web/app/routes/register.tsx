@@ -17,7 +17,9 @@ export default function Register() {
   useDocumentTitle(t("auth.register"));
   return (
     <>
-      <h1 className="text-xl font-semibold tracking-tight">{t("auth.createAccount")}</h1>
+      <h1 className="text-balance text-3xl font-semibold tracking-tight">
+        {t("auth.createAccount")}
+      </h1>
       <p className="mb-6 mt-1 text-muted-foreground">{t("auth.registerSub")}</p>
       <Form
         className="flex flex-col gap-4"

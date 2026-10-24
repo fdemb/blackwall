@@ -221,6 +221,18 @@ export const en = {
   "auth.newPassword": "New password",
   "auth.resetPassword": "Set new password",
   "auth.resetDone": "Password updated. You can sign in now.",
+  "auth.showPassword": "Show password",
+  "auth.hidePassword": "Hide password",
+  "auth.inviteHint":
+    "Invited to a workspace? Sign in or create an account, then paste the token from your invitation.",
+  "auth.pitchTitle": "Plans, issues and discussion in one place.",
+  "auth.pitchBody":
+    "Every issue has an owner, a stage and a thread. Your inbox shows what needs you today.",
+  "auth.preview.issue1": "Speed up board loading for large teams",
+  "auth.preview.issue2": "Show sprint progress on the project page",
+  "auth.preview.issue3": "Rewrite the onboarding checklist",
+  "auth.preview.issue4": "Fix time zones in deadline reminders",
+  "auth.preview.issue5": "Export time entries to CSV",
 
   "welcome.title": "Welcome, {{name}}",
   "welcome.createSub": "A workspace holds your teams, issues and projects.",

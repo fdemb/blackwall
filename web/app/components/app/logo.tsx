@@ -1,6 +1,8 @@
+import { useId } from "react";
 import { cn } from "~/lib/utils";
 
 export function Logo({ className, size = 24 }: { className?: string; size?: number }) {
+  const gradient = useId();
   return (
     <svg
       width={size}
@@ -9,12 +11,21 @@ export function Logo({ className, size = 24 }: { className?: string; size?: numb
       className={cn("shrink-0", className)}
       aria-hidden
     >
-      <rect width="32" height="32" rx="8" className="fill-primary" />
-      <path d="M9 8h8a4 4 0 0 1 2.4 7.2A4.5 4.5 0 0 1 17.5 24H9z" fill="white" />
-      <path
-        d="M13 12.2h3.6a1.4 1.4 0 0 1 0 2.8H13zM13 17h4.2a1.5 1.5 0 0 1 0 3H13z"
-        className="fill-primary"
-      />
+      <defs>
+        <linearGradient id={gradient} x1="0" y1="0" x2="1" y2="0">
+          <stop offset="0" stopColor="#fdba74" />
+          <stop offset="1" stopColor="#fb7185" />
+        </linearGradient>
+      </defs>
+      <g className="fill-foreground">
+        <rect x="1" y="3.5" width="14" height="7" rx="1.5" />
+        <rect x="17" y="3.5" width="14" height="7" rx="1.5" />
+        <rect x="1" y="12.5" width="6" height="7" rx="1.5" />
+        <rect x="25" y="12.5" width="6" height="7" rx="1.5" />
+        <rect x="1" y="21.5" width="14" height="7" rx="1.5" />
+        <rect x="17" y="21.5" width="14" height="7" rx="1.5" />
+      </g>
+      <rect x="9" y="12.5" width="14" height="7" rx="1.5" fill={`url(#${gradient})`} />
     </svg>
   );
 }

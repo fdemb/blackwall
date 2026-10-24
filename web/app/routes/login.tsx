@@ -1,9 +1,9 @@
 import { useState } from "react";
-import { Form } from "react-aria-components";
+import { Form, TextField as RACTextField } from "react-aria-components";
 import { Link, useNavigate } from "react-router";
-import { Loader2 } from "lucide-react";
+import { Eye, EyeOff, Loader2 } from "lucide-react";
 import { Button } from "~/components/ui/button";
-import { FormError, TextField } from "~/components/ui/field";
+import { FieldError, FormError, Input, Label, TextField } from "~/components/ui/field";
 import { auth, setCsrf } from "~/lib/api";
 import { useI18n } from "~/lib/i18n";
 import { useDocumentTitle } from "~/lib/title";
@@ -14,10 +14,13 @@ export default function Login() {
   const nav = useNavigate();
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
   useDocumentTitle(t("auth.login"));
   return (
     <>
-      <h1 className="text-balance text-xl font-semibold tracking-tight">{t("auth.welcomeBack")}</h1>
+      <h1 className="text-balance text-3xl font-semibold tracking-tight">
+        {t("auth.welcomeBack")}
+      </h1>
       <p className="mb-6 mt-1 text-muted-foreground">{t("auth.loginSub")}</p>
       <Form
         className="flex flex-col gap-4"
@@ -46,30 +49,48 @@ export default function Login() {
           autoFocus
           isRequired
         />
-        <TextField
+        <RACTextField
           name="password"
-          type="password"
-          label={t("field.password")}
+          type={showPassword ? "text" : "password"}
           autoComplete="current-password"
           isRequired
-        />
+          className="flex flex-col"
+        >
+          <div className="mb-1 flex items-baseline justify-between gap-2">
+            <Label className="mb-0">{t("field.password")}</Label>
+            <Link
+              to="/recover"
+              className="text-muted-foreground hover:text-foreground hover:underline"
+            >
+              {t("auth.forgot")}
+            </Link>
+          </div>
+          <div className="relative">
+            <Input className="pr-9" />
+            <Button
+              variant="ghost"
+              size="icon"
+              aria-label={showPassword ? t("auth.hidePassword") : t("auth.showPassword")}
+              onPress={() => setShowPassword((v) => !v)}
+              className="absolute right-0.5 top-1/2 -translate-y-1/2 text-muted-foreground"
+            >
+              {showPassword ? <EyeOff /> : <Eye />}
+            </Button>
+          </div>
+          <FieldError />
+        </RACTextField>
         <FormError>{error}</FormError>
         <Button type="submit" variant="primary" size="lg" isPending={busy}>
           {busy && <Loader2 aria-hidden className="animate-spin" />}
           {busy ? t("auth.signingIn") : t("auth.login")}
         </Button>
       </Form>
-      <div className="mt-5 flex justify-between  text-muted-foreground">
-        <Link to="/recover" className="hover:text-foreground hover:underline">
-          {t("auth.forgot")}
+      <p className="mt-5 text-center text-muted-foreground">
+        {t("auth.noAccount")}{" "}
+        <Link to="/register" className="font-medium text-primary hover:underline">
+          {t("auth.register")}
         </Link>
-        <span>
-          {t("auth.noAccount")}{" "}
-          <Link to="/register" className="font-medium text-primary hover:underline">
-            {t("auth.register")}
-          </Link>
-        </span>
-      </div>
+      </p>
     </>
   );
 }

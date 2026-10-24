@@ -2,7 +2,7 @@
 
 Linear is the reference: dense, keyboard-first, quiet. A neutral sidebar holds the workspace switcher, inbox, teams, and saved views. The main column holds one page at a time. Issue detail is a full page with properties on the right, not a modal.
 
-Color is neutral (slightly cool grays) with one accent, violet, used for primary actions, selection, focus rings, progress, and the done state. Status colors (amber for in progress, red for urgent and overdue) appear only as small icons and chips. Light, dark, and system themes share the same tokens in `web/app/app.css`.
+Color is neutral (warm stone grays) with one accent, coral, used for primary actions, selection, focus rings, progress, and the done state. Status colors (amber for in progress, red for urgent and overdue) appear only as small icons and chips. Light, dark, and system themes share the same tokens in `web/app/app.css`.
 
 Type is Inter Variable at 13px for the interface and 14px for long text. Numbers use tabular figures. JetBrains Mono appears only for code and identifiers.
 
