@@ -153,9 +153,9 @@ const CASES = {
   },
   delete_view: id,
   cancel_invitation: id,
-  mark_notification_read: id,
+  mark_notification_read: { args: { id: ID, created_at: AT } },
   mark_notification_unread: id,
-  mark_all_notifications_read: { args: {} },
+  mark_all_notifications_read: { args: { notifications: [{ id: ID, created_at: AT }] } },
   configure_alerts: {
     args: { assignment: true, reply: true, change: true, mention: true, deadline: true },
   },

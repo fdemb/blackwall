@@ -188,7 +188,10 @@ describe.skipIf(!enabled)(`${suiteName}: prediction contract`, () => {
         c: ownerClient,
         value: { type: "update_view", id: f.view, name: "", shared: true, filter: {} },
       },
-      { c: ownerClient, value: { type: "mark_notification_read", id: crypto.randomUUID() } },
+      {
+        c: ownerClient,
+        value: { type: "mark_notification_read", id: crypto.randomUUID(), created_at: DATE },
+      },
       { c: viewerClient, value: { type: "cancel_invitation", id: f.invitation } },
       { c: viewerClient, value: { type: "update_integration", id: f.integration, enabled: false } },
     ];
@@ -235,7 +238,9 @@ describe.skipIf(!enabled)(`${suiteName}: prediction contract`, () => {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           client_id: crypto.randomUUID(),
-          mutations: [{ id: 1, name: "mark_all_notifications_read", args: {}, at: DATE }],
+          mutations: [
+            { id: 1, name: "mark_all_notifications_read", args: { notifications: [] }, at: DATE },
+          ],
         }),
       },
     );

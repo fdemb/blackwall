@@ -153,7 +153,9 @@ describe("session replica lifetime", () => {
     await acceptSession({ ...profile, session_id: id(99) });
     expect(await replicaStorage().list()).toEqual([]);
     expect(activeWorkspaceEngine(workspace.id)).toBeNull();
-    await expect(engine.mutate("mark_all_notifications_read", {})).rejects.toThrow("closed");
+    await expect(
+      engine.mutate("mark_all_notifications_read", { notifications: [] }),
+    ).rejects.toThrow("closed");
   });
   it("unauthorized sync clears the current session and returns to login after deleting its replicas", async () => {
     const { server, token, workspace, profile } = await fixture();
@@ -256,10 +258,14 @@ describe("workspace loader lifecycle", () => {
     const next = await openWorkspaceEngine(other.id);
     expect(activeWorkspaceEngine(other.id)?.engine).toBe(next);
     expect(next.store.get("workspace", other.id)?.id).toBe(other.id);
-    await expect(previous.mutate("mark_all_notifications_read", {})).resolves.toBeDefined();
+    await expect(
+      previous.mutate("mark_all_notifications_read", { notifications: [] }),
+    ).resolves.toBeDefined();
     detach();
     await previous.retire();
-    await expect(previous.mutate("mark_all_notifications_read", {})).rejects.toThrow("closed");
+    await expect(
+      previous.mutate("mark_all_notifications_read", { notifications: [] }),
+    ).rejects.toThrow("closed");
   });
   it("leaving a workspace with an empty outbox closes its engine", async () => {
     const { workspace } = await fixture();
@@ -267,7 +273,9 @@ describe("workspace loader lifecycle", () => {
     attachWorkspaceEngine(engine)();
     await engine.retire();
     expect(activeWorkspaceEngine(workspace.id)).toBeNull();
-    await expect(engine.mutate("mark_all_notifications_read", {})).rejects.toThrow("closed");
+    await expect(
+      engine.mutate("mark_all_notifications_read", { notifications: [] }),
+    ).rejects.toThrow("closed");
   });
   it("returning while the leaving engine closes opens a new engine", async () => {
     const { workspace } = await fixture();
@@ -277,7 +285,9 @@ describe("workspace loader lifecycle", () => {
     const next = await openWorkspaceEngine(workspace.id);
     expect(next).not.toBe(engine);
     expect(activeWorkspaceEngine(workspace.id)?.engine).toBe(next);
-    await expect(next.mutate("mark_all_notifications_read", {})).resolves.toBeDefined();
+    await expect(
+      next.mutate("mark_all_notifications_read", { notifications: [] }),
+    ).resolves.toBeDefined();
   });
   it("leaving with pending edits keeps sending them and closes only after the outbox is empty", async () => {
     const { server, workspace, fetch } = await fixture();
@@ -290,7 +300,9 @@ describe("workspace loader lifecycle", () => {
     void engine.retire().then(() => {
       closed = true;
     });
-    await expect(engine.mutate("mark_all_notifications_read", {})).rejects.toThrow("retiring");
+    await expect(
+      engine.mutate("mark_all_notifications_read", { notifications: [] }),
+    ).rejects.toThrow("retiring");
     await settle();
     expect(closed).toBe(false);
     server.advance(60_000);
@@ -315,7 +327,9 @@ describe("workspace loader lifecycle", () => {
     await until(() => engine.status.get().pending === 0);
     await settle();
     expect(closed).toBe(false);
-    await expect(engine.mutate("mark_all_notifications_read", {})).resolves.toBeDefined();
+    await expect(
+      engine.mutate("mark_all_notifications_read", { notifications: [] }),
+    ).resolves.toBeDefined();
   });
   it("a leaving workspace stays open while offline and closes once it is back online and drained", async () => {
     const { server, workspace } = await fixture();
@@ -361,7 +375,9 @@ describe("workspace loader lifecycle", () => {
     navigation.abort();
     expect(await observed).toMatchObject({ message: "Workspace navigation cancelled" });
     expect(activeWorkspaceEngine(other.id)).toBeNull();
-    await expect(mounted.mutate("mark_all_notifications_read", {})).resolves.toBeDefined();
+    await expect(
+      mounted.mutate("mark_all_notifications_read", { notifications: [] }),
+    ).resolves.toBeDefined();
     detach();
   });
   it("opening another workspace keeps the mounted one writable until its screen unmounts", async () => {
@@ -372,13 +388,19 @@ describe("workspace loader lifecycle", () => {
     const detachFirst = attachWorkspaceEngine(first);
     const second = await openWorkspaceEngine(other.id);
     const detachSecond = attachWorkspaceEngine(second);
-    await expect(first.mutate("mark_all_notifications_read", {})).resolves.toBeDefined();
+    await expect(
+      first.mutate("mark_all_notifications_read", { notifications: [] }),
+    ).resolves.toBeDefined();
     detachFirst();
     await first.retire();
     expect(activeWorkspaceEngine(workspace.id)).toBeNull();
-    await expect(first.mutate("mark_all_notifications_read", {})).rejects.toThrow("closed");
+    await expect(
+      first.mutate("mark_all_notifications_read", { notifications: [] }),
+    ).rejects.toThrow("closed");
     expect(activeWorkspaceEngine(other.id)?.engine).toBe(second);
-    await expect(second.mutate("mark_all_notifications_read", {})).resolves.toBeDefined();
+    await expect(
+      second.mutate("mark_all_notifications_read", { notifications: [] }),
+    ).resolves.toBeDefined();
     detachSecond();
   });
   it("a strict-mode remount in the same turn keeps the engine writable", async () => {
@@ -387,7 +409,9 @@ describe("workspace loader lifecycle", () => {
     attachWorkspaceEngine(engine)();
     const detach = attachWorkspaceEngine(engine);
     await settle();
-    await expect(engine.mutate("mark_all_notifications_read", {})).resolves.toBeDefined();
+    await expect(
+      engine.mutate("mark_all_notifications_read", { notifications: [] }),
+    ).resolves.toBeDefined();
     expect(activeWorkspaceEngine(workspace.id)?.engine).toBe(engine);
     detach();
   });

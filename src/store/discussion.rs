@@ -112,16 +112,17 @@ impl Operation<'_> {
                 self.remove_member(user_id).await?;
                 user_id
             }
-            Command::MarkNotificationRead { id } => {
-                self.set_notification_read(id, Some(Utc::now())).await?;
+            Command::MarkNotificationRead { id, created_at } => {
+                self.mark_notification_read(id, created_at).await?;
                 id
             }
             Command::MarkNotificationUnread { id } => {
-                self.set_notification_read(id, None).await?;
+                self.mark_notification_unread(id).await?;
                 id
             }
-            Command::MarkAllNotificationsRead => {
-                self.mark_all_notifications_read().await?;
+            Command::MarkAllNotificationsRead { notifications } => {
+                self.mark_notifications_read(notifications.as_deref())
+                    .await?;
                 return Ok(None);
             }
             Command::ConfigureAlerts {
@@ -818,29 +819,46 @@ impl Operation<'_> {
         Ok(())
     }
 
-    async fn set_notification_read(
+    async fn mark_notification_read(
         &mut self,
         id: Uuid,
-        read_at: Option<DateTime<Utc>>,
+        created_at: Option<DateTime<Utc>>,
     ) -> Result<()> {
+        let current = self.own_notification(id).await?;
+        let created_at = created_at.unwrap_or(current);
+        self.mark_notifications_read(Some(&[SeenNotification { id, created_at }]))
+            .await
+    }
+
+    async fn mark_notification_unread(&mut self, id: Uuid) -> Result<()> {
         self.own_notification(id).await?;
         self.touch("notifications", id).await?;
-        sqlx::query("UPDATE notifications SET read_at=$3 WHERE workspace_id=$1 AND id=$2")
+        sqlx::query("UPDATE notifications SET read_at=NULL WHERE workspace_id=$1 AND id=$2")
             .bind(self.workspace_id)
             .bind(id)
-            .bind(read_at)
             .execute(&mut *self.tx)
             .await?;
         Ok(())
     }
 
-    async fn mark_all_notifications_read(&mut self) -> Result<()> {
+    /// Reads only the unread notifications whose `created_at` still matches what the reader
+    /// saw. A change notification bumped since then stays unread, even after an offline delay.
+    /// `None` reads all of the actor's unread notifications.
+    async fn mark_notifications_read(&mut self, seen: Option<&[SeenNotification]>) -> Result<()> {
+        let (ids, created): (Option<Vec<Uuid>>, Option<Vec<DateTime<Utc>>>) = seen
+            .map(|seen| seen.iter().map(|n| (n.id, n.created_at)).unzip())
+            .unzip();
         let ids: Vec<Uuid> = sqlx::query_scalar(
-            "SELECT id FROM notifications WHERE workspace_id=$1 AND user_id=$2 \
-            AND read_at IS NULL ORDER BY id FOR UPDATE",
+            "SELECT id FROM notifications \
+            WHERE workspace_id=$1 AND user_id=$2 AND read_at IS NULL \
+            AND ($3::uuid[] IS NULL OR (id,created_at) IN \
+            (SELECT * FROM unnest($3::uuid[],$4::timestamptz[]))) \
+            ORDER BY id FOR UPDATE",
         )
         .bind(self.workspace_id)
         .bind(self.actor)
+        .bind(ids)
+        .bind(created)
         .fetch_all(&mut *self.tx)
         .await?;
         let now = Utc::now();
@@ -1087,9 +1105,10 @@ impl Operation<'_> {
         Ok(())
     }
 
-    async fn own_notification(&mut self, id: Uuid) -> Result<()> {
-        sqlx::query(
-            "SELECT id FROM notifications WHERE workspace_id=$1 AND id=$2 AND \
+    /// Locks the actor's notification and returns its `created_at`.
+    async fn own_notification(&mut self, id: Uuid) -> Result<DateTime<Utc>> {
+        sqlx::query_scalar(
+            "SELECT created_at FROM notifications WHERE workspace_id=$1 AND id=$2 AND \
             user_id=$3 FOR UPDATE",
         )
         .bind(self.workspace_id)
@@ -1097,8 +1116,7 @@ impl Operation<'_> {
         .bind(self.actor)
         .fetch_optional(&mut *self.tx)
         .await?
-        .ok_or(Error::NotFound)?;
-        Ok(())
+        .ok_or(Error::NotFound)
     }
 
     async fn discussion_lock(&mut self, scope: &str) -> Result<()> {

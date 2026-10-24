@@ -80,28 +80,44 @@ function admitsRejects(
   expect(store.replayErrors().size).toBe(0);
 }
 
-function queueMarkAll(store: ReturnType<typeof seedStore>, actor: Id = MEMBER): number {
-  const result = admit(store, actor, { name: "mark_all_notifications_read", args: {}, at: AT });
-  return mutate(store, "mark_all_notifications_read", result.args, AT, result.local);
+/** The notification as the reader sees it now, the way the inbox sends it. */
+function seen(store: ReturnType<typeof seedStore>, id: Id): { id: Id; created_at: string } {
+  const notification = store.get("notifications", id);
+  return { id, created_at: notification?.created_at ?? AT };
+}
+
+function unreadSeen(store: ReturnType<typeof seedStore>, actor: Id = MEMBER) {
+  return store
+    .all("notifications")
+    .filter((row) => row.user_id === actor && row.read_at === null)
+    .map((row) => seen(store, row.id));
 }
 
 /** Running a mutation twice leaves the same view as running it once, with no errors. */
 function twice(name: string, args: unknown, actor: Id = MEMBER): void {
   const once = seedStore(actor);
-  if (name === "mark_all_notifications_read") queueMarkAll(once, actor);
-  else mutate(once, name, args);
+  mutate(once, name, args);
   expect(once.replayErrors().size).toBe(0);
   const first = beforeAll(once);
   const both = seedStore(actor);
-  if (name === "mark_all_notifications_read") {
-    queueMarkAll(both, actor);
-    queueMarkAll(both, actor);
-  } else {
-    mutate(both, name, args);
-    mutate(both, name, args);
-  }
+  mutate(both, name, args);
+  mutate(both, name, args);
   expect(both.replayErrors().size).toBe(0);
   expectSame(both, first);
+}
+
+/** The server bumped a change notification after the reader saw it. */
+function bump(store: ReturnType<typeof seedStore>, id: Id): RecordOf["notifications"] {
+  const current = store.get("notifications", id);
+  if (current === undefined) throw new Error("missing notification");
+  const bumped = {
+    ...(current as RecordOf["notifications"]),
+    version: current.version + 1,
+    read_at: null,
+    created_at: "2026-10-09T12:30:00.000000Z",
+  };
+  store.applyBase([{ entity: "notifications", id, record: bumped }]);
+  return normalize("notifications", bumped);
 }
 
 describe("mark_notification_read / mark_notification_unread", () => {
@@ -109,7 +125,7 @@ describe("mark_notification_read / mark_notification_unread", () => {
     const store = seedStore();
     const unread = store.get("notifications", NOTIF_UNREAD);
     if (unread === undefined) throw new Error("missing notification");
-    mutate(store, "mark_notification_read", { id: NOTIF_UNREAD });
+    mutate(store, "mark_notification_read", seen(store, NOTIF_UNREAD));
     expect(store.get("notifications", NOTIF_UNREAD)).toEqual(
       normalize("notifications", { ...(unread as RecordOf["notifications"]), read_at: AT }),
     );
@@ -119,15 +135,33 @@ describe("mark_notification_read / mark_notification_unread", () => {
     );
   });
 
+  it("keeps a notification changed after the read unread", () => {
+    const store = seedStore();
+    const id = mutate(store, "mark_notification_read", seen(store, NOTIF_UNREAD));
+    expect(store.get("notifications", NOTIF_UNREAD)?.read_at).toBe(AT);
+    const bumped = bump(store, NOTIF_UNREAD);
+    expect(store.replayErrors().get(id)).toBeUndefined();
+    expect(store.get("notifications", NOTIF_UNREAD)).toEqual(bumped);
+  });
+
+  it("reads a notification changed since, for an older client's command without created_at", () => {
+    const store = seedStore();
+    const id = mutate(store, "mark_notification_read", { id: NOTIF_UNREAD });
+    const bumped = bump(store, NOTIF_UNREAD);
+    expect(store.replayErrors().get(id)).toBeUndefined();
+    expect(store.get("notifications", NOTIF_UNREAD)).toEqual({ ...bumped, read_at: AT });
+  });
+
   it("replays an already-read notification as a no-op but admission succeeds", () => {
     const replayed = seedStore();
     const before = beforeAll(replayed);
-    const id = mutate(replayed, "mark_notification_read", { id: NOTIF_READ });
+    const args = seen(replayed, NOTIF_READ);
+    const id = mutate(replayed, "mark_notification_read", args);
     expect(replayed.replayErrors().get(id)).toBeUndefined();
     expectSame(replayed, before);
     let error: unknown;
     try {
-      admit(replayed, MEMBER, { name: "mark_notification_read", args: { id: NOTIF_READ }, at: AT });
+      admit(replayed, MEMBER, { name: "mark_notification_read", args, at: AT });
     } catch (caught) {
       error = caught;
     }
@@ -143,24 +177,30 @@ describe("mark_notification_read / mark_notification_unread", () => {
   });
 
   it("running twice keeps the view", () => {
-    twice("mark_notification_read", { id: NOTIF_UNREAD });
+    twice("mark_notification_read", seen(seedStore(), NOTIF_UNREAD));
     twice("mark_notification_unread", { id: NOTIF_READ });
   });
 
   it("rejects missing and foreign notifications with 404", () => {
-    admitsRejects("mark_notification_read", { id: "notif-ghost" }, 404, "not found");
-    admitsRejects("mark_notification_read", { id: NOTIF_OTHER }, 404, "not found");
+    admitsRejects(
+      "mark_notification_read",
+      { id: "notif-ghost", created_at: AT },
+      404,
+      "not found",
+    );
+    admitsRejects("mark_notification_read", { id: NOTIF_OTHER, created_at: AT }, 404, "not found");
     admitsRejects("mark_notification_unread", { id: "notif-ghost" }, 404, "not found");
     // Replay over a missing row is a no-op without errors.
     const replayed = seedStore();
     const before = beforeAll(replayed);
-    const id = mutate(replayed, "mark_notification_read", { id: "notif-ghost" });
+    const id = mutate(replayed, "mark_notification_read", { id: "notif-ghost", created_at: AT });
     expect(replayed.replayErrors().get(id)).toBeUndefined();
     expectSame(replayed, before);
   });
 
   it("viewers may mark their own notifications", () => {
     const store = seedStore(VIEWER);
+    const createdAt = "2026-10-08T12:00:00.000000Z";
     store.applyBase([
       {
         entity: "notifications",
@@ -173,23 +213,24 @@ describe("mark_notification_read / mark_notification_unread", () => {
           kind: "mention",
           message: "Hi",
           read_at: null,
-          created_at: "2026-10-08T12:00:00.000000Z",
+          created_at: createdAt,
           dedup_key: "dv",
         },
       },
     ]);
-    mutate(store, "mark_notification_read", { id: "notif-v" });
+    mutate(store, "mark_notification_read", { id: "notif-v", created_at: createdAt });
     expect(store.replayErrors().size).toBe(0);
     expect(store.get("notifications", "notif-v")?.read_at).toBe(AT);
     // Reading someone else's notification fails admission as on the server;
     // replay treats the foreign row as absent and stays quiet.
-    admitsRejects("mark_notification_read", { id: NOTIF_UNREAD }, 404, "not found", VIEWER);
-    rejects("mark_notification_read", { id: NOTIF_UNREAD }, 403, "permission denied", GHOST);
+    const foreign = seen(seedStore(), NOTIF_UNREAD);
+    admitsRejects("mark_notification_read", foreign, 404, "not found", VIEWER);
+    rejects("mark_notification_read", foreign, 403, "permission denied", GHOST);
   });
 });
 
 describe("mark_all_notifications_read", () => {
-  it("marks every unread notification of the actor", () => {
+  it("marks every unread notification the reader saw", () => {
     const store = seedStore();
     const unread = store.get("notifications", NOTIF_UNREAD);
     const read = store.get("notifications", NOTIF_READ);
@@ -197,7 +238,10 @@ describe("mark_all_notifications_read", () => {
     if (unread === undefined || read === undefined || other === undefined) {
       throw new Error("missing notifications");
     }
-    queueMarkAll(store);
+    mutate(store, "mark_all_notifications_read", {
+      notifications: [...unreadSeen(store), seen(store, NOTIF_READ), seen(store, NOTIF_OTHER)],
+    });
+    expect(store.replayErrors().size).toBe(0);
     expect(store.get("notifications", NOTIF_UNREAD)).toEqual(
       normalize("notifications", { ...(unread as RecordOf["notifications"]), read_at: AT }),
     );
@@ -210,32 +254,11 @@ describe("mark_all_notifications_read", () => {
     );
   });
 
-  it("replay marks only the notifications admitted, not newer ones", () => {
+  it("leaves notifications the reader did not see, or that changed since, unread", () => {
     const store = seedStore();
-    const admitted = admit(store, MEMBER, {
-      name: "mark_all_notifications_read",
-      args: {},
-      at: AT,
-    });
-    expect(admitted.local).toEqual({ ids: [NOTIF_UNREAD] });
-    store.setPending([
-      ...store.pending(),
-      {
-        id: store.pending().length + 1,
-        name: "mark_all_notifications_read",
-        args: admitted.args,
-        at: AT,
-        local: admitted.local,
-      },
-    ]);
-    const unread = store.get("notifications", NOTIF_UNREAD);
-    if (unread === undefined) throw new Error("missing notification");
-    expect(unread.read_at).toBe(AT);
-    const confirmed = {
-      ...unread,
-      version: unread.version + 1,
-      read_at: "2026-10-09T12:00:01.000000Z",
-    };
+    const id = mutate(store, "mark_all_notifications_read", { notifications: unreadSeen(store) });
+    expect(store.get("notifications", NOTIF_UNREAD)?.read_at).toBe(AT);
+    const bumped = bump(store, NOTIF_UNREAD);
     const newer: RecordOf["notifications"] = {
       id: "notif-new",
       version: 1,
@@ -247,20 +270,26 @@ describe("mark_all_notifications_read", () => {
       created_at: AT,
       dedup_key: "d-new",
     };
-    // A notification created after the server applied mark-all arrives on an
-    // intermediate pull while the mutation is still pending: it stays unread.
-    store.applyBase([
-      { entity: "notifications", id: NOTIF_UNREAD, record: confirmed },
-      { entity: "notifications", id: newer.id, record: newer },
-    ]);
-    expect(store.replayErrors().size).toBe(0);
+    store.applyBase([{ entity: "notifications", id: newer.id, record: newer }]);
+    expect(store.replayErrors().get(id)).toBeUndefined();
+    expect(store.get("notifications", NOTIF_UNREAD)).toEqual(bumped);
     expect(store.get("notifications", newer.id)).toEqual(normalize("notifications", newer));
-    expect(store.get("notifications", NOTIF_UNREAD)).toEqual(normalize("notifications", confirmed));
-    const once = beforeAll(store);
-    store.setPending([...store.pending()]);
-    expect(store.replayErrors().size).toBe(0);
-    expectSame(store, once);
-    twice("mark_all_notifications_read", {});
+  });
+
+  it("reads every unread notification, changed or not, for an older client's command", () => {
+    const store = seedStore();
+    const read = store.get("notifications", NOTIF_READ);
+    const other = store.get("notifications", NOTIF_OTHER);
+    const id = mutate(store, "mark_all_notifications_read", {});
+    const bumped = bump(store, NOTIF_UNREAD);
+    expect(store.replayErrors().get(id)).toBeUndefined();
+    expect(store.get("notifications", NOTIF_UNREAD)).toEqual({ ...bumped, read_at: AT });
+    expect(store.get("notifications", NOTIF_READ)).toEqual(read);
+    expect(store.get("notifications", NOTIF_OTHER)).toEqual(other);
+  });
+
+  it("running twice keeps the view", () => {
+    twice("mark_all_notifications_read", { notifications: unreadSeen(seedStore()) });
   });
 
   it("is a no-op when all notifications are already read", () => {
@@ -273,21 +302,18 @@ describe("mark_all_notifications_read", () => {
       },
     ]);
     const before = beforeAll(store);
-    const id = queueMarkAll(store, OWNER);
+    const id = mutate(store, "mark_all_notifications_read", {
+      notifications: [seen(store, NOTIF_OTHER)],
+    });
     expect(store.replayErrors().get(id)).toBeUndefined();
     expectSame(store, before);
-    twice("mark_all_notifications_read", {});
-  });
-
-  it("does not expand mark-all during replay when local data is absent", () => {
-    rejects("mark_all_notifications_read", {}, 400, "mark all read requires local.ids");
   });
 
   it("viewers may mark all read but ghosts may not", () => {
     const store = seedStore(VIEWER);
-    const id = queueMarkAll(store, VIEWER);
+    const id = mutate(store, "mark_all_notifications_read", { notifications: [] });
     expect(store.replayErrors().get(id)).toBeUndefined();
-    rejects("mark_all_notifications_read", {}, 403, "permission denied", GHOST);
+    rejects("mark_all_notifications_read", { notifications: [] }, 403, "permission denied", GHOST);
   });
 });
 

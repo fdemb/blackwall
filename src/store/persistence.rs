@@ -449,7 +449,13 @@ async fn issue_effects_with_context(
         notify_new_assignee(conn, workspace, actor, before, after).await?;
     }
 
-    if matches!(effects, IssueEffects::Update) || (remote && before.is_some()) {
+    let notifies_followers = match effects {
+        IssueEffects::Update => true,
+        IssueEffects::Move => before.is_some_and(|old| old.stage_id != after.stage_id),
+        IssueEffects::Remote(_) => before.is_some(),
+        IssueEffects::Create | IssueEffects::DeleteRestore => false,
+    };
+    if notifies_followers {
         notify_changes(conn, workspace, actor, after, remote).await?;
     }
 
@@ -554,8 +560,11 @@ async fn activity_with_integrations(
         fields,
         via: None,
     };
-    let via: Option<serde_json::Value> = sqlx::query_scalar("INSERT INTO activity(id,workspace_id,actor,action,entity_id,at,fields) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING via")
-        .bind(event.id).bind(workspace).bind(actor).bind(action).bind(issue).bind(event.at).bind(serde_json::to_value(&event.fields)?).fetch_one(&mut *conn).await?;
+    let via: Option<serde_json::Value> = match continued_description_edit(conn, workspace, &event).await? {
+        Some(via) => via,
+        None => sqlx::query_scalar("INSERT INTO activity(id,workspace_id,actor,action,entity_id,at,fields) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING via")
+            .bind(event.id).bind(workspace).bind(actor).bind(action).bind(issue).bind(event.at).bind(serde_json::to_value(&event.fields)?).fetch_one(&mut *conn).await?,
+    };
     // Only public events leave the workspace; see `WEBHOOK_EVENTS`.
     let Some((kind, entity_type)) = crate::domain::webhook_event(action) else {
         return Ok(());
@@ -601,6 +610,36 @@ async fn activity_with_integrations(
     Ok(())
 }
 
+/// Description autosave saves after every pause in typing. A save continues the latest
+/// activity row of the issue when that row is a description-only edit by the same actor through
+/// the same client (`via`) from the last ten minutes, and returns that row's `via`. Ten minutes
+/// spans the pauses of one sitting but splits separate ones. The row keeps its first `at`,
+/// because activity rows sync to clients only on insert.
+async fn continued_description_edit(
+    conn: &mut PgConnection,
+    workspace: Uuid,
+    event: &Activity,
+) -> Result<Option<Option<serde_json::Value>>> {
+    let Some(issue) = event.entity_id else {
+        return Ok(None);
+    };
+    if event.action != "update_issue" || event.fields != ["description"] {
+        return Ok(None);
+    }
+    Ok(sqlx::query_scalar(
+        "SELECT via FROM (SELECT actor,action,fields,at,via FROM activity \
+         WHERE workspace_id=$1 AND entity_id=$2 ORDER BY at DESC,id DESC LIMIT 1) latest \
+         WHERE actor=$3 AND action='update_issue' AND fields='[\"description\"]'::jsonb AND at>$4 \
+         AND via IS NOT DISTINCT FROM nullif(current_setting('blackwall.via',true),'')::jsonb",
+    )
+    .bind(workspace)
+    .bind(issue)
+    .bind(event.actor)
+    .bind(event.at - chrono::TimeDelta::minutes(10))
+    .fetch_optional(conn)
+    .await?)
+}
+
 async fn notify_changes(
     conn: &mut PgConnection,
     workspace: Uuid,
@@ -618,11 +657,14 @@ async fn notify_changes(
         return Ok(());
     }
     let ids: Vec<Uuid> = users.iter().map(|_| Uuid::new_v4()).collect();
+    // One unread change notification per issue and recipient. Later changes bump it to the top
+    // of the inbox. Marking it read moves it off this key (migration 0035), so the next change
+    // inserts a fresh one.
     let keys: Vec<String> = users
         .iter()
-        .map(|user| format!("change:{}:{user}:{}", issue.id, Uuid::new_v4()))
+        .map(|user| format!("change:{}:{user}", issue.id))
         .collect();
-    sqlx::query("INSERT INTO notifications(id,workspace_id,user_id,issue_id,kind,message,created_at,dedup_key) SELECT input.id,$1,input.user_id,$2,'change',$3,now(),input.key FROM unnest($4::uuid[],$5::uuid[],$6::text[]) AS input(id,user_id,key) JOIN workspace_members m ON m.workspace_id=$1 AND m.user_id=input.user_id JOIN users u ON u.id=input.user_id LEFT JOIN alert_preferences p ON p.workspace_id=$1 AND p.user_id=input.user_id WHERE COALESCE(p.change,true) AND COALESCE((u.profile->'alerts'->>'changes')::bool,true) ON CONFLICT(workspace_id,dedup_key) DO NOTHING")
+    sqlx::query("INSERT INTO notifications(id,workspace_id,user_id,issue_id,kind,message,created_at,dedup_key) SELECT input.id,$1,input.user_id,$2,'change',$3,now(),input.key FROM unnest($4::uuid[],$5::uuid[],$6::text[]) AS input(id,user_id,key) JOIN workspace_members m ON m.workspace_id=$1 AND m.user_id=input.user_id JOIN users u ON u.id=input.user_id LEFT JOIN alert_preferences p ON p.workspace_id=$1 AND p.user_id=input.user_id WHERE COALESCE(p.change,true) AND COALESCE((u.profile->'alerts'->>'changes')::bool,true) ON CONFLICT(workspace_id,dedup_key) DO UPDATE SET message=EXCLUDED.message,created_at=EXCLUDED.created_at,version=notifications.version+1 WHERE notifications.read_at IS NULL")
         .bind(workspace).bind(issue.id).bind(&issue.title).bind(ids).bind(users).bind(keys)
         .execute(conn).await?;
     Ok(())

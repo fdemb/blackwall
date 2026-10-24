@@ -582,9 +582,9 @@ describe("tab coordination", () => {
       for (const [index, tab] of f.tabs.entries()) {
         expect(tab.events).toEqual([{ type: "outdated" }]);
         expect(tab.engine.store.all("issues")).toEqual(views[index]);
-        await expect(tab.engine.mutate("mark_all_notifications_read", {})).rejects.toBeInstanceOf(
-          OutdatedError,
-        );
+        await expect(
+          tab.engine.mutate("mark_all_notifications_read", { notifications: [] }),
+        ).rejects.toBeInstanceOf(OutdatedError);
       }
       const nextLeader = vi.fn(async () => {});
       await f.hub.locks.request(`blackwall-sync:${SESSION}:${f.workspaceId}`, nextLeader);
