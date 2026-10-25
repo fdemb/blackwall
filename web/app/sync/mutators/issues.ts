@@ -279,10 +279,11 @@ function sameIds(a: readonly string[], b: readonly string[]): boolean {
   return a.length === b.length && a.every((id, index) => id === b[index]);
 }
 
+/** Postgres keeps microseconds, so finer digits and other offsets name the same deadline. */
 function sameInstant(a: string | null, b: string | null): boolean {
   if (a === null || b === null) return a === b;
   try {
-    return parseTimestamp(a, false, "chrono") === parseTimestamp(b, false, "chrono");
+    return parseTimestamp(a) === parseTimestamp(b);
   } catch {
     return a === b;
   }

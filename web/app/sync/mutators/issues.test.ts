@@ -425,7 +425,7 @@ describe("update_issue", () => {
           stage_id: STAGE_ACTIVE,
           assignee: MEMBER,
           labels: [LABEL_ONE, LABEL_TWO, LABEL_ONE],
-          deadline: "2026-10-12T12:00:00Z",
+          deadline: "2026-10-12T12:00:00.000000400Z",
           project_id: PROJECT,
           sprint_id: SPRINT,
         },

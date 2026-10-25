@@ -1,3 +1,4 @@
+use super::super::issues::{id_set, stored_instant};
 use super::super::*;
 use super::find_mut;
 
@@ -212,14 +213,14 @@ impl Workspace {
             assignee: input.assignee,
             created_by: Some(actor),
             priority: input.priority,
-            labels: input.labels,
+            labels: id_set(input.labels),
             estimate: input.estimate,
-            deadline: input.deadline,
+            deadline: input.deadline.map(stored_instant),
             project_id: input.project_id,
             milestone_id: input.milestone_id,
             sprint_id: input.sprint_id,
             parent_id: input.parent_id,
-            dependencies: input.dependencies,
+            dependencies: id_set(input.dependencies),
             position: 0,
             followers: vec![actor],
             attachments: vec![],

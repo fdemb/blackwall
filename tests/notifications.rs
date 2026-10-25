@@ -676,7 +676,7 @@ async fn a_patch_that_changes_nothing_leaves_no_trace() {
         description: Some("Expires Friday".into()),
         stage_id: Some(f.stages[1]),
         labels: Some(reordered),
-        deadline: Some(deadline),
+        deadline: Some(deadline + chrono::Duration::nanoseconds(400)),
         ..Default::default()
     };
     let commands = [
