@@ -490,6 +490,19 @@ describe("online-only controls", () => {
   );
 });
 
+describe("members list", () => {
+  it("shows each member's teams", async () => {
+    const engine = await fixture({ otherMember: true });
+    const router = createMemoryRouter([{ path: "/", Component: Members }]);
+    const html = render(engine, <RouterProvider router={router} />);
+    const row = (name: string) => html.split('role="row"').find((r) => r.includes(`>${name}<`))!;
+    expect(row("Ada")).toContain(">TEAM<");
+    expect(row("Ada")).not.toContain("No teams");
+    expect(row("Grace")).toContain("No teams");
+    expect(row("Grace")).not.toContain(">TEAM<");
+  });
+});
+
 describe("workspace settings", () => {
   it("lets the only owner rename and hand over the workspace, but not leave it", async () => {
     const engine = await fixture({ online: true, otherMember: true });

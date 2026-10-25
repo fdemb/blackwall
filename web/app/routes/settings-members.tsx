@@ -137,6 +137,9 @@ function MemberRow({
             )}
           </p>
           <p className="truncate text-muted-foreground">{row.email}</p>
+          <div className="mt-1 flex flex-wrap items-center gap-1 md:hidden">
+            <TeamKeys keys={row.teams} />
+          </div>
         </div>
       </div>
       <div role="cell" className={cn(COLUMN.teams, "flex-wrap items-center gap-1")}>
