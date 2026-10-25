@@ -68,8 +68,10 @@ const ALL_COMMANDS = [
   "invite",
   "resend_invitation",
   "cancel_invitation",
+  "update_workspace",
   "set_role",
   "remove_member",
+  "transfer_ownership",
   "mark_notification_read",
   "mark_notification_unread",
   "mark_all_notifications_read",
@@ -107,8 +109,10 @@ describe("mutator registry", () => {
       "invite",
       "resend_invitation",
       "create_integration",
+      "update_workspace",
       "set_role",
       "remove_member",
+      "transfer_ownership",
       "import_issues",
       "add_attachment",
       "attach_comment_file",
@@ -294,8 +298,10 @@ describe("mutator registry", () => {
       | "invite"
       | "resend_invitation"
       | "create_integration"
+      | "update_workspace"
       | "set_role"
       | "remove_member"
+      | "transfer_ownership"
       | "import_issues"
       | "add_attachment"
       | "attach_comment_file"

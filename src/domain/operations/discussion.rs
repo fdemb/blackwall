@@ -209,12 +209,23 @@ impl Workspace {
                 invitation.token_hash.clear();
                 id
             }
+            Command::UpdateWorkspace { name, slug } => {
+                self.admin(actor)?;
+                text(&name, 200)?;
+                validate_workspace_slug(&slug)?;
+                self.name = name;
+                return Ok(None);
+            }
             Command::SetRole { user_id, role } => {
                 self.set_role(actor, user_id, role)?;
                 user_id
             }
             Command::RemoveMember { user_id } => {
                 self.remove_member(actor, user_id)?;
+                user_id
+            }
+            Command::TransferOwnership { user_id } => {
+                self.transfer_ownership(actor, user_id)?;
                 user_id
             }
             Command::MarkNotificationRead { id, created_at } => {
@@ -443,8 +454,22 @@ impl Workspace {
         Ok(())
     }
 
+    fn transfer_ownership(&mut self, actor: Uuid, user_id: Uuid) -> Result<()> {
+        if self.member(actor)?.role != Role::Owner {
+            return Err(Error::Forbidden);
+        }
+        if user_id == actor {
+            return Err(Error::BadRequest("you already own the workspace".into()));
+        }
+        find_mut(&mut self.members, |m| m.user_id == user_id)?.role = Role::Owner;
+        find_mut(&mut self.members, |m| m.user_id == actor)?.role = Role::Admin;
+        Ok(())
+    }
+
     fn remove_member(&mut self, actor: Uuid, user_id: Uuid) -> Result<()> {
-        self.admin(actor)?;
+        if user_id != actor {
+            self.admin(actor)?;
+        }
         if self.member(user_id)?.role == Role::Owner {
             if self.member(actor)?.role != Role::Owner {
                 return Err(Error::Forbidden);

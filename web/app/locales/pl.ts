@@ -642,6 +642,22 @@ export const pl = {
   "settings.generalSub": "Przestrzeń, której dotyczą te ustawienia, i Twoja rola w niej.",
   "settings.yourRole": "Twoja rola",
   "settings.contents": "Zawartość",
+  "workspace.saved": "Zapisano przestrzeń",
+  "workspace.slugChangeHint":
+    "Linki do przestrzeni zaczynają się od /{{slug}}. Linki ze starym adresem przestaną działać.",
+  "workspace.membership": "Twoje członkostwo",
+  "workspace.transfer": "Przekaż własność",
+  "workspace.transferSub": "Ustaw innego członka jako właściciela. Ty zostaniesz administratorem.",
+  "workspace.transferTo": "Nowy właściciel",
+  "workspace.transferConfirm": "Przekazać własność użytkownikowi {{name}}?",
+  "workspace.transferConfirmSub":
+    "Zostaniesz administratorem i nie odzyskasz własności bez zgody nowego właściciela.",
+  "workspace.leave": "Opuść przestrzeń",
+  "workspace.leaveSub":
+    "Stracisz dostęp do jej zadań i projektów, dopóki ktoś znów cię nie zaprosi.",
+  "workspace.leaveConfirm": "Opuścić {{name}}?",
+  "workspace.leaveSoleOwner":
+    "Jesteś jedynym właścicielem. Zanim odejdziesz, przekaż własność innemu członkowi.",
   "account.preferencesSub": "Język, motyw i zachowanie klawiatury.",
   "account.appearance": "Wygląd",
   "account.keyboard": "Klawiatura",

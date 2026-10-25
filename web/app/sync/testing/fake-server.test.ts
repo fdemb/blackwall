@@ -321,6 +321,23 @@ describe("fake sync push", () => {
     expect(f.server.record("members", f.member.id)).toBeNull();
   });
 
+  it("renames the workspace, lets members leave and hands ownership over", () => {
+    const f = fixture();
+    const rename = { type: "update_workspace", name: "Renamed", slug: "renamed" } as const;
+    expect(() => f.server.run(f.member, rename)).toThrow("permission denied");
+    f.server.run(f.owner, rename);
+    expect(f.server.records("workspace", f.owner.id)).toMatchObject([
+      { name: "Renamed", slug: "renamed" },
+    ]);
+    const handOver = { type: "transfer_ownership", user_id: f.member.id } as const;
+    expect(() => f.server.run(f.member, handOver)).toThrow("permission denied");
+    f.server.run(f.owner, handOver);
+    expect(f.server.record("members", f.member.id)?.role).toBe("owner");
+    expect(f.server.record("members", f.owner.id)?.role).toBe("admin");
+    f.server.run(f.owner, { type: "remove_member", user_id: f.owner.id });
+    expect(f.server.record("members", f.owner.id)).toBeNull();
+  });
+
   it("clears the lead of projects a removed member led", async () => {
     const f = fixture();
     const project = id(16);
@@ -370,8 +387,10 @@ describe("fake sync push", () => {
     ONLINE_ONLY.filter(
       (name) =>
         ![
+          "update_workspace",
           "set_role",
           "remove_member",
+          "transfer_ownership",
           "add_attachment",
           "attach_comment_file",
           "invite",

@@ -1234,6 +1234,25 @@ mod tests {
             .is_err()
         );
         assert!(w.query(viewer, IssueFilter::default()).is_ok());
+
+        w.apply(
+            owner,
+            Command::TransferOwnership { user_id: viewer },
+            Utc::now(),
+        )
+        .unwrap();
+        assert_eq!(w.member(owner).unwrap().role, Role::Admin);
+        w.apply(owner, Command::RemoveMember { user_id: owner }, Utc::now())
+            .unwrap();
+        assert!(w.member(owner).is_err());
+        assert!(
+            w.apply(
+                viewer,
+                Command::RemoveMember { user_id: viewer },
+                Utc::now()
+            )
+            .is_err()
+        );
     }
 
     #[test]

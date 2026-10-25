@@ -561,8 +561,10 @@ export type Command =
   | { type: "invite"; email: string; role: Role; token_hash: string }
   | { type: "resend_invitation"; id: Id; token_hash: string }
   | { type: "cancel_invitation"; id: Id }
+  | { type: "update_workspace"; name: string; slug: string }
   | { type: "set_role"; user_id: Id; role: Role }
   | { type: "remove_member"; user_id: Id }
+  | { type: "transfer_ownership"; user_id: Id }
   // Clients older than coalesced change notifications omit `created_at` and
   // `notifications`; their queued commands keep the old read-regardless meaning.
   | { type: "mark_notification_read"; id: Id; created_at?: string }
