@@ -400,7 +400,6 @@ export interface Profile {
   contact: string;
   language: Language;
   theme: Theme;
-  alerts: { assignments: boolean; replies: boolean; changes: boolean; deadlines: boolean };
 }
 export type LimitedResource =
   | "issues"

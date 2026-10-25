@@ -210,7 +210,6 @@ export class FakeServer {
       contact: "",
       language: "en",
       theme: "system",
-      alerts: { assignments: true, replies: true, changes: true, deadlines: true },
       ...structuredClone(input),
     };
     if (this.users.has(id)) throw new Error("user already exists");
@@ -829,7 +828,6 @@ export class FakeServer {
       id,
       now: this.now,
       generateId: () => this.id(),
-      users: this.users,
     });
     if (
       name === "add_source_link" &&

@@ -457,12 +457,6 @@ function parseProfile(value: unknown, status: number): SessionProfile {
     language: value.language,
     theme: value.theme,
     session_id: value.session_id,
-    alerts: {
-      assignments: value.alerts.assignments,
-      replies: value.alerts.replies,
-      changes: value.alerts.changes,
-      deadlines: value.alerts.deadlines,
-    },
   };
 }
 
@@ -474,11 +468,7 @@ function isProfile(value: unknown): value is SessionProfile {
     ) &&
     (value.avatar_url === null || typeof value.avatar_url === "string") &&
     (value.language === "en" || value.language === "pl") &&
-    (value.theme === "light" || value.theme === "dark" || value.theme === "system") &&
-    object(value.alerts) &&
-    ["assignments", "replies", "changes", "deadlines"].every(
-      (key) => typeof (value.alerts as Record<string, unknown>)[key] === "boolean",
-    )
+    (value.theme === "light" || value.theme === "dark" || value.theme === "system")
   );
 }
 

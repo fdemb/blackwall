@@ -717,3 +717,44 @@ async fn a_patch_that_changes_nothing_leaves_no_trace() {
 
     f.cleanup().await;
 }
+
+#[tokio::test]
+async fn workspace_preferences_gate_the_inbox_and_profile_alerts_do_not() {
+    let f = Fixture::new().await;
+    let (owner, follower) = (f.owner.profile.id, f.follower.profile.id);
+    sqlx::query(
+        "UPDATE users SET profile=profile||'{\"alerts\":{\"assignments\":false,\"replies\":false,\"changes\":false,\"deadlines\":false}}' WHERE id=$1",
+    )
+    .bind(follower)
+    .execute(&f.store.pool)
+    .await
+    .unwrap();
+    let assign = |issue| Command::UpdateIssue {
+        id: issue,
+        patch: IssuePatch {
+            assignee: Some(follower),
+            ..Default::default()
+        },
+    };
+
+    let first = f.create_issue("Legacy switches", f.stages[0]).await;
+    f.run(owner, assign(first)).await;
+    assert_eq!(f.alerts(follower, first, "assignment").await.len(), 1);
+
+    f.run(
+        follower,
+        Command::ConfigureAlerts {
+            assignment: false,
+            reply: true,
+            change: true,
+            mention: true,
+            deadline: true,
+        },
+    )
+    .await;
+    let second = f.create_issue("Workspace switch", f.stages[0]).await;
+    f.run(owner, assign(second)).await;
+    assert!(f.alerts(follower, second, "assignment").await.is_empty());
+
+    f.cleanup().await;
+}

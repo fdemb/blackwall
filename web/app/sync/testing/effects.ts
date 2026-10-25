@@ -1,5 +1,5 @@
 import { newMentions } from "../../lib/mentions";
-import type { AlertKind, Profile } from "../../lib/types";
+import type { AlertKind } from "../../lib/types";
 import { object } from "./commands";
 import { Tables } from "./tables";
 
@@ -12,7 +12,6 @@ interface ServerEffects {
   id: string | null;
   now: () => string;
   generateId: () => string;
-  users: ReadonlyMap<string, Profile>;
 }
 
 /** Audit corrections to client predictions here against Operation and persistence. */
@@ -318,15 +317,6 @@ function issueFieldChanges(old: IssueFields, current: IssueFields): string[] {
   ).map((field) => field.replace(/_id$/, ""));
 }
 
-/** The profile switch that silences each alert kind; mentions follow replies. */
-const GLOBAL_ALERT = {
-  assignment: "assignments",
-  change: "changes",
-  deadline: "deadlines",
-  reply: "replies",
-  mention: "replies",
-} as const;
-
 function notify(
   context: ServerEffects,
   tx: Tables,
@@ -336,14 +326,7 @@ function notify(
   message: string,
   { key, fields = [] }: { key?: string; fields?: string[] },
 ): void {
-  const profile = context.users.get(user);
-  const global = profile?.alerts[GLOBAL_ALERT[kind]];
-  if (
-    !tx.get("members", user) ||
-    tx.get("alert_preferences", user)?.[kind] === false ||
-    global === false
-  )
-    return;
+  if (!tx.get("members", user) || tx.get("alert_preferences", user)?.[kind] === false) return;
   const id = context.generateId();
   const dedup_key = key ?? `${kind}:${issue}:${user}:${id}`;
   if (tx.all("notifications").some((notification) => notification.dedup_key === dedup_key)) return;

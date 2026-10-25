@@ -422,7 +422,7 @@ async fn refresh_only_invalidates_watermark_and_reconciles_old_packages_next_pol
 }
 
 #[tokio::test]
-async fn follower_alerts_are_batched_and_respect_local_and_global_preferences() {
+async fn follower_alerts_are_batched_and_respect_preferences() {
     let fixture = Fixture::new(0).await;
     drain(&fixture.store).await;
     let member = account(&fixture.store).await;
@@ -471,13 +471,12 @@ async fn follower_alerts_are_batched_and_respect_local_and_global_preferences() 
         vec![(member.profile.id, None, json!(["deadline"]))],
         "a remote change names no local actor"
     );
-    sqlx::query(
-        "UPDATE users SET profile=jsonb_set(profile,'{alerts,changes}','false'::jsonb) WHERE id=$1",
-    )
-    .bind(member.profile.id)
-    .execute(&fixture.store.pool)
-    .await
-    .unwrap();
+    sqlx::query("INSERT INTO alert_preferences(workspace_id,user_id,change) VALUES($1,$2,false)")
+        .bind(fixture.workspace)
+        .bind(member.profile.id)
+        .execute(&fixture.store.pool)
+        .await
+        .unwrap();
     fixture.mock.data.lock().await.deadline = Some("2030-12-11".into());
     fixture.sync_now().await;
     assert_eq!(

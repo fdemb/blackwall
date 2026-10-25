@@ -3,7 +3,6 @@ import { Switch } from "~/components/ui/toggles";
 import { useToast } from "~/components/ui/toast";
 import { SettingsPage, SettingsSection } from "~/components/app/settings";
 import { useI18n } from "~/lib/i18n";
-import { useSession } from "~/lib/session";
 import { useWorkspace } from "~/lib/workspace";
 import { cn } from "~/lib/utils";
 
@@ -17,29 +16,16 @@ const STATUS_LABEL = {
   failed: "account.alertsFailed",
 } as const;
 
-/** This workspace's choices, falling back to the profile defaults; mentions default on. */
-function storedAlerts(
-  mine: Partial<Prefs> | undefined,
-  defaults: { assignments: boolean; replies: boolean; changes: boolean; deadlines: boolean },
-): Prefs {
-  return {
-    assignment: mine?.assignment ?? defaults.assignments,
-    reply: mine?.reply ?? defaults.replies,
-    change: mine?.change ?? defaults.changes,
-    mention: mine?.mention ?? true,
-    deadline: mine?.deadline ?? defaults.deadlines,
-  };
+/** This workspace's choices. Without a stored row every kind reaches the inbox. */
+function storedAlerts(mine: Partial<Prefs> | undefined): Prefs {
+  return Object.fromEntries(KINDS.map((k) => [k, mine?.[k] ?? true])) as Prefs;
 }
 
 export default function Notifications() {
   const { t } = useI18n();
   const toast = useToast();
-  const { profile, saveProfile } = useSession();
   const { ws, me, run } = useWorkspace();
-  const stored = storedAlerts(
-    ws.alert_preferences.find((p) => p.user_id === me),
-    profile.alerts,
-  );
+  const stored = storedAlerts(ws.alert_preferences.find((p) => p.user_id === me));
   const storedRef = useRef(stored);
   useEffect(() => {
     storedRef.current = stored;
@@ -68,15 +54,6 @@ export default function Notifications() {
         setLocal(storedRef.current);
         return setStatus("failed");
       }
-      // The profile keeps a default copy for new workspaces. A failure here doesn't undo the saved choice.
-      await saveProfile({
-        alerts: {
-          assignments: want.assignment,
-          replies: want.reply,
-          changes: want.change,
-          deadlines: want.deadline,
-        },
-      }).catch((e: Error) => toast.error(e.message));
       if (latest.current === want) setStatus("saved");
     });
   };

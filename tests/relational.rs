@@ -604,8 +604,10 @@ async fn superseded_running_reminders_skip_inbox_and_current_generation_deduplic
     };
 
     sqlx::query(
-        "UPDATE users SET profile=jsonb_set(profile,'{alerts,deadlines}','false') WHERE id=$1",
+        "INSERT INTO alert_preferences(workspace_id,user_id,deadline) VALUES($1,$2,false) \
+         ON CONFLICT(workspace_id,user_id) DO UPDATE SET deadline=EXCLUDED.deadline",
     )
+    .bind(ws)
     .bind(owner.profile.id)
     .execute(&store.pool)
     .await
@@ -624,8 +626,10 @@ async fn superseded_running_reminders_skip_inbox_and_current_generation_deduplic
     tx.commit().await.unwrap();
 
     sqlx::query(
-        "UPDATE users SET profile=jsonb_set(profile,'{alerts,deadlines}','true') WHERE id=$1",
+        "INSERT INTO alert_preferences(workspace_id,user_id,deadline) VALUES($1,$2,true) \
+         ON CONFLICT(workspace_id,user_id) DO UPDATE SET deadline=EXCLUDED.deadline",
     )
+    .bind(ws)
     .bind(owner.profile.id)
     .execute(&store.pool)
     .await
