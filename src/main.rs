@@ -72,6 +72,8 @@ async fn serve(store: &Store) -> MainResult {
     let listener = tokio::net::TcpListener::bind(&bind).await?;
     let mut store = store.clone();
     store.mail_enabled = jobs::Mailer::from_env()?.enabled();
+    store.registration =
+        blackwall::auth::RegistrationMode::parse(std::env::var("REGISTRATION").ok().as_deref())?;
 
     // One change listener per HTTP process; the worker never starts one.
     let _sync_events = store.spawn_sync_events();
@@ -79,6 +81,7 @@ async fn serve(store: &Store) -> MainResult {
     tracing::info!(
         address = %listener.local_addr()?,
         mail = store.mail_enabled,
+        registration = ?store.registration,
         "Blackwall listening"
     );
     axum::serve(

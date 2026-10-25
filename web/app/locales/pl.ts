@@ -996,6 +996,17 @@ export const pl = {
   "auth.resent": "Nowy token jest w drodze",
   "auth.changeEmail": "Użyj innego adresu e-mail",
   "auth.haveToken": "Mam już token",
+  "auth.inviteOnly":
+    "Rejestracja wymaga zaproszenia. Wpisz identyfikator przestrzeni i token z e-maila z zaproszeniem.",
+  "auth.verifySent":
+    "Wysłaliśmy link weryfikacyjny na {{email}}. Otwórz go w ciągu 24 godzin, a potem się zaloguj.",
+  "auth.verifyTitle": "Potwierdź e-mail",
+  "auth.verifySub": "Wklej token weryfikacyjny z e-maila.",
+  "auth.verifyToken": "Token weryfikacyjny",
+  "auth.verify": "Potwierdź e-mail",
+  "auth.verifying": "Potwierdzanie…",
+  "auth.verified": "E-mail potwierdzony",
+  "auth.verifiedSub": "Konto jest gotowe. Zaloguj się, aby kontynuować.",
   "workspace.creating": "Tworzenie…",
   "workspace.joining": "Dołączanie…",
   "workspace.idHint": "Z e-maila z zaproszeniem.",

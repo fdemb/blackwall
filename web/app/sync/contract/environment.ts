@@ -6,6 +6,7 @@ import type { EngineSignal, SyncEngine } from "../engine";
 import { MemoryReplicaStorage } from "../persistence/memory";
 import type { Scope } from "../persistence/types";
 import { createTransport, ProtocolError } from "../transport";
+import { sql } from "./setup";
 
 declare module "vite-plus/test" {
   export interface ProvidedContext {
@@ -58,18 +59,26 @@ export async function request(path: string, user?: User, body?: unknown): Promis
     body: body === undefined ? undefined : JSON.stringify(body),
     signal: AbortSignal.timeout(10_000),
   });
-  const value: unknown = await response.json();
+  const value: unknown = response.status === 204 ? null : await response.json();
   if (!response.ok) throw new Error(`${response.status}: ${JSON.stringify(value)}`);
   return value;
 }
 export async function register(name: string): Promise<User> {
-  return session(
+  const email = `${randomUUID()}@example.test`;
+  const registered = object(
     await request("/internal-api/auth/register", undefined, {
       display_name: name,
-      email: `${randomUUID()}@example.test`,
+      email,
       password,
     }),
   );
+  if (registered.verification_sent !== true) return session(registered);
+  const token = await sql(
+    inject("syncContract").databaseUrl,
+    `SELECT payload->>'token' FROM jobs WHERE payload->>'to'='${email}' AND payload ? 'verification_hash'`,
+  );
+  await request("/internal-api/auth/verify", undefined, { token });
+  return session(await request("/internal-api/auth/login", undefined, { email, password }));
 }
 export async function login(user: User): Promise<User> {
   return session(

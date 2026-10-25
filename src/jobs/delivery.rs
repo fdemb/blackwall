@@ -48,6 +48,10 @@ pub enum Grant {
         user_id: Uuid,
         token_hash: String,
     },
+    Verification {
+        user_id: Uuid,
+        verification_hash: String,
+    },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -174,6 +178,25 @@ impl Job {
                 )
                 .bind(user_id)
                 .bind(token_hash)
+                .fetch_one(&store.pool)
+                .await
+            }
+            Job::Email(Email {
+                grant:
+                    Grant::Verification {
+                        user_id,
+                        verification_hash,
+                    },
+                ..
+            }) => {
+                sqlx::query_scalar::<_, bool>(
+                    "SELECT EXISTS(SELECT 1 FROM email_verifications \
+                     JOIN users ON users.id=email_verifications.user_id \
+                     WHERE user_id=$1 AND token_hash=$2 AND expires_at>clock_timestamp() \
+                     AND users.email_verified_at IS NULL)",
+                )
+                .bind(user_id)
+                .bind(verification_hash)
                 .fetch_one(&store.pool)
                 .await
             }
@@ -421,5 +444,41 @@ mod tests {
         assert!(Job::decode("email", "{}").is_err());
         assert!(Job::decode("digest", "{}").is_err());
         assert!(Job::decode("unknown_kind", "{}").is_err());
+    }
+
+    #[test]
+    fn every_grant_round_trips_as_itself() {
+        let id = Uuid::new_v4();
+        for grant in [
+            Grant::Invitation {
+                workspace_id: id,
+                invitation_id: id,
+                token_hash: "h".into(),
+            },
+            Grant::Reset {
+                user_id: id,
+                token_hash: "h".into(),
+            },
+            Grant::Verification {
+                user_id: id,
+                verification_hash: "h".into(),
+            },
+        ] {
+            let job = Job::Email(Email {
+                to: "a@example.com".into(),
+                subject: "Subject".into(),
+                token: "t".into(),
+                grant: grant.clone(),
+            });
+            let Ok(Job::Email(decoded)) = Job::decode(job.kind(), &job.payload().unwrap()) else {
+                panic!("{grant:?} did not decode");
+            };
+            assert_eq!(
+                std::mem::discriminant(&decoded.grant),
+                std::mem::discriminant(&grant),
+                "{grant:?} decoded as {:?}",
+                decoded.grant
+            );
+        }
     }
 }

@@ -56,8 +56,11 @@ async fn issues_move_between_teams_and_keep_their_old_keys() {
             email: format!("mover-{}@example.com", Uuid::new_v4()),
             password: "team-move-password".into(),
             display_name: "Mover".into(),
+            invitation: None,
         })
         .await
+        .unwrap()
+        .session()
         .unwrap();
     let created = store
         .create_workspace("Moves".into(), owner.profile.id)

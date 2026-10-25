@@ -29,8 +29,11 @@ async fn setup() -> (
             email: format!("{}@example.com", Uuid::new_v4()),
             password: "test-password-123".into(),
             display_name: "Reader".into(),
+            invitation: None,
         })
         .await
+        .unwrap()
+        .session()
         .unwrap();
     let workspace = store
         .create_workspace("Read tests".into(), owner.profile.id)

@@ -92,6 +92,7 @@ pub struct Store {
     pub(crate) database_url: String,
     pub mail_enabled: bool,
     pub(crate) limits: Limits,
+    pub registration: crate::auth::RegistrationMode,
 }
 
 pub struct NewAttachment {
@@ -304,8 +305,9 @@ impl Store {
             sync_events: config.sync_events,
             sync_shutdown: Arc::new(tokio::sync::watch::channel(false).0),
             database_url: url.to_owned(),
-            mail_enabled: true,
             limits: config.limits,
+            mail_enabled: false,
+            registration: crate::auth::RegistrationMode::Open,
             pool,
         })
     }
@@ -875,8 +877,11 @@ mod tests {
                 email: format!("{name}-{}@example.com", Uuid::new_v4()),
                 password: "import-lock-password".into(),
                 display_name: name.into(),
+                invitation: None,
             })
             .await
+            .unwrap()
+            .session()
             .unwrap()
             .profile
             .id;

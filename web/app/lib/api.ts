@@ -65,6 +65,15 @@ export async function api<T>(
   return data as T;
 }
 
+export type AuthOptions = {
+  registration: "open" | "invite";
+  /** Whether unverified accounts must verify their email address before signing in. */
+  email_verification: boolean;
+};
+
+/** A pending invitation to the registering address. */
+export type Invitation = { workspace_id: string; token: string };
+
 export const auth = {
   me: () => api<Profile & { session_id: string }>("/internal-api/me"),
   login: (email: string, password: string) =>
@@ -72,11 +81,14 @@ export const auth = {
       method: "POST",
       body: { email, password },
     }),
-  register: (email: string, password: string, display_name: string) =>
-    api<{ csrf_token: string; profile: Profile }>("/internal-api/auth/register", {
-      method: "POST",
-      body: { email, password, display_name },
-    }),
+  options: () => api<AuthOptions>("/internal-api/auth/options"),
+  register: (email: string, password: string, display_name: string, invitation?: Invitation) =>
+    api<{ csrf_token: string; profile: Profile } | { verification_sent: true }>(
+      "/internal-api/auth/register",
+      { method: "POST", body: { email, password, display_name, invitation } },
+    ),
+  verify: (token: string) =>
+    api<null>("/internal-api/auth/verify", { method: "POST", body: { token } }),
   logout: () => api<null>("/internal-api/auth/logout", { method: "POST" }),
   requestReset: (email: string) =>
     api<null>("/internal-api/auth/reset-request", { method: "POST", body: { email } }),

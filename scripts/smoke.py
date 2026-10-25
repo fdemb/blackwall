@@ -112,7 +112,11 @@ try:
                     subprocess.run([binary, "migrate"], cwd=temporary, env=environment, stdout=log, stderr=log, check=True)
                 # No worker yet, so the invitation email stays queued.
                 start(with_worker=False)
-                session = request("POST", "/internal-api/auth/register", {"email": "owner@example.com", "password": "smoke-password-123", "display_name": "Owner"})
+                owner = {"email": "owner@example.com", "password": "smoke-password-123"}
+                assert request("POST", "/internal-api/auth/register", {**owner, "display_name": "Owner"}) == {"verification_sent": True}
+                verification = sql("SELECT payload->>'token' FROM jobs WHERE kind='email' AND payload->>'to'='owner@example.com' AND payload ? 'verification_hash'", database)
+                request("POST", "/internal-api/auth/verify", {"token": verification})
+                session = request("POST", "/internal-api/auth/login", owner)
                 token = session["token"]
                 workspace = request("POST", "/internal-api/workspaces", {"name": "HTTP smoke", "slug": "http-smoke"})
                 workspace_id = workspace["workspace"]["id"]
@@ -161,7 +165,8 @@ try:
                     time.sleep(0.1)
                 assert cancelled_state in ("cancelled", "succeeded")
                 assert "cancelled@example.com" not in spooled
-                colleague = request("POST", "/internal-api/auth/register", {"email": "colleague@example.com", "password": "smoke-password-456", "display_name": "Colleague"})
+                proof = {"workspace_id": workspace_id, "token": mail["token"]}
+                colleague = request("POST", "/internal-api/auth/register", {"email": "colleague@example.com", "password": "smoke-password-456", "display_name": "Colleague", "invitation": proof})
                 token = colleague["token"]
                 joined = request("POST", path + "/invitations/accept", {"token": mail["token"]})
                 assert joined["workspace"]["id"] == workspace_id
@@ -173,7 +178,7 @@ try:
                 assert assets
                 assert len(request("GET", assets[0].decode())) > 100
                 assert request("GET", "/internal-api/schema.json")["components"]["schemas"]["Command"]
-                print("PASS: PostgreSQL migrations, real HTTP, idempotency, restart, expired-lease recovery, invitation delivery and acceptance, HTML, assets, OpenAPI")
+                print("PASS: PostgreSQL migrations, real HTTP, idempotency, restart, expired-lease recovery, email verification, invitation delivery, invited registration and acceptance, HTML, assets, OpenAPI")
             except Exception:
                 log.flush()
                 log.seek(0)

@@ -383,3 +383,44 @@ async fn store_starts_on_a_database_migrated_by_a_newer_release() {
     store.pool.close().await;
     database.cleanup().await;
 }
+
+#[tokio::test]
+async fn email_verification_counts_existing_and_old_binary_users_as_verified() {
+    let database = support::TestDatabase::new().await;
+    let mut conn = PgConnection::connect(&database.url).await.unwrap();
+    migrate_before(&mut conn, "0044").await;
+
+    sqlx::query(
+        "INSERT INTO users(id,email,password_hash,profile) VALUES($1,'old@example.com','x','{}')",
+    )
+    .bind(Uuid::from_u128(1))
+    .execute(&mut conn)
+    .await
+    .unwrap();
+
+    sqlx::raw_sql(include_str!("../migrations/0044_email_verification.sql"))
+        .execute(&mut conn)
+        .await
+        .unwrap();
+
+    sqlx::query(
+        "INSERT INTO users(id,email,password_hash,profile) VALUES($1,'new@example.com','x','{}')",
+    )
+    .bind(Uuid::from_u128(2))
+    .execute(&mut conn)
+    .await
+    .unwrap();
+
+    let unverified: Vec<String> =
+        sqlx::query_scalar("SELECT email FROM users WHERE email_verified_at IS NULL")
+            .fetch_all(&mut conn)
+            .await
+            .unwrap();
+    assert!(
+        unverified.is_empty(),
+        "existing and old-binary accounts stay able to sign in: {unverified:?}"
+    );
+
+    conn.close().await.unwrap();
+    database.cleanup().await;
+}

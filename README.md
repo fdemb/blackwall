@@ -111,6 +111,10 @@ Set `SMTP_URL`, such as `smtps://user:password@smtp.example.com` or `smtp://smtp
 
 Without SMTP or a development spool, the server queues no email. Admins copy invitation links from the members page instead, and password reset requests answer that the server can't send email. The web server and the worker must read the same mail settings.
 
+While mail works, people who register without an invitation verify their address through an emailed link before they can sign in. A sign-in attempt before then sends a new link, at most one every five minutes. Accounts that registered through an invitation, and accounts created before this check existed, count as verified. Without mail, nobody is asked to verify.
+
+Set `REGISTRATION=invite` to close open sign-up. People then register through an invitation link, or by entering the workspace ID and invitation token on the registration page. Only the first account of a fresh install registers without one. The default, `REGISTRATION=open`, lets anyone register. Any other value stops the server at startup.
+
 For local mail, set `SMTP_URL=smtp://127.0.0.1:1025` and read Mailpit at `http://127.0.0.1:8025`. Alternatively, set `DEV_MAIL_DIR=./dev-mail` to write private JSON files with mode 0600. `DEV_MAIL_DIR` and `SMTP_URL` are mutually exclusive. Keep the directory private.
 
 Outgoing integration requests carry a minimal typed event (see [webhooks](docs/api.md#webhooks)) with `X-Blackwall-Event`, `Idempotency-Key` and `X-Blackwall-Signature: sha256=<hex HMAC-SHA256>`. Incoming source links use `POST /api/workspaces/{id}/integrations/{integration}/webhook`, signed over the exact request body:
