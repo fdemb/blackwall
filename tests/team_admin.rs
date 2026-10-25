@@ -286,6 +286,30 @@ async fn teams_delete_only_when_empty_and_only_for_admins() {
         "a trashed issue still holds the team: {refused}"
     );
 
+    let shipped = f.team("Shipped", "SHP").await;
+    let (status, done) = f
+        .send(
+            "POST",
+            "issues",
+            Some(json!({"title":"Shipped","team":"SHP","stage":"Done"})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{done}");
+    let (status, archived) = f
+        .send(
+            "POST",
+            &format!("issues/{}/archive", done["key"].as_str().unwrap()),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{archived}");
+    let (status, refused) = f.send("DELETE", &format!("teams/{shipped}"), None).await;
+    assert_eq!(
+        status,
+        StatusCode::CONFLICT,
+        "an archived issue still holds the team: {refused}"
+    );
+
     let (status, removed) = f.send("DELETE", &format!("teams/{empty}"), None).await;
     assert_eq!(status, StatusCode::NO_CONTENT, "{removed}");
     for path in [format!("teams/{empty}"), format!("teams/{empty}/stages")] {
