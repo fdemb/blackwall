@@ -1,6 +1,7 @@
 import { newMentions } from "../../lib/mentions";
 import { sprintStageId } from "../../lib/teams";
 import type { Id, IssuePatch } from "../../lib/types";
+import { parseTimestamp } from "../records";
 import type { SyncIssue } from "../records";
 import type { DeepReadonly, Tx } from "../store";
 import type { ArgsOf, Mutator, MutatorContext } from "./common";
@@ -243,6 +244,8 @@ function patchIssue(
   if (patch.team_id !== undefined && patch.team_id !== current.team_id)
     enterTeam(tx, current, next, patch.team_id);
   fitSprint(tx, next, next.stage_id !== current.stage_id);
+  // The server writes nothing for a patch that changes no field, not even updated_at.
+  if (unchanged(current, next)) return;
   validateIssue(tx, next, current);
   if (next.stage_id !== current.stage_id) {
     next.done_at = doneAt(tx, next.team_id, next.stage_id, current.done_at, ctx.at);
@@ -252,6 +255,40 @@ function patchIssue(
   followMentions(tx, next, current.description);
   next.updated_at = ctx.at;
   tx.put("issues", next);
+}
+
+/** The fields `Issue::changed_fields` compares in `src/domain/issues.rs`. */
+function unchanged(current: DeepReadonly<SyncIssue>, next: SyncIssue): boolean {
+  return (
+    next.title === current.title &&
+    next.description === current.description &&
+    next.team_id === current.team_id &&
+    next.stage_id === current.stage_id &&
+    next.assignee === current.assignee &&
+    next.priority === current.priority &&
+    sameIds(next.labels, current.labels) &&
+    next.estimate === current.estimate &&
+    sameInstant(next.deadline, current.deadline) &&
+    next.project_id === current.project_id &&
+    next.milestone_id === current.milestone_id &&
+    next.sprint_id === current.sprint_id &&
+    next.parent_id === current.parent_id &&
+    sameIds(next.dependencies, current.dependencies)
+  );
+}
+
+function sameIds(a: readonly string[], b: readonly string[]): boolean {
+  return a.length === b.length && a.every((id, index) => id === b[index]);
+}
+
+/** The server compares parsed instants, so offsets and trailing zeros don't count as changes. */
+function sameInstant(a: string | null, b: string | null): boolean {
+  if (a === null || b === null) return a === b;
+  try {
+    return parseTimestamp(a, false, "chrono") === parseTimestamp(b, false, "chrono");
+  } catch {
+    return a === b;
+  }
 }
 
 function followMentions(tx: Tx, next: SyncIssue, before: string): void {

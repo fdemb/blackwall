@@ -375,6 +375,18 @@ impl Command {
         }
     }
 
+    /// Issue edits that leave no activity when they change no field.
+    pub(crate) fn is_issue_update(&self) -> bool {
+        matches!(
+            self,
+            Self::UpdateIssue { .. }
+                | Self::BulkIssues {
+                    action: BulkAction::Update(_),
+                    ..
+                }
+        )
+    }
+
     pub(crate) fn kind(&self) -> &'static str {
         match self {
             Self::CreateTeam { .. } => "create_team",

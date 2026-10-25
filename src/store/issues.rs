@@ -363,7 +363,7 @@ impl Operation<'_> {
     }
 
     async fn patch_issue_sql(&mut self, id: Uuid, p: IssuePatch) -> Result<()> {
-        self.touch("issues", id).await?;
+        let version = self.lock("issues", id).await?;
 
         let old = self.issue(id).await?;
         if old.archived_at.is_some() {
@@ -379,7 +379,12 @@ impl Operation<'_> {
         let entered_stage = i.stage_id != old.stage_id;
         self.fit_sprint(&mut i, entered_stage).await?;
 
-        self.activity_fields.extend(old.changed_fields(&i));
+        let fields = old.changed_fields(&i);
+        if fields.is_empty() {
+            return Ok(());
+        }
+        self.touch_locked("issues", id, version).await?;
+        self.activity_fields.extend(fields);
         self.validate_issue_sql(&i, Some(&old)).await?;
         if i.stage_id != old.stage_id {
             self.restamp_done(&mut i).await?;
@@ -608,7 +613,7 @@ impl Operation<'_> {
         }
         let ids: BTreeSet<_> = ids.into_iter().collect();
         for id in &ids {
-            self.touch("issues", *id).await?;
+            self.lock("issues", *id).await?;
         }
         for id in ids {
             match &action {

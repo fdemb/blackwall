@@ -596,6 +596,7 @@ impl Workspace {
         }
 
         let action = command.kind().to_string();
+        let update = command.is_issue_update();
         let mut fields = vec![];
         let result = match command.family() {
             CommandFamily::Planning => Some(self.apply_planning(actor, command, now)?),
@@ -603,15 +604,17 @@ impl Workspace {
             CommandFamily::Discussion => self.apply_discussion(actor, command, now)?,
         };
 
-        self.activity.push(Activity {
-            id: Uuid::new_v4(),
-            actor,
-            action,
-            entity_id: result,
-            at: now,
-            fields,
-            via: None,
-        });
+        if !(update && fields.is_empty()) {
+            self.activity.push(Activity {
+                id: Uuid::new_v4(),
+                actor,
+                action,
+                entity_id: result,
+                at: now,
+                fields,
+                via: None,
+            });
+        }
 
         Ok(CommandResult {
             id: result,
