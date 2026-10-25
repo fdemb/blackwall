@@ -315,6 +315,9 @@ pub struct AlertPreferences {
 }
 
 impl AlertPreferences {
+    /// The email columns' defaults for assignment, reply, change, mention and deadline.
+    pub const EMAIL_DEFAULTS: [bool; 5] = [true, true, false, true, true];
+
     fn enabled(&self, kind: &AlertKind) -> bool {
         match kind {
             AlertKind::Assignment => self.assignment,

@@ -664,7 +664,7 @@ export const pl = {
   "account.alertsInbox": "Wysyłaj do mojej skrzynki",
   "account.alertsEmail": "Wysyłaj e-mailem",
   "account.alertsEmailSub":
-    "E-mail przychodzi jako jedno zestawienie kilka minut po pierwszym nieprzeczytanym powiadomieniu i tylko wtedy, gdy serwer ma skonfigurowaną pocztę.",
+    "E-mail obejmuje tylko to, co trafia do skrzynki. Przychodzi jako jedno zestawienie kilka minut po pierwszym nieprzeczytanym powiadomieniu i tylko wtedy, gdy serwer ma skonfigurowaną pocztę.",
   "account.security": "Bezpieczeństwo",
   "account.securitySub": "Twoje hasło i urządzenia zalogowane na Twoje konto.",
   "account.signOutSub": "Zakończ sesję w tej przeglądarce.",

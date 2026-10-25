@@ -1,5 +1,5 @@
 use super::*;
-use crate::domain::{validate_email, validate_url};
+use crate::domain::{AlertPreferences, validate_email, validate_url};
 use crate::jobs::{Email, Grant, Job};
 use std::collections::BTreeSet;
 
@@ -133,18 +133,16 @@ impl Operation<'_> {
                 email_mention,
                 email_deadline,
             } => {
-                self.configure_alerts([
-                    assignment,
-                    reply,
-                    change,
-                    mention,
-                    deadline,
-                    email_assignment,
-                    email_reply,
-                    email_change,
-                    email_mention,
-                    email_deadline,
-                ])
+                self.configure_alerts(
+                    [assignment, reply, change, mention, deadline],
+                    [
+                        email_assignment,
+                        email_reply,
+                        email_change,
+                        email_mention,
+                        email_deadline,
+                    ],
+                )
                 .await?;
                 return Ok(None);
             }
@@ -993,9 +991,9 @@ impl Operation<'_> {
         Ok(())
     }
 
-    /// `alerts` holds the assignment, reply, change, mention and deadline flags for the inbox,
-    /// then the same five for email.
-    async fn configure_alerts(&mut self, alerts: [bool; 10]) -> Result<()> {
+    /// Each array holds the assignment, reply, change, mention and deadline flags. A missing
+    /// email flag keeps the stored choice, or the column default for a new row.
+    async fn configure_alerts(&mut self, inbox: [bool; 5], email: [Option<bool>; 5]) -> Result<()> {
         self.discussion_lock(&format!("preferences:{}", self.actor))
             .await?;
 
@@ -1016,17 +1014,26 @@ impl Operation<'_> {
         let mut query = sqlx::query(
             "INSERT INTO alert_preferences(workspace_id,user_id,assignment,reply,\
             change,mention,deadline,email_assignment,email_reply,email_change,\
-            email_mention,email_deadline) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) ON \
-            CONFLICT(workspace_id,user_id) DO UPDATE SET \
+            email_mention,email_deadline) VALUES($1,$2,$3,$4,$5,$6,$7,\
+            COALESCE($8,$13),COALESCE($9,$14),COALESCE($10,$15),COALESCE($11,$16),\
+            COALESCE($12,$17)) ON CONFLICT(workspace_id,user_id) DO UPDATE SET \
             assignment=EXCLUDED.assignment,reply=EXCLUDED.reply,\
-            change=EXCLUDED.change,mention=EXCLUDED.mention,\
-            deadline=EXCLUDED.deadline,email_assignment=EXCLUDED.email_assignment,\
-            email_reply=EXCLUDED.email_reply,email_change=EXCLUDED.email_change,\
-            email_mention=EXCLUDED.email_mention,email_deadline=EXCLUDED.email_deadline",
+            change=EXCLUDED.change,mention=EXCLUDED.mention,deadline=EXCLUDED.deadline,\
+            email_assignment=COALESCE($8,alert_preferences.email_assignment),\
+            email_reply=COALESCE($9,alert_preferences.email_reply),\
+            email_change=COALESCE($10,alert_preferences.email_change),\
+            email_mention=COALESCE($11,alert_preferences.email_mention),\
+            email_deadline=COALESCE($12,alert_preferences.email_deadline)",
         )
         .bind(self.workspace_id)
         .bind(self.actor);
-        for alert in alerts {
+        for alert in inbox {
+            query = query.bind(alert);
+        }
+        for alert in email {
+            query = query.bind(alert);
+        }
+        for alert in AlertPreferences::EMAIL_DEFAULTS {
             query = query.bind(alert);
         }
         query.execute(&mut *self.tx).await?;

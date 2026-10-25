@@ -39,12 +39,11 @@ FROM workspace_members m
 JOIN profile_alerts g ON g.user_id = m.user_id
 ON CONFLICT (workspace_id, user_id) DO NOTHING;
 
--- How far each member's unread notifications have been emailed. Not synced to clients.
-CREATE TABLE notification_digests(
-    workspace_id uuid NOT NULL REFERENCES workspaces(id),
-    user_id uuid NOT NULL REFERENCES users(id),
-    sent_through timestamptz NOT NULL,
-    PRIMARY KEY (workspace_id, user_id)
+-- Which notifications a digest has covered, at the created_at it covered. A change notification
+-- bumps created_at, so it is due again. Not synced to clients.
+CREATE TABLE notification_emails(
+    notification_id uuid PRIMARY KEY REFERENCES notifications(id) ON DELETE CASCADE,
+    created_at timestamptz NOT NULL
 );
 
 -- The digest sweep reads recent unread notifications across every workspace,

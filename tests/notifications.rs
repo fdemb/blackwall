@@ -438,6 +438,65 @@ async fn an_older_client_marking_all_read_reads_every_unread_notification() {
     f.cleanup().await;
 }
 
+/// The deadline inbox switch and the five email switches, in command order.
+async fn stored_alerts(f: &Fixture, user: Uuid) -> (bool, Vec<bool>) {
+    sqlx::query_as(
+        "SELECT deadline,ARRAY[email_assignment,email_reply,email_change,email_mention,\
+         email_deadline] FROM alert_preferences WHERE workspace_id=$1 AND user_id=$2",
+    )
+    .bind(f.workspace)
+    .bind(user)
+    .fetch_one(&f.store.pool)
+    .await
+    .unwrap()
+}
+
+#[tokio::test]
+async fn an_older_client_configuring_alerts_keeps_the_email_choices() {
+    let f = Fixture::new().await;
+    let follower = f.follower.profile.id;
+    let older = |deadline: bool| {
+        older_client_command(json!({
+            "type": "configure_alerts",
+            "assignment": true,
+            "reply": true,
+            "change": true,
+            "mention": true,
+            "deadline": deadline,
+        }))
+    };
+
+    f.run(follower, older(false)).await;
+    assert_eq!(
+        stored_alerts(&f, follower).await,
+        (false, vec![true, true, false, true, true])
+    );
+
+    f.run(
+        follower,
+        Command::ConfigureAlerts {
+            assignment: true,
+            reply: true,
+            change: true,
+            mention: true,
+            deadline: false,
+            email_assignment: Some(true),
+            email_reply: Some(false),
+            email_change: Some(true),
+            email_mention: Some(true),
+            email_deadline: Some(true),
+        },
+    )
+    .await;
+    f.run(follower, older(true)).await;
+    assert_eq!(
+        stored_alerts(&f, follower).await,
+        (true, vec![true, false, true, true, true])
+    );
+
+    f.cleanup().await;
+}
+
 fn mention(user: Uuid, label: &str) -> String {
     format!("[@{label}](mention:{user})")
 }
@@ -750,11 +809,11 @@ async fn workspace_preferences_gate_the_inbox_and_profile_alerts_do_not() {
             change: true,
             mention: true,
             deadline: true,
-            email_assignment: true,
-            email_reply: true,
-            email_change: true,
-            email_mention: true,
-            email_deadline: true,
+            email_assignment: Some(true),
+            email_reply: Some(true),
+            email_change: Some(true),
+            email_mention: Some(true),
+            email_deadline: Some(true),
         },
     )
     .await;
@@ -840,30 +899,30 @@ async fn unread_notifications_are_emailed_once_as_a_digest_after_a_delay() {
         f.digest_jobs().await.is_empty(),
         "disabled mail sends nothing"
     );
-    let cursors: i64 = sqlx::query_scalar("SELECT count(*) FROM notification_digests")
+    let marks: i64 = sqlx::query_scalar("SELECT count(*) FROM notification_emails")
         .fetch_one(&f.store.pool)
         .await
         .unwrap();
-    assert_eq!(cursors, 0);
+    assert_eq!(marks, 0);
 
     jobs::tick(&f.store, &mail).await.unwrap();
     assert_eq!(f.digest_jobs().await, ["succeeded"]);
     let letters = spooled(&f.store, &spool).await;
     assert_eq!(letters.len(), 1, "{letters:?}");
-    assert_eq!(letters[0].0, "owner assigned you TEAM-1");
+    // Once the oldest is due, the batch takes the fresh reply along.
+    assert_eq!(letters[0].0, "2 new notifications in Notifications");
     assert!(
-        letters[0]
-            .1
-            .contains("\nowner assigned you TEAM-1: Rotate certificates\n"),
+        letters[0].1.contains(
+            "\nowner assigned you TEAM-1: Rotate certificates\n\
+             \nowner replied on TEAM-1: Rotate certificates\n"
+        ),
         "{}",
         letters[0].1
     );
-    for left_out in ["TEAM-2", "replied"] {
-        assert!(!letters[0].1.contains(left_out), "{}", letters[0].1);
-    }
+    assert!(!letters[0].1.contains("TEAM-2"), "{}", letters[0].1);
 
     jobs::tick(&f.store, &mail).await.unwrap();
-    assert_eq!(f.digest_jobs().await.len(), 1, "the cursor stops a resend");
+    assert_eq!(f.digest_jobs().await.len(), 1, "the marks stop a resend");
 
     // A fresh notification alone isn't due yet.
     f.backdated(audit, "assignment", 5.0, json!([])).await;
@@ -878,11 +937,11 @@ async fn unread_notifications_are_emailed_once_as_a_digest_after_a_delay() {
             change: true,
             mention: true,
             deadline: true,
-            email_assignment: true,
-            email_reply: true,
-            email_change: true,
-            email_mention: false,
-            email_deadline: true,
+            email_assignment: Some(true),
+            email_reply: Some(true),
+            email_change: Some(true),
+            email_mention: Some(false),
+            email_deadline: Some(true),
         },
     )
     .await;
@@ -893,8 +952,7 @@ async fn unread_notifications_are_emailed_once_as_a_digest_after_a_delay() {
     assert_eq!(f.digest_jobs().await, ["succeeded", "succeeded"]);
     let letters = spooled(&f.store, &spool).await;
     assert_eq!(letters.len(), 2, "{letters:?}");
-    // The change from before the switch is still unread and newer than the first digest.
-    // The first assignment was already sent, and the reply is inside the one-minute margin.
+    // The change from before the switch is still unread, and no digest covered it.
     assert_eq!(letters[1].0, "3 new notifications in Notifications");
     assert!(
         letters[1].1.contains(
@@ -908,6 +966,13 @@ async fn unread_notifications_are_emailed_once_as_a_digest_after_a_delay() {
     for left_out in ["assigned you TEAM-1", "mentioned", "replied"] {
         assert!(!letters[1].1.contains(left_out), "{}", letters[1].1);
     }
+
+    // A transaction that stamped its notification early and committed after both digests.
+    f.backdated(rotate, "deadline", 30.0, json!([])).await;
+    jobs::tick(&f.store, &mail).await.unwrap();
+    let letters = spooled(&f.store, &spool).await;
+    assert_eq!(letters.len(), 3, "{letters:?}");
+    assert_eq!(letters[2].0, "Deadline is near for TEAM-1");
 
     tokio::fs::remove_dir_all(spool).await.unwrap();
     f.cleanup().await;

@@ -648,7 +648,7 @@ export const en = {
   "account.alertsInbox": "Send to my inbox",
   "account.alertsEmail": "Email me",
   "account.alertsEmailSub":
-    "Email arrives as one digest a few minutes after your first unread notification, and only when this server has email set up.",
+    "Email covers only what reaches your inbox. It arrives as one digest a few minutes after your first unread notification, and only when this server has email set up.",
   "account.security": "Security",
   "account.securitySub": "Your password and the devices signed in to your account.",
   "account.signOutSub": "End your session in this browser.",

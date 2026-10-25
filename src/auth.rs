@@ -37,6 +37,30 @@ pub struct Profile {
     pub contact: String,
     pub language: Language,
     pub theme: Theme,
+    /// Always on, whatever `users.profile` holds. Browser tabs loaded before workspace email
+    /// preferences reject a profile without it. Drop it once those tabs are gone.
+    #[serde(default, skip_deserializing)]
+    pub alerts: LegacyAlerts,
+}
+
+/// The profile-wide alert switches, replaced by per-workspace alert preferences.
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct LegacyAlerts {
+    pub assignments: bool,
+    pub replies: bool,
+    pub changes: bool,
+    pub deadlines: bool,
+}
+
+impl Default for LegacyAlerts {
+    fn default() -> Self {
+        Self {
+            assignments: true,
+            replies: true,
+            changes: true,
+            deadlines: true,
+        }
+    }
 }
 
 #[derive(Deserialize, utoipa::ToSchema)]
@@ -187,6 +211,7 @@ impl Store {
             contact: String::new(),
             language: Language::En,
             theme: Theme::System,
+            alerts: LegacyAlerts::default(),
         };
 
         let insert = sqlx::query(

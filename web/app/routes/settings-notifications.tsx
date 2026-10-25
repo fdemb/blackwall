@@ -4,45 +4,20 @@ import { useToast } from "~/components/ui/toast";
 import { SettingsPage, SettingsSection } from "~/components/app/settings";
 import { useI18n } from "~/lib/i18n";
 import { useWorkspace } from "~/lib/workspace";
+import {
+  ALERT_KINDS,
+  alertSwitch,
+  storedAlerts,
+  type AlertChannel,
+  type AlertPrefs,
+} from "~/lib/alerts";
 import { cn } from "~/lib/utils";
-
-const KINDS = ["assignment", "reply", "change", "mention", "deadline"] as const;
-
-type Kind = (typeof KINDS)[number];
-type Prefs = Record<Kind | `email_${Kind}`, boolean>;
-
-const CHANNELS = {
-  inbox: (k: Kind) => k,
-  email: (k: Kind) => `email_${k}` as const,
-};
-
-/** The server's column defaults, for a member who has never saved a choice. */
-const DEFAULTS: Prefs = {
-  assignment: true,
-  reply: true,
-  change: true,
-  mention: true,
-  deadline: true,
-  email_assignment: true,
-  email_reply: true,
-  email_change: false,
-  email_mention: true,
-  email_deadline: true,
-};
 
 const STATUS_LABEL = {
   saving: "account.alertsSaving",
   saved: "account.alertsSaved",
   failed: "account.alertsFailed",
 } as const;
-
-function storedAlerts(mine: Partial<Prefs> | undefined): Prefs {
-  const entries = Object.entries(DEFAULTS).map(([field, on]) => [
-    field,
-    mine?.[field as keyof Prefs] ?? on,
-  ]);
-  return Object.fromEntries(entries) as Prefs;
-}
 
 export default function Notifications() {
   const { t } = useI18n();
@@ -55,12 +30,12 @@ export default function Notifications() {
   });
   // The switches show `local` at once. Saves go one at a time and always send the newest choice, so two
   // quick toggles can't overwrite each other with a stale snapshot.
-  const [local, setLocal] = useState<Prefs>(stored);
-  const latest = useRef<Prefs>(stored);
-  const sent = useRef<Prefs | null>(null);
+  const [local, setLocal] = useState<AlertPrefs>(stored);
+  const latest = useRef<AlertPrefs>(stored);
+  const sent = useRef<AlertPrefs | null>(null);
   const chain = useRef<Promise<unknown>>(Promise.resolve());
   const [status, setStatus] = useState<"idle" | "saving" | "saved" | "failed">("idle");
-  const set = (patch: Partial<Prefs>) => {
+  const set = (patch: Partial<AlertPrefs>) => {
     latest.current = { ...latest.current, ...patch };
     setLocal(latest.current);
     setStatus("saving");
@@ -110,19 +85,20 @@ function Switches({
   local,
   set,
 }: {
-  channel: keyof typeof CHANNELS;
-  local: Prefs;
-  set: (patch: Partial<Prefs>) => void;
+  channel: AlertChannel;
+  local: AlertPrefs;
+  set: (patch: Partial<AlertPrefs>) => void;
 }) {
   const { t } = useI18n();
   return (
     <div className="divide-y divide-border">
-      {KINDS.map((k) => {
-        const field = CHANNELS[channel](k);
+      {ALERT_KINDS.map((k) => {
+        const { field, selected, disabled } = alertSwitch(local, channel, k);
         return (
           <Switch
             key={k}
-            isSelected={local[field]}
+            isSelected={selected}
+            isDisabled={disabled}
             onChange={(v) => set({ [field]: v })}
             className="flex-row-reverse justify-between gap-8 px-4 py-4 sm:px-5"
           >

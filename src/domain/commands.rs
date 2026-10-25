@@ -275,11 +275,18 @@ pub enum Command {
         change: bool,
         mention: bool,
         deadline: bool,
-        email_assignment: bool,
-        email_reply: bool,
-        email_change: bool,
-        email_mention: bool,
-        email_deadline: bool,
+        /// Clients from before email notifications omit the email choices, which keeps the
+        /// stored ones.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        email_assignment: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        email_reply: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        email_change: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        email_mention: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        email_deadline: Option<bool>,
     },
     CreateIntegration {
         id: Option<Uuid>,

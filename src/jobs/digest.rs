@@ -17,37 +17,35 @@ pub struct Digest {
     pub notification_ids: Vec<Uuid>,
 }
 
-/// Unread notifications a member wants by email and hasn't been sent, batched per member once the
-/// oldest has waited `$1`. The one-minute margin covers transactions still open with an earlier
-/// `now()`, and the one-day floor keeps a backlog from flooding inboxes when mail is turned on.
+/// Unread notifications a member wants by email and no digest has covered at their current
+/// `created_at`, batched per member once the oldest has waited `$1`. Marks per notification,
+/// not a time cursor, catch a notification whose transaction commits after a later one was sent.
+/// The one-day floor keeps a backlog from flooding inboxes when mail is turned on.
 const DUE_BATCHES: &str = "WITH eligible AS (\
     SELECT n.workspace_id,n.user_id,n.id,n.created_at FROM notifications n \
     JOIN workspace_members m ON m.workspace_id=n.workspace_id AND m.user_id=n.user_id \
     LEFT JOIN alert_preferences p ON p.workspace_id=n.workspace_id AND p.user_id=n.user_id \
-    LEFT JOIN notification_digests d ON d.workspace_id=n.workspace_id AND d.user_id=n.user_id \
-    WHERE n.read_at IS NULL \
-    AND n.created_at>GREATEST(d.sent_through,now()-interval '1 day') \
+    WHERE n.read_at IS NULL AND n.created_at>now()-interval '1 day' \
+    AND NOT EXISTS(SELECT 1 FROM notification_emails e \
+        WHERE e.notification_id=n.id AND e.created_at>=n.created_at) \
     AND CASE n.kind \
         WHEN 'assignment' THEN COALESCE(p.email_assignment,true) \
         WHEN 'reply' THEN COALESCE(p.email_reply,true) \
         WHEN 'change' THEN COALESCE(p.email_change,false) \
         WHEN 'mention' THEN COALESCE(p.email_mention,true) \
-        WHEN 'deadline' THEN COALESCE(p.email_deadline,true) END), \
-    due AS (SELECT workspace_id,user_id FROM eligible GROUP BY workspace_id,user_id \
-    HAVING min(created_at)<=now()-make_interval(mins=>$1)) \
-    SELECT e.workspace_id,e.user_id,array_agg(e.id ORDER BY e.created_at,e.id),max(e.created_at) \
-    FROM eligible e JOIN due USING(workspace_id,user_id) \
-    WHERE e.created_at<=now()-interval '1 minute' \
-    GROUP BY e.workspace_id,e.user_id";
+        WHEN 'deadline' THEN COALESCE(p.email_deadline,true) END) \
+    SELECT workspace_id,user_id,array_agg(id ORDER BY created_at,id),\
+    array_agg(created_at ORDER BY created_at,id) FROM eligible \
+    GROUP BY workspace_id,user_id HAVING min(created_at)<=now()-make_interval(mins=>$1)";
 
 const DELAY_MINUTES: i32 = 10;
 
-/// Queues a digest for every member whose batch is due and advances their cursor past it.
+/// Queues a digest for every member whose batch is due and marks what it covers.
 pub(super) async fn enqueue(store: &Store) -> Result<()> {
     let mut tx = store.pool.begin().await?;
-    // Concurrent workers would cut overlapping batches under different dedup keys.
+    // Concurrent workers would cut overlapping batches.
     let locked: bool = sqlx::query_scalar(
-        "SELECT pg_try_advisory_xact_lock(hashtextextended('notification_digests',0))",
+        "SELECT pg_try_advisory_xact_lock(hashtextextended('notification_emails',0))",
     )
     .fetch_one(&mut *tx)
     .await?;
@@ -55,7 +53,7 @@ pub(super) async fn enqueue(store: &Store) -> Result<()> {
         return Ok(());
     }
 
-    let batches: Vec<(Uuid, Uuid, Vec<Uuid>, DateTime<Utc>)> = sqlx::query_as(DUE_BATCHES)
+    let batches: Vec<(Uuid, Uuid, Vec<Uuid>, Vec<DateTime<Utc>>)> = sqlx::query_as(DUE_BATCHES)
         .bind(DELAY_MINUTES)
         .fetch_all(&mut *tx)
         .await?;
@@ -63,30 +61,25 @@ pub(super) async fn enqueue(store: &Store) -> Result<()> {
         return Ok(());
     }
 
-    let mut cursors = (vec![], vec![], vec![]);
-    for (workspace_id, user_id, notification_ids, through) in batches {
-        let key = format!(
-            "digest:{workspace_id}:{user_id}:{}",
-            through.timestamp_micros()
-        );
+    let (mut covered, mut stamps) = (vec![], vec![]);
+    for (workspace_id, user_id, notification_ids, created) in batches {
+        covered.extend_from_slice(&notification_ids);
+        stamps.extend(created);
         let digest = Digest {
             workspace_id,
             user_id,
             notification_ids,
         };
+        let key = format!("digest:{}", Uuid::new_v4());
         Outbox::insert(&mut tx, &NewJob::now(key, Job::Digest(digest))).await?;
-        cursors.0.push(workspace_id);
-        cursors.1.push(user_id);
-        cursors.2.push(through);
     }
     sqlx::query(
-        "INSERT INTO notification_digests(workspace_id,user_id,sent_through) \
-         SELECT * FROM unnest($1::uuid[],$2::uuid[],$3::timestamptz[]) \
-         ON CONFLICT(workspace_id,user_id) DO UPDATE SET sent_through=EXCLUDED.sent_through",
+        "INSERT INTO notification_emails(notification_id,created_at) \
+         SELECT * FROM unnest($1::uuid[],$2::timestamptz[]) \
+         ON CONFLICT(notification_id) DO UPDATE SET created_at=EXCLUDED.created_at",
     )
-    .bind(cursors.0)
-    .bind(cursors.1)
-    .bind(cursors.2)
+    .bind(covered)
+    .bind(stamps)
     .execute(&mut *tx)
     .await?;
 
