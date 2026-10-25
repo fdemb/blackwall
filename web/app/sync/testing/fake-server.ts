@@ -105,6 +105,7 @@ export function createFakeServer(options: FakeServerOptions = {}): FakeServer {
 }
 
 export class FakeServer {
+  emailsInvitations = true;
   private readonly clock: FakeClock;
   private readonly users = new Map<string, Profile>();
   private readonly workspaces = new Map<string, WorkspaceState>();
@@ -759,6 +760,25 @@ export class FakeServer {
           throw new MutationError(400, "invalid role");
         tx.put("members", { ...member, role: targetRole });
       }
+    } else if (name === "invite" || name === "resend_invitation") {
+      requireAdmin(role);
+      const expires_at = new Date(Date.parse(this.now()) + 7 * 86_400_000).toISOString();
+      if (name === "invite") {
+        const email = String(args.email).toLowerCase();
+        tx.put("invitations", {
+          id: this.id(),
+          version: 1,
+          email,
+          role: args.role === "admin" || args.role === "viewer" ? args.role : "member",
+          expires_at,
+          state: "pending",
+          token_hash: "",
+        });
+      } else {
+        const invitation = tx.get("invitations", uuid(args.id, "id"));
+        if (!invitation) throw new MutationError(404, "not found");
+        tx.put("invitations", { ...invitation, expires_at, state: "pending" });
+      }
     } else if (name === "add_attachment" || name === "attach_comment_file")
       throw new MutationError(400, "use the attachment upload endpoint");
     else if (onlineOnly.has(name)) throw new MutationError(400, "not supported by the fake");
@@ -885,6 +905,14 @@ export class FakeServer {
     const response = { ...applied, versions };
     if (identity !== null)
       this.operationKeys.set(identity, { request, response: structuredClone(response) });
+    if (payload.command.type === "invite" || payload.command.type === "resend_invitation")
+      return {
+        ...response,
+        result: {
+          ...response.result,
+          invitation: { token: this.id(), emailed: this.emailsInvitations },
+        },
+      };
     return response;
   }
 
@@ -981,6 +1009,8 @@ export class FakeServer {
         );
       } else {
         try {
+          if (mutation.name === "invite" || mutation.name === "resend_invitation")
+            throw new MutationError(400, "use the commands endpoint");
           this.execute(actor, mutation.name, commandArgs(mutation.name, mutation.args), workspace);
           body.results.push({ id: mutation.id, status: "applied" });
         } catch (error) {

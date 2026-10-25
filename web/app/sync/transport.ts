@@ -56,8 +56,13 @@ export interface PushResponse {
   retryAfter?: number | string | null;
 }
 
+export interface IssuedInvitation {
+  token: string;
+  emailed: boolean;
+}
+
 export interface CommandResponse {
-  result: { id: string | null };
+  result: { id: string | null; invitation?: IssuedInvitation };
   versions: Record<string, number>;
   changes: Change[];
 }
@@ -222,6 +227,7 @@ export function createTransport(options: TransportOptions) {
         !object(value) ||
         !object(value.result) ||
         (value.result.id !== null && typeof value.result.id !== "string") ||
+        (value.result.invitation !== undefined && !issuedInvitation(value.result.invitation)) ||
         !object(value.versions) ||
         !Object.values(value.versions).every(integer) ||
         !Array.isArray(value.changes)
@@ -242,7 +248,9 @@ export function createTransport(options: TransportOptions) {
         if (!integer(version)) throw new ProtocolError("Invalid command version", response.status);
         versions[id] = version;
       }
-      return { result: { id: value.result.id }, versions, changes };
+      const result: CommandResponse["result"] = { id: value.result.id };
+      if (issuedInvitation(value.result.invitation)) result.invitation = value.result.invitation;
+      return { result, versions, changes };
     },
     async scope(
       ws: string,
@@ -412,6 +420,10 @@ function parsePush(value: unknown, status: number, mutations: readonly Mutation[
     results,
   };
 }
+function issuedInvitation(value: unknown): value is IssuedInvitation {
+  return object(value) && typeof value.token === "string" && typeof value.emailed === "boolean";
+}
+
 function parseMutationResult(result: unknown, status: number): MutationResult {
   if (!object(result) || !integer(result.id) || result.id === 0)
     throw new ProtocolError("Invalid mutation result", status);

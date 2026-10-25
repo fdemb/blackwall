@@ -1874,3 +1874,178 @@ async fn sessions_list_revoke_and_survive_password_change() {
     store.pool.close().await;
     database.cleanup().await;
 }
+
+#[tokio::test]
+async fn invitation_links_work_without_mail() {
+    let database = support::TestDatabase::new().await;
+    let mut store = Store::connect(&database.url).await.unwrap();
+    store.mail_enabled = false;
+    let app = blackwall::http::router(store.clone());
+    let owner = account(&store, "owner").await;
+    let colleague = account(&store, "colleague").await;
+
+    let (status, value) = call(
+        &app,
+        "POST",
+        "/internal-api/workspaces",
+        Some(&owner.token),
+        Some(json!({"name":"Links","slug":"links"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{value}");
+    let id = value["workspace"]["id"].as_str().unwrap().to_owned();
+
+    let invite = json!({
+        "idempotency_key": "invite-once",
+        "command": {"type":"invite","email":colleague.profile.email,"role":"member","token_hash":""},
+    });
+    let commands = format!("/internal-api/workspaces/{id}/commands");
+    let (status, value) = call(
+        &app,
+        "POST",
+        &commands,
+        Some(&owner.token),
+        Some(invite.clone()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{value}");
+    assert_eq!(value["result"]["invitation"]["emailed"], false, "{value}");
+    let token = value["result"]["invitation"]["token"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    let jobs: i64 = sqlx::query_scalar("SELECT count(*) FROM jobs WHERE kind='email'")
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+    assert_eq!(jobs, 0, "no email job waits for mail that can't be sent");
+
+    let (status, replay) = call(&app, "POST", &commands, Some(&owner.token), Some(invite)).await;
+    assert_eq!(status, StatusCode::OK, "{replay}");
+    assert_eq!(replay["result"]["id"], value["result"]["id"]);
+    assert!(replay["result"].get("invitation").is_none(), "{replay}");
+    let stored: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM operation_keys WHERE position($1 in result::text) > 0",
+    )
+    .bind(&token)
+    .fetch_one(&store.pool)
+    .await
+    .unwrap();
+    assert_eq!(stored, 0, "the plaintext token is never stored");
+
+    let (status, value) = call(
+        &app,
+        "POST",
+        &format!("/internal-api/workspaces/{id}/invitations/accept"),
+        Some(&colleague.token),
+        Some(json!({"token":token})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{value}");
+
+    let (status, value) = call(
+        &app,
+        "POST",
+        "/internal-api/auth/reset-request",
+        None,
+        Some(json!({"email":owner.profile.email})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{value}");
+    assert!(
+        value["error"]
+            .as_str()
+            .unwrap()
+            .starts_with("This server can't send email"),
+        "{value}"
+    );
+    let (missing, _) = call(
+        &app,
+        "POST",
+        "/internal-api/auth/reset-request",
+        None,
+        Some(json!({"email":"nobody@example.com"})),
+    )
+    .await;
+    assert_eq!(
+        missing, status,
+        "the answer doesn't reveal which accounts exist"
+    );
+    let resets: i64 = sqlx::query_scalar("SELECT count(*) FROM password_resets")
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+    assert_eq!(resets, 0);
+
+    let mut mailing = store.clone();
+    mailing.mail_enabled = true;
+    let app = blackwall::http::router(mailing);
+    let (status, value) = call(
+        &app,
+        "POST",
+        &commands,
+        Some(&owner.token),
+        Some(json!({"command":{"type":"invite","email":"later@example.com","role":"viewer","token_hash":""}})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{value}");
+    assert_eq!(value["result"]["invitation"]["emailed"], true, "{value}");
+    let invitation = value["result"]["id"].as_str().unwrap().to_owned();
+
+    let (status, value) = call(
+        &app,
+        "POST",
+        &commands,
+        Some(&owner.token),
+        Some(json!({"command":{"type":"resend_invitation","id":invitation,"token_hash":""}})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{value}");
+    let renewed = value["result"]["invitation"]["token"].as_str().unwrap();
+    let emailed: Vec<String> = sqlx::query_scalar(
+        "SELECT payload->>'token' FROM jobs WHERE kind='email' AND payload->>'invitation_id'=$1 \
+         ORDER BY created_at",
+    )
+    .bind(&invitation)
+    .fetch_all(&store.pool)
+    .await
+    .unwrap();
+    assert_eq!(emailed.len(), 2);
+    assert_eq!(
+        emailed[1], renewed,
+        "the email and the copied link carry one token"
+    );
+
+    let later = store
+        .register(Register {
+            email: "later@example.com".into(),
+            password: "test-password-123".into(),
+            display_name: "Later".into(),
+        })
+        .await
+        .unwrap();
+    let accept = format!("/internal-api/workspaces/{id}/invitations/accept");
+    let (status, value) = call(
+        &app,
+        "POST",
+        &accept,
+        Some(&later.token),
+        Some(json!({"token":emailed[0]})),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "resend retires the old link: {value}"
+    );
+    let (status, value) = call(
+        &app,
+        "POST",
+        &accept,
+        Some(&later.token),
+        Some(json!({"token":renewed})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{value}");
+}

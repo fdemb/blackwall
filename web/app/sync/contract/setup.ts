@@ -82,10 +82,13 @@ export default async function setup(project: TestProject) {
     created = true;
     const port = await freePort();
     const baseUrl = `http://127.0.0.1:${port}`;
+    const { SMTP_URL: _smtp, SMTP_FROM: _from, ...environment } = process.env;
     processHandle = spawn(`${root}/target/debug/blackwall`, ["serve"], {
       cwd: temporary,
       env: {
-        ...process.env,
+        ...environment,
+        // Mail on, so invitations queue an email job as they do in production.
+        DEV_MAIL_DIR: `${temporary}/mail`,
         DATABASE_URL: databaseUrl.href,
         BIND_ADDR: `127.0.0.1:${port}`,
         WEB_DIR: temporary,

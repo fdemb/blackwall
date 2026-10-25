@@ -30,6 +30,7 @@ BIND_ADDR=127.0.0.1:3000
 RUST_LOG=blackwall=info
 # Served over HTTPS by the svc:blackwall Tailscale service
 COOKIE_SECURE=true
+PUBLIC_URL=https://blackwall.example.com
 # SMTP_URL=smtps://user:password@smtp.example.com
 # SMTP_FROM="Blackwall <noreply@example.com>"
 EOF

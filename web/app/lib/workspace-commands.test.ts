@@ -8,6 +8,7 @@ import { setCsrf } from "./api";
 import {
   OnlineRequiredError,
   runCommand,
+  runInvitation,
   ServerRejection,
   uuidsIn,
   waitForUploadTarget,
@@ -134,6 +135,29 @@ describe("workspace commands", () => {
     ).not.toContain("set_role");
     expect(fetch.mock.calls.some(([url]) => String(url).endsWith("/commands"))).toBe(true);
     expect(engine.store.pending().some((mutation) => mutation.name === "set_role")).toBe(false);
+  });
+  it("returns the token an invitation issues and whether the server emailed it", async () => {
+    const { engine, server } = await fixture();
+    server.emailsInvitations = false;
+    const invitation = await runInvitation(engine, {
+      type: "invite",
+      email: "new@example.com",
+      role: "member",
+      token_hash: "",
+    });
+    expect(invitation).toEqual({ token: expect.any(String), emailed: false });
+    await engine.pull();
+    const [pending] = engine.store.all("invitations");
+    expect(pending.email).toBe("new@example.com");
+
+    server.emailsInvitations = true;
+    const renewed = await runInvitation(engine, {
+      type: "resend_invitation",
+      id: pending.id,
+      token_hash: "",
+    });
+    expect(renewed?.emailed).toBe(true);
+    expect(renewed?.token).not.toBe(invitation?.token);
   });
 });
 

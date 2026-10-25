@@ -344,7 +344,10 @@ pub(super) async fn incoming(
         .await?;
 
     let result = OperationResult {
-        result: CommandResult { id: entity },
+        result: CommandResult {
+            id: entity,
+            invitation: None,
+        },
         versions: op.response_versions(),
         changes: Vec::new(),
     };

@@ -12,7 +12,7 @@ import {
 } from "react-router";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
-import Members from "../routes/settings-members";
+import Members, { InvitationLink } from "../routes/settings-members";
 import Security from "../routes/settings-security";
 import { Sidebar } from "../components/app/sidebar";
 import { AttachButton, useUploader } from "../components/app/issue-content";
@@ -459,6 +459,22 @@ describe("online-only controls", () => {
       expectGated(attach, "Attach files");
     },
   );
+});
+
+describe("invitation link", () => {
+  it("shows a copyable link that opens the welcome page with the workspace and token", async () => {
+    vi.stubGlobal("window", {
+      ...globalThis.window,
+      location: { origin: "https://bw.example.com" },
+    });
+    const engine = await fixture({ online: true });
+    const html = render(engine, <InvitationLink token="a/b+c=" />);
+    expect(html).toContain(
+      "https://bw.example.com/welcome?workspace=workspace&amp;token=a%2Fb%2Bc%3D",
+    );
+    expect(buttonTags(html, "Copy link")).toHaveLength(1);
+    vi.unstubAllGlobals();
+  });
 });
 
 describe("security settings", () => {

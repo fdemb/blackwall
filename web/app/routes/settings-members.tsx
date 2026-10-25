@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Form } from "react-aria-components";
-import { MailPlus, RotateCw, UserMinus, X } from "lucide-react";
+import { Copy, MailPlus, RotateCw, UserMinus, X } from "lucide-react";
 import { Avatar } from "~/components/ui/avatar";
 import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
@@ -15,6 +15,9 @@ import { useI18n } from "~/lib/i18n";
 import { usePending } from "~/lib/use-pending";
 import { useWorkspace } from "~/lib/workspace";
 import type { Id, Role } from "~/lib/types";
+import type { IssuedInvitation } from "~/sync/transport";
+
+type Issued = { email: string; invitation: IssuedInvitation };
 
 const ROLES: Role[] = ["owner", "admin", "member", "viewer"];
 const rank = (r: Role) => ROLES.length - ROLES.indexOf(r);
@@ -84,9 +87,10 @@ function MemberRow({
 
 export default function Members() {
   const { t, lang } = useI18n();
-  const { ws, members, me, role, run, canAdmin, offline } = useWorkspace();
+  const { ws, members, me, role, run, invite, canAdmin, offline } = useWorkspace();
   const toast = useToast();
   const [inviting, setInviting] = useState(false);
+  const [issued, setIssued] = useState<Issued | null>(null);
   const [removing, setRemoving] = useState<Id | null>(null);
   const [demoting, setDemoting] = useState<Role | null>(null);
   const { pending, guard } = usePending();
@@ -157,11 +161,15 @@ export default function Members() {
                     size="sm"
                     isDisabled={pending || offline}
                     onPress={() =>
-                      void guard(() =>
-                        run({ type: "resend_invitation", id: i.id, token_hash: "" }).then(() =>
-                          toast.show(t("invite.resent")),
-                        ),
-                      )
+                      void guard(async () => {
+                        const invitation = await invite({
+                          type: "resend_invitation",
+                          id: i.id,
+                          token_hash: "",
+                        });
+                        if (invitation) setIssued({ email: i.email, invitation });
+                        else toast.show(t("invite.noLink"));
+                      })
                     }
                   >
                     <RotateCw />
@@ -191,9 +199,14 @@ export default function Members() {
         onOpenChange={setInviting}
       >
         {(close) => (
-          <InviteForm close={close} roles={roleOptions.filter((r) => r.id !== "owner")} />
+          <InviteForm
+            close={close}
+            roles={roleOptions.filter((r) => r.id !== "owner")}
+            onIssued={setIssued}
+          />
         )}
       </Dialog>
+      <InvitationLinkDialog issued={issued} close={() => setIssued(null)} />
       <ConfirmDialog
         title={t("members.selfDemoteTitle")}
         description={t("members.selfDemoteSub")}
@@ -232,15 +245,79 @@ export default function Members() {
   );
 }
 
+function InvitationLinkDialog({ issued, close }: { issued: Issued | null; close: () => void }) {
+  const { t } = useI18n();
+  return (
+    <Dialog
+      title={t("invite.linkTitle")}
+      description={
+        issued
+          ? t(issued.invitation.emailed ? "invite.emailed" : "invite.notEmailed", {
+              email: issued.email,
+            })
+          : undefined
+      }
+      size="sm"
+      isOpen={issued !== null}
+      onOpenChange={(open) => !open && close()}
+    >
+      {(dismiss) => (
+        <div className="flex flex-col gap-4">
+          {issued && <InvitationLink token={issued.invitation.token} />}
+          <div className="flex justify-end">
+            <Button variant="primary" onPress={dismiss}>
+              {t("action.close")}
+            </Button>
+          </div>
+        </div>
+      )}
+    </Dialog>
+  );
+}
+
+export function InvitationLink({ token }: { token: string }) {
+  const { t } = useI18n();
+  const { ws } = useWorkspace();
+  const toast = useToast();
+  const url = new URL("/welcome", window.location.origin);
+  url.searchParams.set("workspace", ws.id);
+  url.searchParams.set("token", token);
+  const link = url.href;
+  return (
+    <>
+      <div className="flex items-center gap-1 rounded-lg bg-muted p-2">
+        <code className="min-w-0 flex-1 break-all font-mono text-[11px]">{link}</code>
+        <Button
+          variant="ghost"
+          size="icon"
+          aria-label={t("invite.copyLink")}
+          onPress={() =>
+            // Browsers expose no clipboard on plain-http pages.
+            void (navigator.clipboard?.writeText(link) ?? Promise.reject()).then(
+              () => toast.show(t("action.copied")),
+              () => toast.error(t("error.generic")),
+            )
+          }
+        >
+          <Copy />
+        </Button>
+      </div>
+      <p className="text-muted-foreground">{t("invite.linkOnce")}</p>
+    </>
+  );
+}
+
 function InviteForm({
   close,
   roles,
+  onIssued,
 }: {
   close: () => void;
   roles: { id: string; label: string }[];
+  onIssued: (issued: Issued) => void;
 }) {
   const { t } = useI18n();
-  const { run, offline } = useWorkspace();
+  const { invite, offline } = useWorkspace();
   const toast = useToast();
   const [email, setEmail] = useState("");
   const [role, setRole] = useState<Role>("member");
@@ -252,9 +329,14 @@ function InviteForm({
       onSubmit={(e) => {
         e.preventDefault();
         void guard(async () => {
-          await run({ type: "invite", email: email.trim(), role, token_hash: "" }, { quiet: true });
-          toast.show(t("invite.sent", { email }));
+          const address = email.trim();
+          const invitation = await invite(
+            { type: "invite", email: address, role, token_hash: "" },
+            { quiet: true },
+          );
           close();
+          if (invitation) onIssued({ email: address, invitation });
+          else toast.show(t("invite.noLink"));
         });
       }}
     >

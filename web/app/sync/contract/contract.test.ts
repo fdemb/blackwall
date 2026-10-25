@@ -109,7 +109,8 @@ describe.skipIf(!enabled)(`${suiteName}: prediction contract`, () => {
     const first = await transport.command(ws, input);
     const replay = await transport.command(ws, input);
     expect(first.result.id).not.toBeNull();
-    expect(replay.result).toEqual(first.result);
+    expect(first.result.invitation).toMatchObject({ token: expect.any(String), emailed: true });
+    expect(replay.result).toEqual({ id: first.result.id });
     expect(
       await sql(
         inject("syncContract").databaseUrl,

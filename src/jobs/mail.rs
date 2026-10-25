@@ -3,6 +3,7 @@ use lettre::{
     AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor,
     message::{Mailbox, header::ContentType},
 };
+use reqwest::Url;
 use std::{path::PathBuf, time::Duration};
 
 /// Where email jobs go. Configured once at startup from the environment.
@@ -11,6 +12,7 @@ pub enum Mailer {
     Smtp {
         transport: AsyncSmtpTransport<Tokio1Executor>,
         from: Mailbox,
+        public_url: Option<Url>,
     },
     /// Writes each email's JSON payload to a private directory instead of sending it.
     Spool(PathBuf),
@@ -22,18 +24,26 @@ impl Mailer {
     /// `DEV_MAIL_DIR` selects the spool. `SMTP_URL` and `SMTP_FROM` configure SMTP,
     /// for example `smtps://user:password@smtp.example.com` or
     /// `smtp://smtp.example.com:587?tls=required`.
-    /// `DEV_MAIL_DIR` and `SMTP_URL` are mutually exclusive.
+    /// `DEV_MAIL_DIR` and `SMTP_URL` are mutually exclusive. `PUBLIC_URL`, such as
+    /// `https://blackwall.example.com`, puts links in emails.
     pub fn from_env() -> Result<Self, String> {
         let directory = std::env::var("DEV_MAIL_DIR").ok();
         let url = std::env::var("SMTP_URL").ok();
         let from = std::env::var("SMTP_FROM").ok();
-        Self::from_config(directory.as_deref(), url.as_deref(), from.as_deref())
+        let public_url = std::env::var("PUBLIC_URL").ok();
+        Self::from_config(
+            directory.as_deref(),
+            url.as_deref(),
+            from.as_deref(),
+            public_url.as_deref(),
+        )
     }
 
     fn from_config(
         directory: Option<&str>,
         url: Option<&str>,
         from: Option<&str>,
+        public_url: Option<&str>,
     ) -> Result<Self, String> {
         if directory.is_some() && url.is_some() {
             return Err("set either DEV_MAIL_DIR or SMTP_URL, not both".into());
@@ -46,6 +56,7 @@ impl Mailer {
         let Some(url) = url else {
             return Ok(Self::Disabled);
         };
+        let public_url = public_url.map(parse_public_url).transpose()?;
         let from = from
             .ok_or("SMTP_FROM is required with SMTP_URL")?
             .parse()
@@ -57,7 +68,11 @@ impl Mailer {
             .timeout(Some(Duration::from_secs(15)))
             .build();
 
-        Ok(Self::Smtp { transport, from })
+        Ok(Self::Smtp {
+            transport,
+            from,
+            public_url,
+        })
     }
 
     pub fn describe(&self) -> &'static str {
@@ -68,14 +83,29 @@ impl Mailer {
         }
     }
 
+    pub fn lacks_links(&self) -> bool {
+        matches!(
+            self,
+            Self::Smtp {
+                public_url: None,
+                ..
+            }
+        )
+    }
+
     pub fn enabled(&self) -> bool {
         !matches!(self, Self::Disabled)
     }
 
     pub(super) async fn send(&self, id: &str, email: &Email) -> Result<(), DeliveryError> {
         match self {
-            Self::Smtp { transport, from } => {
-                let message = message(id, from, email).map_err(DeliveryError::Permanent)?;
+            Self::Smtp {
+                transport,
+                from,
+                public_url,
+            } => {
+                let message = message(id, from, email, public_url.as_ref())
+                    .map_err(DeliveryError::Permanent)?;
                 transport.send(message).await.map_err(|error| {
                     if error.is_permanent() {
                         tracing::warn!(
@@ -108,7 +138,35 @@ impl Mailer {
     }
 }
 
-fn message(id: &str, from: &Mailbox, email: &Email) -> Result<Message, &'static str> {
+/// Ends the path with a slash so joining keeps a subpath such as `/blackwall/`.
+fn parse_public_url(value: &str) -> Result<Url, String> {
+    let invalid = || "PUBLIC_URL must be an http:// or https:// URL without a query".to_string();
+    let mut url = Url::parse(value).map_err(|_| invalid())?;
+    if !matches!(url.scheme(), "http" | "https")
+        || url.host().is_none()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return Err(invalid());
+    }
+    if !url.path().ends_with('/') {
+        url.set_path(&format!("{}/", url.path()));
+    }
+    Ok(url)
+}
+
+fn link(public_url: &Url, path: &str, query: &[(&str, &str)]) -> String {
+    let mut url = public_url.join(path).expect("relative path joins");
+    url.query_pairs_mut().extend_pairs(query);
+    url.into()
+}
+
+fn message(
+    id: &str,
+    from: &Mailbox,
+    email: &Email,
+    public_url: Option<&Url>,
+) -> Result<Message, &'static str> {
     // Stable across retries. SMTP still permits duplicate delivery.
     let message_id = format!("<{}@{}>", crate::auth::hash(id), from.email.domain());
 
@@ -118,13 +176,29 @@ fn message(id: &str, from: &Mailbox, email: &Email) -> Result<Message, &'static 
         .subject(&email.subject)
         .message_id(Some(message_id))
         .header(ContentType::TEXT_PLAIN)
-        .body(body(email))
+        .body(body(email, public_url))
         .map_err(|_| "invalid email")
 }
 
-fn body(email: &Email) -> String {
-    match &email.grant {
-        Grant::Invitation { workspace_id, .. } => format!(
+fn body(email: &Email, public_url: Option<&Url>) -> String {
+    match (&email.grant, public_url) {
+        (Grant::Invitation { workspace_id, .. }, Some(public_url)) => format!(
+            "You've been invited to a Blackwall workspace.\n\n\
+             Open this link to join. Sign in or register with this email address first if \
+             Blackwall asks you to:\n\n\
+             {}\n\n\
+             The link works for seven days. If you weren't expecting this invitation, you can \
+             ignore this email.\n",
+            link(
+                public_url,
+                "welcome",
+                &[
+                    ("workspace", &workspace_id.to_string()),
+                    ("token", &email.token)
+                ]
+            )
+        ),
+        (Grant::Invitation { workspace_id, .. }, None) => format!(
             "You've been invited to a Blackwall workspace.\n\n\
              Sign in or register with this email address. On the welcome page, choose Join \
              workspace and enter:\n\n\
@@ -133,7 +207,14 @@ fn body(email: &Email) -> String {
              If you weren't expecting this invitation, you can ignore this email.\n",
             email.token
         ),
-        Grant::Reset { .. } => format!(
+        (Grant::Reset { .. }, Some(public_url)) => format!(
+            "Someone asked to reset the password for your Blackwall account.\n\n\
+             Open this link within one hour to choose a new password:\n\n\
+             {}\n\n\
+             If you didn't ask for this, ignore this email. Your password stays the same.\n",
+            link(public_url, "recover", &[("token", &email.token)])
+        ),
+        (Grant::Reset { .. }, None) => format!(
             "Someone asked to reset the password for your Blackwall account.\n\n\
              Enter this recovery token on the password recovery page within one hour:\n\n\
              {}\n\n\
@@ -180,7 +261,8 @@ mod tests {
 
     #[test]
     fn rejects_spool_with_smtp() {
-        let result = Mailer::from_config(Some("dev-mail"), Some("smtp://localhost:1025"), None);
+        let result =
+            Mailer::from_config(Some("dev-mail"), Some("smtp://localhost:1025"), None, None);
         assert_eq!(
             result.err().as_deref(),
             Some("set either DEV_MAIL_DIR or SMTP_URL, not both")
@@ -189,7 +271,7 @@ mod tests {
 
     #[test]
     fn selects_spool() {
-        let mailer = Mailer::from_config(Some("dev-mail"), None, None).unwrap();
+        let mailer = Mailer::from_config(Some("dev-mail"), None, None, None).unwrap();
         assert!(matches!(mailer, Mailer::Spool(path) if path == std::path::Path::new("dev-mail")));
     }
 
@@ -199,6 +281,7 @@ mod tests {
             None,
             Some("smtp://localhost:1025"),
             Some("Blackwall <noreply@example.com>"),
+            None,
         )
         .unwrap();
         assert!(
@@ -208,13 +291,13 @@ mod tests {
 
     #[test]
     fn disables_unconfigured_mail() {
-        let mailer = Mailer::from_config(None, None, None).unwrap();
+        let mailer = Mailer::from_config(None, None, None, None).unwrap();
         assert!(matches!(mailer, Mailer::Disabled));
     }
 
     #[test]
     fn requires_smtp_from() {
-        let result = Mailer::from_config(None, Some("smtp://localhost:1025"), None);
+        let result = Mailer::from_config(None, Some("smtp://localhost:1025"), None, None);
         assert_eq!(
             result.err().as_deref(),
             Some("SMTP_FROM is required with SMTP_URL")
@@ -223,11 +306,93 @@ mod tests {
 
     #[test]
     fn rejects_invalid_smtp_from() {
-        let result = Mailer::from_config(None, Some("smtp://localhost:1025"), Some("invalid"));
+        let result =
+            Mailer::from_config(None, Some("smtp://localhost:1025"), Some("invalid"), None);
         assert_eq!(
             result.err().as_deref(),
             Some("SMTP_FROM must be an address like Blackwall <noreply@example.com>")
         );
+    }
+
+    #[test]
+    fn rejects_invalid_public_url() {
+        for value in [
+            "blackwall.example.com",
+            "ftp://blackwall.example.com",
+            "https://blackwall.example.com/?a=1",
+        ] {
+            let result = Mailer::from_config(
+                None,
+                Some("smtp://localhost:1025"),
+                Some("Blackwall <noreply@example.com>"),
+                Some(value),
+            );
+            assert_eq!(
+                result.err().as_deref(),
+                Some("PUBLIC_URL must be an http:// or https:// URL without a query"),
+                "{value}"
+            );
+            // Only SMTP mail carries links, so a bad value can't stop a server without it.
+            assert!(Mailer::from_config(None, None, None, Some(value)).is_ok());
+        }
+    }
+
+    fn email(grant: Grant) -> Email {
+        Email {
+            to: "colleague@example.com".into(),
+            subject: "Subject".into(),
+            token: "tok/en+1".into(),
+            grant,
+        }
+    }
+
+    #[test]
+    fn links_invitation_to_welcome_page() {
+        let workspace_id = Uuid::new_v4();
+        let invitation = email(Grant::Invitation {
+            workspace_id,
+            invitation_id: Uuid::new_v4(),
+            token_hash: "hash".into(),
+        });
+
+        for (public_url, expected) in [
+            (
+                "https://blackwall.example.com",
+                "https://blackwall.example.com/welcome",
+            ),
+            (
+                "https://example.com/blackwall",
+                "https://example.com/blackwall/welcome",
+            ),
+        ] {
+            let public_url = parse_public_url(public_url).unwrap();
+            let text = body(&invitation, Some(&public_url));
+            assert!(
+                text.contains(&format!(
+                    "{expected}?workspace={workspace_id}&token=tok%2Fen%2B1\n"
+                )),
+                "{text}"
+            );
+            assert!(!text.contains("Workspace ID"), "{text}");
+        }
+    }
+
+    #[test]
+    fn links_reset_to_recovery_page() {
+        let reset = email(Grant::Reset {
+            user_id: Uuid::new_v4(),
+            token_hash: "hash".into(),
+        });
+        let public_url = parse_public_url("http://127.0.0.1:3000/").unwrap();
+
+        let text = body(&reset, Some(&public_url));
+        assert!(
+            text.contains("http://127.0.0.1:3000/recover?token=tok%2Fen%2B1\n"),
+            "{text}"
+        );
+
+        let text = body(&reset, None);
+        assert!(text.contains("\n\ntok/en+1\n\n"), "{text}");
     }
 
     /// Accepts one SMTP session and returns the message data.
@@ -275,6 +440,7 @@ mod tests {
                 .port(port)
                 .build(),
             from: "Blackwall <noreply@example.com>".parse().unwrap(),
+            public_url: None,
         };
 
         let workspace_id = Uuid::new_v4();

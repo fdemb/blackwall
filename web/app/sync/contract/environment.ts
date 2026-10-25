@@ -6,7 +6,6 @@ import type { EngineSignal, SyncEngine } from "../engine";
 import { MemoryReplicaStorage } from "../persistence/memory";
 import type { Scope } from "../persistence/types";
 import { createTransport, ProtocolError } from "../transport";
-import { sql } from "./setup";
 
 declare module "vite-plus/test" {
   export interface ProvidedContext {
@@ -97,19 +96,16 @@ export async function command(ws: string, user: User, value: Command): Promise<s
   throw new Error("invalid command result id");
 }
 export async function addMember(ws: string, owner: User, user: User, role: Role): Promise<void> {
-  const id = await command(ws, owner, {
-    type: "invite",
-    email: user.email,
-    role,
-    token_hash: "server-generated",
-  });
-  if (id === null || !/^[\da-f-]{36}$/.test(id)) throw new Error("invalid invitation id");
-  // Read the queued email, without running a worker or writing database state.
-  const token = await sql(
-    inject("syncContract").databaseUrl,
-    `SELECT payload->>'token' FROM jobs WHERE payload->>'invitation_id'='${id}'`,
+  const result = object(
+    object(
+      await request(`/internal-api/workspaces/${ws}/commands`, owner, {
+        command: { type: "invite", email: user.email, role, token_hash: "server-generated" },
+      }),
+    ).result,
   );
-  if (!token) throw new Error("missing invitation email token");
+  if (typeof result.id !== "string" || !/^[\da-f-]{36}$/.test(result.id))
+    throw new Error("invalid invitation id");
+  const token = textField(object(result.invitation), "token");
   await request(`/internal-api/workspaces/${ws}/invitations/accept`, user, { token });
 }
 

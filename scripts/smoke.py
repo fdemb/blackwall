@@ -48,7 +48,7 @@ try:
         environment = os.environ.copy()
         environment.pop("DEV_MAIL_DIR", None)
         environment.pop("SMTP_URL", None)
-        environment.update(DATABASE_URL=urllib.parse.urlunsplit(parsed._replace(path=f"/{database}")), BIND_ADDR=f"127.0.0.1:{port}", WEB_DIR=str(root / "web/build/client"))
+        environment.update(DATABASE_URL=urllib.parse.urlunsplit(parsed._replace(path=f"/{database}")), BIND_ADDR=f"127.0.0.1:{port}", WEB_DIR=str(root / "web/build/client"), DEV_MAIL_DIR=f"{temporary}/mail")
         binary = str(root / "target/debug/blackwall")
         process = None
         worker = None
@@ -65,12 +65,13 @@ try:
                     body = response.read()
                     return json.loads(body) if body and response.headers.get_content_type() == "application/json" else body
 
-            def start():
+            def start(with_worker=True):
                 global process, worker
                 process = subprocess.Popen([binary], cwd=temporary, env=environment, stdout=log, stderr=log)
-                worker = subprocess.Popen([binary, "worker"], cwd=temporary, env=environment, stdout=log, stderr=log)
+                if with_worker:
+                    worker = subprocess.Popen([binary, "worker"], cwd=temporary, env=environment, stdout=log, stderr=log)
                 for _ in range(100):
-                    if process.poll() is not None or worker.poll() is not None:
+                    if process.poll() is not None or (worker is not None and worker.poll() is not None):
                         log.seek(0)
                         raise RuntimeError(log.read())
                     try:
@@ -109,7 +110,8 @@ try:
             try:
                 for _ in range(2):
                     subprocess.run([binary, "migrate"], cwd=temporary, env=environment, stdout=log, stderr=log, check=True)
-                start()
+                # No worker yet, so the invitation email stays queued.
+                start(with_worker=False)
                 session = request("POST", "/internal-api/auth/register", {"email": "owner@example.com", "password": "smoke-password-123", "display_name": "Owner"})
                 token = session["token"]
                 workspace = request("POST", "/internal-api/workspaces", {"name": "HTTP smoke", "slug": "http-smoke"})
@@ -127,7 +129,9 @@ try:
                 created = command(creation, key="smoke-create")
                 assert command(creation, key="smoke-create") == created
                 issue = created["result"]["id"]
-                invitation = command({"type": "invite", "email": "colleague@example.com", "role": "member", "token_hash": "server-generated"})["result"]["id"]
+                invited = command({"type": "invite", "email": "colleague@example.com", "role": "member", "token_hash": "server-generated"})["result"]
+                invitation = invited["id"]
+                assert invited["invitation"]["emailed"] is True
                 cancelled = command({"type": "invite", "email": "cancelled@example.com", "role": "member", "token_hash": "server-generated"})
                 cancelled_id = cancelled["result"]["id"]
                 command({"type": "cancel_invitation", "id": cancelled_id}, {cancelled_id: cancelled["versions"][cancelled_id]})
@@ -135,7 +139,6 @@ try:
                 # Model a worker crash after claiming but before delivering the invitation.
                 assert sql(f"SELECT count(*) FROM jobs WHERE kind='email' AND payload->>'to'='colleague@example.com' AND state='pending'", database) == "1"
                 sql("UPDATE jobs SET state='running',attempts=1,claim_token=gen_random_uuid(),lease_expires_at=clock_timestamp()-interval '1 second' WHERE kind='email' AND payload->>'to'='colleague@example.com'", database)
-                environment["DEV_MAIL_DIR"] = f"{temporary}/mail"
                 start()
                 persisted = request("GET", path + f"/issues/{issue}")
                 assert persisted["id"] == issue and persisted["version"] >= 1

@@ -313,6 +313,13 @@ async fn run_in_savepoint(op: &mut Operation<'_>, built: Result<Command>) -> Res
             "use the attachment upload endpoint".into(),
         ));
     }
+    // A push result can't carry the new token, so the invitation would be unusable.
+    if matches!(
+        command,
+        Command::Invite { .. } | Command::ResendInvitation { .. }
+    ) {
+        return Err(Error::BadRequest("use the commands endpoint".into()));
+    }
     match op.run_command(command, None).await {
         Ok(_) => Ok(()),
         Err(error) if is_business(&error) => {

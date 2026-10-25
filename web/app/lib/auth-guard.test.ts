@@ -85,3 +85,30 @@ describe("offline startup", () => {
     await expect(after.guard.currentProfile()).rejects.toThrow(TypeError);
   });
 });
+
+describe("returning after sign-in", () => {
+  it("sends a signed-out visitor to sign in and back to the invitation link", async () => {
+    const { signInFor, sameOriginPathOrHome } = await import("./auth-guard");
+    const login = signInFor("https://bw.example.com/welcome?workspace=w1&token=a%2Fb");
+    expect(login).toBe("/login?next=%2Fwelcome%3Fworkspace%3Dw1%26token%3Da%252Fb");
+    const next = new URLSearchParams(login.split("?")[1]).get("next");
+    expect(sameOriginPathOrHome(next, "https://bw.example.com")).toBe(
+      "/welcome?workspace=w1&token=a%2Fb",
+    );
+    expect(signInFor("https://bw.example.com/")).toBe("/login");
+  });
+  it("goes home instead of following a next link to another site", async () => {
+    const { sameOriginPathOrHome } = await import("./auth-guard");
+    for (const next of [
+      null,
+      "",
+      "https://evil.example",
+      "//evil.example",
+      "/\\evil.example",
+      "/.//evil.example",
+      "/..//evil.example",
+      "/a/..//evil.example",
+    ])
+      expect(sameOriginPathOrHome(next, "https://bw.example.com")).toBe("/");
+  });
+});

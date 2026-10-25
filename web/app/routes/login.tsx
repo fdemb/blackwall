@@ -1,10 +1,11 @@
 import { useState } from "react";
 import { Form, TextField as RACTextField } from "react-aria-components";
-import { Link, useNavigate } from "react-router";
+import { Link, useNavigate, useSearchParams } from "react-router";
 import { Eye, EyeOff, Loader2 } from "lucide-react";
 import { Button } from "~/components/ui/button";
 import { FieldError, FormError, Input, Label, TextField } from "~/components/ui/field";
 import { auth, setCsrf } from "~/lib/api";
+import { sameOriginPathOrHome } from "~/lib/auth-guard";
 import { useI18n } from "~/lib/i18n";
 import { useDocumentTitle } from "~/lib/title";
 import { formText } from "~/lib/utils";
@@ -12,6 +13,7 @@ import { formText } from "~/lib/utils";
 export default function Login() {
   const { t } = useI18n();
   const nav = useNavigate();
+  const [params] = useSearchParams();
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
@@ -33,7 +35,7 @@ export default function Login() {
           try {
             const s = await auth.login(formText(f, "email"), formText(f, "password"));
             setCsrf(s.csrf_token);
-            await nav("/", { replace: true });
+            await nav(sameOriginPathOrHome(params.get("next")), { replace: true });
           } catch (err) {
             setError((err as Error).message);
             setBusy(false);
@@ -87,7 +89,10 @@ export default function Login() {
       </Form>
       <p className="mt-5 text-center text-muted-foreground">
         {t("auth.noAccount")}{" "}
-        <Link to="/register" className="font-medium text-primary hover:underline">
+        <Link
+          to={{ pathname: "/register", search: params.toString() }}
+          className="font-medium text-primary hover:underline"
+        >
           {t("auth.register")}
         </Link>
       </p>

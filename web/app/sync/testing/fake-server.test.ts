@@ -336,7 +336,14 @@ describe("fake sync push", () => {
   it.each(
     ONLINE_ONLY.filter(
       (name) =>
-        !["set_role", "remove_member", "add_attachment", "attach_comment_file"].includes(name),
+        ![
+          "set_role",
+          "remove_member",
+          "add_attachment",
+          "attach_comment_file",
+          "invite",
+          "resend_invitation",
+        ].includes(name),
     ),
   )("explicitly rejects unsupported online-only command %s", async (name) => {
     const f = fixture();
@@ -348,6 +355,20 @@ describe("fake sync push", () => {
       error: { status: 400, message: "not supported by the fake" },
     });
   });
+
+  it.each(["invite", "resend_invitation"])(
+    "rejects %s pushed through sync, as its token could never reach the admin",
+    async (name) => {
+      const f = fixture();
+      const body: PushResponse = await (
+        await f.push([{ id: 1, name, args: {}, at: CLIENT_AT }])
+      ).json();
+      expect(body.results[0]).toMatchObject({
+        status: "rejected",
+        error: { status: 400, message: "use the commands endpoint" },
+      });
+    },
+  );
 });
 
 describe("fake sync pull", () => {

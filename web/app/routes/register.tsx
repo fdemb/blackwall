@@ -1,10 +1,11 @@
 import { useState } from "react";
 import { Form } from "react-aria-components";
-import { Link, useNavigate } from "react-router";
+import { Link, useNavigate, useSearchParams } from "react-router";
 import { Loader2 } from "lucide-react";
 import { Button } from "~/components/ui/button";
 import { FormError, TextField } from "~/components/ui/field";
 import { auth, setCsrf } from "~/lib/api";
+import { sameOriginPathOrHome } from "~/lib/auth-guard";
 import { useI18n } from "~/lib/i18n";
 import { useDocumentTitle } from "~/lib/title";
 import { formText } from "~/lib/utils";
@@ -12,6 +13,7 @@ import { formText } from "~/lib/utils";
 export default function Register() {
   const { t, lang } = useI18n();
   const nav = useNavigate();
+  const [params] = useSearchParams();
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   useDocumentTitle(t("auth.register"));
@@ -41,7 +43,7 @@ export default function Register() {
               const { id: _id, email: _email, ...profile } = s.profile;
               await auth.editProfile({ ...profile, language: lang }).catch(() => undefined);
             }
-            await nav("/", { replace: true });
+            await nav(sameOriginPathOrHome(params.get("next")), { replace: true });
           } catch (err) {
             setError((err as Error).message);
             setBusy(false);
@@ -80,7 +82,10 @@ export default function Register() {
       </Form>
       <p className="mt-5  text-muted-foreground">
         {t("auth.haveAccount")}{" "}
-        <Link to="/login" className="font-medium text-primary hover:underline">
+        <Link
+          to={{ pathname: "/login", search: params.toString() }}
+          className="font-medium text-primary hover:underline"
+        >
           {t("auth.login")}
         </Link>
       </p>

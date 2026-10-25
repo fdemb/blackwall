@@ -1,6 +1,7 @@
-import { OutdatedError, type SyncEngine, type Rejection } from "../sync/engine";
+import { OutdatedError, type OnlineResult, type Rejection, type SyncEngine } from "../sync/engine";
 import { createdIds, MutationError, ONLINE_ONLY } from "../sync/mutators";
 import { ApiError, workspaces } from "./api";
+import type { IssuedInvitation } from "../sync/transport";
 import type { Command } from "./types";
 
 export class ServerRejection extends ApiError {}
@@ -19,18 +20,35 @@ export async function runCommand(engine: SyncEngine, command: Command): Promise<
     command = { ...command, id: crypto.randomUUID() };
   const { type, ...args } = command;
   if (ONLINE_ONLY.some((name) => name === type)) {
-    if (!engine.status.get().online) throw new OnlineRequiredError();
-    const result = await engine.runOnline(type, args).catch((error: unknown) => {
-      if (error instanceof MutationError) throw new ServerRejection(error.message, error.status);
-      throw error;
-    });
-    if (result.status === "rejected")
-      throw new ServerRejection(result.error.message, result.error.status);
+    await runOnline(engine, type, args);
     // Online creates cannot predict their server result; create_integration supplies its id.
     return type === "create_integration" ? (command.id ?? null) : null;
   }
   const receipt = await engine.mutate(type, args);
   return receipt.id;
+}
+
+export type InvitationCommand = Extract<Command, { type: "invite" | "resend_invitation" }>;
+
+export async function runInvitation(
+  engine: SyncEngine,
+  command: InvitationCommand,
+): Promise<IssuedInvitation | null> {
+  const error = engine.status.get().lastError;
+  if (error instanceof OutdatedError) throw error;
+  const { type, ...args } = command;
+  return (await runOnline(engine, type, args)).invitation ?? null;
+}
+
+async function runOnline(engine: SyncEngine, type: string, args: object): Promise<OnlineResult> {
+  if (!engine.status.get().online) throw new OnlineRequiredError();
+  const result = await engine.runOnline(type, args).catch((error: unknown) => {
+    if (error instanceof MutationError) throw new ServerRejection(error.message, error.status);
+    throw error;
+  });
+  if (result.status === "rejected")
+    throw new ServerRejection(result.error.message, result.error.status);
+  return result;
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {

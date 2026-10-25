@@ -86,6 +86,7 @@ pub struct Store {
     /// streams so graceful shutdown does not wait out their lifetime.
     pub(crate) sync_shutdown: Arc<tokio::sync::watch::Sender<bool>>,
     pub(crate) database_url: String,
+    pub mail_enabled: bool,
 }
 
 pub struct NewAttachment {
@@ -117,6 +118,8 @@ pub(super) struct Operation<'a> {
     /// another table's row with the same id. Collapsed to Uuid keys for responses.
     pub versions: BTreeMap<(String, Uuid), i64>,
     pub activity_fields: Vec<String>,
+    pub mail_enabled: bool,
+    pub invitation: Option<crate::domain::IssuedInvitation>,
 }
 
 pub(super) fn enum_text<T: serde::Serialize>(v: &T) -> String {
@@ -295,6 +298,7 @@ impl Store {
             sync_events: config.sync_events,
             sync_shutdown: Arc::new(tokio::sync::watch::channel(false).0),
             database_url: url.to_owned(),
+            mail_enabled: true,
             pool,
         })
     }
@@ -431,7 +435,10 @@ impl Store {
         let id = op.run_command(command, attachment).await?;
 
         let mut result = OperationResult {
-            result: CommandResult { id },
+            result: CommandResult {
+                id,
+                invitation: None,
+            },
             versions: op.response_versions(),
             changes: changes::pending(&mut op.tx, workspace_id, actor).await?,
         };
@@ -452,6 +459,7 @@ impl Store {
         .await?;
         op.tx.commit().await?;
 
+        result.result.invitation = op.invitation.take();
         Ok(result)
     }
 
@@ -509,6 +517,8 @@ impl Store {
             expected,
             versions: BTreeMap::new(),
             activity_fields: Vec::new(),
+            mail_enabled: self.mail_enabled,
+            invitation: None,
         })
     }
 }
@@ -786,6 +796,8 @@ mod tests {
             expected: BTreeMap::new(),
             versions: BTreeMap::new(),
             activity_fields: Vec::new(),
+            mail_enabled: true,
+            invitation: None,
         };
 
         // 5000 supplied ids, as in one maximal ImportIssues command.
@@ -889,6 +901,8 @@ mod tests {
             expected: BTreeMap::new(),
             versions: BTreeMap::new(),
             activity_fields: Vec::new(),
+            mail_enabled: true,
+            invitation: None,
         };
 
         let issues: Vec<IssueInput> = (0..20)
@@ -926,6 +940,8 @@ mod tests {
             expected: BTreeMap::new(),
             versions: BTreeMap::new(),
             activity_fields: Vec::new(),
+            mail_enabled: true,
+            invitation: None,
         };
 
         let supplied: Vec<Uuid> = (0..5).map(|_| Uuid::new_v4()).collect();

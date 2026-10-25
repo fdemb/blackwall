@@ -1,13 +1,19 @@
 import { useEffect } from "react";
-import { Outlet } from "react-router";
-import { landing } from "~/lib/auth-guard";
+import { Outlet, redirect } from "react-router";
+import { landing, signInFor } from "~/lib/auth-guard";
 import { SessionProvider } from "~/lib/session";
 import { applyTheme } from "~/lib/theme";
 import { useI18n } from "~/lib/i18n";
 import type { Route } from "./+types/authed";
 
-export async function clientLoader() {
-  return landing();
+export async function clientLoader({ request }: Route.ClientLoaderArgs) {
+  try {
+    return await landing();
+  } catch (error) {
+    if (error instanceof Response && error.headers.get("Location") === "/login")
+      throw redirect(signInFor(request.url));
+    throw error;
+  }
 }
 
 export function shouldRevalidate({ currentUrl, nextUrl }: { currentUrl: URL; nextUrl: URL }) {

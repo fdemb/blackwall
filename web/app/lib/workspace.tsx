@@ -20,6 +20,8 @@ import {
   uploadFile,
   OnlineRequiredError,
   runCommand,
+  runInvitation,
+  type InvitationCommand,
   uuidsIn,
   watchRejections,
   watchOutdated,
@@ -140,29 +142,32 @@ function useWorkspaceValue() {
     [t],
   );
 
-  const run = useCallback(
-    async (command: Command, opts: RunOptions = {}) => {
+  const report = useCallback(
+    async <T,>(work: Promise<T>, quiet = false): Promise<T> => {
       try {
-        return await runCommand(engine, command);
+        return await work;
       } catch (error) {
         // Synced edits return before the server answers, so their rejections arrive only as engine
         // events. Anything thrown here (admission, online commands) has no event and is shown now.
-        if (!opts.quiet) toast.error(describeError(error));
+        if (!quiet) toast.error(describeError(error));
         throw error instanceof OutdatedError ? new OutdatedError(describeError(error)) : error;
       }
     },
-    [engine, toast, describeError],
+    [toast, describeError],
+  );
+  const run = useCallback(
+    (command: Command, opts: RunOptions = {}) => report(runCommand(engine, command), opts.quiet),
+    [engine, report],
+  );
+  const invite = useCallback(
+    (command: InvitationCommand, opts: RunOptions = {}) =>
+      report(runInvitation(engine, command), opts.quiet),
+    [engine, report],
   );
   const upload = useCallback(
-    async (issueId: string, file: File, opts: UploadOptions = {}) => {
-      try {
-        return await uploadFile(engine, ws.id, issueId, file, opts.commentId);
-      } catch (error) {
-        if (!opts.quiet) toast.error(describeError(error));
-        throw error instanceof OutdatedError ? new OutdatedError(describeError(error)) : error;
-      }
-    },
-    [engine, ws.id, toast, describeError],
+    (issueId: string, file: File, opts: UploadOptions = {}) =>
+      report(uploadFile(engine, ws.id, issueId, file, opts.commentId), opts.quiet),
+    [engine, ws.id, report],
   );
   // REST writes that send record ids wait here until the server has those records.
   const confirmed = useCallback((body: unknown) => whenConfirmed(engine, uuidsIn(body)), [engine]);
@@ -206,6 +211,7 @@ function useWorkspaceValue() {
     retrySync,
     reload: retrySync,
     run,
+    invite,
     upload,
     confirmed,
     create,

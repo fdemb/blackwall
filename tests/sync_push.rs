@@ -881,11 +881,16 @@ async fn push_malformed_commands_rejected_per_mutation() {
                 "add_attachment",
                 json!({"issue_id": issue, "attachment": {"id": Uuid::new_v4(), "name": "f.txt", "content_type": "text/plain", "size": 1}}),
             ),
+            mutation(
+                4,
+                "invite",
+                json!({"email": "pushed@example.com", "role": "member", "token_hash": ""}),
+            ),
         ],
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{result}");
-    assert_eq!(result["last_mutation_id"], 3);
+    assert_eq!(result["last_mutation_id"], 4);
     for entry in result["results"].as_array().unwrap() {
         assert_eq!(entry["status"], "rejected", "{entry}");
         assert_eq!(entry["error"]["status"], 400, "{entry}");
@@ -893,6 +898,10 @@ async fn push_malformed_commands_rejected_per_mutation() {
     assert_eq!(
         result["results"][2]["error"]["message"],
         "use the attachment upload endpoint"
+    );
+    assert_eq!(
+        result["results"][3]["error"]["message"], "use the commands endpoint",
+        "a pushed invitation could never hand out its token"
     );
 
     drop(app);

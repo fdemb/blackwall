@@ -462,6 +462,14 @@ impl Store {
     }
 
     pub async fn request_reset(&self, input: ResetRequest) -> Result<()> {
+        if !self.mail_enabled {
+            return Err(Error::Conflict(
+                "This server can't send email, so it can't reset passwords. Ask the person who \
+                 runs Blackwall for help."
+                    .into(),
+            ));
+        }
+
         let mut tx = self.pool.begin().await?;
         let row = sqlx::query("SELECT id,email FROM users WHERE email = $1 FOR UPDATE")
             .bind(input.email.trim().to_lowercase())

@@ -107,7 +107,9 @@ cargo run -- queue cancel <job-uuid>
 
 Delivery is at least once. A crash after an external service accepts a request can cause another delivery.
 
-Set `SMTP_URL`, such as `smtps://user:password@smtp.example.com` or `smtp://smtp.example.com:587?tls=required`, and `SMTP_FROM`. Percent-encode URL credentials. Email uses a stable Message-ID derived from the job. SMTP servers do not guarantee deduplication. Invalidated invitation and password-reset grants suppress queued mail. Without SMTP or a development spool, workers leave email jobs pending without consuming attempts.
+Set `SMTP_URL`, such as `smtps://user:password@smtp.example.com` or `smtp://smtp.example.com:587?tls=required`, and `SMTP_FROM`. Percent-encode URL credentials. Email uses a stable Message-ID derived from the job. SMTP servers do not guarantee deduplication. Invalidated invitation and password-reset grants suppress queued mail. Set `PUBLIC_URL` to the address people open Blackwall at, such as `https://blackwall.example.com`, so invitation and reset emails carry links. Without it, emails carry the raw tokens.
+
+Without SMTP or a development spool, the server queues no email. Admins copy invitation links from the members page instead, and password reset requests answer that the server can't send email. The web server and the worker must read the same mail settings.
 
 For local mail, set `SMTP_URL=smtp://127.0.0.1:1025` and read Mailpit at `http://127.0.0.1:8025`. Alternatively, set `DEV_MAIL_DIR=./dev-mail` to write private JSON files with mode 0600. `DEV_MAIL_DIR` and `SMTP_URL` are mutually exclusive. Keep the directory private.
 
@@ -144,7 +146,7 @@ Every push to `main` deploys to `deploy-host`, an aarch64 Debian 13 host reachab
 
 `deploy` passes the archive to `/usr/local/sbin/blackwall-deploy`, the one command the runner may run with sudo. The script unpacks the archive into `/opt/blackwall/releases/<sha>`, runs `blackwall migrate`, points `/opt/blackwall/current` at the release, and restarts `blackwall-web` and `blackwall-worker`. If `/health` or the worker is down after 30 seconds, it switches back to the previous release; migrations stay applied. It keeps the five newest releases.
 
-PostgreSQL 17 runs natively, and the `blackwall` system user connects with peer authentication. The `svc:blackwall` Tailscale service publishes the app at `https://blackwall.example.com` inside the tailnet only. Service hosts must be tagged nodes; `deploy-host` has `tag:deploy`, and an admin approved it as the service's host. Configuration lives in `/etc/blackwall/blackwall.env`; mail stays queued until you set `SMTP_URL` and `SMTP_FROM` there.
+PostgreSQL 17 runs natively, and the `blackwall` system user connects with peer authentication. The `svc:blackwall` Tailscale service publishes the app at `https://blackwall.example.com` inside the tailnet only. Service hosts must be tagged nodes; `deploy-host` has `tag:deploy`, and an admin approved it as the service's host. Configuration lives in `/etc/blackwall/blackwall.env`. Mail stays off until you set `SMTP_URL`, `SMTP_FROM` and `PUBLIC_URL` there.
 
 `deploy/bootstrap.sh` sets up the host and can be rerun. Copy `deploy/` to the host and run it as root. Add `RUNNER_TOKEN` from `gh api -X POST repos/fdemb/blackwall-rust/actions/runners/registration-token --jq .token` to register the runner too. To redeploy a commit, rerun its `deploy` job in GitHub Actions. To roll back by hand, run `blackwall-deploy` with an older archive, or repoint `current` and restart both services.
 

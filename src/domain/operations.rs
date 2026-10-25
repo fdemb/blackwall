@@ -622,7 +622,10 @@ impl Workspace {
             via: None,
         });
 
-        Ok(CommandResult { id: result })
+        Ok(CommandResult {
+            id: result,
+            invitation: None,
+        })
     }
 
     pub fn query(&self, actor: Uuid, f: IssueFilter) -> Result<Vec<Issue>> {

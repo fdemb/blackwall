@@ -1078,23 +1078,29 @@ impl Operation<'_> {
         token: String,
         token_hash: String,
     ) -> Result<()> {
-        Outbox::insert(
-            &mut self.tx,
-            &NewJob::now(
-                format!("invitation:{id}:{token_hash}"),
-                Job::Email(Email {
-                    to: email,
-                    subject: "You have been invited to a Blackwall workspace".into(),
-                    token,
-                    grant: Grant::Invitation {
-                        workspace_id: self.workspace_id,
-                        invitation_id: id,
-                        token_hash,
-                    },
-                }),
-            ),
-        )
-        .await?;
+        if self.mail_enabled {
+            Outbox::insert(
+                &mut self.tx,
+                &NewJob::now(
+                    format!("invitation:{id}:{token_hash}"),
+                    Job::Email(Email {
+                        to: email,
+                        subject: "You have been invited to a Blackwall workspace".into(),
+                        token: token.clone(),
+                        grant: Grant::Invitation {
+                            workspace_id: self.workspace_id,
+                            invitation_id: id,
+                            token_hash,
+                        },
+                    }),
+                ),
+            )
+            .await?;
+        }
+        self.invitation = Some(crate::domain::IssuedInvitation {
+            token,
+            emailed: self.mail_enabled,
+        });
         Ok(())
     }
 

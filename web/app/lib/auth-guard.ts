@@ -44,6 +44,20 @@ function unavailable(e: unknown) {
   return e instanceof TypeError || (e instanceof ApiError && e.status >= 500);
 }
 
+export function signInFor(url: string): string {
+  const { pathname, search } = new URL(url);
+  const next = pathname + search;
+  return next === "/" ? "/login" : `/login?next=${encodeURIComponent(next)}`;
+}
+
+export function sameOriginPathOrHome(next: string | null, origin = window.location.origin): string {
+  if (!next?.startsWith("/")) return "/";
+  const url = new URL(next, origin);
+  // Dot segments can resolve to a protocol-relative path such as `//evil.com`.
+  if (url.origin !== origin || url.pathname.startsWith("//")) return "/";
+  return url.pathname + url.search + url.hash;
+}
+
 export const LAST_WS = "bw-last-workspace:v1";
 
 export function readLastWs() {

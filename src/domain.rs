@@ -361,6 +361,17 @@ pub struct Workspace {
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct CommandResult {
     pub id: Option<Uuid>,
+    /// Set by `invite` and `resend_invitation`. Idempotent replays leave it out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub invitation: Option<IssuedInvitation>,
+}
+
+/// The only copy of a new invitation token. The database keeps its hash.
+#[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
+pub struct IssuedInvitation {
+    pub token: String,
+    /// False when this server has no mail configured, so the admin must share the link.
+    pub emailed: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]

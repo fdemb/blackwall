@@ -655,6 +655,7 @@ async fn shutdown_drains_inflight_delivery_without_claiming_more() {
             .port(port)
             .build(),
         from: "Blackwall <noreply@example.com>".parse().unwrap(),
+        public_url: None,
     };
 
     let (stop, shutdown) = watch::channel(false);
@@ -1177,6 +1178,7 @@ async fn drain_deadline_abandons_lease_for_restart_recovery() {
             .port(port)
             .build(),
         from: "Blackwall <noreply@example.com>".parse().unwrap(),
+        public_url: None,
     };
 
     let (stop, shutdown) = watch::channel(false);
@@ -1678,6 +1680,7 @@ async fn lease_renewal_keeps_long_delivery() {
             .port(port)
             .build(),
         from: "Blackwall <noreply@example.com>".parse().unwrap(),
+        public_url: None,
     };
 
     let store_task = store.clone();
@@ -1806,6 +1809,7 @@ async fn cancelled_lease_abandons_delivery() {
             .port(port)
             .build(),
         from: "Blackwall <noreply@example.com>".parse().unwrap(),
+        public_url: None,
     };
 
     let store_task = store.clone();

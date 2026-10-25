@@ -51,6 +51,9 @@ async fn run_worker(store: &Store) -> MainResult {
     let config = jobs::WorkerConfig::from_env()?;
     config.validate(store)?;
     tracing::info!(mail = mailer.describe(), "email delivery configured");
+    if mailer.lacks_links() {
+        tracing::warn!("PUBLIC_URL is unset, so emails carry tokens instead of links");
+    }
     let worker = jobs::run_with_config(store.clone(), mailer, shutdown_rx, config);
     tokio::pin!(worker);
     tokio::select! {
@@ -67,11 +70,17 @@ async fn run_worker(store: &Store) -> MainResult {
 async fn serve(store: &Store) -> MainResult {
     let bind = std::env::var("BIND_ADDR").unwrap_or_else(|_| "127.0.0.1:3000".into());
     let listener = tokio::net::TcpListener::bind(&bind).await?;
+    let mut store = store.clone();
+    store.mail_enabled = jobs::Mailer::from_env()?.enabled();
 
     // One change listener per HTTP process; the worker never starts one.
     let _sync_events = store.spawn_sync_events();
     let events = store.clone();
-    tracing::info!(address = %listener.local_addr()?, "Blackwall listening");
+    tracing::info!(
+        address = %listener.local_addr()?,
+        mail = store.mail_enabled,
+        "Blackwall listening"
+    );
     axum::serve(
         listener,
         http::router(store.clone()).into_make_service_with_connect_info::<std::net::SocketAddr>(),

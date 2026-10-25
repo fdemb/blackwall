@@ -20,7 +20,7 @@ import {
   UnauthorizedError,
   UnavailableError,
 } from "./transport";
-import type { Mutation, MutationResult, PullResponse } from "./transport";
+import type { IssuedInvitation, Mutation, MutationResult, PullResponse } from "./transport";
 import { backoff, Cancelled, cancellable, pause, SerialQueue } from "./engine-scheduling";
 import type {
   EngineDependencies,
@@ -52,6 +52,8 @@ export type {
 export type { TabMessage } from "./tabs";
 
 export const SCHEMA = 5;
+
+export type OnlineResult = MutationResult & { invitation?: IssuedInvitation };
 
 export class OutdatedError extends Error {
   constructor(message = "A newer version is open in another tab. Reload to continue.") {
@@ -500,7 +502,7 @@ export class SyncEngine {
     });
   }
 
-  async runOnline(name: string, args: unknown): Promise<MutationResult> {
+  async runOnline(name: string, args: unknown): Promise<OnlineResult> {
     if (this.outdated) throw this.outdated;
     if (!this.deps.signals.getOnline())
       throw new MutationError(400, "This command requires an online connection");
@@ -539,19 +541,21 @@ export class SyncEngine {
   private async sendOnline(
     input: { command: object; idempotencyKey: string },
     controller: AbortController,
-  ): Promise<MutationResult> {
+  ): Promise<OnlineResult> {
     for (let attempt = 0, csrfRefreshes = 0; ; attempt++) {
       controller.signal.throwIfAborted();
       await this.drainOutbox(controller.signal);
       try {
-        await this.withDeadline(controller, WRITE_DEADLINE_MS, (signal) =>
+        const { result } = await this.withDeadline(controller, WRITE_DEADLINE_MS, (signal) =>
           this.deps.transport.command(this.deps.workspaceId, input, { signal }),
         );
         controller.signal.throwIfAborted();
         // The server pokes the leader's event stream, including when a follower sends this call.
         if (this.role === "leader") void this.pull();
         // Keep the callers' mutation-result shape without allocating a sync mutation id.
-        return { id: 0, status: "applied" };
+        return result.invitation
+          ? { id: 0, status: "applied", invitation: result.invitation }
+          : { id: 0, status: "applied" };
       } catch (caught) {
         controller.signal.throwIfAborted();
         const next = await this.onlineFailure(caught, controller, csrfRefreshes === 0);
