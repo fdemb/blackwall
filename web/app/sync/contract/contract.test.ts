@@ -3,7 +3,7 @@ import type { Command } from "../../lib/types";
 import { MUTATORS, MutationError } from "../mutators";
 import type { MutatorName } from "../mutators";
 import { createTransport } from "../transport";
-import { snapshot, predictionView } from "./compare";
+import { exactView, snapshot, predictionView } from "./compare";
 import {
   addMember,
   client,
@@ -97,6 +97,43 @@ describe.skipIf(!enabled)(`${suiteName}: prediction contract`, () => {
     },
     30_000,
   );
+
+  it("changes nothing on either side for an update that matches the issue", async () => {
+    const ws = await workspace(owner);
+    await addMember(ws, owner, member, "member");
+    const f = await fixture(ws, owner, member);
+    const c = client(ws, owner);
+    clients.push(c);
+    await ready(c.engine);
+    const { databaseUrl } = inject("syncContract");
+    const version = `SELECT version FROM issues WHERE id='${f.peer}'`;
+    const versionBefore = await sql(databaseUrl, version);
+    c.engine.stop();
+    const before = exactView(snapshot(c.engine));
+    const receipt = await c.engine.mutate("update_issue", {
+      id: f.peer,
+      patch: {
+        title: "Child",
+        labels: [f.label, f.label],
+        parent_id: f.issue,
+        sprint_id: f.sprint,
+        estimate: 2,
+      },
+    });
+    expect(c.engine.store.replayErrors().size).toBe(0);
+    expect(exactView(snapshot(c.engine))).toEqual(before);
+    await ready(c.engine);
+    expect(await receipt.settled).toBe("applied");
+    await settle(c.engine);
+    expect(exactView(snapshot(c.engine))).toEqual(before);
+    expect(await sql(databaseUrl, version)).toBe(versionBefore);
+    const traces = [
+      `SELECT count(*) FROM activity WHERE entity_id='${f.peer}' AND action='update_issue'`,
+      `SELECT count(*) FROM jobs WHERE queue='webhook' AND payload::text LIKE '%${f.peer}%' AND payload::text LIKE '%issue.updated%'`,
+    ];
+    for (const statement of traces) expect(await sql(databaseUrl, statement)).toBe("0");
+    await c.engine.close();
+  });
 
   it("applies an online invite once when its idempotency key is replayed", async () => {
     const ws = await workspace(owner);

@@ -2,7 +2,8 @@ mod support;
 
 use blackwall::{
     auth::{Register, Session},
-    domain::{Command, IssueInput, IssuePatch, SeenNotification},
+    domain::{BulkAction, Command, IssueInput, IssuePatch, SeenNotification},
+    error::Error,
     store::{CollectionQuery, OperationResult, Store},
 };
 use chrono::{DateTime, Utc};
@@ -591,6 +592,115 @@ async fn change_notifications_name_the_latest_actor_and_every_field_since_the_la
     assert_eq!(assignment.len(), 1, "{assignment:?}");
     assert_eq!(assignment[0]["actor_id"], json!(owner));
     assert_eq!(assignment[0]["fields"], json!([]));
+
+    f.cleanup().await;
+}
+
+/// Everything a write leaves behind: the issue's version and timestamp, sync changes, queued
+/// jobs such as webhooks and reminders, and activity.
+async fn trace(f: &Fixture, issue: Uuid) -> ((i64, DateTime<Utc>), i64, i64, usize) {
+    let row = sqlx::query_as("SELECT version,updated_at FROM issues WHERE id=$1")
+        .bind(issue)
+        .fetch_one(&f.store.pool)
+        .await
+        .unwrap();
+    let changes = sqlx::query_scalar("SELECT count(*) FROM changes WHERE workspace_id=$1")
+        .bind(f.workspace)
+        .fetch_one(&f.store.pool)
+        .await
+        .unwrap();
+    let jobs = sqlx::query_scalar("SELECT count(*) FROM jobs")
+        .fetch_one(&f.store.pool)
+        .await
+        .unwrap();
+    (row, changes, jobs, f.activity(issue).await.len())
+}
+
+#[tokio::test]
+async fn a_patch_that_changes_nothing_leaves_no_trace() {
+    let f = Fixture::new().await;
+    let (owner, follower) = (f.owner.profile.id, f.follower.profile.id);
+    let mut labels = vec![];
+    for name in ["tls", "ops"] {
+        let created = f
+            .run(
+                owner,
+                Command::CreateLabel {
+                    id: None,
+                    name: name.into(),
+                    color: "#aabbcc".into(),
+                },
+            )
+            .await;
+        labels.push(created.result.id.unwrap());
+    }
+    let deadline: DateTime<Utc> = "2026-11-02T09:00:00Z".parse().unwrap();
+    let issue = f.create_issue("Rotate certificates", f.stages[1]).await;
+    f.follow(follower, issue).await;
+    f.run(
+        owner,
+        Command::UpdateIssue {
+            id: issue,
+            patch: IssuePatch {
+                description: Some("Expires Friday".into()),
+                labels: Some(labels.clone()),
+                deadline: Some(deadline),
+                ..Default::default()
+            },
+        },
+    )
+    .await;
+    f.read(follower, &f.notifications(follower, issue).await[0])
+        .await;
+
+    let before = trace(&f, issue).await;
+
+    let mut reordered = labels.clone();
+    reordered.reverse();
+    reordered.push(labels[0]);
+    let same = IssuePatch {
+        title: Some("Rotate certificates".into()),
+        description: Some("Expires Friday".into()),
+        stage_id: Some(f.stages[1]),
+        labels: Some(reordered),
+        deadline: Some(deadline),
+        ..Default::default()
+    };
+    let commands = [
+        Command::UpdateIssue {
+            id: issue,
+            patch: same.clone(),
+        },
+        Command::BulkIssues {
+            ids: vec![issue],
+            action: BulkAction::Update(Box::new(same.clone())),
+        },
+    ];
+    for command in commands {
+        let result = f.run(owner, command).await;
+        assert!(result.versions.is_empty(), "{:?}", result.versions);
+        assert!(result.changes.is_empty(), "{:?}", result.changes);
+    }
+
+    assert_eq!(trace(&f, issue).await, before);
+    let inbox = f.notifications(follower, issue).await;
+    assert!(unread(&inbox).is_empty(), "{inbox:?}");
+
+    let stale = f
+        .store
+        .operation(
+            f.workspace,
+            owner,
+            Command::UpdateIssue {
+                id: issue,
+                patch: same,
+            },
+            BTreeMap::from([(issue, before.0.0 - 1)]),
+            None,
+            None,
+        )
+        .await;
+    assert!(matches!(stale, Err(Error::Stale(_))), "{stale:?}");
 
     f.cleanup().await;
 }
