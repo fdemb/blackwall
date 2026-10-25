@@ -10,7 +10,11 @@ esac
 python3 deploy/test-deploy.py
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
-cargo test --locked
+if cargo nextest --version >/dev/null 2>&1; then
+    cargo nextest run --locked
+else
+    cargo test --locked
+fi
 
 cd web
 pnpm install --frozen-lockfile
