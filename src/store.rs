@@ -1,6 +1,7 @@
 use crate::{
     domain::*,
     error::{Error, Result},
+    limits::{Limits, Resource, Usage},
 };
 use chrono::{DateTime, Utc};
 use sqlx::{PgConnection, PgPool, Postgres, Row, Transaction, postgres::PgPoolOptions};
@@ -41,6 +42,7 @@ pub struct StoreConfig {
     pub bootstrap_send_timeout: Duration,
     pub bootstrap_overall_timeout: Duration,
     pub sync_events: SyncEventsConfig,
+    pub limits: Limits,
 }
 
 impl Default for StoreConfig {
@@ -52,6 +54,7 @@ impl Default for StoreConfig {
             bootstrap_send_timeout: sync::BOOTSTRAP_SEND_TIMEOUT,
             bootstrap_overall_timeout: sync::BOOTSTRAP_OVERALL_TIMEOUT,
             sync_events: SyncEventsConfig::default(),
+            limits: Limits::default(),
         }
     }
 }
@@ -66,6 +69,7 @@ impl StoreConfig {
                 1,
                 60,
             )?)),
+            limits: Limits::from_env()?,
             ..Self::default()
         })
     }
@@ -87,6 +91,7 @@ pub struct Store {
     pub(crate) sync_shutdown: Arc<tokio::sync::watch::Sender<bool>>,
     pub(crate) database_url: String,
     pub mail_enabled: bool,
+    pub(crate) limits: Limits,
 }
 
 pub struct NewAttachment {
@@ -120,6 +125,7 @@ pub(super) struct Operation<'a> {
     pub activity_fields: Vec<String>,
     pub mail_enabled: bool,
     pub invitation: Option<crate::domain::IssuedInvitation>,
+    pub limits: Limits,
 }
 
 pub(super) fn enum_text<T: serde::Serialize>(v: &T) -> String {
@@ -299,6 +305,7 @@ impl Store {
             sync_shutdown: Arc::new(tokio::sync::watch::channel(false).0),
             database_url: url.to_owned(),
             mail_enabled: true,
+            limits: config.limits,
             pool,
         })
     }
@@ -519,6 +526,7 @@ impl Store {
             activity_fields: Vec::new(),
             mail_enabled: self.mail_enabled,
             invitation: None,
+            limits: self.limits,
         })
     }
 }
@@ -801,6 +809,7 @@ mod tests {
             activity_fields: Vec::new(),
             mail_enabled: true,
             invitation: None,
+            limits: Limits::default(),
         };
 
         // 5000 supplied ids, as in one maximal ImportIssues command.
@@ -906,6 +915,7 @@ mod tests {
             activity_fields: Vec::new(),
             mail_enabled: true,
             invitation: None,
+            limits: Limits::default(),
         };
 
         let issues: Vec<IssueInput> = (0..20)
@@ -945,6 +955,7 @@ mod tests {
             activity_fields: Vec::new(),
             mail_enabled: true,
             invitation: None,
+            limits: Limits::default(),
         };
 
         let supplied: Vec<Uuid> = (0..5).map(|_| Uuid::new_v4()).collect();

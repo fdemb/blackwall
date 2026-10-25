@@ -272,6 +272,7 @@ pub async fn execute(store: &Store, claim: &Claim, job: &TrackerJob) -> Result<(
                     mapping,
                     metadata,
                     comments: fetched.as_ref(),
+                    limits: store.limits,
                 },
                 items,
             )

@@ -2,7 +2,6 @@ import type { DeepReadonly, Tx } from "../store";
 import type { ArgsOf, Mutator } from "./common";
 import {
   checkCreateId,
-  checkCapacity,
   checkText,
   checkTimestamp,
   dedupeSortUuids,
@@ -156,7 +155,6 @@ export const logTime: Mutator<ArgsOf<"log_time">> = (tx, args, ctx) => {
   checkTime(args.minutes, args.note);
   checkTimestamp(args.logged_at);
   const id = requireClientId(args.id);
-  checkCapacity(tx, "time_entries", 20_000, ctx, id);
   checkCreateId(tx, id, ctx);
   const previous = tx.get("time_entries", id);
   tx.put("time_entries", {

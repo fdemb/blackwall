@@ -438,15 +438,3 @@ export function checkCreateId(tx: Tx, id: string, ctx: MutatorContext): void {
     tx.all("comments").some((comment) => comment.attachments.some((file) => file.id === id));
   if (exists) throw new MutationError(409, "id already exists");
 }
-
-/** Workspace counts include trashed and archived records, as SQL capacity does. */
-export function checkCapacity(
-  tx: Tx,
-  entity: Entity,
-  maximum: number,
-  ctx: MutatorContext,
-  id?: string,
-): void {
-  if (ctx.mode === "replay" && id !== undefined && tx.get(entity, id) !== undefined) return;
-  if (tx.all(entity).length >= maximum) throw new MutationError(400, "workspace capacity reached");
-}

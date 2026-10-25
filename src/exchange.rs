@@ -86,7 +86,6 @@ impl Transfer {
         if self.version != 1 {
             return Err(Error::BadRequest("unsupported transfer version".into()));
         }
-        self.check_limits()?;
         for user in mapping.values() {
             workspace.member(*user)?;
         }
@@ -125,24 +124,6 @@ impl Transfer {
         *workspace = candidate;
 
         Ok(summary)
-    }
-
-    fn check_limits(&self) -> Result<()> {
-        if self.issues.len() > 5000
-            || self.comments.len() > 20000
-            || self.time_entries.len() > 20000
-            || self.activity.len() > 50000
-            || self.teams.len() > 200
-            || self.members.len() > 2000
-            || self.labels.len() > 1000
-            || self.projects.len() > 1000
-            || self.sprints.len() > 2000
-            || self.milestones.len() > 5000
-            || self.views.len() > 5000
-        {
-            return Err(Error::BadRequest("transfer exceeds import limits".into()));
-        }
-        Ok(())
     }
 
     /// A fresh id for every entity in the transfer, so imports never collide.

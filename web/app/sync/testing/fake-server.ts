@@ -47,7 +47,22 @@ export interface FakeServerOptions {
   onPush?: (input: { clientId: string; mutations: readonly Mutation[]; previous: number }) => void;
   onResult?: (clientId: string, result: MutationResult) => void;
   onFault?: (route: string, fault: Fault) => void;
+  /** Workspace limits the server enforces, as its `WORKSPACE_LIMIT_*` settings. Unset is unlimited. */
+  limits?: Partial<Record<Entity, number>>;
 }
+
+/** Commands that add a row counted against a workspace limit: the table, its noun and setting. */
+const LIMITED: Partial<Record<string, [Entity, string, string]>> = {
+  create_issue: ["issues", "issues", "ISSUES"],
+  add_comment: ["comments", "comments", "COMMENTS"],
+  log_time: ["time_entries", "time entries", "TIME_ENTRIES"],
+  create_team: ["teams", "teams", "TEAMS"],
+  create_project: ["projects", "projects", "PROJECTS"],
+  create_label: ["labels", "labels", "LABELS"],
+  create_milestone: ["milestones", "milestones", "MILESTONES"],
+  create_sprint: ["sprints", "sprints", "SPRINTS"],
+  save_view: ["views", "saved views", "SAVED_VIEWS"],
+};
 interface WorkspaceState {
   tables: Tables;
 }
@@ -722,12 +737,7 @@ export class FakeServer {
     const tx = new Tables(state.tables);
     args = this.allocateServerIds(name, args);
     this.reserveIds(name, args);
-    if (
-      (name === "add_comment" && tx.all("comments").length >= 20_000) ||
-      (name === "save_view" && tx.all("views").length >= 5000)
-    ) {
-      throw new MutationError(400, "workspace capacity reached");
-    }
+    this.checkLimit(tx, name);
     if (name === "add_comment" && Array.isArray(args.attachments)) {
       for (const attachment of args.attachments) {
         if (object(attachment) && this.uploaders.get(String(attachment.id)) !== actor) {
@@ -942,6 +952,19 @@ export class FakeServer {
       };
     }
     return args;
+  }
+
+  /** Counts include trashed and archived rows, as the server's do. */
+  private checkLimit(tx: Tables, name: string): void {
+    const limited = LIMITED[name];
+    if (!limited) return;
+    const [entity, noun, setting] = limited;
+    const limit = this.options.limits?.[entity];
+    if (limit !== undefined && tx.all(entity).length >= limit)
+      throw new MutationError(
+        400,
+        `This workspace has reached its limit of ${limit} ${noun}. A server administrator can raise it with WORKSPACE_LIMIT_${setting}.`,
+      );
   }
 
   private reserveIds(name: string, args: Record<string, unknown>): void {

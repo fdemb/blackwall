@@ -1667,14 +1667,14 @@ describe("fake server fidelity regressions", () => {
   });
 
   it.each(["comments", "views"] as const)(
-    "enforces private workspace %s capacity",
+    "enforces the private workspace %s limit",
     async (entity) => {
-      const f = fixture();
+      const f = fixture({ limits: { comments: 3, views: 3 } });
       f.createIssue();
       if (entity === "comments") {
         f.server.seed(
           "comments",
-          Array.from({ length: 20_000 }, (_, n) => ({
+          Array.from({ length: 3 }, (_, n) => ({
             id: id(1000 + n),
             version: 1,
             issue_id: ISSUE,
@@ -1689,7 +1689,7 @@ describe("fake server fidelity regressions", () => {
       } else {
         f.server.seed(
           "views",
-          Array.from({ length: 5000 }, (_, n) => ({
+          Array.from({ length: 3 }, (_, n) => ({
             id: id(1000 + n),
             version: 1,
             owner: f.member.id,
@@ -1714,7 +1714,12 @@ describe("fake server fidelity regressions", () => {
       const response: PushResponse = await (await f.push([mutation(1, command)])).json();
       expect(response.results[0]).toMatchObject({
         status: "rejected",
-        error: { status: 400, message: "workspace capacity reached" },
+        error: {
+          status: 400,
+          message: expect.stringContaining(
+            `reached its limit of 3 ${entity === "views" ? "saved views" : "comments"}`,
+          ),
+        },
       });
     },
   );

@@ -1,5 +1,4 @@
 import { describe, expect, it } from "vite-plus/test";
-import type { Entity } from "../records";
 import { admit, normalizeArgs } from "./index";
 import { AT, OWNER, TEAM, PROJECT, STAGE_BACKLOG, seedStore, mutate } from "./fixtures";
 
@@ -181,24 +180,6 @@ describe("create admission fidelity", () => {
   });
 });
 
-function capacityRows<E extends Entity>(
-  store: ReturnType<typeof seedStore>,
-  entity: E,
-  maximum: number,
-): void {
-  const row = store.all(entity)[0];
-  if (!row) throw new Error(`missing ${entity} fixture`);
-  // Existing rows plus these copies reach the SQL count, including deleted rows.
-  const extra = maximum - store.all(entity).length;
-  store.applyBase(
-    Array.from({ length: extra }, (_, i) => ({
-      entity,
-      id: `capacity-${i}`,
-      record: { ...row, id: `capacity-${i}` },
-    })),
-  );
-}
-
 describe("replica capacity fidelity", () => {
   it("rejects a 101st stage and permits replay of an existing stage at capacity", () => {
     const store = seedStore(OWNER);
@@ -229,47 +210,5 @@ describe("replica capacity fidelity", () => {
     );
     mutate(store, "create_stage", { ...args, id: stage.id });
     expect(store.replayErrors().size).toBe(0);
-  });
-
-  it.each([
-    [
-      "teams",
-      200,
-      "create_team",
-      {
-        id: "new",
-        name: "Team",
-        key: "NEW",
-        members: [],
-        default_stage_ids: ["s1", "s2", "s3", "s4"],
-      },
-    ],
-    ["labels", 1000, "create_label", { id: "new", name: "Label", color: "red" }],
-    ["projects", 1000, "create_project", { id: "new", name: "Project", team_ids: [TEAM] }],
-    ["milestones", 5000, "create_milestone", { id: "new", name: "Milestone", project_id: PROJECT }],
-    [
-      "sprints",
-      2000,
-      "create_sprint",
-      {
-        id: "new",
-        team_id: TEAM,
-        name: "Sprint",
-        goal: "",
-        starts_at: "2026-10-08T00:00:00Z",
-        ends_at: AT,
-      },
-    ],
-    ["issues", 5000, "create_issue", { input: { id: "new", team_id: TEAM, title: "Issue" } }],
-    [
-      "time_entries",
-      20000,
-      "log_time",
-      { id: "new", issue_id: "issue-1", minutes: 10, logged_at: AT },
-    ],
-  ] as const)("rejects workspace capacity for %s", (entity, maximum, name, args) => {
-    const store = seedStore(OWNER);
-    capacityRows(store, entity, maximum);
-    rejection(() => admit(store, OWNER, { name, args, at: AT }), 400, "workspace capacity reached");
   });
 });

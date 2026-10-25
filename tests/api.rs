@@ -7,7 +7,8 @@ use blackwall::{
     domain::{BulkAction, Command, IssueInput, IssuePatch, Priority, Role},
     http::router_with_web,
     jobs::{self, Mailer},
-    store::Store,
+    limits::{Limits, Resource},
+    store::{Store, StoreConfig},
 };
 use chrono::{Duration, Utc};
 use http_body_util::BodyExt;
@@ -2048,4 +2049,93 @@ async fn invitation_links_work_without_mail() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{value}");
+}
+
+#[tokio::test]
+async fn workspace_limits_name_the_resource_and_report_usage() {
+    let database = support::TestDatabase::new().await;
+    let config = StoreConfig {
+        limits: Limits::default()
+            .with(Resource::Issues, Some(2))
+            .with(Resource::Labels, None),
+        ..StoreConfig::default()
+    };
+    let store = Store::connect_with_config(&database.url, config)
+        .await
+        .unwrap();
+    let app = blackwall::http::router(store.clone());
+    let owner = account(&store, "owner").await;
+    let outsider = account(&store, "outsider").await;
+    let (status, value) = call(
+        &app,
+        "POST",
+        "/internal-api/workspaces",
+        Some(&owner.token),
+        Some(json!({"name":"Limits","slug":"limits"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{value}");
+    let id = value["workspace"]["id"].as_str().unwrap().to_owned();
+    let created = change(
+        &app,
+        &owner,
+        &id,
+        Command::CreateTeam {
+            id: None,
+            name: "Operations".into(),
+            key: "OPE".into(),
+            members: vec![owner.profile.id],
+            default_stage_ids: None,
+        },
+    )
+    .await;
+    let team = uuid(&created["result"]["id"]);
+
+    for title in ["One", "Two"] {
+        change(
+            &app,
+            &owner,
+            &id,
+            Command::CreateIssue {
+                input: issue(team, title),
+            },
+        )
+        .await;
+    }
+    let (status, value) = call(
+        &app,
+        "POST",
+        &format!("/internal-api/workspaces/{id}/commands"),
+        Some(&owner.token),
+        Some(json!({"command":{"type":"create_issue","input":{"team_id":team,"title":"Three"}}})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{value}");
+    assert_eq!(
+        value["error"],
+        "This workspace has reached its limit of 2 issues. A server administrator can raise it with WORKSPACE_LIMIT_ISSUES."
+    );
+
+    let usage = format!("/internal-api/workspaces/{id}/usage");
+    let (status, value) = call(&app, "GET", &usage, Some(&owner.token), None).await;
+    assert_eq!(status, StatusCode::OK, "{value}");
+    let entry = |resource: &str| {
+        value
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["resource"] == resource)
+            .cloned()
+            .unwrap()
+    };
+    assert_eq!(
+        entry("issues"),
+        json!({"resource":"issues","used":2,"limit":2})
+    );
+    assert_eq!(entry("labels")["limit"], Value::Null);
+    assert_eq!(entry("time_entries")["limit"], 250_000);
+
+    let (status, _) = call(&app, "GET", &usage, Some(&outsider.token), None).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    database.cleanup().await;
 }

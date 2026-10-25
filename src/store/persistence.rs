@@ -740,53 +740,27 @@ pub(crate) async fn notify(
     Ok(())
 }
 
-pub(crate) async fn capacity(
+/// Locks the workspace's `resource` count and returns how many more fit, or
+/// None, without a lock, when `limit` is None.
+pub(crate) async fn room(
     conn: &mut PgConnection,
     workspace: Uuid,
-    table: &str,
-    max: i64,
-    cached_count: &mut Option<i64>,
-    message: &str,
-) -> Result<()> {
-    assert!(matches!(
-        table,
-        "issues"
-            | "teams"
-            | "projects"
-            | "sprints"
-            | "comments"
-            | "time_entries"
-            | "notifications"
-            | "activity"
-            | "workspace_members"
-            | "invitations"
-            | "saved_views"
-            | "integrations"
-            | "labels"
-            | "milestones"
-    ));
+    resource: Resource,
+    limit: Option<u32>,
+) -> Result<Option<i64>> {
+    let Some(limit) = limit else {
+        return Ok(None);
+    };
+    let table = resource.table();
     sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,30269))")
         .bind(format!("{}:{table}", workspace))
         .execute(&mut *conn)
         .await?;
-
-    let count = if let Some(count) = *cached_count {
-        count
-    } else {
-        let count: i64 = sqlx::query_scalar(&format!(
-            "SELECT count(*) FROM {table} WHERE workspace_id=$1"
-        ))
-        .bind(workspace)
-        .fetch_one(&mut *conn)
-        .await?;
-
-        *cached_count = Some(count);
-        count
-    };
-
-    if count >= max {
-        return Err(Error::BadRequest(message.into()));
-    }
-
-    Ok(())
+    let count: i64 = sqlx::query_scalar(&format!(
+        "SELECT count(*) FROM {table} WHERE workspace_id=$1"
+    ))
+    .bind(workspace)
+    .fetch_one(&mut *conn)
+    .await?;
+    Ok(Some(i64::from(limit) - count))
 }
