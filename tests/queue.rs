@@ -804,6 +804,45 @@ async fn maintenance_drains_more_than_one_cleanup_batch() {
 }
 
 #[tokio::test]
+async fn worker_waits_one_interval_before_its_first_maintenance() {
+    let db = support::TestDatabase::new().await;
+    let store = Store::connect(&db.url).await.unwrap();
+    sqlx::query(
+        "INSERT INTO jobs(id,kind,queue,payload,state,finished_at) \
+         VALUES(gen_random_uuid(),'email','email','{}','succeeded',clock_timestamp()-interval '31 days')",
+    )
+    .execute(&store.pool)
+    .await
+    .unwrap();
+
+    let (stop, shutdown) = watch::channel(false);
+    let worker = tokio::spawn(jobs::run_with_config(
+        store.clone(),
+        Mailer::Disabled,
+        shutdown,
+        WorkerConfig {
+            poll_interval: Duration::from_millis(50),
+            ..WorkerConfig::default()
+        },
+    ));
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    stop.send(true).unwrap();
+    worker.await.unwrap().unwrap();
+
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM jobs")
+            .fetch_one(&store.pool)
+            .await
+            .unwrap(),
+        1,
+        "expired job survives the worker's first second"
+    );
+
+    store.pool.close().await;
+    db.cleanup().await;
+}
+
+#[tokio::test]
 async fn concurrent_maintenance_skips_while_lock_is_held() {
     let db = support::TestDatabase::new().await;
     let store = Store::connect(&db.url).await.unwrap();

@@ -332,7 +332,7 @@ const TOOLS: &[Tool] = &[
     },
     Tool {
         name: "delete_issue",
-        description: "Move an issue to the trash. restore_issue brings it back.",
+        description: "Move an issue to the trash. restore_issue brings it back within 30 days; after that the issue is deleted for good.",
         access: Access::Write,
         destructive: true,
         schema: issue_only,

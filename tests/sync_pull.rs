@@ -1914,3 +1914,70 @@ async fn planning_deletes_clear_references_on_live_and_trashed_issues() {
     store.pool.close().await;
     database.cleanup().await;
 }
+
+#[tokio::test]
+async fn pull_tombstones_issues_purged_from_the_trash_with_their_activity() {
+    let database = support::TestDatabase::new().await;
+    let store = Store::connect(&database.url).await.unwrap();
+    let app = router(store.clone());
+    let owner = account(&store, "owner").await;
+    let (ws, team) = setup(&app, &owner).await;
+    let client = Uuid::new_v4();
+    let issue = created(
+        &app,
+        &owner,
+        ws,
+        json!({"type": "create_issue", "input": {"team_id": team, "title": "Old"}}),
+    )
+    .await;
+    let comment = created(
+        &app,
+        &owner,
+        ws,
+        json!({"type": "add_comment", "issue_id": issue, "body": "Note"}),
+    )
+    .await;
+    let (status, result) = command(
+        &app,
+        &owner,
+        ws,
+        json!({"type": "delete_issue", "id": issue}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+    let activity: Vec<Uuid> = sqlx::query_scalar("SELECT id FROM activity WHERE entity_id=ANY($1)")
+        .bind(vec![issue, comment])
+        .fetch_all(&store.pool)
+        .await
+        .unwrap();
+    assert!(activity.len() >= 3, "create, comment and delete activity");
+    sqlx::query("UPDATE issues SET deleted_at=now()-interval '31 days' WHERE id=$1")
+        .bind(issue)
+        .execute(&store.pool)
+        .await
+        .unwrap();
+    let start = pull_ok(&app, &owner.token, ws, client, None).await;
+
+    assert_eq!(store.purge_trash().await.unwrap(), 1);
+
+    let page = pull_ok(&app, &owner.token, ws, client, Some(&cursor_of(&start))).await;
+    assert_eq!(page["more"], false);
+    assert_eq!(
+        record(&page["changes"], "issues", &issue.to_string()),
+        Some(&Value::Null)
+    );
+    assert_eq!(
+        record(&page["changes"], "comments", &comment.to_string()),
+        Some(&Value::Null)
+    );
+    for id in activity {
+        assert_eq!(
+            record(&page["changes"], "activity", &id.to_string()),
+            Some(&Value::Null),
+            "activity {id} is tombstoned"
+        );
+    }
+
+    store.pool.close().await;
+    database.cleanup().await;
+}

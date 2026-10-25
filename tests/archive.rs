@@ -508,3 +508,351 @@ async fn global_search_spans_live_and_archived_issues() {
     store.pool.close().await;
     database.cleanup().await;
 }
+
+async fn run(store: &Store, ws: Uuid, actor: Uuid, cmd: Value) -> Option<Uuid> {
+    op(store, ws, actor, cmd, BTreeMap::new())
+        .await
+        .unwrap()
+        .result
+        .id
+}
+
+async fn trash(store: &Store, ws: Uuid, actor: Uuid, issue: Uuid, days: i32) {
+    run(store, ws, actor, json!({"type":"delete_issue","id":issue})).await;
+    sqlx::query("UPDATE issues SET deleted_at=now()-make_interval(days=>$2) WHERE id=$1")
+        .bind(issue)
+        .bind(days)
+        .execute(&store.pool)
+        .await
+        .unwrap();
+}
+
+async fn kept_activity(store: &Store, ids: &[Uuid]) -> Vec<Uuid> {
+    sqlx::query_scalar("SELECT id FROM activity WHERE entity_id=ANY($1) ORDER BY id")
+        .bind(ids)
+        .fetch_all(&store.pool)
+        .await
+        .unwrap()
+}
+
+async fn count(store: &Store, sql: &str, id: Uuid) -> i64 {
+    sqlx::query_scalar(sql)
+        .bind(id)
+        .fetch_one(&store.pool)
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn issues_trashed_over_thirty_days_ago_are_purged_with_their_records() {
+    let database = support::TestDatabase::new().await;
+    let store = Store::connect(&database.url).await.unwrap();
+    let owner = account(&store, "owner").await;
+    let ws = Uuid::parse_str(
+        store.create_workspace("Trash".into(), owner).await.unwrap()["id"]
+            .as_str()
+            .unwrap(),
+    )
+    .unwrap();
+    let team = run(
+        &store,
+        ws,
+        owner,
+        json!({"type":"create_team","name":"Infra","key":"INF","members":[owner]}),
+    )
+    .await
+    .unwrap();
+    let label = run(
+        &store,
+        ws,
+        owner,
+        json!({"type":"create_label","name":"Bug","color":"red"}),
+    )
+    .await
+    .unwrap();
+    let issue = |title: &str, extra: Value| {
+        let mut input = json!({"team_id":team,"title":title});
+        input
+            .as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        json!({"type":"create_issue","input":input})
+    };
+    let blocker = run(&store, ws, owner, issue("Blocker", json!({})))
+        .await
+        .unwrap();
+    let doomed = run(
+        &store,
+        ws,
+        owner,
+        issue("Doomed", json!({"labels":[label],"dependencies":[blocker]})),
+    )
+    .await
+    .unwrap();
+    let dependent = run(
+        &store,
+        ws,
+        owner,
+        issue("Dependent", json!({"dependencies":[doomed]})),
+    )
+    .await
+    .unwrap();
+    let child = run(
+        &store,
+        ws,
+        owner,
+        issue("Child", json!({"parent_id":doomed})),
+    )
+    .await
+    .unwrap();
+    let recent = run(&store, ws, owner, issue("Recent", json!({})))
+        .await
+        .unwrap();
+
+    let comment = run(
+        &store,
+        ws,
+        owner,
+        json!({"type":"add_comment","issue_id":doomed,"body":"Looking into it"}),
+    )
+    .await
+    .unwrap();
+    let time = run(
+        &store,
+        ws,
+        owner,
+        json!({"type":"log_time","issue_id":doomed,"minutes":30,"logged_at":"2026-10-01T10:00:00Z"}),
+    )
+    .await
+    .unwrap();
+    let mut kept = Vec::new();
+    for target in [child, recent] {
+        let comment = run(
+            &store,
+            ws,
+            owner,
+            json!({"type":"add_comment","issue_id":target,"body":"Wrong issue"}),
+        )
+        .await
+        .unwrap();
+        run(
+            &store,
+            ws,
+            owner,
+            json!({"type":"delete_comment","id":comment}),
+        )
+        .await;
+        let time = run(
+            &store,
+            ws,
+            owner,
+            json!({"type":"log_time","issue_id":target,"minutes":5,"logged_at":"2026-10-01T09:00:00Z"}),
+        )
+        .await
+        .unwrap();
+        run(&store, ws, owner, json!({"type":"delete_time","id":time})).await;
+        kept.extend([target, comment, time]);
+    }
+    run(
+        &store,
+        ws,
+        owner,
+        json!({"type":"follow","issue_id":doomed,"following":true}),
+    )
+    .await;
+    run(
+        &store,
+        ws,
+        owner,
+        json!({"type":"add_source_link","issue_id":doomed,"url":"https://example.com/1","title":"Ticket"}),
+    )
+    .await;
+    sqlx::query("INSERT INTO attachments(id,workspace_id,issue_id,uploader_id,filename,content_type,bytes,created_at) VALUES($1,$2,$3,$4,'log.txt','text/plain','\\x00',now())")
+        .bind(Uuid::new_v4())
+        .bind(ws)
+        .bind(doomed)
+        .bind(owner)
+        .execute(&store.pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO notifications(id,workspace_id,user_id,issue_id,kind,message,created_at,dedup_key) VALUES($1,$2,$3,$4,'assignment','Doomed',now(),'purge-test')")
+        .bind(Uuid::new_v4())
+        .bind(ws)
+        .bind(owner)
+        .bind(doomed)
+        .execute(&store.pool)
+        .await
+        .unwrap();
+
+    for id in [doomed, comment, time] {
+        assert!(
+            count(
+                &store,
+                "SELECT count(*) FROM activity WHERE entity_id=$1",
+                id
+            )
+            .await
+                > 0
+        );
+    }
+    trash(&store, ws, owner, doomed, 31).await;
+    trash(&store, ws, owner, recent, 29).await;
+    let kept_before = kept_activity(&store, &kept).await;
+    for id in &kept {
+        assert!(
+            count(
+                &store,
+                "SELECT count(*) FROM activity WHERE entity_id=$1",
+                *id
+            )
+            .await
+                > 0
+        );
+    }
+    let issues_before = count(
+        &store,
+        "SELECT count(*) FROM issues WHERE workspace_id=$1",
+        ws,
+    )
+    .await;
+
+    assert_eq!(store.purge_trash().await.unwrap(), 1);
+
+    assert_eq!(
+        count(
+            &store,
+            "SELECT count(*) FROM issues WHERE workspace_id=$1",
+            ws
+        )
+        .await,
+        issues_before - 1
+    );
+    let remaining: Vec<Uuid> =
+        sqlx::query_scalar("SELECT id FROM issues WHERE workspace_id=$1 ORDER BY number")
+            .bind(ws)
+            .fetch_all(&store.pool)
+            .await
+            .unwrap();
+    assert_eq!(remaining, vec![blocker, dependent, child, recent]);
+    let parent: Option<Uuid> = sqlx::query_scalar("SELECT parent_id FROM issues WHERE id=$1")
+        .bind(child)
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+    assert_eq!(parent, None, "the live child loses its purged parent");
+    assert_eq!(
+        count(
+            &store,
+            "SELECT count(*) FROM issue_dependencies WHERE issue_id=$1 OR dependency_id=$1",
+            doomed
+        )
+        .await,
+        0
+    );
+    for sql in [
+        "SELECT count(*) FROM notifications WHERE issue_id=$1",
+        "SELECT count(*) FROM attachments WHERE issue_id=$1",
+        "SELECT count(*) FROM activity WHERE entity_id=$1",
+    ] {
+        assert_eq!(count(&store, sql, doomed).await, 0, "{sql}");
+    }
+    for id in [comment, time] {
+        assert_eq!(
+            count(
+                &store,
+                "SELECT count(*) FROM activity WHERE entity_id=$1",
+                id
+            )
+            .await,
+            0,
+            "activity about the purged issue's comments and time goes too"
+        );
+    }
+    assert_eq!(
+        kept_activity(&store, &kept).await,
+        kept_before,
+        "issues that stay keep all their history, including deleted comments and time"
+    );
+
+    assert_eq!(store.purge_trash().await.unwrap(), 0);
+
+    store.pool.close().await;
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn purged_issue_numbers_are_not_reused() {
+    let database = support::TestDatabase::new().await;
+    let store = Store::connect(&database.url).await.unwrap();
+    let owner = account(&store, "owner").await;
+    let ws = Uuid::parse_str(
+        store
+            .create_workspace("Numbers".into(), owner)
+            .await
+            .unwrap()["id"]
+            .as_str()
+            .unwrap(),
+    )
+    .unwrap();
+    let team = run(
+        &store,
+        ws,
+        owner,
+        json!({"type":"create_team","name":"Infra","key":"INF","members":[owner]}),
+    )
+    .await
+    .unwrap();
+    let create = json!({"type":"create_issue","input":{"team_id":team,"title":"Work"}});
+    run(&store, ws, owner, create.clone()).await;
+    let last = run(&store, ws, owner, create.clone()).await.unwrap();
+    let number = |id: Uuid| {
+        let pool = store.pool.clone();
+        async move {
+            sqlx::query_scalar::<_, i64>("SELECT number FROM issues WHERE id=$1")
+                .bind(id)
+                .fetch_one(&pool)
+                .await
+                .unwrap()
+        }
+    };
+    let other_ws = Uuid::parse_str(
+        store.create_workspace("Other".into(), owner).await.unwrap()["id"]
+            .as_str()
+            .unwrap(),
+    )
+    .unwrap();
+    let other_team = run(
+        &store,
+        other_ws,
+        owner,
+        json!({"type":"create_team","name":"Ops","key":"OPS","members":[owner]}),
+    )
+    .await
+    .unwrap();
+    let other = run(
+        &store,
+        other_ws,
+        owner,
+        json!({"type":"create_issue","input":{"team_id":other_team,"title":"Old"}}),
+    )
+    .await
+    .unwrap();
+    let purged = number(last).await;
+    trash(&store, ws, owner, last, 31).await;
+    trash(&store, other_ws, owner, other, 40).await;
+    blackwall::jobs::tick(&store, &blackwall::jobs::Mailer::Disabled)
+        .await
+        .unwrap();
+    let left: i64 = sqlx::query_scalar("SELECT count(*) FROM issues WHERE id=ANY($1)")
+        .bind(vec![last, other])
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+    assert_eq!(left, 0);
+
+    let next = run(&store, ws, owner, create).await.unwrap();
+    assert_eq!(number(next).await, purged + 1);
+
+    store.pool.close().await;
+    database.cleanup().await;
+}

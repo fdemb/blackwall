@@ -878,3 +878,63 @@ async fn late_parent_advances_the_baseline_while_parent_import_is_off() {
     store.pool.close().await;
     db.cleanup().await;
 }
+
+#[tokio::test]
+async fn issues_purged_from_the_trash_are_not_imported_again() {
+    let db = support::TestDatabase::new().await;
+    let store = Store::connect(&db.url).await.unwrap();
+    let owner = account(&store).await;
+    let (workspace, team, _) = setup(&store, &owner).await;
+    let app = http::router(store.clone());
+    let mock = Mock::default();
+    {
+        let mut data = mock.data.lock().await;
+        data.parents.insert(7, 8);
+        data.page_size = Some(50);
+    }
+    let (url, server) = mock_server(mock.clone()).await;
+    let action = create(
+        &app,
+        &owner,
+        workspace,
+        &url,
+        json!([{"project_id":"42","team_id":team}]),
+    )
+    .await;
+    drain(&store).await;
+    let parent = issue_id(&issues(&app, &owner, workspace).await, 8);
+    store
+        .operation(
+            workspace,
+            owner.profile.id,
+            Command::DeleteIssue { id: parent },
+            BTreeMap::new(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    sqlx::query("UPDATE issues SET deleted_at=now()-interval '31 days' WHERE id=$1")
+        .bind(parent)
+        .execute(&store.pool)
+        .await
+        .unwrap();
+    assert_eq!(store.purge_trash().await.unwrap(), 1);
+
+    sync_now(&app, &owner, &action, &store).await;
+    let remote_ids: Vec<String> = sqlx::query_scalar(
+        "SELECT tracker->>'remote_id' FROM issues WHERE workspace_id=$1 ORDER BY 1",
+    )
+    .bind(workspace)
+    .fetch_all(&store.pool)
+    .await
+    .unwrap();
+    assert_eq!(remote_ids, ["7"], "the purged package stays gone");
+    assert!(
+        by_wp(&issues(&app, &owner, workspace).await, 7)["parent_id"].is_null(),
+        "the child imports as if its purged parent were absent"
+    );
+    server.abort();
+    store.pool.close().await;
+    db.cleanup().await;
+}

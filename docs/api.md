@@ -55,7 +55,7 @@ All of these are under `/api/v1`:
 | Attachments | `GET .../attachments/{attachment}` |
 | Webhooks | `GET /webhook-events`; `GET`, `POST .../webhooks`; `GET`, `PATCH`, `DELETE .../webhooks/{webhook}` |
 
-The issue list accepts `where` (the JSON clause array described in [filters](filters.md)), `search`, `archived`, `trash` and `sort`. Filter values may be names wherever writes take them, and `team`, `stage`, `label`, `project`, `sprint` and `parent` stand for `team_id`, `stage_id`, `labels`, `project_id`, `sprint_id` and `parent_id`. A stage or sprint name matches every team's stage or sprint of that name. `DELETE` on an issue moves it to the trash.
+The issue list accepts `where` (the JSON clause array described in [filters](filters.md)), `search`, `archived`, `trash` and `sort`. Filter values may be names wherever writes take them, and `team`, `stage`, `label`, `project`, `sprint` and `parent` stand for `team_id`, `stage_id`, `labels`, `project_id`, `sprint_id` and `parent_id`. A stage or sprint name matches every team's stage or sprint of that name. `DELETE` on an issue moves it to the trash. Issues stay in the trash for 30 days and are then deleted for good.
 
 `GET .../issues/{issue}/activity` is the issue's history, newest first. Each entry has `actor`, `via`, `action` and the `fields` an update changed.
 

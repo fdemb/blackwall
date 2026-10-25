@@ -64,7 +64,7 @@ The baseline then moves to the current remote value. Because the baseline stores
 
 Status and team move together, because stages belong to teams. Team placement has no toggle: it follows remote project moves and project-to-team mapping changes even when status import is off.
 
-Locally trashed issues keep every local value. Scans only update their link and baseline. Restoring an issue from the trash does not reapply remote values that arrived meanwhile; later remote changes apply as usual.
+Locally trashed issues keep every local value. Scans only update their link and baseline. Restoring an issue from the trash does not reapply remote values that arrived meanwhile; later remote changes apply as usual. Issues purged from the trash after 30 days are not imported again.
 
 Parents resolve to local issues of the same connection, regardless of scan or page order. Links follow remote re-parenting and removals. A parent in an unmapped project, one hidden from the integration account, or one not yet imported leaves the local parent empty. Local parent changes are allowed, including linking synced and local issues, and are kept until the remote parent changes. A remote change that would form a cycle is skipped and retried by a later scan.
 
@@ -151,7 +151,7 @@ Polling is eventually consistent, not a snapshot of OpenProject. Work packages c
 
 ## Limits
 
-Imports respect Blackwall's 5,000-issue workspace capacity, including trashed issues. At capacity, existing work packages can still update, but a page that needs to create another issue fails without partial writes.
+Imports respect Blackwall's 5,000-issue workspace capacity, including trashed issues until they are purged 30 days after deletion. At capacity, existing work packages can still update, but a page that needs to create another issue fails without partial writes.
 
 Each connection supports up to 100 project mappings with up to 100 status mappings each, and up to 5,000 people overrides. Discovery caches at most 5,000 projects, 5,000 statuses, and 5,000 people. Work-package pages contain at most 50 items and responses are limited to 2 MiB. A scan stops after 1,000 pages per project. If OpenProject changes its effective page size during a scan, request **Sync now** to restart the scan rather than resume with unsafe offsets.
 

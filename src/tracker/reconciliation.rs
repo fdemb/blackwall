@@ -34,6 +34,22 @@ pub(super) async fn apply_page(
     import: PageImport<'_>,
     items: &[RemoteIssue],
 ) -> Result<()> {
+    let remote_ids: Vec<&str> = items.iter().map(|item| item.id.as_str()).collect();
+    let purged: BTreeSet<String> = sqlx::query_scalar(
+        "SELECT remote_id FROM tracker_deleted_issues WHERE connection_id=$1 AND remote_id=ANY($2)",
+    )
+    .bind(import.connection)
+    .bind(remote_ids)
+    .fetch_all(&mut *conn)
+    .await?
+    .into_iter()
+    .collect();
+    let items: Vec<RemoteIssue> = items
+        .iter()
+        .filter(|item| !purged.contains(&item.id))
+        .cloned()
+        .collect();
+    let items = &items[..];
     if items.is_empty() {
         return Ok(());
     }

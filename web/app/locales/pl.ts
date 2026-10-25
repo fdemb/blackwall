@@ -586,9 +586,9 @@ export const pl = {
   "search.people": "Osoby",
   "search.actions": "Przejdź do",
 
-  "trash.sub": "Usunięte zadania można przywrócić",
+  "trash.sub": "Usunięte zadania można przywrócić przez 30 dni",
   "trash.emptyTitle": "Kosz jest pusty",
-  "trash.emptySub": "Usunięte zadania czekają tu na przywrócenie.",
+  "trash.emptySub": "Usunięte zadania czekają tu 30 dni, a potem znikają na stałe.",
   "trash.restoreAll": "Przywróć wszystko",
   "trash.restored": "Przywrócono",
   "trash.deleted": "Usunięto {{when}}",

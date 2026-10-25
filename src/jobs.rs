@@ -5,6 +5,7 @@ use crate::{
 use sqlx::{Postgres, Transaction, postgres::PgListener};
 use std::{collections::HashMap, ops::ControlFlow, time::Duration};
 use tokio::{sync::watch, task::JoinSet};
+use uuid::Uuid;
 
 mod delivery;
 mod mail;
@@ -219,7 +220,10 @@ impl Worker {
             limits,
             task_queues: HashMap::new(),
             schedule_at: now,
-            maintenance_at: now,
+            // A deploy restarts web and worker together, and a failed health check rolls back
+            // to the old binary, which ignores purged issue numbers and tracker tombstones.
+            // Waiting one interval keeps the first purge clear of both.
+            maintenance_at: now + MAINTENANCE_INTERVAL,
         }
     }
 
@@ -763,6 +767,10 @@ async fn sweep(store: &Store, retention_days: i32, failed_retention_days: i32) -
         s.prune_sync_clients().await
     })
     .await?;
+    drain(deadline, 1, store.clone(), |s| async move {
+        s.purge_trash().await
+    })
+    .await?;
 
     Ok(())
 }
@@ -786,7 +794,78 @@ where
     Ok(())
 }
 
+const TRASH_RETENTION_DAYS: i32 = 30;
+const PURGE_BATCH: u64 = 100;
+
+const PURGE: [&str; 13] = [
+    "INSERT INTO purged_issue_numbers(workspace_id,team_id,number) \
+     SELECT workspace_id,team_id,max(number) FROM issues WHERE workspace_id=$1 AND id=ANY($2) \
+     GROUP BY workspace_id,team_id ON CONFLICT(workspace_id,team_id) \
+     DO UPDATE SET number=GREATEST(purged_issue_numbers.number,EXCLUDED.number)",
+    "INSERT INTO tracker_deleted_issues(connection_id,remote_id) \
+     SELECT t.id,i.tracker->>'remote_id' FROM issues i \
+     JOIN tracker_connections t ON t.id::text=i.tracker->>'connection_id' \
+     WHERE i.workspace_id=$1 AND i.id=ANY($2) ON CONFLICT DO NOTHING",
+    "UPDATE issues SET parent_id=NULL,updated_at=now(),version=version+1 \
+     WHERE workspace_id=$1 AND parent_id=ANY($2) AND NOT id=ANY($2)",
+    "DELETE FROM issue_dependencies WHERE workspace_id=$1 AND (issue_id=ANY($2) OR dependency_id=ANY($2))",
+    "DELETE FROM activity WHERE workspace_id=$1 AND (entity_id=ANY($2) \
+     OR entity_id IN (SELECT id FROM comments WHERE workspace_id=$1 AND issue_id=ANY($2)) \
+     OR entity_id IN (SELECT id FROM time_entries WHERE workspace_id=$1 AND issue_id=ANY($2)))",
+    "DELETE FROM issue_labels WHERE workspace_id=$1 AND issue_id=ANY($2)",
+    "DELETE FROM issue_followers WHERE workspace_id=$1 AND issue_id=ANY($2)",
+    "DELETE FROM source_links WHERE workspace_id=$1 AND issue_id=ANY($2)",
+    "DELETE FROM time_entries WHERE workspace_id=$1 AND issue_id=ANY($2)",
+    "DELETE FROM attachments WHERE workspace_id=$1 AND issue_id=ANY($2)",
+    "DELETE FROM comments WHERE workspace_id=$1 AND issue_id=ANY($2)",
+    "DELETE FROM notifications WHERE workspace_id=$1 AND issue_id=ANY($2)",
+    "DELETE FROM issues WHERE workspace_id=$1 AND id=ANY($2)",
+];
+
 impl Store {
+    /// Permanently deletes one batch of issues trashed more than `TRASH_RETENTION_DAYS`
+    /// ago in one workspace, with everything attached to them. Returns the number of
+    /// issues deleted.
+    pub async fn purge_trash(&self) -> Result<u64> {
+        let cutoff = chrono::Utc::now() - chrono::Duration::days(TRASH_RETENTION_DAYS.into());
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("SET LOCAL lock_timeout='5s'")
+            .execute(&mut *tx)
+            .await?;
+        let Some(workspace): Option<Uuid> = sqlx::query_scalar(
+            "SELECT workspace_id FROM issues WHERE deleted_at<=$1 ORDER BY deleted_at,id LIMIT 1",
+        )
+        .bind(cutoff)
+        .fetch_optional(&mut *tx)
+        .await?
+        else {
+            return Ok(0);
+        };
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,41827))")
+            .bind(workspace.to_string())
+            .execute(&mut *tx)
+            .await?;
+        let ids: Vec<Uuid> = sqlx::query_scalar(
+            "SELECT id FROM issues \
+             WHERE workspace_id=$1 AND deleted_at<=$2 \
+             ORDER BY deleted_at,id LIMIT $3 FOR UPDATE SKIP LOCKED",
+        )
+        .bind(workspace)
+        .bind(cutoff)
+        .bind(PURGE_BATCH as i64)
+        .fetch_all(&mut *tx)
+        .await?;
+        for sql in PURGE {
+            sqlx::query(sql)
+                .bind(workspace)
+                .bind(&ids)
+                .execute(&mut *tx)
+                .await?;
+        }
+        tx.commit().await?;
+        Ok(ids.len() as u64)
+    }
+
     /// Backfills the Done-entry clock and archives Done issues past their
     /// team's deadline. Returns the number of issues archived.
     /// Cancelled stages are excluded; a NULL team deadline means never.
@@ -842,7 +921,6 @@ impl Store {
 mod tests {
     use super::*;
     use crate::test_support::TestDatabase;
-    use uuid::Uuid;
 
     #[tokio::test]
     async fn renewal_does_not_block_work_on_row_lock() {

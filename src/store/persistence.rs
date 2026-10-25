@@ -26,8 +26,6 @@ pub(crate) async fn create(
     insert(conn, workspace, i, origin).await
 }
 
-/// The team's highest issue number plus one, the same rule the sync client
-/// predicts with. Locking the team row serializes creations in the team until commit.
 async fn next_number(conn: &mut PgConnection, workspace: Uuid, team: Uuid) -> Result<u64> {
     sqlx::query("SELECT 1 FROM teams WHERE workspace_id=$1 AND id=$2 FOR NO KEY UPDATE")
         .bind(workspace)
@@ -36,7 +34,8 @@ async fn next_number(conn: &mut PgConnection, workspace: Uuid, team: Uuid) -> Re
         .await?
         .ok_or(Error::NotFound)?;
     let number: i64 = sqlx::query_scalar(
-        "SELECT COALESCE(max(number),0)+1 FROM issues WHERE workspace_id=$1 AND team_id=$2",
+        "SELECT GREATEST((SELECT max(number) FROM issues WHERE workspace_id=$1 AND team_id=$2),\
+         (SELECT number FROM purged_issue_numbers WHERE workspace_id=$1 AND team_id=$2),0)+1",
     )
     .bind(workspace)
     .bind(team)

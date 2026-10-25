@@ -570,9 +570,9 @@ export const en = {
   "search.people": "People",
   "search.actions": "Go to",
 
-  "trash.sub": "Deleted issues can be restored",
+  "trash.sub": "Deleted issues can be restored for 30 days",
   "trash.emptyTitle": "Trash is empty",
-  "trash.emptySub": "Deleted issues wait here until you restore them.",
+  "trash.emptySub": "Deleted issues stay here for 30 days, then they are deleted for good.",
   "trash.restoreAll": "Restore all",
   "trash.restored": "Restored",
   "trash.deleted": "Deleted {{when}}",

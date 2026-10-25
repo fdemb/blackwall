@@ -41,7 +41,7 @@ pub struct RemotePerson {
     pub name: String,
     pub email: Option<String>,
 }
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct RemoteIssue {
     pub id: String,
     pub project_id: String,
