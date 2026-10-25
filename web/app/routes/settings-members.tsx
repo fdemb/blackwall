@@ -133,9 +133,7 @@ function MemberRow({
           <p className="flex items-center gap-1.5 font-medium">
             <span className="truncate">{row.display_name}</span>
             {row.user_id === me && (
-              <span className="shrink-0 font-normal text-muted-foreground">
-                {t("members.you")}
-              </span>
+              <span className="shrink-0 font-normal text-muted-foreground">{t("members.you")}</span>
             )}
           </p>
           <p className="truncate text-muted-foreground">{row.email}</p>
@@ -336,9 +334,15 @@ export default function Members() {
               role="row"
               className="flex items-center gap-3 border-b border-border bg-background px-5 py-2 text-xs font-medium text-muted-foreground"
             >
-              <span role="columnheader" className="flex-1">{t("members.colName")}</span>
-              <span role="columnheader" className={COLUMN.teams}>{t("members.colTeams")}</span>
-              <span role="columnheader" className={COLUMN.role}>{t("members.colRole")}</span>
+              <span role="columnheader" className="flex-1">
+                {t("members.colName")}
+              </span>
+              <span role="columnheader" className={COLUMN.teams}>
+                {t("members.colTeams")}
+              </span>
+              <span role="columnheader" className={COLUMN.role}>
+                {t("members.colRole")}
+              </span>
               {canAdmin && (
                 <span role="columnheader" className={COLUMN.actions}>
                   <span className="sr-only">{t("members.colActions")}</span>
