@@ -952,6 +952,17 @@ export const en = {
   "auth.resent": "A new token is on its way",
   "auth.changeEmail": "Use a different email",
   "auth.haveToken": "I already have a token",
+  "auth.inviteOnly":
+    "Registration is by invitation. Enter the workspace ID and token from your invitation email.",
+  "auth.verifySent":
+    "We sent a verification link to {{email}}. Open it within 24 hours, then sign in.",
+  "auth.verifyTitle": "Verify your email",
+  "auth.verifySub": "Paste the verification token from your email.",
+  "auth.verifyToken": "Verification token",
+  "auth.verify": "Verify email",
+  "auth.verifying": "Verifying…",
+  "auth.verified": "Email verified",
+  "auth.verifiedSub": "Your account is ready. Sign in to continue.",
   "workspace.creating": "Creating…",
   "workspace.joining": "Joining…",
   "workspace.idHint": "From the invitation email.",

@@ -6,6 +6,7 @@ export default [
     route("login", "routes/login.tsx"),
     route("register", "routes/register.tsx"),
     route("recover", "routes/recover.tsx"),
+    route("verify", "routes/verify.tsx"),
   ]),
   layout("routes/authed.tsx", [
     route("welcome", "routes/welcome.tsx"),
