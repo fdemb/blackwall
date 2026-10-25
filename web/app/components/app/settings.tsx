@@ -91,6 +91,15 @@ export function SettingsRow({
   );
 }
 
+/** The bar at the bottom of a card that holds its save action. */
+export function SettingsFooter({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="flex items-center justify-end gap-2 border-t border-border bg-background px-4 py-2.5 sm:px-5">
+      {children}
+    </div>
+  );
+}
+
 /** Rows inside a card; the card supplies border and rounding. */
 export function SettingsList({
   children,

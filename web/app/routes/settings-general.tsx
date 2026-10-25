@@ -1,5 +1,10 @@
 import { useState } from "react";
-import { Form } from "react-aria-components";
+import {
+  FieldError as RACFieldError,
+  Form,
+  Input as RACInput,
+  TextField as RACTextField,
+} from "react-aria-components";
 import { Link, useNavigate, useRevalidator } from "react-router";
 import { Copy, LogOut } from "lucide-react";
 import { Badge } from "~/components/ui/badge";
@@ -8,7 +13,13 @@ import { FormError, TextField } from "~/components/ui/field";
 import { Select } from "~/components/ui/select";
 import { useToast } from "~/components/ui/toast";
 import { ConfirmDialog } from "~/components/app/confirm";
-import { SettingsPage, SettingsSection } from "~/components/app/settings";
+import {
+  SettingsBlock,
+  SettingsFooter,
+  SettingsPage,
+  SettingsRow,
+  SettingsSection,
+} from "~/components/app/settings";
 import { clearLastWs } from "~/lib/auth-guard";
 import { useI18n } from "~/lib/i18n";
 import { isWorkspaceSlug, slugInput } from "~/lib/identifiers";
@@ -19,70 +30,12 @@ import type { Id } from "~/lib/types";
 
 export default function General() {
   const { t } = useI18n();
-  const toast = useToast();
-  const { ws, role, canAdmin } = useWorkspace();
-  const issueCount = useIssueCount();
-  const base = `/${ws.slug}/settings`;
-  const copyId = () =>
-    navigator.clipboard.writeText(ws.id).then(
-      () => toast.show(t("action.copied")),
-      () => toast.error(t("error.generic")),
-    );
-  const counts: [string, number, string?][] = [
-    [t("settings.members"), ws.members.length, `${base}/members`],
-    [t("nav.teams"), ws.teams.length, `${base}/teams`],
-    [t("nav.projects"), ws.projects.length],
-    [t("nav.issues"), issueCount],
-  ];
+  const { role, canAdmin: canEdit } = useWorkspace();
   return (
     <SettingsPage title={t("settings.general")} description={t("settings.generalSub")}>
-      {canAdmin && (
-        <SettingsSection>
-          <WorkspaceForm />
-        </SettingsSection>
-      )}
-      <SettingsSection>
-        <dl className="divide-y divide-border ">
-          {!canAdmin && (
-            <Row label={t("field.name")}>
-              <span className="font-medium">{ws.name}</span>
-            </Row>
-          )}
-          <Row label={t("workspace.id")}>
-            <span className="flex min-w-0 items-center gap-1">
-              <code className="truncate font-mono  text-muted-foreground">{ws.id}</code>
-              <Button
-                variant="ghost"
-                size="icon"
-                aria-label={`${t("action.copy")}: ${t("workspace.id")}`}
-                onPress={() => void copyId()}
-              >
-                <Copy />
-              </Button>
-            </span>
-          </Row>
-          <Row label={t("settings.yourRole")}>
-            <Badge tone="primary">{t(`role.${role}`)}</Badge>
-          </Row>
-        </dl>
-      </SettingsSection>
-      <SettingsSection title={t("settings.contents")}>
-        <dl className="divide-y divide-border ">
-          {counts.map(([label, n, to]) => (
-            <Row key={label} label={label}>
-              {to ? (
-                <Link
-                  to={to}
-                  className="rounded-sm font-medium tabular-nums underline-offset-4 outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring/60"
-                >
-                  {n}
-                </Link>
-              ) : (
-                <span className="font-medium tabular-nums">{n}</span>
-              )}
-            </Row>
-          ))}
-        </dl>
+      <Identity canEdit={canEdit} />
+      <SettingsSection title={t("settings.generalWorkspace")}>
+        <WorkspaceCard canEdit={canEdit} />
       </SettingsSection>
       <SettingsSection title={t("workspace.membership")}>
         <div className="divide-y divide-border">
@@ -94,7 +47,53 @@ export default function General() {
   );
 }
 
-function WorkspaceForm() {
+function Identity({ canEdit }: { canEdit: boolean }) {
+  const { t } = useI18n();
+  const { ws, role } = useWorkspace();
+  const issueCount = useIssueCount();
+  const base = `/${ws.slug}/settings`;
+  const counts: [string, string?][] = [
+    [t("settings.generalMembers", { count: ws.members.length }), `${base}/members`],
+    [t("settings.generalTeams", { count: ws.teams.length }), `${base}/teams`],
+    [t("settings.generalProjects", { count: ws.projects.length })],
+    [t("settings.generalIssues", { count: issueCount })],
+  ];
+  return (
+    <SettingsBlock className="flex items-center gap-4">
+      <div
+        aria-hidden="true"
+        className="flex size-14 shrink-0 items-center justify-center rounded-[14px] bg-primary-solid text-2xl font-semibold text-primary-foreground"
+      >
+        {ws.name.trim().charAt(0).toUpperCase()}
+      </div>
+      <div className="flex min-w-0 flex-1 flex-col gap-1">
+        <div className="flex min-w-0 items-center gap-2">
+          <h2 className="truncate text-base font-semibold">{ws.name}</h2>
+          <Badge tone={canEdit ? "primary" : "neutral"}>{t(`role.${role}`)}</Badge>
+        </div>
+        <ul className="flex flex-wrap items-center gap-x-1.5 text-muted-foreground tabular-nums">
+          {counts.map(([label, to], i) => (
+            <li key={label} className="flex items-center gap-1.5">
+              {i > 0 && <span aria-hidden="true">·</span>}
+              {to ? (
+                <Link
+                  to={to}
+                  className="rounded-sm underline-offset-4 outline-none hover:text-foreground hover:underline focus-visible:ring-2 focus-visible:ring-ring/60"
+                >
+                  {label}
+                </Link>
+              ) : (
+                label
+              )}
+            </li>
+          ))}
+        </ul>
+      </div>
+    </SettingsBlock>
+  );
+}
+
+function WorkspaceCard({ canEdit }: { canEdit: boolean }) {
   const { t } = useI18n();
   const toast = useToast();
   const nav = useNavigate();
@@ -103,11 +102,88 @@ function WorkspaceForm() {
   const [name, setName] = useState(ws.name);
   const [slug, setSlug] = useState(ws.slug);
   const { pending, error, guard } = usePending();
+  const host = typeof window === "undefined" ? "" : window.location.host;
   const slugError = isWorkspaceSlug(slug) ? "" : t("workspace.slugInvalid");
   const unchanged = name.trim() === ws.name && slug === ws.slug;
+  const copyId = () =>
+    navigator.clipboard.writeText(ws.id).then(
+      () => toast.show(t("action.copied")),
+      () => toast.error(t("error.generic")),
+    );
+  const rows = (
+    <div className="divide-y divide-border">
+      <SettingsRow
+        label={t("field.name")}
+        description={t(canEdit ? "settings.generalNameSub" : "settings.generalNameReadOnly")}
+      >
+        {canEdit ? (
+          <TextField
+            name="name"
+            aria-label={t("field.name")}
+            className="w-full sm:w-70"
+            value={name}
+            onChange={setName}
+            autoComplete="off"
+            isRequired
+          />
+        ) : (
+          <p className="w-full truncate px-2.5 sm:w-70">{ws.name}</p>
+        )}
+      </SettingsRow>
+      <SettingsRow
+        label={t("workspace.slug")}
+        description={t(canEdit ? "settings.generalUrlSub" : "settings.generalUrlReadOnly")}
+      >
+        {canEdit ? (
+          <RACTextField
+            name="slug"
+            aria-label={t("workspace.slug")}
+            className="group flex w-full flex-col sm:w-70"
+            value={slug}
+            onChange={(value) => setSlug(slugInput(value))}
+            isInvalid={Boolean(slugError)}
+            validationBehavior="aria"
+            isRequired
+          >
+            <div className="flex h-8 overflow-hidden rounded-md border border-input bg-card shadow-xs transition-colors focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/25 hover:border-muted-foreground/40 group-data-invalid:border-destructive pointer-coarse:h-10">
+              <span className="flex min-w-0 shrink items-center truncate border-r border-input bg-muted px-2.5 text-muted-foreground">
+                {host}/
+              </span>
+              <RACInput
+                autoComplete="off"
+                spellCheck="false"
+                className="min-w-16 flex-1 bg-transparent px-2.5 text-foreground outline-none"
+              />
+            </div>
+            <RACFieldError className="mt-1 text-destructive">{slugError}</RACFieldError>
+          </RACTextField>
+        ) : (
+          <p className="w-full truncate px-2.5 sm:w-70">
+            {host}/{ws.slug}
+          </p>
+        )}
+      </SettingsRow>
+      <SettingsRow label={t("workspace.id")} description={t("settings.generalIdSub")}>
+        <div className="flex h-8 w-full items-center gap-2 rounded-md bg-muted pr-1 pl-2.5 sm:w-70">
+          <code className="min-w-0 flex-1 truncate font-mono text-xs text-muted-foreground">
+            {ws.id}
+          </code>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="size-6"
+            aria-label={`${t("action.copy")}: ${t("workspace.id")}`}
+            onPress={() => void copyId()}
+          >
+            <Copy className="size-3.5" />
+          </Button>
+        </div>
+      </SettingsRow>
+    </div>
+  );
+  if (!canEdit) return rows;
   return (
     <Form
-      className="flex flex-col gap-4 px-4 py-4 sm:px-5"
       onSubmit={(e) => {
         e.preventDefault();
         void guard(async () => {
@@ -118,37 +194,24 @@ function WorkspaceForm() {
         });
       }}
     >
-      <TextField
-        name="name"
-        label={t("workspace.name")}
-        value={name}
-        onChange={setName}
-        autoComplete="off"
-        isRequired
-      />
-      <TextField
-        name="slug"
-        label={t("workspace.slug")}
-        description={t(slug === ws.slug ? "workspace.slugHint" : "workspace.slugChangeHint", {
-          slug,
-        })}
-        error={slugError}
-        value={slug}
-        onChange={(value) => setSlug(slugInput(value))}
-        autoComplete="off"
-        spellCheck="false"
-        isRequired
-      />
-      <FormError>{error}</FormError>
-      <div className="flex justify-end">
+      {rows}
+      <SettingsFooter>
+        <div className="min-w-0 flex-1">
+          {error ? (
+            <FormError>{error}</FormError>
+          ) : (
+            <p className="text-muted-foreground">{t("settings.generalSaveHint")}</p>
+          )}
+        </div>
         <Button
           type="submit"
           variant="primary"
+          size="sm"
           isDisabled={unchanged || !name.trim() || Boolean(slugError) || pending || offline}
         >
           {t("action.save")}
         </Button>
-      </div>
+      </SettingsFooter>
     </Form>
   );
 }
@@ -163,27 +226,26 @@ function TransferOwnership() {
     .map((m) => ({ id: m.user_id, label: member(m.user_id)?.display_name ?? m.user_id }));
   const name = member(target)?.display_name ?? "";
   return (
-    <div className="flex flex-wrap items-end gap-3 px-4 py-4 sm:px-5">
-      <div className="min-w-0 flex-1 basis-60">
-        <p className="font-medium">{t("workspace.transfer")}</p>
-        <p className="text-muted-foreground">{t("workspace.transferSub")}</p>
+    <SettingsRow label={t("workspace.transfer")} description={t("workspace.transferSub")}>
+      <div className="flex items-center gap-2">
+        <Select
+          aria-label={t("workspace.transferTo")}
+          placeholder={t("workspace.transferTo")}
+          className="w-45 min-w-0 flex-1 sm:flex-none"
+          isDisabled={options.length === 0 || offline}
+          selectedKey={target}
+          options={options}
+          onSelectionChange={(key) => setTarget(key as Id)}
+        />
+        <Button
+          variant="secondary"
+          className="sm:w-23"
+          isDisabled={target === null || offline}
+          onPress={() => setConfirming(true)}
+        >
+          {t("workspace.transferAction")}
+        </Button>
       </div>
-      <Select
-        aria-label={t("workspace.transferTo")}
-        placeholder={t("workspace.transferTo")}
-        className="w-48"
-        isDisabled={options.length === 0 || offline}
-        selectedKey={target}
-        options={options}
-        onSelectionChange={(key) => setTarget(key as Id)}
-      />
-      <Button
-        variant="secondary"
-        isDisabled={target === null || offline}
-        onPress={() => setConfirming(true)}
-      >
-        {t("workspace.transfer")}
-      </Button>
       <ConfirmDialog
         title={t("workspace.transferConfirm", { name })}
         description={t("workspace.transferConfirmSub")}
@@ -196,7 +258,7 @@ function TransferOwnership() {
           )
         }
       />
-    </div>
+    </SettingsRow>
   );
 }
 
@@ -207,20 +269,18 @@ function Leave() {
   const [confirming, setConfirming] = useState(false);
   const soleOwner = role === "owner" && ws.members.filter((m) => m.role === "owner").length <= 1;
   return (
-    <div className="flex flex-wrap items-center gap-3 px-4 py-4 sm:px-5">
-      <div className="min-w-0 flex-1 basis-60">
-        <p className="font-medium">{t("workspace.leave")}</p>
-        <p className="text-muted-foreground">
-          {t(soleOwner ? "workspace.leaveSoleOwner" : "workspace.leaveSub")}
-        </p>
-      </div>
+    <SettingsRow
+      label={t("workspace.leave")}
+      description={t(soleOwner ? "workspace.leaveSoleOwner" : "workspace.leaveSub")}
+    >
       <Button
-        variant="destructive"
+        variant="secondary"
+        className="border-destructive/30 text-destructive hover:bg-destructive/10"
         isDisabled={soleOwner || offline}
         onPress={() => setConfirming(true)}
       >
-        <LogOut />
-        {t("workspace.leave")}
+        <LogOut className="size-3.5" />
+        {t("workspace.leaveAction")}
       </Button>
       <ConfirmDialog
         title={t("workspace.leaveConfirm", { name: ws.name })}
@@ -234,15 +294,6 @@ function Leave() {
           await nav("/", { replace: true });
         }}
       />
-    </div>
-  );
-}
-
-function Row({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <div className="flex min-h-11 items-center justify-between gap-6 px-4 py-2 sm:px-5">
-      <dt className="shrink-0 text-muted-foreground">{label}</dt>
-      <dd className="flex min-w-0 justify-end">{children}</dd>
-    </div>
+    </SettingsRow>
   );
 }
