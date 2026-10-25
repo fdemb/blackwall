@@ -57,7 +57,6 @@ const profile: Profile = {
   contact: "",
   language: "en",
   theme: "system",
-  alerts: { assignments: true, replies: true, changes: true, deadlines: true },
 };
 const engines: SyncEngine[] = [];
 async function fixture({

@@ -12,7 +12,6 @@ const profile: SessionProfile = {
   contact: "",
   language: "en",
   theme: "system",
-  alerts: { assignments: true, replies: true, changes: true, deadlines: true },
   session_id: "11111111-1111-4111-8111-000000000002",
 };
 const list = [

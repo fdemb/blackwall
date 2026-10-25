@@ -888,7 +888,7 @@ async fn notify_deadline(
         "deadline:{}:{}:{user}",
         reminder.issue_id, reminder.generation
     );
-    sqlx::query("INSERT INTO notifications(id,workspace_id,user_id,issue_id,kind,message,created_at,dedup_key) SELECT $1,$2,$3,$4,'deadline',$5,now(),$6 WHERE EXISTS(SELECT 1 FROM workspace_members WHERE workspace_id=$2 AND user_id=$3) AND COALESCE((SELECT deadline FROM alert_preferences WHERE workspace_id=$2 AND user_id=$3),true) AND COALESCE((SELECT (profile->'alerts'->>'deadlines')::bool FROM users WHERE id=$3),true) ON CONFLICT(workspace_id,dedup_key) DO NOTHING")
+    sqlx::query("INSERT INTO notifications(id,workspace_id,user_id,issue_id,kind,message,created_at,dedup_key) SELECT $1,$2,$3,$4,'deadline',$5,now(),$6 WHERE EXISTS(SELECT 1 FROM workspace_members WHERE workspace_id=$2 AND user_id=$3) AND COALESCE((SELECT deadline FROM alert_preferences WHERE workspace_id=$2 AND user_id=$3),true) ON CONFLICT(workspace_id,dedup_key) DO NOTHING")
         .bind(Uuid::new_v4())
         .bind(reminder.workspace_id)
         .bind(user)

@@ -29,25 +29,6 @@ pub enum Theme {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
-pub struct AlertPreferences {
-    pub assignments: bool,
-    pub replies: bool,
-    pub changes: bool,
-    pub deadlines: bool,
-}
-
-impl Default for AlertPreferences {
-    fn default() -> Self {
-        Self {
-            assignments: true,
-            replies: true,
-            changes: true,
-            deadlines: true,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct Profile {
     pub id: Uuid,
     pub email: String,
@@ -56,8 +37,30 @@ pub struct Profile {
     pub contact: String,
     pub language: Language,
     pub theme: Theme,
-    #[serde(default)]
-    pub alerts: AlertPreferences,
+    /// Always on, whatever `users.profile` holds. Browser tabs loaded before workspace email
+    /// preferences reject a profile without it. Drop it once those tabs are gone.
+    #[serde(default, skip_deserializing)]
+    pub alerts: LegacyAlerts,
+}
+
+/// The profile-wide alert switches, replaced by per-workspace alert preferences.
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct LegacyAlerts {
+    pub assignments: bool,
+    pub replies: bool,
+    pub changes: bool,
+    pub deadlines: bool,
+}
+
+impl Default for LegacyAlerts {
+    fn default() -> Self {
+        Self {
+            assignments: true,
+            replies: true,
+            changes: true,
+            deadlines: true,
+        }
+    }
 }
 
 #[derive(Deserialize, utoipa::ToSchema)]
@@ -104,7 +107,6 @@ pub struct ProfileEdit {
     pub contact: String,
     pub language: Language,
     pub theme: Theme,
-    pub alerts: AlertPreferences,
 }
 
 #[derive(Deserialize, utoipa::ToSchema)]
@@ -209,7 +211,7 @@ impl Store {
             contact: String::new(),
             language: Language::En,
             theme: Theme::System,
-            alerts: AlertPreferences::default(),
+            alerts: LegacyAlerts::default(),
         };
 
         let insert = sqlx::query(
@@ -345,7 +347,6 @@ impl Store {
         profile.contact = edit.contact;
         profile.language = edit.language;
         profile.theme = edit.theme;
-        profile.alerts = edit.alerts;
 
         sqlx::query("UPDATE users SET profile = $1 WHERE id = $2")
             .bind(Json(&profile))

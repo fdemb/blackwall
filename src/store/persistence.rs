@@ -698,7 +698,7 @@ async fn notify_changes(
         .iter()
         .map(|user| format!("change:{}:{user}", issue.id))
         .collect();
-    sqlx::query("INSERT INTO notifications(id,workspace_id,user_id,issue_id,kind,message,created_at,dedup_key,actor_id,fields) SELECT input.id,$1,input.user_id,$2,'change',$3,now(),input.key,$7,$8 FROM unnest($4::uuid[],$5::uuid[],$6::text[]) AS input(id,user_id,key) JOIN workspace_members m ON m.workspace_id=$1 AND m.user_id=input.user_id JOIN users u ON u.id=input.user_id LEFT JOIN alert_preferences p ON p.workspace_id=$1 AND p.user_id=input.user_id WHERE COALESCE(p.change,true) AND COALESCE((u.profile->'alerts'->>'changes')::bool,true) ON CONFLICT(workspace_id,dedup_key) DO UPDATE SET message=EXCLUDED.message,created_at=EXCLUDED.created_at,actor_id=EXCLUDED.actor_id,fields=COALESCE((SELECT jsonb_agg(DISTINCT f) FROM jsonb_array_elements_text(notifications.fields||EXCLUDED.fields) f),'[]'),version=notifications.version+1 WHERE notifications.read_at IS NULL")
+    sqlx::query("INSERT INTO notifications(id,workspace_id,user_id,issue_id,kind,message,created_at,dedup_key,actor_id,fields) SELECT input.id,$1,input.user_id,$2,'change',$3,now(),input.key,$7,$8 FROM unnest($4::uuid[],$5::uuid[],$6::text[]) AS input(id,user_id,key) JOIN workspace_members m ON m.workspace_id=$1 AND m.user_id=input.user_id LEFT JOIN alert_preferences p ON p.workspace_id=$1 AND p.user_id=input.user_id WHERE COALESCE(p.change,true) ON CONFLICT(workspace_id,dedup_key) DO UPDATE SET message=EXCLUDED.message,created_at=EXCLUDED.created_at,actor_id=EXCLUDED.actor_id,fields=COALESCE((SELECT jsonb_agg(DISTINCT f) FROM jsonb_array_elements_text(notifications.fields||EXCLUDED.fields) f),'[]'),version=notifications.version+1 WHERE notifications.read_at IS NULL")
         .bind(workspace).bind(issue.id).bind(&issue.title).bind(ids).bind(users).bind(keys).bind((!remote).then_some(actor)).bind(serde_json::to_value(fields)?)
         .execute(conn).await?;
     Ok(())
@@ -718,19 +718,11 @@ pub(crate) async fn notify(
 ) -> Result<()> {
     let column = enum_text(&kind);
 
-    let global = match kind {
-        AlertKind::Assignment => "assignments",
-        AlertKind::Reply | AlertKind::Mention => "replies",
-        AlertKind::Change => "changes",
-        AlertKind::Deadline => "deadlines",
-    };
-
     let sql = format!(
         "INSERT INTO notifications(id,workspace_id,user_id,issue_id,kind,message,created_at,dedup_key,actor_id,fields) \
              SELECT $1,$2,$3,$4,$5,$6,now(),$7,$8,$9 \
              WHERE EXISTS(SELECT 1 FROM workspace_members WHERE workspace_id=$2 AND user_id=$3) \
              AND COALESCE((SELECT {column} FROM alert_preferences WHERE workspace_id=$2 AND user_id=$3),true) \
-             AND COALESCE((SELECT (profile->'alerts'->>'{global}')::bool FROM users WHERE id=$3),true) \
              ON CONFLICT(workspace_id,dedup_key) DO NOTHING"
     );
 

@@ -1,4 +1,4 @@
-use super::{DeliveryError, Mailer};
+use super::{Content, DeliveryError, Digest, Mailer};
 use crate::store::Store;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -12,6 +12,7 @@ use uuid::Uuid;
 #[derive(Clone, Debug)]
 pub enum Job {
     Email(Email),
+    Digest(Digest),
     Webhook(Webhook),
     Reminder(Reminder),
     Tracker(crate::tracker::TrackerJob),
@@ -61,6 +62,7 @@ impl Job {
     pub fn kind(&self) -> &'static str {
         match self {
             Job::Email(_) => "email",
+            Job::Digest(_) => "digest",
             Job::Webhook(_) => "webhook",
             Job::Reminder(_) => "reminder",
             Job::Tracker(_) => "tracker",
@@ -69,7 +71,7 @@ impl Job {
 
     pub fn queue(&self) -> &'static str {
         match self {
-            Job::Email(_) => "email",
+            Job::Email(_) | Job::Digest(_) => "email",
             Job::Webhook(_) => "webhook",
             Job::Reminder(_) => "database",
             Job::Tracker(_) => "tracker",
@@ -79,6 +81,7 @@ impl Job {
     pub fn payload(&self) -> serde_json::Result<String> {
         match self {
             Job::Email(email) => serde_json::to_string(email),
+            Job::Digest(digest) => serde_json::to_string(digest),
             Job::Webhook(webhook) => serde_json::to_string(webhook),
             Job::Reminder(reminder) => serde_json::to_string(reminder),
             Job::Tracker(job) => serde_json::to_string(job),
@@ -88,6 +91,7 @@ impl Job {
     pub fn decode(kind: &str, payload: &str) -> Result<Self, String> {
         match kind {
             "email" => serde_json::from_str(payload).map(Job::Email),
+            "digest" => serde_json::from_str(payload).map(Job::Digest),
             "webhook" => serde_json::from_str(payload).map(Job::Webhook),
             "reminder" => serde_json::from_str(payload).map(Job::Reminder),
             "tracker" => serde_json::from_str(payload).map(Job::Tracker),
@@ -113,8 +117,12 @@ impl Job {
                 if !self.is_current(store, id).await? {
                     return Ok(());
                 }
-                mailer.send(id, email).await
+                mailer.send(id, Content::Grant(email)).await
             }
+            Job::Digest(digest) => match digest.summary(store).await? {
+                Some(summary) => mailer.send(id, Content::Digest(&summary)).await,
+                None => Ok(()),
+            },
             Job::Webhook(webhook) => {
                 let Some(secret) = webhook.current_secret(store).await? else {
                     return Ok(());
@@ -397,7 +405,21 @@ mod tests {
             }))
         ));
 
+        let user = Uuid::new_v4();
+        let notification = Uuid::new_v4();
+        let digest = format!(
+            r#"{{"workspace_id":"{workspace}","user_id":"{user}","notification_ids":["{notification}"]}}"#
+        );
+        let decoded = Job::decode("digest", &digest).unwrap();
+        assert_eq!(decoded.queue(), "email");
+        assert!(matches!(
+            decoded,
+            Job::Digest(Digest { user_id, notification_ids, .. })
+                if user_id == user && notification_ids == [notification]
+        ));
+
         assert!(Job::decode("email", "{}").is_err());
+        assert!(Job::decode("digest", "{}").is_err());
         assert!(Job::decode("unknown_kind", "{}").is_err());
     }
 }

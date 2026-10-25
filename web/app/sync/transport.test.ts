@@ -886,8 +886,6 @@ describe("response shape validation", () => {
       );
     }
     for (const malformed of [
-      { ...profile, alerts: [] },
-      { ...profile, alerts: { ...profile.alerts, replies: "yes" } },
       { ...profile, language: "unknown" },
       { ...profile, theme: "unknown" },
     ])

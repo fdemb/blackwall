@@ -260,7 +260,40 @@ impl Workspace {
                 change,
                 mention,
                 deadline,
+                email_assignment,
+                email_reply,
+                email_change,
+                email_mention,
+                email_deadline,
             } => {
+                let stored = self
+                    .alert_preferences
+                    .iter()
+                    .find(|p| p.user_id == actor)
+                    .map(|p| {
+                        [
+                            p.email_assignment,
+                            p.email_reply,
+                            p.email_change,
+                            p.email_mention,
+                            p.email_deadline,
+                        ]
+                    })
+                    .unwrap_or(AlertPreferences::EMAIL_DEFAULTS);
+                let choices = [
+                    email_assignment,
+                    email_reply,
+                    email_change,
+                    email_mention,
+                    email_deadline,
+                ];
+                let [
+                    email_assignment,
+                    email_reply,
+                    email_change,
+                    email_mention,
+                    email_deadline,
+                ] = std::array::from_fn(|i| choices[i].unwrap_or(stored[i]));
                 self.alert_preferences.retain(|p| p.user_id != actor);
                 self.alert_preferences.push(AlertPreferences {
                     version: 1,
@@ -270,6 +303,11 @@ impl Workspace {
                     change,
                     mention,
                     deadline,
+                    email_assignment,
+                    email_reply,
+                    email_change,
+                    email_mention,
+                    email_deadline,
                 });
                 return Ok(None);
             }

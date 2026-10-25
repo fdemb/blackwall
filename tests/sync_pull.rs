@@ -1222,7 +1222,6 @@ async fn pull_profile_edit_and_team_join_do_not_reset() {
             "contact": me["contact"],
             "language": me["language"],
             "theme": me["theme"],
-            "alerts": me["alerts"],
         })),
     )
     .await;

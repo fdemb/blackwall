@@ -609,7 +609,8 @@ export const en = {
   "account.saved": "Profile saved",
   "account.preferences": "Preferences",
   "account.alerts": "Notifications",
-  "account.alertsSub": "These settings apply to {{name}} only. Choose what reaches your inbox.",
+  "account.alertsSub":
+    "These settings apply to {{name}} only. Choose what reaches your inbox and your email.",
   "account.password": "Password",
   "account.currentPassword": "Current password",
   "account.changePassword": "Change password",
@@ -645,6 +646,9 @@ export const en = {
   "account.appearance": "Appearance",
   "account.keyboard": "Keyboard",
   "account.alertsInbox": "Send to my inbox",
+  "account.alertsEmail": "Email me",
+  "account.alertsEmailSub":
+    "Email covers only what reaches your inbox. It arrives as one digest a few minutes after your first unread notification, and only when this server has email set up.",
   "account.security": "Security",
   "account.securitySub": "Your password and the devices signed in to your account.",
   "account.signOutSub": "End your session in this browser.",

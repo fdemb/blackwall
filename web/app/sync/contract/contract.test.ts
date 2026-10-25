@@ -302,6 +302,11 @@ describe.skipIf(!enabled)(`${suiteName}: prediction contract`, () => {
       change: false,
       mention: true,
       deadline: false,
+      email_assignment: true,
+      email_reply: true,
+      email_change: false,
+      email_mention: true,
+      email_deadline: true,
     });
     expect(await receipt.settled).toBe("applied");
     await settle(c.engine);

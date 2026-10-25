@@ -180,6 +180,123 @@ async fn change_notifications_take_the_coalescing_key_and_release_it_on_read() {
 }
 
 #[tokio::test]
+async fn profile_alerts_fold_into_workspace_preferences() {
+    let database = support::TestDatabase::new().await;
+    let mut conn = PgConnection::connect(&database.url).await.unwrap();
+    migrate_before(&mut conn, "0043").await;
+
+    let [first, second] = [1, 2].map(Uuid::from_u128);
+    let [no_assignments, defaults, no_profile_alerts, no_replies] =
+        [11, 12, 13, 14].map(Uuid::from_u128);
+    for (workspace, slug) in [(first, "first"), (second, "second")] {
+        sqlx::query("INSERT INTO workspaces(id,name,slug) VALUES($1,$2,$2)")
+            .bind(workspace)
+            .bind(slug)
+            .execute(&mut conn)
+            .await
+            .unwrap();
+    }
+    let on = r#"{"assignments":true,"replies":true,"changes":true,"deadlines":true}"#;
+    for (user, alerts) in [
+        (
+            no_assignments,
+            Some(r#"{"assignments":false,"replies":true,"changes":true,"deadlines":true}"#),
+        ),
+        (defaults, Some(on)),
+        (no_profile_alerts, None),
+        (
+            no_replies,
+            Some(r#"{"assignments":true,"replies":false,"changes":true,"deadlines":true}"#),
+        ),
+    ] {
+        sqlx::query("INSERT INTO users(id,email,password_hash,profile) VALUES($1,$1::text||'@example.com','x',jsonb_strip_nulls(jsonb_build_object('alerts',$2::jsonb)))")
+            .bind(user)
+            .bind(alerts)
+            .execute(&mut conn)
+            .await
+            .unwrap();
+    }
+    for (workspace, user) in [
+        (first, no_assignments),
+        (second, no_assignments),
+        (first, defaults),
+        (first, no_profile_alerts),
+        (first, no_replies),
+    ] {
+        sqlx::query(
+            "INSERT INTO workspace_members(workspace_id,user_id,role) VALUES($1,$2,'member')",
+        )
+        .bind(workspace)
+        .bind(user)
+        .execute(&mut conn)
+        .await
+        .unwrap();
+    }
+    for (user, column) in [
+        (no_assignments, "deadline"),
+        (no_profile_alerts, "change"),
+        (no_replies, "deadline"),
+    ] {
+        sqlx::query(&format!(
+            "INSERT INTO alert_preferences(workspace_id,user_id,{column}) VALUES($1,$2,false)"
+        ))
+        .bind(first)
+        .bind(user)
+        .execute(&mut conn)
+        .await
+        .unwrap();
+    }
+
+    sqlx::raw_sql(include_str!("../migrations/0043_email_notifications.sql"))
+        .execute(&mut conn)
+        .await
+        .unwrap();
+
+    let rows: Vec<(Uuid, Uuid, Vec<bool>, i64)> = sqlx::query_as(
+        "SELECT workspace_id,user_id,ARRAY[assignment,reply,change,mention,deadline],version \
+         FROM alert_preferences ORDER BY workspace_id,user_id",
+    )
+    .fetch_all(&mut conn)
+    .await
+    .unwrap();
+    assert_eq!(
+        rows,
+        [
+            (
+                first,
+                no_assignments,
+                vec![false, true, true, true, false],
+                2
+            ),
+            (
+                first,
+                no_profile_alerts,
+                vec![true, true, false, true, true],
+                1
+            ),
+            (first, no_replies, vec![true, false, true, false, false], 2),
+            (
+                second,
+                no_assignments,
+                vec![false, true, true, true, true],
+                1
+            ),
+        ]
+    );
+    let email: Vec<(bool, bool, bool, bool, bool)> = sqlx::query_as(
+        "SELECT DISTINCT email_assignment,email_reply,email_change,email_mention,email_deadline \
+         FROM alert_preferences",
+    )
+    .fetch_all(&mut conn)
+    .await
+    .unwrap();
+    assert_eq!(email, [(true, true, false, true, true)]);
+
+    conn.close().await.unwrap();
+    database.cleanup().await;
+}
+
+#[tokio::test]
 async fn session_metadata_dates_existing_sessions_and_accepts_old_inserts() {
     let database = support::TestDatabase::new().await;
     let mut conn = PgConnection::connect(&database.url).await.unwrap();

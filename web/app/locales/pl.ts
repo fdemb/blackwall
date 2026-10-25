@@ -626,7 +626,7 @@ export const pl = {
   "account.preferences": "Preferencje",
   "account.alerts": "Powiadomienia",
   "account.alertsSub":
-    "Te ustawienia dotyczą tylko przestrzeni {{name}}. Wybierz, co trafia do skrzynki.",
+    "Te ustawienia dotyczą tylko przestrzeni {{name}}. Wybierz, co trafia do skrzynki i na e-mail.",
   "account.password": "Hasło",
   "account.currentPassword": "Obecne hasło",
   "account.changePassword": "Zmień hasło",
@@ -662,6 +662,9 @@ export const pl = {
   "account.appearance": "Wygląd",
   "account.keyboard": "Klawiatura",
   "account.alertsInbox": "Wysyłaj do mojej skrzynki",
+  "account.alertsEmail": "Wysyłaj e-mailem",
+  "account.alertsEmailSub":
+    "E-mail obejmuje tylko to, co trafia do skrzynki. Przychodzi jako jedno zestawienie kilka minut po pierwszym nieprzeczytanym powiadomieniu i tylko wtedy, gdy serwer ma skonfigurowaną pocztę.",
   "account.security": "Bezpieczeństwo",
   "account.securitySub": "Twoje hasło i urządzenia zalogowane na Twoje konto.",
   "account.signOutSub": "Zakończ sesję w tej przeglądarce.",

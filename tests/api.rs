@@ -869,24 +869,25 @@ async fn complete_contract_on_postgres() {
     )
     .await;
 
-    // Account alert preferences suppress scheduled reminders without rewriting state each tick.
-    store
-        .edit_profile(
-            owner.profile.clone(),
-            blackwall::auth::ProfileEdit {
-                display_name: owner.profile.display_name.clone(),
-                avatar_url: None,
-                contact: String::new(),
-                language: blackwall::auth::Language::En,
-                theme: blackwall::auth::Theme::System,
-                alerts: blackwall::auth::AlertPreferences {
-                    deadlines: false,
-                    ..Default::default()
-                },
-            },
-        )
-        .await
-        .unwrap();
+    // Alert preferences suppress scheduled reminders without rewriting state each tick.
+    change(
+        &app,
+        &owner,
+        &id,
+        Command::ConfigureAlerts {
+            assignment: true,
+            reply: true,
+            change: true,
+            mention: true,
+            deadline: false,
+            email_assignment: Some(true),
+            email_reply: Some(true),
+            email_change: Some(true),
+            email_mention: Some(true),
+            email_deadline: Some(true),
+        },
+    )
+    .await;
 
     let mut quiet_input = issue(team, "No deadline alert");
     quiet_input.assignee = Some(owner.profile.id);
@@ -1111,10 +1112,6 @@ async fn native_identity_and_atomic_password_recovery() {
                 contact: "Contact".into(),
                 language: blackwall::auth::Language::Pl,
                 theme: blackwall::auth::Theme::Dark,
-                alerts: blackwall::auth::AlertPreferences {
-                    deadlines: false,
-                    ..Default::default()
-                },
             },
         )
         .await

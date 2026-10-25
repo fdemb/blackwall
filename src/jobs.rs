@@ -8,9 +8,12 @@ use tokio::{sync::watch, task::JoinSet};
 use uuid::Uuid;
 
 mod delivery;
+mod digest;
 mod mail;
 
 pub use delivery::{Email, Grant, Job, Reminder, Webhook};
+pub use digest::Digest;
+use mail::Content;
 pub use mail::Mailer;
 
 pub const PAYLOAD_VERSION: i32 = 1;
@@ -148,6 +151,7 @@ pub async fn run(store: Store, mailer: Mailer, shutdown: watch::Receiver<bool>) 
 
 const QUEUES: [&str; 4] = ["email", "webhook", "database", "tracker"];
 const MAINTENANCE_INTERVAL: Duration = Duration::from_secs(300);
+const DIGEST_INTERVAL: Duration = Duration::from_secs(60);
 
 /// Delivery is at least once. Aborted I/O may already have reached the destination.
 pub async fn run_with_config(
@@ -195,6 +199,8 @@ struct Worker {
     task_queues: HashMap<tokio::task::Id, usize>,
     schedule_at: tokio::time::Instant,
     maintenance_at: tokio::time::Instant,
+    /// `None` while mail is disabled, so the sweep never reads notifications.
+    digest_at: Option<tokio::time::Instant>,
 }
 
 impl Worker {
@@ -213,7 +219,6 @@ impl Worker {
         let now = tokio::time::Instant::now();
         Self {
             store,
-            mailer,
             config,
             tasks: JoinSet::new(),
             active: [0; 4],
@@ -224,6 +229,8 @@ impl Worker {
             // to the old binary, which ignores purged issue numbers and tracker tombstones.
             // Waiting one interval keeps the first purge clear of both.
             maintenance_at: now + MAINTENANCE_INTERVAL,
+            digest_at: mailer.enabled().then_some(now),
+            mailer,
         }
     }
 
@@ -236,6 +243,7 @@ impl Worker {
                 break;
             }
             self.maintain().await;
+            self.send_digests().await;
 
             let deadline = self.next_wake();
             tokio::select! {
@@ -308,10 +316,23 @@ impl Worker {
         self.maintenance_at = tokio::time::Instant::now() + MAINTENANCE_INTERVAL;
     }
 
+    async fn send_digests(&mut self) {
+        let now = tokio::time::Instant::now();
+        if self.digest_at.is_none_or(|at| at > now) {
+            return;
+        }
+        if let Err(error) = digest::enqueue(&self.store).await {
+            tracing::warn!(error = %error, "notification digest sweep failed");
+        }
+        self.digest_at = Some(tokio::time::Instant::now() + DIGEST_INTERVAL);
+    }
+
     fn next_wake(&self) -> tokio::time::Instant {
+        let poll = tokio::time::Instant::now() + self.config.poll_interval;
         self.schedule_at
             .min(self.maintenance_at)
-            .min(tokio::time::Instant::now() + self.config.poll_interval)
+            .min(self.digest_at.unwrap_or(poll))
+            .min(poll)
     }
 
     /// Frees the finished task's queue slot. A failed result keeps its lease,
@@ -422,6 +443,9 @@ async fn stopped(shutdown: &mut watch::Receiver<bool>) {
 /// Executes currently due work once, preserving missing-SMTP pause behavior.
 pub async fn tick(store: &Store, mailer: &Mailer) -> Result<()> {
     crate::tracker::schedule(store).await?;
+    if mailer.enabled() {
+        digest::enqueue(store).await?;
+    }
     for queue in ["database", "webhook", "email", "tracker"] {
         if queue == "email" && !mailer.enabled() {
             continue;
@@ -579,7 +603,7 @@ async fn run_delivery(
     renew_interval: Duration,
 ) -> Attempt {
     let timeout = match job {
-        Job::Email(_) => EMAIL_TIMEOUT,
+        Job::Email(_) | Job::Digest(_) => EMAIL_TIMEOUT,
         _ => WEBHOOK_TIMEOUT,
     };
     let id = claim.id.to_string();
