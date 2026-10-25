@@ -510,6 +510,18 @@ describe("workspace settings", () => {
     expect(/ disabled=""/.test(buttonTags(html, "Leave")[0])).toBe(true);
   });
 
+  it("describes the URL field with the broken-links warning", async () => {
+    const engine = await fixture({ online: true });
+    const router = createMemoryRouter([{ path: "/", Component: General }]);
+    const html = render(engine, <RouterProvider router={router} />);
+    const input = /<input[^>]*value="workspace"[^>]*>/.exec(html)?.[0] ?? "";
+    const ids = /aria-describedby="([^"]*)"/.exec(input)?.[1].split(" ") ?? [];
+    const description = ids
+      .map((id) => new RegExp(`id="${id}"[^>]*>([^<]*)<`).exec(html)?.[1] ?? "")
+      .join(" ");
+    expect(description).toContain("Changing it breaks links that use the old address.");
+  });
+
   it("shows members the workspace read-only and lets them leave", async () => {
     const engine = await fixture({ online: true, otherMember: true, role: "member" });
     const router = createMemoryRouter([{ path: "/", Component: General }]);

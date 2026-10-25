@@ -1,3 +1,4 @@
+import { useId } from "react";
 import { useDocumentTitle } from "~/lib/title";
 import { cn } from "~/lib/utils";
 
@@ -70,7 +71,10 @@ export function SettingsBlock({
   return <section className={className}>{children}</section>;
 }
 
-/** A label on the left, its control on the right. Stacks on narrow screens. */
+/**
+ * A label on the left, its control on the right. Stacks on narrow screens.
+ * Pass children as a function to get the description's id for the control's `aria-describedby`.
+ */
 export function SettingsRow({
   label,
   description,
@@ -78,15 +82,23 @@ export function SettingsRow({
 }: {
   label: React.ReactNode;
   description?: React.ReactNode;
-  children: React.ReactNode;
+  children: React.ReactNode | ((descriptionId: string | undefined) => React.ReactNode);
 }) {
+  const id = useId();
+  const descriptionId = description ? id : undefined;
   return (
     <div className="flex flex-col gap-3 px-4 py-4 sm:flex-row sm:items-center sm:justify-between sm:gap-6 sm:px-5">
       <div className="min-w-0">
         <p className=" font-medium">{label}</p>
-        {description && <p className="mt-0.5 max-w-prose  text-muted-foreground">{description}</p>}
+        {description && (
+          <p id={descriptionId} className="mt-0.5 max-w-prose  text-muted-foreground">
+            {description}
+          </p>
+        )}
       </div>
-      <div className="shrink-0">{children}</div>
+      <div className="shrink-0">
+        {typeof children === "function" ? children(descriptionId) : children}
+      </div>
     </div>
   );
 }

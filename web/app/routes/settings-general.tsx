@@ -116,52 +116,58 @@ function WorkspaceCard({ canEdit }: { canEdit: boolean }) {
         label={t("field.name")}
         description={t(canEdit ? "settings.generalNameSub" : "settings.generalNameReadOnly")}
       >
-        {canEdit ? (
-          <TextField
-            name="name"
-            aria-label={t("field.name")}
-            className="w-full sm:w-70"
-            value={name}
-            onChange={setName}
-            autoComplete="off"
-            isRequired
-          />
-        ) : (
-          <p className="w-full truncate px-2.5 sm:w-70">{ws.name}</p>
-        )}
+        {(descriptionId) =>
+          canEdit ? (
+            <TextField
+              name="name"
+              aria-label={t("field.name")}
+              aria-describedby={descriptionId}
+              className="w-full sm:w-70"
+              value={name}
+              onChange={setName}
+              autoComplete="off"
+              isRequired
+            />
+          ) : (
+            <p className="w-full truncate px-2.5 sm:w-70">{ws.name}</p>
+          )
+        }
       </SettingsRow>
       <SettingsRow
         label={t("workspace.slug")}
         description={t(canEdit ? "settings.generalUrlSub" : "settings.generalUrlReadOnly")}
       >
-        {canEdit ? (
-          <RACTextField
-            name="slug"
-            aria-label={t("workspace.slug")}
-            className="group flex w-full flex-col sm:w-70"
-            value={slug}
-            onChange={(value) => setSlug(slugInput(value))}
-            isInvalid={Boolean(slugError)}
-            validationBehavior="aria"
-            isRequired
-          >
-            <div className="flex h-8 overflow-hidden rounded-md border border-input bg-card shadow-xs transition-colors focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/25 hover:border-muted-foreground/40 group-data-invalid:border-destructive pointer-coarse:h-10">
-              <span className="flex min-w-0 shrink items-center truncate border-r border-input bg-muted px-2.5 text-muted-foreground">
-                {host}/
-              </span>
-              <RACInput
-                autoComplete="off"
-                spellCheck="false"
-                className="min-w-16 flex-1 bg-transparent px-2.5 text-foreground outline-none"
-              />
-            </div>
-            <RACFieldError className="mt-1 text-destructive">{slugError}</RACFieldError>
-          </RACTextField>
-        ) : (
-          <p className="w-full truncate px-2.5 sm:w-70">
-            {host}/{ws.slug}
-          </p>
-        )}
+        {(descriptionId) =>
+          canEdit ? (
+            <RACTextField
+              name="slug"
+              aria-label={t("workspace.slug")}
+              aria-describedby={descriptionId}
+              className="group flex w-full flex-col sm:w-70"
+              value={slug}
+              onChange={(value) => setSlug(slugInput(value))}
+              isInvalid={Boolean(slugError)}
+              validationBehavior="aria"
+              isRequired
+            >
+              <div className="flex h-8 overflow-hidden rounded-md border border-input bg-card shadow-xs transition-colors focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/25 hover:border-muted-foreground/40 group-data-invalid:border-destructive pointer-coarse:h-10">
+                <span className="flex min-w-0 shrink items-center truncate border-r border-input bg-muted px-2.5 text-muted-foreground">
+                  {host}/
+                </span>
+                <RACInput
+                  autoComplete="off"
+                  spellCheck="false"
+                  className="min-w-16 flex-1 bg-transparent px-2.5 text-foreground outline-none"
+                />
+              </div>
+              <RACFieldError className="mt-1 text-destructive">{slugError}</RACFieldError>
+            </RACTextField>
+          ) : (
+            <p className="w-full truncate px-2.5 sm:w-70">
+              {host}/{ws.slug}
+            </p>
+          )
+        }
       </SettingsRow>
       <SettingsRow label={t("workspace.id")} description={t("settings.generalIdSub")}>
         <div className="flex h-8 w-full items-center gap-2 rounded-md bg-muted pr-1 pl-2.5 sm:w-70">
