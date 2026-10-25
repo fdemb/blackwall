@@ -8,6 +8,7 @@ use super::{
 use crate::{
     domain::{Baseline, FormerKey, Issue, TrackerLink},
     error::{Error, Result},
+    limits::{Limits, Resource},
     store::persistence::{self, CreationBatch},
 };
 use chrono::{DateTime, Utc};
@@ -24,6 +25,7 @@ pub(super) struct PageImport<'a> {
     pub metadata: &'a Metadata,
     /// Listed items' comments, None for failed listings; None while comment import is off.
     pub comments: Option<&'a BTreeMap<String, Option<Vec<RemoteComment>>>>,
+    pub limits: Limits,
 }
 
 /// Reconciles one fetched page inside the caller's transaction and workspace graph locks.
@@ -702,22 +704,16 @@ async fn allocate(
 ) -> Result<Option<CreationBatch>> {
     let count = local.new_count;
     if count > 0 {
-        let capacity_error = format!(
-            "{} import stopped: workspace issue capacity reached (5000); reduce project mappings. Existing issues remain unchanged",
-            import.provider.name()
-        );
-        let mut stored = None;
-        persistence::capacity(
-            conn,
-            import.workspace,
-            "issues",
-            5000,
-            &mut stored,
-            &capacity_error,
-        )
-        .await?;
-        if stored.unwrap_or_default() + count > 5000 {
-            return Err(Error::BadRequest(capacity_error));
+        let limit = import.limits.get(Resource::Issues);
+        let room = persistence::room(conn, import.workspace, Resource::Issues, limit).await?;
+        if let (Some(room), Some(limit)) = (room, limit)
+            && room < count
+        {
+            return Err(Error::BadRequest(format!(
+                "{} import stopped. {} Reduce project mappings. Existing issues remain unchanged.",
+                import.provider.name(),
+                Resource::Issues.reached(limit)
+            )));
         }
     } else if local.moved_count == 0 {
         return Ok(None);
@@ -995,6 +991,7 @@ impl<'a> CommentProgress<'a> {
             import.workspace,
             import.connection,
             import.provider,
+            import.limits,
             self.incoming,
         )
         .await?;

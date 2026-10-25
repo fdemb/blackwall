@@ -8,7 +8,8 @@ use super::{
 };
 use crate::{
     domain::{AlertKind, TrackerLink},
-    error::{Error, Result},
+    error::Result,
+    limits::{Limits, Resource},
     store::{Store, persistence},
 };
 use chrono::{DateTime, Utc};
@@ -27,7 +28,6 @@ const MAX_FETCHES: usize = 50;
 /// One slow listing cannot take the whole comment budget of a job.
 const LISTING_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_BODY: usize = 100_000;
-const MAX_COMMENTS: i64 = 20_000;
 
 /// Lists comments of the page's items that are new or changed since their last complete
 /// comment import, skipping trashed issues; a failed listing maps to None. Items that
@@ -160,6 +160,7 @@ pub(super) async fn import(
     workspace: Uuid,
     connection: Uuid,
     provider: ProviderKind,
+    limits: Limits,
     incoming: Vec<Incoming<'_>>,
 ) -> Result<BTreeSet<Uuid>> {
     let mut incomplete = BTreeSet::new();
@@ -170,7 +171,10 @@ pub(super) async fn import(
     if incoming.is_empty() {
         return Ok(incomplete);
     }
-    let room = room(conn, workspace).await?;
+    let limit = limits.get(Resource::Comments);
+    let room = persistence::room(conn, workspace, Resource::Comments, limit)
+        .await?
+        .map_or(usize::MAX, |room| room.max(0) as usize);
     if incoming.len() > room {
         tracing::debug!(
             skipped = incoming.len() - room,
@@ -237,26 +241,6 @@ async fn unlinked<'a>(
         incomplete.extend(held.iter().map(|item| item.issue));
     }
     Ok(incoming)
-}
-
-/// How many more comments the workspace holds.
-async fn room(conn: &mut PgConnection, workspace: Uuid) -> Result<usize> {
-    let mut count = None;
-    let room = match persistence::capacity(
-        conn,
-        workspace,
-        "comments",
-        MAX_COMMENTS,
-        &mut count,
-        "",
-    )
-    .await
-    {
-        Ok(()) => MAX_COMMENTS - count.unwrap_or_default(),
-        Err(Error::BadRequest(_)) => 0,
-        Err(error) => return Err(error),
-    };
-    Ok(room.max(0) as usize)
 }
 
 /// Inserts the comments under `ids` and returns the ones inserted.

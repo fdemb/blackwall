@@ -151,7 +151,7 @@ Polling is eventually consistent, not a snapshot of OpenProject. Work packages c
 
 ## Limits
 
-Imports respect Blackwall's 5,000-issue workspace capacity, including trashed issues until they are purged 30 days after deletion. At capacity, existing work packages can still update, but a page that needs to create another issue fails without partial writes.
+Imports respect the workspace issue limit (50,000 by default, set with `WORKSPACE_LIMIT_ISSUES`), including trashed issues until they are purged 30 days after deletion. Comment import stops at the comment limit. At the issue limit, existing work packages can still update, but a page that needs to create another issue fails without partial writes.
 
 Each connection supports up to 100 project mappings with up to 100 status mappings each, and up to 5,000 people overrides. Discovery caches at most 5,000 projects, 5,000 statuses, and 5,000 people. Work-package pages contain at most 50 items and responses are limited to 2 MiB. A scan stops after 1,000 pages per project. If OpenProject changes its effective page size during a scan, request **Sync now** to restart the scan rather than resume with unsafe offsets.
 

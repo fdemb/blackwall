@@ -165,7 +165,7 @@ impl Operation<'_> {
         self.admin()?;
         text(&name, 200)?;
         crate::domain::validate_team_key(&key)?;
-        self.capacity("teams", 200).await?;
+        self.capacity(Resource::Teams, 1).await?;
         let members = sorted_unique(members);
         for user in &members {
             self.member(*user).await?;
@@ -508,7 +508,7 @@ impl Operation<'_> {
         color: String,
     ) -> Result<Uuid> {
         validate_label(&name, &color)?;
-        self.capacity("labels", 1000).await?;
+        self.capacity(Resource::Labels, 1).await?;
         let id = self.reserve_client_id(id).await?;
         sqlx::query("INSERT INTO labels(id,workspace_id,name,color) VALUES($1,$2,$3,$4)")
             .bind(id)
@@ -594,7 +594,7 @@ impl Operation<'_> {
         team_ids: Vec<Uuid>,
     ) -> Result<Uuid> {
         validate_project(&name, &description)?;
-        self.capacity("projects", 1000).await?;
+        self.capacity(Resource::Projects, 1).await?;
         let team_ids = self.lock_project_teams(team_ids).await?;
 
         let id = self.reserve_client_id(id).await?;
@@ -705,7 +705,7 @@ impl Operation<'_> {
     ) -> Result<Uuid> {
         text(&name, 200)?;
         crate::domain::optional_timestamp(deadline)?;
-        self.capacity("milestones", 5000).await?;
+        self.capacity(Resource::Milestones, 1).await?;
         sqlx::query("SELECT id FROM projects WHERE workspace_id=$1 AND id=$2 FOR SHARE")
             .bind(self.workspace_id)
             .bind(project_id)
@@ -771,8 +771,8 @@ impl Operation<'_> {
         ends_at: DateTime<Utc>,
     ) -> Result<Uuid> {
         validate_sprint(&name, &goal, starts_at, ends_at)?;
-        self.capacity("sprints", 2000).await?;
-        self.lock_team(team_id, false).await?;
+        self.capacity(Resource::Sprints, 1).await?;
+        persistence::lock_team_numbers(&mut self.tx, self.workspace_id, team_id).await?;
         let id = self.reserve_client_id(id).await?;
         sqlx::query("INSERT INTO sprints(id,workspace_id,team_id,number,name,goal,starts_at,ends_at,state) VALUES($1,$2,$3,(SELECT COALESCE(max(number),0)+1 FROM sprints WHERE workspace_id=$2 AND team_id=$3),$4,$5,$6,$7,'planned')")
             .bind(id)

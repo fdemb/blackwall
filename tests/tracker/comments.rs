@@ -417,7 +417,8 @@ async fn identical_remote_comments_by_others_import_and_never_stand_in_for_a_pus
 #[tokio::test]
 async fn comments_past_the_workspace_limit_are_fetched_again() {
     let off = json!({"options":{"comments":{"import":false,"export":true}}});
-    let f = Fixture::with(off, |remote| {
+    let limits = Limits::default().with(Resource::Comments, Some(10));
+    let f = Fixture::with_limits(off, limits, |remote| {
         remote.activities.insert(
             7,
             vec![
@@ -428,20 +429,13 @@ async fn comments_past_the_workspace_limit_are_fetched_again() {
     })
     .await;
     let issue = Uuid::parse_str(f.first().await["id"].as_str().unwrap()).unwrap();
-    // Filler without change-feed triggers, which would take most of the test's time.
-    let mut tx = f.store.pool.begin().await.unwrap();
-    sqlx::query("SET LOCAL session_replication_role=replica")
-        .execute(&mut *tx)
-        .await
-        .unwrap();
-    sqlx::query("INSERT INTO comments(id,workspace_id,issue_id,author,body,created_at) SELECT gen_random_uuid(),$1,$2,$3,'Filler',now() FROM generate_series(1,19999)")
+    sqlx::query("INSERT INTO comments(id,workspace_id,issue_id,author,body,created_at) SELECT gen_random_uuid(),$1,$2,$3,'Filler',now() FROM generate_series(1,9)")
         .bind(f.workspace)
         .bind(issue)
         .bind(f.owner.profile.id)
-        .execute(&mut *tx)
+        .execute(&f.store.pool)
         .await
         .unwrap();
-    tx.commit().await.unwrap();
     let (status, value) = call(
         &f.app,
         &f.owner,

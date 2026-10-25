@@ -8,7 +8,6 @@ import {
   checkSourceUrl,
   checkText,
   dedupeSortUuids,
-  checkCapacity,
   requireIssue,
   requireLiveIssue,
   requireMember,
@@ -168,7 +167,6 @@ function doneAt(
 
 export const createIssue: Mutator<ArgsOf<"create_issue">> = (tx, args, ctx) => {
   requireRole(tx, ctx.actor, "create_issue", args);
-  checkCapacity(tx, "issues", 5000, ctx, args.input.id);
   const input = args.input;
   const id = reserveClientId(tx, input.id, ctx);
   const stageId = resolveStage(tx, input.team_id, input.stage_id);

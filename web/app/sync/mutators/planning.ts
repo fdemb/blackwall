@@ -4,7 +4,6 @@ import type { ArgsOf, Mutator, MutatorContext } from "./common";
 import {
   NIL_UUID,
   checkCreateId,
-  checkCapacity,
   checkArchiveDays,
   checkTeamAppearance,
   checkText,
@@ -70,7 +69,6 @@ export const createTeam: Mutator<ArgsOf<"create_team">> = (tx, args, ctx) => {
       "team key must be 1 to 4 uppercase letters or digits, starting with a letter",
     );
   }
-  checkCapacity(tx, "teams", 200, ctx, args.id);
   const members = dedupeSortUuids(args.members);
   for (const user of members) requireMember(tx, user);
   const stageIds = reserveStageIds(tx, args.default_stage_ids, ctx);
@@ -276,7 +274,6 @@ export const createLabel: Mutator<ArgsOf<"create_label">> = (tx, args, ctx) => {
   // Order mirrors `validate_label`: name, then color.
   checkText(args.name, 100);
   if (utf8Length(args.color) > 40) throw new MutationError(400, "invalid color");
-  checkCapacity(tx, "labels", 1000, ctx, args.id);
   const id = reserveClientId(tx, args.id, ctx);
   const previous = tx.get("labels", id);
   tx.put("labels", { id, version: previous?.version ?? 1, name: args.name, color: args.color });
@@ -322,7 +319,6 @@ export const createProject: Mutator<ArgsOf<"create_project">> = (tx, args, ctx) 
   if (utf8Length(args.description) > 100_000) {
     throw new MutationError(400, "project description too long");
   }
-  checkCapacity(tx, "projects", 1000, ctx, args.id);
   const teamIds = dedupeSortUuids(args.team_ids);
   for (const team of teamIds) requireRecord(tx, "teams", team);
   const id = reserveClientId(tx, args.id, ctx);
@@ -417,7 +413,6 @@ export const createMilestone: Mutator<ArgsOf<"create_milestone">> = (tx, args, c
   // Order mirrors `planning::CreateMilestone`: name, deadline, project, id.
   checkText(args.name, 200);
   checkTimestamp(args.deadline);
-  checkCapacity(tx, "milestones", 5000, ctx, args.id);
   requireRecord(tx, "projects", args.project_id);
   const id = reserveClientId(tx, args.id, ctx);
   const previous = tx.get("milestones", id);
@@ -465,7 +460,6 @@ function checkSprint(
 export const createSprint: Mutator<ArgsOf<"create_sprint">> = (tx, args, ctx) => {
   requireRole(tx, ctx.actor, "create_sprint", args);
   const { starts, ends } = checkSprint(args.name, args.goal, args.starts_at, args.ends_at);
-  checkCapacity(tx, "sprints", 2000, ctx, args.id);
   requireRecord(tx, "teams", args.team_id);
   const id = reserveClientId(tx, args.id, ctx);
   const previous = tx.get("sprints", id);

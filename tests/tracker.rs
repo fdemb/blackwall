@@ -28,7 +28,8 @@ use blackwall::{
     domain::Command,
     http,
     jobs::{self, Job, Mailer, WorkerConfig},
-    store::Store,
+    limits::{Limits, Resource},
+    store::{Store, StoreConfig},
     tracker,
 };
 use http_body_util::BodyExt;
@@ -1105,7 +1106,11 @@ async fn record_failure_rechecks_ownership_after_waiting_for_connection_lock() {
 #[tokio::test]
 async fn capacity_stops_new_imports_but_existing_work_packages_still_update() {
     let db = support::TestDatabase::new().await;
-    let store = Store::connect(&db.url).await.unwrap();
+    let config = StoreConfig {
+        limits: Limits::default().with(Resource::Issues, Some(10)),
+        ..StoreConfig::default()
+    };
+    let store = Store::connect_with_config(&db.url, config).await.unwrap();
     let owner = account(&store).await;
     let (workspace, team, other_team) = setup(&store, &owner).await;
     let app = http::router(store.clone());
@@ -1122,7 +1127,7 @@ async fn capacity_stops_new_imports_but_existing_work_packages_still_update() {
             .fetch_one(&store.pool)
             .await
             .unwrap();
-    sqlx::query("INSERT INTO issues(id,workspace_id,number,title,description,team_id,stage_id,priority,position,created_at,updated_at) SELECT gen_random_uuid(),$1,n,'Filler','',$2,$3,'none',n*1024,clock_timestamp(),clock_timestamp() FROM generate_series(3,5000) n").bind(workspace).bind(team).bind(stage).execute(&store.pool).await.unwrap();
+    sqlx::query("INSERT INTO issues(id,workspace_id,number,title,description,team_id,stage_id,priority,position,created_at,updated_at) SELECT gen_random_uuid(),$1,n,'Filler','',$2,$3,'none',n*1024,clock_timestamp(),clock_timestamp() FROM generate_series(3,10) n").bind(workspace).bind(team).bind(stage).execute(&store.pool).await.unwrap();
     mock.data.lock().await.moved = true;
     call(&app, &owner, "POST", &format!("{action}/sync"), None).await;
     drain(&store).await;
@@ -1145,7 +1150,7 @@ async fn capacity_stops_new_imports_but_existing_work_packages_still_update() {
         };
         if let Err(error) = tracker::execute(&store, &claim, &job).await {
             let message = tracker::failure_message(&error);
-            assert!(message.contains("capacity"), "{message}");
+            assert!(message.contains("limit of 10 issues"), "{message}");
             tracker::record_failure(&store, &claim, &job, &message)
                 .await
                 .unwrap();
@@ -1165,7 +1170,7 @@ async fn capacity_stops_new_imports_but_existing_work_packages_still_update() {
             .fetch_one(&store.pool)
             .await
             .unwrap(),
-        5000
+        10
     );
     assert_eq!(
         sqlx::query_scalar::<_, i64>(

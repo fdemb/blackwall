@@ -875,6 +875,28 @@ impl Store {
 }
 
 impl Store {
+    /// Every limited resource's count and limit, as the capacity check counts them.
+    pub async fn usage(&self, workspace: Uuid, actor: Uuid) -> Result<Vec<Usage>> {
+        let mut conn = self.pool.acquire().await?;
+        authorize(&mut conn, workspace, actor).await?;
+        let counts = Resource::ALL
+            .map(|r| format!("(SELECT count(*) FROM {} WHERE workspace_id=$1)", r.table()))
+            .join(",");
+        let used: Vec<i64> = sqlx::query_scalar(&format!("SELECT ARRAY[{counts}]"))
+            .bind(workspace)
+            .fetch_one(&mut *conn)
+            .await?;
+        Ok(Resource::ALL
+            .into_iter()
+            .zip(used)
+            .map(|(resource, used)| Usage {
+                resource,
+                used,
+                limit: self.limits.get(resource),
+            })
+            .collect())
+    }
+
     pub async fn report_sql(&self, workspace: Uuid, actor: Uuid) -> Result<Value> {
         let mut conn = self.pool.acquire().await?;
         authorize(&mut conn, workspace, actor).await?;

@@ -290,7 +290,7 @@ impl Operation<'_> {
             self.member(*user).await?;
         }
 
-        self.capacity("comments", 20_000).await?;
+        self.capacity(Resource::Comments, 1).await?;
         let id = self.reserve_client_id(id).await?;
         sqlx::query(
             "INSERT INTO comments(id,workspace_id,issue_id,author,body,\
@@ -466,7 +466,7 @@ impl Operation<'_> {
         self.discussion_issue(issue_id).await?;
         validate_time(minutes, &note)?;
         crate::domain::timestamp(logged_at)?;
-        self.capacity("time_entries", 20_000).await?;
+        self.capacity(Resource::TimeEntries, 1).await?;
         let id = self.reserve_client_id(id).await?;
 
         sqlx::query(
@@ -527,7 +527,7 @@ impl Operation<'_> {
     ) -> Result<Uuid> {
         crate::domain::text(&name, 200)?;
         filter.validate()?;
-        self.capacity("saved_views", 5_000).await?;
+        self.capacity(Resource::SavedViews, 1).await?;
         let id = self.reserve_client_id(id).await?;
 
         sqlx::query(
@@ -622,7 +622,7 @@ impl Operation<'_> {
             return Err(Error::Conflict("invitation already pending".into()));
         }
 
-        self.capacity("invitations", 5_000).await?;
+        self.capacity(Resource::Invitations, 1).await?;
         let id = Uuid::new_v4();
         let token = crate::auth::token();
         let hash = crate::auth::hash(&token);
@@ -1030,7 +1030,7 @@ impl Operation<'_> {
         validate_url(&webhook_url)?;
         crate::domain::text(&secret, 4096)?;
         crate::domain::validate_webhook_events(&events)?;
-        self.capacity("integrations", 100).await?;
+        self.capacity(Resource::Integrations, 1).await?;
         let id = self.reserve_client_id(id).await?;
 
         sqlx::query(

@@ -402,6 +402,24 @@ export interface Profile {
   theme: Theme;
   alerts: { assignments: boolean; replies: boolean; changes: boolean; deadlines: boolean };
 }
+export type LimitedResource =
+  | "issues"
+  | "comments"
+  | "time_entries"
+  | "teams"
+  | "projects"
+  | "labels"
+  | "milestones"
+  | "sprints"
+  | "saved_views"
+  | "invitations"
+  | "integrations";
+/** How many of one resource the workspace holds; a null limit is unlimited. */
+export interface Usage {
+  resource: LimitedResource;
+  used: number;
+  limit: number | null;
+}
 export interface ImportSummary {
   issues: number;
   comments: number;

@@ -12,16 +12,13 @@ impl Operation<'_> {
         Ok(())
     }
 
-    pub(super) async fn capacity(&mut self, table: &str, max: i64) -> Result<()> {
-        persistence::capacity(
-            &mut self.tx,
-            self.workspace_id,
-            table,
-            max,
-            &mut None,
-            "workspace capacity reached",
-        )
-        .await
+    pub(super) async fn capacity(&mut self, resource: Resource, incoming: usize) -> Result<()> {
+        let limit = self.limits.get(resource);
+        let room = persistence::room(&mut self.tx, self.workspace_id, resource, limit).await?;
+        match (room, limit) {
+            (Some(room), Some(limit)) if room < incoming as i64 => Err(resource.reached(limit)),
+            _ => Ok(()),
+        }
     }
 
     pub(super) async fn schedule_reminder(&mut self, id: Uuid) -> Result<()> {
@@ -265,7 +262,7 @@ impl Operation<'_> {
     }
 
     async fn create_issue_sql(&mut self, input: IssueInput) -> Result<Uuid> {
-        self.capacity("issues", 5000).await?;
+        self.capacity(Resource::Issues, 1).await?;
 
         let stage_id = match input.stage_id {
             Some(id) => id,

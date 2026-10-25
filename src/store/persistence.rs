@@ -26,17 +26,27 @@ pub(crate) async fn create(
     insert(conn, workspace, i, origin).await
 }
 
-pub(crate) async fn next_number(
+/// Serializes allocation of the team's issue and sprint numbers.
+pub(crate) async fn lock_team_numbers(
     conn: &mut PgConnection,
     workspace: Uuid,
     team: Uuid,
-) -> Result<u64> {
+) -> Result<()> {
     sqlx::query("SELECT 1 FROM teams WHERE workspace_id=$1 AND id=$2 FOR NO KEY UPDATE")
         .bind(workspace)
         .bind(team)
         .fetch_optional(&mut *conn)
         .await?
         .ok_or(Error::NotFound)?;
+    Ok(())
+}
+
+pub(crate) async fn next_number(
+    conn: &mut PgConnection,
+    workspace: Uuid,
+    team: Uuid,
+) -> Result<u64> {
+    lock_team_numbers(conn, workspace, team).await?;
     let number: i64 = sqlx::query_scalar(
         "SELECT GREATEST((SELECT max(number) FROM issues WHERE workspace_id=$1 AND team_id=$2),\
          (SELECT number FROM purged_issue_numbers WHERE workspace_id=$1 AND team_id=$2),\
@@ -740,53 +750,25 @@ pub(crate) async fn notify(
     Ok(())
 }
 
-pub(crate) async fn capacity(
+pub(crate) async fn room(
     conn: &mut PgConnection,
     workspace: Uuid,
-    table: &str,
-    max: i64,
-    cached_count: &mut Option<i64>,
-    message: &str,
-) -> Result<()> {
-    assert!(matches!(
-        table,
-        "issues"
-            | "teams"
-            | "projects"
-            | "sprints"
-            | "comments"
-            | "time_entries"
-            | "notifications"
-            | "activity"
-            | "workspace_members"
-            | "invitations"
-            | "saved_views"
-            | "integrations"
-            | "labels"
-            | "milestones"
-    ));
+    resource: Resource,
+    limit: Option<u32>,
+) -> Result<Option<i64>> {
+    let Some(limit) = limit else {
+        return Ok(None);
+    };
+    let table = resource.table();
     sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,30269))")
         .bind(format!("{}:{table}", workspace))
         .execute(&mut *conn)
         .await?;
-
-    let count = if let Some(count) = *cached_count {
-        count
-    } else {
-        let count: i64 = sqlx::query_scalar(&format!(
-            "SELECT count(*) FROM {table} WHERE workspace_id=$1"
-        ))
-        .bind(workspace)
-        .fetch_one(&mut *conn)
-        .await?;
-
-        *cached_count = Some(count);
-        count
-    };
-
-    if count >= max {
-        return Err(Error::BadRequest(message.into()));
-    }
-
-    Ok(())
+    let count: i64 = sqlx::query_scalar(&format!(
+        "SELECT count(*) FROM {table} WHERE workspace_id=$1"
+    ))
+    .bind(workspace)
+    .fetch_one(&mut *conn)
+    .await?;
+    Ok(Some(i64::from(limit) - count))
 }

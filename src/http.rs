@@ -262,6 +262,7 @@ pub fn router_with_web(store: Store, web_dir: std::path::PathBuf) -> Router {
         .route("/internal-api/workspaces/{id}/members", get(members))
         .route("/internal-api/workspaces/{id}/search", get(search))
         .route("/internal-api/workspaces/{id}/report", get(report))
+        .route("/internal-api/workspaces/{id}/usage", get(usage))
         .route(
             "/internal-api/workspaces/{id}/{collection}",
             get(collection),
@@ -871,6 +872,20 @@ async fn report(
 }
 
 #[utoipa::path(
+    get,
+    path = "/internal-api/workspaces/{id}/usage",
+    params(("id" = Uuid, Path)),
+    responses((status = 200, body = [crate::limits::Usage]))
+)]
+async fn usage(
+    State(store): State<Store>,
+    actor: Actor,
+    Path(id): Path<Uuid>,
+) -> Result<Json<Vec<crate::limits::Usage>>> {
+    Ok(Json(store.usage(id, actor.profile.id).await?))
+}
+
+#[utoipa::path(
     post,
     path = "/internal-api/workspaces/{id}/invitations/accept",
     params(("id" = Uuid, Path)),
@@ -962,6 +977,7 @@ async fn markdown(
         members,
         search,
         report,
+        usage,
         collection,
         accept_invitation,
         markdown,
@@ -992,7 +1008,9 @@ async fn markdown(
         crate::store::MutationStatus,
         crate::store::PullResponse,
         crate::store::ScopeResponse,
-        crate::error::ErrorBody
+        crate::error::ErrorBody,
+        crate::limits::Usage,
+        crate::limits::Resource
     )),
     info(
         title = "Blackwall internal API",

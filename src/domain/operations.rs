@@ -402,7 +402,6 @@ impl Workspace {
 
         let mut copy = self.clone();
         let result = copy.apply_inner(actor, command, now)?;
-        copy.check_limits()?;
 
         for team in &mut copy.teams {
             team.stages.sort_by_key(|s| (s.position, s.id));
@@ -434,14 +433,12 @@ impl Workspace {
             });
         }
 
-        copy.check_limits()?;
         *self = copy;
 
         Ok(result)
     }
 
     pub fn validate_imported(&self) -> Result<()> {
-        self.check_limits()?;
         text(&self.name, 200)?;
         self.validate_imported_planning()?;
         self.validate_imported_issues()?;
@@ -583,28 +580,6 @@ impl Workspace {
 
         for view in &self.views {
             text(&view.name, 200)?;
-        }
-
-        Ok(())
-    }
-
-    fn check_limits(&self) -> Result<()> {
-        if self.issues.len() > 5000
-            || self.comments.len() > 20000
-            || self.time_entries.len() > 20000
-            || self.notifications.len() > 30000
-            || self.activity.len() > 50000
-            || self.members.len() > 2000
-            || self.teams.len() > 200
-            || self.projects.len() > 1000
-            || self.sprints.len() > 2000
-            || self.invitations.len() > 5000
-            || self.views.len() > 5000
-            || self.integrations.len() > 100
-            || self.labels.len() > 1000
-            || self.milestones.len() > 5000
-        {
-            return Err(Error::BadRequest("workspace capacity reached".into()));
         }
 
         Ok(())

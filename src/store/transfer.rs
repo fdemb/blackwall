@@ -167,21 +167,20 @@ async fn member_candidate(op: &mut Operation<'_>) -> Result<(Workspace, BTreeMap
 
 /// Each table must fit what it already holds plus the incoming rows.
 async fn check_import_capacity(op: &mut Operation<'_>, candidate: &Workspace) -> Result<()> {
-    let capacities = [
-        ("activity", candidate.activity.len(), 50000),
-        ("comments", candidate.comments.len(), 20000),
-        ("issues", candidate.issues.len(), 5000),
-        ("labels", candidate.labels.len(), 1000),
-        ("milestones", candidate.milestones.len(), 5000),
-        ("projects", candidate.projects.len(), 1000),
-        ("saved_views", candidate.views.len(), 5000),
-        ("sprints", candidate.sprints.len(), 2000),
-        ("teams", candidate.teams.len(), 200),
-        ("time_entries", candidate.time_entries.len(), 20000),
+    let incoming = [
+        (Resource::Comments, candidate.comments.len()),
+        (Resource::Issues, candidate.issues.len()),
+        (Resource::Labels, candidate.labels.len()),
+        (Resource::Milestones, candidate.milestones.len()),
+        (Resource::Projects, candidate.projects.len()),
+        (Resource::SavedViews, candidate.views.len()),
+        (Resource::Sprints, candidate.sprints.len()),
+        (Resource::Teams, candidate.teams.len()),
+        (Resource::TimeEntries, candidate.time_entries.len()),
     ];
-    for (table, incoming, maximum) in capacities {
-        if incoming > 0 {
-            op.capacity(table, maximum - incoming as i64 + 1).await?;
+    for (resource, count) in incoming {
+        if count > 0 {
+            op.capacity(resource, count).await?;
         }
     }
     Ok(())
