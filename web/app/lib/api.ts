@@ -3,6 +3,7 @@ import type {
   ApiToken,
   SessionInfo,
   ImportSummary,
+  Usage,
   Profile,
   Report,
   WorkspaceSummary,
@@ -116,6 +117,7 @@ export const workspaces = {
       body: { name, slug, idempotency_key },
     }),
   report: (id: string) => api<Report>(`/internal-api/workspaces/${id}/report`),
+  usage: (id: string) => api<Usage[]>(`/internal-api/workspaces/${id}/usage`),
   accept: (id: string, token: string) =>
     api<{ workspace: WorkspaceSummary }>(`/internal-api/workspaces/${id}/invitations/accept`, {
       method: "POST",

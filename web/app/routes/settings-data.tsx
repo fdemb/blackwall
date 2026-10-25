@@ -1,4 +1,5 @@
 import { useRef, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { DropZone, FileTrigger, Text } from "react-aria-components";
 import { Download, FileUp } from "lucide-react";
 import { Button } from "~/components/ui/button";
@@ -6,8 +7,10 @@ import { Dialog } from "~/components/ui/dialog";
 import { FormError } from "~/components/ui/field";
 import { useToast } from "~/components/ui/toast";
 import { SettingsPage, SettingsSection } from "~/components/app/settings";
+import { UsageList } from "~/components/app/usage";
 import { workspaces } from "~/lib/api";
 import { download } from "~/lib/format";
+import { usageQuery } from "~/lib/query-client";
 import { useI18n, type Key } from "~/lib/i18n";
 import { usePending } from "~/lib/use-pending";
 import { useWorkspace } from "~/lib/workspace";
@@ -68,6 +71,7 @@ export default function Data() {
   const importKey = useRef(crypto.randomUUID());
   const [preview, setPreview] = useState<Preview | null>(null);
   const [result, setResult] = useState<ImportSummary | null | undefined>(undefined);
+  const usage = useQuery({ ...usageQuery(ws.id), refetchOnMount: "always" });
 
   const exportAll = async () => {
     setBusy(true);
@@ -137,6 +141,13 @@ export default function Data() {
           </div>
         </SettingsSection>
       )}
+      <SettingsSection title={t("usage.title")} description={t("usage.sub")}>
+        {usage.data ? (
+          <UsageList usage={usage.data} />
+        ) : (
+          usage.error && <FormError>{usage.error.message}</FormError>
+        )}
+      </SettingsSection>
       <Dialog
         title={result !== undefined ? t("data.resultTitle") : t("data.previewTitle")}
         description={
@@ -161,6 +172,7 @@ export default function Data() {
                 await confirmed(preview.body);
                 const res = await workspaces.import(ws.id, preview.body, importKey.current);
                 await reload().catch(() => undefined);
+                void usage.refetch();
                 setResult(res.summary);
                 toast.show(t("data.imported"));
               }}

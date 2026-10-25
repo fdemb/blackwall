@@ -19,10 +19,14 @@ export const queryClient = new QueryClient({
 export const keys = {
   all: (ws: Id) => ["ws", ws] as const,
   report: (ws: Id) => ["ws", ws, "report"] as const,
+  usage: (ws: Id) => ["ws", ws, "usage"] as const,
 };
 
 export const reportQuery = (ws: Id) =>
   queryOptions({ queryKey: keys.report(ws), queryFn: () => workspaces.report(ws) });
+
+export const usageQuery = (ws: Id) =>
+  queryOptions({ queryKey: keys.usage(ws), queryFn: () => workspaces.usage(ws) });
 
 /**
  * Marks the report stale after server-side issue or time changes. A local edit grows the outbox and

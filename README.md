@@ -150,6 +150,28 @@ PostgreSQL 17 runs natively, and the `blackwall` system user connects with peer 
 
 `deploy/bootstrap.sh` sets up the host and can be rerun. Copy `deploy/` to the host and run it as root. Add `RUNNER_TOKEN` from `gh api -X POST repos/fdemb/blackwall-rust/actions/runners/registration-token --jq .token` to register the runner too. To redeploy a commit, rerun its `deploy` job in GitHub Actions. To roll back by hand, run `blackwall-deploy` with an older archive, or repoint `current` and restart both services.
 
+## Workspace limits
+
+Each workspace has a limit per kind of record. Trashed and archived records count. Set a variable to a positive integer or to `unlimited` to change a limit:
+
+| Variable | Default |
+| --- | --- |
+| `WORKSPACE_LIMIT_ISSUES` | 50,000 |
+| `WORKSPACE_LIMIT_COMMENTS` | 250,000 |
+| `WORKSPACE_LIMIT_TIME_ENTRIES` | 250,000 |
+| `WORKSPACE_LIMIT_TEAMS` | 500 |
+| `WORKSPACE_LIMIT_PROJECTS` | 5,000 |
+| `WORKSPACE_LIMIT_LABELS` | 1,000 |
+| `WORKSPACE_LIMIT_MILESTONES` | 5,000 |
+| `WORKSPACE_LIMIT_SPRINTS` | 2,000 |
+| `WORKSPACE_LIMIT_SAVED_VIEWS` | 5,000 |
+| `WORKSPACE_LIMIT_INVITATIONS` | 5,000 |
+| `WORKSPACE_LIMIT_INTEGRATIONS` | 100 |
+
+Set the same values for the server and the worker, because the worker applies them to tracker imports. On the deploy host, set them in `/etc/blackwall/blackwall.env`. Before it adds a record, the server counts the workspace's rows of that kind, so a very high limit slows writes in a very large workspace.
+
+At a limit, the server refuses new records of that kind and names the limit in the error. Settings > Import & export shows each count against its limit and warns from 80%.
+
 ## Current limits
 
 Roles are owner, admin, member, and viewer. Viewers read the workspace and manage personal views, follows, and their inbox. Teams do not have separate visibility rules. Markdown output is sanitized. English and Polish localization covers frontend labels; domain validation messages remain English.
