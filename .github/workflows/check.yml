@@ -25,6 +25,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@nextest
       - uses: pnpm/action-setup@v4
         with:
           package_json_file: web/package.json
@@ -34,8 +36,8 @@ jobs:
           cache: pnpm
           cache-dependency-path: web/pnpm-lock.yaml
       - run: sudo apt-get update && sudo apt-get install -y postgresql-client
-      - run: ./scripts/check.sh
       - run: cargo build --locked
+      - run: ./scripts/check.sh
       - run: python3 scripts/smoke.py
   build:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -46,6 +48,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-unknown-linux-gnu
+      - uses: Swatinem/rust-cache@v2
       - uses: pnpm/action-setup@v4
         with:
           package_json_file: web/package.json
@@ -55,7 +60,6 @@ jobs:
           cache: pnpm
           cache-dependency-path: web/pnpm-lock.yaml
       - run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
-      - run: rustup target add aarch64-unknown-linux-gnu
       - run: cargo build --locked --release --target aarch64-unknown-linux-gnu
       - run: cd web && pnpm install --frozen-lockfile && pnpm run build
       - run: |
