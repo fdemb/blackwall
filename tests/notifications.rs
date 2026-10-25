@@ -4,6 +4,7 @@ use blackwall::{
     auth::{Register, Session},
     domain::{BulkAction, Command, IssueInput, IssuePatch, SeenNotification},
     error::Error,
+    jobs::{self, Mailer},
     store::{CollectionQuery, OperationResult, Store},
 };
 use chrono::{DateTime, Utc};
@@ -761,5 +762,153 @@ async fn workspace_preferences_gate_the_inbox_and_profile_alerts_do_not() {
     f.run(owner, assign(second)).await;
     assert!(f.alerts(follower, second, "assignment").await.is_empty());
 
+    f.cleanup().await;
+}
+
+impl Fixture {
+    /// An unread notification for the follower, created `minutes` ago by the owner.
+    async fn backdated(&self, issue: Uuid, kind: &str, minutes: f64, fields: Value) -> Uuid {
+        let id = Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO notifications(id,workspace_id,user_id,issue_id,kind,message,created_at,dedup_key,actor_id,fields) \
+             VALUES($1,$2,$3,$4,$5,'',now()-make_interval(secs=>$6*60),'test:'||$1,$7,$8)",
+        )
+        .bind(id)
+        .bind(self.workspace)
+        .bind(self.follower.profile.id)
+        .bind(issue)
+        .bind(kind)
+        .bind(minutes)
+        .bind(self.owner.profile.id)
+        .bind(fields)
+        .execute(&self.store.pool)
+        .await
+        .unwrap();
+        id
+    }
+
+    async fn digest_jobs(&self) -> Vec<String> {
+        sqlx::query_scalar("SELECT state FROM jobs WHERE kind='digest' ORDER BY created_at")
+            .fetch_all(&self.store.pool)
+            .await
+            .unwrap()
+    }
+}
+
+/// The subject and body of each digest job's spooled email, oldest first.
+async fn spooled(store: &Store, directory: &std::path::Path) -> Vec<(String, String)> {
+    let ids: Vec<Uuid> =
+        sqlx::query_scalar("SELECT id FROM jobs WHERE kind='digest' ORDER BY created_at")
+            .fetch_all(&store.pool)
+            .await
+            .unwrap();
+    let mut letters = vec![];
+    for id in ids {
+        let path = directory.join(format!("{}.json", blackwall::auth::hash(&id.to_string())));
+        let letter: Value = serde_json::from_slice(&tokio::fs::read(path).await.unwrap()).unwrap();
+        letters.push((
+            letter["subject"].as_str().unwrap().to_owned(),
+            letter["body"].as_str().unwrap().to_owned(),
+        ));
+    }
+    letters
+}
+
+#[tokio::test]
+async fn unread_notifications_are_emailed_once_as_a_digest_after_a_delay() {
+    let f = Fixture::new().await;
+    let follower = f.follower.profile.id;
+    let spool = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("target")
+        .join(format!("digest-spool-{}", Uuid::new_v4()));
+    let mail = Mailer::Spool(spool.clone());
+    let rotate = f.create_issue("Rotate certificates", f.stages[0]).await;
+    let audit = f.create_issue("Audit logs", f.stages[0]).await;
+
+    f.backdated(rotate, "assignment", 15.0, json!([])).await;
+    f.backdated(audit, "change", 14.0, json!(["stage"])).await;
+    let read = f.backdated(audit, "mention", 13.0, json!([])).await;
+    sqlx::query("UPDATE notifications SET read_at=now() WHERE id=$1")
+        .bind(read)
+        .execute(&f.store.pool)
+        .await
+        .unwrap();
+    f.backdated(rotate, "reply", 0.2, json!([])).await;
+
+    jobs::tick(&f.store, &Mailer::Disabled).await.unwrap();
+    assert!(
+        f.digest_jobs().await.is_empty(),
+        "disabled mail sends nothing"
+    );
+    let cursors: i64 = sqlx::query_scalar("SELECT count(*) FROM notification_digests")
+        .fetch_one(&f.store.pool)
+        .await
+        .unwrap();
+    assert_eq!(cursors, 0);
+
+    jobs::tick(&f.store, &mail).await.unwrap();
+    assert_eq!(f.digest_jobs().await, ["succeeded"]);
+    let letters = spooled(&f.store, &spool).await;
+    assert_eq!(letters.len(), 1, "{letters:?}");
+    assert_eq!(letters[0].0, "owner assigned you TEAM-1");
+    assert!(
+        letters[0]
+            .1
+            .contains("\nowner assigned you TEAM-1: Rotate certificates\n"),
+        "{}",
+        letters[0].1
+    );
+    for left_out in ["TEAM-2", "replied"] {
+        assert!(!letters[0].1.contains(left_out), "{}", letters[0].1);
+    }
+
+    jobs::tick(&f.store, &mail).await.unwrap();
+    assert_eq!(f.digest_jobs().await.len(), 1, "the cursor stops a resend");
+
+    // A fresh notification alone isn't due yet.
+    f.backdated(audit, "assignment", 5.0, json!([])).await;
+    jobs::tick(&f.store, &mail).await.unwrap();
+    assert_eq!(f.digest_jobs().await.len(), 1);
+
+    f.run(
+        follower,
+        Command::ConfigureAlerts {
+            assignment: true,
+            reply: true,
+            change: true,
+            mention: true,
+            deadline: true,
+            email_assignment: true,
+            email_reply: true,
+            email_change: true,
+            email_mention: false,
+            email_deadline: true,
+        },
+    )
+    .await;
+    f.backdated(rotate, "change", 11.0, json!(["assignee", "stage"]))
+        .await;
+    f.backdated(audit, "mention", 11.0, json!([])).await;
+    jobs::tick(&f.store, &mail).await.unwrap();
+    assert_eq!(f.digest_jobs().await, ["succeeded", "succeeded"]);
+    let letters = spooled(&f.store, &spool).await;
+    assert_eq!(letters.len(), 2, "{letters:?}");
+    // The change from before the switch is still unread and newer than the first digest.
+    // The first assignment was already sent, and the reply is inside the one-minute margin.
+    assert_eq!(letters[1].0, "3 new notifications in Notifications");
+    assert!(
+        letters[1].1.contains(
+            "\nowner changed status on TEAM-2: Audit logs\n\
+             \nowner changed status, assignee on TEAM-1: Rotate certificates\n\
+             \nowner assigned you TEAM-2: Audit logs\n"
+        ),
+        "{}",
+        letters[1].1
+    );
+    for left_out in ["assigned you TEAM-1", "mentioned", "replied"] {
+        assert!(!letters[1].1.contains(left_out), "{}", letters[1].1);
+    }
+
+    tokio::fs::remove_dir_all(spool).await.unwrap();
     f.cleanup().await;
 }

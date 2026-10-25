@@ -1,9 +1,14 @@
-use super::{DeliveryError, Email, Grant};
+use super::{
+    DeliveryError, Email, Grant,
+    digest::{Entry, Summary},
+};
+use crate::domain::AlertKind;
 use lettre::{
     AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor,
     message::{Mailbox, header::ContentType},
 };
 use reqwest::Url;
+use serde::Serialize;
 use std::{path::PathBuf, time::Duration};
 
 /// Where email jobs go. Configured once at startup from the environment.
@@ -14,7 +19,8 @@ pub enum Mailer {
         from: Mailbox,
         public_url: Option<Url>,
     },
-    /// Writes each email's JSON payload to a private directory instead of sending it.
+    /// Writes each email's recipient, subject and body as JSON to a private directory instead
+    /// of sending it.
     Spool(PathBuf),
     /// Email jobs stay pending until mail is configured.
     Disabled,
@@ -97,15 +103,15 @@ impl Mailer {
         !matches!(self, Self::Disabled)
     }
 
-    pub(super) async fn send(&self, id: &str, email: &Email) -> Result<(), DeliveryError> {
+    pub(super) async fn send(&self, id: &str, content: Content<'_>) -> Result<(), DeliveryError> {
         match self {
             Self::Smtp {
                 transport,
                 from,
                 public_url,
             } => {
-                let message = message(id, from, email, public_url.as_ref())
-                    .map_err(DeliveryError::Permanent)?;
+                let letter = content.letter(public_url.as_ref());
+                let message = message(id, from, &letter).map_err(DeliveryError::Permanent)?;
                 transport.send(message).await.map_err(|error| {
                     if error.is_permanent() {
                         tracing::warn!(
@@ -130,7 +136,7 @@ impl Mailer {
 
                 Ok(())
             }
-            Self::Spool(directory) => spool(directory, id, email)
+            Self::Spool(directory) => spool(directory, id, &content.letter(None))
                 .await
                 .map_err(DeliveryError::Transient),
             Self::Disabled => Err(DeliveryError::Transient("email is not configured")),
@@ -161,22 +167,47 @@ fn link(public_url: &Url, path: &str, query: &[(&str, &str)]) -> String {
     url.into()
 }
 
-fn message(
-    id: &str,
-    from: &Mailbox,
-    email: &Email,
-    public_url: Option<&Url>,
-) -> Result<Message, &'static str> {
+/// What an email job says, before the mailer renders it.
+pub(super) enum Content<'a> {
+    Grant(&'a Email),
+    Digest(&'a Summary),
+}
+
+#[derive(Serialize)]
+struct Letter {
+    to: String,
+    subject: String,
+    body: String,
+}
+
+impl Content<'_> {
+    fn letter(&self, public_url: Option<&Url>) -> Letter {
+        match self {
+            Content::Grant(email) => Letter {
+                to: email.to.clone(),
+                subject: email.subject.clone(),
+                body: body(email, public_url),
+            },
+            Content::Digest(summary) => Letter {
+                to: summary.to.clone(),
+                subject: digest_subject(summary),
+                body: digest_body(summary, public_url),
+            },
+        }
+    }
+}
+
+fn message(id: &str, from: &Mailbox, letter: &Letter) -> Result<Message, &'static str> {
     // Stable across retries. SMTP still permits duplicate delivery.
     let message_id = format!("<{}@{}>", crate::auth::hash(id), from.email.domain());
 
     Message::builder()
         .from(from.clone())
-        .to(email.to.parse().map_err(|_| "invalid recipient address")?)
-        .subject(&email.subject)
+        .to(letter.to.parse().map_err(|_| "invalid recipient address")?)
+        .subject(&letter.subject)
         .message_id(Some(message_id))
         .header(ContentType::TEXT_PLAIN)
-        .body(body(email, public_url))
+        .body(letter.body.clone())
         .map_err(|_| "invalid email")
 }
 
@@ -224,7 +255,103 @@ fn body(email: &Email, public_url: Option<&Url>) -> String {
     }
 }
 
-async fn spool(directory: &PathBuf, id: &str, email: &Email) -> Result<(), &'static str> {
+/// Issue fields as the inbox names them, in its order.
+const FIELD_LABELS: [(&str, &str); 14] = [
+    ("title", "title"),
+    ("description", "description"),
+    ("team", "team"),
+    ("stage", "status"),
+    ("assignee", "assignee"),
+    ("priority", "priority"),
+    ("labels", "labels"),
+    ("estimate", "estimate"),
+    ("deadline", "deadline"),
+    ("project", "project"),
+    ("milestone", "milestone"),
+    ("sprint", "sprint"),
+    ("parent", "parent"),
+    ("dependencies", "dependencies"),
+];
+
+impl Entry {
+    /// What happened, worded to precede the issue key.
+    fn headline(&self) -> String {
+        let actor = self.actor.as_deref().unwrap_or("Someone");
+        match self.kind {
+            AlertKind::Assignment => format!("{actor} assigned you"),
+            AlertKind::Reply => format!("{actor} replied on"),
+            AlertKind::Mention => format!("{actor} mentioned you on"),
+            AlertKind::Deadline => "Deadline is near for".into(),
+            AlertKind::Change => {
+                let fields: Vec<&str> = FIELD_LABELS
+                    .iter()
+                    .filter(|(name, _)| self.fields.iter().any(|field| field == name))
+                    .map(|(_, label)| *label)
+                    .collect();
+                if fields.is_empty() {
+                    format!("{actor} updated")
+                } else {
+                    format!("{actor} changed {} on", fields.join(", "))
+                }
+            }
+        }
+    }
+}
+
+fn digest_subject(summary: &Summary) -> String {
+    match summary.entries.as_slice() {
+        [entry] => format!("{} {}", entry.headline(), entry.key),
+        entries => format!(
+            "{} new notifications in {}",
+            entries.len(),
+            summary.workspace
+        ),
+    }
+}
+
+fn digest_body(summary: &Summary, public_url: Option<&Url>) -> String {
+    let mut text = match summary.entries.len() {
+        1 => format!(
+            "You have an unread notification in {}.\n",
+            summary.workspace
+        ),
+        n => format!(
+            "You have {n} unread notifications in {}.\n",
+            summary.workspace
+        ),
+    };
+    for entry in &summary.entries {
+        text.push_str(&format!(
+            "\n{} {}: {}\n",
+            entry.headline(),
+            entry.key,
+            entry.title
+        ));
+        if let Some(public_url) = public_url {
+            let url = public_url
+                .join(&format!("{}/issue/{}", summary.slug, entry.key))
+                .expect("relative path joins");
+            text.push_str(&format!("{url}\n"));
+        }
+    }
+    match public_url {
+        Some(public_url) => {
+            let url = public_url
+                .join(&format!("{}/settings/notifications", summary.slug))
+                .expect("relative path joins");
+            text.push_str(&format!(
+                "\nChoose which notifications Blackwall emails you:\n{url}\n"
+            ));
+        }
+        None => text.push_str(
+            "\nTo choose which notifications Blackwall emails you, open Settings, then \
+             Notifications.\n",
+        ),
+    }
+    text
+}
+
+async fn spool(directory: &PathBuf, id: &str, letter: &Letter) -> Result<(), &'static str> {
     use tokio::io::AsyncWriteExt;
 
     tokio::fs::create_dir_all(directory)
@@ -242,7 +369,7 @@ async fn spool(directory: &PathBuf, id: &str, email: &Email) -> Result<(), &'sta
         .await
         .map_err(|_| "mail spool write failed")?;
 
-    let body = serde_json::to_vec(email).map_err(|_| "invalid email")?;
+    let body = serde_json::to_vec(letter).map_err(|_| "invalid email")?;
     file.write_all(&body)
         .await
         .map_err(|_| "mail spool write failed")?;
@@ -395,6 +522,83 @@ mod tests {
         assert!(text.contains("\n\ntok/en+1\n\n"), "{text}");
     }
 
+    fn entry(kind: AlertKind, actor: Option<&str>, fields: &[&str], key: &str) -> Entry {
+        Entry {
+            kind,
+            actor: actor.map(Into::into),
+            fields: fields.iter().map(|field| field.to_string()).collect(),
+            key: key.into(),
+            title: format!("Title of {key}"),
+        }
+    }
+
+    fn summary(entries: Vec<Entry>) -> Summary {
+        Summary {
+            to: "member@example.com".into(),
+            workspace: "Acme".into(),
+            slug: "acme".into(),
+            entries,
+        }
+    }
+
+    #[test]
+    fn digest_links_each_notification_and_the_settings() {
+        let digest = summary(vec![
+            entry(AlertKind::Assignment, Some("Ana"), &[], "ENG-12"),
+            entry(
+                AlertKind::Change,
+                None,
+                &["assignee", "stage", "internal"],
+                "ENG-3",
+            ),
+            entry(AlertKind::Change, Some("Ana"), &[], "ENG-4"),
+            entry(AlertKind::Deadline, None, &[], "OPS-1"),
+        ]);
+        let public_url = parse_public_url("https://example.com/blackwall").unwrap();
+
+        let letter = Content::Digest(&digest).letter(Some(&public_url));
+
+        assert_eq!(letter.to, "member@example.com");
+        assert_eq!(letter.subject, "4 new notifications in Acme");
+        assert_eq!(
+            letter.body,
+            "You have 4 unread notifications in Acme.\n\
+             \n\
+             Ana assigned you ENG-12: Title of ENG-12\n\
+             https://example.com/blackwall/acme/issue/ENG-12\n\
+             \n\
+             Someone changed status, assignee on ENG-3: Title of ENG-3\n\
+             https://example.com/blackwall/acme/issue/ENG-3\n\
+             \n\
+             Ana updated ENG-4: Title of ENG-4\n\
+             https://example.com/blackwall/acme/issue/ENG-4\n\
+             \n\
+             Deadline is near for OPS-1: Title of OPS-1\n\
+             https://example.com/blackwall/acme/issue/OPS-1\n\
+             \n\
+             Choose which notifications Blackwall emails you:\n\
+             https://example.com/blackwall/acme/settings/notifications\n"
+        );
+    }
+
+    #[test]
+    fn digest_without_public_url_names_the_settings_page() {
+        let digest = summary(vec![entry(AlertKind::Mention, Some("Ana"), &[], "ENG-12")]);
+
+        let letter = Content::Digest(&digest).letter(None);
+
+        assert_eq!(letter.subject, "Ana mentioned you on ENG-12");
+        assert_eq!(
+            letter.body,
+            "You have an unread notification in Acme.\n\
+             \n\
+             Ana mentioned you on ENG-12: Title of ENG-12\n\
+             \n\
+             To choose which notifications Blackwall emails you, open Settings, then \
+             Notifications.\n"
+        );
+    }
+
     /// Accepts one SMTP session and returns the message data.
     async fn smtp_sink(listener: TcpListener) -> String {
         let (stream, _) = listener.accept().await.unwrap();
@@ -455,7 +659,7 @@ mod tests {
             },
         };
 
-        mailer.send("job-1", &email).await.unwrap();
+        mailer.send("job-1", Content::Grant(&email)).await.unwrap();
         let data = sink.await.unwrap();
 
         assert!(data.contains("To: colleague@example.com"), "{data}");
