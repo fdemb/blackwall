@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vite-plus/test";
-import { mutate, seedStore, TEAM } from "../sync/mutators/fixtures";
+import { mutate, seedStore, TEAM, TEAM_OTHER } from "../sync/mutators/fixtures";
 import { countedIssue, resolveIssue } from "./queries";
 
 describe("issue URLs", () => {
@@ -25,5 +25,33 @@ describe("issue URLs", () => {
     expect(resolveIssue(store, "TEAM-17")).toBe("issue-new");
     expect(resolveIssue(store, "TEAM-16")).toBe("issue-remote");
     expect(resolveIssue(store, "issue-new")).toBe("issue-new");
+  });
+
+  it("still name an issue by a key it held before it moved", () => {
+    const store = seedStore();
+    const moved = {
+      ...store.get("issues", "issue-2")!,
+      team_id: TEAM_OTHER,
+      number: 1,
+      former_keys: [{ team_id: TEAM, number: 2 }],
+    };
+    store.applyBase([{ entity: "issues", id: moved.id, record: moved }]);
+    expect(resolveIssue(store, "TEAM-2")).toBe("issue-2");
+    expect(resolveIssue(store, "OTH-1")).toBe("issue-2");
+    expect(countedIssue(store, "issue-2")).toMatchObject({ key: "OTH-1", ref: "OTH-1" });
+  });
+
+  it("give a key to the issue holding it now over one that held it before moving", () => {
+    const store = seedStore();
+    const moved = {
+      ...store.get("issues", "issue-2")!,
+      team_id: TEAM_OTHER,
+      number: 1,
+      former_keys: [{ team_id: TEAM, number: 2 }],
+    };
+    store.applyBase([{ entity: "issues", id: moved.id, record: moved }]);
+    const holder = { ...store.get("issues", "issue-3")!, id: "issue-holder", number: 2 };
+    store.applyBase([{ entity: "issues", id: holder.id, record: holder }]);
+    expect(resolveIssue(store, "TEAM-2")).toBe("issue-holder");
   });
 });

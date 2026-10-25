@@ -343,7 +343,6 @@ async fn insert_issues(op: &mut Operation<'_>, w: &Workspace) -> Result<()> {
     Ok(())
 }
 
-/// Labels, dependencies, followers and source links of one imported issue.
 async fn insert_issue_relations(
     op: &mut Operation<'_>,
     workspace: Uuid,
@@ -389,6 +388,10 @@ async fn insert_issue_relations(
         .bind(&link.title)
         .execute(&mut *op.tx)
         .await?;
+    }
+
+    for key in &issue.former_keys {
+        persistence::claim_former_key(&mut op.tx, workspace, issue.id, *key).await?;
     }
 
     Ok(())
@@ -670,6 +673,14 @@ mod tests {
             .await
             .unwrap();
 
+        sqlx::query("INSERT INTO issue_key_aliases(workspace_id,team_id,number,issue_id) VALUES($1,$2,9,$3)")
+            .bind(source)
+            .bind(team)
+            .bind(second)
+            .execute(&store.pool)
+            .await
+            .unwrap();
+
         let transfer = store.export_transfer(source, user).await.unwrap();
         assert!(
             transfer
@@ -743,6 +754,18 @@ mod tests {
                 .map(|t| t.key.as_str())
                 .collect::<Vec<_>>(),
             ["EXI", "INF"]
+        );
+        let imported_team = imported.teams.iter().find(|t| t.key == "INF").unwrap().id;
+        assert_eq!(
+            child.former_keys,
+            [crate::domain::FormerKey {
+                team_id: imported_team,
+                number: 9
+            }]
+        );
+        assert_eq!(
+            store.issue_by_key(target, user, "INF", 9).await.unwrap(),
+            child.id
         );
         assert_eq!(child.parent_id, Some(parent.id));
         assert_eq!(child.dependencies, vec![parent.id]);

@@ -225,6 +225,9 @@ impl Transfer {
         for issue in &mut self.issues {
             issue.id = remap.entity(issue.id)?;
             issue.team_id = remap.entity(issue.team_id)?;
+            for key in &mut issue.former_keys {
+                key.team_id = remap.entity(key.team_id)?;
+            }
             issue.stage_id = remap.entity(issue.stage_id)?;
             issue.assignee = remap.user(issue.assignee);
             issue.created_by = remap.user(issue.created_by);

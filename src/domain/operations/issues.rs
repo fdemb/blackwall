@@ -202,14 +202,8 @@ impl Workspace {
             subtask_completed: 0,
             version: 1,
             id,
-            number: self
-                .issues
-                .iter()
-                .filter(|i| i.team_id == input.team_id)
-                .map(|i| i.number)
-                .max()
-                .unwrap_or(0)
-                + 1,
+            number: self.next_number(input.team_id),
+            former_keys: vec![],
             title: input.title,
             description: input.description,
             team_id: input.team_id,
@@ -282,7 +276,11 @@ impl Workspace {
         let mut i = old.clone();
         let (old_assignee, old_stage) = (i.assignee, i.stage_id);
 
+        let team = p.team_id.filter(|team| *team != old.team_id);
         i.apply_patch(p);
+        if let Some(team) = team {
+            self.enter_team(&old, &mut i, team)?;
+        }
         let entered_stage = i.stage_id != old_stage;
         self.fit_sprint(&mut i, entered_stage)?;
 
@@ -326,6 +324,71 @@ impl Workspace {
 
         *self.issue_mut(id)? = i;
 
+        Ok(())
+    }
+
+    fn next_number(&self, team: Uuid) -> u64 {
+        self.issues
+            .iter()
+            .flat_map(|i| {
+                let current = FormerKey {
+                    team_id: i.team_id,
+                    number: i.number,
+                };
+                i.former_keys.iter().copied().chain([current])
+            })
+            .filter(|key| key.team_id == team)
+            .map(|key| key.number)
+            .max()
+            .unwrap_or(0)
+            + 1
+    }
+
+    fn enter_team(&self, old: &Issue, i: &mut Issue, team: Uuid) -> Result<()> {
+        if old.tracker.is_some() {
+            return Err(Error::BadRequest(
+                "synced issues follow their tracker project's team".into(),
+            ));
+        }
+        i.leave_team(old, team);
+        i.number = self.next_number(i.team_id);
+        let team = self.team(i.team_id)?;
+        if i.stage_id == old.stage_id {
+            let kind = &self
+                .team(old.team_id)?
+                .stages
+                .iter()
+                .find(|s| s.id == old.stage_id)
+                .ok_or(Error::NotFound)?
+                .kind;
+            i.stage_id = team
+                .stages
+                .iter()
+                .min_by_key(|s| (s.kind != *kind, s.position, s.id))
+                .ok_or(Error::NotFound)?
+                .id;
+        }
+        if let Some(project) = i.project_id.filter(|_| i.project_id == old.project_id)
+            && !self
+                .projects
+                .iter()
+                .any(|p| p.id == project && p.team_ids.contains(&i.team_id))
+        {
+            i.project_id = None;
+            i.milestone_id = None;
+        }
+        i.position = self
+            .issues
+            .iter()
+            .filter(|other| {
+                other.team_id == i.team_id
+                    && other.stage_id == i.stage_id
+                    && other.deleted_at.is_none()
+                    && other.id != i.id
+            })
+            .map(|other| other.position + 1024)
+            .max()
+            .unwrap_or(0);
         Ok(())
     }
 

@@ -158,6 +158,10 @@ export interface TrackerConnectionInput {
   projects?: TrackerMapping[];
   people_mapping?: Record<string, Id>;
 }
+export interface FormerKey {
+  team_id: Id;
+  number: number;
+}
 export interface Issue {
   tracker?: TrackerLink | null;
   id: Id;
@@ -170,6 +174,8 @@ export interface Issue {
    * prediction until the pull brings the server's.
    */
   number: number;
+  /** Teams and numbers the issue held before it moved. Their keys still name it. */
+  former_keys: readonly FormerKey[];
   /** The team key and number, as in `ENG-42`. Derived on the client. */
   key: string;
   /** What URLs name the issue by: its confirmed key, or its id until the server confirms it. */
@@ -439,6 +445,7 @@ export interface IssueInput {
 export interface IssuePatch {
   title?: string;
   description?: string;
+  team_id?: Id;
   stage_id?: Id;
   assignee?: Id;
   clear_assignee?: boolean;

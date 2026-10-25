@@ -29,6 +29,7 @@ function copyIssue(issue: DeepReadonly<SyncIssue>): SyncIssue {
     followers: [...issue.followers],
     attachments: [...issue.attachments],
     source_links: [...issue.source_links],
+    former_keys: [...issue.former_keys],
   };
 }
 
@@ -79,16 +80,14 @@ function createPosition(tx: Tx, teamId: string, stageId: string, excludeId: stri
   return max + 1024;
 }
 
-/**
- * Number for a new issue: the team's highest plus one, the rule
- * `persistence::next_number` applies. The replica holds every issue,
- * including trash and archive, so this matches the server unless another
- * client created in the team first; the pull then brings the real number.
- */
-function createNumber(tx: Tx, teamId: string, excludeId: string): number {
+function nextNumber(tx: Tx, teamId: string, excludeId: string): number {
   let max = 0;
   for (const peer of tx.byIndex("issues", "team_id", teamId)) {
     if (peer.id !== excludeId) max = Math.max(max, peer.number);
+  }
+  for (const moved of tx.byIndex("issues", "former_team_id", teamId)) {
+    for (const key of moved.former_keys)
+      if (key.team_id === teamId) max = Math.max(max, key.number);
   }
   return max + 1;
 }
@@ -187,7 +186,7 @@ export const createIssue: Mutator<ArgsOf<"create_issue">> = (tx, args, ctx) => {
     next.version = previous.version;
     next.created_at = previous.created_at;
   } else {
-    next.number = createNumber(tx, next.team_id, id);
+    next.number = nextNumber(tx, next.team_id, id);
   }
   next.position = createPosition(tx, next.team_id, next.stage_id, id);
   validateIssue(tx, next, null);
@@ -224,6 +223,7 @@ function issueFromInput(
     followers: dedupeSortUuids([ctx.actor, ...(input.assignee ? [input.assignee] : [])]),
     attachments: [],
     source_links: [],
+    former_keys: [],
     deleted_at: null,
     archived_at: null,
     done_at: null,
@@ -242,6 +242,8 @@ function patchIssue(
   const current = requireLiveIssue(tx, id);
   if (current.archived_at !== null) throw new MutationError(409, "issue is archived");
   const next = patchedIssue(current, patch);
+  if (patch.team_id !== undefined && patch.team_id !== current.team_id)
+    enterTeam(tx, current, next, patch.team_id);
   fitSprint(tx, next, next.stage_id !== current.stage_id);
   validateIssue(tx, next, current);
   if (next.stage_id !== current.stage_id) {
@@ -257,6 +259,40 @@ function patchIssue(
 function followMentions(tx: Tx, next: SyncIssue, before: string): void {
   const mentioned = newMentions(next.description, before).filter((user) => tx.get("members", user));
   if (mentioned.length > 0) next.followers = dedupeSortUuids([...next.followers, ...mentioned]);
+}
+
+function enterTeam(
+  tx: Tx,
+  current: DeepReadonly<SyncIssue>,
+  next: SyncIssue,
+  teamId: string,
+): void {
+  if (current.tracker)
+    throw new MutationError(400, "synced issues follow their tracker project's team");
+  next.former_keys.push({ team_id: current.team_id, number: current.number });
+  next.team_id = teamId;
+  if (next.sprint_id === current.sprint_id) next.sprint_id = null;
+  const team = tx.get("teams", next.team_id);
+  if (team === undefined) throw new MutationError(404, "not found");
+  next.number = nextNumber(tx, next.team_id, next.id);
+  if (next.stage_id === current.stage_id) {
+    const kind = stageKindOf(tx, current.team_id, current.stage_id);
+    const stage = [...team.stages].sort(
+      (a, b) =>
+        Number(a.kind !== kind) - Number(b.kind !== kind) ||
+        a.position - b.position ||
+        (a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
+    )[0];
+    if (stage === undefined) throw new MutationError(404, "not found");
+    next.stage_id = stage.id;
+  }
+  if (next.project_id !== null && next.project_id === current.project_id) {
+    if (!tx.get("projects", next.project_id)?.team_ids.includes(next.team_id)) {
+      next.project_id = null;
+      next.milestone_id = null;
+    }
+  }
+  next.position = createPosition(tx, next.team_id, next.stage_id, next.id);
 }
 
 function patchedIssue(

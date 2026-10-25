@@ -51,7 +51,7 @@ export type {
 } from "./engine-types";
 export type { TabMessage } from "./tabs";
 
-export const SCHEMA = 5;
+export const SCHEMA = 6;
 
 export type OnlineResult = MutationResult & { invitation?: IssuedInvitation };
 

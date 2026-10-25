@@ -52,6 +52,8 @@ pub struct ApiIssue {
     /// number in that team. Accepted wherever an issue id is.
     pub key: String,
     pub number: u64,
+    /// Keys the issue held in teams it moved out of. They still resolve to it.
+    pub former_keys: Vec<String>,
     pub title: String,
     /// Markdown.
     pub description: String,
@@ -141,6 +143,11 @@ pub async fn render(store: &Store, scope: Scope, issues: Vec<Issue>) -> Result<V
         .into_iter()
         .map(|i| ApiIssue {
             key: dir.issue_key(i.team_id, i.number),
+            former_keys: i
+                .former_keys
+                .iter()
+                .map(|k| dir.issue_key(k.team_id, k.number))
+                .collect(),
             team: dir.team(i.team_id),
             stage: dir.stage(i.stage_id).unwrap_or_else(|| StageRef {
                 id: i.stage_id,
@@ -476,7 +483,12 @@ where
 pub struct UpdateIssue {
     pub title: Option<String>,
     pub description: Option<String>,
-    /// Stage UUID or name within the issue's team.
+    /// Team UUID, key or name. Moving gives the issue a new key in that team, and the old key
+    /// keeps resolving. Without `stage` the issue lands in the team's first stage of the same
+    /// kind. It leaves its sprint, and its project when the project doesn't include the team.
+    /// Synced issues can't move.
+    pub team: Option<String>,
+    /// Stage UUID or name within the issue's team, or within `team` when it moves.
     pub stage: Option<String>,
     #[serde(default, deserialize_with = "nullable")]
     #[schema(value_type = Option<String>)]
@@ -523,6 +535,7 @@ impl UpdateIssue {
     fn is_empty(&self) -> bool {
         self.title.is_none()
             && self.description.is_none()
+            && self.team.is_none()
             && self.stage.is_none()
             && self.assignee.is_none()
             && self.priority.is_none()
@@ -540,7 +553,8 @@ impl UpdateIssue {
 
     async fn into_patch(self, store: &Store, scope: Scope, current: &Issue) -> Result<IssuePatch> {
         let dir = Directory::load(store, scope).await?;
-        let team = current.team_id;
+        let team_id = self.team.map(|t| dir.find_team(&t)).transpose()?;
+        let team = team_id.unwrap_or(current.team_id);
         let labels = match (self.labels, self.add_labels, self.remove_labels) {
             (Some(_), Some(_), _) | (Some(_), _, Some(_)) => {
                 return Err(Error::BadRequest(
@@ -598,6 +612,7 @@ impl UpdateIssue {
         Ok(IssuePatch {
             title: self.title,
             description: self.description,
+            team_id,
             stage_id: self.stage.map(|s| dir.find_stage(team, &s)).transpose()?,
             assignee,
             clear_assignee,

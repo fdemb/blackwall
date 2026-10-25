@@ -20,13 +20,20 @@ import {
 } from "./environment";
 import type { Client, User } from "./environment";
 import { sql } from "./setup";
-import { DATE, fixture, scenario } from "./scenarios";
+import { DATE, fixture, scenario, teamMove, type Scenario } from "./scenarios";
 
 const names = Object.keys(MUTATORS).filter((name): name is MutatorName =>
   Object.hasOwn(MUTATORS, name),
 );
 
-const predictions: { name: MutatorName; date?: string }[] = names.map((name) => ({ name }));
+const predictions: { name: MutatorName; label: string; date?: string; variant?: () => Scenario }[] =
+  names.map((name) => ({ name, label: "" }));
+predictions.push({ name: "update_issue", label: "to another team", variant: teamMove });
+predictions.push({
+  name: "update_issue",
+  label: "to another team past a reopened dependency",
+  variant: () => teamMove({ blocked: true }),
+});
 for (const name of ["save_view", "update_view"] satisfies MutatorName[]) {
   for (const date of [
     "2026-10-10T14:00:00.120000+02:00",
@@ -34,7 +41,7 @@ for (const name of ["save_view", "update_view"] satisfies MutatorName[]) {
     "2026-10-10T14:00:00.123456789+02:00",
     "2016-12-31T23:59:60Z",
   ])
-    predictions.push({ name, date });
+    predictions.push({ name, label: date, date });
 }
 
 describe.skipIf(!enabled)(`${suiteName}: prediction contract`, () => {
@@ -52,12 +59,12 @@ describe.skipIf(!enabled)(`${suiteName}: prediction contract`, () => {
   });
 
   it.each(predictions)(
-    "predicts every visible record for $name $date",
-    async ({ name, date }) => {
+    "predicts every visible record for $name $label",
+    async ({ name, date, variant }) => {
       const ws = await workspace(owner);
       await addMember(ws, owner, member, "member");
       const f = await fixture(ws, owner, member);
-      const selected = scenario(name);
+      const selected = variant?.() ?? scenario(name);
       await selected.prepare?.(f);
       const value = await selected.command(f);
       if (date && (value.type === "save_view" || value.type === "update_view"))

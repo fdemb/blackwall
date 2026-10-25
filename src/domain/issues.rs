@@ -83,6 +83,13 @@ pub struct Baseline {
     pub parent_id: Option<Uuid>,
 }
 
+/// A team and number an issue held before it moved to another team. Its key still names the issue.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct FormerKey {
+    pub team_id: Uuid,
+    pub number: u64,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct Issue {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -97,6 +104,8 @@ pub struct Issue {
     pub version: i64,
     pub id: Uuid,
     pub number: u64,
+    #[serde(default)]
+    pub former_keys: Vec<FormerKey>,
     pub title: String,
     pub description: String,
     pub team_id: Uuid,
@@ -214,11 +223,25 @@ impl Issue {
         set(&mut self.dependencies, p.dependencies);
     }
 
+    /// Starts a move to `team`: the current key becomes a former key, and a sprint the patch
+    /// didn't name is left, since sprints belong to one team.
+    pub(crate) fn leave_team(&mut self, before: &Issue, team: Uuid) {
+        self.former_keys.push(FormerKey {
+            team_id: before.team_id,
+            number: before.number,
+        });
+        self.team_id = team;
+        if self.sprint_id == before.sprint_id {
+            self.sprint_id = None;
+        }
+    }
+
     /// Editable fields changed by the supplied replacement, in activity order.
     pub(crate) fn changed_fields(&self, after: &Issue) -> Vec<String> {
         [
             ("title", self.title != after.title),
             ("description", self.description != after.description),
+            ("team", self.team_id != after.team_id),
             ("stage", self.stage_id != after.stage_id),
             ("assignee", self.assignee != after.assignee),
             ("priority", self.priority != after.priority),
@@ -265,6 +288,10 @@ pub struct IssueInput {
 pub struct IssuePatch {
     pub title: Option<String>,
     pub description: Option<String>,
+    /// Moves the issue to another team under that team's next number. Its old key keeps
+    /// resolving. Without `stage_id` it lands in the team's first stage of the same kind. It
+    /// leaves its sprint, and its project when the project doesn't include the team.
+    pub team_id: Option<Uuid>,
     pub stage_id: Option<Uuid>,
     pub assignee: Option<Uuid>,
     #[serde(default)]

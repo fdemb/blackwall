@@ -14,6 +14,7 @@ import {
   NullableSelect,
   PriorityPicker,
   StagePicker,
+  TeamPicker,
 } from "~/components/app/pickers";
 import { formatMinutes, fullDate, relativeTime, sprintLabel } from "~/lib/format";
 import { useI18n } from "~/lib/i18n";
@@ -36,13 +37,21 @@ export function useIssuePatch(issue: Issue) {
     );
 }
 
-/** Status, priority and assignee as property rows. The side panel shows these above the rest. */
 export function CoreProperties({ issue }: { issue: Issue }) {
   const { t } = useI18n();
   const { canWrite } = useWorkspace();
   const patch = useIssuePatch(issue);
+  const followsTracker = Boolean(issue.tracker);
   return (
     <PropGroup>
+      <Prop label={t("field.team")}>
+        <TeamPicker
+          variant="ghost"
+          isDisabled={!canWrite || followsTracker}
+          value={issue.team_id}
+          onChange={(id) => id !== issue.team_id && patch({ team_id: id })}
+        />
+      </Prop>
       <Prop label={t("field.stage")}>
         <StagePicker
           variant="ghost"

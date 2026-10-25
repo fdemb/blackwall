@@ -336,8 +336,9 @@ function checkIssueSprint(
 }
 
 /**
- * Dependencies gate entering an active or done stage, and new dependencies of
- * a started issue. Ones that reopen later leave the issue blocked, not invalid.
+ * Dependencies gate entering an active or done stage from another kind, and new
+ * dependencies of a started issue. Ones that reopen later leave the issue
+ * blocked, not invalid, so it can still move between stages of its kind.
  */
 function checkIssueDependencies(
   tx: Tx,
@@ -346,7 +347,10 @@ function checkIssueDependencies(
   before: DeepReadonly<SyncIssue> | null,
 ): void {
   const started = issue.deleted_at === null && (kind === "active" || kind === "done");
-  const entered = before === null || before.stage_id !== issue.stage_id;
+  const entered =
+    before === null ||
+    (before.stage_id !== issue.stage_id &&
+      stageKindOf(tx, before.team_id, before.stage_id) !== kind);
   for (const dep of new Set(issue.dependencies)) {
     const added = before === null || !before.dependencies.includes(dep);
     const other = tx.get("issues", dep);

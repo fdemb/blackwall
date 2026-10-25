@@ -24,6 +24,7 @@ import {
   Tag,
   Trash2,
   UserRound,
+  Users,
   X,
   type LucideIcon,
 } from "lucide-react";
@@ -66,6 +67,7 @@ const EVENTS: Partial<Record<string, { label: Key; icon: LucideIcon }>> = {
 const FIELDS: Partial<Record<string, { label: Key; icon: LucideIcon }>> = {
   title: { label: "field.title", icon: Pencil },
   description: { label: "field.description", icon: Pencil },
+  team: { label: "field.team", icon: Users },
   stage: { label: "field.stage", icon: CircleDot },
   assignee: { label: "field.assignee", icon: UserRound },
   priority: { label: "field.priority", icon: Signal },

@@ -797,10 +797,12 @@ where
 const TRASH_RETENTION_DAYS: i32 = 30;
 const PURGE_BATCH: u64 = 100;
 
-const PURGE: [&str; 13] = [
+const PURGE: [&str; 14] = [
     "INSERT INTO purged_issue_numbers(workspace_id,team_id,number) \
-     SELECT workspace_id,team_id,max(number) FROM issues WHERE workspace_id=$1 AND id=ANY($2) \
-     GROUP BY workspace_id,team_id ON CONFLICT(workspace_id,team_id) \
+     SELECT workspace_id,team_id,max(number) FROM (\
+     SELECT workspace_id,team_id,number FROM issues WHERE workspace_id=$1 AND id=ANY($2) \
+     UNION ALL SELECT workspace_id,team_id,number FROM issue_key_aliases WHERE workspace_id=$1 AND issue_id=ANY($2)\
+     ) purged GROUP BY workspace_id,team_id ON CONFLICT(workspace_id,team_id) \
      DO UPDATE SET number=GREATEST(purged_issue_numbers.number,EXCLUDED.number)",
     "INSERT INTO tracker_deleted_issues(connection_id,remote_id) \
      SELECT t.id,i.tracker->>'remote_id' FROM issues i \
@@ -819,6 +821,7 @@ const PURGE: [&str; 13] = [
     "DELETE FROM attachments WHERE workspace_id=$1 AND issue_id=ANY($2)",
     "DELETE FROM comments WHERE workspace_id=$1 AND issue_id=ANY($2)",
     "DELETE FROM notifications WHERE workspace_id=$1 AND issue_id=ANY($2)",
+    "DELETE FROM issue_key_aliases WHERE workspace_id=$1 AND issue_id=ANY($2)",
     "DELETE FROM issues WHERE workspace_id=$1 AND id=ANY($2)",
 ];
 

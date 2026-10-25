@@ -22,6 +22,7 @@ import {
   STAGE_BACKLOG,
   STAGE_CANCELLED,
   STAGE_DONE,
+  STAGE_OTHER,
   TEAM,
   TEAM_OTHER,
   VIEWER,
@@ -144,6 +145,7 @@ describe("create_issue", () => {
         followers: [MEMBER],
         attachments: [],
         source_links: [],
+        former_keys: [],
         deleted_at: null,
         archived_at: null,
         done_at: null,
@@ -571,6 +573,90 @@ describe("update_issue", () => {
       403,
       "permission denied",
       GHOST,
+    );
+  });
+});
+
+describe("update_issue team moves", () => {
+  it("renumbers in the new team, maps the stage and leaves team-bound planning", () => {
+    const store = seedStore();
+    const before = live(store, "issue-1");
+    mutate(store, "update_issue", { id: "issue-1", patch: { team_id: TEAM_OTHER } });
+    expectRecord(store, "issue-1", {
+      ...before,
+      team_id: TEAM_OTHER,
+      number: 1,
+      former_keys: [{ team_id: TEAM, number: 1 }],
+      stage_id: STAGE_OTHER,
+      sprint_id: null,
+      project_id: null,
+      milestone_id: null,
+      position: 0,
+      updated_at: AT,
+    });
+  });
+
+  it("keeps a named stage and a project the team is in", () => {
+    const store = seedStore();
+    mutate(store, "update_issue", {
+      id: "issue-2",
+      patch: { team_id: TEAM_OTHER, stage_id: STAGE_OTHER, project_id: PROJECT_OTHER },
+    });
+    expect(live(store, "issue-2")).toMatchObject({
+      team_id: TEAM_OTHER,
+      stage_id: STAGE_OTHER,
+      project_id: PROJECT_OTHER,
+    });
+  });
+
+  it("never hands a moved issue's number out again", () => {
+    const store = seedStore();
+    mutate(store, "update_issue", { id: "issue-y", patch: { team_id: TEAM_OTHER } });
+    expect(live(store, "issue-y")).toMatchObject({ number: 1, stage_id: STAGE_OTHER });
+    mutate(store, "create_issue", { input: { id: "issue-new", title: "New", team_id: TEAM } });
+    expect(live(store, "issue-new").number).toBe(16);
+    mutate(store, "update_issue", { id: "issue-y", patch: { team_id: TEAM } });
+    expect(live(store, "issue-y")).toMatchObject({
+      number: 17,
+      former_keys: [
+        { team_id: TEAM, number: 15 },
+        { team_id: TEAM_OTHER, number: 1 },
+      ],
+    });
+  });
+
+  it("changes nothing when the patch names the current team", () => {
+    const store = seedStore();
+    const before = live(store, "issue-2");
+    mutate(store, "update_issue", { id: "issue-2", patch: { team_id: TEAM } });
+    expect(live(store, "issue-2")).toEqual({ ...before, updated_at: AT });
+  });
+
+  it("moves a started issue past dependencies that reopened, but starts none", () => {
+    const store = seedStore();
+    mutate(store, "update_issue", { id: "issue-a", patch: { team_id: TEAM_OTHER } });
+    expect(store.replayErrors().size).toBe(0);
+    expect(live(store, "issue-a")).toMatchObject({ team_id: TEAM_OTHER, stage_id: STAGE_OTHER });
+    rejects(
+      "update_issue",
+      { id: "issue-x", patch: { team_id: TEAM_OTHER } },
+      409,
+      "issue has unfinished dependencies",
+    );
+  });
+
+  it("refuses synced issues and stages of the old team", () => {
+    rejects(
+      "update_issue",
+      { id: "issue-op", patch: { team_id: TEAM_OTHER } },
+      400,
+      "synced issues follow their tracker project's team",
+    );
+    rejects(
+      "update_issue",
+      { id: "issue-2", patch: { team_id: TEAM_OTHER, stage_id: STAGE_DONE } },
+      400,
+      "stage belongs to another team",
     );
   });
 });

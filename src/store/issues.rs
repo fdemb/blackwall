@@ -51,10 +51,15 @@ impl Operation<'_> {
         if let Some(sprint) = i.sprint_id {
             self.validate_issue_sprint(i, sprint, &kind).await?;
         }
-        // Dependencies gate entering an active or done stage, and new dependencies of a
-        // started issue. Ones that reopen later leave the issue blocked, not invalid.
+        // Dependencies gate entering an active or done stage from another kind, and new
+        // dependencies of a started issue. Ones that reopen later leave the issue blocked, not
+        // invalid, so it can still move between stages of its kind, in its team or another.
         let started = i.deleted_at.is_none() && matches!(kind.as_str(), "active" | "done");
-        let entered = before.is_none_or(|old| old.stage_id != i.stage_id);
+        let entered = match before {
+            None => true,
+            Some(old) if old.stage_id == i.stage_id => false,
+            Some(old) => self.stage_kind(old.stage_id).await? != kind,
+        };
         for dep in i.dependencies.iter().copied().collect::<BTreeSet<_>>() {
             let added = before.is_none_or(|old| !old.dependencies.contains(&dep));
             if added {
@@ -282,6 +287,7 @@ impl Operation<'_> {
             version: 1,
             id,
             number: 0,
+            former_keys: vec![],
             title: input.title,
             description: input.description,
             team_id: input.team_id,
@@ -368,7 +374,11 @@ impl Operation<'_> {
         }
         let mut i = old.clone();
 
+        let team = p.team_id.filter(|team| *team != old.team_id);
         i.apply_patch(p);
+        if let Some(team) = team {
+            self.enter_team(&old, &mut i, team).await?;
+        }
         let entered_stage = i.stage_id != old.stage_id;
         self.fit_sprint(&mut i, entered_stage).await?;
 
@@ -378,6 +388,13 @@ impl Operation<'_> {
             self.restamp_done(&mut i).await?;
         }
         self.save_issue_fields(&i).await?;
+        if team.is_some() {
+            let key = FormerKey {
+                team_id: old.team_id,
+                number: old.number,
+            };
+            persistence::claim_former_key(&mut self.tx, self.workspace_id, id, key).await?;
+        }
 
         self.issue_effects(Some(&old), &i, persistence::IssueEffects::Update)
             .await?;
@@ -388,6 +405,40 @@ impl Operation<'_> {
             self.add_follower(id, user).await?;
         }
         self.mention(Some(&old), &i).await
+    }
+
+    async fn enter_team(&mut self, old: &Issue, i: &mut Issue, team: Uuid) -> Result<()> {
+        if old.tracker.is_some() {
+            return Err(Error::BadRequest(
+                "synced issues follow their tracker project's team".into(),
+            ));
+        }
+        i.leave_team(old, team);
+        i.number = persistence::next_number(&mut self.tx, self.workspace_id, i.team_id).await?;
+        if i.stage_id == old.stage_id {
+            let kind = self.stage_kind(old.stage_id).await?;
+            i.stage_id = sqlx::query_scalar("SELECT id FROM stages WHERE workspace_id=$1 AND team_id=$2 ORDER BY kind<>$3,position,id LIMIT 1")
+                .bind(self.workspace_id)
+                .bind(i.team_id)
+                .bind(kind)
+                .fetch_optional(&mut *self.tx)
+                .await?
+                .ok_or(Error::NotFound)?;
+        }
+        if let Some(project) = i.project_id.filter(|_| i.project_id == old.project_id) {
+            let included: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM project_teams WHERE workspace_id=$1 AND project_id=$2 AND team_id=$3)")
+                .bind(self.workspace_id)
+                .bind(project)
+                .bind(i.team_id)
+                .fetch_one(&mut *self.tx)
+                .await?;
+            if !included {
+                i.project_id = None;
+                i.milestone_id = None;
+            }
+        }
+        i.position = self.position_last(i).await?;
+        Ok(())
     }
 
     async fn mention(&mut self, before: Option<&Issue>, after: &Issue) -> Result<()> {
@@ -747,6 +798,7 @@ fn changes_graph(command: &Command) -> bool {
     match command {
         Command::UpdateIssue { patch, .. } => {
             patch.stage_id.is_some()
+                || patch.team_id.is_some()
                 || patch.dependencies.is_some()
                 || patch.parent_id.is_some()
                 || patch.clear_parent

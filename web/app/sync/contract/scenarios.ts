@@ -175,7 +175,7 @@ export async function fixture(ws: string, owner: User, member: User) {
   return { ...ids, invitation, notification, owner, member, ws, upload };
 }
 export type Fixture = Awaited<ReturnType<typeof fixture>>;
-type Scenario = {
+export type Scenario = {
   prepare?: (f: Fixture) => Promise<void>;
   command: (f: Fixture) => Command | Promise<Command>;
 };
@@ -475,4 +475,37 @@ export const scenarios = {
 
 export function scenario(name: MutatorName): Scenario {
   return scenarios[name];
+}
+
+export function teamMove({ blocked = false } = {}): Scenario {
+  const team = randomUUID();
+  return {
+    prepare: async (f) => {
+      if (blocked) {
+        await command(f.ws, f.owner, {
+          type: "update_issue",
+          id: f.issue,
+          patch: { stage_id: f.stages[2], dependencies: [f.done] },
+        });
+        await command(f.ws, f.owner, {
+          type: "move_issue",
+          id: f.done,
+          stage_id: f.stages[1],
+          before_id: null,
+        });
+      }
+      await command(f.ws, f.owner, {
+        type: "create_team",
+        id: team,
+        name: "Other",
+        key: "OTH",
+        members: [f.owner.id],
+      });
+      await command(f.ws, f.owner, {
+        type: "create_issue",
+        input: { team_id: team, title: "Already there" },
+      });
+    },
+    command: (f) => ({ type: "update_issue", id: f.issue, patch: { team_id: team } }),
+  };
 }

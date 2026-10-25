@@ -26,7 +26,11 @@ pub(crate) async fn create(
     insert(conn, workspace, i, origin).await
 }
 
-async fn next_number(conn: &mut PgConnection, workspace: Uuid, team: Uuid) -> Result<u64> {
+pub(crate) async fn next_number(
+    conn: &mut PgConnection,
+    workspace: Uuid,
+    team: Uuid,
+) -> Result<u64> {
     sqlx::query("SELECT 1 FROM teams WHERE workspace_id=$1 AND id=$2 FOR NO KEY UPDATE")
         .bind(workspace)
         .bind(team)
@@ -35,13 +39,33 @@ async fn next_number(conn: &mut PgConnection, workspace: Uuid, team: Uuid) -> Re
         .ok_or(Error::NotFound)?;
     let number: i64 = sqlx::query_scalar(
         "SELECT GREATEST((SELECT max(number) FROM issues WHERE workspace_id=$1 AND team_id=$2),\
-         (SELECT number FROM purged_issue_numbers WHERE workspace_id=$1 AND team_id=$2),0)+1",
+         (SELECT number FROM purged_issue_numbers WHERE workspace_id=$1 AND team_id=$2),\
+         (SELECT max(number) FROM issue_key_aliases WHERE workspace_id=$1 AND team_id=$2),0)+1",
     )
     .bind(workspace)
     .bind(team)
     .fetch_one(&mut *conn)
     .await?;
     Ok(number as u64)
+}
+
+pub(crate) async fn claim_former_key(
+    conn: &mut PgConnection,
+    workspace: Uuid,
+    issue: Uuid,
+    key: FormerKey,
+) -> Result<()> {
+    // The issue losing the key changes too, so replicas stop resolving the key to it.
+    sqlx::query("WITH previous AS (SELECT issue_id FROM issue_key_aliases WHERE workspace_id=$1 AND team_id=$2 AND number=$3 AND issue_id<>$4), \
+         claimed AS (INSERT INTO issue_key_aliases(workspace_id,team_id,number,issue_id) VALUES($1,$2,$3,$4) ON CONFLICT(workspace_id,team_id,number) DO UPDATE SET issue_id=excluded.issue_id,seq=excluded.seq) \
+         UPDATE issues SET version=version+1 WHERE workspace_id=$1 AND id IN (SELECT issue_id FROM previous)")
+        .bind(workspace)
+        .bind(key.team_id)
+        .bind(key.number as i64)
+        .bind(issue)
+        .execute(conn)
+        .await?;
+    Ok(())
 }
 
 pub(crate) struct CreationBatch {

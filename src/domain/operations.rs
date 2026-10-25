@@ -288,7 +288,14 @@ impl Workspace {
             && self.team(issue.team_id)?.stages.iter().any(|s| {
                 s.id == issue.stage_id && matches!(s.kind, StageKind::Active | StageKind::Done)
             });
-        let entered = before.is_none_or(|old| old.stage_id != issue.stage_id);
+        let kind_of = |i: &Issue| {
+            self.team(i.team_id)
+                .ok()
+                .and_then(|t| t.stages.iter().find(|s| s.id == i.stage_id))
+                .map(|s| &s.kind)
+        };
+        let entered = before
+            .is_none_or(|old| old.stage_id != issue.stage_id && kind_of(old) != kind_of(issue));
         for dep in &issue.dependencies {
             let added = before.is_none_or(|old| !old.dependencies.contains(dep));
             // New dependencies must be live; kept ones may have been trashed since.

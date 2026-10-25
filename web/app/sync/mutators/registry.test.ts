@@ -431,6 +431,7 @@ describe("mutator registry", () => {
         followers: [MEMBER],
         attachments: [],
         source_links: [],
+        former_keys: [],
         deleted_at: null,
         archived_at: null,
         done_at: null,

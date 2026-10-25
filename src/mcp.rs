@@ -327,6 +327,15 @@ const TOOLS: &[Tool] = &[
                 "type": "array", "items": { "type": "string" },
                 "description": "Replaces the issues this one depends on, by key or UUID."
             });
+            properties["team"] = json!({
+                "type": "string",
+                "description": "Team key, name or UUID to move the issue to. It gets a new key \
+                    there and the old key keeps resolving. Without stage it lands in the team's \
+                    first stage of the same kind. It leaves its sprint, and its project unless \
+                    the project includes the team. Synced issues can't move."
+            });
+            properties["stage"]["description"] =
+                json!("Stage name in the issue's team, or in team when moving, or its UUID.");
             object(properties, &["issue"])
         },
     },

@@ -21,6 +21,7 @@ import { useQueueState } from "../components/app/workbench";
 import { IssueList } from "../components/app/issue-list";
 import { OfflineBanner } from "../components/app/offline-banner";
 import { SaveStatus } from "../components/app/save-status";
+import { CoreProperties } from "../components/app/issue-properties";
 import { QueryStatus } from "../components/app/query-status";
 import { ToastProvider, useToast } from "../components/ui/toast";
 import { createEngine, SCHEMA, type SyncEngine } from "../sync/engine";
@@ -44,7 +45,7 @@ import { queryClient } from "./query-client";
 import { useIssueCount } from "./stats";
 import { SessionProvider } from "./session";
 import { WorkspaceProvider, useWorkspace } from "./workspace";
-import type { Language, Profile } from "./types";
+import type { Language, Profile, TrackerLink } from "./types";
 import type { ReactNode } from "react";
 
 const profile: Profile = {
@@ -421,6 +422,34 @@ describe("workspace React integration without a DOM", () => {
     expect(html).toContain("Waiting to sync");
     expect(html).toContain("lucide-wifi-off");
     expect(html).not.toContain("Load more");
+  });
+});
+
+function CoreProbe({ synced = false }: { synced?: boolean }) {
+  const { issue } = useIssueDetail("issue");
+  if (!issue) return null;
+  const tracker: TrackerLink | null = synced
+    ? {
+        provider: "openproject",
+        connection_id: "conn",
+        remote_id: "7",
+        project_id: "9",
+        status_name: "New",
+        url: "https://op.example.com/work_packages/7",
+      }
+    : null;
+  return <CoreProperties issue={{ ...issue, tracker }} />;
+}
+
+describe("issue team picker", () => {
+  it("offers every team and stays fixed for synced issues", async () => {
+    const engine = await fixture();
+    const teamButton = (html: string) => buttonTags(html, 'aria-label="Team"');
+    const local = render(engine, <CoreProbe />);
+    expect(local).toContain('<option value="team-1" selected="">Team</option>');
+    expect(teamButton(local)).toHaveLength(1);
+    expect(teamButton(local)[0]).not.toContain('disabled=""');
+    expect(teamButton(render(engine, <CoreProbe synced />))[0]).toContain('disabled=""');
   });
 });
 

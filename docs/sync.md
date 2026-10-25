@@ -112,7 +112,7 @@ Keep the `changes` table, its triggers and `change_horizon`. They are correct an
 `GET sync/bootstrap?client_id=<uuid>` streams the whole always-loaded data set from one `REPEATABLE READ READ ONLY` transaction. The response is `application/x-ndjson`, compressed with gzip when the request's `Accept-Encoding` accepts gzip, and plain otherwise.
 
 ```
-{"cursor":"812:812:","last_mutation_id":0,"schema":5}
+{"cursor":"812:812:","last_mutation_id":0,"schema":6}
 {"entity":"teams","record":{...}}
 {"entity":"issues","record":{...}}
 ...

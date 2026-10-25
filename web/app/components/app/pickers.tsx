@@ -22,6 +22,7 @@ import { useI18n } from "~/lib/i18n";
 import { useWorkspace } from "~/lib/workspace";
 import type { Id, Priority } from "~/lib/types";
 import { PriorityIcon, StageIcon } from "./icons";
+import { TeamIcon } from "./team-icon";
 
 const NONE = "__none";
 const CREATE = "__create";
@@ -115,6 +116,29 @@ export function AssigneePicker({ teamId, ...rest }: PickProps & { teamId?: Id })
       options={options}
       noneLabel={t("assignee.none")}
       noneIcon={<User className="size-4 text-muted-foreground" />}
+    />
+  );
+}
+
+export function TeamPicker({
+  value,
+  onChange,
+  ...rest
+}: Omit<PickProps, "value" | "onChange"> & { value: Id; onChange: (id: Id) => void }) {
+  const { t } = useI18n();
+  const { ws } = useWorkspace();
+  const options = ws.teams.map((team) => ({
+    id: team.id,
+    label: team.name,
+    icon: <TeamIcon team={team} />,
+  }));
+  return (
+    <Select
+      {...rest}
+      options={options}
+      selectedKey={value}
+      onSelectionChange={(k) => onChange(k as Id)}
+      aria-label={rest.label ?? t("field.team")}
     />
   );
 }

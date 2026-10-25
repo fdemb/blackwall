@@ -45,8 +45,10 @@ export function resolveIssue(store: SyncStore, ref: string): string | undefined 
   const key = parseIssueKey(ref);
   if (!key) return store.get("issues", ref)?.id;
   const team = store.all("teams").find((t) => t.key === key.team);
-  const number = team && teamNumber(team.id, key.number);
-  return number && store.baseByIndex("issues", "team_number", number)[0]?.id;
+  if (!team) return undefined;
+  const found = store.baseByIndex("issues", "team_number", teamNumber(team.id, key.number));
+  const current = found.find((issue) => issue.team_id === team.id && issue.number === key.number);
+  return (current ?? found[0])?.id;
 }
 
 export function useIssueRef(ref: string): string | undefined {

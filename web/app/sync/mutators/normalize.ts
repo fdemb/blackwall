@@ -43,6 +43,7 @@ const ISSUE_INPUT: Fields = {
 const ISSUE_PATCH: Fields = {
   title: option,
   description: option,
+  team_id: option,
   stage_id: option,
   assignee: option,
   clear_assignee: defaulted(false),

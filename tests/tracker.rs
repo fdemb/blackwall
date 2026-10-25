@@ -652,7 +652,6 @@ async fn paginated_sync_is_idempotent_and_reconciles_project_and_team_moves() {
         local_number.as_u64().unwrap() + 1,
         "numbers count per team"
     );
-    // Keys have no aliases: the new key resolves and the old one stops resolving.
     let key = |team: Uuid| {
         sqlx::query_scalar::<_, String>("SELECT key FROM teams WHERE id=$1")
             .bind(team)
@@ -668,12 +667,28 @@ async fn paginated_sync_is_idempotent_and_reconciles_project_and_team_moves() {
             .to_string(),
         first_id.as_str().unwrap()
     );
-    assert!(matches!(
+    assert_eq!(
         store
             .issue_by_key(workspace, owner.profile.id, &key_a, number(first))
-            .await,
-        Err(blackwall::error::Error::NotFound)
-    ));
+            .await
+            .unwrap()
+            .to_string(),
+        first_id.as_str().unwrap()
+    );
+    let command = json!({"type":"update_issue","id":first_id,"patch":{"team_id":a}});
+    let (status, value) = call(
+        &app,
+        &owner,
+        "POST",
+        &format!("/internal-api/workspaces/{workspace}/commands"),
+        Some(json!({"command":command})),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "synced issues follow their project mapping: {value}"
+    );
     sqlx::query(
         "WITH f AS (DELETE FROM issue_followers WHERE issue_id=$1) DELETE FROM issues WHERE id=$1",
     )

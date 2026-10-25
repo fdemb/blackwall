@@ -72,7 +72,12 @@ function searchPredicate(
       const document = entry.words;
       if (query.every((word) => document.has(word))) return true;
     }
-    return String(issue.number) === number && (!key || issue.team_id === keyTeam);
+    if (number === undefined) return false;
+    if (String(issue.number) === number && (!key || issue.team_id === keyTeam)) return true;
+    return (
+      keyTeam !== undefined &&
+      issue.former_keys.some((k) => k.team_id === keyTeam && String(k.number) === number)
+    );
   };
 }
 

@@ -38,6 +38,7 @@ export type IndexName<E extends Entity> = E extends "issues"
       | "assignee"
       | "dependency"
       | "team_number"
+      | "former_team_id"
   : E extends "comments"
     ? "issue_id"
     : E extends "time_entries"
@@ -201,7 +202,6 @@ function scalar(record: AnyRecord, key: string): string | null {
   return typeof value === "string" ? value : null;
 }
 
-/** The `team_number` index value: the issue's team and its number there. */
 export function teamNumber(teamId: string, number: number): string {
   return `${teamId}:${number}`;
 }
@@ -234,8 +234,18 @@ const INDEX_DEFS: readonly IndexDef[] = [
     name: "team_number",
     values: (record) => {
       const issue = record as unknown as SyncIssue;
-      return [teamNumber(issue.team_id, issue.number)];
+      return [
+        teamNumber(issue.team_id, issue.number),
+        ...issue.former_keys.map((key) => teamNumber(key.team_id, key.number)),
+      ];
     },
+  },
+  {
+    entity: "issues",
+    name: "former_team_id",
+    values: (record) => [
+      ...new Set((record as unknown as SyncIssue).former_keys.map((key) => key.team_id)),
+    ],
   },
   field("comments", "issue_id", "issue_id"),
   field("time_entries", "issue_id", "issue_id"),

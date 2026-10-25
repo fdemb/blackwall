@@ -6,7 +6,7 @@ use super::{
     provider::{RemoteComment, RemoteIssue, RemotePerson, RemoteStatus},
 };
 use crate::{
-    domain::{Baseline, Issue, TrackerLink},
+    domain::{Baseline, FormerKey, Issue, TrackerLink},
     error::{Error, Result},
     store::persistence::{self, CreationBatch},
 };
@@ -408,6 +408,7 @@ fn new_issue(id: Uuid, team_id: Uuid, stage_id: Uuid) -> Issue {
     Issue {
         id,
         number: 0,
+        former_keys: vec![],
         title: String::new(),
         description: String::new(),
         team_id,
@@ -744,13 +745,10 @@ impl Reconciled {
             .as_ref()
             .map(|old| old.changed_fields(&after))
             .unwrap_or_default();
-        if let Some(old) = &before {
-            if old.team_id != after.team_id {
-                fields.push("team".into());
-            }
-            if without_bookkeeping(&old.tracker) != without_bookkeeping(&after.tracker) {
-                fields.push("tracker".into());
-            }
+        if let Some(old) = &before
+            && without_bookkeeping(&old.tracker) != without_bookkeeping(&after.tracker)
+        {
+            fields.push("tracker".into());
         }
         // Archive bookkeeping can change even when all visible remote fields match.
         let bookkeeping_changed = before.as_ref().is_some_and(|old| {
@@ -797,7 +795,8 @@ impl Writes {
         if changed {
             if let Some(old) = &before {
                 // Numbers are unique per team.
-                if old.team_id != after.team_id {
+                let moved = old.team_id != after.team_id;
+                if moved {
                     allocation
                         .as_mut()
                         .ok_or_else(|| Error::Internal("missing import allocation".into()))?
@@ -810,6 +809,14 @@ impl Writes {
                     persistence::Origin::Remote(&source),
                 )
                 .await?;
+                if moved {
+                    let key = FormerKey {
+                        team_id: old.team_id,
+                        number: old.number,
+                    };
+                    persistence::claim_former_key(conn, import.workspace, after.id, key).await?;
+                    after.former_keys.push(key);
+                }
                 if let Some(allocation) = allocation {
                     allocation.include(&after, import.mapping.team_id);
                 }

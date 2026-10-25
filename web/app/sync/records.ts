@@ -100,12 +100,14 @@ export type SyncIssue = Omit<
   | "followers"
   | "attachments"
   | "source_links"
+  | "former_keys"
 > & {
   labels: Id[];
   dependencies: Id[];
   followers: Id[];
   attachments: Issue["attachments"][number][];
   source_links: Issue["source_links"][number][];
+  former_keys: Issue["former_keys"][number][];
 };
 
 /** Workspace pull shape: only the workspace row itself. */

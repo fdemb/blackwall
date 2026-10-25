@@ -1506,6 +1506,80 @@ mod tests {
     }
 
     #[test]
+    fn issues_move_to_another_team_like_the_store_moves_them() {
+        let (mut w, owner, infra) = setup();
+        let now = Utc::now();
+        let id = |w: &mut Workspace, command| w.apply(owner, command, now).unwrap().id.unwrap();
+        let ops = id(
+            &mut w,
+            Command::CreateTeam {
+                id: None,
+                name: "Ops".into(),
+                key: "OPS".into(),
+                members: vec![owner],
+                default_stage_ids: None,
+            },
+        );
+        let project = id(
+            &mut w,
+            Command::CreateProject {
+                id: None,
+                name: "Infra only".into(),
+                description: String::new(),
+                team_ids: vec![infra],
+            },
+        );
+        let active = |w: &Workspace, team: Uuid| {
+            let stages = &w.teams.iter().find(|t| t.id == team).unwrap().stages;
+            stages
+                .iter()
+                .find(|s| s.kind == StageKind::Active)
+                .unwrap()
+                .id
+        };
+        let mut filed = input(infra);
+        filed.stage_id = Some(active(&w, infra));
+        filed.project_id = Some(project);
+        id(
+            &mut w,
+            Command::CreateIssue {
+                input: input(infra),
+            },
+        );
+        let issue = id(&mut w, Command::CreateIssue { input: filed });
+
+        let patch = IssuePatch {
+            team_id: Some(ops),
+            ..Default::default()
+        };
+        id(&mut w, Command::UpdateIssue { id: issue, patch });
+        let moved = w.issues.iter().find(|i| i.id == issue).unwrap();
+        assert_eq!((moved.team_id, moved.number), (ops, 1));
+        assert_eq!(moved.stage_id, active(&w, ops), "same kind of stage");
+        assert_eq!(moved.project_id, None, "the project excludes Ops");
+        assert_eq!(
+            moved.former_keys,
+            [FormerKey {
+                team_id: infra,
+                number: 2
+            }]
+        );
+        assert_eq!(
+            w.activity.last().unwrap().fields,
+            ["team", "stage", "project"]
+        );
+
+        let next = id(
+            &mut w,
+            Command::CreateIssue {
+                input: input(infra),
+            },
+        );
+        let next = w.issues.iter().find(|i| i.id == next).unwrap();
+        assert_eq!(next.number, 3, "the moved issue's number stays taken");
+    }
+
+    #[test]
     fn invitation_is_one_use_and_public_snapshot_hides_hash() {
         let (mut w, owner, _) = setup();
         let hash = "a".repeat(64);

@@ -57,6 +57,8 @@ All of these are under `/api/v1`:
 
 The issue list accepts `where` (the JSON clause array described in [filters](filters.md)), `search`, `archived`, `trash` and `sort`. Filter values may be names wherever writes take them, and `team`, `stage`, `label`, `project`, `sprint` and `parent` stand for `team_id`, `stage_id`, `labels`, `project_id`, `sprint_id` and `parent_id`. A stage or sprint name matches every team's stage or sprint of that name. `DELETE` on an issue moves it to the trash. Issues stay in the trash for 30 days and are then deleted for good.
 
+`PATCH` with `team` moves an issue to another team under that team's next number. The old key keeps resolving everywhere an issue key is accepted, and the issue lists it in `former_keys`. Numbers are never handed out again. Without `stage` the issue lands in the team's first stage of the same kind. It leaves its sprint, and its project when the project doesn't include the team. Synced issues follow their tracker project and can't move.
+
 `GET .../issues/{issue}/activity` is the issue's history, newest first. Each entry has `actor`, `via`, `action` and the `fields` an update changed.
 
 Every write runs the same `Command` the app runs, through the same transaction. Validation, roles, activity, notifications, webhooks and issue tracker sends therefore behave exactly as they do in the app.

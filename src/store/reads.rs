@@ -12,15 +12,26 @@ pub struct CollectionQuery {
     pub entity_id: Option<Uuid>,
 }
 
+macro_rules! former_keys {
+    () => {
+        "COALESCE((SELECT jsonb_agg(jsonb_build_object('team_id',k.team_id,'number',k.number) ORDER BY k.seq) FROM issue_key_aliases k WHERE k.workspace_id=i.workspace_id AND k.issue_id=i.id),'[]'::jsonb)"
+    };
+}
+
 macro_rules! issue_json {
     () => {
-        r#"(to_jsonb(i)-'workspace_id'-'reminder_generation') || jsonb_build_object(
+        concat!(
+            r#"(to_jsonb(i)-'workspace_id'-'reminder_generation') || jsonb_build_object(
  'tracker',i.tracker-'baseline'-'comments_at'-'comments_imported'-'comments_tried_at',
  'labels',COALESCE((SELECT jsonb_agg(l.label_id ORDER BY l.label_id) FROM issue_labels l WHERE l.workspace_id=i.workspace_id AND l.issue_id=i.id),'[]'::jsonb),
  'dependencies',COALESCE((SELECT jsonb_agg(d.dependency_id ORDER BY d.dependency_id) FROM issue_dependencies d WHERE d.workspace_id=i.workspace_id AND d.issue_id=i.id),'[]'::jsonb),
  'followers',COALESCE((SELECT jsonb_agg(f.user_id ORDER BY f.user_id) FROM issue_followers f WHERE f.workspace_id=i.workspace_id AND f.issue_id=i.id),'[]'::jsonb),
  'attachments',COALESCE((SELECT jsonb_agg(jsonb_build_object('id',a.id,'name',a.filename,'content_type',a.content_type,'size',octet_length(a.bytes)) ORDER BY a.id) FROM attachments a WHERE a.workspace_id=i.workspace_id AND a.issue_id=i.id AND a.comment_id IS NULL),'[]'::jsonb),
- 'source_links',COALESCE((SELECT jsonb_agg(jsonb_build_object('url',s.url,'title',s.title) ORDER BY s.id) FROM source_links s WHERE s.workspace_id=i.workspace_id AND s.issue_id=i.id),'[]'::jsonb))"#
+ 'source_links',COALESCE((SELECT jsonb_agg(jsonb_build_object('url',s.url,'title',s.title) ORDER BY s.id) FROM source_links s WHERE s.workspace_id=i.workspace_id AND s.issue_id=i.id),'[]'::jsonb),
+ 'former_keys',"#,
+            former_keys!(),
+            ")"
+        )
     };
 }
 
@@ -34,7 +45,8 @@ pub(super) const ISSUE_JSON: &str = concat!(
  'subtask_completed',(SELECT count(*) FROM issues child JOIN stages stage ON stage.id=child.stage_id WHERE child.workspace_id=i.workspace_id AND child.parent_id=i.id AND child.deleted_at IS NULL AND stage.kind IN ('done','cancelled')))"#
 );
 
-const ISSUE_SUMMARY_JSON: &str = r#"jsonb_build_object(
+const ISSUE_SUMMARY_JSON: &str = concat!(
+    r#"jsonb_build_object(
  'id',i.id,'number',i.number,'title',i.title,'team_id',i.team_id,'stage_id',i.stage_id,
  'assignee',i.assignee,'created_by',i.created_by,'priority',i.priority,'estimate',i.estimate,'deadline',i.deadline,
  'project_id',i.project_id,'milestone_id',i.milestone_id,'sprint_id',i.sprint_id,
@@ -44,7 +56,11 @@ const ISSUE_SUMMARY_JSON: &str = r#"jsonb_build_object(
  'blocked_count',(SELECT count(*) FROM issue_dependencies d JOIN issues dependency ON dependency.id=d.dependency_id JOIN stages stage ON stage.id=dependency.stage_id WHERE d.issue_id=i.id AND dependency.deleted_at IS NULL AND stage.kind NOT IN ('done','cancelled')),
  'subtask_total',(SELECT count(*) FROM issues child WHERE child.workspace_id=i.workspace_id AND child.parent_id=i.id AND child.deleted_at IS NULL),
  'subtask_completed',(SELECT count(*) FROM issues child JOIN stages stage ON stage.id=child.stage_id WHERE child.workspace_id=i.workspace_id AND child.parent_id=i.id AND child.deleted_at IS NULL AND stage.kind IN ('done','cancelled')),
- 'labels',COALESCE((SELECT jsonb_agg(l.label_id ORDER BY l.label_id) FROM issue_labels l WHERE l.workspace_id=i.workspace_id AND l.issue_id=i.id),'[]'::jsonb))"#;
+ 'labels',COALESCE((SELECT jsonb_agg(l.label_id ORDER BY l.label_id) FROM issue_labels l WHERE l.workspace_id=i.workspace_id AND l.issue_id=i.id),'[]'::jsonb),
+ 'former_keys',"#,
+    former_keys!(),
+    ")"
+);
 
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -322,7 +338,16 @@ fn push_issue_search(
             q.push(" AND i.team_id=(SELECT t.id FROM teams t WHERE t.workspace_id=")
                 .push_bind(workspace)
                 .push(" AND t.key=")
+                .push_bind(key.clone())
+                .push(")");
+            q.push(" UNION SELECT i.id FROM issues i WHERE ");
+            push_issue_filters(q, workspace, filter, clauses)?;
+            q.push(" AND i.id IN (SELECT k.issue_id FROM issue_key_aliases k JOIN teams t ON t.id=k.team_id WHERE k.workspace_id=")
+                .push_bind(workspace)
+                .push(" AND t.key=")
                 .push_bind(key)
+                .push(" AND k.number=")
+                .push_bind(number)
                 .push(")");
         }
     }
@@ -785,7 +810,6 @@ impl Store {
             .ok_or(Error::NotFound)
     }
 
-    /// Resolves an issue key such as `ENG-42`, including trashed and archived issues.
     pub async fn issue_by_key(
         &self,
         workspace: Uuid,
@@ -795,7 +819,8 @@ impl Store {
     ) -> Result<Uuid> {
         let mut conn = self.pool.acquire().await?;
         authorize(&mut conn, workspace, actor).await?;
-        sqlx::query_scalar("SELECT i.id FROM issues i JOIN teams t ON t.id=i.team_id WHERE i.workspace_id=$1 AND t.key=$2 AND i.number=$3")
+        sqlx::query_scalar("SELECT id FROM (SELECT i.id,0 AS former FROM issues i JOIN teams t ON t.id=i.team_id WHERE i.workspace_id=$1 AND t.key=$2 AND i.number=$3 \
+             UNION ALL SELECT k.issue_id,1 FROM issue_key_aliases k JOIN teams t ON t.id=k.team_id WHERE k.workspace_id=$1 AND t.key=$2 AND k.number=$3) found ORDER BY former LIMIT 1")
             .bind(workspace)
             .bind(team_key)
             .bind(number as i64)
