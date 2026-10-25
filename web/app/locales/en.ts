@@ -625,6 +625,22 @@ export const en = {
   "settings.generalSub": "The workspace these settings apply to, and your role in it.",
   "settings.yourRole": "Your role",
   "settings.contents": "Contents",
+  "workspace.saved": "Workspace saved",
+  "workspace.slugChangeHint":
+    "Links to the workspace start with /{{slug}}. Links with the old address stop working.",
+  "workspace.membership": "Your membership",
+  "workspace.transfer": "Transfer ownership",
+  "workspace.transferSub": "Make another member the owner. You become an admin.",
+  "workspace.transferTo": "New owner",
+  "workspace.transferConfirm": "Make {{name}} the owner?",
+  "workspace.transferConfirmSub":
+    "You become an admin and can't take ownership back without the new owner.",
+  "workspace.leave": "Leave workspace",
+  "workspace.leaveSub":
+    "You lose access to its issues and projects until someone invites you again.",
+  "workspace.leaveConfirm": "Leave {{name}}?",
+  "workspace.leaveSoleOwner":
+    "You're the only owner. Make another member the owner before you leave.",
   "account.preferencesSub": "Language, theme, and keyboard behavior.",
   "account.appearance": "Appearance",
   "account.keyboard": "Keyboard",

@@ -736,8 +736,8 @@ export class FakeServer {
       }
     }
     if (name === "set_role" || name === "remove_member") {
-      requireAdmin(role);
       const user = uuid(args.user_id, "user_id");
+      if (name === "set_role" || user !== actor) requireAdmin(role);
       const member = tx.get("members", user);
       if (!member) throw new MutationError(403, "permission denied");
       const targetRole = args.role;
@@ -760,6 +760,18 @@ export class FakeServer {
           throw new MutationError(400, "invalid role");
         tx.put("members", { ...member, role: targetRole });
       }
+    } else if (name === "transfer_ownership") {
+      if (role !== "owner") throw new MutationError(403, "permission denied");
+      const user = uuid(args.user_id, "user_id");
+      if (user === actor) throw new MutationError(400, "you already own the workspace");
+      const member = tx.get("members", user);
+      if (!member) throw new MutationError(404, "not found");
+      tx.put("members", { ...member, role: "owner" });
+      tx.put("members", { ...tx.get("members", actor)!, role: "admin" });
+    } else if (name === "update_workspace") {
+      requireAdmin(role);
+      const [row] = tx.all("workspace");
+      tx.put("workspace", { ...row, name: String(args.name), slug: String(args.slug) });
     } else if (name === "invite" || name === "resend_invitation") {
       requireAdmin(role);
       const expires_at = new Date(Date.parse(this.now()) + 7 * 86_400_000).toISOString();

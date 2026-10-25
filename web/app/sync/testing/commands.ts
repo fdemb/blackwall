@@ -65,6 +65,8 @@ const required = new Map<string, string[]>([
   ["delete_integration", ["id"]],
   ["set_role", ["user_id", "role"]],
   ["remove_member", ["user_id"]],
+  ["update_workspace", ["name", "slug"]],
+  ["transfer_ownership", ["user_id"]],
 ]);
 const strings = new Set([
   "title",
@@ -75,6 +77,7 @@ const strings = new Set([
   "goal",
   "note",
   "url",
+  "slug",
   "logged_at",
   "starts_at",
   "ends_at",

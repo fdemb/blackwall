@@ -12,6 +12,7 @@ import {
 } from "react-router";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
+import General from "../routes/settings-general";
 import Members, { InvitationLink } from "../routes/settings-members";
 import Security from "../routes/settings-security";
 import { Sidebar } from "../components/app/sidebar";
@@ -488,6 +489,19 @@ describe("online-only controls", () => {
       expectGated(attach, "Attach files");
     },
   );
+});
+
+describe("workspace settings", () => {
+  it("lets the only owner rename and hand over the workspace, but not leave it", async () => {
+    const engine = await fixture({ online: true, otherMember: true });
+    const router = createMemoryRouter([{ path: "/", Component: General }]);
+    const html = render(engine, <RouterProvider router={router} />);
+    expect(html).toContain('value="Replica workspace"');
+    expect(html).toContain('value="workspace"');
+    expect(html).toContain("Transfer ownership");
+    expect(html).toContain("You&#x27;re the only owner.");
+    expect(/ disabled=""/.test(buttonTags(html, "Leave workspace")[0])).toBe(true);
+  });
 });
 
 describe("invitation link", () => {
