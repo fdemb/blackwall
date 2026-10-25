@@ -654,6 +654,11 @@ describe("fake sync pull", () => {
       change: true,
       mention: true,
       deadline: false,
+      email_assignment: true,
+      email_reply: true,
+      email_change: false,
+      email_mention: true,
+      email_deadline: true,
     });
     const mine = await f.pull(cursor, f.memberToken);
     const theirs = await f.pull(cursor);
@@ -1211,6 +1216,11 @@ describe("server-only effects and request order", () => {
       change: false,
       mention: false,
       deadline: false,
+      email_assignment: true,
+      email_reply: true,
+      email_change: false,
+      email_mention: true,
+      email_deadline: true,
     });
     f.server.run(f.owner, { type: "update_issue", id: ISSUE, patch: { title: "Changed" } });
     f.server.run(f.owner, {

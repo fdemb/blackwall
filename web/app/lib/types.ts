@@ -322,6 +322,11 @@ export interface AlertPrefsWs {
   change: boolean;
   mention: boolean;
   deadline: boolean;
+  email_assignment: boolean;
+  email_reply: boolean;
+  email_change: boolean;
+  email_mention: boolean;
+  email_deadline: boolean;
 }
 export interface Integration {
   id: Id;
@@ -597,6 +602,11 @@ export type Command =
       change: boolean;
       mention: boolean;
       deadline: boolean;
+      email_assignment: boolean;
+      email_reply: boolean;
+      email_change: boolean;
+      email_mention: boolean;
+      email_deadline: boolean;
     }
   | { type: "create_integration"; id?: Id; name: string; webhook_url: string; secret: string }
   | { type: "update_integration"; id: Id; enabled: boolean }

@@ -880,6 +880,11 @@ async fn complete_contract_on_postgres() {
             change: true,
             mention: true,
             deadline: false,
+            email_assignment: true,
+            email_reply: true,
+            email_change: true,
+            email_mention: true,
+            email_deadline: true,
         },
     )
     .await;

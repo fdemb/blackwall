@@ -8,7 +8,27 @@ import { cn } from "~/lib/utils";
 
 const KINDS = ["assignment", "reply", "change", "mention", "deadline"] as const;
 
-type Prefs = Record<(typeof KINDS)[number], boolean>;
+type Kind = (typeof KINDS)[number];
+type Prefs = Record<Kind | `email_${Kind}`, boolean>;
+
+const CHANNELS = {
+  inbox: (k: Kind) => k,
+  email: (k: Kind) => `email_${k}` as const,
+};
+
+/** The server's column defaults, for a member who has never saved a choice. */
+const DEFAULTS: Prefs = {
+  assignment: true,
+  reply: true,
+  change: true,
+  mention: true,
+  deadline: true,
+  email_assignment: true,
+  email_reply: true,
+  email_change: false,
+  email_mention: true,
+  email_deadline: true,
+};
 
 const STATUS_LABEL = {
   saving: "account.alertsSaving",
@@ -16,9 +36,12 @@ const STATUS_LABEL = {
   failed: "account.alertsFailed",
 } as const;
 
-/** This workspace's choices. Without a stored row every kind reaches the inbox. */
 function storedAlerts(mine: Partial<Prefs> | undefined): Prefs {
-  return Object.fromEntries(KINDS.map((k) => [k, mine?.[k] ?? true])) as Prefs;
+  const entries = Object.entries(DEFAULTS).map(([field, on]) => [
+    field,
+    mine?.[field as keyof Prefs] ?? on,
+  ]);
+  return Object.fromEntries(entries) as Prefs;
 }
 
 export default function Notifications() {
@@ -73,22 +96,43 @@ export default function Notifications() {
           </p>
         }
       >
-        <div className="divide-y divide-border">
-          {KINDS.map((k) => (
-            <Switch
-              key={k}
-              isSelected={local[k]}
-              onChange={(v) => set({ [k]: v })}
-              className="flex-row-reverse justify-between gap-8 px-4 py-4 sm:px-5"
-            >
-              <span>
-                <span className="block font-medium">{t(`alert.${k}`)}</span>
-                <span className="mt-0.5 block  text-muted-foreground">{t(`alert.${k}Sub`)}</span>
-              </span>
-            </Switch>
-          ))}
-        </div>
+        <Switches channel="inbox" local={local} set={set} />
+      </SettingsSection>
+      <SettingsSection title={t("account.alertsEmail")} description={t("account.alertsEmailSub")}>
+        <Switches channel="email" local={local} set={set} />
       </SettingsSection>
     </SettingsPage>
+  );
+}
+
+function Switches({
+  channel,
+  local,
+  set,
+}: {
+  channel: keyof typeof CHANNELS;
+  local: Prefs;
+  set: (patch: Partial<Prefs>) => void;
+}) {
+  const { t } = useI18n();
+  return (
+    <div className="divide-y divide-border">
+      {KINDS.map((k) => {
+        const field = CHANNELS[channel](k);
+        return (
+          <Switch
+            key={k}
+            isSelected={local[field]}
+            onChange={(v) => set({ [field]: v })}
+            className="flex-row-reverse justify-between gap-8 px-4 py-4 sm:px-5"
+          >
+            <span>
+              <span className="block font-medium">{t(`alert.${k}`)}</span>
+              <span className="mt-0.5 block  text-muted-foreground">{t(`alert.${k}Sub`)}</span>
+            </span>
+          </Switch>
+        );
+      })}
+    </div>
   );
 }

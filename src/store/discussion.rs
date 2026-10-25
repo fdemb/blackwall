@@ -127,9 +127,25 @@ impl Operation<'_> {
                 change,
                 mention,
                 deadline,
+                email_assignment,
+                email_reply,
+                email_change,
+                email_mention,
+                email_deadline,
             } => {
-                self.configure_alerts([assignment, reply, change, mention, deadline])
-                    .await?;
+                self.configure_alerts([
+                    assignment,
+                    reply,
+                    change,
+                    mention,
+                    deadline,
+                    email_assignment,
+                    email_reply,
+                    email_change,
+                    email_mention,
+                    email_deadline,
+                ])
+                .await?;
                 return Ok(None);
             }
             Command::CreateIntegration {
@@ -977,8 +993,9 @@ impl Operation<'_> {
         Ok(())
     }
 
-    /// `alerts` holds the assignment, reply, change, mention and deadline flags.
-    async fn configure_alerts(&mut self, alerts: [bool; 5]) -> Result<()> {
+    /// `alerts` holds the assignment, reply, change, mention and deadline flags for the inbox,
+    /// then the same five for email.
+    async fn configure_alerts(&mut self, alerts: [bool; 10]) -> Result<()> {
         self.discussion_lock(&format!("preferences:{}", self.actor))
             .await?;
 
@@ -996,24 +1013,23 @@ impl Operation<'_> {
             self.created("alert_preferences", self.actor);
         }
 
-        let [assignment, reply, change, mention, deadline] = alerts;
-        sqlx::query(
+        let mut query = sqlx::query(
             "INSERT INTO alert_preferences(workspace_id,user_id,assignment,reply,\
-            change,mention,deadline) VALUES($1,$2,$3,$4,$5,$6,$7) ON \
+            change,mention,deadline,email_assignment,email_reply,email_change,\
+            email_mention,email_deadline) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) ON \
             CONFLICT(workspace_id,user_id) DO UPDATE SET \
             assignment=EXCLUDED.assignment,reply=EXCLUDED.reply,\
             change=EXCLUDED.change,mention=EXCLUDED.mention,\
-            deadline=EXCLUDED.deadline",
+            deadline=EXCLUDED.deadline,email_assignment=EXCLUDED.email_assignment,\
+            email_reply=EXCLUDED.email_reply,email_change=EXCLUDED.email_change,\
+            email_mention=EXCLUDED.email_mention,email_deadline=EXCLUDED.email_deadline",
         )
         .bind(self.workspace_id)
-        .bind(self.actor)
-        .bind(assignment)
-        .bind(reply)
-        .bind(change)
-        .bind(mention)
-        .bind(deadline)
-        .execute(&mut *self.tx)
-        .await?;
+        .bind(self.actor);
+        for alert in alerts {
+            query = query.bind(alert);
+        }
+        query.execute(&mut *self.tx).await?;
         Ok(())
     }
 

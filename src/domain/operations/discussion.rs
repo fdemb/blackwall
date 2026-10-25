@@ -260,6 +260,11 @@ impl Workspace {
                 change,
                 mention,
                 deadline,
+                email_assignment,
+                email_reply,
+                email_change,
+                email_mention,
+                email_deadline,
             } => {
                 self.alert_preferences.retain(|p| p.user_id != actor);
                 self.alert_preferences.push(AlertPreferences {
@@ -270,6 +275,11 @@ impl Workspace {
                     change,
                     mention,
                     deadline,
+                    email_assignment,
+                    email_reply,
+                    email_change,
+                    email_mention,
+                    email_deadline,
                 });
                 return Ok(None);
             }

@@ -275,6 +275,11 @@ pub enum Command {
         change: bool,
         mention: bool,
         deadline: bool,
+        email_assignment: bool,
+        email_reply: bool,
+        email_change: bool,
+        email_mention: bool,
+        email_deadline: bool,
     },
     CreateIntegration {
         id: Option<Uuid>,

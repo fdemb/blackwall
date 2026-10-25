@@ -243,7 +243,7 @@ async fn bootstrap_all_entities_match_pull_and_rest_keeps_counts() {
         json!({"type":"save_view","name":"Mine","shared":false,"filter":{}}),
     )
     .await;
-    command(&app, &owner, ws, json!({"type":"configure_alerts","assignment":true,"reply":true,"change":true,"mention":true,"deadline":true})).await;
+    command(&app, &owner, ws, json!({"type":"configure_alerts","assignment":true,"reply":true,"change":true,"mention":true,"deadline":true,"email_assignment":true,"email_reply":true,"email_change":false,"email_mention":true,"email_deadline":true})).await;
     created(&app, &owner, ws, json!({"type":"invite","email":"invited@example.com","role":"member","token_hash":"hidden"})).await;
     created(&app, &owner, ws, json!({"type":"create_integration","name":"Webhook","webhook_url":"https://example.com/hook","secret":"hidden"})).await;
     let issue = created(
@@ -422,7 +422,7 @@ async fn bootstrap_visibility_matches_pull_for_members_and_admins() {
             json!({"type":"save_view","name":"Private","shared":false,"filter":{}}),
         )
         .await;
-        command(&app, user, ws, json!({"type":"configure_alerts","assignment":true,"reply":true,"change":true,"mention":true,"deadline":true})).await;
+        command(&app, user, ws, json!({"type":"configure_alerts","assignment":true,"reply":true,"change":true,"mention":true,"deadline":true,"email_assignment":true,"email_reply":true,"email_change":false,"email_mention":true,"email_deadline":true})).await;
         sqlx::query("INSERT INTO notifications(id,workspace_id,user_id,kind,message,created_at,dedup_key) VALUES(gen_random_uuid(),$1,$2,'mention','Private',now(),$2::text)").bind(ws).bind(user.profile.id).execute(&store.pool).await.unwrap();
     }
     let shared = created(

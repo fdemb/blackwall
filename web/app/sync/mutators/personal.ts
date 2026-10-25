@@ -79,5 +79,10 @@ export const configureAlerts: Mutator<ArgsOf<"configure_alerts">> = (tx, args, c
     change: args.change,
     mention: args.mention,
     deadline: args.deadline,
+    email_assignment: args.email_assignment,
+    email_reply: args.email_reply,
+    email_change: args.email_change,
+    email_mention: args.email_mention,
+    email_deadline: args.email_deadline,
   });
 };

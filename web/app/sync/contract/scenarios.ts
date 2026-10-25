@@ -476,6 +476,11 @@ export const scenarios = {
       change: false,
       mention: true,
       deadline: false,
+      email_assignment: false,
+      email_reply: true,
+      email_change: true,
+      email_mention: false,
+      email_deadline: true,
     }),
   },
   update_integration: {

@@ -307,6 +307,11 @@ pub struct AlertPreferences {
     pub change: bool,
     pub mention: bool,
     pub deadline: bool,
+    pub email_assignment: bool,
+    pub email_reply: bool,
+    pub email_change: bool,
+    pub email_mention: bool,
+    pub email_deadline: bool,
 }
 
 impl AlertPreferences {

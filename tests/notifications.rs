@@ -749,6 +749,11 @@ async fn workspace_preferences_gate_the_inbox_and_profile_alerts_do_not() {
             change: true,
             mention: true,
             deadline: true,
+            email_assignment: true,
+            email_reply: true,
+            email_change: true,
+            email_mention: true,
+            email_deadline: true,
         },
     )
     .await;

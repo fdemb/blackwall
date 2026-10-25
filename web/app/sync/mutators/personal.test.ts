@@ -328,6 +328,11 @@ describe("configure_alerts", () => {
       change: false,
       mention: false,
       deadline: false,
+      email_assignment: false,
+      email_reply: true,
+      email_change: true,
+      email_mention: true,
+      email_deadline: false,
     });
     expect(store.get("alert_preferences", MEMBER)).toEqual({
       ...(before as RecordOf["alert_preferences"]),
@@ -336,6 +341,11 @@ describe("configure_alerts", () => {
       change: false,
       mention: false,
       deadline: false,
+      email_assignment: false,
+      email_reply: true,
+      email_change: true,
+      email_mention: true,
+      email_deadline: false,
     });
   });
 
@@ -347,6 +357,11 @@ describe("configure_alerts", () => {
       change: true,
       mention: true,
       deadline: true,
+      email_assignment: true,
+      email_reply: true,
+      email_change: false,
+      email_mention: true,
+      email_deadline: true,
     });
     expect(store.replayErrors().size).toBe(0);
     expect(store.get("alert_preferences", OWNER)).toEqual({
@@ -357,6 +372,11 @@ describe("configure_alerts", () => {
       change: true,
       mention: true,
       deadline: true,
+      email_assignment: true,
+      email_reply: true,
+      email_change: false,
+      email_mention: true,
+      email_deadline: true,
     });
   });
 
@@ -367,6 +387,11 @@ describe("configure_alerts", () => {
       change: true,
       mention: true,
       deadline: true,
+      email_assignment: true,
+      email_reply: true,
+      email_change: false,
+      email_mention: true,
+      email_deadline: true,
     });
   });
 
@@ -378,6 +403,11 @@ describe("configure_alerts", () => {
       change: true,
       mention: true,
       deadline: true,
+      email_assignment: true,
+      email_reply: true,
+      email_change: false,
+      email_mention: true,
+      email_deadline: true,
     });
     expect(store.replayErrors().size).toBe(0);
     rejects(

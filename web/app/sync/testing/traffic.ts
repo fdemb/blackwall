@@ -46,6 +46,11 @@ export function convergenceCommand({
         change: true,
         mention: true,
         deadline: false,
+        email_assignment: true,
+        email_reply: true,
+        email_change: false,
+        email_mention: true,
+        email_deadline: true,
       },
       markAllRead,
     ] satisfies Command[]);
@@ -105,6 +110,11 @@ export function convergenceCommand({
       change: true,
       mention: true,
       deadline: true,
+      email_assignment: true,
+      email_reply: true,
+      email_change: false,
+      email_mention: true,
+      email_deadline: true,
     },
   ];
   const deleted = store.all("issues").filter((row) => row.deleted_at !== null);
