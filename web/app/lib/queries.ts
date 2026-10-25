@@ -2,6 +2,7 @@ import { useEngine, useScope, useSyncStatus, useView } from "../sync/react";
 import { withCounts, type CountedIssue } from "../sync/derived";
 import { teamNumber, type SyncStore } from "../sync/store";
 import { parseIssueKey } from "./identifiers";
+import { teamByKey } from "./teams";
 import { shallowEqual } from "../sync/selection";
 import type { IssueFilter } from "./types";
 import { filterIssues } from "./issue-filter";
@@ -44,7 +45,7 @@ export function countedIssue(store: SyncStore, id: string): CountedIssue | undef
 export function resolveIssue(store: SyncStore, ref: string): string | undefined {
   const key = parseIssueKey(ref);
   if (!key) return store.get("issues", ref)?.id;
-  const team = store.all("teams").find((t) => t.key === key.team);
+  const team = teamByKey(store.all("teams"), key.team);
   if (!team) return undefined;
   const found = store.baseByIndex("issues", "team_number", teamNumber(team.id, key.number));
   const current = found.find((issue) => issue.team_id === team.id && issue.number === key.number);

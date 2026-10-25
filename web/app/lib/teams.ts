@@ -1,5 +1,13 @@
 import type { Id, Stage, TeamColor, TeamIcon } from "./types";
 
+/** The team that has or had `key`. No two teams share a key, former ones included. */
+export function teamByKey<T extends { key: string; former_keys: readonly string[] }>(
+  teams: readonly T[],
+  key: string,
+): T | undefined {
+  return teams.find((team) => team.key === key || team.former_keys.includes(key));
+}
+
 /** Mirrors `TEAM_ICONS` in `src/domain.rs`. The first is the default for new teams. */
 export const TEAM_ICONS = [
   "users",

@@ -19,6 +19,8 @@ const required = new Map<string, string[]>([
   ["set_team_members", ["id", "members"]],
   ["set_team_archive", ["id"]],
   ["set_team_appearance", ["id", "icon", "color"]],
+  ["update_team", ["id", "name", "key"]],
+  ["delete_team", ["id"]],
   ["create_stage", ["team_id", "name", "kind", "position"]],
   ["update_stage", ["id", "team_id", "name", "kind", "position"]],
   ["delete_stage", ["id", "team_id", "replacement"]],

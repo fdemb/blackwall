@@ -97,7 +97,13 @@ impl Transfer {
             identities: BTreeMap::new(),
         };
         self.remap_planning(&remap)?;
-        self.claim_team_keys(&mut workspace.teams.iter().map(|t| t.key.clone()).collect())?;
+        self.claim_team_keys(
+            &mut workspace
+                .teams
+                .iter()
+                .flat_map(|t| std::iter::once(&t.key).chain(&t.former_keys).cloned())
+                .collect(),
+        )?;
         self.remap_issues(&remap)?;
         self.remap_records(&mut remap)?;
 
@@ -188,6 +194,7 @@ impl Transfer {
 
     /// Gives each team its key, or a free variant when `taken` or an earlier
     /// team holds it. Teams without a key get one derived from the name.
+    /// Former keys that are already taken are dropped.
     pub fn claim_team_keys(&mut self, taken: &mut BTreeSet<String>) -> Result<()> {
         for team in &mut self.teams {
             let base = if team.key.is_empty() {
@@ -198,6 +205,11 @@ impl Transfer {
             };
             team.key = unique_team_key(&base, taken)?;
             taken.insert(team.key.clone());
+        }
+        // Former keys only matter for old links, so drop the ones held here.
+        for team in &mut self.teams {
+            team.former_keys
+                .retain(|key| validate_team_key(key).is_ok() && taken.insert(key.clone()));
         }
         Ok(())
     }

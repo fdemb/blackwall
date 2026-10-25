@@ -405,7 +405,12 @@ pub fn router(store: Store) -> Router<Store> {
             &format!("{workspace}/teams"),
             get(resources::teams).post(resources::create_team),
         )
-        .route(&format!("{workspace}/teams/{{team}}"), get(resources::team))
+        .route(
+            &format!("{workspace}/teams/{{team}}"),
+            get(resources::team)
+                .patch(resources::update_team)
+                .delete(resources::delete_team),
+        )
         .route(
             &format!("{workspace}/teams/{{team}}/stages"),
             get(resources::stages).post(resources::create_stage),
@@ -554,6 +559,8 @@ fn cors() -> tower_http::cors::CorsLayer {
         resources::teams,
         resources::team,
         resources::create_team,
+        resources::update_team,
+        resources::delete_team,
         resources::stages,
         resources::stage,
         resources::create_stage,

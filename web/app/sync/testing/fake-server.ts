@@ -776,6 +776,13 @@ export class FakeServer {
       if (!member) throw new MutationError(404, "not found");
       tx.put("members", { ...member, role: "owner" });
       tx.put("members", { ...tx.get("members", actor)!, role: "admin" });
+    } else if (name === "delete_team") {
+      requireAdmin(role);
+      const team = uuid(args.id, "id");
+      if (!tx.get("teams", team)) throw new MutationError(404, "not found");
+      if (tx.all("issues").some((issue) => issue.team_id === team))
+        throw new MutationError(409, "team still has issues; move or delete them first");
+      this.deleteTeam(tx, team);
     } else if (name === "update_workspace") {
       requireAdmin(role);
       const [row] = tx.all("workspace");
@@ -979,6 +986,30 @@ export class FakeServer {
       seen.add(id);
       if (this.takenId(id)) throw new MutationError(409, "id already exists");
     }
+  }
+
+  private deleteTeam(tx: Tables, team: string): void {
+    tx.delete("teams", team);
+    for (const member of tx.all("members"))
+      if (member.team_ids.includes(team))
+        tx.put("members", { ...member, team_ids: member.team_ids.filter((id) => id !== team) });
+    for (const project of tx.all("projects"))
+      if (project.team_ids.includes(team))
+        tx.put("projects", {
+          ...project,
+          version: project.version + 1,
+          team_ids: project.team_ids.filter((id) => id !== team),
+        });
+    for (const sprint of tx.all("sprints"))
+      if (sprint.team_id === team) tx.delete("sprints", sprint.id);
+    for (const issue of tx.all("issues"))
+      if (issue.former_keys.some((key) => key.team_id === team))
+        tx.put("issues", {
+          ...issue,
+          version: issue.version + 1,
+          updated_at: this.now(),
+          former_keys: issue.former_keys.filter((key) => key.team_id !== team),
+        });
   }
 
   private removeFromTables(tx: Tables, user: string): void {

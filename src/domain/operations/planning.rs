@@ -42,6 +42,14 @@ impl Workspace {
                 team.color = color;
                 Ok(id)
             }
+            Command::UpdateTeam { id, name, key } => {
+                self.update_team(actor, id, name, key)?;
+                Ok(id)
+            }
+            Command::DeleteTeam { id } => {
+                self.delete_team(actor, id)?;
+                Ok(id)
+            }
             Command::CreateStage {
                 id,
                 team_id,
@@ -286,6 +294,53 @@ impl Workspace {
         find_mut(&mut self.teams, |t| t.id == id)
     }
 
+    /// Fails when another team holds `key`, now or as a former key.
+    fn claimable_team_key(&self, team: Option<Uuid>, key: &str) -> Result<()> {
+        if self
+            .teams
+            .iter()
+            .any(|t| Some(t.id) != team && (t.key == key || t.former_keys.iter().any(|k| k == key)))
+        {
+            return Err(Error::Conflict("team key already exists".into()));
+        }
+        Ok(())
+    }
+
+    fn update_team(&mut self, actor: Uuid, id: Uuid, name: String, key: String) -> Result<()> {
+        self.admin(actor)?;
+        text(&name, 200)?;
+        super::super::validate_team_key(&key)?;
+        self.claimable_team_key(Some(id), &key)?;
+        let team = self.team_mut(id)?;
+        if team.key != key {
+            let former = std::mem::replace(&mut team.key, key);
+            team.former_keys.retain(|k| *k != team.key);
+            team.former_keys.push(former);
+            team.former_keys.sort();
+        }
+        team.name = name;
+        Ok(())
+    }
+
+    fn delete_team(&mut self, actor: Uuid, id: Uuid) -> Result<()> {
+        self.admin(actor)?;
+        self.team(id)?;
+        if self.issues.iter().any(|i| i.team_id == id) {
+            return Err(Error::Conflict(
+                "team still has issues; move or delete them first".into(),
+            ));
+        }
+        for issue in &mut self.issues {
+            issue.former_keys.retain(|k| k.team_id != id);
+        }
+        for project in &mut self.projects {
+            project.team_ids.retain(|team| *team != id);
+        }
+        self.sprints.retain(|s| s.team_id != id);
+        self.teams.retain(|t| t.id != id);
+        Ok(())
+    }
+
     fn create_team(
         &mut self,
         actor: Uuid,
@@ -298,9 +353,7 @@ impl Workspace {
         self.admin(actor)?;
         text(&name, 200)?;
         super::super::validate_team_key(&key)?;
-        if self.teams.iter().any(|t| t.key == key) {
-            return Err(Error::Conflict("team key already exists".into()));
-        }
+        self.claimable_team_key(None, &key)?;
         for user in &members {
             self.member(*user)?;
         }
@@ -338,6 +391,7 @@ impl Workspace {
             id,
             name,
             key,
+            former_keys: vec![],
             members,
             stages,
             archive_after_days: super::super::default_archive_days(),

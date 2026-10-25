@@ -62,6 +62,10 @@ pub struct Team {
     /// Transfers without one get a key derived from the name.
     #[serde(default)]
     pub key: String,
+    /// Keys the team had before, sorted. Issue keys under them keep resolving,
+    /// and no other team can take them.
+    #[serde(default)]
+    pub former_keys: Vec<String>,
     pub members: Vec<Uuid>,
     pub stages: Vec<Stage>,
     /// Days after entering Done before auto-archive. Null means never.
@@ -1204,6 +1208,62 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn teams_rekey_without_freeing_old_keys_and_delete_only_when_empty() {
+        let (mut w, owner, team) = setup();
+        let now = Utc::now();
+        let rekey = |key: &str| Command::UpdateTeam {
+            id: team,
+            name: "Platform".into(),
+            key: key.into(),
+        };
+        w.apply(owner, rekey("PLAT"), now).unwrap();
+        assert_eq!(
+            (w.teams[0].name.as_str(), w.teams[0].key.as_str()),
+            ("Platform", "PLAT")
+        );
+        assert_eq!(w.teams[0].former_keys, ["INF"]);
+        let taken = Command::CreateTeam {
+            id: None,
+            name: "Infra again".into(),
+            key: "INF".into(),
+            members: vec![],
+            default_stage_ids: None,
+        };
+        assert!(matches!(
+            w.apply(owner, taken, now),
+            Err(Error::Conflict(_))
+        ));
+        w.apply(owner, rekey("INF"), now).unwrap();
+        assert_eq!(w.teams[0].former_keys, ["PLAT"]);
+
+        let member = Uuid::new_v4();
+        w.members.push(Member {
+            version: 1,
+            user_id: member,
+            role: Role::Member,
+        });
+        assert!(matches!(
+            w.apply(member, Command::DeleteTeam { id: team }, now),
+            Err(Error::Forbidden)
+        ));
+        let issue = w
+            .apply(owner, Command::CreateIssue { input: input(team) }, now)
+            .unwrap()
+            .id
+            .unwrap();
+        w.apply(owner, Command::DeleteIssue { id: issue }, now)
+            .unwrap();
+        assert!(matches!(
+            w.apply(owner, Command::DeleteTeam { id: team }, now),
+            Err(Error::Conflict(_)),
+        ));
+        w.issues.clear();
+        w.apply(owner, Command::DeleteTeam { id: team }, now)
+            .unwrap();
+        assert!(w.teams.is_empty());
     }
 
     #[test]

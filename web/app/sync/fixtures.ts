@@ -10,6 +10,7 @@ export function makeTeam(id = "team-1"): Team {
     version: 1,
     name: "Team",
     key: "TEAM",
+    former_keys: [],
     members: [],
     stages: [
       { id: "stage-todo", version: 1, name: "Todo", kind: "active", position: 0 },

@@ -31,6 +31,18 @@ pub enum Command {
         icon: String,
         color: String,
     },
+    /// Renames the team and changes its key. Issue keys under a former key keep
+    /// resolving, and no other team can take a key this team has used.
+    UpdateTeam {
+        id: Uuid,
+        name: String,
+        key: String,
+    },
+    /// Deletes the team with its stages, sprints and memberships. Refused while
+    /// it holds any issue, archived and trashed ones included.
+    DeleteTeam {
+        id: Uuid,
+    },
     CreateStage {
         id: Option<Uuid>,
         team_id: Uuid,
@@ -355,6 +367,8 @@ impl Command {
             | Self::SetTeamMembers { .. }
             | Self::SetTeamArchive { .. }
             | Self::SetTeamAppearance { .. }
+            | Self::UpdateTeam { .. }
+            | Self::DeleteTeam { .. }
             | Self::CreateStage { .. }
             | Self::UpdateStage { .. }
             | Self::DeleteStage { .. }
@@ -404,6 +418,8 @@ impl Command {
             Self::SetTeamMembers { .. } => "set_team_members",
             Self::SetTeamArchive { .. } => "set_team_archive",
             Self::SetTeamAppearance { .. } => "set_team_appearance",
+            Self::UpdateTeam { .. } => "update_team",
+            Self::DeleteTeam { .. } => "delete_team",
             Self::CreateStage { .. } => "create_stage",
             Self::UpdateStage { .. } => "update_stage",
             Self::DeleteStage { .. } => "delete_stage",

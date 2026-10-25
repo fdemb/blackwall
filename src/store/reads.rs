@@ -335,14 +335,14 @@ fn push_issue_search(
         push_issue_filters(q, workspace, filter, clauses)?;
         q.push(" AND i.number=").push_bind(number);
         if let Some(key) = key {
-            q.push(" AND i.team_id=(SELECT t.id FROM teams t WHERE t.workspace_id=")
+            q.push(" AND i.team_id=(SELECT t.team_id FROM team_keys t WHERE t.workspace_id=")
                 .push_bind(workspace)
                 .push(" AND t.key=")
                 .push_bind(key.clone())
                 .push(")");
             q.push(" UNION SELECT i.id FROM issues i WHERE ");
             push_issue_filters(q, workspace, filter, clauses)?;
-            q.push(" AND i.id IN (SELECT k.issue_id FROM issue_key_aliases k JOIN teams t ON t.id=k.team_id WHERE k.workspace_id=")
+            q.push(" AND i.id IN (SELECT k.issue_id FROM issue_key_aliases k JOIN team_keys t ON t.workspace_id=k.workspace_id AND t.team_id=k.team_id WHERE k.workspace_id=")
                 .push_bind(workspace)
                 .push(" AND t.key=")
                 .push_bind(key)
@@ -416,7 +416,7 @@ pub(super) fn collection_select(kind: &str) -> Result<(&'static str, &'static st
     Ok(match kind {
         "teams" => (
             "teams t",
-            r#"(to_jsonb(t)-'workspace_id') || jsonb_build_object('members',COALESCE((SELECT jsonb_agg(m.user_id ORDER BY m.user_id) FROM team_members m WHERE m.team_id=t.id),'[]'::jsonb),'stages',COALESCE((SELECT jsonb_agg(to_jsonb(s)-'workspace_id'-'team_id' ORDER BY s.position,s.id) FROM stages s WHERE s.team_id=t.id),'[]'::jsonb))"#,
+            r#"(to_jsonb(t)-'workspace_id') || jsonb_build_object('members',COALESCE((SELECT jsonb_agg(m.user_id ORDER BY m.user_id) FROM team_members m WHERE m.team_id=t.id),'[]'::jsonb),'stages',COALESCE((SELECT jsonb_agg(to_jsonb(s)-'workspace_id'-'team_id' ORDER BY s.position,s.id) FROM stages s WHERE s.team_id=t.id),'[]'::jsonb),'former_keys',COALESCE((SELECT jsonb_agg(k.key ORDER BY k.key COLLATE "C") FROM team_keys k WHERE k.workspace_id=t.workspace_id AND k.team_id=t.id AND k.key<>t.key),'[]'::jsonb))"#,
             "t.name,t.id",
         ),
         "labels" => ("labels t", "to_jsonb(t)-'workspace_id'", "t.name,t.id"),
@@ -819,8 +819,8 @@ impl Store {
     ) -> Result<Uuid> {
         let mut conn = self.pool.acquire().await?;
         authorize(&mut conn, workspace, actor).await?;
-        sqlx::query_scalar("SELECT id FROM (SELECT i.id,0 AS former FROM issues i JOIN teams t ON t.id=i.team_id WHERE i.workspace_id=$1 AND t.key=$2 AND i.number=$3 \
-             UNION ALL SELECT k.issue_id,1 FROM issue_key_aliases k JOIN teams t ON t.id=k.team_id WHERE k.workspace_id=$1 AND t.key=$2 AND k.number=$3) found ORDER BY former LIMIT 1")
+        sqlx::query_scalar("SELECT id FROM (SELECT i.id,0 AS former FROM issues i JOIN team_keys t ON t.workspace_id=i.workspace_id AND t.team_id=i.team_id WHERE i.workspace_id=$1 AND t.key=$2 AND i.number=$3 \
+             UNION ALL SELECT k.issue_id,1 FROM issue_key_aliases k JOIN team_keys t ON t.workspace_id=k.workspace_id AND t.team_id=k.team_id WHERE k.workspace_id=$1 AND t.key=$2 AND k.number=$3) found ORDER BY former LIMIT 1")
             .bind(workspace)
             .bind(team_key)
             .bind(number as i64)

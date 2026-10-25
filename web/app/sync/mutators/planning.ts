@@ -27,6 +27,7 @@ import { isProjectHealth, isProjectStatus } from "../../lib/projects";
 function copyTeam(team: DeepReadonly<Team>): Team {
   return {
     ...team,
+    former_keys: [...team.former_keys],
     members: [...team.members],
     stages: team.stages.map((stage) => ({ ...stage })),
   };
@@ -63,20 +64,13 @@ export const createTeam: Mutator<ArgsOf<"create_team">> = (tx, args, ctx) => {
   // Order mirrors `planning::CreateTeam`: name, key, members, stage ids, then
   // the client id and the key's uniqueness.
   checkText(args.name, 200);
-  if (!isTeamKey(args.key)) {
-    throw new MutationError(
-      400,
-      "team key must be 1 to 4 uppercase letters or digits, starting with a letter",
-    );
-  }
+  checkTeamKey(args.key);
   const members = dedupeSortUuids(args.members);
   for (const user of members) requireMember(tx, user);
   const stageIds = reserveStageIds(tx, args.default_stage_ids, ctx);
   const id = reserveClientId(tx, args.id, ctx);
   if (stageIds.includes(id)) throw new MutationError(409, "id already exists");
-  if (tx.all("teams").some((team) => team.key === args.key && team.id !== id)) {
-    throw new MutationError(409, "team key already exists");
-  }
+  checkKeyFree(tx, id, args.key);
   // Replay upserts preserve pulled stages and archive settings,
   // including changes made after the server created this team.
   const previous = tx.get("teams", id);
@@ -85,6 +79,7 @@ export const createTeam: Mutator<ArgsOf<"create_team">> = (tx, args, ctx) => {
     version: previous?.version ?? 1,
     name: args.name,
     key: args.key,
+    former_keys: previous ? [...previous.former_keys] : [],
     members,
     stages: previous
       ? previous.stages.map((stage) => ({ ...stage }))
@@ -105,6 +100,23 @@ export const createTeam: Mutator<ArgsOf<"create_team">> = (tx, args, ctx) => {
   });
   for (const user of members) joinTeam(tx, user, id);
 };
+
+function checkTeamKey(key: string): void {
+  if (!isTeamKey(key)) {
+    throw new MutationError(
+      400,
+      "team key must be 1 to 4 uppercase letters or digits, starting with a letter",
+    );
+  }
+}
+
+/** Other teams' former keys stay reserved too, so old issue links can't change hands. */
+function checkKeyFree(tx: Tx, id: string, key: string): void {
+  const taken = tx
+    .all("teams")
+    .some((team) => team.id !== id && (team.key === key || team.former_keys.includes(key)));
+  if (taken) throw new MutationError(409, "team key already exists");
+}
 
 /** One distinct, unused id per default stage. */
 function reserveStageIds(
@@ -167,6 +179,22 @@ export const setTeamAppearance: Mutator<ArgsOf<"set_team_appearance">> = (tx, ar
   const next = copyTeam(team);
   next.icon = args.icon;
   next.color = args.color;
+  tx.put("teams", next);
+};
+
+export const updateTeam: Mutator<ArgsOf<"update_team">> = (tx, args, ctx) => {
+  requireAdmin(requireRole(tx, ctx.actor, "update_team", args));
+  // Order mirrors `planning::UpdateTeam`: name, key, the team lookup, then the key's uniqueness.
+  checkText(args.name, 200);
+  checkTeamKey(args.key);
+  const team = requireRecord(tx, "teams", args.id);
+  checkKeyFree(tx, args.id, args.key);
+  const next = copyTeam(team);
+  next.name = args.name;
+  if (team.key !== args.key) {
+    next.key = args.key;
+    next.former_keys = [...team.former_keys.filter((key) => key !== args.key), team.key].sort();
+  }
   tx.put("teams", next);
 };
 
