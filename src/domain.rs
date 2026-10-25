@@ -1,5 +1,5 @@
 use crate::error::{Error, Result};
-use chrono::{DateTime, Datelike, Utc};
+use chrono::{DateTime, Datelike, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use uuid::Uuid;
@@ -109,6 +109,34 @@ pub struct Project {
     pub name: String,
     pub description: String,
     pub team_ids: Vec<Uuid>,
+    #[serde(default)]
+    pub lead_id: Option<Uuid>,
+    #[serde(default)]
+    pub status: ProjectStatus,
+    #[serde(default)]
+    pub health: Option<ProjectHealth>,
+    #[serde(default)]
+    pub start_date: Option<NaiveDate>,
+    #[serde(default)]
+    pub target_date: Option<NaiveDate>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, ToSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProjectStatus {
+    #[default]
+    Planned,
+    InProgress,
+    Completed,
+    Cancelled,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, ToSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProjectHealth {
+    OnTrack,
+    AtRisk,
+    OffTrack,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
@@ -675,6 +703,29 @@ pub(crate) fn timestamp(value: DateTime<Utc>) -> Result<()> {
             "timestamp year must be between 1 and 9999".into(),
         ))
     }
+}
+
+pub(crate) fn validate_project_dates(
+    start: Option<NaiveDate>,
+    target: Option<NaiveDate>,
+) -> Result<()> {
+    if [start, target]
+        .into_iter()
+        .flatten()
+        .any(|date| !(1..=9999).contains(&date.year()))
+    {
+        return Err(Error::BadRequest(
+            "date year must be between 1 and 9999".into(),
+        ));
+    }
+    if let (Some(start), Some(target)) = (start, target)
+        && target < start
+    {
+        return Err(Error::BadRequest(
+            "target date must not be before start date".into(),
+        ));
+    }
+    Ok(())
 }
 
 pub(crate) fn optional_timestamp(value: Option<DateTime<Utc>>) -> Result<()> {

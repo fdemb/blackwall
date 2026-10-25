@@ -968,6 +968,9 @@ export class FakeServer {
           assignee: issue.assignee === user ? null : issue.assignee,
           followers: issue.followers.filter((id) => id !== user),
         });
+    for (const project of tx.all("projects"))
+      if (project.lead_id === user)
+        tx.put("projects", { ...project, version: project.version + 1, lead_id: null });
   }
 
   private push(

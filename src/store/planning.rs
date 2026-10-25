@@ -77,6 +77,18 @@ impl Operation<'_> {
                 self.update_project(id, name, description, team_ids).await?;
                 id
             }
+            Command::SetProjectPlan {
+                id,
+                lead_id,
+                status,
+                health,
+                start_date,
+                target_date,
+            } => {
+                self.set_project_plan(id, lead_id, status, health, start_date, target_date)
+                    .await?;
+                id
+            }
             Command::DeleteProject { id } => {
                 self.delete_project(id).await?;
                 id
@@ -629,6 +641,33 @@ impl Operation<'_> {
             .execute(&mut *self.tx)
             .await?;
         self.replace_project_teams(id, team_ids).await
+    }
+
+    async fn set_project_plan(
+        &mut self,
+        id: Uuid,
+        lead_id: Option<Uuid>,
+        status: ProjectStatus,
+        health: Option<ProjectHealth>,
+        start_date: Option<chrono::NaiveDate>,
+        target_date: Option<chrono::NaiveDate>,
+    ) -> Result<()> {
+        crate::domain::validate_project_dates(start_date, target_date)?;
+        if let Some(lead) = lead_id {
+            self.member(lead).await?;
+        }
+        self.touch("projects", id).await?;
+        sqlx::query("UPDATE projects SET lead_id=$3,status=$4,health=$5,start_date=$6,target_date=$7 WHERE workspace_id=$1 AND id=$2")
+            .bind(self.workspace_id)
+            .bind(id)
+            .bind(lead_id)
+            .bind(enum_text(&status))
+            .bind(health.as_ref().map(enum_text))
+            .bind(start_date)
+            .bind(target_date)
+            .execute(&mut *self.tx)
+            .await?;
+        Ok(())
     }
 
     async fn delete_project(&mut self, id: Uuid) -> Result<()> {

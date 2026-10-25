@@ -41,12 +41,20 @@ export interface Label {
   name: string;
   color: string;
 }
+export type ProjectStatus = "planned" | "in_progress" | "completed" | "cancelled";
+export type ProjectHealth = "on_track" | "at_risk" | "off_track";
+export type IsoDate = string;
 export interface Project {
   id: Id;
   version: number;
   name: string;
   description: string;
   team_ids: Id[];
+  lead_id: Id | null;
+  status: ProjectStatus;
+  health: ProjectHealth | null;
+  start_date: IsoDate | null;
+  target_date: IsoDate | null;
 }
 export interface Milestone {
   id: Id;
@@ -486,6 +494,15 @@ export type Command =
   | { type: "create_project"; id?: Id; name: string; description: string; team_ids: Id[] }
   | { type: "update_project"; id: Id; name: string; description: string; team_ids: Id[] }
   | { type: "delete_project"; id: Id }
+  | {
+      type: "set_project_plan";
+      id: Id;
+      lead_id: Id | null;
+      status: ProjectStatus;
+      health: ProjectHealth | null;
+      start_date: IsoDate | null;
+      target_date: IsoDate | null;
+    }
   | { type: "create_milestone"; id?: Id; project_id: Id; name: string; deadline: string | null }
   | { type: "update_milestone"; id: Id; name: string; deadline: string | null }
   | { type: "delete_milestone"; id: Id }

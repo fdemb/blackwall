@@ -20,9 +20,21 @@ import { useIssues } from "~/lib/queries";
 import { QueryStatus } from "~/components/app/query-status";
 import { useProjectStats, useReferencingIssueCount } from "~/lib/stats";
 import { useWorkspace } from "~/lib/workspace";
-import { ProjectForm } from "./projects";
+import { ProjectForm, ProjectHealthLabel } from "./projects";
+import { Avatar } from "~/components/ui/avatar";
+import { Select } from "~/components/ui/select";
+import { NullableSelect } from "~/components/app/pickers";
+import { Prop, PropGroup } from "~/components/app/issue-properties";
+import {
+  PROJECT_HEALTH,
+  PROJECT_HEALTHS,
+  PROJECT_STATUS,
+  PROJECT_STATUSES,
+  localDay,
+  planDateTime,
+} from "~/lib/projects";
 import { effectiveFilter, isNarrowed, whereIs } from "~/lib/filters";
-import type { IssueFilter, Milestone, Project } from "~/lib/types";
+import type { IssueFilter, Milestone, Project, ProjectStatus } from "~/lib/types";
 
 export default function ProjectPage() {
   const { t, lang } = useI18n();
@@ -128,6 +140,7 @@ export default function ProjectPage() {
             </div>
           </div>
           <aside className="space-y-6 lg:order-2">
+            <ProjectProperties project={project} />
             <section>
               <h2 className="mb-2  font-semibold">{t("project.progress")}</h2>
               <ProgressBar value={done} total={total} label={t("project.progress")} />
@@ -245,6 +258,95 @@ export default function ProjectPage() {
       <DeleteProject project={project} isOpen={deletingProject} onOpenChange={setDeletingProject} />
       <DeleteMilestone milestone={deletingMilestone} close={() => setDeletingMilestone(null)} />
     </Page>
+  );
+}
+
+type Plan = Pick<Project, "lead_id" | "status" | "health" | "start_date" | "target_date">;
+
+function ProjectProperties({ project }: { project: Project }) {
+  const { t } = useI18n();
+  const { members, canWrite, run } = useWorkspace();
+  const save = (change: Partial<Plan>) => {
+    const plan: Plan = {
+      lead_id: project.lead_id,
+      status: project.status,
+      health: project.health,
+      start_date: project.start_date,
+      target_date: project.target_date,
+      ...change,
+    };
+    run(
+      { type: "set_project_plan", id: project.id, ...plan },
+      { expectedVersions: { [project.id]: project.version } },
+    ).catch(() => {});
+  };
+  const date = (value: string | null) => (value ? planDateTime(value) : null);
+  return (
+    <section>
+      <h2 className="mb-2 font-semibold">{t("project.properties")}</h2>
+      <PropGroup>
+        <Prop label={t("project.status")}>
+          <Select
+            variant="ghost"
+            aria-label={t("project.status")}
+            isDisabled={!canWrite}
+            options={PROJECT_STATUSES.map((id) => ({ id, label: t(PROJECT_STATUS[id].label) }))}
+            selectedKey={project.status}
+            onSelectionChange={(k) => save({ status: k as ProjectStatus })}
+          />
+        </Prop>
+        <Prop label={t("project.health")}>
+          <NullableSelect
+            variant="ghost"
+            label={t("project.health")}
+            isDisabled={!canWrite}
+            noneLabel={t("project.noHealth")}
+            options={PROJECT_HEALTHS.map((id) => ({
+              id,
+              label: t(PROJECT_HEALTH[id].label),
+              icon: <ProjectHealthLabel health={id} dotOnly />,
+            }))}
+            value={project.health}
+            onChange={(health) => save({ health: health as Plan["health"] })}
+          />
+        </Prop>
+        <Prop label={t("project.lead")}>
+          <NullableSelect
+            variant="ghost"
+            label={t("project.lead")}
+            isDisabled={!canWrite}
+            noneLabel={t("project.noLead")}
+            options={members.map((m) => ({
+              id: m.id,
+              label: m.display_name,
+              icon: <Avatar name={m.display_name} src={m.avatar_url} size={16} />,
+            }))}
+            value={project.lead_id}
+            onChange={(lead_id) => save({ lead_id })}
+          />
+        </Prop>
+        <Prop label={t("project.startDate")}>
+          <DatePicker
+            variant="ghost"
+            aria-label={t("project.startDate")}
+            isDisabled={!canWrite}
+            placeholder={t("project.noDate")}
+            value={date(project.start_date)}
+            onChange={(iso) => save({ start_date: iso && localDay(iso) })}
+          />
+        </Prop>
+        <Prop label={t("project.targetDate")}>
+          <DatePicker
+            variant="ghost"
+            aria-label={t("project.targetDate")}
+            isDisabled={!canWrite}
+            placeholder={t("project.noDate")}
+            value={date(project.target_date)}
+            onChange={(iso) => save({ target_date: iso && localDay(iso) })}
+          />
+        </Prop>
+      </PropGroup>
+    </section>
   );
 }
 

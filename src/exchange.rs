@@ -189,6 +189,7 @@ impl Transfer {
         }
         for project in &mut self.projects {
             project.id = remap.entity(project.id)?;
+            project.lead_id = remap.user(project.lead_id);
             for id in &mut project.team_ids {
                 *id = remap.entity(*id)?;
             }
@@ -566,6 +567,64 @@ mod tests {
         assert_eq!(target.sprints[0].state, SprintState::Archived);
         assert_eq!(target.report(target_user).unwrap().sprints[0].total, 2);
         assert_eq!(target.report(target_user).unwrap().delivery[0].completed, 2);
+    }
+
+    #[test]
+    fn import_keeps_project_plans_and_maps_or_drops_the_lead() {
+        let now = Utc::now();
+        let source_user = Uuid::new_v4();
+        let target_user = Uuid::new_v4();
+        let mut source = Workspace::new("Source".into(), source_user).unwrap();
+        let project = source
+            .apply(
+                source_user,
+                Command::CreateProject {
+                    id: None,
+                    name: "Launch".into(),
+                    description: String::new(),
+                    team_ids: vec![],
+                },
+                now,
+            )
+            .unwrap()
+            .id
+            .unwrap();
+        let start = chrono::NaiveDate::from_ymd_opt(2026, 11, 1);
+        let target = chrono::NaiveDate::from_ymd_opt(2026, 12, 15);
+        source
+            .apply(
+                source_user,
+                Command::SetProjectPlan {
+                    id: project,
+                    lead_id: Some(source_user),
+                    status: ProjectStatus::InProgress,
+                    health: Some(ProjectHealth::AtRisk),
+                    start_date: start,
+                    target_date: target,
+                },
+                now,
+            )
+            .unwrap();
+        let transfer = Transfer::export(&source, vec![]);
+
+        for (mapping, lead) in [
+            (
+                BTreeMap::from([(source_user, target_user)]),
+                Some(target_user),
+            ),
+            (BTreeMap::new(), None),
+        ] {
+            let mut workspace = Workspace::new("Target".into(), target_user).unwrap();
+            transfer
+                .clone()
+                .import(&mut workspace, target_user, &mapping, now)
+                .unwrap();
+            let imported = &workspace.projects[0];
+            assert_eq!(imported.lead_id, lead);
+            assert_eq!(imported.status, ProjectStatus::InProgress);
+            assert_eq!(imported.health, Some(ProjectHealth::AtRisk));
+            assert_eq!((imported.start_date, imported.target_date), (start, target));
+        }
     }
 
     #[test]

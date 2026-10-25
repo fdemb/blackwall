@@ -770,6 +770,7 @@ impl Operation<'_> {
         self.lock_graph().await?;
         self.release_member_issues(user_id).await?;
         self.release_member_teams(user_id).await?;
+        self.release_member_projects(user_id).await?;
 
         sqlx::query("DELETE FROM workspace_members WHERE workspace_id=$1 AND user_id=$2")
             .bind(self.workspace_id)
@@ -829,6 +830,26 @@ impl Operation<'_> {
         .fetch_all(&mut *self.tx)
         .await?;
         self.record_versions("teams", changed)
+    }
+
+    async fn release_member_projects(&mut self, user_id: Uuid) -> Result<()> {
+        sqlx::query(
+            "SELECT id FROM projects WHERE workspace_id=$1 AND lead_id=$2 ORDER BY id FOR UPDATE",
+        )
+        .bind(self.workspace_id)
+        .bind(user_id)
+        .fetch_all(&mut *self.tx)
+        .await?;
+
+        let changed = sqlx::query(
+            "UPDATE projects SET lead_id=NULL,version=version+1 WHERE workspace_id=$1 AND \
+            lead_id=$2 RETURNING id,version",
+        )
+        .bind(self.workspace_id)
+        .bind(user_id)
+        .fetch_all(&mut *self.tx)
+        .await?;
+        self.record_versions("projects", changed)
     }
 
     fn record_versions(&mut self, table: &str, rows: Vec<sqlx::postgres::PgRow>) -> Result<()> {

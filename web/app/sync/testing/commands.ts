@@ -28,6 +28,7 @@ const required = new Map<string, string[]>([
   ["create_project", ["name", "team_ids"]],
   ["update_project", ["id", "name", "description", "team_ids"]],
   ["delete_project", ["id"]],
+  ["set_project_plan", ["id", "status"]],
   ["create_milestone", ["project_id", "name"]],
   ["update_milestone", ["id", "name"]],
   ["delete_milestone", ["id"]],

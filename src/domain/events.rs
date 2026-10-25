@@ -70,7 +70,7 @@ pub fn webhook_event(action: &str) -> Option<(&'static str, &'static str)> {
         "update_label" => ("label.updated", "label"),
         "delete_label" => ("label.deleted", "label"),
         "create_project" => ("project.created", "project"),
-        "update_project" => ("project.updated", "project"),
+        "update_project" | "set_project_plan" => ("project.updated", "project"),
         "delete_project" => ("project.deleted", "project"),
         "create_milestone" => ("milestone.created", "milestone"),
         "update_milestone" => ("milestone.updated", "milestone"),

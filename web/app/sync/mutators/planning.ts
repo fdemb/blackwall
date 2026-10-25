@@ -22,6 +22,7 @@ import {
 import { MutationError } from "./errors";
 import { isTeamKey } from "../../lib/identifiers";
 import { TEAM_ICONS, leastUsedTeamColor } from "../../lib/teams";
+import { isProjectHealth, isProjectStatus } from "../../lib/projects";
 
 /** Mutable working copy: the store freezes records, so every write builds a new object. */
 function copyTeam(team: DeepReadonly<Team>): Team {
@@ -332,6 +333,11 @@ export const createProject: Mutator<ArgsOf<"create_project">> = (tx, args, ctx) 
     name: args.name,
     description: args.description,
     team_ids: teamIds,
+    lead_id: previous?.lead_id ?? null,
+    status: previous?.status ?? "planned",
+    health: previous?.health ?? null,
+    start_date: previous?.start_date ?? null,
+    target_date: previous?.target_date ?? null,
   });
 };
 
@@ -357,6 +363,42 @@ export const updateProject: Mutator<ArgsOf<"update_project">> = (tx, args, ctx) 
     team_ids: teamIds,
   });
 };
+
+export const setProjectPlan: Mutator<ArgsOf<"set_project_plan">> = (tx, args, ctx) => {
+  requireRole(tx, ctx.actor, "set_project_plan", args);
+  if (!isProjectStatus(args.status)) throw new MutationError(400, "unknown project status");
+  const health = args.health ?? null;
+  if (health !== null && !isProjectHealth(health)) {
+    throw new MutationError(400, "unknown project health");
+  }
+  const start = parseIsoDate(args.start_date);
+  const target = parseIsoDate(args.target_date);
+  if (start !== null && target !== null && target < start) {
+    throw new MutationError(400, "project target date must not precede start date");
+  }
+  const lead = args.lead_id ?? null;
+  if (lead !== null) requireMember(tx, lead);
+  const project = requireRecord(tx, "projects", args.id);
+  tx.put("projects", {
+    ...project,
+    lead_id: lead,
+    status: args.status,
+    health,
+    start_date: start,
+    target_date: target,
+  });
+};
+
+function parseIsoDate(value: string | null | undefined): string | null {
+  if (value === null || value === undefined) return null;
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  const date = new Date(0);
+  if (match) date.setUTCFullYear(+match[1]!, +match[2]! - 1, +match[3]!);
+  if (!match || +match[1]! < 1 || date.toISOString().slice(0, 10) !== value) {
+    throw new MutationError(400, "invalid date");
+  }
+  return value;
+}
 
 export const deleteProject: Mutator<ArgsOf<"delete_project">> = (tx, args, ctx) => {
   requireRole(tx, ctx.actor, "delete_project", args);

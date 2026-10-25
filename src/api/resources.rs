@@ -1,10 +1,14 @@
 use super::*;
 use crate::{
-    domain::{Comment, Label, Milestone, Project, Role, Sprint, Stage, StageKind, Team},
+    domain::{
+        Comment, Label, Milestone, Project, ProjectHealth, ProjectStatus, Role, Sprint, Stage,
+        StageKind, Team,
+    },
     http::MemberProfile,
     store::CollectionQuery,
 };
 use axum::extract::{Path, Query};
+use chrono::NaiveDate;
 use sqlx::Row;
 
 /// Records whose version is their ETag.
@@ -673,11 +677,29 @@ pub async fn create_project(
     Ok(one(StatusCode::CREATED, project))
 }
 
+/// Merge-patch: omitted fields stay, `null` clears `lead_id`, `health`, `start_date` and
+/// `target_date`.
 #[derive(Deserialize, utoipa::ToSchema)]
 pub struct UpdateProject {
     pub name: Option<String>,
     pub description: Option<String>,
     pub team_ids: Option<Vec<Uuid>>,
+    /// A member's user id.
+    #[serde(default, deserialize_with = "super::issues::nullable")]
+    #[schema(value_type = Option<Uuid>)]
+    pub lead_id: Option<Option<Uuid>>,
+    pub status: Option<ProjectStatus>,
+    #[serde(default, deserialize_with = "super::issues::nullable")]
+    #[schema(value_type = Option<ProjectHealth>)]
+    pub health: Option<Option<ProjectHealth>>,
+    /// `YYYY-MM-DD`.
+    #[serde(default, deserialize_with = "super::issues::nullable")]
+    #[schema(value_type = Option<NaiveDate>)]
+    pub start_date: Option<Option<NaiveDate>>,
+    /// `YYYY-MM-DD`, not before `start_date`.
+    #[serde(default, deserialize_with = "super::issues::nullable")]
+    #[schema(value_type = Option<NaiveDate>)]
+    pub target_date: Option<Option<NaiveDate>>,
 }
 
 #[utoipa::path(
@@ -692,24 +714,72 @@ pub async fn update_project(
     State(store): State<Store>,
     actor: ApiActor,
     Path((workspace, project)): Path<(Uuid, Uuid)>,
-    options: WriteOptions,
+    mut options: WriteOptions,
     Json(body): Json<UpdateProject>,
 ) -> Result<Response> {
     let scope = actor.write(workspace)?;
     let current: Project = record(&store, scope, "projects", project).await?;
-    run(
-        &store,
-        scope,
-        Command::UpdateProject {
-            id: project,
-            name: body.name.unwrap_or(current.name),
-            description: body.description.unwrap_or(current.description),
-            team_ids: body.team_ids.unwrap_or(current.team_ids),
-        },
-        Some(project),
-        options,
-    )
-    .await?;
+    let plan = (body.lead_id.is_some()
+        || body.status.is_some()
+        || body.health.is_some()
+        || body.start_date.is_some()
+        || body.target_date.is_some())
+    .then(|| Command::SetProjectPlan {
+        id: project,
+        lead_id: body.lead_id.unwrap_or(current.lead_id),
+        status: body.status.unwrap_or(current.status),
+        health: body.health.unwrap_or(current.health),
+        start_date: body.start_date.unwrap_or(current.start_date),
+        target_date: body.target_date.unwrap_or(current.target_date),
+    });
+    let details = body.name.is_some() || body.description.is_some() || body.team_ids.is_some();
+    if details
+        && let Some(Command::SetProjectPlan {
+            lead_id,
+            start_date,
+            target_date,
+            ..
+        }) = &plan
+    {
+        crate::domain::validate_project_dates(*start_date, *target_date)?;
+        if let Some(lead) = lead_id {
+            let member: bool = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM workspace_members WHERE workspace_id=$1 AND user_id=$2)",
+            )
+            .bind(workspace)
+            .bind(lead)
+            .fetch_one(&store.pool)
+            .await?;
+            if !member {
+                return Err(Error::Forbidden);
+            }
+        }
+    }
+    if details || plan.is_none() {
+        let result = run(
+            &store,
+            scope,
+            Command::UpdateProject {
+                id: project,
+                name: body.name.unwrap_or(current.name),
+                description: body.description.unwrap_or(current.description),
+                team_ids: body.team_ids.unwrap_or(current.team_ids),
+            },
+            Some(project),
+            WriteOptions {
+                if_match: options.if_match,
+                idempotency_key: options.idempotency_key.clone(),
+            },
+        )
+        .await?;
+        options.if_match = options
+            .if_match
+            .and_then(|_| result.versions.get(&project).copied());
+        options.idempotency_key = options.idempotency_key.map(|key| format!("{key}:plan"));
+    }
+    if let Some(plan) = plan {
+        run(&store, scope, plan, Some(project), options).await?;
+    }
     let project: Project = record(&store, scope, "projects", project).await?;
     Ok(one(StatusCode::OK, project))
 }

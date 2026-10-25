@@ -463,6 +463,11 @@ impl Workspace {
             }
             issue.followers.retain(|u| *u != user_id);
         }
+        for project in &mut self.projects {
+            if project.lead_id == Some(user_id) {
+                project.lead_id = None;
+            }
+        }
         Ok(())
     }
 }

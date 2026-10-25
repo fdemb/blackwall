@@ -330,6 +330,17 @@ export const scenarios = {
     }),
   },
   delete_project: { command: (f) => ({ type: "delete_project", id: f.project }) },
+  set_project_plan: {
+    command: (f) => ({
+      type: "set_project_plan",
+      id: f.project,
+      lead_id: f.member.id,
+      status: "in_progress",
+      health: "at_risk",
+      start_date: "2026-11-02",
+      target_date: "2026-12-18",
+    }),
+  },
   create_milestone: {
     command: (f) => ({
       type: "create_milestone",

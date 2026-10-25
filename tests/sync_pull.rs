@@ -1981,3 +1981,71 @@ async fn pull_tombstones_issues_purged_from_the_trash_with_their_activity() {
     store.pool.close().await;
     database.cleanup().await;
 }
+
+#[tokio::test]
+async fn project_plan_syncs_and_survives_update_project() {
+    let database = support::TestDatabase::new().await;
+    let store = Store::connect(&database.url).await.unwrap();
+    let app = router(store.clone());
+    let owner = account(&store, "owner").await;
+    let stranger = account(&store, "stranger").await;
+    let (ws, team) = setup(&app, &owner).await;
+    let client = Uuid::new_v4();
+    let project = created(
+        &app,
+        &owner,
+        ws,
+        json!({"type": "create_project", "name": "Launch", "team_ids": [team]}),
+    )
+    .await;
+    let before = cursor_of(&pull_ok(&app, &owner.token, ws, client, None).await);
+    let plan = json!({
+        "id": project,
+        "lead_id": owner.profile.id,
+        "status": "in_progress",
+        "health": "on_track",
+        "start_date": "2026-11-01",
+        "target_date": "2026-12-15",
+    });
+    let mut backwards = plan.clone();
+    backwards["start_date"] = json!("2027-01-01");
+    let mut outsider = plan.clone();
+    outsider["lead_id"] = json!(stranger.profile.id);
+
+    let (status, result) = push(
+        &app,
+        &owner.token,
+        ws,
+        client,
+        vec![
+            mutation(1, "set_project_plan", backwards),
+            mutation(2, "set_project_plan", outsider),
+            mutation(3, "set_project_plan", plan),
+            mutation(
+                4,
+                "update_project",
+                json!({"id": project, "name": "Relaunch", "description": "", "team_ids": [team]}),
+            ),
+        ],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+    assert_eq!(result["results"][0]["error"]["status"], 400, "{result}");
+    assert_eq!(result["results"][1]["error"]["status"], 403, "{result}");
+    assert_eq!(result["results"][2]["status"], "applied", "{result}");
+    assert_eq!(result["results"][3]["status"], "applied", "{result}");
+
+    let page = pull_ok(&app, &owner.token, ws, client, Some(&before)).await;
+    let record = record(&page["changes"], "projects", &project.to_string()).unwrap();
+    assert_eq!(record["name"], "Relaunch", "{record}");
+    assert_eq!(record["lead_id"], json!(owner.profile.id));
+    assert_eq!(record["status"], "in_progress");
+    assert_eq!(record["health"], "on_track");
+    assert_eq!(record["start_date"], "2026-11-01");
+    assert_eq!(record["target_date"], "2026-12-15");
+    assert_eq!(record["version"], 3);
+
+    drop(app);
+    store.pool.close().await;
+    database.cleanup().await;
+}

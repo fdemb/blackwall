@@ -93,6 +93,10 @@ const CASES = {
   },
   update_project: { args: { id: ID, name: "Project", description: "", team_ids: [] } },
   delete_project: { args: { id: ID } },
+  set_project_plan: {
+    args: { id: ID, status: "planned" },
+    options: { lead_id: null, health: null, start_date: null, target_date: null },
+  },
   create_milestone: {
     args: { project_id: ID, name: "Milestone" },
     options: { id: null, deadline: null },

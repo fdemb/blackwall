@@ -478,6 +478,10 @@ impl Workspace {
             if project.description.len() > 100000 {
                 return Err(Error::BadRequest("project description too long".into()));
             }
+            validate_project_dates(project.start_date, project.target_date)?;
+            if let Some(lead) = project.lead_id {
+                self.member(lead)?;
+            }
             for id in &project.team_ids {
                 self.team(*id)?;
             }

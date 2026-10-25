@@ -77,6 +77,15 @@ pub enum Command {
         description: String,
         team_ids: Vec<Uuid>,
     },
+    /// Sets who leads the project, where it stands and when it runs.
+    SetProjectPlan {
+        id: Uuid,
+        lead_id: Option<Uuid>,
+        status: ProjectStatus,
+        health: Option<ProjectHealth>,
+        start_date: Option<NaiveDate>,
+        target_date: Option<NaiveDate>,
+    },
     /// Deletes the project's milestones too and clears both from its issues.
     DeleteProject {
         id: Uuid,
@@ -331,6 +340,7 @@ impl Command {
             | Self::DeleteLabel { .. }
             | Self::CreateProject { .. }
             | Self::UpdateProject { .. }
+            | Self::SetProjectPlan { .. }
             | Self::DeleteProject { .. }
             | Self::CreateMilestone { .. }
             | Self::UpdateMilestone { .. }
@@ -368,6 +378,7 @@ impl Command {
             Self::DeleteLabel { .. } => "delete_label",
             Self::CreateProject { .. } => "create_project",
             Self::UpdateProject { .. } => "update_project",
+            Self::SetProjectPlan { .. } => "set_project_plan",
             Self::DeleteProject { .. } => "delete_project",
             Self::CreateMilestone { .. } => "create_milestone",
             Self::UpdateMilestone { .. } => "update_milestone",

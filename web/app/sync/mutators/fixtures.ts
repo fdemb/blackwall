@@ -115,10 +115,25 @@ function labels(): Label[] {
   ];
 }
 
+const PLAN = {
+  lead_id: null,
+  status: "planned",
+  health: null,
+  start_date: null,
+  target_date: null,
+} as const;
+
 function projects(): Project[] {
   return [
-    { id: PROJECT, version: 1, name: "Project", description: "", team_ids: [TEAM] },
-    { id: PROJECT_OTHER, version: 1, name: "Other", description: "", team_ids: [TEAM_OTHER] },
+    { id: PROJECT, version: 1, name: "Project", description: "", team_ids: [TEAM], ...PLAN },
+    {
+      id: PROJECT_OTHER,
+      version: 1,
+      name: "Other",
+      description: "",
+      team_ids: [TEAM_OTHER],
+      ...PLAN,
+    },
   ];
 }
 

@@ -321,6 +321,39 @@ describe("fake sync push", () => {
     expect(f.server.record("members", f.member.id)).toBeNull();
   });
 
+  it("clears the lead of projects a removed member led", async () => {
+    const f = fixture();
+    const project = id(16);
+    f.server.run(f.owner, {
+      type: "create_project",
+      id: project,
+      name: "P",
+      description: "",
+      team_ids: [TEAM],
+    });
+    const plan = {
+      type: "set_project_plan",
+      id: project,
+      lead_id: f.member.id,
+      status: "in_progress",
+      health: "on_track",
+      start_date: "2026-11-02",
+      target_date: "2026-12-18",
+    } as const;
+    f.server.run(f.owner, plan);
+    expect(f.server.record("projects", project)).toMatchObject({
+      lead_id: f.member.id,
+      version: 2,
+    });
+    await f.push([mutation(1, { type: "remove_member", user_id: f.member.id })]);
+    expect(f.server.record("projects", project)).toMatchObject({
+      lead_id: null,
+      status: "in_progress",
+      target_date: "2026-12-18",
+      version: 3,
+    });
+  });
+
   it("stops with 403 when a mutation removes the actor mid-batch", async () => {
     const f = fixture();
     f.server.setRole(f.workspace.id, f.member.id, "owner");

@@ -468,7 +468,9 @@ pub async fn create(
 }
 
 /// Present as `Some(None)` when the JSON says `null`, so `null` can clear a field.
-fn nullable<'de, D, T>(deserializer: D) -> std::result::Result<Option<Option<T>>, D::Error>
+pub(super) fn nullable<'de, D, T>(
+    deserializer: D,
+) -> std::result::Result<Option<Option<T>>, D::Error>
 where
     D: serde::Deserializer<'de>,
     T: Deserialize<'de>,

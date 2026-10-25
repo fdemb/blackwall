@@ -48,6 +48,7 @@ const ALL_COMMANDS = [
   "create_project",
   "update_project",
   "delete_project",
+  "set_project_plan",
   "create_milestone",
   "update_milestone",
   "delete_milestone",

@@ -281,7 +281,7 @@ export function Properties({
 }
 
 /** A run of property rows. Groups sit between hairline dividers. */
-function PropGroup({ children }: { children: React.ReactNode }) {
+export function PropGroup({ children }: { children: React.ReactNode }) {
   return (
     <div className="space-y-0.5 border-b border-border py-3 last:border-b-0 first:pt-0 last:pb-0">
       {children}
@@ -290,7 +290,7 @@ function PropGroup({ children }: { children: React.ReactNode }) {
 }
 
 /** One property row: a fixed label column and the control. `top` aligns the label with multi-line values. */
-function Prop({
+export function Prop({
   label,
   top,
   children,

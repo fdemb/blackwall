@@ -1117,3 +1117,165 @@ async fn deletes_labels_projects_and_milestones() {
     store.pool.close().await;
     database.cleanup().await;
 }
+
+#[tokio::test]
+async fn project_plan_patches_merge_and_lose_a_removed_lead() {
+    let database = support::TestDatabase::new().await;
+    let store = Store::connect(&database.url).await.unwrap();
+    let app = router(store.clone());
+    let owner = account(&store, "owner").await;
+    let lead = account(&store, "lead").await;
+    let stranger = account(&store, "stranger").await;
+    let ws = workspace(&store, &owner, "Plans").await;
+    sqlx::query("INSERT INTO workspace_members(workspace_id,user_id,role) VALUES($1,$2,'member')")
+        .bind(ws)
+        .bind(lead.profile.id)
+        .execute(&store.pool)
+        .await
+        .unwrap();
+    let write = token(&app, &lead, json!({"name":"CI","access":"write"})).await;
+    let base = format!("/api/v1/workspaces/{ws}");
+
+    let created = call(
+        &app,
+        "POST",
+        &format!("{base}/projects"),
+        &write,
+        Some(json!({"name":"Launch","team_ids":[]})),
+    )
+    .await;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    assert_eq!(created.body["status"], "planned");
+    assert_eq!(created.body["lead_id"], Value::Null);
+    let path = format!("{base}/projects/{}", created.body["id"].as_str().unwrap());
+    let patch = |body: Value| call(&app, "PATCH", &path, &write, Some(body));
+    let plan = |body: &Value| {
+        json!({
+            "name": body["name"],
+            "lead_id": body["lead_id"],
+            "status": body["status"],
+            "health": body["health"],
+            "start_date": body["start_date"],
+            "target_date": body["target_date"],
+        })
+    };
+
+    let set = patch(json!({
+        "lead_id": lead.profile.id,
+        "status": "in_progress",
+        "health": "at_risk",
+        "start_date": "2026-11-01",
+        "target_date": "2026-12-15",
+    }))
+    .await;
+    assert_eq!(set.status, StatusCode::OK, "{}", set.body);
+    let expected = json!({
+        "name": "Launch",
+        "lead_id": lead.profile.id,
+        "status": "in_progress",
+        "health": "at_risk",
+        "start_date": "2026-11-01",
+        "target_date": "2026-12-15",
+    });
+    assert_eq!(plan(&set.body), expected);
+    let fetched = call(&app, "GET", &path, &write, None).await;
+    assert_eq!(plan(&fetched.body), expected);
+
+    let status_only = patch(json!({"status": "completed"})).await;
+    assert_eq!(status_only.status, StatusCode::OK, "{}", status_only.body);
+    let mut expected = expected;
+    expected["status"] = json!("completed");
+    assert_eq!(plan(&status_only.body), expected);
+
+    let renamed = patch(json!({"name": "Relaunch"})).await;
+    assert_eq!(renamed.status, StatusCode::OK, "{}", renamed.body);
+    expected["name"] = json!("Relaunch");
+    assert_eq!(plan(&renamed.body), expected);
+
+    let backwards = patch(json!({"start_date": "2026-12-20"})).await;
+    assert_eq!(
+        backwards.status,
+        StatusCode::BAD_REQUEST,
+        "{}",
+        backwards.body
+    );
+    let outsider = patch(json!({"lead_id": stranger.profile.id})).await;
+    assert_eq!(outsider.status, StatusCode::FORBIDDEN, "{}", outsider.body);
+    let mixed_backwards =
+        patch(json!({"name": "Renamed", "start_date": "2027-01-01", "target_date": "2026-01-01"}))
+            .await;
+    assert_eq!(
+        mixed_backwards.status,
+        StatusCode::BAD_REQUEST,
+        "{}",
+        mixed_backwards.body
+    );
+    let mixed_outsider = patch(json!({"name": "Renamed", "lead_id": stranger.profile.id})).await;
+    assert_eq!(
+        mixed_outsider.status,
+        StatusCode::FORBIDDEN,
+        "{}",
+        mixed_outsider.body
+    );
+    let unchanged = call(&app, "GET", &path, &write, None).await;
+    assert_eq!(plan(&unchanged.body), expected);
+    assert_eq!(unchanged.body["version"], renamed.body["version"]);
+
+    let version = unchanged.body["version"].as_i64().unwrap();
+    let mixed = send(
+        &app,
+        "PATCH",
+        &path,
+        Some(&write),
+        Some(json!({"name": "Launch", "health": null})),
+        &[("If-Match", &etag(&unchanged))],
+    )
+    .await;
+    assert_eq!(mixed.status, StatusCode::OK, "{}", mixed.body);
+    expected["name"] = json!("Launch");
+    expected["health"] = Value::Null;
+    assert_eq!(plan(&mixed.body), expected);
+    assert_eq!(mixed.body["version"], version + 2);
+    let stale = send(
+        &app,
+        "PATCH",
+        &path,
+        Some(&write),
+        Some(json!({"status": "cancelled"})),
+        &[("If-Match", &etag(&unchanged))],
+    )
+    .await;
+    assert_eq!(stale.status, StatusCode::PRECONDITION_FAILED);
+
+    let removed = call(
+        &app,
+        "POST",
+        &format!("/internal-api/workspaces/{ws}/commands"),
+        &owner.token,
+        Some(json!({"command": {"type":"remove_member","user_id":lead.profile.id}})),
+    )
+    .await;
+    assert_eq!(removed.status, StatusCode::OK, "{}", removed.body);
+    let owner_token = token(&app, &owner, json!({"name":"Owner","access":"read"})).await;
+    let orphaned = call(&app, "GET", &path, &owner_token, None).await;
+    expected["lead_id"] = Value::Null;
+    assert_eq!(plan(&orphaned.body), expected);
+    assert_eq!(orphaned.body["version"], version + 3);
+
+    let cleared = call(
+        &app,
+        "PATCH",
+        &path,
+        &token(&app, &owner, json!({"name":"Owner write","access":"write"})).await,
+        Some(json!({"start_date": null, "target_date": null})),
+    )
+    .await;
+    assert_eq!(cleared.status, StatusCode::OK, "{}", cleared.body);
+    expected["start_date"] = Value::Null;
+    expected["target_date"] = Value::Null;
+    assert_eq!(plan(&cleared.body), expected);
+
+    drop(app);
+    store.pool.close().await;
+    database.cleanup().await;
+}

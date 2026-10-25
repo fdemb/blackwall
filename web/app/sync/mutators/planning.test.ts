@@ -1021,6 +1021,11 @@ describe("create_project / update_project", () => {
       name: "New",
       description: "Body",
       team_ids: [TEAM, TEAM_OTHER],
+      lead_id: null,
+      status: "planned",
+      health: null,
+      start_date: null,
+      target_date: null,
     });
     const before = store.get("projects", PROJECT);
     if (before === undefined) throw new Error("missing project");
@@ -1104,6 +1109,84 @@ describe("create_project / update_project", () => {
       "permission denied",
       GHOST,
     );
+  });
+});
+
+describe("set_project_plan", () => {
+  const plan = {
+    id: PROJECT,
+    lead_id: MEMBER,
+    status: "in_progress",
+    health: "at_risk",
+    start_date: "2026-11-02",
+    target_date: "2026-12-18",
+  };
+
+  it("replaces the plan and leaves the rest of the project alone", () => {
+    const store = seedStore(MEMBER);
+    const before = store.get("projects", PROJECT) as Project;
+    mutate(store, "set_project_plan", plan);
+    const { id: _, ...fields } = plan;
+    expectRecord(store, "projects", PROJECT, { ...before, ...fields } as Project);
+    mutate(store, "set_project_plan", { id: PROJECT, status: "completed" });
+    expectRecord(store, "projects", PROJECT, {
+      ...before,
+      lead_id: null,
+      status: "completed",
+      health: null,
+      start_date: null,
+      target_date: null,
+    });
+    twice("set_project_plan", plan, MEMBER);
+  });
+
+  it("keeps the plan through update_project", () => {
+    const store = seedStore(MEMBER);
+    mutate(store, "set_project_plan", plan);
+    mutate(store, "update_project", { id: PROJECT, name: "N", description: "", team_ids: [TEAM] });
+    expect(store.get("projects", PROJECT)).toMatchObject({ name: "N", lead_id: MEMBER });
+  });
+
+  it("accepts the server's year range down to year 1", () => {
+    const store = seedStore(MEMBER);
+    mutate(store, "set_project_plan", { ...plan, start_date: "0050-06-15" });
+    expect(store.replayErrors().size).toBe(0);
+    expect(store.get("projects", PROJECT)?.start_date).toBe("0050-06-15");
+  });
+
+  it("allows one date or matching dates", () => {
+    const store = seedStore(MEMBER);
+    mutate(store, "set_project_plan", { ...plan, start_date: null });
+    mutate(store, "set_project_plan", { ...plan, start_date: "2026-12-18" });
+    expect(store.replayErrors().size).toBe(0);
+    expect(store.get("projects", PROJECT)?.start_date).toBe("2026-12-18");
+  });
+
+  it("requires a member lead, ordered real dates and known values", () => {
+    rejects("set_project_plan", { ...plan, lead_id: GHOST }, 403, "permission denied", MEMBER);
+    rejects(
+      "set_project_plan",
+      { ...plan, start_date: "2026-12-19" },
+      400,
+      "project target date must not precede start date",
+      MEMBER,
+    );
+    rejects("set_project_plan", { ...plan, target_date: "2026-02-30" }, 400, "invalid date");
+    rejects("set_project_plan", { ...plan, start_date: "0000-01-01" }, 400, "invalid date");
+    rejects(
+      "set_project_plan",
+      { ...plan, target_date: "2026-12-18T00:00:00Z" },
+      400,
+      "invalid date",
+    );
+    rejects("set_project_plan", { ...plan, status: "done" }, 400, "unknown project status");
+    rejects("set_project_plan", { ...plan, health: "fine" }, 400, "unknown project health");
+    rejects("set_project_plan", { ...plan, id: "project-ghost" }, 404, "not found", MEMBER);
+  });
+
+  it("members may plan projects but viewers may not", () => {
+    rejects("set_project_plan", plan, 403, "permission denied", VIEWER);
+    rejects("set_project_plan", plan, 403, "permission denied", GHOST);
   });
 });
 

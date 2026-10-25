@@ -1,21 +1,68 @@
 import { useState } from "react";
 import { Form } from "react-aria-components";
 import { Link } from "react-router";
-import { FolderKanban, Plus } from "lucide-react";
+import { CalendarDays, FolderKanban, Plus } from "lucide-react";
+import { Avatar } from "~/components/ui/avatar";
+import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
 import { Dialog, useDialogDirty } from "~/components/ui/dialog";
 import { SearchField, TextField } from "~/components/ui/field";
 import { Menu, MenuItem, MenuPopover, MenuTrigger } from "~/components/ui/menu";
+import { Tab, TabList, Tabs } from "~/components/ui/tabs";
 import { Checkbox } from "~/components/ui/toggles";
 import { EmptyState, Page, PageHeader, Scroll } from "~/components/app/page";
 import { ProgressBar } from "~/components/app/progress";
-import { useI18n } from "~/lib/i18n";
+import { fullDate } from "~/lib/format";
+import { useI18n, type Key } from "~/lib/i18n";
+import {
+  PROJECT_HEALTH,
+  PROJECT_STATUS,
+  PROJECT_STATUSES,
+  inScope,
+  planDateTime,
+  type ProjectScope,
+} from "~/lib/projects";
 import { usePending } from "~/lib/use-pending";
 import { useProjectStats } from "~/lib/stats";
 import { useWorkspace } from "~/lib/workspace";
-import type { Id, Project } from "~/lib/types";
+import { cn } from "~/lib/utils";
+import type { Id, IsoDate, Project, ProjectHealth, ProjectStatus } from "~/lib/types";
 
-type ProjectSort = "name" | "progress" | "recent";
+interface Row {
+  p: Project;
+  total: number;
+  done: number;
+  ratio: number;
+  touched: number;
+}
+
+const byText = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
+function byTarget(a: IsoDate | null, b: IsoDate | null): number {
+  if (a === b) return 0;
+  if (a === null) return 1;
+  if (b === null) return -1;
+  return byText(a, b);
+}
+const SORTS = {
+  name: { label: "project.sortName", compare: () => 0 },
+  progress: { label: "project.sortProgress", compare: (a, b) => b.ratio - a.ratio },
+  recent: { label: "project.sortRecent", compare: (a, b) => b.touched - a.touched },
+  target: {
+    label: "project.sortTarget",
+    compare: (a, b) => byTarget(a.p.target_date, b.p.target_date),
+  },
+  status: {
+    label: "project.sortStatus",
+    compare: (a, b) => PROJECT_STATUSES.indexOf(a.p.status) - PROJECT_STATUSES.indexOf(b.p.status),
+  },
+} satisfies Record<string, { label: Key; compare: (a: Row, b: Row) => number }>;
+type ProjectSort = keyof typeof SORTS;
+
+const SCOPES = {
+  open: "project.scopeOpen",
+  closed: "project.scopeClosed",
+  all: "project.scopeAll",
+} satisfies Record<ProjectScope, Key>;
 
 export default function Projects() {
   const { t } = useI18n();
@@ -24,7 +71,8 @@ export default function Projects() {
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState("");
   const [sort, setSort] = useState<ProjectSort>("name");
-  const rows = ws.projects.map((p) => {
+  const [scope, setScope] = useState<ProjectScope>("open");
+  const rows = ws.projects.map((p): Row => {
     const stats = projectStats.get(p.id);
     const total = stats?.total ?? 0;
     const done = stats?.completed ?? 0;
@@ -33,12 +81,12 @@ export default function Projects() {
   });
   const needle = q.trim().toLowerCase();
   const list = rows
-    .filter(({ p }) => !needle || `${p.name} ${p.description}`.toLowerCase().includes(needle))
-    .sort(
-      (a, b) =>
-        (sort === "progress" ? b.ratio - a.ratio : sort === "recent" ? b.touched - a.touched : 0) ||
-        a.p.name.localeCompare(b.p.name),
-    );
+    .filter(
+      ({ p }) =>
+        inScope(p.status, scope) &&
+        (!needle || `${p.name} ${p.description}`.toLowerCase().includes(needle)),
+    )
+    .sort((a, b) => SORTS[sort].compare(a, b) || a.p.name.localeCompare(b.p.name));
   return (
     <Page>
       <PageHeader
@@ -53,8 +101,17 @@ export default function Projects() {
           )
         }
       >
-        {ws.projects.length > 1 && (
+        {ws.projects.length > 0 && (
           <div className="flex flex-wrap items-center gap-2 px-4 pb-2">
+            <Tabs selectedKey={scope} onSelectionChange={(k) => setScope(k as ProjectScope)}>
+              <TabList aria-label={t("project.scope")}>
+                {Object.entries(SCOPES).map(([id, label]) => (
+                  <Tab key={id} id={id} size="compact">
+                    {t(label)}
+                  </Tab>
+                ))}
+              </TabList>
+            </Tabs>
             <SearchField
               aria-label={t("action.search")}
               placeholder={t("project.search")}
@@ -64,14 +121,7 @@ export default function Projects() {
             />
             <MenuTrigger>
               <Button variant="ghost" size="sm">
-                {t("sort.label")}:{" "}
-                {t(
-                  sort === "name"
-                    ? "project.sortName"
-                    : sort === "progress"
-                      ? "project.sortProgress"
-                      : "project.sortRecent",
-                )}
+                {t("sort.label")}: {t(SORTS[sort].label)}
               </Button>
               <MenuPopover placement="bottom start">
                 <Menu
@@ -80,9 +130,11 @@ export default function Projects() {
                   onAction={(k) => setSort(k as ProjectSort)}
                   aria-label={t("sort.label")}
                 >
-                  <MenuItem id="name">{t("project.sortName")}</MenuItem>
-                  <MenuItem id="progress">{t("project.sortProgress")}</MenuItem>
-                  <MenuItem id="recent">{t("project.sortRecent")}</MenuItem>
+                  {Object.entries(SORTS).map(([id, { label }]) => (
+                    <MenuItem key={id} id={id}>
+                      {t(label)}
+                    </MenuItem>
+                  ))}
                 </Menu>
               </MenuPopover>
             </MenuTrigger>
@@ -106,40 +158,29 @@ export default function Projects() {
         ) : list.length === 0 ? (
           <EmptyState
             icon={<FolderKanban />}
-            title={t("project.noMatch")}
-            action={<Button onPress={() => setQ("")}>{t("action.clearSearch")}</Button>}
+            title={t(
+              needle || scope === "all"
+                ? "project.noMatch"
+                : scope === "open"
+                  ? "project.noOpen"
+                  : "project.noClosed",
+            )}
+            action={
+              <div className="flex flex-wrap justify-center gap-2">
+                {needle && <Button onPress={() => setQ("")}>{t("action.clearSearch")}</Button>}
+                {scope !== "all" && (
+                  <Button onPress={() => setScope("all")}>{t("project.showAll")}</Button>
+                )}
+              </div>
+            }
           />
         ) : (
           <ul className="grid gap-3 p-4 sm:grid-cols-2 xl:grid-cols-3">
-            {list.map(({ p, total, done }) => {
-              return (
-                <li key={p.id}>
-                  <Link
-                    to={`/${ws.slug}/projects/${p.id}`}
-                    className="group block rounded-xl border border-border bg-card p-4 shadow-xs outline-none transition-colors hover:border-primary/40 hover:shadow-md focus-visible:ring-2 focus-visible:ring-ring/60"
-                  >
-                    <h2 className="font-semibold tracking-tight group-hover:text-primary">
-                      {p.name}
-                    </h2>
-                    <p className="mt-1 line-clamp-2 min-h-10  text-muted-foreground">
-                      {p.description || t("project.noDescription")}
-                    </p>
-                    <div className="mt-3 flex items-center gap-3  text-muted-foreground">
-                      <ProgressBar value={done} total={total} className="flex-1" label={p.name} />
-                      <span className="tabular-nums">
-                        {done}/{total}
-                      </span>
-                    </div>
-                    <p className="mt-2 truncate  text-muted-foreground">
-                      {p.team_ids
-                        .map((id) => ws.teams.find((x) => x.id === id)?.name)
-                        .filter(Boolean)
-                        .join(", ") || t("project.allTeams")}
-                    </p>
-                  </Link>
-                </li>
-              );
-            })}
+            {list.map(({ p, total, done }) => (
+              <li key={p.id}>
+                <ProjectCard project={p} total={total} done={done} />
+              </li>
+            ))}
           </ul>
         )}
       </Scroll>
@@ -147,6 +188,93 @@ export default function Projects() {
         {(close) => <ProjectForm close={close} />}
       </Dialog>
     </Page>
+  );
+}
+
+function ProjectCard({
+  project: p,
+  total,
+  done,
+}: {
+  project: Project;
+  total: number;
+  done: number;
+}) {
+  const { t, lang } = useI18n();
+  const { ws, member } = useWorkspace();
+  const lead = p.lead_id ? member(p.lead_id) : undefined;
+  return (
+    <Link
+      to={`/${ws.slug}/projects/${p.id}`}
+      className="group block rounded-xl border border-border bg-card p-4 shadow-xs outline-none transition-colors hover:border-primary/40 hover:shadow-md focus-visible:ring-2 focus-visible:ring-ring/60"
+    >
+      <div className="flex items-start gap-2">
+        <h2 className="min-w-0 flex-1 font-semibold tracking-tight group-hover:text-primary">
+          {p.name}
+        </h2>
+        <ProjectStatusBadge status={p.status} />
+      </div>
+      <p className="mt-1 line-clamp-2 min-h-10  text-muted-foreground">
+        {p.description || t("project.noDescription")}
+      </p>
+      <div className="mt-3 flex items-center gap-3  text-muted-foreground">
+        <ProgressBar value={done} total={total} className="flex-1" label={p.name} />
+        <span className="tabular-nums">
+          {done}/{total}
+        </span>
+      </div>
+      {(lead || p.health || p.target_date) && (
+        <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1  text-muted-foreground">
+          {p.health && <ProjectHealthLabel health={p.health} />}
+          {lead && (
+            <span className="flex min-w-0 items-center gap-1.5">
+              <Avatar name={lead.display_name} src={lead.avatar_url} size={16} />
+              <span className="sr-only">{t("project.leadBy", { name: lead.display_name })}</span>
+              <span aria-hidden="true" className="truncate">
+                {lead.display_name}
+              </span>
+            </span>
+          )}
+          {p.target_date && (
+            <span className="flex items-center gap-1">
+              <CalendarDays aria-hidden="true" className="size-3" />
+              {t("project.targetOn", { date: fullDate(planDateTime(p.target_date), lang) })}
+            </span>
+          )}
+        </div>
+      )}
+      <p className="mt-2 truncate  text-muted-foreground">
+        {p.team_ids
+          .map((id) => ws.teams.find((x) => x.id === id)?.name)
+          .filter(Boolean)
+          .join(", ") || t("project.allTeams")}
+      </p>
+    </Link>
+  );
+}
+
+export function ProjectStatusBadge({ status }: { status: ProjectStatus }) {
+  const { t } = useI18n();
+  const info = PROJECT_STATUS[status];
+  return <Badge tone={info.tone}>{t(info.label)}</Badge>;
+}
+
+export function ProjectHealthLabel({
+  health,
+  dotOnly,
+}: {
+  health: ProjectHealth;
+  dotOnly?: boolean;
+}) {
+  const { t } = useI18n();
+  const info = PROJECT_HEALTH[health];
+  const dot = <span aria-hidden="true" className={cn("size-2 shrink-0 rounded-full", info.dot)} />;
+  if (dotOnly) return dot;
+  return (
+    <span className="flex items-center gap-1.5">
+      {dot}
+      {t(info.label)}
+    </span>
   );
 }
 

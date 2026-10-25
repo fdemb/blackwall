@@ -249,11 +249,16 @@ async fn insert_planning(op: &mut Operation<'_>, w: &Workspace) -> Result<()> {
     }
 
     for project in &w.projects {
-        sqlx::query("INSERT INTO projects(id,workspace_id,name,description) VALUES($1,$2,$3,$4)")
+        sqlx::query("INSERT INTO projects(id,workspace_id,name,description,lead_id,status,health,start_date,target_date) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)")
             .bind(project.id)
             .bind(w.id)
             .bind(&project.name)
             .bind(&project.description)
+            .bind(project.lead_id)
+            .bind(enum_text(&project.status))
+            .bind(project.health.as_ref().map(enum_text))
+            .bind(project.start_date)
+            .bind(project.target_date)
             .execute(&mut *op.tx)
             .await?;
         op.created("projects", project.id);

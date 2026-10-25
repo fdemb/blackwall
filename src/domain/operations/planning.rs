@@ -126,6 +126,11 @@ impl Workspace {
                     name,
                     description,
                     team_ids,
+                    lead_id: None,
+                    status: ProjectStatus::Planned,
+                    health: None,
+                    start_date: None,
+                    target_date: None,
                 });
                 Ok(id)
             }
@@ -136,6 +141,26 @@ impl Workspace {
                 team_ids,
             } => {
                 self.update_project(id, name, description, team_ids)?;
+                Ok(id)
+            }
+            Command::SetProjectPlan {
+                id,
+                lead_id,
+                status,
+                health,
+                start_date,
+                target_date,
+            } => {
+                validate_project_dates(start_date, target_date)?;
+                if let Some(lead) = lead_id {
+                    self.member(lead)?;
+                }
+                let project = find_mut(&mut self.projects, |p| p.id == id)?;
+                project.lead_id = lead_id;
+                project.status = status;
+                project.health = health;
+                project.start_date = start_date;
+                project.target_date = target_date;
                 Ok(id)
             }
             Command::DeleteProject { id } => {
