@@ -10,7 +10,7 @@ commit=${2:?usage: blackwall-deploy <archive.tar.gz> <commit-sha>}
 root=/opt/blackwall
 env_file=/etc/blackwall/blackwall.env
 release=$root/releases/$commit
-previous=$(readlink -f "$root/current" || true)
+previous=$(readlink -e "$root/current" || true)
 
 if [[ ! -d $release ]]; then
     rm -rf "$release.tmp"
@@ -28,10 +28,12 @@ run_as_app() {
     (set -a; . "$env_file"; set +a; exec runuser -u blackwall -- "$@")
 }
 
+# Runs as an if condition, where set -e is off, so every step chains with &&.
 activate() {
-    ln -sfn "$1" "$root/current.new"
-    mv -T "$root/current.new" "$root/current"
-    systemctl restart blackwall-web blackwall-worker
+    ln -sfn "$1" "$root/current.new" \
+        && mv -T "$root/current.new" "$root/current" \
+        && systemctl restart blackwall-web blackwall-worker \
+        && healthy
 }
 
 healthy() {
@@ -49,14 +51,20 @@ echo "migrating with $commit"
 run_as_app "$release/blackwall" migrate
 
 echo "switching to $commit"
-activate "$release"
-if ! healthy; then
+if ! activate "$release"; then
     journalctl -u blackwall-web -u blackwall-worker -n 50 --no-pager || true
-    if [[ -n $previous && $previous != "$release" ]]; then
-        echo "health check failed; rolling back to $(basename "$previous")" >&2
-        echo "migrations from $commit stay applied" >&2
-        activate "$previous"
+    echo "$commit failed to start or failed its health check" >&2
+    if [[ -z $previous || $previous == "$release" ]]; then
+        echo "no previous release to roll back to" >&2
+        exit 1
     fi
+    echo "rolling back to $(basename "$previous"); migrations from $commit stay applied" >&2
+    if ! activate "$previous"; then
+        journalctl -u blackwall-web -u blackwall-worker -n 50 --no-pager || true
+        echo "$(basename "$previous") failed too: both releases are down" >&2
+        exit 1
+    fi
+    echo "rolled back to $(basename "$previous")" >&2
     exit 1
 fi
 

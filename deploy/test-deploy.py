@@ -100,12 +100,7 @@ def rollback_after_failed_health_check(o):
 
 def both_releases_down(o):
     assert o["code"] == 1 and o["current"] == old
-    assert "both releases are down" in o["output"]
-
-
-def rollback_restart_fails(o):
-    assert o["code"] == 1 and o["current"] == old
-    assert "both releases are down" in o["output"]
+    assert "both releases are down" in o["output"] and "rolled back" not in o["output"]
 
 
 def first_deploy_unhealthy(o):
@@ -123,7 +118,7 @@ case("healthy deploy switches to the new release", healthy_deploy)
 case("failed restart rolls back", rollback_after_failed_restart, restart_fails=[new])
 case("failed health check rolls back and checks the old release", rollback_after_failed_health_check, unhealthy=[new])
 case("both releases unhealthy", both_releases_down, unhealthy=[new, old])
-case("restart fails for both releases", rollback_restart_fails, restart_fails=[new, old])
+case("restart fails for both releases", both_releases_down, restart_fails=[new, old])
 case("first deploy has nothing to roll back to", first_deploy_unhealthy, previous=None, unhealthy=[new])
 case("redeploying the current release has nothing to roll back to", redeploy_unhealthy, previous=new, unhealthy=[new])
 
