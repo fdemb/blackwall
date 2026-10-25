@@ -2139,3 +2139,63 @@ async fn workspace_limits_name_the_resource_and_report_usage() {
     assert_eq!(status, StatusCode::FORBIDDEN);
     database.cleanup().await;
 }
+
+#[tokio::test]
+async fn unlimited_sprints_still_number_concurrent_creates() {
+    let database = support::TestDatabase::new().await;
+    let config = StoreConfig {
+        limits: Limits::default().with(Resource::Sprints, None),
+        ..StoreConfig::default()
+    };
+    let store = Store::connect_with_config(&database.url, config)
+        .await
+        .unwrap();
+    let app = blackwall::http::router(store.clone());
+    let owner = account(&store, "owner").await;
+    let (status, value) = call(
+        &app,
+        "POST",
+        "/internal-api/workspaces",
+        Some(&owner.token),
+        Some(json!({"name":"Sprints","slug":"sprints"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{value}");
+    let id = value["workspace"]["id"].as_str().unwrap().to_owned();
+    let created = change(
+        &app,
+        &owner,
+        &id,
+        Command::CreateTeam {
+            id: None,
+            name: "Operations".into(),
+            key: "OPE".into(),
+            members: vec![owner.profile.id],
+            default_stage_ids: None,
+        },
+    )
+    .await;
+    let team = uuid(&created["result"]["id"]);
+
+    let path = format!("/internal-api/workspaces/{id}/commands");
+    let requests = (0..10).map(|n| {
+        let (app, path, token) = (app.clone(), path.clone(), owner.token.clone());
+        tokio::spawn(async move {
+            let command = json!({"command":{"type":"create_sprint","team_id":team,"name":format!("Sprint {n}"),
+                "goal":"","starts_at":"2026-11-02T00:00:00Z","ends_at":"2026-11-16T00:00:00Z"}});
+            call(&app, "POST", &path, Some(&token), Some(command)).await
+        })
+    });
+    for request in requests.collect::<Vec<_>>() {
+        let (status, value) = request.await.unwrap();
+        assert_eq!(status, StatusCode::OK, "{value}");
+    }
+    let numbers: Vec<i64> =
+        sqlx::query_scalar("SELECT number FROM sprints WHERE team_id=$1 ORDER BY number")
+            .bind(team)
+            .fetch_all(&store.pool)
+            .await
+            .unwrap();
+    assert_eq!(numbers, (1..=10).collect::<Vec<i64>>());
+    database.cleanup().await;
+}

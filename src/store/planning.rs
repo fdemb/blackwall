@@ -772,7 +772,7 @@ impl Operation<'_> {
     ) -> Result<Uuid> {
         validate_sprint(&name, &goal, starts_at, ends_at)?;
         self.capacity(Resource::Sprints, 1).await?;
-        self.lock_team(team_id, false).await?;
+        persistence::lock_team_numbers(&mut self.tx, self.workspace_id, team_id).await?;
         let id = self.reserve_client_id(id).await?;
         sqlx::query("INSERT INTO sprints(id,workspace_id,team_id,number,name,goal,starts_at,ends_at,state) VALUES($1,$2,$3,(SELECT COALESCE(max(number),0)+1 FROM sprints WHERE workspace_id=$2 AND team_id=$3),$4,$5,$6,$7,'planned')")
             .bind(id)

@@ -170,6 +170,8 @@ Each workspace has a limit per kind of record. Trashed and archived records coun
 
 Set the same values for the server and the worker, because the worker applies them to tracker imports. On the deploy host, set them in `/etc/blackwall/blackwall.env`. Before it adds a record, the server counts the workspace's rows of that kind, so a very high limit slows writes in a very large workspace.
 
+Activity history has no limit. Every change writes to it, so a cap would block all writes once reached. An import adds the activity in its file, and the 20 MiB request limit bounds that.
+
 At a limit, the server refuses new records of that kind and names the limit in the error. Settings > Import & export shows each count against its limit and warns from 80%.
 
 ## Current limits

@@ -26,17 +26,27 @@ pub(crate) async fn create(
     insert(conn, workspace, i, origin).await
 }
 
-pub(crate) async fn next_number(
+/// Serializes allocation of the team's issue and sprint numbers.
+pub(crate) async fn lock_team_numbers(
     conn: &mut PgConnection,
     workspace: Uuid,
     team: Uuid,
-) -> Result<u64> {
+) -> Result<()> {
     sqlx::query("SELECT 1 FROM teams WHERE workspace_id=$1 AND id=$2 FOR NO KEY UPDATE")
         .bind(workspace)
         .bind(team)
         .fetch_optional(&mut *conn)
         .await?
         .ok_or(Error::NotFound)?;
+    Ok(())
+}
+
+pub(crate) async fn next_number(
+    conn: &mut PgConnection,
+    workspace: Uuid,
+    team: Uuid,
+) -> Result<u64> {
+    lock_team_numbers(conn, workspace, team).await?;
     let number: i64 = sqlx::query_scalar(
         "SELECT GREATEST((SELECT max(number) FROM issues WHERE workspace_id=$1 AND team_id=$2),\
          (SELECT number FROM purged_issue_numbers WHERE workspace_id=$1 AND team_id=$2),\
