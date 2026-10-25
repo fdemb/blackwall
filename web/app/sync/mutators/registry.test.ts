@@ -44,10 +44,13 @@ const ALL_COMMANDS = [
   "delete_stage",
   "create_label",
   "update_label",
+  "delete_label",
   "create_project",
   "update_project",
+  "delete_project",
   "create_milestone",
   "update_milestone",
+  "delete_milestone",
   "create_sprint",
   "update_sprint",
   "complete_sprint",
@@ -207,18 +210,27 @@ describe("mutator registry", () => {
     expectTypeOf(MUTATORS.update_label)
       .parameter(1)
       .toEqualTypeOf<DeepReadonly<ArgsOf<"update_label">>>();
+    expectTypeOf(MUTATORS.delete_label)
+      .parameter(1)
+      .toEqualTypeOf<DeepReadonly<ArgsOf<"delete_label">>>();
     expectTypeOf(MUTATORS.create_project)
       .parameter(1)
       .toEqualTypeOf<DeepReadonly<ArgsOf<"create_project">>>();
     expectTypeOf(MUTATORS.update_project)
       .parameter(1)
       .toEqualTypeOf<DeepReadonly<ArgsOf<"update_project">>>();
+    expectTypeOf(MUTATORS.delete_project)
+      .parameter(1)
+      .toEqualTypeOf<DeepReadonly<ArgsOf<"delete_project">>>();
     expectTypeOf(MUTATORS.create_milestone)
       .parameter(1)
       .toEqualTypeOf<DeepReadonly<ArgsOf<"create_milestone">>>();
     expectTypeOf(MUTATORS.update_milestone)
       .parameter(1)
       .toEqualTypeOf<DeepReadonly<ArgsOf<"update_milestone">>>();
+    expectTypeOf(MUTATORS.delete_milestone)
+      .parameter(1)
+      .toEqualTypeOf<DeepReadonly<ArgsOf<"delete_milestone">>>();
     expectTypeOf(MUTATORS.create_sprint)
       .parameter(1)
       .toEqualTypeOf<DeepReadonly<ArgsOf<"create_sprint">>>();

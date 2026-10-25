@@ -1050,4 +1050,31 @@ export const pl = {
   "help.goReports": "Przejdź do raportów",
   "help.send": "Wyślij komentarz lub zapisz opis",
   "help.then": "potem",
+  "labels.delete": "Usuń etykietę",
+  "labels.deleteSub_one":
+    "Etykieta „{{name}}” zniknie z {{count}} zadania. Tej operacji nie można cofnąć.",
+  "labels.deleteSub_few":
+    "Etykieta „{{name}}” zniknie z {{count}} zadań. Tej operacji nie można cofnąć.",
+  "labels.deleteSub_many":
+    "Etykieta „{{name}}” zniknie z {{count}} zadań. Tej operacji nie można cofnąć.",
+  "labels.deleteSub_other":
+    "Etykieta „{{name}}” zniknie z {{count}} zadania. Tej operacji nie można cofnąć.",
+  "project.delete": "Usuń projekt",
+  "project.deleteSub_one":
+    "Projekt „{{name}}” i jego kamienie milowe zostaną usunięte. {{count}} zadanie zostanie bez projektu. Tej operacji nie można cofnąć.",
+  "project.deleteSub_few":
+    "Projekt „{{name}}” i jego kamienie milowe zostaną usunięte. {{count}} zadania zostaną bez projektu. Tej operacji nie można cofnąć.",
+  "project.deleteSub_many":
+    "Projekt „{{name}}” i jego kamienie milowe zostaną usunięte. {{count}} zadań zostanie bez projektu. Tej operacji nie można cofnąć.",
+  "project.deleteSub_other":
+    "Projekt „{{name}}” i jego kamienie milowe zostaną usunięte. {{count}} zadania zostanie bez projektu. Tej operacji nie można cofnąć.",
+  "milestone.delete": "Usuń kamień milowy",
+  "milestone.deleteSub_one":
+    "Kamień milowy „{{name}}” zniknie z {{count}} zadania. Tej operacji nie można cofnąć.",
+  "milestone.deleteSub_few":
+    "Kamień milowy „{{name}}” zniknie z {{count}} zadań. Tej operacji nie można cofnąć.",
+  "milestone.deleteSub_many":
+    "Kamień milowy „{{name}}” zniknie z {{count}} zadań. Tej operacji nie można cofnąć.",
+  "milestone.deleteSub_other":
+    "Kamień milowy „{{name}}” zniknie z {{count}} zadania. Tej operacji nie można cofnąć.",
 } as const satisfies Catalog<"one" | "few" | "many" | "other">;

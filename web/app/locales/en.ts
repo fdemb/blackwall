@@ -1000,4 +1000,15 @@ export const en = {
   "help.goReports": "Go to Reports",
   "help.send": "Send a comment or save a description",
   "help.then": "then",
+  "labels.delete": "Delete label",
+  "labels.deleteSub_one": "Removes “{{name}}” from {{count}} issue. This can't be undone.",
+  "labels.deleteSub_other": "Removes “{{name}}” from {{count}} issues. This can't be undone.",
+  "project.delete": "Delete project",
+  "project.deleteSub_one":
+    "Deletes “{{name}}” and its milestones. Its {{count}} issue stays, without a project. This can't be undone.",
+  "project.deleteSub_other":
+    "Deletes “{{name}}” and its milestones. Its {{count}} issues stay, without a project. This can't be undone.",
+  "milestone.delete": "Delete milestone",
+  "milestone.deleteSub_one": "Removes “{{name}}” from {{count}} issue. This can't be undone.",
+  "milestone.deleteSub_other": "Removes “{{name}}” from {{count}} issues. This can't be undone.",
 } as const;

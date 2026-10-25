@@ -311,6 +311,7 @@ export const scenarios = {
   update_label: {
     command: (f) => ({ type: "update_label", id: f.label, name: "Renamed", color: "blue" }),
   },
+  delete_label: { command: (f) => ({ type: "delete_label", id: f.label }) },
   create_project: {
     command: (f) => ({
       type: "create_project",
@@ -328,6 +329,7 @@ export const scenarios = {
       team_ids: [f.team],
     }),
   },
+  delete_project: { command: (f) => ({ type: "delete_project", id: f.project }) },
   create_milestone: {
     command: (f) => ({
       type: "create_milestone",
@@ -344,6 +346,7 @@ export const scenarios = {
       deadline: null,
     }),
   },
+  delete_milestone: { command: (f) => ({ type: "delete_milestone", id: f.milestone }) },
   create_sprint: {
     command: (f) => ({
       type: "create_sprint",

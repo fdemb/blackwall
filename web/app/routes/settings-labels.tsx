@@ -1,14 +1,15 @@
 import { useState } from "react";
 import { Form, Radio, RadioGroup } from "react-aria-components";
-import { Pencil, Tag } from "lucide-react";
+import { Pencil, Tag, Trash2 } from "lucide-react";
 import { Button } from "~/components/ui/button";
 import { Dialog, useDialogDirty } from "~/components/ui/dialog";
 import { FormError, TextField } from "~/components/ui/field";
+import { ConfirmDialog } from "~/components/app/confirm";
 import { SettingsList, SettingsPage, SettingsSection } from "~/components/app/settings";
 import { LABEL_COLORS, LabelDot } from "~/components/app/pickers";
 import { useI18n, type Key } from "~/lib/i18n";
 import { usePending } from "~/lib/use-pending";
-import { useLabelCounts } from "~/lib/stats";
+import { useLabelCounts, useReferencingIssueCount } from "~/lib/stats";
 import { useWorkspace } from "~/lib/workspace";
 import type { Label } from "~/lib/types";
 
@@ -65,6 +66,8 @@ export default function Labels() {
   const [name, setName] = useState("");
   const [color, setColor] = useState(COLORS[0][0]);
   const [editing, setEditing] = useState<Label | null>(null);
+  const [deleting, setDeleting] = useState<Label | null>(null);
+  const deletingIssues = useReferencingIssueCount("labels", deleting?.id ?? null);
   const { pending, error, guard } = usePending();
   return (
     <SettingsPage title={t("settings.labels")} description={t("labels.sub")}>
@@ -123,6 +126,16 @@ export default function Labels() {
                     <Pencil />
                   </Button>
                 )}
+                {canWrite && (
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    aria-label={`${t("labels.delete")}: ${l.name}`}
+                    onPress={() => setDeleting(l)}
+                  >
+                    <Trash2 />
+                  </Button>
+                )}
               </li>
             ))}
           </SettingsList>
@@ -136,6 +149,21 @@ export default function Labels() {
       >
         {(close) => editing && <EditLabel label={editing} close={close} />}
       </Dialog>
+      <ConfirmDialog
+        title={t("labels.delete")}
+        description={
+          deleting ? t("labels.deleteSub", { name: deleting.name, count: deletingIssues }) : ""
+        }
+        isOpen={deleting !== null}
+        onOpenChange={(o) => !o && setDeleting(null)}
+        onConfirm={async () => {
+          if (!deleting) return;
+          await run(
+            { type: "delete_label", id: deleting.id },
+            { quiet: true, expectedVersions: { [deleting.id]: deleting.version } },
+          );
+        }}
+      />
     </SettingsPage>
   );
 }

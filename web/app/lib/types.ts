@@ -475,10 +475,13 @@ export type Command =
   | { type: "delete_stage"; team_id: Id; id: Id; replacement: Id }
   | { type: "create_label"; id?: Id; name: string; color: string }
   | { type: "update_label"; id: Id; name: string; color: string }
+  | { type: "delete_label"; id: Id }
   | { type: "create_project"; id?: Id; name: string; description: string; team_ids: Id[] }
   | { type: "update_project"; id: Id; name: string; description: string; team_ids: Id[] }
+  | { type: "delete_project"; id: Id }
   | { type: "create_milestone"; id?: Id; project_id: Id; name: string; deadline: string | null }
   | { type: "update_milestone"; id: Id; name: string; deadline: string | null }
+  | { type: "delete_milestone"; id: Id }
   | {
       type: "create_sprint";
       id?: Id;

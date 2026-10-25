@@ -117,10 +117,13 @@ const COMMAND_FIELDS: Record<Command["type"] | "add_attachment" | "attach_commen
   delete_stage: { id: required, team_id: required, replacement: required },
   create_label: { id: option, name: required, color: required },
   update_label: { id: required, name: required, color: required },
+  delete_label: { id: required },
   create_project: { id: option, name: required, description: defaulted(""), team_ids: required },
   update_project: { id: required, name: required, description: required, team_ids: required },
+  delete_project: { id: required },
   create_milestone: { id: option, project_id: required, name: required, deadline: timestampOption },
   update_milestone: { id: required, name: required, deadline: timestampOption },
+  delete_milestone: { id: required },
   create_sprint: {
     id: option,
     team_id: required,

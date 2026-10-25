@@ -110,3 +110,20 @@ export function useProjectStats(): ReadonlyMap<Id, ProjectStats> {
     [],
   );
 }
+
+/** Issues a label, project or milestone delete clears, trashed and archived ones included. */
+export function useReferencingIssueCount(
+  entity: "labels" | "projects" | "milestones",
+  id: Id | null,
+): number {
+  return useView(
+    (store) => {
+      if (id === null) return 0;
+      if (entity === "projects") return store.byIndex("issues", "project_id", id).length;
+      if (entity === "milestones") return store.byIndex("issues", "milestone_id", id).length;
+      return store.all("issues").filter((issue) => issue.labels.includes(id)).length;
+    },
+    ["issues"],
+    [entity, id],
+  );
+}

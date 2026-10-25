@@ -1396,6 +1396,105 @@ mod tests {
     }
 
     #[test]
+    fn planning_deletes_clear_issue_references() {
+        let (mut w, owner, team) = setup();
+        let created = Utc::now();
+        let id = |w: &mut Workspace, command| w.apply(owner, command, created).unwrap().id.unwrap();
+        let label = id(
+            &mut w,
+            Command::CreateLabel {
+                id: None,
+                name: "bug".into(),
+                color: "red".into(),
+            },
+        );
+        let project = id(
+            &mut w,
+            Command::CreateProject {
+                id: None,
+                name: "Launch".into(),
+                description: String::new(),
+                team_ids: vec![team],
+            },
+        );
+        let milestone = id(
+            &mut w,
+            Command::CreateMilestone {
+                id: None,
+                project_id: project,
+                name: "Beta".into(),
+                deadline: None,
+            },
+        );
+        let other = id(
+            &mut w,
+            Command::CreateMilestone {
+                id: None,
+                project_id: project,
+                name: "GA".into(),
+                deadline: None,
+            },
+        );
+        let mut tagged = input(team);
+        tagged.labels = vec![label];
+        tagged.project_id = Some(project);
+        tagged.milestone_id = Some(milestone);
+        let live = id(
+            &mut w,
+            Command::CreateIssue {
+                input: tagged.clone(),
+            },
+        );
+        let trashed = id(&mut w, Command::CreateIssue { input: tagged });
+        id(&mut w, Command::DeleteIssue { id: trashed });
+
+        let viewer = Uuid::new_v4();
+        w.members.push(Member {
+            version: 1,
+            user_id: viewer,
+            role: Role::Viewer,
+        });
+        assert!(matches!(
+            w.apply(viewer, Command::DeleteLabel { id: label }, created),
+            Err(Error::Forbidden)
+        ));
+        for ghost in [
+            Command::DeleteLabel { id: Uuid::new_v4() },
+            Command::DeleteProject { id: Uuid::new_v4() },
+            Command::DeleteMilestone { id: Uuid::new_v4() },
+        ] {
+            assert!(matches!(
+                w.apply(owner, ghost, created),
+                Err(Error::NotFound)
+            ));
+        }
+
+        let later = created + chrono::Duration::minutes(1);
+        w.apply(owner, Command::DeleteLabel { id: label }, later)
+            .unwrap();
+        w.apply(owner, Command::DeleteMilestone { id: milestone }, later)
+            .unwrap();
+        assert!(w.labels.is_empty());
+        assert_eq!(
+            w.milestones.iter().map(|m| m.id).collect::<Vec<_>>(),
+            [other]
+        );
+        for issue in [live, trashed] {
+            let issue = w.issues.iter().find(|i| i.id == issue).unwrap();
+            assert!(issue.labels.is_empty());
+            assert_eq!(issue.milestone_id, None);
+            assert_eq!(issue.project_id, Some(project));
+            assert_eq!(issue.updated_at, later);
+        }
+
+        w.apply(owner, Command::DeleteProject { id: project }, later)
+            .unwrap();
+        assert!(w.projects.is_empty());
+        assert!(w.milestones.is_empty());
+        assert!(w.issues.iter().all(|i| i.project_id.is_none()));
+    }
+
+    #[test]
     fn invitation_is_one_use_and_public_snapshot_hides_hash() {
         let (mut w, owner, _) = setup();
         let hash = "a".repeat(64);

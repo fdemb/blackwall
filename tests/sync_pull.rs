@@ -1730,3 +1730,187 @@ async fn pull_replays_command_changes_with_current_records() {
     store.pool.close().await;
     database.cleanup().await;
 }
+
+async fn bootstrap_text(app: &axum::Router, token: &str, workspace: Uuid) -> String {
+    let request = Request::builder()
+        .uri(format!(
+            "/internal-api/workspaces/{workspace}/sync/bootstrap?client_id={}",
+            Uuid::new_v4()
+        ))
+        .header("Authorization", format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap();
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    String::from_utf8(bytes.to_vec()).unwrap()
+}
+
+#[tokio::test]
+async fn planning_deletes_clear_references_on_live_and_trashed_issues() {
+    let database = support::TestDatabase::new().await;
+    let store = Store::connect(&database.url).await.unwrap();
+    let app = router(store.clone());
+    let owner = account(&store, "owner").await;
+    let viewer = account(&store, "viewer").await;
+    let (ws, team) = setup(&app, &owner).await;
+    sqlx::query("INSERT INTO workspace_members(workspace_id,user_id,role) VALUES($1,$2,'viewer')")
+        .bind(ws)
+        .bind(viewer.profile.id)
+        .execute(&store.pool)
+        .await
+        .unwrap();
+    let client = Uuid::new_v4();
+
+    let label = created(
+        &app,
+        &owner,
+        ws,
+        json!({"type": "create_label", "name": "bug", "color": "red"}),
+    )
+    .await;
+    let project = created(
+        &app,
+        &owner,
+        ws,
+        json!({"type": "create_project", "name": "Launch", "team_ids": [team]}),
+    )
+    .await;
+    let mut milestones = vec![];
+    for name in ["Beta", "GA"] {
+        milestones.push(
+            created(
+                &app,
+                &owner,
+                ws,
+                json!({"type": "create_milestone", "project_id": project, "name": name, "deadline": null}),
+            )
+            .await,
+        );
+    }
+    let mut issues = vec![];
+    for title in ["Live", "Trashed"] {
+        issues.push(
+            created(
+                &app,
+                &owner,
+                ws,
+                json!({"type": "create_issue", "input": {"team_id": team, "title": title, "labels": [label], "project_id": project, "milestone_id": milestones[0]}}),
+            )
+            .await,
+        );
+    }
+    let (live, trashed) = (issues[0], issues[1]);
+    created(
+        &app,
+        &owner,
+        ws,
+        json!({"type": "delete_issue", "id": trashed}),
+    )
+    .await;
+    let before = cursor_of(&pull_ok(&app, &owner.token, ws, client, None).await);
+
+    let (status, result) = push(
+        &app,
+        &viewer.token,
+        ws,
+        Uuid::new_v4(),
+        vec![mutation(1, "delete_label", json!({"id": label}))],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+    assert_eq!(result["results"][0]["error"]["status"], 403, "{result}");
+
+    let ghost = Uuid::new_v4();
+    let (status, result) = push(
+        &app,
+        &owner.token,
+        ws,
+        client,
+        vec![
+            mutation(1, "delete_label", json!({"id": ghost})),
+            mutation(2, "delete_project", json!({"id": ghost})),
+            mutation(3, "delete_milestone", json!({"id": ghost})),
+            mutation(4, "delete_label", json!({"id": label})),
+            mutation(5, "delete_milestone", json!({"id": milestones[0]})),
+        ],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+    for index in 0..3 {
+        assert_eq!(result["results"][index]["error"]["status"], 404, "{result}");
+    }
+    assert_eq!(result["results"][3]["status"], "applied", "{result}");
+    assert_eq!(result["results"][4]["status"], "applied", "{result}");
+
+    let page = pull_ok(&app, &owner.token, ws, client, Some(&before)).await;
+    let changes = &page["changes"];
+    assert_eq!(
+        record(changes, "labels", &label.to_string()),
+        Some(&Value::Null)
+    );
+    assert_eq!(
+        record(changes, "milestones", &milestones[0].to_string()),
+        Some(&Value::Null)
+    );
+    let issue = record(changes, "issues", &live.to_string()).unwrap();
+    assert_eq!(issue["labels"], json!([]), "{issue}");
+    assert_eq!(issue["milestone_id"], Value::Null);
+    assert_eq!(issue["project_id"], json!(project));
+    let stored: Vec<(Uuid, i64, i64)> = sqlx::query_as(
+        "SELECT id, version, (SELECT count(*) FROM issue_labels l WHERE l.issue_id = i.id) \
+         FROM issues i WHERE workspace_id = $1 AND milestone_id IS NULL ORDER BY number",
+    )
+    .bind(ws)
+    .fetch_all(&store.pool)
+    .await
+    .unwrap();
+    assert_eq!(stored, vec![(live, 3, 0), (trashed, 4, 0)]);
+
+    let (status, result) = push(
+        &app,
+        &owner.token,
+        ws,
+        client,
+        vec![mutation(6, "delete_project", json!({"id": project}))],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+    assert_eq!(result["results"][0]["status"], "applied", "{result}");
+    let page = pull_ok(&app, &owner.token, ws, client, Some(&before)).await;
+    let changes = &page["changes"];
+    assert_eq!(
+        record(changes, "projects", &project.to_string()),
+        Some(&Value::Null)
+    );
+    assert_eq!(
+        record(changes, "milestones", &milestones[1].to_string()),
+        Some(&Value::Null)
+    );
+    assert_eq!(
+        record(changes, "issues", &live.to_string()).unwrap()["project_id"],
+        Value::Null
+    );
+    let referenced: i64 = sqlx::query_scalar(
+        "SELECT (SELECT count(*) FROM issues WHERE workspace_id=$1 AND project_id IS NOT NULL) \
+         + (SELECT count(*) FROM project_teams WHERE workspace_id=$1)",
+    )
+    .bind(ws)
+    .fetch_one(&store.pool)
+    .await
+    .unwrap();
+    assert_eq!(referenced, 0);
+
+    let snapshot = bootstrap_text(&app, &owner.token, ws).await;
+    for gone in [label, project, milestones[0], milestones[1]] {
+        assert!(
+            !snapshot.contains(&gone.to_string()),
+            "{gone} in {snapshot}"
+        );
+    }
+    assert!(snapshot.contains(&live.to_string()));
+
+    drop(app);
+    store.pool.close().await;
+    database.cleanup().await;
+}

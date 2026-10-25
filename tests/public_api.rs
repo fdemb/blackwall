@@ -1025,3 +1025,95 @@ async fn public_api_on_postgres() {
 
     database.cleanup().await;
 }
+
+#[tokio::test]
+async fn deletes_labels_projects_and_milestones() {
+    let database = support::TestDatabase::new().await;
+    let store = Store::connect(&database.url).await.unwrap();
+    let app = router(store.clone());
+    let owner = account(&store, "owner").await;
+    let ws = workspace(&store, &owner, "Deletes").await;
+    let write = token(&app, &owner, json!({"name":"CI","access":"write"})).await;
+    let read = token(&app, &owner, json!({"name":"Reports","access":"read"})).await;
+    let base = format!("/api/v1/workspaces/{ws}");
+
+    let schema = send(&app, "GET", "/api/v1/openapi.json", None, None, &[]).await;
+    for path in [
+        "labels/{label}",
+        "projects/{project}",
+        "milestones/{milestone}",
+    ] {
+        let operation = &schema.body["paths"][format!("/api/v1/workspaces/{{workspace}}/{path}")];
+        assert!(
+            operation["delete"]["responses"]["204"].is_object(),
+            "{path}"
+        );
+    }
+
+    let label = call(
+        &app,
+        "POST",
+        &format!("{base}/labels"),
+        &write,
+        Some(json!({"name":"typo","color":"red"})),
+    )
+    .await;
+    assert_eq!(label.status, StatusCode::CREATED, "{}", label.body);
+    let project = call(
+        &app,
+        "POST",
+        &format!("{base}/projects"),
+        &write,
+        Some(json!({"name":"Dead","team_ids":[]})),
+    )
+    .await;
+    assert_eq!(project.status, StatusCode::CREATED, "{}", project.body);
+    let project_id = project.body["id"].as_str().unwrap().to_owned();
+    let mut milestones = vec![];
+    for name in ["Beta", "GA"] {
+        let created = call(
+            &app,
+            "POST",
+            &format!("/internal-api/workspaces/{ws}/commands"),
+            &owner.token,
+            Some(json!({"command": {"type":"create_milestone","project_id":project_id,"name":name,"deadline":null}})),
+        )
+        .await;
+        assert_eq!(created.status, StatusCode::OK, "{}", created.body);
+        milestones.push(created.body["result"]["id"].as_str().unwrap().to_owned());
+    }
+
+    let paths = [
+        format!("{base}/labels/{}", label.body["id"].as_str().unwrap()),
+        format!("{base}/milestones/{}", milestones[0]),
+        format!("{base}/projects/{project_id}"),
+    ];
+    let denied = call(&app, "DELETE", &paths[0], &read, None).await;
+    assert_eq!(denied.status, StatusCode::FORBIDDEN);
+    for path in &paths {
+        let removed = call(&app, "DELETE", path, &write, None).await;
+        assert_eq!(
+            removed.status,
+            StatusCode::NO_CONTENT,
+            "{path}: {}",
+            removed.body
+        );
+        let again = call(&app, "DELETE", path, &write, None).await;
+        assert_eq!(again.status, StatusCode::NOT_FOUND, "{path}");
+        let fetched = call(&app, "GET", path, &read, None).await;
+        assert_eq!(fetched.status, StatusCode::NOT_FOUND, "{path}");
+    }
+    let orphan = call(
+        &app,
+        "GET",
+        &format!("{base}/milestones/{}", milestones[1]),
+        &read,
+        None,
+    )
+    .await;
+    assert_eq!(orphan.status, StatusCode::NOT_FOUND);
+
+    drop(app);
+    store.pool.close().await;
+    database.cleanup().await;
+}

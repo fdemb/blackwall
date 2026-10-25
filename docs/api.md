@@ -46,9 +46,9 @@ All of these are under `/api/v1`:
 | Members | `GET /workspaces/{workspace}/members` |
 | Teams | `GET`, `POST /workspaces/{workspace}/teams`; `GET .../teams/{team}` |
 | Stages | `GET`, `POST .../teams/{team}/stages`; `GET`, `PATCH`, `DELETE .../stages/{stage}?replacement=<stage>` |
-| Labels | `GET`, `POST .../labels`; `GET`, `PATCH .../labels/{label}` |
-| Projects | `GET`, `POST .../projects`; `GET`, `PATCH .../projects/{project}` |
-| Milestones | `GET .../milestones`; `GET .../milestones/{milestone}` |
+| Labels | `GET`, `POST .../labels`; `GET`, `PATCH`, `DELETE .../labels/{label}` |
+| Projects | `GET`, `POST .../projects`; `GET`, `PATCH`, `DELETE .../projects/{project}` |
+| Milestones | `GET .../milestones`; `GET`, `DELETE .../milestones/{milestone}` |
 | Sprints | `GET .../sprints`; `GET .../sprints/{sprint}` |
 | Issues | `GET`, `POST .../issues`; `GET`, `PATCH`, `DELETE .../issues/{issue}`; `POST .../issues/{issue}/restore`, `/archive`, `/unarchive`; `GET .../issues/{issue}/activity` |
 | Comments | `GET`, `POST .../issues/{issue}/comments`; `GET`, `PATCH`, `DELETE .../comments/{comment}` |

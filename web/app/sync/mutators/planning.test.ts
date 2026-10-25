@@ -8,8 +8,10 @@ import {
   AT,
   GHOST,
   LABEL_ONE,
+  LABEL_TWO,
   MEMBER,
   MILESTONE,
+  MILESTONE_OTHER,
   OWNER,
   PROJECT,
   SPRINT,
@@ -1445,4 +1447,88 @@ describe("archive_sprint", () => {
     rejects("archive_sprint", { id: SPRINT_FINISHED }, 403, "permission denied", VIEWER);
     rejects("archive_sprint", { id: SPRINT_FINISHED }, 403, "permission denied", GHOST);
   });
+});
+
+describe("delete_label / delete_project / delete_milestone", () => {
+  function referenceAllFromTrashedIssue(store: SyncStore): void {
+    const trashed = store.get("issues", "issue-deleted");
+    if (trashed === undefined) throw new Error("missing issue");
+    store.applyBase([
+      {
+        entity: "issues",
+        id: trashed.id,
+        record: {
+          ...trashed,
+          labels: [LABEL_ONE, LABEL_TWO],
+          project_id: PROJECT,
+          milestone_id: MILESTONE,
+        },
+      },
+    ]);
+  }
+
+  it("delete_label strips the label from live and trashed issues", () => {
+    const store = seedStore(MEMBER);
+    referenceAllFromTrashedIssue(store);
+    const untouched = store.get("issues", "issue-2");
+    mutate(store, "delete_label", { id: LABEL_ONE });
+    expect(store.replayErrors().size).toBe(0);
+    expect(store.get("labels", LABEL_ONE)).toBeUndefined();
+    expect(store.get("labels", LABEL_TWO)).toBeDefined();
+    expect(store.get("issues", "issue-1")).toMatchObject({ labels: [], updated_at: AT });
+    expect(store.get("issues", "issue-deleted")).toMatchObject({
+      labels: [LABEL_TWO],
+      updated_at: AT,
+    });
+    expect(store.get("issues", "issue-2")).toEqual(untouched);
+  });
+
+  it("delete_milestone clears it from issues and keeps the project", () => {
+    const store = seedStore(MEMBER);
+    referenceAllFromTrashedIssue(store);
+    mutate(store, "delete_milestone", { id: MILESTONE });
+    expect(store.replayErrors().size).toBe(0);
+    expect(store.get("milestones", MILESTONE)).toBeUndefined();
+    for (const id of ["issue-1", "issue-deleted"]) {
+      expect(store.get("issues", id)).toMatchObject({
+        project_id: PROJECT,
+        milestone_id: null,
+        updated_at: AT,
+      });
+    }
+  });
+
+  it("delete_project clears issues and drops only its own milestones", () => {
+    const store = seedStore(MEMBER);
+    referenceAllFromTrashedIssue(store);
+    mutate(store, "delete_project", { id: PROJECT });
+    expect(store.replayErrors().size).toBe(0);
+    expect(store.get("projects", PROJECT)).toBeUndefined();
+    expect(store.get("milestones", MILESTONE)).toBeUndefined();
+    expect(store.get("milestones", MILESTONE_OTHER)).toBeDefined();
+    for (const id of ["issue-1", "issue-deleted"]) {
+      expect(store.get("issues", id)).toMatchObject({
+        project_id: null,
+        milestone_id: null,
+        updated_at: AT,
+      });
+    }
+  });
+
+  it.each([
+    ["delete_label", LABEL_ONE],
+    ["delete_project", PROJECT],
+    ["delete_milestone", MILESTONE],
+  ])("%s replays a missing record as a no-op but admission fails", (name, id) => {
+    twice(name, { id }, MEMBER);
+    admitsRejects(name, { id: "ghost" }, 404, "not found", MEMBER);
+  });
+
+  it.each(["delete_label", "delete_project", "delete_milestone"])(
+    "%s is refused to viewers",
+    (name) => {
+      rejects(name, { id: LABEL_ONE }, 403, "permission denied", VIEWER);
+      rejects(name, { id: LABEL_ONE }, 403, "permission denied", GHOST);
+    },
+  );
 });

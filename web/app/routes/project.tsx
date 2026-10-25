@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Form } from "react-aria-components";
 import { Navigate, useParams } from "react-router";
-import { CalendarDays, Flag, Pencil, Plus } from "lucide-react";
+import { CalendarDays, Flag, Pencil, Plus, Trash2 } from "lucide-react";
 import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
 import { DatePicker } from "~/components/ui/date-picker";
@@ -10,6 +10,7 @@ import { TextField } from "~/components/ui/field";
 import { FilterBar } from "~/components/app/filter-bar";
 import { IssueList } from "~/components/app/issue-list";
 import { useQueueState } from "~/components/app/workbench";
+import { ConfirmDialog } from "~/components/app/confirm";
 import { EmptyState, Page, PageHeader, PageHeading, Scroll } from "~/components/app/page";
 import { ProgressBar } from "~/components/app/progress";
 import { daysUntil, fullDate } from "~/lib/format";
@@ -17,11 +18,11 @@ import { useI18n } from "~/lib/i18n";
 import { usePending } from "~/lib/use-pending";
 import { useIssues } from "~/lib/queries";
 import { QueryStatus } from "~/components/app/query-status";
-import { useProjectStats } from "~/lib/stats";
+import { useProjectStats, useReferencingIssueCount } from "~/lib/stats";
 import { useWorkspace } from "~/lib/workspace";
 import { ProjectForm } from "./projects";
 import { effectiveFilter, isNarrowed, whereIs } from "~/lib/filters";
-import type { IssueFilter, Milestone } from "~/lib/types";
+import type { IssueFilter, Milestone, Project } from "~/lib/types";
 
 export default function ProjectPage() {
   const { t, lang } = useI18n();
@@ -30,6 +31,8 @@ export default function ProjectPage() {
   const projectStats = useProjectStats();
   const [editing, setEditing] = useState(false);
   const [milestoneForm, setMilestoneForm] = useState<Milestone | "new" | null>(null);
+  const [deletingProject, setDeletingProject] = useState(false);
+  const [deletingMilestone, setDeletingMilestone] = useState<Milestone | null>(null);
   const { filter, setFilter } = useQueueState();
   const base: IssueFilter = { where: [whereIs("project_id", projectId ?? "")] };
   const query = useIssues(effectiveFilter(filter, base), Boolean(projectId));
@@ -61,10 +64,16 @@ export default function ProjectPage() {
         actions={
           <>
             {canWrite && (
-              <Button variant="ghost" size="sm" onPress={() => setEditing(true)}>
-                <Pencil />
-                {t("action.edit")}
-              </Button>
+              <>
+                <Button variant="ghost" size="sm" onPress={() => setEditing(true)}>
+                  <Pencil />
+                  {t("action.edit")}
+                </Button>
+                <Button variant="ghost" size="sm" onPress={() => setDeletingProject(true)}>
+                  <Trash2 />
+                  {t("action.delete")}
+                </Button>
+              </>
             )}
             {canWrite && (
               <Button
@@ -175,15 +184,26 @@ export default function ProjectPage() {
                           <span className="min-w-0 flex-1 truncate">{m.name}</span>
                           {late && <Badge tone="danger">{t("deadline.overdue")}</Badge>}
                           {canWrite && (
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              className="-my-1 -mr-1"
-                              aria-label={`${t("milestone.edit")}: ${m.name}`}
-                              onPress={() => setMilestoneForm(m)}
-                            >
-                              <Pencil />
-                            </Button>
+                            <>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="-my-1 -mr-1"
+                                aria-label={`${t("milestone.edit")}: ${m.name}`}
+                                onPress={() => setMilestoneForm(m)}
+                              >
+                                <Pencil />
+                              </Button>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="-my-1 -mr-1"
+                                aria-label={`${t("milestone.delete")}: ${m.name}`}
+                                onPress={() => setDeletingMilestone(m)}
+                              >
+                                <Trash2 />
+                              </Button>
+                            </>
                           )}
                         </div>
                         {m.deadline && (
@@ -222,7 +242,60 @@ export default function ProjectPage() {
           />
         )}
       </Dialog>
+      <DeleteProject project={project} isOpen={deletingProject} onOpenChange={setDeletingProject} />
+      <DeleteMilestone milestone={deletingMilestone} close={() => setDeletingMilestone(null)} />
     </Page>
+  );
+}
+
+function DeleteProject({
+  project,
+  isOpen,
+  onOpenChange,
+}: {
+  project: Project;
+  isOpen: boolean;
+  onOpenChange: (open: boolean) => void;
+}) {
+  const { t } = useI18n();
+  const { run } = useWorkspace();
+  const issues = useReferencingIssueCount("projects", project.id);
+  return (
+    <ConfirmDialog
+      title={t("project.delete")}
+      description={t("project.deleteSub", { name: project.name, count: issues })}
+      isOpen={isOpen}
+      onOpenChange={onOpenChange}
+      onConfirm={() =>
+        run(
+          { type: "delete_project", id: project.id },
+          { quiet: true, expectedVersions: { [project.id]: project.version } },
+        )
+      }
+    />
+  );
+}
+
+function DeleteMilestone({ milestone, close }: { milestone: Milestone | null; close: () => void }) {
+  const { t } = useI18n();
+  const { run } = useWorkspace();
+  const issues = useReferencingIssueCount("milestones", milestone?.id ?? null);
+  return (
+    <ConfirmDialog
+      title={t("milestone.delete")}
+      description={
+        milestone ? t("milestone.deleteSub", { name: milestone.name, count: issues }) : ""
+      }
+      isOpen={milestone !== null}
+      onOpenChange={(open) => !open && close()}
+      onConfirm={async () => {
+        if (!milestone) return;
+        await run(
+          { type: "delete_milestone", id: milestone.id },
+          { quiet: true, expectedVersions: { [milestone.id]: milestone.version } },
+        );
+      }}
+    />
   );
 }
 

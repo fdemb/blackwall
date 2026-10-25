@@ -311,6 +311,10 @@ impl Remap<'_> {
         ))
     }
 
+    fn filter_entity(&self, id: Uuid) -> Uuid {
+        self.ids.get(&id).copied().unwrap_or_else(Uuid::new_v4)
+    }
+
     fn optional(&self, id: Option<Uuid>) -> Result<Option<Uuid>> {
         id.map(|id| self.entity(id)).transpose()
     }
@@ -342,7 +346,8 @@ impl Remap<'_> {
     }
 
     /// Remaps the ids a view filter names. Unmapped users drop out of their clause, and a clause
-    /// left without values drops out of the filter.
+    /// left without values drops out of the filter. An id of a record the transfer lacks, such as
+    /// a deleted label, becomes a fresh id, so the clause still matches nothing.
     fn filter(&self, filter: &mut IssueFilter) -> Result<()> {
         let mut clauses = Vec::with_capacity(filter.clauses.len());
         for mut clause in filter.clauses.drain(..) {
@@ -370,7 +375,7 @@ impl Remap<'_> {
                     let mapped = if users {
                         self.user(Some(id))
                     } else {
-                        Some(self.entity(id)?)
+                        Some(self.filter_entity(id))
                     };
                     if let Some(mapped) = mapped {
                         values.push(Some(mapped.to_string()));
@@ -388,10 +393,10 @@ impl Remap<'_> {
             let remapped = ids
                 .split(',')
                 .map(|value| {
-                    let id = value
+                    value
                         .parse()
-                        .map_err(|_| Error::BadRequest("filter ids must be UUIDs".into()))?;
-                    self.entity(id).map(|id| id.to_string())
+                        .map(|id| self.filter_entity(id).to_string())
+                        .map_err(|_| Error::BadRequest("filter ids must be UUIDs".into()))
                 })
                 .collect::<Result<Vec<_>>>()?;
             filter.ids = Some(remapped.join(","));
@@ -643,6 +648,99 @@ mod tests {
         valid
             .import(&mut fresh_target(), target_user, &BTreeMap::new(), now)
             .unwrap();
+    }
+
+    #[test]
+    fn views_on_deleted_records_survive_a_roundtrip_and_still_match_nothing() {
+        let now = Utc::now();
+        let actor = Uuid::new_v4();
+        let mut source = Workspace::new("Source".into(), actor).unwrap();
+        let stages: Vec<Uuid> = (0..4).map(|_| Uuid::new_v4()).collect();
+        let mut run = |command| source.apply(actor, command, now).unwrap().id.unwrap();
+        let team = run(Command::CreateTeam {
+            id: None,
+            name: "Team".into(),
+            key: "TEA".into(),
+            members: vec![],
+            default_stage_ids: Some(stages.clone()),
+        });
+        let label = |name: &str| Command::CreateLabel {
+            id: None,
+            name: name.into(),
+            color: "#000000".into(),
+        };
+        let kept_label = run(label("kept"));
+        let gone_label = run(label("gone"));
+        let project = |name: &str| Command::CreateProject {
+            id: None,
+            name: name.into(),
+            description: String::new(),
+            team_ids: vec![team],
+        };
+        let kept_project = run(project("kept"));
+        let gone_project = run(project("gone"));
+        let milestone = run(Command::CreateMilestone {
+            id: None,
+            project_id: kept_project,
+            name: "gone".into(),
+            deadline: None,
+        });
+        let view = |name: &str, field: &str, op: &str, id: Uuid| Command::SaveView {
+            id: None,
+            name: name.into(),
+            shared: true,
+            filter: serde_json::from_value(serde_json::json!({
+                "where": [{"field": field, "op": op, "values": [id.to_string()]}],
+            }))
+            .unwrap(),
+        };
+        run(view("kept label", "labels", "is", kept_label));
+        run(view("gone label", "labels", "is", gone_label));
+        run(view("not gone label", "labels", "is_not", gone_label));
+        run(view("gone project", "project_id", "is", gone_project));
+        run(view("gone stage", "stage_id", "is", stages[3]));
+        run(Command::DeleteLabel { id: gone_label });
+        run(Command::DeleteProject { id: gone_project });
+        run(Command::DeleteMilestone { id: milestone });
+        run(Command::DeleteStage {
+            team_id: team,
+            id: stages[3],
+            replacement: stages[0],
+        });
+
+        let transfer = Transfer::export(&source, vec![]);
+        let target_actor = Uuid::new_v4();
+        let mut target = Workspace::new("Target".into(), target_actor).unwrap();
+        transfer
+            .import(&mut target, target_actor, &BTreeMap::new(), now)
+            .unwrap();
+
+        let value = |name: &str| {
+            let view = target.views.iter().find(|v| v.name == name).unwrap();
+            let clause = &view.filter.clauses[0];
+            (clause.op, clause.values[0].clone().unwrap())
+        };
+        let known: Vec<String> = target
+            .labels
+            .iter()
+            .map(|l| l.id)
+            .chain(target.projects.iter().map(|p| p.id))
+            .chain(
+                target
+                    .teams
+                    .iter()
+                    .flat_map(|t| t.stages.iter().map(|s| s.id)),
+            )
+            .map(|id| id.to_string())
+            .collect();
+        assert_eq!(value("kept label").1, target.labels[0].id.to_string());
+        for name in ["gone label", "not gone label", "gone project", "gone stage"] {
+            let (_, id) = value(name);
+            assert!(!known.contains(&id), "{name} must still name no record");
+            assert_ne!(id, gone_label.to_string());
+            assert_ne!(id, gone_project.to_string());
+        }
+        assert_eq!(value("not gone label").0, FilterOp::IsNot);
     }
 
     #[test]

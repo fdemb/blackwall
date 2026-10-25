@@ -289,6 +289,31 @@ export const updateLabel: Mutator<ArgsOf<"update_label">> = (tx, args, ctx) => {
   tx.put("labels", { ...label, name: args.name, color: args.color });
 };
 
+function skipReplayOfMissing(
+  tx: Tx,
+  entity: "labels" | "projects" | "milestones",
+  id: string,
+  ctx: MutatorContext,
+): boolean {
+  if (tx.get(entity, id) !== undefined) return false;
+  if (ctx.mode === "replay") return true;
+  throw new MutationError(404, "not found");
+}
+
+export const deleteLabel: Mutator<ArgsOf<"delete_label">> = (tx, args, ctx) => {
+  requireRole(tx, ctx.actor, "delete_label", args);
+  if (skipReplayOfMissing(tx, "labels", args.id, ctx)) return;
+  for (const issue of tx.all("issues")) {
+    if (!issue.labels.includes(args.id)) continue;
+    tx.put("issues", {
+      ...issue,
+      labels: issue.labels.filter((label) => label !== args.id),
+      updated_at: ctx.at,
+    });
+  }
+  tx.delete("labels", args.id);
+};
+
 export const createProject: Mutator<ArgsOf<"create_project">> = (tx, args, ctx) => {
   requireRole(tx, ctx.actor, "create_project", args);
   // Order mirrors `planning::CreateProject`: name, description, teams, id.
@@ -333,6 +358,18 @@ export const updateProject: Mutator<ArgsOf<"update_project">> = (tx, args, ctx) 
   });
 };
 
+export const deleteProject: Mutator<ArgsOf<"delete_project">> = (tx, args, ctx) => {
+  requireRole(tx, ctx.actor, "delete_project", args);
+  if (skipReplayOfMissing(tx, "projects", args.id, ctx)) return;
+  for (const issue of tx.byIndex("issues", "project_id", args.id)) {
+    tx.put("issues", { ...issue, project_id: null, milestone_id: null, updated_at: ctx.at });
+  }
+  for (const milestone of tx.byIndex("milestones", "project_id", args.id)) {
+    tx.delete("milestones", milestone.id);
+  }
+  tx.delete("projects", args.id);
+};
+
 export const createMilestone: Mutator<ArgsOf<"create_milestone">> = (tx, args, ctx) => {
   requireRole(tx, ctx.actor, "create_milestone", args);
   // Order mirrors `planning::CreateMilestone`: name, deadline, project, id.
@@ -357,6 +394,15 @@ export const updateMilestone: Mutator<ArgsOf<"update_milestone">> = (tx, args, c
   checkTimestamp(args.deadline);
   const milestone = requireRecord(tx, "milestones", args.id);
   tx.put("milestones", { ...milestone, name: args.name, deadline: args.deadline ?? null });
+};
+
+export const deleteMilestone: Mutator<ArgsOf<"delete_milestone">> = (tx, args, ctx) => {
+  requireRole(tx, ctx.actor, "delete_milestone", args);
+  if (skipReplayOfMissing(tx, "milestones", args.id, ctx)) return;
+  for (const issue of tx.byIndex("issues", "milestone_id", args.id)) {
+    tx.put("issues", { ...issue, milestone_id: null, updated_at: ctx.at });
+  }
+  tx.delete("milestones", args.id);
 };
 
 /** `validate_sprint` mirror (`src/store/planning.rs`), in the server's order. */

@@ -85,17 +85,20 @@ const CASES = {
   delete_stage: { args: { team_id: ID, id: ID, replacement: ID } },
   create_label: { args: { name: "Label", color: "red" }, options: { id: null } },
   update_label: { args: { id: ID, name: "Label", color: "red" } },
+  delete_label: { args: { id: ID } },
   create_project: {
     args: { name: "Project", team_ids: [] },
     options: { id: null },
     defaults: { description: "" },
   },
   update_project: { args: { id: ID, name: "Project", description: "", team_ids: [] } },
+  delete_project: { args: { id: ID } },
   create_milestone: {
     args: { project_id: ID, name: "Milestone" },
     options: { id: null, deadline: null },
   },
   update_milestone: { args: { id: ID, name: "Milestone" }, options: { deadline: null } },
+  delete_milestone: { args: { id: ID } },
   create_sprint: {
     args: { team_id: ID, name: "Sprint", goal: "", starts_at: AT, ends_at: AT },
     options: { id: null },

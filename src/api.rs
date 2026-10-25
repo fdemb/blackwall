@@ -422,7 +422,9 @@ pub fn router(store: Store) -> Router<Store> {
         )
         .route(
             &format!("{workspace}/labels/{{label}}"),
-            get(resources::label).patch(resources::update_label),
+            get(resources::label)
+                .patch(resources::update_label)
+                .delete(resources::delete_label),
         )
         .route(
             &format!("{workspace}/projects"),
@@ -430,7 +432,9 @@ pub fn router(store: Store) -> Router<Store> {
         )
         .route(
             &format!("{workspace}/projects/{{project}}"),
-            get(resources::project).patch(resources::update_project),
+            get(resources::project)
+                .patch(resources::update_project)
+                .delete(resources::delete_project),
         )
         .route(
             &format!("{workspace}/milestones"),
@@ -438,7 +442,7 @@ pub fn router(store: Store) -> Router<Store> {
         )
         .route(
             &format!("{workspace}/milestones/{{milestone}}"),
-            get(resources::milestone),
+            get(resources::milestone).delete(resources::delete_milestone),
         )
         .route(&format!("{workspace}/sprints"), get(resources::sprints))
         .route(
@@ -559,12 +563,15 @@ fn cors() -> tower_http::cors::CorsLayer {
         resources::label,
         resources::create_label,
         resources::update_label,
+        resources::delete_label,
         resources::projects,
         resources::project,
         resources::create_project,
         resources::update_project,
+        resources::delete_project,
         resources::milestones,
         resources::milestone,
+        resources::delete_milestone,
         resources::sprints,
         resources::sprint,
         issues::list,

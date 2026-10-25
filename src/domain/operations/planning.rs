@@ -100,6 +100,15 @@ impl Workspace {
                 label.color = color;
                 Ok(id)
             }
+            Command::DeleteLabel { id } => {
+                find_mut(&mut self.labels, |l| l.id == id)?;
+                for issue in self.issues.iter_mut().filter(|i| i.labels.contains(&id)) {
+                    issue.labels.retain(|label| *label != id);
+                    issue.updated_at = now;
+                }
+                self.labels.retain(|l| l.id != id);
+                Ok(id)
+            }
             Command::CreateProject {
                 id,
                 name,
@@ -129,6 +138,17 @@ impl Workspace {
                 self.update_project(id, name, description, team_ids)?;
                 Ok(id)
             }
+            Command::DeleteProject { id } => {
+                find_mut(&mut self.projects, |p| p.id == id)?;
+                for issue in self.issues.iter_mut().filter(|i| i.project_id == Some(id)) {
+                    issue.project_id = None;
+                    issue.milestone_id = None;
+                    issue.updated_at = now;
+                }
+                self.milestones.retain(|m| m.project_id != id);
+                self.projects.retain(|p| p.id != id);
+                Ok(id)
+            }
             Command::CreateMilestone {
                 id,
                 project_id,
@@ -156,6 +176,19 @@ impl Workspace {
                 let milestone = find_mut(&mut self.milestones, |m| m.id == id)?;
                 milestone.name = name;
                 milestone.deadline = deadline;
+                Ok(id)
+            }
+            Command::DeleteMilestone { id } => {
+                find_mut(&mut self.milestones, |m| m.id == id)?;
+                for issue in self
+                    .issues
+                    .iter_mut()
+                    .filter(|i| i.milestone_id == Some(id))
+                {
+                    issue.milestone_id = None;
+                    issue.updated_at = now;
+                }
+                self.milestones.retain(|m| m.id != id);
                 Ok(id)
             }
             Command::CreateSprint {

@@ -60,6 +60,10 @@ pub enum Command {
         name: String,
         color: String,
     },
+    /// Removes the label from every issue, trashed ones included.
+    DeleteLabel {
+        id: Uuid,
+    },
     CreateProject {
         id: Option<Uuid>,
         name: String,
@@ -73,6 +77,10 @@ pub enum Command {
         description: String,
         team_ids: Vec<Uuid>,
     },
+    /// Deletes the project's milestones too and clears both from its issues.
+    DeleteProject {
+        id: Uuid,
+    },
     CreateMilestone {
         id: Option<Uuid>,
         project_id: Uuid,
@@ -83,6 +91,9 @@ pub enum Command {
         id: Uuid,
         name: String,
         deadline: Option<DateTime<Utc>>,
+    },
+    DeleteMilestone {
+        id: Uuid,
     },
     CreateSprint {
         id: Option<Uuid>,
@@ -317,10 +328,13 @@ impl Command {
             | Self::DeleteStage { .. }
             | Self::CreateLabel { .. }
             | Self::UpdateLabel { .. }
+            | Self::DeleteLabel { .. }
             | Self::CreateProject { .. }
             | Self::UpdateProject { .. }
+            | Self::DeleteProject { .. }
             | Self::CreateMilestone { .. }
             | Self::UpdateMilestone { .. }
+            | Self::DeleteMilestone { .. }
             | Self::CreateSprint { .. }
             | Self::UpdateSprint { .. }
             | Self::CompleteSprint { .. }
@@ -351,10 +365,13 @@ impl Command {
             Self::DeleteStage { .. } => "delete_stage",
             Self::CreateLabel { .. } => "create_label",
             Self::UpdateLabel { .. } => "update_label",
+            Self::DeleteLabel { .. } => "delete_label",
             Self::CreateProject { .. } => "create_project",
             Self::UpdateProject { .. } => "update_project",
+            Self::DeleteProject { .. } => "delete_project",
             Self::CreateMilestone { .. } => "create_milestone",
             Self::UpdateMilestone { .. } => "update_milestone",
+            Self::DeleteMilestone { .. } => "delete_milestone",
             Self::CreateSprint { .. } => "create_sprint",
             Self::UpdateSprint { .. } => "update_sprint",
             Self::CompleteSprint { .. } => "complete_sprint",

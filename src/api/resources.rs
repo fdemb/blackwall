@@ -575,6 +575,30 @@ pub async fn update_label(
 }
 
 #[utoipa::path(
+    delete,
+    path = "/api/v1/workspaces/{workspace}/labels/{label}",
+    tag = "labels",
+    params(("workspace" = Uuid, Path), ("label" = Uuid, Path)),
+    responses((status = 204))
+)]
+pub async fn delete_label(
+    State(store): State<Store>,
+    actor: ApiActor,
+    Path((workspace, label)): Path<(Uuid, Uuid)>,
+    options: WriteOptions,
+) -> Result<StatusCode> {
+    run(
+        &store,
+        actor.write(workspace)?,
+        Command::DeleteLabel { id: label },
+        Some(label),
+        options,
+    )
+    .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[utoipa::path(
     get,
     path = "/api/v1/workspaces/{workspace}/projects",
     tag = "projects",
@@ -691,6 +715,30 @@ pub async fn update_project(
 }
 
 #[utoipa::path(
+    delete,
+    path = "/api/v1/workspaces/{workspace}/projects/{project}",
+    tag = "projects",
+    params(("workspace" = Uuid, Path), ("project" = Uuid, Path)),
+    responses((status = 204))
+)]
+pub async fn delete_project(
+    State(store): State<Store>,
+    actor: ApiActor,
+    Path((workspace, project)): Path<(Uuid, Uuid)>,
+    options: WriteOptions,
+) -> Result<StatusCode> {
+    run(
+        &store,
+        actor.write(workspace)?,
+        Command::DeleteProject { id: project },
+        Some(project),
+        options,
+    )
+    .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[utoipa::path(
     get,
     path = "/api/v1/workspaces/{workspace}/milestones",
     tag = "projects",
@@ -723,6 +771,30 @@ pub async fn milestone(
     let milestone: Milestone =
         record(&store, actor.read(workspace)?, "milestones", milestone).await?;
     Ok(one(StatusCode::OK, milestone))
+}
+
+#[utoipa::path(
+    delete,
+    path = "/api/v1/workspaces/{workspace}/milestones/{milestone}",
+    tag = "projects",
+    params(("workspace" = Uuid, Path), ("milestone" = Uuid, Path)),
+    responses((status = 204))
+)]
+pub async fn delete_milestone(
+    State(store): State<Store>,
+    actor: ApiActor,
+    Path((workspace, milestone)): Path<(Uuid, Uuid)>,
+    options: WriteOptions,
+) -> Result<StatusCode> {
+    run(
+        &store,
+        actor.write(workspace)?,
+        Command::DeleteMilestone { id: milestone },
+        Some(milestone),
+        options,
+    )
+    .await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[utoipa::path(

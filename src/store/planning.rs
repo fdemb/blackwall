@@ -58,6 +58,10 @@ impl Operation<'_> {
                 self.update_label(id, name, color).await?;
                 id
             }
+            Command::DeleteLabel { id } => {
+                self.delete_label(id).await?;
+                id
+            }
             Command::CreateProject {
                 id,
                 name,
@@ -73,6 +77,10 @@ impl Operation<'_> {
                 self.update_project(id, name, description, team_ids).await?;
                 id
             }
+            Command::DeleteProject { id } => {
+                self.delete_project(id).await?;
+                id
+            }
             Command::CreateMilestone {
                 id,
                 project_id,
@@ -84,6 +92,10 @@ impl Operation<'_> {
             }
             Command::UpdateMilestone { id, name, deadline } => {
                 self.update_milestone(id, name, deadline).await?;
+                id
+            }
+            Command::DeleteMilestone { id } => {
+                self.delete_milestone(id).await?;
                 id
             }
             Command::CreateSprint {
@@ -511,6 +523,48 @@ impl Operation<'_> {
         Ok(())
     }
 
+    async fn delete_label(&mut self, id: Uuid) -> Result<()> {
+        self.lock_graph().await?;
+        self.touch("labels", id).await?;
+        self.touch_referencing_issues("SELECT i.id FROM issues i JOIN issue_labels l ON l.issue_id=i.id WHERE i.workspace_id=$1 AND l.label_id=$2 ORDER BY i.id FOR UPDATE OF i", id)
+            .await?;
+        sqlx::query("DELETE FROM issue_labels WHERE workspace_id=$1 AND label_id=$2")
+            .bind(self.workspace_id)
+            .bind(id)
+            .execute(&mut *self.tx)
+            .await?;
+        self.delete_planning_row("labels", id).await
+    }
+
+    async fn touch_referencing_issues(&mut self, select: &str, id: Uuid) -> Result<()> {
+        let issues: Vec<Uuid> = sqlx::query_scalar(select)
+            .bind(self.workspace_id)
+            .bind(id)
+            .fetch_all(&mut *self.tx)
+            .await?;
+        for issue in &issues {
+            self.touch("issues", *issue).await?;
+        }
+        sqlx::query("UPDATE issues SET updated_at=now() WHERE workspace_id=$1 AND id=ANY($2)")
+            .bind(self.workspace_id)
+            .bind(&issues)
+            .execute(&mut *self.tx)
+            .await?;
+        Ok(())
+    }
+
+    async fn delete_planning_row(&mut self, table: &str, id: Uuid) -> Result<()> {
+        assert!(matches!(table, "labels" | "projects" | "milestones"));
+        sqlx::query(&format!(
+            "DELETE FROM {table} WHERE workspace_id=$1 AND id=$2"
+        ))
+        .bind(self.workspace_id)
+        .bind(id)
+        .execute(&mut *self.tx)
+        .await?;
+        Ok(())
+    }
+
     /// Sorts and dedupes the teams and locks each one for the project write.
     async fn lock_project_teams(&mut self, team_ids: Vec<Uuid>) -> Result<Vec<Uuid>> {
         let team_ids = sorted_unique(team_ids);
@@ -577,6 +631,32 @@ impl Operation<'_> {
         self.replace_project_teams(id, team_ids).await
     }
 
+    async fn delete_project(&mut self, id: Uuid) -> Result<()> {
+        self.lock_graph().await?;
+        self.touch("projects", id).await?;
+        self.touch_referencing_issues(
+            "SELECT id FROM issues WHERE workspace_id=$1 AND project_id=$2 ORDER BY id FOR UPDATE",
+            id,
+        )
+        .await?;
+        sqlx::query("UPDATE issues SET project_id=NULL,milestone_id=NULL WHERE workspace_id=$1 AND project_id=$2")
+            .bind(self.workspace_id)
+            .bind(id)
+            .execute(&mut *self.tx)
+            .await?;
+        sqlx::query("DELETE FROM milestones WHERE workspace_id=$1 AND project_id=$2")
+            .bind(self.workspace_id)
+            .bind(id)
+            .execute(&mut *self.tx)
+            .await?;
+        sqlx::query("DELETE FROM project_teams WHERE workspace_id=$1 AND project_id=$2")
+            .bind(self.workspace_id)
+            .bind(id)
+            .execute(&mut *self.tx)
+            .await?;
+        self.delete_planning_row("projects", id).await
+    }
+
     async fn create_milestone(
         &mut self,
         id: Option<Uuid>,
@@ -625,6 +705,21 @@ impl Operation<'_> {
             .execute(&mut *self.tx)
             .await?;
         Ok(())
+    }
+
+    async fn delete_milestone(&mut self, id: Uuid) -> Result<()> {
+        self.lock_graph().await?;
+        self.touch("milestones", id).await?;
+        self.touch_referencing_issues("SELECT id FROM issues WHERE workspace_id=$1 AND milestone_id=$2 ORDER BY id FOR UPDATE", id)
+            .await?;
+        sqlx::query(
+            "UPDATE issues SET milestone_id=NULL WHERE workspace_id=$1 AND milestone_id=$2",
+        )
+        .bind(self.workspace_id)
+        .bind(id)
+        .execute(&mut *self.tx)
+        .await?;
+        self.delete_planning_row("milestones", id).await
     }
 
     async fn create_sprint(
