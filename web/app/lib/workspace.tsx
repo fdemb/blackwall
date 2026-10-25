@@ -76,6 +76,7 @@ function useWorkspaceValue() {
           .all("teams")
           .map((team) => ({
             ...team,
+            former_keys: [...team.former_keys],
             members: [...team.members],
             stages: [...team.stages].sort(byPosition),
           }))
