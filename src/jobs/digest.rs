@@ -40,6 +40,9 @@ const DUE_BATCHES: &str = "WITH eligible AS (\
 
 const DELAY_MINUTES: i32 = 10;
 
+/// Workspace, member, and the covered notifications with their `created_at`, oldest first.
+type Batch = (Uuid, Uuid, Vec<Uuid>, Vec<DateTime<Utc>>);
+
 /// Queues a digest for every member whose batch is due and marks what it covers.
 pub(super) async fn enqueue(store: &Store) -> Result<()> {
     let mut tx = store.pool.begin().await?;
@@ -53,7 +56,7 @@ pub(super) async fn enqueue(store: &Store) -> Result<()> {
         return Ok(());
     }
 
-    let batches: Vec<(Uuid, Uuid, Vec<Uuid>, Vec<DateTime<Utc>>)> = sqlx::query_as(DUE_BATCHES)
+    let batches: Vec<Batch> = sqlx::query_as(DUE_BATCHES)
         .bind(DELAY_MINUTES)
         .fetch_all(&mut *tx)
         .await?;
