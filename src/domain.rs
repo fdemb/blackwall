@@ -333,6 +333,10 @@ pub struct Notification {
     pub read_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     pub dedup_key: String,
+    #[serde(default)]
+    pub actor_id: Option<Uuid>,
+    #[serde(default)]
+    pub fields: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
@@ -1449,6 +1453,8 @@ mod tests {
             read_at: Some(now),
             created_at: now,
             dedup_key: String::new(),
+            actor_id: None,
+            fields: vec![],
         });
 
         w.apply(owner, Command::MarkNotificationUnread { id: note }, now)

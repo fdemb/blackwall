@@ -4,27 +4,16 @@ import { Link } from "react-router";
 import {
   Archive,
   ArchiveRestore,
-  CalendarDays,
-  CalendarRange,
   ChevronsUp,
   CircleCheck,
   CircleDot,
   CirclePlus,
   Clock,
-  Flag,
-  FolderKanban,
-  Gauge,
-  GitFork,
   Link2,
   Loader2,
-  Lock,
   Paperclip,
   Pencil,
-  Signal,
-  Tag,
   Trash2,
-  UserRound,
-  Users,
   X,
   type LucideIcon,
 } from "lucide-react";
@@ -44,6 +33,7 @@ import { useWorkspace } from "~/lib/workspace";
 import { cn } from "~/lib/utils";
 import type { Activity, Comment, Id, Issue, TimeEntry } from "~/lib/types";
 import { trackerProviderName } from "~/lib/trackers";
+import { ISSUE_FIELDS } from "~/lib/issue-fields";
 import { Section, revealOnHover } from "./issue-section";
 import { AttachmentChip } from "./issue-content";
 
@@ -63,22 +53,6 @@ const EVENTS: Partial<Record<string, { label: Key; icon: LucideIcon }>> = {
   add_source_link: { label: "timeline.add_source_link", icon: Link2 },
   log_time: { label: "timeline.log_time", icon: Clock },
   update_time: { label: "timeline.update_time", icon: Clock },
-};
-const FIELDS: Partial<Record<string, { label: Key; icon: LucideIcon }>> = {
-  title: { label: "field.title", icon: Pencil },
-  description: { label: "field.description", icon: Pencil },
-  team: { label: "field.team", icon: Users },
-  stage: { label: "field.stage", icon: CircleDot },
-  assignee: { label: "field.assignee", icon: UserRound },
-  priority: { label: "field.priority", icon: Signal },
-  labels: { label: "field.labels", icon: Tag },
-  estimate: { label: "field.estimate", icon: Gauge },
-  deadline: { label: "field.deadline", icon: CalendarDays },
-  project: { label: "field.project", icon: FolderKanban },
-  milestone: { label: "field.milestone", icon: Flag },
-  sprint: { label: "field.sprint", icon: CalendarRange },
-  parent: { label: "issue.parent", icon: GitFork },
-  dependencies: { label: "issue.dependencies", icon: Lock },
 };
 const PAGE = 30;
 
@@ -173,7 +147,7 @@ function TimelineDot({ className, children }: { className?: string; children: Re
 function EventItem({ event, entries }: { event: Activity; entries: Map<Id, TimeEntry> }) {
   const { t, lang } = useI18n();
   const { member } = useWorkspace();
-  const fields = (event.fields ?? []).flatMap((f) => FIELDS[f] ?? []);
+  const fields = (event.fields ?? []).flatMap((f) => ISSUE_FIELDS[f] ?? []);
   const entry = event.entity_id ? entries.get(event.entity_id) : undefined;
   const meta = EVENTS[event.action];
   const label =

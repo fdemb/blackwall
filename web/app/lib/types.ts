@@ -311,6 +311,8 @@ export interface Notification {
   message: string;
   read_at: string | null;
   created_at: string;
+  actor_id?: Id | null;
+  fields?: readonly string[];
 }
 export interface AlertPrefsWs {
   user_id: Id;

@@ -18,6 +18,13 @@ impl Fixture {
             .unwrap()
     }
 
+    async fn reply_actors(&self) -> Vec<Option<Uuid>> {
+        sqlx::query_scalar("SELECT actor_id FROM notifications WHERE kind='reply' ORDER BY user_id")
+            .fetch_all(&self.store.pool)
+            .await
+            .unwrap()
+    }
+
     async fn activity_requests(&self) -> Vec<i64> {
         let mut requests = self.mock.data.lock().await.activity_requests.clone();
         requests.sort();
@@ -178,6 +185,7 @@ async fn enabling_import_brings_history_silently_then_new_comments_notify() {
         )
     );
     assert_eq!(f.replies().await, [f.owner.profile.id]);
+    assert_eq!(f.reply_actors().await, [Some(jane.profile.id)]);
     let (status, listed) = call(
         &f.app,
         &f.owner,
@@ -561,6 +569,11 @@ async fn comments_notify_after_the_first_import_without_remote_modification_time
     f.sync_now().await;
     assert_eq!(f.comments().await.len(), 2);
     assert_eq!(f.replies().await, [jane.profile.id]);
+    assert_eq!(
+        f.reply_actors().await,
+        [None],
+        "an unmapped author is nobody local"
+    );
     f.cleanup().await;
 }
 

@@ -132,14 +132,18 @@ function stampIssue(context: ServerEffects, key: string): void {
     issue.assignee !== actor &&
     issue.assignee !== oldIssue?.assignee
   )
-    notify(context, tx, issue.assignee, issue.id, "assignment", issue.title);
+    notify(context, tx, issue.assignee, issue.id, "assignment", issue.title, {});
   const updated = name === "update_issue" || (name === "bulk_issues" && object(args.action));
-  if (updated)
+  if (updated) {
+    const fields = oldIssue ? issueFieldChanges(oldIssue, issue) : [];
     for (const follower of oldIssue?.followers ?? issue.followers)
-      if (follower !== actor) notify(context, tx, follower, issue.id, "change", issue.title);
+      if (follower !== actor)
+        notify(context, tx, follower, issue.id, "change", issue.title, { fields });
+  }
   if (updated || name === "create_issue")
     for (const user of newMentions(issue.description, oldIssue?.description ?? ""))
-      if (user !== actor) notify(context, tx, user, issue.id, "mention", issue.title);
+      if (user !== actor)
+        notify(context, tx, user, issue.id, "mention", issue.title, { fields: ["description"] });
 }
 
 function stampTeam(context: ServerEffects, key: string): void {
@@ -191,10 +195,14 @@ function notifyCommentReaders(context: ServerEffects): void {
   const readers = context.before.get("issues", issue.id)?.followers ?? issue.followers;
   for (const follower of readers)
     if (follower !== actor)
-      notify(context, tx, follower, issue.id, "reply", comment.body, `reply:${id}:${follower}`);
+      notify(context, tx, follower, issue.id, "reply", comment.body, {
+        key: `reply:${id}:${follower}`,
+      });
   for (const mention of comment.mentions)
     if (mention !== actor)
-      notify(context, tx, mention, issue.id, "mention", comment.body, `mention:${id}:${mention}`);
+      notify(context, tx, mention, issue.id, "mention", comment.body, {
+        key: `mention:${id}:${mention}`,
+      });
 }
 
 function notifyNewlyMentioned(context: ServerEffects, id: string): void {
@@ -204,15 +212,9 @@ function notifyNewlyMentioned(context: ServerEffects, id: string): void {
   if (!comment || !old) return;
   for (const mention of comment.mentions)
     if (mention !== actor && !old.mentions.includes(mention))
-      notify(
-        context,
-        tx,
-        mention,
-        comment.issue_id,
-        "mention",
-        comment.body,
-        `mention:${id}:${mention}`,
-      );
+      notify(context, tx, mention, comment.issue_id, "mention", comment.body, {
+        key: `mention:${id}:${mention}`,
+      });
 }
 
 function recordCompletions(context: ServerEffects): void {
@@ -303,11 +305,17 @@ function changedIssueFields({ tx, before }: ServerEffects): string[] {
     const old = before.get("issues", key);
     const current = tx.get("issues", key);
     if (!old || !current) continue;
-    for (const field of ACTIVITY_FIELDS)
-      if (JSON.stringify(old[field]) !== JSON.stringify(current[field]))
-        fields.push(field.replace(/_id$/, ""));
+    fields.push(...issueFieldChanges(old, current));
   }
   return fields;
+}
+
+type IssueFields = Readonly<Record<(typeof ACTIVITY_FIELDS)[number], unknown>>;
+
+function issueFieldChanges(old: IssueFields, current: IssueFields): string[] {
+  return ACTIVITY_FIELDS.filter(
+    (field) => JSON.stringify(old[field]) !== JSON.stringify(current[field]),
+  ).map((field) => field.replace(/_id$/, ""));
 }
 
 /** The profile switch that silences each alert kind; mentions follow replies. */
@@ -326,7 +334,7 @@ function notify(
   issue: string,
   kind: AlertKind,
   message: string,
-  key?: string,
+  { key, fields = [] }: { key?: string; fields?: string[] },
 ): void {
   const profile = context.users.get(user);
   const global = profile?.alerts[GLOBAL_ALERT[kind]];
@@ -349,5 +357,7 @@ function notify(
     read_at: null,
     created_at: context.now(),
     dedup_key,
+    actor_id: context.actor,
+    fields,
   });
 }

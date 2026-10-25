@@ -479,7 +479,8 @@ async fn issue_effects_with_context(
         IssueEffects::Create | IssueEffects::DeleteRestore => false,
     };
     if notifies_followers {
-        notify_changes(conn, workspace, actor, after, remote).await?;
+        let fields = before.map_or_else(Vec::new, |old| old.changed_fields(after));
+        notify_changes(conn, workspace, actor, after, &fields, remote).await?;
     }
 
     if !matches!(effects, IssueEffects::DeleteRestore)
@@ -527,11 +528,13 @@ async fn notify_new_assignee(
     notify(
         conn,
         workspace,
+        Some(actor),
         user,
         Some(after.id),
         AlertKind::Assignment,
         after.title.clone(),
         format!("assignment:{}:{}", after.id, Uuid::new_v4()),
+        &[],
     )
     .await
 }
@@ -668,6 +671,7 @@ async fn notify_changes(
     workspace: Uuid,
     actor: Uuid,
     issue: &Issue,
+    fields: &[String],
     remote: bool,
 ) -> Result<()> {
     let users: Vec<Uuid> = issue
@@ -680,27 +684,27 @@ async fn notify_changes(
         return Ok(());
     }
     let ids: Vec<Uuid> = users.iter().map(|_| Uuid::new_v4()).collect();
-    // One unread change notification per issue and recipient. Later changes bump it to the top
-    // of the inbox. Marking it read moves it off this key (migration 0035), so the next change
-    // inserts a fresh one.
     let keys: Vec<String> = users
         .iter()
         .map(|user| format!("change:{}:{user}", issue.id))
         .collect();
-    sqlx::query("INSERT INTO notifications(id,workspace_id,user_id,issue_id,kind,message,created_at,dedup_key) SELECT input.id,$1,input.user_id,$2,'change',$3,now(),input.key FROM unnest($4::uuid[],$5::uuid[],$6::text[]) AS input(id,user_id,key) JOIN workspace_members m ON m.workspace_id=$1 AND m.user_id=input.user_id JOIN users u ON u.id=input.user_id LEFT JOIN alert_preferences p ON p.workspace_id=$1 AND p.user_id=input.user_id WHERE COALESCE(p.change,true) AND COALESCE((u.profile->'alerts'->>'changes')::bool,true) ON CONFLICT(workspace_id,dedup_key) DO UPDATE SET message=EXCLUDED.message,created_at=EXCLUDED.created_at,version=notifications.version+1 WHERE notifications.read_at IS NULL")
-        .bind(workspace).bind(issue.id).bind(&issue.title).bind(ids).bind(users).bind(keys)
+    sqlx::query("INSERT INTO notifications(id,workspace_id,user_id,issue_id,kind,message,created_at,dedup_key,actor_id,fields) SELECT input.id,$1,input.user_id,$2,'change',$3,now(),input.key,$7,$8 FROM unnest($4::uuid[],$5::uuid[],$6::text[]) AS input(id,user_id,key) JOIN workspace_members m ON m.workspace_id=$1 AND m.user_id=input.user_id JOIN users u ON u.id=input.user_id LEFT JOIN alert_preferences p ON p.workspace_id=$1 AND p.user_id=input.user_id WHERE COALESCE(p.change,true) AND COALESCE((u.profile->'alerts'->>'changes')::bool,true) ON CONFLICT(workspace_id,dedup_key) DO UPDATE SET message=EXCLUDED.message,created_at=EXCLUDED.created_at,actor_id=EXCLUDED.actor_id,fields=COALESCE((SELECT jsonb_agg(DISTINCT f) FROM jsonb_array_elements_text(notifications.fields||EXCLUDED.fields) f),'[]'),version=notifications.version+1 WHERE notifications.read_at IS NULL")
+        .bind(workspace).bind(issue.id).bind(&issue.title).bind(ids).bind(users).bind(keys).bind((!remote).then_some(actor)).bind(serde_json::to_value(fields)?)
         .execute(conn).await?;
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn notify(
     conn: &mut PgConnection,
     workspace: Uuid,
+    actor: Option<Uuid>,
     user: Uuid,
     issue_id: Option<Uuid>,
     kind: AlertKind,
     message: String,
     key: String,
+    fields: &[&str],
 ) -> Result<()> {
     let column = enum_text(&kind);
 
@@ -712,8 +716,8 @@ pub(crate) async fn notify(
     };
 
     let sql = format!(
-        "INSERT INTO notifications(id,workspace_id,user_id,issue_id,kind,message,created_at,dedup_key) \
-             SELECT $1,$2,$3,$4,$5,$6,now(),$7 \
+        "INSERT INTO notifications(id,workspace_id,user_id,issue_id,kind,message,created_at,dedup_key,actor_id,fields) \
+             SELECT $1,$2,$3,$4,$5,$6,now(),$7,$8,$9 \
              WHERE EXISTS(SELECT 1 FROM workspace_members WHERE workspace_id=$2 AND user_id=$3) \
              AND COALESCE((SELECT {column} FROM alert_preferences WHERE workspace_id=$2 AND user_id=$3),true) \
              AND COALESCE((SELECT (profile->'alerts'->>'{global}')::bool FROM users WHERE id=$3),true) \
@@ -728,6 +732,8 @@ pub(crate) async fn notify(
         .bind(column)
         .bind(message)
         .bind(key)
+        .bind(actor)
+        .bind(serde_json::to_value(fields)?)
         .execute(&mut *conn)
         .await?;
 

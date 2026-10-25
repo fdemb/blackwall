@@ -459,13 +459,18 @@ async fn follower_alerts_are_batched_and_respect_local_and_global_preferences() 
         .unwrap();
     fixture.mock.data.lock().await.deadline = Some("2030-12-10".into());
     fixture.sync_now().await;
-    let users: Vec<Uuid> =
-        sqlx::query_scalar("SELECT user_id FROM notifications WHERE issue_id=$1 AND kind='change'")
-            .bind(issue)
-            .fetch_all(&fixture.store.pool)
-            .await
-            .unwrap();
-    assert_eq!(users, vec![member.profile.id]);
+    let alerts: Vec<(Uuid, Option<Uuid>, Value)> = sqlx::query_as(
+        "SELECT user_id,actor_id,fields FROM notifications WHERE issue_id=$1 AND kind='change'",
+    )
+    .bind(issue)
+    .fetch_all(&fixture.store.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        alerts,
+        vec![(member.profile.id, None, json!(["deadline"]))],
+        "a remote change names no local actor"
+    );
     sqlx::query(
         "UPDATE users SET profile=jsonb_set(profile,'{alerts,changes}','false'::jsonb) WHERE id=$1",
     )

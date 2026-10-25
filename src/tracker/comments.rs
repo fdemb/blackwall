@@ -330,11 +330,13 @@ async fn notify_followers(
             persistence::notify(
                 conn,
                 workspace,
+                item.author,
                 *user,
                 Some(item.issue),
                 AlertKind::Reply,
                 truncate(&item.comment.body).to_owned(),
                 format!("reply:{id}:{user}"),
+                &[],
             )
             .await?;
         }

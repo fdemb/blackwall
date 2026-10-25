@@ -161,17 +161,19 @@ impl Workspace {
                 .is_none_or(|p| p.enabled(kind))
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn notify(
         &mut self,
+        actor: Uuid,
         user: Uuid,
         issue_id: Option<Uuid>,
         kind: AlertKind,
         message: String,
         key: String,
         now: DateTime<Utc>,
-    ) {
+    ) -> Option<&mut Notification> {
         if !self.wants(user, &kind) || self.notifications.iter().any(|n| n.dedup_key == key) {
-            return;
+            return None;
         }
 
         self.notifications.push(Notification {
@@ -184,7 +186,10 @@ impl Workspace {
             read_at: None,
             created_at: now,
             dedup_key: key,
+            actor_id: Some(actor),
+            fields: vec![],
         });
+        self.notifications.last_mut()
     }
 
     pub fn public(&self, actor: Uuid) -> Result<Self> {

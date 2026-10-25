@@ -65,6 +65,7 @@ impl Workspace {
                     if *user != actor {
                         let key = format!("mention:{id}:{user}");
                         self.notify(
+                            actor,
                             *user,
                             Some(issue_id),
                             AlertKind::Mention,
@@ -360,7 +361,7 @@ impl Workspace {
             );
         for (user, kind, key) in alerts.collect::<Vec<_>>() {
             if user != actor {
-                self.notify(user, Some(issue_id), kind, body.clone(), key, now)
+                self.notify(actor, user, Some(issue_id), kind, body.clone(), key, now);
             }
         }
 

@@ -390,6 +390,7 @@ impl Operation<'_> {
                 AlertKind::Reply,
                 body.to_owned(),
                 format!("reply:{id}:{user}"),
+                &[],
             )
             .await?;
         }
@@ -402,6 +403,7 @@ impl Operation<'_> {
                 AlertKind::Mention,
                 body.to_owned(),
                 format!("mention:{id}:{user}"),
+                &[],
             )
             .await?;
         }
@@ -448,6 +450,7 @@ impl Operation<'_> {
                     AlertKind::Mention,
                     body.clone(),
                     format!("mention:{id}:{user}"),
+                    &[],
                 )
                 .await?;
             }

@@ -460,6 +460,7 @@ async fn description_mentions_alert_and_subscribe_each_newly_mentioned_member_on
     let alerts = f.alerts(follower, issue, "mention").await;
     assert_eq!(alerts.len(), 1, "{alerts:?}");
     assert_eq!(alerts[0]["message"], "Rotate certificates");
+    assert_eq!(alerts[0]["fields"], json!(["description"]));
     assert!(f.alerts(owner, issue, "mention").await.is_empty());
     let mut expected = vec![owner, follower];
     expected.sort();
@@ -518,13 +519,78 @@ async fn editing_a_comment_alerts_only_people_it_newly_mentions() {
     };
 
     f.run(owner, edit(vec![follower])).await;
-    assert_eq!(f.alerts(follower, issue, "mention").await.len(), 1);
+    let mentions = f.alerts(follower, issue, "mention").await;
+    assert_eq!(mentions.len(), 1);
+    assert_eq!(mentions[0]["actor_id"], json!(owner));
+    assert_eq!(mentions[0]["fields"], json!([]));
     assert!(f.followers(issue).await.contains(&follower));
 
     f.run(owner, edit(vec![follower])).await;
     f.run(owner, edit(vec![])).await;
     f.run(owner, edit(vec![follower])).await;
     assert_eq!(f.alerts(follower, issue, "mention").await.len(), 1);
+
+    f.cleanup().await;
+}
+
+#[tokio::test]
+async fn change_notifications_name_the_latest_actor_and_every_field_since_the_last_read() {
+    let f = Fixture::new().await;
+    let (owner, follower) = (f.owner.profile.id, f.follower.profile.id);
+    let editor = account(&f.store, "editor").await.profile.id;
+    sqlx::query("INSERT INTO workspace_members(workspace_id,user_id,role) VALUES($1,$2,'member')")
+        .bind(f.workspace)
+        .bind(editor)
+        .execute(&f.store.pool)
+        .await
+        .unwrap();
+    let issue = f
+        .create_issue("Renew the TLS certificate", f.stages[0])
+        .await;
+    f.follow(follower, issue).await;
+
+    f.run(owner, description_update(issue, "Expires Friday"))
+        .await;
+    let first = f.notifications(follower, issue).await;
+    assert_eq!(first[0]["actor_id"], json!(owner), "{first:?}");
+    assert_eq!(first[0]["fields"], json!(["description"]));
+
+    f.run(
+        editor,
+        Command::MoveIssue {
+            id: issue,
+            stage_id: f.stages[1],
+            before_id: None,
+        },
+    )
+    .await;
+    let coalesced = f.notifications(follower, issue).await;
+    assert_eq!(coalesced.len(), 1, "{coalesced:?}");
+    assert_eq!(coalesced[0]["actor_id"], json!(editor));
+    assert_eq!(coalesced[0]["fields"], json!(["description", "stage"]));
+
+    f.read(follower, &coalesced[0]).await;
+    f.run(
+        owner,
+        Command::UpdateIssue {
+            id: issue,
+            patch: IssuePatch {
+                assignee: Some(follower),
+                ..Default::default()
+            },
+        },
+    )
+    .await;
+    let fresh = f.notifications(follower, issue).await;
+    let fresh = unread(&fresh);
+    assert_eq!(fresh.len(), 1, "{fresh:?}");
+    assert_eq!(fresh[0]["actor_id"], json!(owner));
+    assert_eq!(fresh[0]["fields"], json!(["assignee"]));
+
+    let assignment = f.alerts(follower, issue, "assignment").await;
+    assert_eq!(assignment.len(), 1, "{assignment:?}");
+    assert_eq!(assignment[0]["actor_id"], json!(owner));
+    assert_eq!(assignment[0]["fields"], json!([]));
 
     f.cleanup().await;
 }

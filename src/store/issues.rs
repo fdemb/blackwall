@@ -462,6 +462,7 @@ impl Operation<'_> {
                     AlertKind::Mention,
                     after.title.clone(),
                     format!("mention:{}:{user}:{}", after.id, Uuid::new_v4()),
+                    &["description"],
                 )
                 .await?;
             }

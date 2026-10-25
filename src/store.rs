@@ -759,15 +759,18 @@ impl Operation<'_> {
         kind: AlertKind,
         message: String,
         key: String,
+        fields: &[&str],
     ) -> Result<()> {
         persistence::notify(
             &mut self.tx,
             self.workspace_id,
+            Some(self.actor),
             user,
             issue_id,
             kind,
             message,
             key,
+            fields,
         )
         .await
     }

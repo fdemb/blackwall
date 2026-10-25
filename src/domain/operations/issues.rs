@@ -247,13 +247,14 @@ impl Workspace {
             && user != actor
         {
             self.notify(
+                actor,
                 user,
                 Some(id),
                 AlertKind::Assignment,
                 issue.title.clone(),
                 format!("assignment:{id}:{}", Uuid::new_v4()),
                 now,
-            )
+            );
         }
         self.mention(&mut issue, None, actor, now);
 
@@ -293,18 +294,21 @@ impl Workspace {
             && user != actor
         {
             self.notify(
+                actor,
                 user,
                 Some(id),
                 AlertKind::Assignment,
                 i.title.clone(),
                 format!("assignment:{id}:{}", Uuid::new_v4()),
                 now,
-            )
+            );
         }
 
+        let fields = old.changed_fields(&i);
         for user in &i.followers {
-            if *user != actor {
-                self.notify(
+            if *user != actor
+                && let Some(note) = self.notify(
+                    actor,
                     *user,
                     Some(id),
                     AlertKind::Change,
@@ -312,6 +316,8 @@ impl Workspace {
                     format!("change:{id}:{user}:{}", Uuid::new_v4()),
                     now,
                 )
+            {
+                note.fields = fields.clone();
             }
         }
 
@@ -403,15 +409,18 @@ impl Workspace {
             if self.member(user).is_err() {
                 continue;
             }
-            if user != actor {
-                self.notify(
+            if user != actor
+                && let Some(note) = self.notify(
+                    actor,
                     user,
                     Some(issue.id),
                     AlertKind::Mention,
                     issue.title.clone(),
                     format!("mention:{}:{user}:{}", issue.id, Uuid::new_v4()),
                     now,
-                );
+                )
+            {
+                note.fields = vec!["description".into()];
             }
             issue.follow(user);
         }
