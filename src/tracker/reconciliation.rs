@@ -707,7 +707,7 @@ async fn allocate(
         let limit = import.limits.get(Resource::Issues);
         let room = persistence::room(conn, import.workspace, Resource::Issues, limit).await?;
         if let (Some(room), Some(limit)) = (room, limit)
-            && room < count as i64
+            && room < count
         {
             return Err(Error::BadRequest(format!(
                 "{} import stopped. {} Reduce project mappings. Existing issues remain unchanged.",
