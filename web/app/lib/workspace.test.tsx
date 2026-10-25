@@ -484,7 +484,7 @@ describe("online-only controls", () => {
       };
       expectGated(members, "Invite people");
       expectGated(members, "Role of Grace");
-      expectGated(members, "Remove member: Grace");
+      expectGated(members, "More actions: Grace");
       expectGated(attach, "Attach files");
     },
   );
