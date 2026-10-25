@@ -270,7 +270,11 @@ impl Store {
             .connect(url)
             .await?;
 
-        sqlx::migrate!()
+        // A deploy rollback runs the previous binary against migrations from
+        // the release it rolled back from, so tolerate versions it doesn't embed.
+        let mut migrator = sqlx::migrate!();
+        migrator.set_ignore_missing(true);
+        migrator
             .run(&pool)
             .await
             .map_err(|e| Error::Internal(e.to_string()))?;

@@ -238,3 +238,31 @@ async fn session_metadata_dates_existing_sessions_and_accepts_old_inserts() {
     conn.close().await.unwrap();
     database.cleanup().await;
 }
+
+#[tokio::test]
+async fn store_starts_on_a_database_migrated_by_a_newer_release() {
+    let database = support::TestDatabase::new().await;
+    blackwall::store::Store::connect(&database.url)
+        .await
+        .unwrap()
+        .pool
+        .close()
+        .await;
+
+    let mut conn = PgConnection::connect(&database.url).await.unwrap();
+    sqlx::raw_sql(
+        "CREATE TABLE from_newer_release(id int); \
+         INSERT INTO _sqlx_migrations(version,description,success,checksum,execution_time) \
+         VALUES(99999999,'from newer release',true,'\\x00',0)",
+    )
+    .execute(&mut conn)
+    .await
+    .unwrap();
+    conn.close().await.unwrap();
+
+    let store = blackwall::store::Store::connect(&database.url)
+        .await
+        .expect("a rollback binary starts after a newer release migrated the database");
+    store.pool.close().await;
+    database.cleanup().await;
+}
