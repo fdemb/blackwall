@@ -7,6 +7,7 @@ case "$TEST_POSTGRES_URL" in
     *) echo "TEST_POSTGRES_URL must use PostgreSQL" >&2; exit 2 ;;
 esac
 
+python3 deploy/test-deploy.py
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 cargo test --locked
