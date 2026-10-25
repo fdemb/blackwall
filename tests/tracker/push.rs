@@ -20,8 +20,20 @@ impl Fixture {
 
     /// Creates the connection with `extra` connection fields after `prepare` set up the remote.
     pub(super) async fn with(extra: Value, prepare: impl FnOnce(&mut Remote)) -> Self {
+        Self::with_limits(extra, Limits::default(), prepare).await
+    }
+
+    pub(super) async fn with_limits(
+        extra: Value,
+        limits: Limits,
+        prepare: impl FnOnce(&mut Remote),
+    ) -> Self {
         let db = support::TestDatabase::new().await;
-        let store = Store::connect(&db.url).await.unwrap();
+        let config = StoreConfig {
+            limits,
+            ..StoreConfig::default()
+        };
+        let store = Store::connect_with_config(&db.url, config).await.unwrap();
         let owner = account(&store).await;
         let (workspace, team, _) = setup(&store, &owner).await;
         let app = http::router(store.clone());
