@@ -12,7 +12,6 @@ impl Operation<'_> {
         Ok(())
     }
 
-    /// Errors unless `incoming` more of `resource` fit in the workspace.
     pub(super) async fn capacity(&mut self, resource: Resource, incoming: usize) -> Result<()> {
         let limit = self.limits.get(resource);
         let room = persistence::room(&mut self.tx, self.workspace_id, resource, limit).await?;

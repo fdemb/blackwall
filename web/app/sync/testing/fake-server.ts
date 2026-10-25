@@ -51,7 +51,6 @@ export interface FakeServerOptions {
   limits?: Partial<Record<Entity, number>>;
 }
 
-/** Commands that add a row counted against a workspace limit: the table, its noun and setting. */
 const LIMITED: Partial<Record<string, [Entity, string, string]>> = {
   create_issue: ["issues", "issues", "ISSUES"],
   add_comment: ["comments", "comments", "COMMENTS"],
@@ -954,7 +953,6 @@ export class FakeServer {
     return args;
   }
 
-  /** Counts include trashed and archived rows, as the server's do. */
   private checkLimit(tx: Tables, name: string): void {
     const limited = LIMITED[name];
     if (!limited) return;

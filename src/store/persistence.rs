@@ -740,8 +740,6 @@ pub(crate) async fn notify(
     Ok(())
 }
 
-/// Locks the workspace's `resource` count and returns how many more fit, or
-/// None, without a lock, when `limit` is None.
 pub(crate) async fn room(
     conn: &mut PgConnection,
     workspace: Uuid,
