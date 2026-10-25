@@ -657,7 +657,7 @@ describe("update_issue team moves", () => {
     const store = seedStore();
     const before = live(store, "issue-2");
     mutate(store, "update_issue", { id: "issue-2", patch: { team_id: TEAM } });
-    expect(live(store, "issue-2")).toEqual({ ...before, updated_at: AT });
+    expect(live(store, "issue-2")).toEqual(before);
   });
 
   it("moves a started issue past dependencies that reopened, but starts none", () => {
