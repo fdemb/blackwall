@@ -32,8 +32,11 @@ impl Fixture {
                 email: format!("tracker-local-{}@example.com", Uuid::new_v4()),
                 password: "test-password-123".into(),
                 display_name: "Owner".into(),
+                invitation: None,
             })
             .await
+            .unwrap()
+            .session()
             .unwrap();
         let workspace = store
             .create_workspace("Tracker".into(), owner.profile.id)
@@ -260,8 +263,11 @@ async fn admin_stage_migration_moves_imported_and_local_issues_atomically() {
             email: format!("member-{}@example.com", Uuid::new_v4()),
             password: "test-password-123".into(),
             display_name: "Member".into(),
+            invitation: None,
         })
         .await
+        .unwrap()
+        .session()
         .unwrap();
     sqlx::query("INSERT INTO workspace_members(workspace_id,user_id,role) VALUES($1,$2,'member')")
         .bind(f.workspace)

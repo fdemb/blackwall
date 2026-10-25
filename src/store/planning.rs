@@ -1107,8 +1107,11 @@ mod tests {
                 email: format!("owner-{}@example.com", Uuid::new_v4()),
                 password: "team-stage-id-password".into(),
                 display_name: "owner".into(),
+                invitation: None,
             })
             .await
+            .unwrap()
+            .session()
             .unwrap()
             .profile
             .id;

@@ -68,8 +68,11 @@ async fn account(store: &Store, name: &str) -> Session {
             email: format!("{name}-{}@example.com", Uuid::new_v4()),
             password: "test-password-123".into(),
             display_name: name.into(),
+            invitation: None,
         })
         .await
+        .unwrap()
+        .session()
         .unwrap()
 }
 

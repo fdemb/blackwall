@@ -1368,8 +1368,11 @@ mod tests {
                         email: format!("{name}@example.com"),
                         password: "discussion-test-password".into(),
                         display_name: name.into(),
+                        invitation: None,
                     })
                     .await
+                    .unwrap()
+                    .session()
                     .unwrap()
                     .profile
                     .id,
@@ -1530,17 +1533,8 @@ mod tests {
                 .unwrap();
         assert!(exists);
 
-        let invitation = command(&store, workspace, owner, json!({"type":"invite","email":"member@example.com","role":"member","token_hash":"ignored"}), BTreeMap::new()).await.unwrap().result.id.unwrap();
-
-        let payload: serde_json::Value = sqlx::query_scalar(
-            "SELECT payload FROM jobs WHERE kind='email' AND \
-                payload->>'invitation_id'=$1",
-        )
-        .bind(invitation.to_string())
-        .fetch_one(&store.pool)
-        .await
-        .unwrap();
-        let token = payload["token"].as_str().unwrap();
+        let invitation = command(&store, workspace, owner, json!({"type":"invite","email":"member@example.com","role":"member","token_hash":"ignored"}), BTreeMap::new()).await.unwrap().result.invitation.unwrap();
+        let token = invitation.token.as_str();
         store
             .accept_invitation(workspace, member, "member@example.com", token)
             .await
@@ -1687,8 +1681,11 @@ mod tests {
                         email: format!("{name}@example.com"),
                         password: "settings-test-password".into(),
                         display_name: name.into(),
+                        invitation: None,
                     })
                     .await
+                    .unwrap()
+                    .session()
                     .unwrap()
                     .profile
                     .id,

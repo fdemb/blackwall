@@ -216,12 +216,14 @@ pub fn router_with_web(store: Store, web_dir: std::path::PathBuf) -> Router {
         .merge(crate::api::router(store.clone()))
         .route("/health", get(health))
         .route("/internal-api/schema.json", get(schema))
+        .route("/internal-api/auth/options", get(auth_options))
         .route("/internal-api/auth/register", post(register))
         .route("/internal-api/auth/login", post(login))
         .route("/internal-api/auth/logout", post(logout))
         .route("/internal-api/auth/password", post(change_password))
         .route("/internal-api/auth/reset-request", post(reset_request))
         .route("/internal-api/auth/reset", post(reset_password))
+        .route("/internal-api/auth/verify", post(verify_email))
         .route("/internal-api/me", get(me).patch(edit_profile))
         .route("/internal-api/me/sessions", get(sessions))
         .route(
@@ -437,16 +439,45 @@ fn session_response(session: Session) -> Result<Response> {
 }
 
 #[utoipa::path(
+    get,
+    path = "/internal-api/auth/options",
+    responses((status = 200, body = AuthOptions))
+)]
+async fn auth_options(State(store): State<Store>) -> Json<AuthOptions> {
+    Json(AuthOptions {
+        registration: store.registration,
+        email_verification: store.mail_enabled,
+    })
+}
+
+#[derive(Serialize, utoipa::ToSchema)]
+struct VerificationSent {
+    verification_sent: bool,
+}
+
+#[utoipa::path(
     post,
     path = "/internal-api/auth/register",
     request_body = Register,
     responses(
         (status = 200, body = Session),
+        (status = 202, description = "The account signs in once its email address is verified", body = VerificationSent),
+        (status = 400, body = crate::error::ErrorBody),
+        (status = 403, description = "Registration is by invitation only", body = crate::error::ErrorBody),
         (status = 409, body = crate::error::ErrorBody)
     )
 )]
 async fn register(State(store): State<Store>, Json(input): Json<Register>) -> Result<Response> {
-    session_response(store.register(input).await?)
+    match store.register(input).await? {
+        Registered::Session(session) => session_response(session),
+        Registered::VerificationSent => Ok((
+            StatusCode::ACCEPTED,
+            Json(VerificationSent {
+                verification_sent: true,
+            }),
+        )
+            .into_response()),
+    }
 }
 
 #[utoipa::path(
@@ -455,7 +486,8 @@ async fn register(State(store): State<Store>, Json(input): Json<Register>) -> Re
     request_body = Login,
     responses(
         (status = 200, body = Session),
-        (status = 401, body = crate::error::ErrorBody)
+        (status = 401, body = crate::error::ErrorBody),
+        (status = 403, description = "The email address is not verified yet", body = crate::error::ErrorBody)
     )
 )]
 async fn login(State(store): State<Store>, Json(input): Json<Login>) -> Result<Response> {
@@ -608,6 +640,24 @@ async fn reset_password(
     Json(input): Json<ResetPassword>,
 ) -> Result<StatusCode> {
     store.reset_password(input).await?;
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[utoipa::path(
+    post,
+    path = "/internal-api/auth/verify",
+    request_body = VerifyEmail,
+    responses(
+        (status = 204),
+        (status = 400, body = crate::error::ErrorBody)
+    )
+)]
+async fn verify_email(
+    State(store): State<Store>,
+    Json(input): Json<VerifyEmail>,
+) -> Result<StatusCode> {
+    store.verify_email(input).await?;
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -952,6 +1002,7 @@ async fn markdown(
 #[openapi(
     paths(
         health,
+        auth_options,
         register,
         login,
         logout,
@@ -963,6 +1014,7 @@ async fn markdown(
         revoke_other_sessions,
         reset_request,
         reset_password,
+        verify_email,
         workspaces,
         create_workspace,
         workspace,
@@ -1010,7 +1062,12 @@ async fn markdown(
         crate::store::ScopeResponse,
         crate::error::ErrorBody,
         crate::limits::Usage,
-        crate::limits::Resource
+        crate::limits::Resource,
+        AuthOptions,
+        RegistrationMode,
+        InvitationProof,
+        VerificationSent,
+        VerifyEmail
     )),
     info(
         title = "Blackwall internal API",

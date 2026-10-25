@@ -464,8 +464,11 @@ async fn account(store: &Store) -> Session {
             email: format!("op-{}@example.com", Uuid::new_v4()),
             password: "test-password-123".into(),
             display_name: "OP owner".into(),
+            invitation: None,
         })
         .await
+        .unwrap()
+        .session()
         .unwrap()
 }
 

@@ -11,7 +11,6 @@ use blackwall::{
 };
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
-use sqlx::Row;
 use tower::ServiceExt;
 use uuid::Uuid;
 
@@ -49,8 +48,11 @@ async fn account(store: &Store, name: &str) -> Session {
             email: format!("{name}-{}@example.com", Uuid::new_v4()),
             password: "test-password-123".into(),
             display_name: name.into(),
+            invitation: None,
         })
         .await
+        .unwrap()
+        .session()
         .unwrap()
 }
 
@@ -126,13 +128,7 @@ async fn push(
     .await
 }
 
-async fn invite_member(
-    app: &axum::Router,
-    store: &Store,
-    owner: &Session,
-    workspace: Uuid,
-    user: &Session,
-) {
+async fn invite_member(app: &axum::Router, owner: &Session, workspace: Uuid, user: &Session) {
     let (status, result) = command(
         app,
         owner,
@@ -142,22 +138,14 @@ async fn invite_member(
     .await;
     assert_eq!(status, StatusCode::OK, "{result}");
 
-    let row = sqlx::query(
-        "SELECT payload FROM jobs WHERE kind = 'email' AND payload->>'to' = $1 \
-         ORDER BY created_at DESC LIMIT 1",
-    )
-    .bind(&user.profile.email)
-    .fetch_one(&store.pool)
-    .await
-    .unwrap();
-    let mail: Value = row.try_get("payload").unwrap();
+    let token = result["result"]["invitation"]["token"].clone();
 
     let (status, result) = call(
         app,
         "POST",
         &format!("/internal-api/workspaces/{workspace}/invitations/accept"),
         Some(&user.token),
-        Some(json!({"token": mail["token"]})),
+        Some(json!({"token": token})),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{result}");
@@ -495,7 +483,7 @@ async fn push_rejected_mutation_advances_id_and_rolls_back() {
     let owner = account(&store, "owner").await;
     let member = account(&store, "member").await;
     let (ws, team) = setup(&app, &owner).await;
-    invite_member(&app, &store, &owner, ws, &member).await;
+    invite_member(&app, &owner, ws, &member).await;
     let client = Uuid::new_v4();
     // The valid issue sorts first in request order, so its writes must roll
     // back when the second issue fails validation. Assignee and deadline
@@ -755,7 +743,7 @@ async fn push_viewer_personal_rules() {
     let owner = account(&store, "owner").await;
     let viewer = account(&store, "watcher").await;
     let (ws, team) = setup(&app, &owner).await;
-    invite_member(&app, &store, &owner, ws, &viewer).await;
+    invite_member(&app, &owner, ws, &viewer).await;
 
     let (status, result) = command(
         &app,
@@ -918,7 +906,7 @@ async fn push_membership_and_client_ownership() {
     let member = account(&store, "member").await;
     let outsider = account(&store, "outsider").await;
     let (ws, _) = setup(&app, &owner).await;
-    invite_member(&app, &store, &owner, ws, &member).await;
+    invite_member(&app, &owner, ws, &member).await;
     let client = Uuid::new_v4();
 
     let (status, _) = push(

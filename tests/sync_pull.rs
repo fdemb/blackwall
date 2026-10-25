@@ -51,8 +51,11 @@ async fn account(store: &Store, name: &str) -> Session {
             email: format!("{name}-{}@example.com", Uuid::new_v4()),
             password: "test-password-123".into(),
             display_name: name.into(),
+            invitation: None,
         })
         .await
+        .unwrap()
+        .session()
         .unwrap()
 }
 
@@ -172,14 +175,7 @@ fn cursor_xmax(cursor: &str) -> i64 {
     cursor.split(':').nth(1).unwrap().parse().unwrap()
 }
 
-async fn invite_member(
-    app: &axum::Router,
-    store: &Store,
-    owner: &Session,
-    workspace: Uuid,
-    user: &Session,
-) {
-    use sqlx::Row;
+async fn invite_member(app: &axum::Router, owner: &Session, workspace: Uuid, user: &Session) {
     let (status, result) = command(
         app,
         owner,
@@ -189,22 +185,14 @@ async fn invite_member(
     .await;
     assert_eq!(status, StatusCode::OK, "{result}");
 
-    let row = sqlx::query(
-        "SELECT payload FROM jobs WHERE kind = 'email' AND payload->>'to' = $1 \
-         ORDER BY created_at DESC LIMIT 1",
-    )
-    .bind(&user.profile.email)
-    .fetch_one(&store.pool)
-    .await
-    .unwrap();
-    let mail: Value = row.try_get("payload").unwrap();
+    let token = result["result"]["invitation"]["token"].clone();
 
     let (status, result) = call(
         app,
         "POST",
         &format!("/internal-api/workspaces/{workspace}/invitations/accept"),
         Some(&user.token),
-        Some(json!({"token": mail["token"]})),
+        Some(json!({"token": token})),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{result}");
@@ -418,7 +406,7 @@ async fn pull_deleted_and_unvisible_return_null() {
     let owner = account(&store, "owner").await;
     let colleague = account(&store, "colleague").await;
     let (ws, _) = setup(&app, &owner).await;
-    invite_member(&app, &store, &owner, ws, &colleague).await;
+    invite_member(&app, &owner, ws, &colleague).await;
     let owner_client = Uuid::new_v4();
     let colleague_client = Uuid::new_v4();
 
@@ -508,7 +496,7 @@ async fn pull_visibility_scopes_private_records() {
     let owner = account(&store, "owner").await;
     let colleague = account(&store, "colleague").await;
     let (ws, team) = setup(&app, &owner).await;
-    invite_member(&app, &store, &owner, ws, &colleague).await;
+    invite_member(&app, &owner, ws, &colleague).await;
     let owner_client = Uuid::new_v4();
     let colleague_client = Uuid::new_v4();
 
@@ -633,7 +621,7 @@ async fn pull_member_sees_admin_entities_as_null() {
     let owner = account(&store, "owner").await;
     let member = account(&store, "member").await;
     let (ws, _) = setup(&app, &owner).await;
-    invite_member(&app, &store, &owner, ws, &member).await;
+    invite_member(&app, &owner, ws, &member).await;
     let member_client = Uuid::new_v4();
 
     let before = cursor_of(&pull_ok(&app, &member.token, ws, member_client, None).await);
@@ -953,8 +941,8 @@ async fn pull_own_role_change_resets_other_does_not() {
     let alice = account(&store, "alice").await;
     let bob = account(&store, "bob").await;
     let (ws, _) = setup(&app, &owner).await;
-    invite_member(&app, &store, &owner, ws, &alice).await;
-    invite_member(&app, &store, &owner, ws, &bob).await;
+    invite_member(&app, &owner, ws, &alice).await;
+    invite_member(&app, &owner, ws, &bob).await;
     let alice_client = Uuid::new_v4();
 
     let before = cursor_of(&pull_ok(&app, &alice.token, ws, alice_client, None).await);
@@ -1001,7 +989,7 @@ async fn pull_role_change_beyond_first_page_resets() {
     let owner = account(&store, "owner").await;
     let alice = account(&store, "alice").await;
     let (ws, team) = setup(&app, &owner).await;
-    invite_member(&app, &store, &owner, ws, &alice).await;
+    invite_member(&app, &owner, ws, &alice).await;
     let client = Uuid::new_v4();
     let before = cursor_of(&pull_ok(&app, &alice.token, ws, client, None).await);
 
@@ -1441,7 +1429,7 @@ async fn pull_request_errors() {
     let member = account(&store, "member").await;
     let outsider = account(&store, "outsider").await;
     let (ws, _) = setup(&app, &owner).await;
-    invite_member(&app, &store, &owner, ws, &member).await;
+    invite_member(&app, &owner, ws, &member).await;
     let other = workspace(&app, &owner, "Other").await;
 
     // Non-members cannot pull.

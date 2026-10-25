@@ -42,8 +42,11 @@ async fn fixture(database: &support::TestDatabase) -> Fixture {
             email: "owner@example.com".into(),
             password: "filters-test-password".into(),
             display_name: "Owner".into(),
+            invitation: None,
         })
         .await
+        .unwrap()
+        .session()
         .unwrap()
         .profile
         .id;

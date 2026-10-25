@@ -16,8 +16,11 @@ async fn account(store: &Store, name: &str) -> Uuid {
             email: format!("{name}@example.com"),
             password: "archive-test-password".into(),
             display_name: name.into(),
+            invitation: None,
         })
         .await
+        .unwrap()
+        .session()
         .unwrap()
         .profile
         .id

@@ -114,8 +114,11 @@ async fn enabling_import_brings_history_silently_then_new_comments_notify() {
             email: jane_email,
             password: "test-password-123".into(),
             display_name: "Jane".into(),
+            invitation: None,
         })
         .await
+        .unwrap()
+        .session()
         .unwrap();
     sqlx::query("INSERT INTO workspace_members(workspace_id,user_id,role) VALUES($1,$2,'member')")
         .bind(f.workspace)
@@ -536,8 +539,11 @@ async fn comments_notify_after_the_first_import_without_remote_modification_time
             email: format!("jane-{}@example.com", Uuid::new_v4()),
             password: "test-password-123".into(),
             display_name: "Jane".into(),
+            invitation: None,
         })
         .await
+        .unwrap()
+        .session()
         .unwrap();
     sqlx::query("INSERT INTO workspace_members(workspace_id,user_id,role) VALUES($1,$2,'member')")
         .bind(f.workspace)

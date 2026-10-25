@@ -31,6 +31,7 @@ RUST_LOG=blackwall=info
 # Served over HTTPS by the svc:blackwall Tailscale service
 COOKIE_SECURE=true
 PUBLIC_URL=https://blackwall.example.com
+# REGISTRATION=invite
 # SMTP_URL=smtps://user:password@smtp.example.com
 # SMTP_FROM="Blackwall <noreply@example.com>"
 EOF

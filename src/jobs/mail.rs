@@ -259,6 +259,20 @@ fn body(email: &Email, public_url: Option<&Url>) -> String {
              If you didn't ask for this, ignore this email. Your password stays the same.\n",
             email.token
         ),
+        (Grant::Verification { .. }, Some(public_url)) => format!(
+            "Someone registered a Blackwall account with this email address.\n\n\
+             Open this link within 24 hours to verify it:\n\n\
+             {}\n\n\
+             If you didn't register, ignore this email.\n",
+            link(public_url, "verify", &[("token", &email.token)])
+        ),
+        (Grant::Verification { .. }, None) => format!(
+            "Someone registered a Blackwall account with this email address.\n\n\
+             Enter this verification token on the email verification page within 24 hours:\n\n\
+             {}\n\n\
+             If you didn't register, ignore this email.\n",
+            email.token
+        ),
     }
 }
 
@@ -603,6 +617,25 @@ mod tests {
              To choose which notifications Blackwall emails you, open Settings, then \
              Notifications.\n"
         );
+    }
+
+    #[test]
+    fn links_verification_to_verify_page() {
+        let verification = email(Grant::Verification {
+            user_id: Uuid::new_v4(),
+            verification_hash: "hash".into(),
+        });
+        let public_url = parse_public_url("https://example.com/blackwall").unwrap();
+
+        let text = body(&verification, Some(&public_url));
+        assert!(
+            text.contains("https://example.com/blackwall/verify?token=tok%2Fen%2B1\n"),
+            "{text}"
+        );
+
+        let text = body(&verification, None);
+        assert!(text.contains("verification page"), "{text}");
+        assert!(text.contains("\n\ntok/en+1\n\n"), "{text}");
     }
 
     /// Accepts one SMTP session and returns the message data.

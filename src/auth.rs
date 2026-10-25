@@ -10,7 +10,7 @@ use argon2::{
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use sqlx::{Row, types::Json};
+use sqlx::{PgConnection, Row, types::Json};
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
@@ -63,11 +63,68 @@ impl Default for LegacyAlerts {
     }
 }
 
+/// Who may create an account, from `REGISTRATION` at startup.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum RegistrationMode {
+    Open,
+    /// Only invited people, plus the first account of a fresh install.
+    Invite,
+}
+
+impl RegistrationMode {
+    pub fn parse(value: Option<&str>) -> std::result::Result<Self, String> {
+        match value {
+            None | Some("open") => Ok(Self::Open),
+            Some("invite") => Ok(Self::Invite),
+            Some(other) => Err(format!(
+                "REGISTRATION must be open or invite, not {other:?}"
+            )),
+        }
+    }
+}
+
+#[derive(Serialize, utoipa::ToSchema)]
+pub struct AuthOptions {
+    pub registration: RegistrationMode,
+    /// Whether unverified accounts must verify their email address before signing in.
+    pub email_verification: bool,
+}
+
+/// A pending invitation to the registering address, as in an invitation link.
+#[derive(Deserialize, utoipa::ToSchema)]
+pub struct InvitationProof {
+    pub workspace_id: Uuid,
+    pub token: String,
+}
+
 #[derive(Deserialize, utoipa::ToSchema)]
 pub struct Register {
     pub email: String,
     pub password: String,
     pub display_name: String,
+    #[serde(default)]
+    pub invitation: Option<InvitationProof>,
+}
+
+pub enum Registered {
+    Session(Session),
+    /// Registration queued a verification email instead of creating a session.
+    VerificationSent,
+}
+
+impl Registered {
+    pub fn session(self) -> Option<Session> {
+        match self {
+            Self::Session(session) => Some(session),
+            Self::VerificationSent => None,
+        }
+    }
+}
+
+#[derive(Deserialize, utoipa::ToSchema)]
+pub struct VerifyEmail {
+    pub token: String,
 }
 
 #[derive(Deserialize, utoipa::ToSchema)]
@@ -192,7 +249,7 @@ async fn verify(password: String, encoded: String) -> Result<bool> {
 }
 
 impl Store {
-    pub async fn register(&self, input: Register) -> Result<Session> {
+    pub async fn register(&self, input: Register) -> Result<Registered> {
         let email = email(&input.email)?;
         let display_name = input.display_name.trim().to_owned();
 
@@ -214,14 +271,57 @@ impl Store {
             alerts: LegacyAlerts::default(),
         };
 
+        let mut tx = self.pool.begin().await?;
+        let invited = match &input.invitation {
+            // The share lock holds off cancellation until the account commits.
+            Some(proof) => sqlx::query(
+                "SELECT 1 FROM invitations WHERE workspace_id=$1 AND token_hash=$2 AND \
+                 lower(email)=lower($3) AND state='pending' AND expires_at>clock_timestamp() \
+                 FOR SHARE",
+            )
+            .bind(proof.workspace_id)
+            .bind(hash(&proof.token))
+            .bind(&email)
+            .fetch_optional(&mut *tx)
+            .await?
+            .is_some(),
+            None => false,
+        };
+        let verified = match &input.invitation {
+            _ if invited => true,
+            Some(_) if self.registration == RegistrationMode::Invite => {
+                return Err(Error::BadRequest("invalid or expired invitation".into()));
+            }
+            Some(_) => false,
+            None if self.registration == RegistrationMode::Invite => {
+                sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended('first-account',0))")
+                    .execute(&mut *tx)
+                    .await?;
+                let installed: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM users)")
+                    .fetch_one(&mut *tx)
+                    .await?;
+                if installed {
+                    return Err(Error::Denied(
+                        "Registration is by invitation only. Ask a workspace admin for an \
+                         invitation."
+                            .into(),
+                    ));
+                }
+                false
+            }
+            None => false,
+        };
+
         let insert = sqlx::query(
-            "INSERT INTO users (id, email, password_hash, profile) VALUES ($1, $2, $3, $4)",
+            "INSERT INTO users (id, email, password_hash, profile, email_verified_at) \
+             VALUES ($1, $2, $3, $4, CASE WHEN $5 THEN now() END)",
         )
         .bind(profile.id)
-        .bind(email)
+        .bind(&email)
         .bind(encoded)
         .bind(Json(&profile))
-        .execute(&self.pool)
+        .bind(verified)
+        .execute(&mut *tx)
         .await;
 
         match insert {
@@ -232,7 +332,14 @@ impl Store {
             _ => {}
         }
 
-        self.create_session(profile).await
+        if !verified && self.mail_enabled {
+            queue_verification(&mut tx, profile.id, email).await?;
+            tx.commit().await?;
+            return Ok(Registered::VerificationSent);
+        }
+
+        tx.commit().await?;
+        Ok(Registered::Session(self.create_session(profile).await?))
     }
 
     async fn create_session(&self, profile: Profile) -> Result<Session> {
@@ -261,10 +368,13 @@ impl Store {
             return Err(Error::Unauthorized);
         }
 
-        let row = sqlx::query("SELECT password_hash, profile FROM users WHERE email = $1")
-            .bind(input.email.trim().to_lowercase())
-            .fetch_optional(&self.pool)
-            .await?;
+        let row = sqlx::query(
+            "SELECT id, email, password_hash, profile, email_verified_at IS NOT NULL AS verified \
+             FROM users WHERE email = $1",
+        )
+        .bind(input.email.trim().to_lowercase())
+        .fetch_optional(&self.pool)
+        .await?;
 
         let Some(row) = row else {
             // Missing accounts still perform the password KDF.
@@ -276,8 +386,60 @@ impl Store {
             return Err(Error::Unauthorized);
         }
 
+        if self.mail_enabled && !row.try_get::<bool, _>("verified")? {
+            let email: String = row.try_get("email")?;
+            self.remind_verification(row.try_get("id")?, email.clone())
+                .await?;
+            return Err(Error::Denied(format!(
+                "Verify your email address first. We sent a link to {email}."
+            )));
+        }
+
         self.create_session(row.try_get::<Json<Profile>, _>("profile")?.0)
             .await
+    }
+
+    async fn remind_verification(&self, user: Uuid, email: String) -> Result<()> {
+        let mut tx = self.pool.begin().await?;
+        // A separate statement after the lock sees tokens that concurrent logins committed.
+        sqlx::query("SELECT 1 FROM users WHERE id=$1 FOR UPDATE")
+            .bind(user)
+            .execute(&mut *tx)
+            .await?;
+        let due: bool = sqlx::query_scalar(
+            "SELECT email_verified_at IS NULL AND NOT EXISTS(SELECT 1 FROM email_verifications \
+             WHERE user_id=$1 AND created_at>now()-interval '5 minutes') \
+             FROM users WHERE id=$1",
+        )
+        .bind(user)
+        .fetch_one(&mut *tx)
+        .await?;
+        if due {
+            queue_verification(&mut tx, user, email).await?;
+        }
+        tx.commit().await?;
+
+        Ok(())
+    }
+
+    pub async fn verify_email(&self, input: VerifyEmail) -> Result<()> {
+        let mut tx = self.pool.begin().await?;
+        let user: Uuid = sqlx::query_scalar(
+            "DELETE FROM email_verifications WHERE token_hash=$1 AND expires_at>$2 \
+             RETURNING user_id",
+        )
+        .bind(hash(&input.token))
+        .bind(Utc::now())
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or(Error::BadRequest(
+            "verification link invalid or expired".into(),
+        ))?;
+
+        mark_verified(&mut tx, user).await?;
+        tx.commit().await?;
+
+        Ok(())
     }
 
     /// Resolves a session token, and records when and from which client the
@@ -557,9 +719,77 @@ impl Store {
             .bind(user)
             .execute(&mut *tx)
             .await?;
+        mark_verified(&mut tx, user).await?;
 
         tx.commit().await?;
 
         Ok(())
+    }
+}
+
+async fn queue_verification(tx: &mut PgConnection, user: Uuid, email: String) -> Result<()> {
+    let token = token();
+    let token_hash = hash(&token);
+    sqlx::query(
+        "INSERT INTO email_verifications (token_hash, user_id, expires_at) VALUES ($1, $2, $3)",
+    )
+    .bind(&token_hash)
+    .bind(user)
+    .bind(Utc::now() + Duration::hours(24))
+    .execute(&mut *tx)
+    .await?;
+
+    let job = Job::Email(Email {
+        to: email,
+        subject: "Verify your Blackwall email address".into(),
+        grant: Grant::Verification {
+            user_id: user,
+            verification_hash: token_hash.clone(),
+        },
+        token,
+    });
+    Outbox::insert(
+        tx,
+        &NewJob::now(format!("verification:{user}:{token_hash}"), job),
+    )
+    .await?;
+
+    Ok(())
+}
+
+async fn mark_verified(tx: &mut PgConnection, user: Uuid) -> Result<()> {
+    sqlx::query(
+        "UPDATE users SET email_verified_at = coalesce(email_verified_at, now()) WHERE id = $1",
+    )
+    .bind(user)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query("DELETE FROM email_verifications WHERE user_id = $1")
+        .bind(user)
+        .execute(&mut *tx)
+        .await?;
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::RegistrationMode;
+
+    #[test]
+    fn registration_mode_defaults_to_open_and_rejects_typos() {
+        assert_eq!(RegistrationMode::parse(None), Ok(RegistrationMode::Open));
+        assert_eq!(
+            RegistrationMode::parse(Some("open")),
+            Ok(RegistrationMode::Open)
+        );
+        assert_eq!(
+            RegistrationMode::parse(Some("invite")),
+            Ok(RegistrationMode::Invite)
+        );
+        assert_eq!(
+            RegistrationMode::parse(Some("invites")),
+            Err("REGISTRATION must be open or invite, not \"invites\"".into())
+        );
     }
 }

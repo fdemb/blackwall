@@ -56,8 +56,11 @@ async fn account(store: &Store, name: &str) -> Session {
             email: format!("{name}-{}@example.com", Uuid::new_v4()),
             password: "test-password-123".into(),
             display_name: name.into(),
+            invitation: None,
         })
         .await
+        .unwrap()
+        .session()
         .unwrap()
 }
 
@@ -182,7 +185,7 @@ mod support;
 #[tokio::test]
 async fn complete_contract_on_postgres() {
     let database = support::TestDatabase::new().await;
-    let store = Store::connect(&database.url).await.unwrap();
+    let mut store = Store::connect(&database.url).await.unwrap();
     let web = std::env::temp_dir().join(format!("blackwall-web-{}", Uuid::new_v4()));
     std::fs::create_dir_all(&web).unwrap();
     std::fs::write(
@@ -191,10 +194,11 @@ async fn complete_contract_on_postgres() {
     )
     .unwrap();
 
-    let app = router_with_web(store.clone(), web);
     let owner = account(&store, "owner").await;
     let colleague = account(&store, "colleague").await;
     let outsider = account(&store, "outsider").await;
+    store.mail_enabled = true;
+    let app = router_with_web(store.clone(), web);
 
     let (status, value) = call(
         &app,
@@ -995,6 +999,7 @@ async fn complete_contract_on_postgres() {
             email: owner.profile.email.clone(),
             password: "another-password-123".into(),
             display_name: "duplicate".into(),
+            invitation: None,
         })
         .await;
 
@@ -1065,7 +1070,7 @@ async fn native_identity_and_atomic_password_recovery() {
     use sqlx::types::Json;
 
     let database = support::TestDatabase::new().await;
-    let store = Store::connect(&database.url).await.unwrap();
+    let mut store = Store::connect(&database.url).await.unwrap();
     let session = account(&store, "identity").await;
     let second = store
         .login(Login {
@@ -1074,6 +1079,7 @@ async fn native_identity_and_atomic_password_recovery() {
         })
         .await
         .unwrap();
+    store.mail_enabled = true;
 
     let row = sqlx::query(
         "SELECT users.id,users.profile,sessions.token_hash,sessions.expires_at \
@@ -2020,8 +2026,11 @@ async fn invitation_links_work_without_mail() {
             email: "later@example.com".into(),
             password: "test-password-123".into(),
             display_name: "Later".into(),
+            invitation: None,
         })
         .await
+        .unwrap()
+        .session()
         .unwrap();
     let accept = format!("/internal-api/workspaces/{id}/invitations/accept");
     let (status, value) = call(
@@ -2194,5 +2203,461 @@ async fn unlimited_sprints_still_number_concurrent_creates() {
             .await
             .unwrap();
     assert_eq!(numbers, (1..=10).collect::<Vec<i64>>());
+    database.cleanup().await;
+}
+
+async fn verification_tokens(store: &Store, email: &str) -> Vec<String> {
+    sqlx::query_scalar(
+        "SELECT payload->>'token' FROM jobs WHERE kind='email' AND payload->>'to'=$1 \
+         AND payload ? 'verification_hash' ORDER BY created_at",
+    )
+    .bind(email)
+    .fetch_all(&store.pool)
+    .await
+    .unwrap()
+}
+
+#[tokio::test]
+async fn email_verification_gates_sign_in_while_mail_works() {
+    use blackwall::{
+        auth::{Login, ResetPassword, ResetRequest},
+        error::Error,
+    };
+
+    let database = support::TestDatabase::new().await;
+    let mut store = Store::connect(&database.url).await.unwrap();
+    store.mail_enabled = true;
+    let app = blackwall::http::router(store.clone());
+    let login = |email: &str, password: &str| {
+        store.login(Login {
+            email: email.into(),
+            password: password.into(),
+        })
+    };
+
+    let (status, value) = call(&app, "GET", "/internal-api/auth/options", None, None).await;
+    assert_eq!(status, StatusCode::OK, "{value}");
+    assert_eq!(
+        value,
+        json!({"registration":"open","email_verification":true})
+    );
+
+    let (status, value) = call(
+        &app,
+        "POST",
+        "/internal-api/auth/register",
+        None,
+        Some(
+            json!({"email":"new@example.com","password":"test-password-123","display_name":"New"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{value}");
+    assert_eq!(value, json!({"verification_sent":true}));
+    assert_eq!(
+        verification_tokens(&store, "new@example.com").await.len(),
+        1
+    );
+
+    let denied = login("new@example.com", "test-password-123").await;
+    assert!(
+        matches!(&denied, Err(Error::Denied(message)) if message.contains("new@example.com")),
+        "{:?}",
+        denied.err()
+    );
+    assert_eq!(
+        verification_tokens(&store, "new@example.com").await.len(),
+        1,
+        "the link sent at registration is recent enough"
+    );
+
+    sqlx::query("UPDATE email_verifications SET created_at=now()-interval '6 minutes'")
+        .execute(&store.pool)
+        .await
+        .unwrap();
+    assert!(matches!(
+        login("new@example.com", "test-password-123").await,
+        Err(Error::Denied(_))
+    ));
+    assert!(matches!(
+        login("new@example.com", "test-password-123").await,
+        Err(Error::Denied(_))
+    ));
+    let tokens = verification_tokens(&store, "new@example.com").await;
+    assert_eq!(
+        tokens.len(),
+        2,
+        "a second sign-in within minutes sends nothing"
+    );
+    assert!(matches!(
+        login("new@example.com", "wrong-password-123").await,
+        Err(Error::Unauthorized)
+    ));
+
+    let verify = |token: &str| {
+        call(
+            &app,
+            "POST",
+            "/internal-api/auth/verify",
+            None,
+            Some(json!({ "token": token })),
+        )
+    };
+    assert_eq!(verify("not-a-token").await.0, StatusCode::BAD_REQUEST);
+    assert_eq!(verify(&tokens[1]).await.0, StatusCode::NO_CONTENT);
+    assert_eq!(
+        verify(&tokens[0]).await.0,
+        StatusCode::BAD_REQUEST,
+        "verifying retires every link"
+    );
+    login("new@example.com", "test-password-123").await.unwrap();
+
+    let registered = store
+        .register(Register {
+            email: "forgetful@example.com".into(),
+            password: "test-password-123".into(),
+            display_name: "Forgetful".into(),
+            invitation: None,
+        })
+        .await
+        .unwrap();
+    assert!(registered.session().is_none());
+    store
+        .request_reset(ResetRequest {
+            email: "forgetful@example.com".into(),
+        })
+        .await
+        .unwrap();
+    let reset: String = sqlx::query_scalar(
+        "SELECT payload->>'token' FROM jobs WHERE kind='email' AND payload->>'to'=$1 \
+         AND payload->>'subject' LIKE 'Reset%'",
+    )
+    .bind("forgetful@example.com")
+    .fetch_one(&store.pool)
+    .await
+    .unwrap();
+    store
+        .reset_password(ResetPassword {
+            token: reset,
+            password: "recovered-password-123".into(),
+        })
+        .await
+        .unwrap();
+    login("forgetful@example.com", "recovered-password-123")
+        .await
+        .unwrap();
+
+    let password_hash: String =
+        sqlx::query_scalar("SELECT password_hash FROM users WHERE email='new@example.com'")
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+    sqlx::query(
+        "INSERT INTO users(id,email,password_hash,profile) \
+         SELECT $1,'old@example.com',password_hash,profile || jsonb_build_object('id',$1::text) \
+         FROM users WHERE password_hash=$2",
+    )
+    .bind(Uuid::new_v4())
+    .bind(password_hash)
+    .execute(&store.pool)
+    .await
+    .unwrap();
+    login("old@example.com", "test-password-123")
+        .await
+        .expect("an account the previous release inserted signs in");
+
+    store.pool.close().await;
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn unverified_accounts_sign_in_without_mail() {
+    use blackwall::auth::Login;
+
+    let database = support::TestDatabase::new().await;
+    let store = Store::connect(&database.url).await.unwrap();
+    let app = blackwall::http::router(store.clone());
+
+    let (_, value) = call(&app, "GET", "/internal-api/auth/options", None, None).await;
+    assert_eq!(value["email_verification"], false);
+
+    let (status, value) = call(
+        &app,
+        "POST",
+        "/internal-api/auth/register",
+        None,
+        Some(json!({"email":"plain@example.com","password":"test-password-123","display_name":"Plain"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{value}");
+    assert!(value["token"].is_string(), "{value}");
+    store
+        .login(Login {
+            email: "plain@example.com".into(),
+            password: "test-password-123".into(),
+        })
+        .await
+        .unwrap();
+
+    store.pool.close().await;
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn invite_only_registration_needs_a_matching_invitation() {
+    use blackwall::{
+        auth::{InvitationProof, Registered, RegistrationMode},
+        error::Error,
+    };
+
+    let database = support::TestDatabase::new().await;
+    let mut store = Store::connect(&database.url).await.unwrap();
+    store.registration = RegistrationMode::Invite;
+    let register = |store: Store, email: &str, invitation: Option<(Uuid, &str)>| {
+        let input = Register {
+            email: email.into(),
+            password: "test-password-123".into(),
+            display_name: "Person".into(),
+            invitation: invitation.map(|(workspace_id, token)| InvitationProof {
+                workspace_id,
+                token: token.into(),
+            }),
+        };
+        async move { store.register(input).await }
+    };
+
+    let owner = register(store.clone(), "owner@example.com", None)
+        .await
+        .expect("the first account of a fresh install needs no invitation")
+        .session()
+        .unwrap();
+
+    store.mail_enabled = true;
+    let app = blackwall::http::router(store.clone());
+    let (_, value) = call(&app, "GET", "/internal-api/auth/options", None, None).await;
+    assert_eq!(
+        value,
+        json!({"registration":"invite","email_verification":true})
+    );
+
+    let (status, value) = call(
+        &app,
+        "POST",
+        "/internal-api/auth/register",
+        None,
+        Some(json!({"email":"stranger@example.com","password":"test-password-123","display_name":"Stranger"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{value}");
+    assert!(
+        value["error"].as_str().unwrap().contains("invitation"),
+        "{value}"
+    );
+
+    let (status, value) = call(
+        &app,
+        "POST",
+        "/internal-api/workspaces",
+        Some(&owner.token),
+        Some(json!({"name":"Invites","slug":"invites"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{value}");
+    let workspace: Uuid = value["workspace"]["id"].as_str().unwrap().parse().unwrap();
+    let (status, value) = call(
+        &app,
+        "POST",
+        &format!("/internal-api/workspaces/{workspace}/commands"),
+        Some(&owner.token),
+        Some(json!({"command":{"type":"invite","email":"Guest@example.com","role":"member","token_hash":""}})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{value}");
+    let token = value["result"]["invitation"]["token"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    for (email, proof) in [
+        ("guest@example.com", (workspace, "wrong-token")),
+        ("guest@example.com", (Uuid::new_v4(), token.as_str())),
+        ("other@example.com", (workspace, token.as_str())),
+    ] {
+        let result = register(store.clone(), email, Some(proof)).await;
+        assert!(
+            matches!(result, Err(Error::BadRequest(_))),
+            "{email} registered with a mismatched invitation"
+        );
+    }
+
+    let mut open = store.clone();
+    open.registration = RegistrationMode::Open;
+    let result = register(open, "other@example.com", Some((workspace, &token))).await;
+    assert!(
+        matches!(result, Ok(Registered::VerificationSent)),
+        "open registration ignores an invitation for another address"
+    );
+
+    let guest = register(
+        store.clone(),
+        "guest@example.com",
+        Some((workspace, &token)),
+    )
+    .await
+    .unwrap()
+    .session()
+    .expect("an invited account signs in at once, even while mail works");
+    let verified: bool = sqlx::query_scalar(
+        "SELECT email_verified_at IS NOT NULL FROM users WHERE email='guest@example.com'",
+    )
+    .fetch_one(&store.pool)
+    .await
+    .unwrap();
+    assert!(verified);
+
+    let (status, value) = call(
+        &app,
+        "POST",
+        &format!("/internal-api/workspaces/{workspace}/invitations/accept"),
+        Some(&guest.token),
+        Some(json!({ "token": token })),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "registering leaves the invitation to accept: {value}"
+    );
+
+    store.pool.close().await;
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn cancelled_invitations_stop_invite_only_registration() {
+    use blackwall::{
+        auth::{InvitationProof, RegistrationMode},
+        error::Error,
+    };
+
+    let database = support::TestDatabase::new().await;
+    let mut store = Store::connect(&database.url).await.unwrap();
+    store.registration = RegistrationMode::Invite;
+    let owner = account(&store, "owner").await;
+    store.mail_enabled = true;
+    let app = blackwall::http::router(store.clone());
+    let (status, value) = call(
+        &app,
+        "POST",
+        "/internal-api/workspaces",
+        Some(&owner.token),
+        Some(json!({"name":"Revocation","slug":"revocation"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{value}");
+    let workspace: Uuid = value["workspace"]["id"].as_str().unwrap().parse().unwrap();
+    let commands = format!("/internal-api/workspaces/{workspace}/commands");
+    let invite = |email: &'static str| {
+        let (app, commands, token) = (app.clone(), commands.clone(), owner.token.clone());
+        async move {
+            let (status, value) = call(
+                &app,
+                "POST",
+                &commands,
+                Some(&token),
+                Some(json!({"command":{"type":"invite","email":email,"role":"member","token_hash":""}})),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{value}");
+            let id = value["result"]["id"].as_str().unwrap().to_owned();
+            let token = value["result"]["invitation"]["token"]
+                .as_str()
+                .unwrap()
+                .to_owned();
+            let version = value["versions"][&id].clone();
+            (id, version, token)
+        }
+    };
+    let register = |email: &'static str, token: String| {
+        let (store, workspace) = (store.clone(), workspace);
+        async move {
+            store
+                .register(Register {
+                    email: email.into(),
+                    password: "test-password-123".into(),
+                    display_name: "Invitee".into(),
+                    invitation: Some(InvitationProof {
+                        workspace_id: workspace,
+                        token,
+                    }),
+                })
+                .await
+        }
+    };
+
+    let (id, version, token) = invite("first@example.com").await;
+    let mut expected = serde_json::Map::new();
+    expected.insert(id.clone(), version);
+    let (status, value) = call(
+        &app,
+        "POST",
+        &commands,
+        Some(&owner.token),
+        Some(json!({"expected_versions":expected,"command":{"type":"cancel_invitation","id":id}})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{value}");
+    assert!(
+        matches!(
+            register("first@example.com", token).await,
+            Err(Error::BadRequest(_))
+        ),
+        "a cancelled invitation still registered an account"
+    );
+
+    let (id, _, token) = invite("second@example.com").await;
+    let mut cancel = store.pool.begin().await.unwrap();
+    sqlx::query("UPDATE invitations SET state='cancelled',token_hash='' WHERE id=$1")
+        .bind(Uuid::parse_str(&id).unwrap())
+        .execute(&mut *cancel)
+        .await
+        .unwrap();
+    let registration = tokio::spawn(register("second@example.com", token));
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        let waiting: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM pg_stat_activity \
+             WHERE datname = current_database() AND wait_event_type = 'Lock'",
+        )
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+        if waiting > 0 {
+            break;
+        }
+        assert!(
+            !registration.is_finished(),
+            "registration finished without waiting for the cancellation"
+        );
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "registration never blocked"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    cancel.commit().await.unwrap();
+    assert!(
+        matches!(registration.await.unwrap(), Err(Error::BadRequest(_))),
+        "a cancellation that committed during registration still let the account through"
+    );
+    let accounts: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM users WHERE email IN ('first@example.com','second@example.com')",
+    )
+    .fetch_one(&store.pool)
+    .await
+    .unwrap();
+    assert_eq!(accounts, 0);
+
+    store.pool.close().await;
     database.cleanup().await;
 }

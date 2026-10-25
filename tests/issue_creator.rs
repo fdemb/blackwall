@@ -35,8 +35,11 @@ async fn issues_remember_their_creator() {
             email: "owner@example.com".into(),
             password: "creator-test-password".into(),
             display_name: "Owner".into(),
+            invitation: None,
         })
         .await
+        .unwrap()
+        .session()
         .unwrap()
         .profile
         .id;

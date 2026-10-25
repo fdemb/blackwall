@@ -537,8 +537,11 @@ mod tests {
                 email: "transfer-check@example.com".into(),
                 password: "module-check-password".into(),
                 display_name: "Transfer".into(),
+                invitation: None,
             })
             .await
+            .unwrap()
+            .session()
             .unwrap()
             .profile
             .id;
