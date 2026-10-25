@@ -236,11 +236,21 @@ pub enum Command {
     CancelInvitation {
         id: Uuid,
     },
+    /// Renames the workspace and changes the slug in its app URLs.
+    UpdateWorkspace {
+        name: String,
+        slug: String,
+    },
     SetRole {
         user_id: Uuid,
         role: Role,
     },
+    /// Members may remove themselves unless they are the workspace's only owner.
     RemoveMember {
+        user_id: Uuid,
+    },
+    /// Makes `user_id` an owner and the acting owner an admin.
+    TransferOwnership {
         user_id: Uuid,
     },
     MarkNotificationRead {
@@ -313,6 +323,7 @@ impl Command {
     pub(crate) fn is_personal(&self, actor: Uuid) -> bool {
         match self {
             Self::Follow { user_id, .. } => user_id.is_none_or(|user| user == actor),
+            Self::RemoveMember { user_id } => *user_id == actor,
             _ => matches!(
                 self,
                 Self::MarkNotificationRead { .. }
@@ -411,8 +422,10 @@ impl Command {
             Self::Invite { .. } => "invite",
             Self::ResendInvitation { .. } => "resend_invitation",
             Self::CancelInvitation { .. } => "cancel_invitation",
+            Self::UpdateWorkspace { .. } => "update_workspace",
             Self::SetRole { .. } => "set_role",
             Self::RemoveMember { .. } => "remove_member",
+            Self::TransferOwnership { .. } => "transfer_ownership",
             Self::MarkNotificationRead { .. } => "mark_notification_read",
             Self::ConfigureAlerts { .. } => "configure_alerts",
             Self::CreateIntegration { .. } => "create_integration",

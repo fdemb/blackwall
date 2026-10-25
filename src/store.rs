@@ -253,7 +253,7 @@ impl Operation<'_> {
 pub(crate) fn membership_exclusive(command: &Command) -> bool {
     matches!(
         command,
-        Command::SetRole { .. } | Command::RemoveMember { .. }
+        Command::SetRole { .. } | Command::RemoveMember { .. } | Command::TransferOwnership { .. }
     )
 }
 

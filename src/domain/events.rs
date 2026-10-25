@@ -82,7 +82,7 @@ pub fn webhook_event(action: &str) -> Option<(&'static str, &'static str)> {
         "log_time" => ("time_entry.created", "time_entry"),
         "update_time" => ("time_entry.updated", "time_entry"),
         "delete_time" => ("time_entry.deleted", "time_entry"),
-        "set_role" => ("member.role_changed", "member"),
+        "set_role" | "transfer_ownership" => ("member.role_changed", "member"),
         "remove_member" => ("member.removed", "member"),
         _ => return None,
     })

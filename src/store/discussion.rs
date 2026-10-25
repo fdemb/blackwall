@@ -104,14 +104,10 @@ impl Operation<'_> {
                 self.cancel_invitation(id).await?;
                 id
             }
-            Command::SetRole { user_id, role } => {
-                self.set_role(user_id, role).await?;
-                user_id
-            }
-            Command::RemoveMember { user_id } => {
-                self.remove_member(user_id).await?;
-                user_id
-            }
+            Command::UpdateWorkspace { .. }
+            | Command::SetRole { .. }
+            | Command::RemoveMember { .. }
+            | Command::TransferOwnership { .. } => return self.workspace_settings(command).await,
             Command::MarkNotificationRead { id, created_at } => {
                 self.mark_notification_read(id, created_at).await?;
                 id
@@ -740,6 +736,29 @@ impl Operation<'_> {
         Ok(())
     }
 
+    async fn workspace_settings(&mut self, command: Command) -> Result<Option<Uuid>> {
+        let user_id = match command {
+            Command::UpdateWorkspace { name, slug } => {
+                self.update_workspace(name, slug).await?;
+                return Ok(None);
+            }
+            Command::SetRole { user_id, role } => {
+                self.set_role(user_id, role).await?;
+                user_id
+            }
+            Command::RemoveMember { user_id } => {
+                self.remove_member(user_id).await?;
+                user_id
+            }
+            Command::TransferOwnership { user_id } => {
+                self.transfer_ownership(user_id).await?;
+                user_id
+            }
+            _ => unreachable!("dispatched by discussion"),
+        };
+        Ok(Some(user_id))
+    }
+
     async fn set_role(&mut self, user_id: Uuid, role: Role) -> Result<()> {
         self.admin()?;
         let old = self.member_role(user_id).await?;
@@ -750,6 +769,23 @@ impl Operation<'_> {
             self.retain_owner().await?;
         }
 
+        self.write_role(user_id, role).await
+    }
+
+    async fn transfer_ownership(&mut self, user_id: Uuid) -> Result<()> {
+        if self.role != Role::Owner {
+            return Err(Error::Forbidden);
+        }
+        if user_id == self.actor {
+            return Err(Error::BadRequest("you already own the workspace".into()));
+        }
+        self.member_role(user_id).await?;
+
+        self.write_role(user_id, Role::Owner).await?;
+        self.write_role(self.actor, Role::Admin).await
+    }
+
+    async fn write_role(&mut self, user_id: Uuid, role: Role) -> Result<()> {
         self.touch("workspace_members", user_id).await?;
         sqlx::query("UPDATE workspace_members SET role=$3 WHERE workspace_id=$1 AND user_id=$2")
             .bind(self.workspace_id)
@@ -760,8 +796,30 @@ impl Operation<'_> {
         Ok(())
     }
 
-    async fn remove_member(&mut self, user_id: Uuid) -> Result<()> {
+    async fn update_workspace(&mut self, name: String, slug: String) -> Result<()> {
         self.admin()?;
+        crate::domain::text(&name, 200)?;
+        crate::domain::validate_workspace_slug(&slug)?;
+
+        sqlx::query("UPDATE workspaces SET name=$2,slug=$3,version=version+1 WHERE id=$1")
+            .bind(self.workspace_id)
+            .bind(&name)
+            .bind(&slug)
+            .execute(&mut *self.tx)
+            .await
+            .map_err(|error| match &error {
+                sqlx::Error::Database(db) if db.constraint() == Some("workspaces_slug") => {
+                    Error::Conflict("workspace slug is taken".into())
+                }
+                _ => Error::Database(error),
+            })?;
+        Ok(())
+    }
+
+    async fn remove_member(&mut self, user_id: Uuid) -> Result<()> {
+        if user_id != self.actor {
+            self.admin()?;
+        }
         if self.member_role(user_id).await? == "owner" {
             if self.role != Role::Owner {
                 return Err(Error::Forbidden);
@@ -1588,6 +1646,128 @@ mod tests {
                 BTreeMap::from([(owner, 1)])
             )
             .await,
+            Err(Error::Conflict(_))
+        ));
+        store.pool.close().await;
+        database.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn members_rename_leave_and_hand_over_the_workspace() {
+        let database = support::TestDatabase::new().await;
+        let store = Store::connect(&database.url).await.unwrap();
+        let mut users = Vec::new();
+        for name in ["owner", "admin", "viewer", "outsider"] {
+            users.push(
+                store
+                    .register(crate::auth::Register {
+                        email: format!("{name}@example.com"),
+                        password: "settings-test-password".into(),
+                        display_name: name.into(),
+                    })
+                    .await
+                    .unwrap()
+                    .profile
+                    .id,
+            );
+        }
+        let [owner, admin, viewer, outsider] = users[..] else {
+            unreachable!()
+        };
+        let created = store.create_workspace("Acme".into(), owner).await.unwrap();
+        let workspace: Uuid = serde_json::from_value(created["id"].clone()).unwrap();
+        store
+            .create_workspace("Taken".into(), outsider)
+            .await
+            .unwrap();
+        for (user, role) in [(admin, "admin"), (viewer, "viewer")] {
+            sqlx::query(
+                "INSERT INTO workspace_members(workspace_id,user_id,role) VALUES($1,$2,$3)",
+            )
+            .bind(workspace)
+            .bind(user)
+            .bind(role)
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        }
+        let run = |actor: Uuid, value: serde_json::Value| {
+            let store = store.clone();
+            async move { command(&store, workspace, actor, value, BTreeMap::new()).await }
+        };
+        let rename = |slug: &str| json!({"type":"update_workspace","name":"Acme Labs","slug":slug});
+        let role_of = |user: Uuid| {
+            let pool = store.pool.clone();
+            async move {
+                sqlx::query_scalar::<_, String>(
+                    "SELECT role FROM workspace_members WHERE workspace_id=$1 AND user_id=$2",
+                )
+                .bind(workspace)
+                .bind(user)
+                .fetch_optional(&pool)
+                .await
+                .unwrap()
+            }
+        };
+
+        assert!(matches!(
+            run(viewer, rename("acme-labs")).await,
+            Err(Error::Forbidden)
+        ));
+        assert!(matches!(
+            run(admin, rename("taken")).await,
+            Err(Error::Conflict(_))
+        ));
+        assert!(matches!(
+            run(admin, rename("Acme")).await,
+            Err(Error::BadRequest(_))
+        ));
+        run(admin, rename("acme-labs")).await.unwrap();
+        assert_eq!(
+            store.workspace_metadata(workspace, viewer).await.unwrap()["workspace"],
+            json!({"id":workspace,"name":"Acme Labs","slug":"acme-labs","version":2})
+        );
+
+        run(viewer, json!({"type":"remove_member","user_id":viewer}))
+            .await
+            .unwrap();
+        assert_eq!(role_of(viewer).await, None);
+        assert!(matches!(
+            run(admin, json!({"type":"remove_member","user_id":owner})).await,
+            Err(Error::Forbidden)
+        ));
+        assert!(matches!(
+            run(owner, json!({"type":"remove_member","user_id":owner})).await,
+            Err(Error::Conflict(_))
+        ));
+
+        assert!(matches!(
+            run(admin, json!({"type":"transfer_ownership","user_id":admin})).await,
+            Err(Error::Forbidden)
+        ));
+        assert!(matches!(
+            run(owner, json!({"type":"transfer_ownership","user_id":owner})).await,
+            Err(Error::BadRequest(_))
+        ));
+        assert!(matches!(
+            run(
+                owner,
+                json!({"type":"transfer_ownership","user_id":outsider})
+            )
+            .await,
+            Err(Error::NotFound)
+        ));
+        run(owner, json!({"type":"transfer_ownership","user_id":admin}))
+            .await
+            .unwrap();
+        assert_eq!(role_of(admin).await.as_deref(), Some("owner"));
+        assert_eq!(role_of(owner).await.as_deref(), Some("admin"));
+
+        run(owner, json!({"type":"remove_member","user_id":owner}))
+            .await
+            .unwrap();
+        assert!(matches!(
+            run(admin, json!({"type":"remove_member","user_id":admin})).await,
             Err(Error::Conflict(_))
         ));
         store.pool.close().await;
