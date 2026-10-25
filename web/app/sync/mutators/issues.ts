@@ -244,7 +244,6 @@ function patchIssue(
   if (patch.team_id !== undefined && patch.team_id !== current.team_id)
     enterTeam(tx, current, next, patch.team_id);
   fitSprint(tx, next, next.stage_id !== current.stage_id);
-  // The server writes nothing for a patch that changes no field, not even updated_at.
   if (unchanged(current, next)) return;
   validateIssue(tx, next, current);
   if (next.stage_id !== current.stage_id) {
@@ -257,7 +256,6 @@ function patchIssue(
   tx.put("issues", next);
 }
 
-/** The fields `Issue::changed_fields` compares in `src/domain/issues.rs`. */
 function unchanged(current: DeepReadonly<SyncIssue>, next: SyncIssue): boolean {
   return (
     next.title === current.title &&
@@ -281,7 +279,6 @@ function sameIds(a: readonly string[], b: readonly string[]): boolean {
   return a.length === b.length && a.every((id, index) => id === b[index]);
 }
 
-/** The server compares parsed instants, so offsets and trailing zeros don't count as changes. */
 function sameInstant(a: string | null, b: string | null): boolean {
   if (a === null || b === null) return a === b;
   try {

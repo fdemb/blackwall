@@ -375,7 +375,6 @@ impl Command {
         }
     }
 
-    /// Issue edits that leave no activity when they change no field.
     pub(crate) fn is_issue_update(&self) -> bool {
         matches!(
             self,

@@ -596,10 +596,17 @@ async fn change_notifications_name_the_latest_actor_and_every_field_since_the_la
     f.cleanup().await;
 }
 
-/// Everything a write leaves behind: the issue's version and timestamp, sync changes, queued
-/// jobs such as webhooks and reminders, and activity.
-async fn trace(f: &Fixture, issue: Uuid) -> ((i64, DateTime<Utc>), i64, i64, usize) {
-    let row = sqlx::query_as("SELECT version,updated_at FROM issues WHERE id=$1")
+#[derive(Debug, PartialEq)]
+struct Trace {
+    version: i64,
+    updated_at: DateTime<Utc>,
+    changes: i64,
+    jobs: i64,
+    activity: usize,
+}
+
+async fn trace(f: &Fixture, issue: Uuid) -> Trace {
+    let (version, updated_at) = sqlx::query_as("SELECT version,updated_at FROM issues WHERE id=$1")
         .bind(issue)
         .fetch_one(&f.store.pool)
         .await
@@ -613,7 +620,13 @@ async fn trace(f: &Fixture, issue: Uuid) -> ((i64, DateTime<Utc>), i64, i64, usi
         .fetch_one(&f.store.pool)
         .await
         .unwrap();
-    (row, changes, jobs, f.activity(issue).await.len())
+    Trace {
+        version,
+        updated_at,
+        changes,
+        jobs,
+        activity: f.activity(issue).await.len(),
+    }
 }
 
 #[tokio::test]
@@ -695,7 +708,7 @@ async fn a_patch_that_changes_nothing_leaves_no_trace() {
                 id: issue,
                 patch: same,
             },
-            BTreeMap::from([(issue, before.0.0 - 1)]),
+            BTreeMap::from([(issue, before.version - 1)]),
             None,
             None,
         )

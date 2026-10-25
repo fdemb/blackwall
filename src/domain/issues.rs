@@ -397,7 +397,6 @@ fn set<T>(field: &mut T, value: Option<T>) {
     }
 }
 
-/// Stored relations are sets, so a reordered or repeated list is the same value.
 fn id_set(mut ids: Vec<Uuid>) -> Vec<Uuid> {
     ids.sort();
     ids.dedup();

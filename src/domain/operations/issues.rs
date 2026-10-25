@@ -264,7 +264,6 @@ impl Workspace {
         Ok(id)
     }
 
-    /// Returns the changed fields; a patch that changes none leaves the issue untouched.
     fn patch_issue(
         &mut self,
         id: Uuid,

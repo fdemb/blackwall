@@ -672,8 +672,6 @@ impl Operation<'_> {
         self.touch_locked(table, id, version).await
     }
 
-    /// Locks the row and checks the caller's version precondition without bumping the version,
-    /// for a write that may turn out to change nothing.
     pub async fn lock(&mut self, table: &str, id: Uuid) -> Result<i64> {
         if let Some(v) = self.versions.get(&(table.to_owned(), id)) {
             return Ok(*v);
@@ -745,7 +743,6 @@ impl Operation<'_> {
         Ok(version + 1)
     }
 
-    /// Absent preconditions mean last-writer-wins. A present one still conflicts on mismatch.
     fn check_expected(&self, id: Uuid, version: i64) -> Result<()> {
         match self.expected.get(&id) {
             Some(expected) if *expected != version => Err(Error::Stale(format!(
