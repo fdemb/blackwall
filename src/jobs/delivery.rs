@@ -7,7 +7,8 @@ use std::{
 };
 use uuid::Uuid;
 
-/// Work stored in the outbox. `kind` and the serialized payload are the persisted row format.
+/// Work stored in the outbox. `kind` and the serialized payload are the persisted row format,
+/// and the email payload is also what the development spool writes.
 #[derive(Clone, Debug)]
 pub enum Job {
     Email(Email),

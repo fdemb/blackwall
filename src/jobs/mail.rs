@@ -19,8 +19,8 @@ pub enum Mailer {
         from: Mailbox,
         public_url: Option<Url>,
     },
-    /// Writes each email's recipient, subject and body as JSON to a private directory instead
-    /// of sending it.
+    /// Writes each email as JSON to a private directory instead of sending it: the job payload for
+    /// invitations and resets, so scripts can read the token, and the rendered text for digests.
     Spool(PathBuf),
     /// Email jobs stay pending until mail is configured.
     Disabled,
@@ -136,9 +136,16 @@ impl Mailer {
 
                 Ok(())
             }
-            Self::Spool(directory) => spool(directory, id, &content.letter(None))
-                .await
-                .map_err(DeliveryError::Transient),
+            Self::Spool(directory) => {
+                let payload = match content {
+                    Content::Grant(email) => serde_json::to_vec(email),
+                    Content::Digest(_) => serde_json::to_vec(&content.letter(None)),
+                }
+                .map_err(|_| DeliveryError::Permanent("invalid email"))?;
+                spool(directory, id, &payload)
+                    .await
+                    .map_err(DeliveryError::Transient)
+            }
             Self::Disabled => Err(DeliveryError::Transient("email is not configured")),
         }
     }
@@ -351,7 +358,7 @@ fn digest_body(summary: &Summary, public_url: Option<&Url>) -> String {
     text
 }
 
-async fn spool(directory: &PathBuf, id: &str, letter: &Letter) -> Result<(), &'static str> {
+async fn spool(directory: &PathBuf, id: &str, payload: &[u8]) -> Result<(), &'static str> {
     use tokio::io::AsyncWriteExt;
 
     tokio::fs::create_dir_all(directory)
@@ -369,8 +376,7 @@ async fn spool(directory: &PathBuf, id: &str, letter: &Letter) -> Result<(), &'s
         .await
         .map_err(|_| "mail spool write failed")?;
 
-    let body = serde_json::to_vec(letter).map_err(|_| "invalid email")?;
-    file.write_all(&body)
+    file.write_all(payload)
         .await
         .map_err(|_| "mail spool write failed")?;
 
