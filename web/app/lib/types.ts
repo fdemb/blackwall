@@ -314,6 +314,13 @@ export interface Integration {
   webhook_url: string;
   enabled: boolean;
 }
+export interface SessionInfo {
+  id: Id;
+  created_at: string;
+  last_seen_at: string | null;
+  user_agent: string | null;
+  current: boolean;
+}
 /** A personal access token for /api/v1 and /mcp. The secret is only returned at creation. */
 export interface ApiToken {
   id: Id;

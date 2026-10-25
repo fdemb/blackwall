@@ -1,6 +1,7 @@
 import { safeGet, safeSet } from "./storage";
 import type {
   ApiToken,
+  SessionInfo,
   ImportSummary,
   Profile,
   Report,
@@ -87,6 +88,13 @@ export const auth = {
     }),
   editProfile: (profile: Omit<Profile, "id" | "email">) =>
     api<Profile>("/internal-api/me", { method: "PATCH", body: profile }),
+};
+
+export const sessions = {
+  list: () => api<SessionInfo[]>("/internal-api/me/sessions"),
+  revoke: (id: string) => api<null>(`/internal-api/me/sessions/${id}`, { method: "DELETE" }),
+  revokeOthers: () =>
+    api<{ revoked: number }>("/internal-api/me/sessions/revoke-others", { method: "POST" }),
 };
 
 export const tokens = {

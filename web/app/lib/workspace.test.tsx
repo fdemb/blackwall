@@ -13,6 +13,7 @@ import {
 import { QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import Members from "../routes/settings-members";
+import Security from "../routes/settings-security";
 import { Sidebar } from "../components/app/sidebar";
 import { AttachButton, useUploader } from "../components/app/issue-content";
 import { IssueBoard } from "../components/app/issue-board";
@@ -456,6 +457,44 @@ describe("online-only controls", () => {
       expectGated(members, "Role of Grace");
       expectGated(members, "Remove member: Grace");
       expectGated(attach, "Attach files");
+    },
+  );
+});
+
+describe("security settings", () => {
+  it.each([false, true])(
+    "lists sessions and offers sign-out for the other ones (online: %s)",
+    async (online) => {
+      const engine = await fixture({ online });
+      queryClient.setQueryData(
+        ["sessions"],
+        [
+          {
+            id: "here",
+            created_at: NOW,
+            last_seen_at: NOW,
+            user_agent: "Mozilla/5.0 (X11; Linux x86_64; rv:139.0) Gecko/20100101 Firefox/139.0",
+            current: true,
+          },
+          {
+            id: "phone",
+            created_at: NOW,
+            last_seen_at: null,
+            user_agent: null,
+            current: false,
+          },
+        ],
+      );
+      const router = createMemoryRouter([{ path: "/", Component: Security }]);
+      const html = render(engine, <RouterProvider router={router} />);
+      expect(html).toContain("Firefox on Linux");
+      expect(html).toContain("This browser");
+      expect(html).toContain("Unknown device");
+      expect(buttonTags(html, "Sign out: Firefox on Linux")).toHaveLength(0);
+      const revoke = buttonTags(html, "Sign out: Unknown device");
+      expect(revoke).toHaveLength(1);
+      expect(/ disabled=""/.test(revoke[0])).toBe(!online);
+      expect(buttonTags(html, "Sign out other sessions")).toHaveLength(1);
     },
   );
 });

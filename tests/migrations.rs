@@ -178,3 +178,63 @@ async fn change_notifications_take_the_coalescing_key_and_release_it_on_read() {
     conn.close().await.unwrap();
     database.cleanup().await;
 }
+
+#[tokio::test]
+async fn session_metadata_dates_existing_sessions_and_accepts_old_inserts() {
+    let database = support::TestDatabase::new().await;
+    let mut conn = PgConnection::connect(&database.url).await.unwrap();
+    migrate_before(&mut conn, "0036").await;
+
+    let user = Uuid::from_u128(1);
+    sqlx::query(
+        "INSERT INTO users(id,email,password_hash,profile) VALUES($1,'s@example.com','x','{}')",
+    )
+    .bind(user)
+    .execute(&mut conn)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO sessions(token_hash,user_id,expires_at) \
+         VALUES('old',$1,'2026-11-01T00:00:00Z')",
+    )
+    .bind(user)
+    .execute(&mut conn)
+    .await
+    .unwrap();
+
+    sqlx::raw_sql(include_str!("../migrations/0036_session_metadata.sql"))
+        .execute(&mut conn)
+        .await
+        .unwrap();
+
+    sqlx::query(
+        "INSERT INTO sessions(token_hash,user_id,public_id,expires_at) \
+         VALUES('new',$1,gen_random_uuid(),now()+interval '30 days')",
+    )
+    .bind(user)
+    .execute(&mut conn)
+    .await
+    .unwrap();
+
+    let old: (String, bool, bool) = sqlx::query_as(
+        "SELECT to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD'), \
+         last_seen_at IS NULL, user_agent IS NULL FROM sessions WHERE token_hash='old'",
+    )
+    .fetch_one(&mut conn)
+    .await
+    .unwrap();
+    assert_eq!(old, ("2026-10-02".into(), true, true));
+    let fresh: bool = sqlx::query_scalar(
+        "SELECT created_at > now() - interval '1 minute' FROM sessions WHERE token_hash='new'",
+    )
+    .fetch_one(&mut conn)
+    .await
+    .unwrap();
+    assert!(
+        fresh,
+        "an old-binary insert gets its sign-in time from the default"
+    );
+
+    conn.close().await.unwrap();
+    database.cleanup().await;
+}

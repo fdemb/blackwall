@@ -7,7 +7,7 @@ use argon2::{
     Argon2, PasswordHash, PasswordHasher, PasswordVerifier,
     password_hash::{SaltString, rand_core::OsRng},
 };
-use chrono::{Duration, Utc};
+use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sqlx::{Row, types::Json};
@@ -81,6 +81,22 @@ pub struct Session {
     pub profile: Profile,
 }
 
+/// A signed-in browser or client, as security settings list it.
+#[derive(Serialize, utoipa::ToSchema)]
+pub struct SessionInfo {
+    pub id: Uuid,
+    pub created_at: DateTime<Utc>,
+    pub last_seen_at: Option<DateTime<Utc>>,
+    pub user_agent: Option<String>,
+    /// The session making this request.
+    pub current: bool,
+}
+
+#[derive(Serialize, utoipa::ToSchema)]
+pub struct RevokedSessions {
+    pub revoked: u64,
+}
+
 #[derive(Deserialize, utoipa::ToSchema)]
 pub struct ProfileEdit {
     pub display_name: String,
@@ -123,6 +139,8 @@ pub fn csrf(value: &str) -> String {
 /// How long a login session lives. Sync clients idle longer than this are
 /// pruned, since their replica's session expired first.
 pub const SESSION_LIFETIME_DAYS: i64 = 30;
+
+const MAX_USER_AGENT_BYTES: usize = 512;
 
 fn email(value: &str) -> Result<String> {
     let value = value.trim().to_lowercase();
@@ -260,14 +278,32 @@ impl Store {
             .await
     }
 
-    pub async fn authenticate(&self, token: &str) -> Result<(Profile, Uuid)> {
+    /// Resolves a session token, and records when and from which client the
+    /// session was last used, at most once a minute.
+    pub async fn authenticate(
+        &self,
+        token: &str,
+        user_agent: Option<&str>,
+    ) -> Result<(Profile, Uuid)> {
+        let user_agent = user_agent.map(|agent| {
+            let mut end = agent.len().min(MAX_USER_AGENT_BYTES);
+            while !agent.is_char_boundary(end) {
+                end -= 1;
+            }
+            &agent[..end]
+        });
         let row = sqlx::query(
-            "SELECT users.profile, sessions.public_id FROM sessions \
+            "WITH touch AS (\
+               UPDATE sessions SET last_seen_at = $2, user_agent = coalesce($3, user_agent) \
+               WHERE token_hash = $1 AND expires_at > $2 \
+                 AND (last_seen_at IS NULL OR last_seen_at < $2 - interval '1 minute')) \
+             SELECT users.profile, sessions.public_id FROM sessions \
               JOIN users ON users.id = sessions.user_id \
               WHERE token_hash = $1 AND expires_at > $2",
         )
         .bind(hash(token))
         .bind(Utc::now())
+        .bind(user_agent)
         .fetch_optional(&self.pool)
         .await?
         .ok_or(Error::Unauthorized)?;
@@ -329,7 +365,61 @@ impl Store {
         Ok(())
     }
 
-    pub async fn change_password(&self, user: Uuid, input: PasswordChange) -> Result<()> {
+    pub async fn sessions(&self, user: Uuid, current: Uuid) -> Result<Vec<SessionInfo>> {
+        sqlx::query(
+            "SELECT public_id, created_at, last_seen_at, user_agent FROM sessions \
+             WHERE user_id = $1 AND expires_at > now() \
+             ORDER BY coalesce(last_seen_at, created_at) DESC, public_id",
+        )
+        .bind(user)
+        .fetch_all(&self.pool)
+        .await?
+        .iter()
+        .map(|row| {
+            let id: Uuid = row.try_get("public_id")?;
+            Ok(SessionInfo {
+                id,
+                created_at: row.try_get("created_at")?,
+                last_seen_at: row.try_get("last_seen_at")?,
+                user_agent: row.try_get("user_agent")?,
+                current: id == current,
+            })
+        })
+        .collect()
+    }
+
+    pub async fn revoke_session(&self, user: Uuid, id: Uuid) -> Result<()> {
+        let deleted = sqlx::query("DELETE FROM sessions WHERE user_id = $1 AND public_id = $2")
+            .bind(user)
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        if deleted.rows_affected() == 0 {
+            return Err(Error::NotFound);
+        }
+
+        Ok(())
+    }
+
+    pub async fn revoke_other_sessions(&self, user: Uuid, current: Uuid) -> Result<u64> {
+        Ok(
+            sqlx::query("DELETE FROM sessions WHERE user_id = $1 AND public_id <> $2")
+                .bind(user)
+                .bind(current)
+                .execute(&self.pool)
+                .await?
+                .rows_affected(),
+        )
+    }
+
+    /// Changes the password and signs out every other session. The session
+    /// that made the change stays signed in.
+    pub async fn change_password(
+        &self,
+        user: Uuid,
+        current_session: Uuid,
+        input: PasswordChange,
+    ) -> Result<()> {
         let row = sqlx::query("SELECT password_hash FROM users WHERE id = $1")
             .bind(user)
             .fetch_one(&self.pool)
@@ -355,8 +445,9 @@ impl Store {
             return Err(Error::Conflict("password changed concurrently".into()));
         }
 
-        sqlx::query("DELETE FROM sessions WHERE user_id = $1")
+        sqlx::query("DELETE FROM sessions WHERE user_id = $1 AND public_id <> $2")
             .bind(user)
+            .bind(current_session)
             .execute(&mut *tx)
             .await?;
 

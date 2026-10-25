@@ -1013,7 +1013,7 @@ async fn complete_contract_on_postgres() {
         .await
         .unwrap();
 
-    assert!(store.authenticate(&owner.token).await.is_err());
+    assert!(store.authenticate(&owner.token, None).await.is_err());
     assert!(
         store
             .reset_password(blackwall::auth::ResetPassword {
@@ -1108,7 +1108,7 @@ async fn native_identity_and_atomic_password_recovery() {
 
     assert_eq!(
         store
-            .authenticate(&session.token)
+            .authenticate(&session.token, None)
             .await
             .unwrap()
             .0
@@ -1197,8 +1197,8 @@ async fn native_identity_and_atomic_password_recovery() {
     );
 
     assert_ne!(first.is_ok(), second_reset.is_ok());
-    assert!(store.authenticate(&session.token).await.is_err());
-    assert!(store.authenticate(&second.token).await.is_err());
+    assert!(store.authenticate(&session.token, None).await.is_err());
+    assert!(store.authenticate(&second.token, None).await.is_err());
     let recovered = store
         .login(Login {
             email: session.profile.email.clone(),
@@ -1214,9 +1214,18 @@ async fn native_identity_and_atomic_password_recovery() {
         .await
         .unwrap();
 
+    let elsewhere = store
+        .login(Login {
+            email: session.profile.email.clone(),
+            password: "recovered-password-123".into(),
+        })
+        .await
+        .unwrap();
+
     store
         .change_password(
             session.profile.id,
+            recovered.session_id,
             PasswordChange {
                 current_password: "recovered-password-123".into(),
                 new_password: "changed-password-123".into(),
@@ -1225,7 +1234,8 @@ async fn native_identity_and_atomic_password_recovery() {
         .await
         .unwrap();
 
-    assert!(store.authenticate(&recovered.token).await.is_err());
+    assert!(store.authenticate(&recovered.token, None).await.is_ok());
+    assert!(store.authenticate(&elsewhere.token, None).await.is_err());
     assert_eq!(
         sqlx::query_scalar::<_, i64>("SELECT count(*) FROM password_resets WHERE user_id=$1")
             .bind(session.profile.id)
@@ -1289,7 +1299,12 @@ async fn native_identity_and_atomic_password_recovery() {
     .await
     .unwrap();
 
-    assert!(store.authenticate(&final_session.token).await.is_err());
+    assert!(
+        store
+            .authenticate(&final_session.token, None)
+            .await
+            .is_err()
+    );
     store
         .request_reset(ResetRequest {
             email: session.profile.email,
@@ -1710,6 +1725,138 @@ async fn members_manage_other_followers_but_viewers_cannot_on_postgres() {
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "{value}");
+
+    store.pool.close().await;
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn sessions_list_revoke_and_survive_password_change() {
+    use blackwall::auth::Login;
+
+    let database = support::TestDatabase::new().await;
+    let store = Store::connect(&database.url).await.unwrap();
+    let app = blackwall::http::router(store.clone());
+    let laptop = account(&store, "sessions").await;
+    let login = || {
+        store.login(Login {
+            email: laptop.profile.email.clone(),
+            password: "test-password-123".into(),
+        })
+    };
+    let phone = login().await.unwrap();
+    let tablet = login().await.unwrap();
+    let stranger = account(&store, "stranger").await;
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::get("/internal-api/me")
+                .header("Authorization", format!("Bearer {}", phone.token))
+                .header(
+                    "User-Agent",
+                    "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X)",
+                )
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let (status, list) = call(
+        &app,
+        "GET",
+        "/internal-api/me/sessions",
+        Some(&laptop.token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{list}");
+    let list = list.as_array().unwrap();
+    assert_eq!(list.len(), 3, "the stranger's session stays out: {list:?}");
+    let entry = |id: Uuid| {
+        list.iter()
+            .find(|s| s["id"] == json!(id))
+            .unwrap_or_else(|| panic!("{id} listed"))
+    };
+    assert_eq!(entry(laptop.session_id)["current"], true);
+    assert_eq!(entry(phone.session_id)["current"], false);
+    assert_eq!(
+        entry(phone.session_id)["user_agent"],
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X)"
+    );
+    assert!(entry(phone.session_id)["last_seen_at"].is_string());
+    assert!(entry(tablet.session_id)["last_seen_at"].is_null());
+
+    let (status, _) = call(
+        &app,
+        "DELETE",
+        &format!("/internal-api/me/sessions/{}", stranger.session_id),
+        Some(&laptop.token),
+        None,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "another user's session is not revocable"
+    );
+    assert!(store.authenticate(&stranger.token, None).await.is_ok());
+
+    let (status, _) = call(
+        &app,
+        "DELETE",
+        &format!("/internal-api/me/sessions/{}", phone.session_id),
+        Some(&laptop.token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert!(store.authenticate(&phone.token, None).await.is_err());
+
+    let (status, revoked) = call(
+        &app,
+        "POST",
+        "/internal-api/me/sessions/revoke-others",
+        Some(&laptop.token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{revoked}");
+    assert_eq!(revoked["revoked"], 1);
+    assert!(store.authenticate(&tablet.token, None).await.is_err());
+    assert!(store.authenticate(&laptop.token, None).await.is_ok());
+
+    let desktop = login().await.unwrap();
+    let (status, value) = call(
+        &app,
+        "POST",
+        "/internal-api/auth/password",
+        Some(&laptop.token),
+        Some(json!({
+            "current_password": "test-password-123",
+            "new_password": "changed-password-123"
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{value}");
+    assert!(store.authenticate(&desktop.token, None).await.is_err());
+    let (status, list) = call(
+        &app,
+        "GET",
+        "/internal-api/me/sessions",
+        Some(&laptop.token),
+        None,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "the session that changed the password stays signed in"
+    );
+    assert_eq!(list.as_array().unwrap().len(), 1, "{list}");
+    assert!(store.authenticate(&stranger.token, None).await.is_ok());
 
     store.pool.close().await;
     database.cleanup().await;

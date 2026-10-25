@@ -69,7 +69,11 @@ impl FromRequestParts<Store> for Actor {
             }
         }
 
-        let (profile, session_id) = store.authenticate(token).await?;
+        let user_agent = parts
+            .headers
+            .get(header::USER_AGENT)
+            .and_then(|h| h.to_str().ok());
+        let (profile, session_id) = store.authenticate(token, user_agent).await?;
         Ok(Self {
             profile,
             session_id,
@@ -219,6 +223,15 @@ pub fn router_with_web(store: Store, web_dir: std::path::PathBuf) -> Router {
         .route("/internal-api/auth/reset-request", post(reset_request))
         .route("/internal-api/auth/reset", post(reset_password))
         .route("/internal-api/me", get(me).patch(edit_profile))
+        .route("/internal-api/me/sessions", get(sessions))
+        .route(
+            "/internal-api/me/sessions/revoke-others",
+            post(revoke_other_sessions),
+        )
+        .route(
+            "/internal-api/me/sessions/{session}",
+            axum::routing::delete(revoke_session),
+        )
         .route(
             "/internal-api/me/tokens",
             get(crate::api::tokens::list).post(crate::api::tokens::create),
@@ -517,9 +530,55 @@ async fn change_password(
     actor: Actor,
     Json(input): Json<PasswordChange>,
 ) -> Result<StatusCode> {
-    store.change_password(actor.profile.id, input).await?;
+    store
+        .change_password(actor.profile.id, actor.session_id, input)
+        .await?;
 
     Ok(StatusCode::NO_CONTENT)
+}
+
+#[utoipa::path(
+    get,
+    path = "/internal-api/me/sessions",
+    responses((status = 200, body = Vec<SessionInfo>))
+)]
+async fn sessions(State(store): State<Store>, actor: Actor) -> Result<Json<Vec<SessionInfo>>> {
+    Ok(Json(
+        store.sessions(actor.profile.id, actor.session_id).await?,
+    ))
+}
+
+#[utoipa::path(
+    delete,
+    path = "/internal-api/me/sessions/{session}",
+    params(("session" = Uuid, Path)),
+    responses((status = 204), (status = 404, body = crate::error::ErrorBody))
+)]
+async fn revoke_session(
+    State(store): State<Store>,
+    actor: Actor,
+    Path(id): Path<Uuid>,
+) -> Result<StatusCode> {
+    store.revoke_session(actor.profile.id, id).await?;
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Signs out every session of the user except the one making the request.
+#[utoipa::path(
+    post,
+    path = "/internal-api/me/sessions/revoke-others",
+    responses((status = 200, body = RevokedSessions))
+)]
+async fn revoke_other_sessions(
+    State(store): State<Store>,
+    actor: Actor,
+) -> Result<Json<RevokedSessions>> {
+    Ok(Json(RevokedSessions {
+        revoked: store
+            .revoke_other_sessions(actor.profile.id, actor.session_id)
+            .await?,
+    }))
 }
 
 #[utoipa::path(
@@ -869,6 +928,9 @@ async fn markdown(
         me,
         edit_profile,
         change_password,
+        sessions,
+        revoke_session,
+        revoke_other_sessions,
         reset_request,
         reset_password,
         workspaces,
