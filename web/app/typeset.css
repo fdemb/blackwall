@@ -256,6 +256,16 @@
       color: var(--typeset-muted);
     }
 
+    /* Mentions. */
+    &:where(.mention) {
+      color: var(--color-primary, inherit);
+      font-weight: 500;
+      background-color: color-mix(in oklab, currentColor 10%, transparent);
+      border-radius: 0.25em;
+      padding: 0 0.2em;
+      white-space: nowrap;
+    }
+
     /* Inline code. */
     &:where(:not(pre) > code) {
       background-color: var(--color-muted, color-mix(in oklab, currentColor 8%, transparent));

@@ -1,3 +1,4 @@
+import { newMentions } from "../../lib/mentions";
 import type { AlertKind, Profile } from "../../lib/types";
 import { object } from "./commands";
 import { Tables } from "./tables";
@@ -93,7 +94,7 @@ function stampRecords(context: ServerEffects): void {
       const childChanged =
         (entity === "members" && ["create_team", "set_team_members"].includes(name)) ||
         (entity === "teams" && ["create_stage", "update_stage", "delete_stage"].includes(name)) ||
-        (entity === "issues" && ["update_stage", "add_comment"].includes(name));
+        (entity === "issues" && ["update_stage", "add_comment", "edit_comment"].includes(name));
       const version = before && "version" in before ? before.version + (childChanged ? 0 : 1) : 1;
       tx.put(entity, { ...row, version });
     }
@@ -118,7 +119,9 @@ function stampIssue(context: ServerEffects, key: string): void {
       : {}),
     updated_at:
       (name === "move_issue" && key !== id) ||
-      ["follow", "add_source_link", "remove_attachment", "add_comment"].includes(name)
+      ["follow", "add_source_link", "remove_attachment", "add_comment", "edit_comment"].includes(
+        name,
+      )
         ? issue.updated_at
         : context.now(),
   });
@@ -130,9 +133,13 @@ function stampIssue(context: ServerEffects, key: string): void {
     issue.assignee !== oldIssue?.assignee
   )
     notify(context, tx, issue.assignee, issue.id, "assignment", issue.title);
-  if (name === "update_issue" || (name === "bulk_issues" && object(args.action)))
+  const updated = name === "update_issue" || (name === "bulk_issues" && object(args.action));
+  if (updated)
     for (const follower of oldIssue?.followers ?? issue.followers)
       if (follower !== actor) notify(context, tx, follower, issue.id, "change", issue.title);
+  if (updated || name === "create_issue")
+    for (const user of newMentions(issue.description, oldIssue?.description ?? ""))
+      if (user !== actor) notify(context, tx, user, issue.id, "mention", issue.title);
 }
 
 function stampTeam(context: ServerEffects, key: string): void {
@@ -176,6 +183,7 @@ function placeMovedIssueLast({ tx, name, args, id }: ServerEffects): void {
 
 function notifyCommentReaders(context: ServerEffects): void {
   const { tx, actor, name, id } = context;
+  if (name === "edit_comment" && id) notifyNewlyMentioned(context, id);
   if (name !== "add_comment" || !id) return;
   const comment = tx.get("comments", id);
   const issue = comment ? tx.get("issues", comment.issue_id) : undefined;
@@ -187,6 +195,24 @@ function notifyCommentReaders(context: ServerEffects): void {
   for (const mention of comment.mentions)
     if (mention !== actor)
       notify(context, tx, mention, issue.id, "mention", comment.body, `mention:${id}:${mention}`);
+}
+
+function notifyNewlyMentioned(context: ServerEffects, id: string): void {
+  const { tx, actor } = context;
+  const comment = tx.get("comments", id);
+  const old = context.before.get("comments", id);
+  if (!comment || !old) return;
+  for (const mention of comment.mentions)
+    if (mention !== actor && !old.mentions.includes(mention))
+      notify(
+        context,
+        tx,
+        mention,
+        comment.issue_id,
+        "mention",
+        comment.body,
+        `mention:${id}:${mention}`,
+      );
 }
 
 function recordCompletions(context: ServerEffects): void {

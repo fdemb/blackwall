@@ -3,6 +3,7 @@ use super::initial_version;
 use crate::error::Result;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 use utoipa::ToSchema;
 use uuid::Uuid;
 
@@ -136,7 +137,43 @@ pub(crate) enum SprintFit {
     Plan,
 }
 
+/// The link scheme a mention uses in markdown: `[@Name](mention:<user id>)`.
+pub const MENTION_SCHEME: &str = "mention:";
+
+/// The markdown dialect descriptions and comments are rendered with.
+pub const MARKDOWN_OPTIONS: pulldown_cmark::Options =
+    pulldown_cmark::Options::ENABLE_TABLES.union(pulldown_cmark::Options::ENABLE_STRIKETHROUGH);
+
+/// Users mentioned in `markdown`, by the id in each mention link.
+pub fn mentioned_users(markdown: &str) -> BTreeSet<Uuid> {
+    use pulldown_cmark::{Event, Parser, Tag};
+    if !markdown.contains(MENTION_SCHEME) {
+        return BTreeSet::new();
+    }
+    Parser::new_ext(markdown, MARKDOWN_OPTIONS)
+        .filter_map(|event| match event {
+            Event::Start(Tag::Link { dest_url, .. }) => {
+                let id = dest_url.strip_prefix(MENTION_SCHEME)?;
+                (id.len() == 36).then(|| Uuid::try_parse(id).ok())?
+            }
+            _ => None,
+        })
+        .collect()
+}
+
 impl Issue {
+    pub(crate) fn new_mentions(&self, before: Option<&Issue>) -> Vec<Uuid> {
+        let old = match before {
+            Some(old) if old.description == self.description => return vec![],
+            Some(old) => mentioned_users(&old.description),
+            None => BTreeSet::new(),
+        };
+        mentioned_users(&self.description)
+            .difference(&old)
+            .copied()
+            .collect()
+    }
+
     /// Subscribes `user`; repeat calls change nothing.
     pub(crate) fn follow(&mut self, user: Uuid) {
         if !self.followers.contains(&user) {
@@ -339,5 +376,19 @@ fn set_or_clear<T>(field: &mut Option<T>, value: Option<T>, clear: bool) {
         *field = None;
     } else if value.is_some() {
         *field = value;
+    }
+}
+
+#[cfg(test)]
+mod mention_tests {
+    use super::*;
+
+    #[test]
+    fn mentions_come_from_links_only() {
+        let (ana, bo) = (Uuid::new_v4(), Uuid::new_v4());
+        let text = format!(
+            "Ask [@Ana](mention:{ana}).\n\n`[@Bo](mention:{bo})` \\[@Bo](mention:{bo})\n\n```\n[@Bo](mention:{bo})\n```\n\n    [@Bo](mention:{bo})\n\n| who |\n| --- |\n| [@Ana](mention:{ana}) |\n"
+        );
+        assert_eq!(mentioned_users(&text), BTreeSet::from([ana]));
     }
 }

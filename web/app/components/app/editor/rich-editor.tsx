@@ -212,12 +212,14 @@ class Callbacks {
   }
 }
 
-/** Mentions stay plain `@Name` text, which is what comments already store and notify on. */
 function insertMention(editor: Editor, range: Range, item: unknown) {
   const m = item as MemberProfile;
   editor
     .chain()
     .focus()
-    .insertContentAt(range, [{ type: "text", text: `@${m.display_name} ` }])
+    .insertContentAt(range, [
+      { type: "mention", attrs: { id: m.id, label: m.display_name } },
+      { type: "text", text: " " },
+    ])
     .run();
 }

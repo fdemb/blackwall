@@ -337,6 +337,7 @@ impl Operation<'_> {
         self.created("issues", id);
         self.issue_effects(None, &i, persistence::IssueEffects::Create)
             .await?;
+        self.mention(None, &i).await?;
 
         Ok(id)
     }
@@ -386,7 +387,35 @@ impl Operation<'_> {
         {
             self.add_follower(id, user).await?;
         }
+        self.mention(Some(&old), &i).await
+    }
 
+    async fn mention(&mut self, before: Option<&Issue>, after: &Issue) -> Result<()> {
+        let mentioned = after.new_mentions(before);
+        if mentioned.is_empty() {
+            return Ok(());
+        }
+        let members: Vec<Uuid> = sqlx::query_scalar(
+            "SELECT user_id FROM workspace_members WHERE workspace_id=$1 AND \
+            user_id=ANY($2) ORDER BY user_id",
+        )
+        .bind(self.workspace_id)
+        .bind(&mentioned)
+        .fetch_all(&mut *self.tx)
+        .await?;
+        for user in members {
+            if user != self.actor {
+                self.notify(
+                    user,
+                    Some(after.id),
+                    AlertKind::Mention,
+                    after.title.clone(),
+                    format!("mention:{}:{user}:{}", after.id, Uuid::new_v4()),
+                )
+                .await?;
+            }
+            self.add_follower(after.id, user).await?;
+        }
         Ok(())
     }
 

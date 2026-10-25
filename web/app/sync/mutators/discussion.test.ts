@@ -8,6 +8,7 @@ import {
   ADMIN,
   AT,
   COMMENT_ONE,
+  COMMENT_OTHER_ISSUE,
   COMMENT_TWO,
   GHOST,
   MEMBER,
@@ -327,6 +328,12 @@ describe("edit_comment", () => {
       mentions: [MEMBER],
       edited_at: AT,
     });
+  });
+
+  it("makes newly mentioned members followers", () => {
+    const store = seedStore(OWNER);
+    mutate(store, "edit_comment", { id: COMMENT_OTHER_ISSUE, body: "cc", mentions: [ADMIN] });
+    expect(store.get("issues", "issue-2")?.followers).toEqual([ADMIN]);
   });
 
   it("is idempotent", () => {

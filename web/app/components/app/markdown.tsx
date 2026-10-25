@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react";
 import { markdown } from "~/lib/api";
 import { cn } from "~/lib/utils";
-import type { Id } from "~/lib/types";
 
 const CACHE_LIMIT = 100;
 const cache = new Map<string, string>();
@@ -77,8 +76,4 @@ function useRenderedMarkdown(text: string): string | null {
     };
   }, [key, cached]);
   return cached ?? (fetched.key === key ? fetched.html : null);
-}
-
-export function mentionsIn(text: string, members: { id: Id; display_name: string }[]) {
-  return members.filter((m) => text.includes(`@${m.display_name}`)).map((m) => m.id);
 }

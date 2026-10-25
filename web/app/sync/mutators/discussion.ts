@@ -128,6 +128,10 @@ export const editComment: Mutator<ArgsOf<"edit_comment">> = (tx, args, ctx) => {
   requireAuthorOrAdmin(tx, ctx.actor, comment.author);
   const mentions = dedupeSortUuids(args.mentions);
   for (const user of mentions) requireMember(tx, user);
+  const added = mentions.filter((user) => !comment.mentions.includes(user));
+  const issue = tx.get("issues", comment.issue_id);
+  if (issue && added.some((user) => !issue.followers.includes(user)))
+    tx.put("issues", { ...issue, followers: dedupeSortUuids([...issue.followers, ...added]) });
   tx.put("comments", { ...comment, body: args.body, mentions, edited_at: ctx.at });
 };
 

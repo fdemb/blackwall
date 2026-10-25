@@ -18,6 +18,7 @@ import {
 } from "lucide-react";
 import type { Key } from "~/lib/i18n";
 import { markdownCodec } from "./markdown-codec";
+import { Mention } from "./mention";
 
 /** The document schema. Everything here has a markdown form the backend renders. */
 export const contentExtensions = [
@@ -33,6 +34,7 @@ export const contentExtensions = [
     },
   }),
   TableKit.configure({ table: { resizable: false } }),
+  Mention,
 ];
 
 export const codec = markdownCodec(contentExtensions);

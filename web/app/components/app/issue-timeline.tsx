@@ -31,7 +31,8 @@ import { Avatar } from "~/components/ui/avatar";
 import { Button } from "~/components/ui/button";
 import { ConfirmDialog } from "~/components/app/confirm";
 import { useToast } from "~/components/ui/toast";
-import { Markdown, mentionsIn } from "~/components/app/markdown";
+import { Markdown } from "~/components/app/markdown";
+import { mentionedUsers } from "~/lib/mentions";
 import { MarkdownEditor } from "~/components/app/editor/rich-editor";
 import { formatMinutes, MAX_UPLOAD, relativeTime } from "~/lib/format";
 import { useI18n, isTranslationKey, type Key } from "~/lib/i18n";
@@ -210,7 +211,7 @@ function EventItem({ event, entries }: { event: Activity; entries: Map<Id, TimeE
 
 function CommentItem({ comment: c }: { comment: Comment }) {
   const { t, lang } = useI18n();
-  const { ws, me, members, member, run, canAdmin } = useWorkspace();
+  const { ws, me, member, run, canAdmin } = useWorkspace();
   const editVersion = useRef(c.version);
   const retryEdit = useRef(false);
   const [editBody, setEditBody] = useState<string | null>(null);
@@ -227,7 +228,7 @@ function CommentItem({ comment: c }: { comment: Comment }) {
         type: "edit_comment",
         id: c.id,
         body: editBody.trim(),
-        mentions: mentionsIn(editBody, members),
+        mentions: mentionedUsers(editBody),
       },
       { expectedVersions: { [c.id]: retryEdit.current ? c.version : editVersion.current } },
     )
@@ -369,7 +370,7 @@ function CommentItem({ comment: c }: { comment: Comment }) {
 
 function Composer({ issue, hasItems }: { issue: Issue; hasItems: boolean }) {
   const { t } = useI18n();
-  const { members, run, upload, canWrite, offline } = useWorkspace();
+  const { run, upload, canWrite, offline } = useWorkspace();
   const toast = useToast();
   const [body, setBody] = useState("");
   const [files, setFiles] = useState<File[]>([]);
@@ -405,7 +406,7 @@ function Composer({ issue, hasItems }: { issue: Issue; hasItems: boolean }) {
           type: "add_comment",
           issue_id: issue.id,
           body: body.trim(),
-          mentions: mentionsIn(body, members),
+          mentions: mentionedUsers(body),
           attachments: [],
         },
         { quiet: true },

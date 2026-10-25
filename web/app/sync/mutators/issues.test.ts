@@ -102,6 +102,18 @@ function twice(name: string, args: unknown, actor: Id = MEMBER): void {
 }
 
 describe("create_issue", () => {
+  it("makes members the description mentions followers", () => {
+    const store = seedStore();
+    const input = {
+      id: "issue-new",
+      title: "New",
+      team_id: TEAM,
+      description: `cc [@Admin](mention:${ADMIN})`,
+    };
+    mutate(store, "create_issue", { input });
+    expect(live(store, "issue-new").followers).toEqual([ADMIN, MEMBER]);
+  });
+
   it("creates with defaults and the actor as follower", () => {
     const store = seedStore();
     mutate(store, "create_issue", { input: { id: "issue-new", title: "New", team_id: TEAM } });
@@ -359,6 +371,16 @@ describe("create_issue", () => {
 });
 
 describe("update_issue", () => {
+  it("makes members the description newly mentions followers", () => {
+    const store = seedStore();
+    const text = `Ask [@Someone](mention:${ADMIN}) and [@Gone](mention:${GHOST})`;
+    mutate(store, "update_issue", { id: "issue-2", patch: { description: text } });
+    expect(live(store, "issue-2").followers).toEqual([ADMIN]);
+    mutate(store, "follow", { issue_id: "issue-2", user_id: ADMIN, following: false });
+    mutate(store, "update_issue", { id: "issue-2", patch: { description: `${text}, soon` } });
+    expect(live(store, "issue-2").followers).toEqual([]);
+  });
+
   it("makes a new assignee a follower and keeps them after unassigning", () => {
     const store = seedStore();
     mutate(store, "update_issue", { id: "issue-2", patch: { assignee: ADMIN } });

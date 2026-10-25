@@ -423,16 +423,37 @@ impl Operation<'_> {
         sqlx::query("UPDATE comments SET body=$3,edited_at=$4 WHERE workspace_id=$1 AND id=$2")
             .bind(self.workspace_id)
             .bind(id)
-            .bind(body)
+            .bind(&body)
             .bind(Utc::now())
             .execute(&mut *self.tx)
             .await?;
-        sqlx::query("DELETE FROM comment_mentions WHERE workspace_id=$1 AND comment_id=$2")
-            .bind(self.workspace_id)
-            .bind(id)
-            .execute(&mut *self.tx)
-            .await?;
-        self.insert_mentions(id, &mentions).await
+        let old: BTreeSet<Uuid> = sqlx::query_scalar(
+            "DELETE FROM comment_mentions WHERE workspace_id=$1 AND comment_id=$2 \
+            RETURNING user_id",
+        )
+        .bind(self.workspace_id)
+        .bind(id)
+        .fetch_all(&mut *self.tx)
+        .await?
+        .into_iter()
+        .collect();
+        self.insert_mentions(id, &mentions).await?;
+
+        let issue_id: Uuid = row.try_get("issue_id")?;
+        for user in mentions.difference(&old).copied() {
+            if user != self.actor {
+                self.notify(
+                    user,
+                    Some(issue_id),
+                    AlertKind::Mention,
+                    body.clone(),
+                    format!("mention:{id}:{user}"),
+                )
+                .await?;
+            }
+            self.add_follower(issue_id, user).await?;
+        }
+        Ok(())
     }
 
     async fn log_time(

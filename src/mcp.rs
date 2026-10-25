@@ -502,7 +502,10 @@ fn issue_fields() -> Value {
         |description: &str| json!({ "type": ["string", "null"], "description": description });
     json!({
         "title": { "type": "string" },
-        "description": { "type": "string", "description": "Markdown." },
+        "description": {
+            "type": "string",
+            "description": "Markdown. [@Name](mention:<user UUID>) alerts that person and makes them a follower."
+        },
         "stage": { "type": "string", "description": "Stage name in the issue's team, or its UUID." },
         "assignee": reference("Email, display name, \"me\" or user UUID."),
         "priority": { "type": "string", "enum": ["none", "low", "normal", "high", "urgent"] },

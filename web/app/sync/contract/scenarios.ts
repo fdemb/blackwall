@@ -206,6 +206,7 @@ export const scenarios = {
       id: f.peer,
       patch: {
         title: "Changed",
+        description: `cc [@Member](mention:${f.member.id})`,
         priority: "urgent",
         clear_parent: true,
         dependencies: [f.issue],
@@ -222,7 +223,9 @@ export const scenarios = {
     command: (f) => ({
       type: "bulk_issues",
       ids: [f.issue, f.peer, f.issue],
-      action: { update: { description: "Bulk", priority: "high" } },
+      action: {
+        update: { description: `Bulk \`[@Member](mention:${f.member.id})\``, priority: "high" },
+      },
     }),
   },
   delete_issue: { command: (f) => ({ type: "delete_issue", id: f.peer }) },

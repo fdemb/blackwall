@@ -53,8 +53,31 @@ impl Workspace {
                 for user in &mentions {
                     self.member(*user)?;
                 }
-                let author = find(&self.comments, |c| c.id == id)?.author;
-                self.author_or_admin(actor, author)?;
+                let comment = find(&self.comments, |c| c.id == id)?;
+                self.author_or_admin(actor, comment.author)?;
+                let issue_id = comment.issue_id;
+                let added: Vec<Uuid> = mentions
+                    .iter()
+                    .copied()
+                    .filter(|user| !comment.mentions.contains(user))
+                    .collect();
+                for user in &added {
+                    if *user != actor {
+                        let key = format!("mention:{id}:{user}");
+                        self.notify(
+                            *user,
+                            Some(issue_id),
+                            AlertKind::Mention,
+                            body.clone(),
+                            key,
+                            now,
+                        );
+                    }
+                }
+                let issue = find_mut(&mut self.issues, |i| i.id == issue_id)?;
+                for user in added {
+                    issue.follow(user);
+                }
                 let comment = find_mut(&mut self.comments, |c| c.id == id)?;
                 comment.body = body;
                 comment.mentions = mentions;

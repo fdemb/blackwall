@@ -33,6 +33,7 @@
     "i18next": "^26.4.2",
     "isbot": "^5",
     "lucide-react": "^1.49.0",
+    "marked": "^17.0.6",
     "react": "^19.3.0",
     "react-aria-components": "^1.21.1",
     "react-dom": "^19.3.0",

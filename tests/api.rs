@@ -718,6 +718,19 @@ async fn complete_contract_on_postgres() {
     assert!(!html["html"].as_str().unwrap().contains("<script>"));
     assert!(!html["html"].as_str().unwrap().contains("javascript:"));
 
+    let (_, html) = call(
+        &app,
+        "POST",
+        "/internal-api/markdown",
+        Some(&owner.token),
+        Some(json!({"text": format!("Ask [@Ana](mention:{})", Uuid::new_v4())})),
+    )
+    .await;
+    assert_eq!(
+        html["html"],
+        "<p>Ask <span class=\"mention\">@Ana</span></p>\n"
+    );
+
     let (status, export) = call(
         &app,
         "GET",

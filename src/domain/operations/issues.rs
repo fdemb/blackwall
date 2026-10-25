@@ -261,6 +261,7 @@ impl Workspace {
                 now,
             )
         }
+        self.mention(&mut issue, None, actor, now);
 
         self.issues.push(issue);
 
@@ -321,10 +322,36 @@ impl Workspace {
         {
             i.follow(user);
         }
+        self.mention(&mut i, Some(&old), actor, now);
 
         *self.issue_mut(id)? = i;
 
         Ok(())
+    }
+
+    fn mention(
+        &mut self,
+        issue: &mut Issue,
+        before: Option<&Issue>,
+        actor: Uuid,
+        now: DateTime<Utc>,
+    ) {
+        for user in issue.new_mentions(before) {
+            if self.member(user).is_err() {
+                continue;
+            }
+            if user != actor {
+                self.notify(
+                    user,
+                    Some(issue.id),
+                    AlertKind::Mention,
+                    issue.title.clone(),
+                    format!("mention:{}:{user}:{}", issue.id, Uuid::new_v4()),
+                    now,
+                );
+            }
+            issue.follow(user);
+        }
     }
 
     /// Keeps backlog work out of sprints; see [`Issue::sprint_fit`].

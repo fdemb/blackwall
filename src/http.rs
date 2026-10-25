@@ -904,17 +904,32 @@ async fn markdown(
         return Err(Error::BadRequest("markdown exceeds 100 KB".into()));
     }
 
+    use pulldown_cmark::{Event, Parser, Tag, TagEnd};
+    static SANITIZER: std::sync::LazyLock<ammonia::Builder<'static>> =
+        std::sync::LazyLock::new(|| {
+            let mut builder = ammonia::Builder::default();
+            builder.add_allowed_classes("span", ["mention"]);
+            builder
+        });
+
+    // Links cannot nest, so one flag pairs each mention's end with its start.
+    let mut in_mention = false;
+    let events = Parser::new_ext(&input.text, MARKDOWN_OPTIONS).map(|event| match event {
+        Event::Start(Tag::Link { ref dest_url, .. }) if dest_url.starts_with(MENTION_SCHEME) => {
+            in_mention = true;
+            Event::Html(r#"<span class="mention">"#.into())
+        }
+        Event::End(TagEnd::Link) if in_mention => {
+            in_mention = false;
+            Event::Html("</span>".into())
+        }
+        event => event,
+    });
     let mut html = String::new();
-    pulldown_cmark::html::push_html(
-        &mut html,
-        pulldown_cmark::Parser::new_ext(
-            &input.text,
-            pulldown_cmark::Options::ENABLE_TABLES | pulldown_cmark::Options::ENABLE_STRIKETHROUGH,
-        ),
-    );
+    pulldown_cmark::html::push_html(&mut html, events);
 
     Ok(Json(MarkdownResponse {
-        html: ammonia::clean(&html),
+        html: SANITIZER.clean(&html).to_string(),
     }))
 }
 

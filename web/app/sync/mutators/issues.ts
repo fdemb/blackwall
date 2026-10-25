@@ -1,3 +1,4 @@
+import { newMentions } from "../../lib/mentions";
 import { sprintStageId } from "../../lib/teams";
 import type { Id, IssuePatch } from "../../lib/types";
 import type { SyncIssue } from "../records";
@@ -173,6 +174,7 @@ export const createIssue: Mutator<ArgsOf<"create_issue">> = (tx, args, ctx) => {
   const id = reserveClientId(tx, input.id, ctx);
   const stageId = resolveStage(tx, input.team_id, input.stage_id);
   const next = issueFromInput(input, id, stageId, ctx);
+  followMentions(tx, next, "");
   fitSprint(tx, next, input.stage_id !== null && input.stage_id !== undefined);
   // The server stamps done_at when creating into a done stage.
   next.done_at = doneAt(tx, input.team_id, next.stage_id, null, ctx.at);
@@ -247,8 +249,14 @@ function patchIssue(
   }
   if (next.assignee !== current.assignee && next.assignee)
     next.followers = dedupeSortUuids([...next.followers, next.assignee]);
+  followMentions(tx, next, current.description);
   next.updated_at = ctx.at;
   tx.put("issues", next);
+}
+
+function followMentions(tx: Tx, next: SyncIssue, before: string): void {
+  const mentioned = newMentions(next.description, before).filter((user) => tx.get("members", user));
+  if (mentioned.length > 0) next.followers = dedupeSortUuids([...next.followers, ...mentioned]);
 }
 
 function patchedIssue(

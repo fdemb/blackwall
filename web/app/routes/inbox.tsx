@@ -17,6 +17,7 @@ import { Tab, TabList, Tabs } from "~/components/ui/tabs";
 import { EmptyState, Page, PageHeader, Scroll } from "~/components/app/page";
 import { relativeTime } from "~/lib/format";
 import { useI18n } from "~/lib/i18n";
+import { plainMentions } from "~/lib/mentions";
 import { useIssueRef, useIssues, useNotifications } from "~/lib/queries";
 import { QueryStatus } from "~/components/app/query-status";
 import { useWorkspace } from "~/lib/workspace";
@@ -181,7 +182,7 @@ export default function Inbox() {
                       </span>
                       <span className="min-w-0 flex-1">
                         <span className={cn("line-clamp-2 block ", !n.read_at && "font-semibold")}>
-                          {n.message}
+                          {plainMentions(n.message)}
                         </span>
                         <span className="mt-0.5 flex flex-wrap items-center gap-x-2  text-muted-foreground">
                           <span>{t(`alert.${n.kind}`)}</span>

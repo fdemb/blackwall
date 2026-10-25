@@ -120,6 +120,10 @@ impl Fixture {
     }
 
     async fn notifications(&self, user: Uuid, issue: Uuid) -> Vec<Value> {
+        self.alerts(user, issue, "change").await
+    }
+
+    async fn alerts(&self, user: Uuid, issue: Uuid, kind: &str) -> Vec<Value> {
         let page = self
             .store
             .collection(
@@ -140,10 +144,18 @@ impl Fixture {
             .unwrap()
             .iter()
             .filter(|notification| {
-                notification["issue_id"] == json!(issue) && notification["kind"] == "change"
+                notification["issue_id"] == json!(issue) && notification["kind"] == kind
             })
             .cloned()
             .collect()
+    }
+
+    async fn followers(&self, issue: Uuid) -> Vec<Uuid> {
+        sqlx::query_scalar("SELECT user_id FROM issue_followers WHERE issue_id=$1 ORDER BY user_id")
+            .bind(issue)
+            .fetch_all(&self.store.pool)
+            .await
+            .unwrap()
     }
 
     async fn activity(&self, issue: Uuid) -> Vec<Value> {
@@ -420,6 +432,99 @@ async fn an_older_client_marking_all_read_reads_every_unread_notification() {
 
     assert!(unread(&f.notifications(follower, first).await).is_empty());
     assert!(unread(&f.notifications(follower, second).await).is_empty());
+
+    f.cleanup().await;
+}
+
+fn mention(user: Uuid, label: &str) -> String {
+    format!("[@{label}](mention:{user})")
+}
+
+#[tokio::test]
+async fn description_mentions_alert_and_subscribe_each_newly_mentioned_member_once() {
+    let f = Fixture::new().await;
+    let (owner, follower) = (f.owner.profile.id, f.follower.profile.id);
+    let issue = f.create_issue("Rotate certificates", f.stages[1]).await;
+    let outsider = account(&f.store, "outsider").await.profile.id;
+
+    let text = format!(
+        "Ask {} and {}, not {}",
+        mention(follower, "Old Name"),
+        mention(owner, "me"),
+        mention(outsider, "outsider"),
+    );
+    f.run(owner, description_update(issue, &text)).await;
+    f.run(owner, description_update(issue, &format!("{text}, soon")))
+        .await;
+
+    let alerts = f.alerts(follower, issue, "mention").await;
+    assert_eq!(alerts.len(), 1, "{alerts:?}");
+    assert_eq!(alerts[0]["message"], "Rotate certificates");
+    assert!(f.alerts(owner, issue, "mention").await.is_empty());
+    let mut expected = vec![owner, follower];
+    expected.sort();
+    assert_eq!(f.followers(issue).await, expected);
+
+    f.cleanup().await;
+}
+
+#[tokio::test]
+async fn creating_an_issue_with_a_mention_alerts_the_member() {
+    let f = Fixture::new().await;
+    let follower = f.follower.profile.id;
+    let input: IssueInput = serde_json::from_value(json!({
+        "title": "Patch the firewall",
+        "description": format!("cc {}", mention(follower, "follower")),
+        "team_id": f.team,
+    }))
+    .unwrap();
+    let issue = f
+        .run(f.owner.profile.id, Command::CreateIssue { input })
+        .await
+        .result
+        .id
+        .unwrap();
+
+    assert_eq!(f.alerts(follower, issue, "mention").await.len(), 1);
+    assert!(f.followers(issue).await.contains(&follower));
+
+    f.cleanup().await;
+}
+
+#[tokio::test]
+async fn editing_a_comment_alerts_only_people_it_newly_mentions() {
+    let f = Fixture::new().await;
+    let (owner, follower) = (f.owner.profile.id, f.follower.profile.id);
+    let issue = f.create_issue("Audit logs", f.stages[1]).await;
+    let comment = f
+        .run(
+            owner,
+            Command::AddComment {
+                id: None,
+                issue_id: issue,
+                body: "First draft".into(),
+                mentions: vec![],
+                attachments: vec![],
+            },
+        )
+        .await
+        .result
+        .id
+        .unwrap();
+    let edit = |mentions: Vec<Uuid>| Command::EditComment {
+        id: comment,
+        body: format!("Edited {}", mention(follower, "follower")),
+        mentions,
+    };
+
+    f.run(owner, edit(vec![follower])).await;
+    assert_eq!(f.alerts(follower, issue, "mention").await.len(), 1);
+    assert!(f.followers(issue).await.contains(&follower));
+
+    f.run(owner, edit(vec![follower])).await;
+    f.run(owner, edit(vec![])).await;
+    f.run(owner, edit(vec![follower])).await;
+    assert_eq!(f.alerts(follower, issue, "mention").await.len(), 1);
 
     f.cleanup().await;
 }
