@@ -1,3 +1,4 @@
+use super::super::issues::{id_set, stored_instant};
 use super::super::*;
 use super::find_mut;
 
@@ -12,9 +13,7 @@ impl Workspace {
         let id = match command {
             Command::CreateIssue { input } => self.create_issue(input, actor, now)?,
             Command::UpdateIssue { id, patch } => {
-                let before = self.issue(id)?.clone();
-                self.patch_issue(id, patch, actor, now)?;
-                *fields = before.changed_fields(self.issue(id)?);
+                *fields = self.patch_issue(id, patch, actor, now)?;
                 id
             }
             Command::MoveIssue {
@@ -32,7 +31,7 @@ impl Workspace {
                 id
             }
             Command::BulkIssues { ids, action } => {
-                self.bulk_issues(ids, action, actor, now)?;
+                self.bulk_issues(ids, action, actor, now, fields)?;
                 return Ok(None);
             }
             Command::DeleteIssue { id } => {
@@ -165,6 +164,7 @@ impl Workspace {
         action: BulkAction,
         actor: Uuid,
         now: DateTime<Utc>,
+        fields: &mut Vec<String>,
     ) -> Result<()> {
         if ids.is_empty() || ids.len() > 500 {
             return Err(Error::BadRequest("select 1 to 500 issues".into()));
@@ -172,7 +172,9 @@ impl Workspace {
 
         for id in ids {
             match &action {
-                BulkAction::Update(p) => self.patch_issue(id, *p.clone(), actor, now)?,
+                BulkAction::Update(p) => {
+                    fields.extend(self.patch_issue(id, *p.clone(), actor, now)?)
+                }
                 BulkAction::Delete => self.issue_mut(id)?.deleted_at = Some(now),
                 BulkAction::Restore => self.restore(id, now)?,
                 BulkAction::Archive => self.archive(id, now)?,
@@ -211,14 +213,14 @@ impl Workspace {
             assignee: input.assignee,
             created_by: Some(actor),
             priority: input.priority,
-            labels: input.labels,
+            labels: id_set(input.labels),
             estimate: input.estimate,
-            deadline: input.deadline,
+            deadline: input.deadline.map(stored_instant),
             project_id: input.project_id,
             milestone_id: input.milestone_id,
             sprint_id: input.sprint_id,
             parent_id: input.parent_id,
-            dependencies: input.dependencies,
+            dependencies: id_set(input.dependencies),
             position: 0,
             followers: vec![actor],
             attachments: vec![],
@@ -269,7 +271,7 @@ impl Workspace {
         p: IssuePatch,
         actor: Uuid,
         now: DateTime<Utc>,
-    ) -> Result<()> {
+    ) -> Result<Vec<String>> {
         let old = self.issue(id)?.clone();
         if old.archived_at.is_some() {
             return Err(Error::Conflict("issue is archived".into()));
@@ -285,6 +287,10 @@ impl Workspace {
         let entered_stage = i.stage_id != old_stage;
         self.fit_sprint(&mut i, entered_stage)?;
 
+        let fields = old.changed_fields(&i);
+        if fields.is_empty() {
+            return Ok(fields);
+        }
         i.updated_at = now;
         self.validate_issue(&i, Some(&old))?;
         self.refresh_done_at(&mut i, now);
@@ -304,7 +310,6 @@ impl Workspace {
             );
         }
 
-        let fields = old.changed_fields(&i);
         for user in &i.followers {
             if *user != actor
                 && let Some(note) = self.notify(
@@ -330,7 +335,7 @@ impl Workspace {
 
         *self.issue_mut(id)? = i;
 
-        Ok(())
+        Ok(fields)
     }
 
     fn next_number(&self, team: Uuid) -> u64 {

@@ -1,7 +1,7 @@
 use super::filter::{Compiled, FilterClause, compile, deserialize_where};
 use super::initial_version;
 use crate::error::Result;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, SubsecRound, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use utoipa::ToSchema;
@@ -209,9 +209,13 @@ impl Issue {
         set(&mut self.stage_id, p.stage_id);
         set_or_clear(&mut self.assignee, p.assignee, p.clear_assignee);
         set(&mut self.priority, p.priority);
-        set(&mut self.labels, p.labels);
+        set(&mut self.labels, p.labels.map(id_set));
         set_or_clear(&mut self.estimate, p.estimate, p.clear_estimate);
-        set_or_clear(&mut self.deadline, p.deadline, p.clear_deadline);
+        set_or_clear(
+            &mut self.deadline,
+            p.deadline.map(stored_instant),
+            p.clear_deadline,
+        );
         set_or_clear(&mut self.project_id, p.project_id, p.clear_project);
         // Leaving the project also leaves its milestone, unless the patch names one.
         if p.clear_project {
@@ -220,7 +224,7 @@ impl Issue {
         set_or_clear(&mut self.milestone_id, p.milestone_id, p.clear_milestone);
         set_or_clear(&mut self.sprint_id, p.sprint_id, p.clear_sprint);
         set_or_clear(&mut self.parent_id, p.parent_id, p.clear_parent);
-        set(&mut self.dependencies, p.dependencies);
+        set(&mut self.dependencies, p.dependencies.map(id_set));
     }
 
     /// Starts a move to `team`: the current key becomes a former key, and a sprint the patch
@@ -395,6 +399,17 @@ fn set<T>(field: &mut T, value: Option<T>) {
     if let Some(value) = value {
         *field = value;
     }
+}
+
+pub(crate) fn id_set(mut ids: Vec<Uuid>) -> Vec<Uuid> {
+    ids.sort();
+    ids.dedup();
+    ids
+}
+
+/// Postgres keeps microseconds, so a finer timestamp would read back as a different value.
+pub(crate) fn stored_instant(at: DateTime<Utc>) -> DateTime<Utc> {
+    at.trunc_subsecs(6)
 }
 
 /// `clear` wins over a supplied value.

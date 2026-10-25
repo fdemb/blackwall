@@ -408,6 +408,34 @@ describe("update_issue", () => {
     });
   });
 
+  it("writes nothing for a patch that matches the issue", () => {
+    const store = seedStore();
+    mutate(store, "update_issue", {
+      id: "issue-1",
+      patch: { labels: [LABEL_TWO, LABEL_ONE], deadline: "2026-10-12T14:00:00+02:00" },
+    });
+    const before = live(store, "issue-1");
+    mutate(
+      store,
+      "update_issue",
+      {
+        id: "issue-1",
+        patch: {
+          title: "Issue one",
+          stage_id: STAGE_ACTIVE,
+          assignee: MEMBER,
+          labels: [LABEL_ONE, LABEL_TWO, LABEL_ONE],
+          deadline: "2026-10-12T12:00:00.000000400Z",
+          project_id: PROJECT,
+          sprint_id: SPRINT,
+        },
+      },
+      "2026-10-10T12:00:00.000000Z",
+    );
+    expect(store.replayErrors().size).toBe(0);
+    expect(live(store, "issue-1")).toEqual(before);
+  });
+
   it("clears fields and clears the milestone with the project", () => {
     const store = seedStore();
     mutate(store, "update_issue", {
@@ -629,7 +657,7 @@ describe("update_issue team moves", () => {
     const store = seedStore();
     const before = live(store, "issue-2");
     mutate(store, "update_issue", { id: "issue-2", patch: { team_id: TEAM } });
-    expect(live(store, "issue-2")).toEqual({ ...before, updated_at: AT });
+    expect(live(store, "issue-2")).toEqual(before);
   });
 
   it("moves a started issue past dependencies that reopened, but starts none", () => {

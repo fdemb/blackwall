@@ -617,6 +617,7 @@ impl Operation<'_> {
         }
 
         let action = command.kind();
+        let update = command.is_issue_update();
         let id = match command.family() {
             CommandFamily::Planning => self.planning(command).await?,
             CommandFamily::Issues => self.issues(command).await?,
@@ -624,7 +625,9 @@ impl Operation<'_> {
         };
 
         let fields = std::mem::take(&mut self.activity_fields);
-        self.activity(action, id, fields).await?;
+        if !(update && fields.is_empty()) {
+            self.activity(action, id, fields).await?;
+        }
 
         Ok(id)
     }
@@ -662,8 +665,15 @@ impl Operation<'_> {
     }
 
     pub async fn touch(&mut self, table: &str, id: Uuid) -> Result<i64> {
-        let key = (table.to_owned(), id);
-        if let Some(v) = self.versions.get(&key) {
+        if let Some(v) = self.versions.get(&(table.to_owned(), id)) {
+            return Ok(*v);
+        }
+        let version = self.lock(table, id).await?;
+        self.touch_locked(table, id, version).await
+    }
+
+    pub async fn lock(&mut self, table: &str, id: Uuid) -> Result<i64> {
+        if let Some(v) = self.versions.get(&(table.to_owned(), id)) {
             return Ok(*v);
         }
 
@@ -702,7 +712,8 @@ impl Operation<'_> {
             .ok_or(Error::NotFound)?
             .try_get("version")?;
 
-        self.touch_locked(table, id, version).await
+        self.check_expected(id, version)?;
+        Ok(version)
     }
 
     /// Bump a row already locked FOR UPDATE, after the caller's authorization checks.
@@ -717,14 +728,7 @@ impl Operation<'_> {
             "id"
         };
 
-        // Absent preconditions mean last-writer-wins. A present one still conflicts on mismatch.
-        if let Some(expected) = self.expected.get(&id)
-            && *expected != version
-        {
-            return Err(Error::Stale(format!(
-                "entity {id} changed; current version is {version}"
-            )));
-        }
+        self.check_expected(id, version)?;
 
         let sql =
             format!("UPDATE {table} SET version=version+1 WHERE workspace_id=$1 AND {column}=$2");
@@ -737,6 +741,15 @@ impl Operation<'_> {
         self.versions.insert(key, version + 1);
 
         Ok(version + 1)
+    }
+
+    fn check_expected(&self, id: Uuid, version: i64) -> Result<()> {
+        match self.expected.get(&id) {
+            Some(expected) if *expected != version => Err(Error::Stale(format!(
+                "entity {id} changed; current version is {version}"
+            ))),
+            _ => Ok(()),
+        }
     }
 
     pub fn created(&mut self, table: &str, id: Uuid) {

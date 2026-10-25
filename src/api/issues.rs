@@ -664,6 +664,7 @@ pub async fn update_issue(
     patch,
     path = "/api/v1/workspaces/{workspace}/issues/{issue}",
     tag = "issues",
+    description = "A patch that changes no field returns the issue unchanged: no new version, activity, webhook or notification.",
     params(("workspace" = Uuid, Path), ("issue" = String, Path, description = "UUID or key such as ENG-42")),
     request_body = UpdateIssue,
     responses((status = 200, body = ApiIssue), (status = 412, body = crate::error::ErrorBody))
