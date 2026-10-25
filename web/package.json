@@ -1,6 +1,7 @@
 {
   "name": "blackwall-web",
   "private": true,
+  "license": "MIT",
   "type": "module",
   "scripts": {
     "dev": "react-router dev",
