@@ -183,7 +183,7 @@ fn validate_url(value: &str) -> Result<String> {
 
 /// Creates the row with its required fields; `configure` validates and applies the rest.
 async fn insert(conn: &mut PgConnection, workspace: Uuid, config: &Config) -> Result<Uuid> {
-    sqlx::query("SELECT id FROM workspaces WHERE id=$1 FOR UPDATE")
+    sqlx::query("SELECT id FROM workspaces WHERE id=$1 FOR NO KEY UPDATE")
         .bind(workspace)
         .execute(&mut *conn)
         .await?;
