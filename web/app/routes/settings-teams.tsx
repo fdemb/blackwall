@@ -153,7 +153,10 @@ function TeamRow({ view: { team, stages, openIssues } }: { view: TeamView }) {
             </span>
           )}
         </span>
-        <span className="w-16 shrink-0 text-right tabular-nums">{openIssues}</span>
+        <span className="w-16 shrink-0 text-right tabular-nums">
+          <span aria-hidden>{openIssues}</span>
+          <span className="sr-only">{t("team.openIssues", { count: openIssues })}</span>
+        </span>
         <ChevronRight aria-hidden className="size-4 shrink-0 text-muted-foreground" />
       </Link>
     </li>

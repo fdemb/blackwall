@@ -450,6 +450,7 @@ export const pl = {
   "team.openIssues_many": "{{count}} otwartych zadań",
   "team.openIssues_other": "{{count}} otwartego zadania",
   "team.openBoard": "Otwórz tablicę",
+  "team.stageKind": "Typ etapu {{name}}",
   "team.details": "Szczegóły",
   "team.nameSub": "Widoczna na pasku bocznym i na tablicy.",
   "team.appearanceSub": "Pomaga odróżnić zespoły na listach i w kluczach zadań.",

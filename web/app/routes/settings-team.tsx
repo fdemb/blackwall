@@ -38,18 +38,30 @@ import {
 import { useDocumentTitle } from "~/lib/title";
 import { usePending } from "~/lib/use-pending";
 import { useWorkspace } from "~/lib/workspace";
-import { useView } from "~/sync/react";
+import { trackerApi } from "~/lib/trackers";
+import { useEngine, useView } from "~/sync/react";
 import type { Id, Stage, StageKind, Team } from "~/lib/types";
 
 export default function TeamSettings() {
   const { teamKey = "" } = useParams();
   const { ws } = useWorkspace();
   const list = `/${ws.slug}/settings/teams`;
-  const team = teamForKeyParam(ws.teams, teamKey);
+  // A re-key the server rejects rolls back after the URL moved to the new key, which then names no
+  // team or another one. Holding the team for the URL it was found under keeps the page on it.
+  const [held, setHeld] = useState<{ param: string; id: Id } | null>(null);
+  const team =
+    held?.param === teamKey
+      ? ws.teams.find((candidate) => candidate.id === held.id)
+      : teamForKeyParam(ws.teams, teamKey);
   if (!team) return <Navigate to={list} replace />;
-  // Old keys keep working in links, but the address bar shows the current one.
-  if (team.key !== teamKey) return <Navigate to={`${list}/${team.key}`} replace />;
-  return <TeamDetail key={team.id} team={team} />;
+  if (held?.param !== teamKey || held.id !== team.id) setHeld({ param: teamKey, id: team.id });
+  return (
+    <>
+      {/* Old keys keep working in links, but the address bar shows the current one. */}
+      {team.key !== teamKey && <Navigate to={`${list}/${team.key}`} replace />}
+      <TeamDetail key={team.id} team={team} />
+    </>
+  );
 }
 
 function TeamDetail({ team }: { team: Team }) {
@@ -151,22 +163,28 @@ function Details({ team }: { team: Team }) {
 function NameField({ team }: { team: Team }) {
   const { t } = useI18n();
   const { run, canAdmin } = useWorkspace();
-  const [name, setName] = useState(team.name);
+  // While focused, the field keeps what the user types and the name it started from; otherwise it
+  // shows the team's current name, so a rename from elsewhere never gets written back.
+  const [draft, setDraft] = useState<{ from: string; name: string } | null>(null);
   const commit = () => {
-    const next = name.trim();
-    if (!next || next === team.name) return setName(team.name);
-    run({ type: "update_team", id: team.id, name: next, key: team.key }).catch(() =>
-      setName(team.name),
-    );
+    if (!draft) return;
+    setDraft(null);
+    const next = draft.name.trim();
+    if (!next || next === draft.from || next === team.name) return;
+    run({ type: "update_team", id: team.id, name: next, key: team.key }).catch(() => {});
   };
   return (
     <Input
       aria-label={t("field.name")}
-      value={name}
+      value={draft?.name ?? team.name}
       disabled={!canAdmin}
-      onChange={(e) => setName(e.target.value)}
+      onFocus={() => setDraft({ from: team.name, name: team.name })}
+      onChange={(e) => setDraft({ from: draft?.from ?? team.name, name: e.target.value })}
       onBlur={commit}
-      onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") e.currentTarget.blur();
+        if (e.key === "Escape") setDraft({ from: team.name, name: team.name });
+      }}
       className="w-full sm:w-70"
     />
   );
@@ -241,6 +259,7 @@ function KeyRow({ team }: { team: Team }) {
 function Workflow({ view }: { view: TeamView }) {
   const { t } = useI18n();
   const { run, canAdmin } = useWorkspace();
+  const { store } = useEngine();
   const { team } = view;
   const [adding, setAdding] = useState(false);
   const [deleting, setDeleting] = useState<Stage | null>(null);
@@ -250,15 +269,19 @@ function Workflow({ view }: { view: TeamView }) {
   const rows = view.stages.map((row) => ({ id: row.stage.id, ...row }));
   const move = (moved: Id, target: Id, side: "before" | "after") =>
     guard(async () => {
-      for (const { stage, position } of reorderStages(team.stages, moved, target, side))
+      for (const { stage, position } of reorderStages(team.stages, moved, target, side)) {
+        // Earlier sends and other admins may have changed the stage since the drop.
+        const current = store.get("teams", team.id)?.stages.find((s) => s.id === stage.id);
+        if (!current) continue;
         await run({
           type: "update_stage",
           team_id: team.id,
-          id: stage.id,
-          name: stage.name,
-          kind: stage.kind,
+          id: current.id,
+          name: current.name,
+          kind: current.kind,
           position,
         });
+      }
     });
   const { dragAndDropHooks } = useDragAndDrop({
     isDisabled: !canAdmin || editing !== null,
@@ -338,6 +361,8 @@ function StageRow({
 }) {
   const { t } = useI18n();
   const { run, canAdmin } = useWorkspace();
+  // Finishing a rename from the keyboard puts focus back on the name, which replaces the input.
+  const [refocus, setRefocus] = useState(false);
   const save = (patch: { name?: string; kind?: StageKind }) =>
     run({
       type: "update_stage",
@@ -368,13 +393,15 @@ function StageRow({
       {editing ? (
         <StageNameInput
           stage={stage}
-          onDone={(name) => {
+          onDone={(name, keyboard) => {
+            setRefocus(keyboard);
             onEditing(false);
             if (name && name !== stage.name) void save({ name });
           }}
         />
       ) : canAdmin ? (
         <Button
+          autoFocus={refocus}
           variant="ghost"
           aria-label={t("stage.rename", { name: stage.name })}
           onPress={() => onEditing(true)}
@@ -389,7 +416,7 @@ function StageRow({
         {t("count.issues", { count: issues })}
       </span>
       <Select
-        aria-label={t("stage.kind")}
+        aria-label={t("team.stageKind", { name: stage.name })}
         className="w-32 shrink-0 sm:w-36"
         isDisabled={!canAdmin}
         selectedKey={stage.kind}
@@ -418,14 +445,20 @@ function StageRow({
   );
 }
 
-function StageNameInput({ stage, onDone }: { stage: Stage; onDone: (name: string) => void }) {
+function StageNameInput({
+  stage,
+  onDone,
+}: {
+  stage: Stage;
+  onDone: (name: string, keyboard: boolean) => void;
+}) {
   const { t } = useI18n();
   const [name, setName] = useState(stage.name);
   const finished = useRef(false);
-  const finish = (value: string) => {
+  const finish = (value: string, keyboard = false) => {
     if (finished.current) return;
     finished.current = true;
-    onDone(value);
+    onDone(value, keyboard);
   };
   return (
     <Input
@@ -435,8 +468,8 @@ function StageNameInput({ stage, onDone }: { stage: Stage; onDone: (name: string
       onChange={(e) => setName(e.target.value)}
       onBlur={() => finish(name.trim())}
       onKeyDown={(e) => {
-        if (e.key === "Enter") finish(name.trim());
-        if (e.key === "Escape") finish(stage.name);
+        if (e.key === "Enter") finish(name.trim(), true);
+        if (e.key === "Escape") finish(stage.name, true);
       }}
       className="min-w-0 flex-1 bg-card"
     />
@@ -628,7 +661,7 @@ function AutoArchive({ team }: { team: Team }) {
 
 function DeleteTeam({ team }: { team: Team }) {
   const { t } = useI18n();
-  const { run, ws } = useWorkspace();
+  const { run, ws, offline } = useWorkspace();
   const navigate = useNavigate();
   const [confirming, setConfirming] = useState(false);
   // Archived and trashed issues count too, as they do on the server.
@@ -641,9 +674,16 @@ function DeleteTeam({ team }: { team: Team }) {
     try {
       await run({ type: "delete_team", id: team.id }, { quiet: true });
     } catch (error) {
-      if (error instanceof ApiError && error.status === 409)
-        throw new Error(hasIssues ? t("team.deleteHasIssues") : t("team.deleteImported"));
-      throw error;
+      if (!(error instanceof ApiError) || error.status !== 409) throw error;
+      // The server reports issues first, so the tracker is the cause only when there are none.
+      const imported =
+        !hasIssues &&
+        (await trackerApi.list(ws.id).then(
+          ({ connections }) =>
+            connections.some((c) => c.projects.some((mapping) => mapping.team_id === team.id)),
+          () => false,
+        ));
+      throw new Error(imported ? t("team.deleteImported") : t("team.deleteHasIssues"));
     }
     void navigate(`/${ws.slug}/settings/teams`, { replace: true });
   };
@@ -653,6 +693,7 @@ function DeleteTeam({ team }: { team: Team }) {
         <Button
           variant="secondary"
           className="text-destructive"
+          isDisabled={offline}
           onPress={() => setConfirming(true)}
         >
           {t("team.delete")}

@@ -46,8 +46,9 @@ export function teamForKeyParam(teams: readonly Team[], param: string): Team | u
 }
 
 /**
- * Positions after moving `moved` next to `target`, numbered from 1 in board order. Only stages whose
- * position changes are returned, so each one is a single `update_stage`.
+ * Positions after moving `moved` next to `target`, numbered in board order from the lowest current
+ * position so a single move renumbers only the stages it passes. Only stages whose position changes
+ * are returned, so each one is a single `update_stage`.
  */
 export function reorderStages(
   stages: readonly Stage[],
@@ -61,9 +62,10 @@ export function reorderStages(
   const [stage] = order.splice(from, 1);
   const to = order.findIndex((s) => s.id === target);
   if (to < 0) return [];
+  const first = Math.min(stage.position, ...order.map((s) => s.position));
   order.splice(side === "before" ? to : to + 1, 0, stage);
   return order
-    .map((s, index) => ({ stage: s, position: index + 1 }))
+    .map((s, index) => ({ stage: s, position: first + index }))
     .filter(({ stage: s, position }) => s.position !== position);
 }
 

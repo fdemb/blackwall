@@ -432,6 +432,7 @@ export const en = {
   "team.openIssues_one": "{{count}} open issue",
   "team.openIssues_other": "{{count}} open issues",
   "team.openBoard": "Open board",
+  "team.stageKind": "Type of {{name}}",
   "team.details": "Details",
   "team.nameSub": "Shown in the sidebar and on the board.",
   "team.appearanceSub": "Helps tell teams apart in lists and issue keys.",

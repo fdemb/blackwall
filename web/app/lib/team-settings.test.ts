@@ -24,11 +24,11 @@ const team = (overrides: Partial<Team> = {}): Team => ({
   former_keys: [],
   members: ["u1", "u2"],
   stages: [
-    stage("done", "done", 4),
-    stage("backlog", "backlog", 1),
-    stage("doing", "active", 3),
-    stage("todo", "planned", 2),
-    stage("cancelled", "cancelled", 5),
+    stage("done", "done", 3),
+    stage("backlog", "backlog", 0),
+    stage("doing", "active", 2),
+    stage("todo", "planned", 1),
+    stage("cancelled", "cancelled", 4),
   ],
   archive_after_days: 30,
   icon: "code",
@@ -102,34 +102,42 @@ describe("reordering stages", () => {
   const moves = (moved: string, target: string, side: "before" | "after") =>
     reorderStages(stages, moved, target, side).map(({ stage, position }) => [stage.id, position]);
 
-  it("moves a stage up and renumbers the stages it passed", () => {
+  it("moves a stage up and renumbers only the stages it passed", () => {
     expect(moves("doing", "backlog", "before")).toEqual([
-      ["doing", 1],
-      ["backlog", 2],
-      ["todo", 3],
+      ["doing", 0],
+      ["backlog", 1],
+      ["todo", 2],
     ]);
   });
 
   it("moves a stage down", () => {
     expect(moves("backlog", "doing", "after")).toEqual([
-      ["todo", 1],
-      ["doing", 2],
-      ["backlog", 3],
+      ["todo", 0],
+      ["doing", 1],
+      ["backlog", 2],
+    ]);
+  });
+
+  it("swaps neighbours without touching the rest", () => {
+    expect(moves("done", "cancelled", "after")).toEqual([
+      ["cancelled", 3],
+      ["done", 4],
     ]);
   });
 
   it("changes nothing when a stage is dropped where it already is", () => {
     expect(moves("todo", "doing", "before")).toEqual([]);
+    expect(moves("todo", "backlog", "after")).toEqual([]);
     expect(moves("todo", "todo", "after")).toEqual([]);
   });
 
-  it("renumbers gaps from 1", () => {
+  it("closes gaps from the lowest position", () => {
     const sparse = [stage("a", "backlog", 10), stage("b", "active", 20)];
     expect(
       reorderStages(sparse, "b", "a", "before").map(({ stage, position }) => [stage.id, position]),
     ).toEqual([
-      ["b", 1],
-      ["a", 2],
+      ["b", 10],
+      ["a", 11],
     ]);
   });
 });
