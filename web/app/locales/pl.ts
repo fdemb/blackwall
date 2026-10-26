@@ -468,7 +468,7 @@ export const pl = {
   "team.deleteConfirm": "Usunąć zespół {{name}}?",
   "team.deleteConfirmSub": "Zespół i jego przepływ pracy znikną. Tej operacji nie można cofnąć.",
   "team.deleteHasIssues":
-    "Ten zespół wciąż ma zadania. Przenieś każde do innego zespołu albo usuń je na stałe, łącznie z zarchiwizowanymi i tymi w koszu, a potem spróbuj ponownie.",
+    "Ten zespół wciąż ma zadania, również zarchiwizowane i w koszu. Przywróć je z kosza lub archiwum i przenieś do innego zespołu albo poczekaj, aż zadania z kosza zostaną usunięte po 30 dniach.",
   "team.deleteImported":
     "Do tego zespołu importuje system śledzenia zadań. Najpierw usuń to mapowanie w Integracjach.",
   "team.namePlaceholder": "Platforma…",

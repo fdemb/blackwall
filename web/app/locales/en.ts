@@ -450,7 +450,7 @@ export const en = {
   "team.deleteConfirm": "Delete {{name}}?",
   "team.deleteConfirmSub": "The team and its workflow go away. This can't be undone.",
   "team.deleteHasIssues":
-    "This team still has issues. Move each one to another team or delete it for good, archived and trashed ones included, then try again.",
+    "This team still has issues, archived and trashed ones included. Restore or unarchive them and move them to another team, or wait until trashed issues are deleted after 30 days.",
   "team.deleteImported":
     "An issue tracker imports into this team. Remove that mapping in Integrations first.",
   "team.namePlaceholder": "Platform…",
