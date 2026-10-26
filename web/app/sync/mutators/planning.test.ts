@@ -150,6 +150,7 @@ describe("create_team", () => {
       version: 1,
       name: "New",
       key: "NEW",
+      former_keys: [],
       members: [ADMIN, MEMBER],
       // The default stages are predicted from the client-chosen ids, in the
       // server's order; issue creates for the pending team resolve them.
@@ -457,6 +458,63 @@ describe("set_team_appearance", () => {
       404,
       "not found",
     );
+  });
+});
+
+describe("update_team", () => {
+  it("renames and re-keys, keeping every former key reserved", () => {
+    const store = seedStore(OWNER);
+    const before = liveTeam(store, TEAM);
+    mutate(store, "update_team", { id: TEAM, name: "Platform", key: "PLAT" });
+    expectRecord(store, "teams", TEAM, {
+      ...before,
+      name: "Platform",
+      key: "PLAT",
+      former_keys: ["TEAM"],
+    });
+    mutate(store, "update_team", { id: TEAM, name: "Platform", key: "CORE" });
+    expect(liveTeam(store, TEAM).former_keys).toEqual(["PLAT", "TEAM"]);
+    mutate(store, "update_team", { id: TEAM, name: "Platform", key: "TEAM" });
+    expect(liveTeam(store, TEAM)).toMatchObject({ key: "TEAM", former_keys: ["CORE", "PLAT"] });
+    twice("update_team", { id: TEAM, name: "Platform", key: "PLAT" });
+  });
+
+  it("refuses a key another team has or had", () => {
+    rejects("update_team", { id: TEAM, name: "Team", key: "OTH" }, 409, "team key already exists");
+    const store = seedStore(OWNER);
+    store.applyBase([
+      {
+        entity: "teams",
+        id: TEAM_OTHER,
+        record: { ...liveTeam(store, TEAM_OTHER), key: "OTH2", former_keys: ["OTH"] },
+      },
+    ]);
+    const before = beforeAll(store);
+    const id = mutate(store, "update_team", { id: TEAM, name: "Team", key: "OTH" });
+    expect(store.replayErrors().get(id)).toMatchObject({
+      status: 409,
+      message: "team key already exists",
+    });
+    expectSame(store, before);
+  });
+
+  it("validates the name, key, team and role", () => {
+    rejects(
+      "update_team",
+      { id: TEAM, name: " ", key: "TEAM" },
+      400,
+      "text must contain 1 to 200 bytes",
+    );
+    rejects(
+      "update_team",
+      { id: TEAM, name: "Team", key: "eng" },
+      400,
+      "team key must be 1 to 4 uppercase letters or digits, starting with a letter",
+    );
+    rejects("update_team", { id: "team-ghost", name: "Team", key: "GHO" }, 404, "not found");
+    const args = { id: TEAM, name: "Renamed", key: "TEAM" };
+    rejects("update_team", args, 403, "permission denied", MEMBER);
+    rejects("update_team", args, 403, "permission denied", VIEWER);
   });
 });
 

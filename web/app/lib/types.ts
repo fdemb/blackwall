@@ -28,6 +28,8 @@ export interface Team {
   name: string;
   /** Prefixes the team's issue numbers, as in `ENG-42`. Unique in the workspace. */
   key: string;
+  /** Keys the team had before, sorted. Issue keys under them still resolve. */
+  former_keys: string[];
   members: Id[];
   stages: Stage[];
   /** Days after Done before auto-archive. Null means never. */
@@ -509,6 +511,8 @@ export type Command =
   | { type: "set_team_members"; id: Id; members: Id[] }
   | { type: "set_team_archive"; id: Id; archive_after_days: number | null }
   | { type: "set_team_appearance"; id: Id; icon: TeamIcon; color: TeamColor }
+  | { type: "update_team"; id: Id; name: string; key: string }
+  | { type: "delete_team"; id: Id }
   | { type: "create_stage"; id?: Id; team_id: Id; name: string; kind: StageKind; position: number }
   | { type: "update_stage"; team_id: Id; id: Id; name: string; kind: StageKind; position: number }
   | { type: "delete_stage"; team_id: Id; id: Id; replacement: Id }

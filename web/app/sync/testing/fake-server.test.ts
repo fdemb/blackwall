@@ -338,6 +338,39 @@ describe("fake sync push", () => {
     expect(f.server.record("members", f.owner.id)).toBeNull();
   });
 
+  it("deletes only empty teams and lets only admins do it", () => {
+    const f = fixture();
+    const empty = id(20);
+    const project = id(21);
+    f.server.run(f.owner, {
+      type: "create_team",
+      id: empty,
+      name: "Empty",
+      key: "EMP",
+      members: [f.member.id],
+      default_stage_ids: [id(22), id(23), id(24), id(25)],
+    });
+    f.server.run(f.owner, {
+      type: "create_project",
+      id: project,
+      name: "Project",
+      description: "",
+      team_ids: [TEAM, empty],
+    });
+    expect(() => f.server.run(f.member, { type: "delete_team", id: empty })).toThrow(
+      "permission denied",
+    );
+    f.createIssue();
+    f.server.run(f.owner, { type: "delete_issue", id: ISSUE });
+    expect(() => f.server.run(f.owner, { type: "delete_team", id: TEAM })).toThrow(
+      "team still has issues",
+    );
+    f.server.run(f.owner, { type: "delete_team", id: empty });
+    expect(f.server.record("teams", empty)).toBeNull();
+    expect(f.server.record("members", f.member.id)?.team_ids).toEqual([TEAM]);
+    expect(f.server.record("projects", project)?.team_ids).toEqual([TEAM]);
+  });
+
   it("clears the lead of projects a removed member led", async () => {
     const f = fixture();
     const project = id(16);
@@ -391,6 +424,7 @@ describe("fake sync push", () => {
           "set_role",
           "remove_member",
           "transfer_ownership",
+          "delete_team",
           "add_attachment",
           "attach_comment_file",
           "invite",

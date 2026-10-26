@@ -35,6 +35,7 @@ import {
   updateProject,
   updateSprint,
   updateStage,
+  updateTeam,
 } from "./planning";
 import {
   configureAlerts,
@@ -78,6 +79,7 @@ const NAMES = [
   "set_team_members",
   "set_team_archive",
   "set_team_appearance",
+  "update_team",
   "create_stage",
   "update_stage",
   "delete_stage",
@@ -132,6 +134,7 @@ export const MUTATORS: { [T in MutatorName]: Mutator<ArgsOf<T>> } = {
   set_team_members: setTeamMembers,
   set_team_archive: setTeamArchive,
   set_team_appearance: setTeamAppearance,
+  update_team: updateTeam,
   create_stage: createStage,
   update_stage: updateStage,
   delete_stage: deleteStage,
@@ -180,6 +183,7 @@ export const ONLINE_ONLY = [
   "set_role",
   "remove_member",
   "transfer_ownership",
+  "delete_team",
   "import_issues",
   "add_attachment",
   "attach_comment_file",

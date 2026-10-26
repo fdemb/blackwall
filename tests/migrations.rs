@@ -424,3 +424,65 @@ async fn email_verification_counts_existing_and_old_binary_users_as_verified() {
     conn.close().await.unwrap();
     database.cleanup().await;
 }
+
+#[tokio::test]
+async fn team_keys_reserve_existing_and_retired_keys() {
+    let database = support::TestDatabase::new().await;
+    let mut conn = PgConnection::connect(&database.url).await.unwrap();
+    migrate_before(&mut conn, "0045").await;
+
+    let [workspace, eng, ops] = [1u128, 2, 3].map(Uuid::from_u128);
+    sqlx::query("INSERT INTO workspaces(id,name,slug) VALUES($1,'Keys','keys')")
+        .bind(workspace)
+        .execute(&mut conn)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO teams(id,workspace_id,name,key) VALUES($1,$2,'Engineering','ENG')")
+        .bind(eng)
+        .bind(workspace)
+        .execute(&mut conn)
+        .await
+        .unwrap();
+
+    sqlx::raw_sql(include_str!("../migrations/0045_team_keys.sql"))
+        .execute(&mut conn)
+        .await
+        .unwrap();
+
+    sqlx::query("UPDATE teams SET key='PLAT' WHERE id=$1")
+        .bind(eng)
+        .execute(&mut conn)
+        .await
+        .unwrap();
+    let keys: Vec<String> =
+        sqlx::query_scalar("SELECT key FROM team_keys WHERE team_id=$1 ORDER BY key")
+            .bind(eng)
+            .fetch_all(&mut conn)
+            .await
+            .unwrap();
+    assert_eq!(
+        keys,
+        ["ENG", "PLAT"],
+        "the backfilled key stays with its team"
+    );
+
+    let hijack =
+        sqlx::query("INSERT INTO teams(id,workspace_id,name,key) VALUES($1,$2,'Ops','ENG')")
+            .bind(ops)
+            .bind(workspace)
+            .execute(&mut conn)
+            .await
+            .unwrap_err();
+    let error = hijack.as_database_error().unwrap();
+    assert_eq!(error.code().as_deref(), Some("23505"));
+    assert_eq!(error.constraint(), Some("teams_key"));
+
+    sqlx::query("UPDATE teams SET key='ENG' WHERE id=$1")
+        .bind(eng)
+        .execute(&mut conn)
+        .await
+        .expect("a team can take back its own key");
+
+    conn.close().await.unwrap();
+    database.cleanup().await;
+}

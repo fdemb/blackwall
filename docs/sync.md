@@ -112,14 +112,14 @@ Keep the `changes` table, its triggers and `change_horizon`. They are correct an
 `GET sync/bootstrap?client_id=<uuid>` streams the whole always-loaded data set from one `REPEATABLE READ READ ONLY` transaction. The response is `application/x-ndjson`, compressed with gzip when the request's `Accept-Encoding` accepts gzip, and plain otherwise.
 
 ```
-{"cursor":"812:812:","last_mutation_id":0,"schema":6}
+{"cursor":"812:812:","last_mutation_id":0,"schema":7}
 {"entity":"teams","record":{...}}
 {"entity":"issues","record":{...}}
 ...
 {"end":true,"records":42}
 ```
 
-The header, client mutation id and every record come from the same snapshot. `schema` is the server constant `SYNC_SCHEMA`, currently 5; bump it whenever a sync record shape changes. Version 5 renamed the issue's `openproject` link to `tracker` and added `tracker` to comments. Record lines use pull's shapes and visibility rules, including trashed and archived issues. Comments and activity are excluded.
+The header, client mutation id and every record come from the same snapshot. `schema` is the server constant `SYNC_SCHEMA`, currently 7; bump it whenever a sync record shape changes. Version 5 renamed the issue's `openproject` link to `tracker` and added `tracker` to comments. Version 7 added `former_keys` to teams. Record lines use pull's shapes and visibility rules, including trashed and archived issues. Comments and activity are excluded.
 
 The trailer counts only record lines. A failure ends the body without a trailer. The client discards any bootstrap without a trailer, and writes a completed bootstrap into a fresh base with its cursor in one IndexedDB transaction. A page reload in the middle leaves no partial replica.
 
@@ -296,9 +296,9 @@ A bootstrap also drops loaded comment and activity scopes; the engine reloads th
 
 ### Online-only operations
 
-Some commands aren't queued offline: `invite`, `resend_invitation`, `create_integration` because of its secret, `update_workspace` because slugs are unique across the server, `set_role`, `remove_member`, `transfer_ownership`, `import_issues`, file uploads, import, export, workspace creation, and issue tracker settings.
+Some commands aren't queued offline: `invite`, `resend_invitation`, `create_integration` because of its secret, `update_workspace` because slugs are unique across the server, `set_role`, `remove_member`, `transfer_ownership`, `delete_team` because the replica can't see issue tracker mappings into the team, `import_issues`, file uploads, import, export, workspace creation, and issue tracker settings.
 
-- `invite`, `resend_invitation`, `create_integration`, `update_workspace`, `set_role`, `remove_member`, `transfer_ownership`, and `import_issues` use `POST /internal-api/workspaces/{id}/commands` with a per-call `idempotency_key`. The tab that issued the command sends it after its replica's outbox drains. If a protocol error keeps the outbox from draining, the command fails and asks for a reload instead of waiting. Transient failures retry the same key and command body with backoff. These commands never allocate mutation ids or enter the outbox. Push carries only outbox mutations.
+- `invite`, `resend_invitation`, `create_integration`, `update_workspace`, `set_role`, `remove_member`, `transfer_ownership`, `delete_team`, and `import_issues` use `POST /internal-api/workspaces/{id}/commands` with a per-call `idempotency_key`. The tab that issued the command sends it after its replica's outbox drains. If a protocol error keeps the outbox from draining, the command fails and asks for a reload instead of waiting. Transient failures retry the same key and command body with backoff. These commands never allocate mutation ids or enter the outbox. Push carries only outbox mutations.
 - Their effects arrive through the next pull. The REST command pokes the leader's event stream even when a follower sends it.
 - Uploads, export, workspace creation, and issue tracker settings use their own REST endpoints.
 - The UI disables them while offline.

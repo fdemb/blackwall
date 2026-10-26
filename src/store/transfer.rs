@@ -119,7 +119,7 @@ impl Store {
             .collect();
 
         let mut taken: std::collections::BTreeSet<String> =
-            sqlx::query_scalar("SELECT key FROM teams WHERE workspace_id=$1")
+            sqlx::query_scalar("SELECT key FROM team_keys WHERE workspace_id=$1")
                 .bind(op.workspace_id)
                 .fetch_all(&mut *op.tx)
                 .await?
@@ -213,6 +213,14 @@ async fn insert_planning(op: &mut Operation<'_>, w: &Workspace) -> Result<()> {
         .execute(&mut *op.tx)
         .await?;
         op.created("teams", team.id);
+        for key in &team.former_keys {
+            sqlx::query("INSERT INTO team_keys(workspace_id,key,team_id) VALUES($1,$2,$3)")
+                .bind(w.id)
+                .bind(key)
+                .bind(team.id)
+                .execute(&mut *op.tx)
+                .await?;
+        }
         for user in &team.members {
             sqlx::query("INSERT INTO team_members(workspace_id,team_id,user_id) VALUES($1,$2,$3)")
                 .bind(w.id)

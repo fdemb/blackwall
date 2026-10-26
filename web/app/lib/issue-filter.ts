@@ -1,5 +1,6 @@
 import { ApiError } from "./api";
 import { parseIssueKey } from "./identifiers";
+import { teamByKey } from "./teams";
 import type {
   FilterClause,
   FilterField,
@@ -383,7 +384,7 @@ export function filterIssues(
   const clauses = compileFilter(filter.where);
   const matches = searchPredicate(
     filter.search ?? "",
-    (key) => store.all("teams").find((team) => team.key === key)?.id,
+    (key) => teamByKey(store.all("teams"), key)?.id,
   );
   const kindOf = (stageId: string) => store.stageKind(stageId);
   const rows = candidates(store, ids, clauses).filter((issue) => {

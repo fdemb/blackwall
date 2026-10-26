@@ -39,6 +39,8 @@ const ALL_COMMANDS = [
   "set_team_members",
   "set_team_archive",
   "set_team_appearance",
+  "update_team",
+  "delete_team",
   "create_stage",
   "update_stage",
   "delete_stage",
@@ -113,6 +115,7 @@ describe("mutator registry", () => {
       "set_role",
       "remove_member",
       "transfer_ownership",
+      "delete_team",
       "import_issues",
       "add_attachment",
       "attach_comment_file",
@@ -302,6 +305,7 @@ describe("mutator registry", () => {
       | "set_role"
       | "remove_member"
       | "transfer_ownership"
+      | "delete_team"
       | "import_issues"
       | "add_attachment"
       | "attach_comment_file"

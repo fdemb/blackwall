@@ -81,6 +81,7 @@ function team(): Team {
     version: 1,
     name: "Team",
     key: "TEAM",
+    former_keys: [],
     members: [OWNER, ADMIN, MEMBER, VIEWER],
     stages: [
       { id: STAGE_BACKLOG, version: 1, name: "Backlog", kind: "backlog", position: 0 },
@@ -100,6 +101,7 @@ function otherTeam(): Team {
     version: 1,
     name: "Other",
     key: "OTH",
+    former_keys: [],
     members: [],
     stages: [{ id: STAGE_OTHER, version: 1, name: "Todo", kind: "active", position: 0 }],
     archive_after_days: null,

@@ -28,6 +28,14 @@ impl Operation<'_> {
                 self.set_team_appearance(id, icon, color).await?;
                 id
             }
+            Command::UpdateTeam { id, name, key } => {
+                self.update_team(id, name, key).await?;
+                id
+            }
+            Command::DeleteTeam { id } => {
+                self.delete_team(id).await?;
+                id
+            }
             Command::CreateStage {
                 id,
                 team_id,
@@ -298,6 +306,89 @@ impl Operation<'_> {
             .bind(color)
             .execute(&mut *self.tx)
             .await?;
+        Ok(())
+    }
+
+    async fn update_team(&mut self, id: Uuid, name: String, key: String) -> Result<()> {
+        self.admin()?;
+        text(&name, 200)?;
+        crate::domain::validate_team_key(&key)?;
+        self.touch("teams", id).await?;
+        // The `claim_team_key` trigger keeps the old key as a former key.
+        sqlx::query("UPDATE teams SET name=$3,key=$4 WHERE workspace_id=$1 AND id=$2")
+            .bind(self.workspace_id)
+            .bind(id)
+            .bind(name)
+            .bind(key)
+            .execute(&mut *self.tx)
+            .await
+            .map_err(team_conflict)?;
+        Ok(())
+    }
+
+    async fn delete_team(&mut self, id: Uuid) -> Result<()> {
+        self.admin()?;
+        // Tracker pages lock the issue graph before their connection.
+        self.lock_graph().await?;
+        // Creating or moving an issue into the team locks it, so the emptiness
+        // check below holds until commit.
+        self.lock("teams", id).await?;
+        let has_issues: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM issues WHERE workspace_id=$1 AND team_id=$2)",
+        )
+        .bind(self.workspace_id)
+        .bind(id)
+        .fetch_one(&mut *self.tx)
+        .await?;
+        if has_issues {
+            return Err(Error::Conflict(
+                "team still has issues, including archived or trashed ones; restore or unarchive them and move them to another team, or wait for the trash to be emptied".into(),
+            ));
+        }
+        let tracked: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM tracker_connections c, jsonb_array_elements(c.projects) mapping \
+             WHERE c.workspace_id=$1 AND NOT c.deleted AND mapping->>'team_id'=$2)",
+        )
+        .bind(self.workspace_id)
+        .bind(id.to_string())
+        .fetch_one(&mut *self.tx)
+        .await?;
+        if tracked {
+            return Err(Error::Conflict(
+                "an issue tracker imports into this team; remove that mapping first".into(),
+            ));
+        }
+
+        // Issues moved out of the team lose the keys they had in it.
+        self.touch_referencing_issues(
+            "SELECT DISTINCT issue_id FROM issue_key_aliases WHERE workspace_id=$1 AND team_id=$2 ORDER BY issue_id",
+            id,
+        )
+        .await?;
+        let projects: Vec<Uuid> = sqlx::query_scalar(
+            "SELECT project_id FROM project_teams WHERE workspace_id=$1 AND team_id=$2 ORDER BY project_id",
+        )
+        .bind(self.workspace_id)
+        .bind(id)
+        .fetch_all(&mut *self.tx)
+        .await?;
+        for project in projects {
+            self.touch("projects", project).await?;
+        }
+        for sql in [
+            "DELETE FROM project_teams WHERE workspace_id=$1 AND team_id=$2",
+            "DELETE FROM sprint_outcomes WHERE workspace_id=$1 AND sprint_id IN (SELECT id FROM sprints WHERE workspace_id=$1 AND team_id=$2)",
+            "DELETE FROM sprints WHERE workspace_id=$1 AND team_id=$2",
+            "DELETE FROM stages WHERE workspace_id=$1 AND team_id=$2",
+            "DELETE FROM team_members WHERE workspace_id=$1 AND team_id=$2",
+            "DELETE FROM teams WHERE workspace_id=$1 AND id=$2",
+        ] {
+            sqlx::query(sql)
+                .bind(self.workspace_id)
+                .bind(id)
+                .execute(&mut *self.tx)
+                .await?;
+        }
         Ok(())
     }
 

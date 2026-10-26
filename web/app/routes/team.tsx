@@ -13,6 +13,7 @@ import { TeamCrumb } from "~/components/app/page";
 import { useEffect } from "react";
 import { useI18n } from "~/lib/i18n";
 import { rememberTeamView } from "~/lib/last-view";
+import { teamByKey } from "~/lib/teams";
 import { useDocumentTitle } from "~/lib/title";
 import { useWorkspace } from "~/lib/workspace";
 import type { Team as TeamT } from "~/lib/types";
@@ -43,7 +44,7 @@ function TeamLayout() {
   const { ws } = useWorkspace();
   const state = useQueueState();
   // Older links name the team by id; any case of the key works too.
-  const tm = ws.teams.find((x) => x.key === teamKey.toUpperCase() || x.id === teamKey);
+  const tm = teamByKey(ws.teams, teamKey.toUpperCase()) ?? ws.teams.find((x) => x.id === teamKey);
   const base = `/${ws.slug}/team/${teamKey}`;
   const section = pathname.slice(base.length).split("/")[1] || "list";
   useEffect(() => rememberTeamView(section), [section]);

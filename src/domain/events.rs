@@ -18,6 +18,7 @@ pub const WEBHOOK_EVENTS: &[&str] = &[
     "comment.deleted",
     "team.created",
     "team.updated",
+    "team.deleted",
     "stage.created",
     "stage.updated",
     "stage.deleted",
@@ -62,7 +63,10 @@ pub fn webhook_event(action: &str) -> Option<(&'static str, &'static str)> {
         "edit_comment" | "attach_comment_file" => ("comment.updated", "comment"),
         "delete_comment" => ("comment.deleted", "comment"),
         "create_team" => ("team.created", "team"),
-        "set_team_members" | "set_team_archive" | "set_team_appearance" => ("team.updated", "team"),
+        "set_team_members" | "set_team_archive" | "set_team_appearance" | "update_team" => {
+            ("team.updated", "team")
+        }
+        "delete_team" => ("team.deleted", "team"),
         "create_stage" => ("stage.created", "stage"),
         "update_stage" => ("stage.updated", "stage"),
         "delete_stage" => ("stage.deleted", "stage"),
@@ -115,6 +119,7 @@ mod tests {
             "issue_completed",
             "bulk_issues",
             "add_comment",
+            "delete_team",
             "delete_stage",
             "delete_label",
             "delete_project",

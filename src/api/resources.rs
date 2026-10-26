@@ -291,6 +291,71 @@ pub async fn create_team(
     Ok(one(StatusCode::CREATED, team))
 }
 
+#[derive(Deserialize, utoipa::ToSchema)]
+pub struct UpdateTeam {
+    pub name: Option<String>,
+    /// A new key. Issue keys under the old one keep resolving, and no other
+    /// team can take it.
+    pub key: Option<String>,
+}
+
+#[utoipa::path(
+    patch,
+    path = "/api/v1/workspaces/{workspace}/teams/{team}",
+    tag = "teams",
+    params(("workspace" = Uuid, Path), ("team" = Uuid, Path)),
+    request_body = UpdateTeam,
+    responses((status = 200, body = Team), (status = 412, body = crate::error::ErrorBody))
+)]
+pub async fn update_team(
+    State(store): State<Store>,
+    actor: ApiActor,
+    Path((workspace, team)): Path<(Uuid, Uuid)>,
+    options: WriteOptions,
+    Json(body): Json<UpdateTeam>,
+) -> Result<Response> {
+    let scope = actor.write(workspace)?;
+    let current: Team = record(&store, scope, "teams", team).await?;
+    run(
+        &store,
+        scope,
+        Command::UpdateTeam {
+            id: team,
+            name: body.name.unwrap_or(current.name),
+            key: body.key.unwrap_or(current.key),
+        },
+        Some(team),
+        options,
+    )
+    .await?;
+    let team: Team = record(&store, scope, "teams", team).await?;
+    Ok(one(StatusCode::OK, team))
+}
+
+#[utoipa::path(
+    delete,
+    path = "/api/v1/workspaces/{workspace}/teams/{team}",
+    tag = "teams",
+    params(("workspace" = Uuid, Path), ("team" = Uuid, Path)),
+    responses((status = 204), (status = 409, body = crate::error::ErrorBody))
+)]
+pub async fn delete_team(
+    State(store): State<Store>,
+    actor: ApiActor,
+    Path((workspace, team)): Path<(Uuid, Uuid)>,
+    options: WriteOptions,
+) -> Result<StatusCode> {
+    run(
+        &store,
+        actor.write(workspace)?,
+        Command::DeleteTeam { id: team },
+        Some(team),
+        options,
+    )
+    .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 async fn team_stage(store: &Store, scope: Scope, team: Uuid, stage: Uuid) -> Result<Stage> {
     let team: Team = record(store, scope, "teams", team).await?;
     team.stages
