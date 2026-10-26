@@ -182,6 +182,16 @@ async fn renamed_and_rekeyed_teams_keep_old_issue_keys() {
     }
     let (_, searched) = f.send("GET", "issues?search=ENG-1", None).await;
     assert_eq!(searched["data"][0]["id"], issue["id"], "{searched}");
+    let (status, created) = f
+        .send(
+            "POST",
+            "issues",
+            Some(json!({"title":"Former key","team":"ENG"})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+    assert_eq!(created["team"]["id"], json!(eng), "{created}");
+    assert_eq!(created["key"], "PLAT-2");
 
     let (status, renamed) = f
         .send(

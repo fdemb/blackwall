@@ -327,7 +327,7 @@ impl Workspace {
         self.team(id)?;
         if self.issues.iter().any(|i| i.team_id == id) {
             return Err(Error::Conflict(
-                "team still has issues; move or delete them first".into(),
+                "team still has issues, including archived or trashed ones; move them to another team or wait for the trash to be emptied".into(),
             ));
         }
         for issue in &mut self.issues {

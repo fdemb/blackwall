@@ -85,6 +85,8 @@ pub struct SprintRow {
 pub struct Directory {
     pub me: Uuid,
     pub teams: Vec<TeamRef>,
+    /// Every key each team has held, current and former.
+    pub team_keys: Vec<(Uuid, String)>,
     pub stages: Vec<StageRow>,
     pub labels: Vec<LabelRef>,
     pub projects: Vec<NamedRef>,
@@ -114,6 +116,13 @@ impl Directory {
         .into_iter()
         .map(|(id, key, name)| TeamRef { id, key, name })
         .collect();
+
+        let team_keys = sqlx::query_as::<_, (Uuid, String)>(
+            "SELECT team_id,key FROM team_keys WHERE workspace_id=$1",
+        )
+        .bind(ws)
+        .fetch_all(pool)
+        .await?;
 
         let stages = sqlx::query_as::<_, (Uuid, Uuid, String, String)>(
             "SELECT team_id,id,name,kind FROM stages WHERE workspace_id=$1 ORDER BY team_id,position,id",
@@ -208,6 +217,7 @@ impl Directory {
 
         Ok(Self {
             teams,
+            team_keys,
             stages,
             labels,
             projects,
@@ -233,6 +243,7 @@ impl Directory {
         Ok(Self {
             me: scope.user,
             teams: vec![],
+            team_keys: vec![],
             stages: vec![],
             labels: vec![],
             projects: vec![],
@@ -329,8 +340,12 @@ impl Directory {
 
     // Resolving references. Each accepts a UUID as well as the names listed.
 
-    /// A team by UUID, key or name.
+    /// A team by UUID, key or name. A key, current or former, belongs to one
+    /// team for good, so it wins over another team's name.
     pub fn find_team(&self, reference: &str) -> Result<Uuid> {
+        if let Some((team, _)) = self.team_keys.iter().find(|(_, key)| same(key, reference)) {
+            return Ok(*team);
+        }
         pick(
             "team",
             reference,

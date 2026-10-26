@@ -342,7 +342,7 @@ impl Operation<'_> {
         .await?;
         if has_issues {
             return Err(Error::Conflict(
-                "team still has issues; move or delete them first".into(),
+                "team still has issues, including archived or trashed ones; move them to another team or wait for the trash to be emptied".into(),
             ));
         }
         let tracked: bool = sqlx::query_scalar(
