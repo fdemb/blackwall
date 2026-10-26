@@ -120,6 +120,18 @@ async fn admin(conn: &mut PgConnection, workspace: Uuid, actor: Uuid) -> Result<
     Ok(())
 }
 
+/// Team deletion and tracker pages take the issue graph lock before any
+/// connection row, so taking it first keeps that order and stops a team from
+/// being deleted under a mapping saved in this transaction.
+async fn admin_holding_graph(conn: &mut PgConnection, workspace: Uuid, actor: Uuid) -> Result<()> {
+    admin(conn, workspace, actor).await?;
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,41827))")
+        .bind(workspace.to_string())
+        .execute(conn)
+        .await?;
+    Ok(())
+}
+
 async fn providers(
     State(store): State<Store>,
     actor: Actor,
@@ -401,14 +413,7 @@ async fn configure(
     config: Config,
 ) -> Result<Connection> {
     let mut tx = store.pool.begin().await?;
-    admin(&mut tx, workspace, actor.profile.id).await?;
-    // Team deletion and tracker pages take the issue graph lock before any
-    // connection row, so taking it first keeps that order and stops a team
-    // from being deleted under a mapping saved here.
-    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,41827))")
-        .bind(workspace.to_string())
-        .execute(&mut *tx)
-        .await?;
+    admin_holding_graph(&mut tx, workspace, actor.profile.id).await?;
     let created = id.is_none();
     let id = match id {
         Some(id) => id,
