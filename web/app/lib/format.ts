@@ -77,8 +77,14 @@ export function relativeTime(iso: string, lang: string) {
   return rtf.format(Math.round(diff), "second");
 }
 
+/** "Mar 5", with the year added when it isn't the current one. */
 export function shortDate(iso: string, lang: string) {
-  return new Date(iso).toLocaleDateString(lang, { month: "short", day: "numeric" });
+  const date = new Date(iso);
+  return date.toLocaleDateString(lang, {
+    year: date.getFullYear() === new Date().getFullYear() ? undefined : "numeric",
+    month: "short",
+    day: "numeric",
+  });
 }
 
 export function fullDate(iso: string, lang: string) {
