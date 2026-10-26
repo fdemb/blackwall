@@ -136,29 +136,11 @@ export function TeamAppearancePicker({
       </Button>
       <Popover placement="bottom start" className="min-w-0">
         <Dialog aria-label={t("team.appearance")} className="w-64 space-y-3 p-3 outline-none">
-          <ListBox
-            aria-label={t("team.color")}
-            layout="grid"
-            selectionMode="single"
-            disallowEmptySelection
-            selectedKeys={[team.color]}
-            onSelectionChange={(keys) => {
-              const [color] = keys === "all" ? [] : [...keys];
-              if (color) onChange({ icon: team.icon, color: color as TeamColor });
-            }}
+          <TeamColorSwatches
+            value={team.color}
+            onChange={(color) => onChange({ icon: team.icon, color })}
             className="grid grid-cols-6 gap-1"
-          >
-            {TEAM_COLORS.map((color) => (
-              <ListBoxItem
-                key={color}
-                id={color}
-                textValue={t(`team.colors.${color}`)}
-                className={cell}
-              >
-                <span className={cn("size-4 rounded-full", COLORS[color].swatch)} />
-              </ListBoxItem>
-            ))}
-          </ListBox>
+          />
           <ListBox
             aria-label={t("team.icon")}
             layout="grid"
@@ -188,5 +170,46 @@ export function TeamAppearancePicker({
         </Dialog>
       </Popover>
     </DialogTrigger>
+  );
+}
+
+/** The team color palette as a row of swatches, one selected. */
+export function TeamColorSwatches({
+  value,
+  onChange,
+  isDisabled,
+  className,
+}: {
+  value: TeamColor;
+  onChange: (color: TeamColor) => void;
+  isDisabled?: boolean;
+  className?: string;
+}) {
+  const { t } = useI18n();
+  return (
+    <ListBox
+      aria-label={t("team.color")}
+      layout="grid"
+      selectionMode="single"
+      disallowEmptySelection
+      disabledKeys={isDisabled ? TEAM_COLORS : []}
+      selectedKeys={[value]}
+      onSelectionChange={(keys) => {
+        const [color] = keys === "all" ? [] : [...keys];
+        if (color) onChange(color as TeamColor);
+      }}
+      className={className}
+    >
+      {TEAM_COLORS.map((color) => (
+        <ListBoxItem
+          key={color}
+          id={color}
+          textValue={t(`team.colors.${color}`)}
+          className={cn(cell, "disabled:opacity-60")}
+        >
+          <span className={cn("size-4 rounded-full", COLORS[color].swatch)} />
+        </ListBoxItem>
+      ))}
+    </ListBox>
   );
 }

@@ -1,6 +1,7 @@
 import { useView } from "../sync/react";
 import type { DeepReadonly, SyncStore } from "../sync/store";
 import type { SyncIssue } from "../sync/records";
+import { stageIssueCounts } from "./team-settings";
 import type { Id, ProjectStats } from "./types";
 
 // Counts the server report also computes, derived from the replica so ordinary pages never fetch it.
@@ -91,6 +92,11 @@ export function useIssueCount(): number {
 
 export function useLabelCounts(): Record<Id, number> {
   return useView(labelCounts, ["issues"], []);
+}
+
+/** Issues per stage id that are neither archived nor trashed. */
+export function useStageIssueCounts(): Record<Id, number> {
+  return useView((store) => stageIssueCounts(store.all("issues")), ["issues"], []);
 }
 
 /** Progress per sprint id, for every sprint in the workspace. */
