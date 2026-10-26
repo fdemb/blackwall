@@ -26,7 +26,7 @@ fn ids(n: u128) -> Vec<Uuid> {
 
 #[tokio::test]
 async fn slugs_and_team_keys_avoid_every_assigned_value() {
-    let database = support::TestDatabase::new().await;
+    let database = support::TestDatabase::empty().await;
     let mut conn = PgConnection::connect(&database.url).await.unwrap();
     migrate_before(&mut conn, "0026").await;
 
@@ -84,7 +84,7 @@ async fn slugs_and_team_keys_avoid_every_assigned_value() {
 
 #[tokio::test]
 async fn change_notifications_take_the_coalescing_key_and_release_it_on_read() {
-    let database = support::TestDatabase::new().await;
+    let database = support::TestDatabase::empty().await;
     let mut conn = PgConnection::connect(&database.url).await.unwrap();
     migrate_before(&mut conn, "0035").await;
 
@@ -181,7 +181,7 @@ async fn change_notifications_take_the_coalescing_key_and_release_it_on_read() {
 
 #[tokio::test]
 async fn profile_alerts_fold_into_workspace_preferences() {
-    let database = support::TestDatabase::new().await;
+    let database = support::TestDatabase::empty().await;
     let mut conn = PgConnection::connect(&database.url).await.unwrap();
     migrate_before(&mut conn, "0043").await;
 
@@ -298,7 +298,7 @@ async fn profile_alerts_fold_into_workspace_preferences() {
 
 #[tokio::test]
 async fn session_metadata_dates_existing_sessions_and_accepts_old_inserts() {
-    let database = support::TestDatabase::new().await;
+    let database = support::TestDatabase::empty().await;
     let mut conn = PgConnection::connect(&database.url).await.unwrap();
     migrate_before(&mut conn, "0036").await;
 
@@ -386,7 +386,7 @@ async fn store_starts_on_a_database_migrated_by_a_newer_release() {
 
 #[tokio::test]
 async fn email_verification_counts_existing_and_old_binary_users_as_verified() {
-    let database = support::TestDatabase::new().await;
+    let database = support::TestDatabase::empty().await;
     let mut conn = PgConnection::connect(&database.url).await.unwrap();
     migrate_before(&mut conn, "0044").await;
 
@@ -427,7 +427,7 @@ async fn email_verification_counts_existing_and_old_binary_users_as_verified() {
 
 #[tokio::test]
 async fn team_keys_reserve_existing_and_retired_keys() {
-    let database = support::TestDatabase::new().await;
+    let database = support::TestDatabase::empty().await;
     let mut conn = PgConnection::connect(&database.url).await.unwrap();
     migrate_before(&mut conn, "0045").await;
 
