@@ -347,7 +347,7 @@ impl Operation<'_> {
         }
         let tracked: bool = sqlx::query_scalar(
             "SELECT EXISTS(SELECT 1 FROM tracker_connections c, jsonb_array_elements(c.projects) mapping \
-             WHERE c.workspace_id=$1 AND mapping->>'team_id'=$2)",
+             WHERE c.workspace_id=$1 AND NOT c.deleted AND mapping->>'team_id'=$2)",
         )
         .bind(self.workspace_id)
         .bind(id.to_string())

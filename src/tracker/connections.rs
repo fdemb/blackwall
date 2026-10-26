@@ -251,8 +251,12 @@ async fn validate_projects(
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect();
+    // Key-share locks hold off a concurrent team delete until this mapping
+    // commits, and skip a team deleted while we waited.
     let existing_teams: BTreeSet<Uuid> = sqlx::query_scalar(
-        "SELECT DISTINCT team_id FROM stages WHERE workspace_id=$1 AND team_id=ANY($2)",
+        "SELECT id FROM teams t WHERE workspace_id=$1 AND id=ANY($2) \
+         AND EXISTS(SELECT 1 FROM stages s WHERE s.workspace_id=$1 AND s.team_id=t.id) \
+         ORDER BY id FOR KEY SHARE",
     )
     .bind(workspace)
     .bind(&teams)

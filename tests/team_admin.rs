@@ -41,8 +41,8 @@ async fn call(
     )
 }
 
-/// A registered user's write API token.
-async fn api_token(store: &Store, app: &axum::Router, name: &str) -> (Uuid, String) {
+/// A registered user's session and write API token.
+async fn api_token(store: &Store, app: &axum::Router, name: &str) -> (Uuid, String, String) {
     let session = store
         .register(Register {
             email: format!("{name}-{}@example.com", Uuid::new_v4()),
@@ -65,6 +65,7 @@ async fn api_token(store: &Store, app: &axum::Router, name: &str) -> (Uuid, Stri
     assert_eq!(status, StatusCode::CREATED, "{token}");
     (
         session.profile.id,
+        session.token,
         token["secret"].as_str().unwrap().to_owned(),
     )
 }
@@ -73,7 +74,9 @@ struct Fixture {
     database: support::TestDatabase,
     store: Store,
     app: axum::Router,
+    workspace: Uuid,
     base: String,
+    owner_session: String,
     owner: String,
     member: String,
 }
@@ -83,17 +86,17 @@ impl Fixture {
         let database = support::TestDatabase::new().await;
         let store = Store::connect(&database.url).await.unwrap();
         let app = router(store.clone());
-        let (owner_id, owner) = api_token(&store, &app, "owner").await;
-        let (member_id, member) = api_token(&store, &app, "member").await;
+        let (owner_id, owner_session, owner) = api_token(&store, &app, "owner").await;
+        let (member_id, _, member) = api_token(&store, &app, "member").await;
         let created = store
             .create_workspace("Teams".into(), owner_id)
             .await
             .unwrap();
-        let ws = created["id"].as_str().unwrap().to_owned();
+        let workspace = Uuid::parse_str(created["id"].as_str().unwrap()).unwrap();
         sqlx::query(
             "INSERT INTO workspace_members(workspace_id,user_id,role) VALUES($1,$2,'member')",
         )
-        .bind(Uuid::parse_str(&ws).unwrap())
+        .bind(workspace)
         .bind(member_id)
         .execute(&store.pool)
         .await
@@ -102,7 +105,9 @@ impl Fixture {
             database,
             store,
             app,
-            base: format!("/api/v1/workspaces/{ws}"),
+            workspace,
+            base: format!("/api/v1/workspaces/{workspace}"),
+            owner_session,
             owner,
             member,
         }
@@ -335,6 +340,64 @@ async fn teams_delete_only_when_empty_and_only_for_admins() {
         status,
         StatusCode::CREATED,
         "a deleted team's key is free: {reused}"
+    );
+
+    f.close().await;
+}
+
+#[tokio::test]
+async fn tracker_mappings_hold_teams_until_disconnected() {
+    let f = Fixture::new().await;
+    let imported = f.team("Imported", "IMP").await;
+    let gone = f.team("Gone", "GON").await;
+    let connections = format!(
+        "/internal-api/workspaces/{}/trackers/connections",
+        f.workspace
+    );
+    let (status, removed) = f.send("DELETE", &format!("teams/{gone}"), None).await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{removed}");
+    let (status, refused) = call(
+        &f.app,
+        "POST",
+        &connections,
+        &f.owner_session,
+        Some(json!({"provider":"openproject","name":"Stale","base_url":"http://127.0.0.1:3000","token":"op-token",
+            "projects":[{"project_id":"42","team_id":gone}]})),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "a deleted team takes no mapping: {refused}"
+    );
+
+    let (status, connection) = call(
+        &f.app,
+        "POST",
+        &connections,
+        &f.owner_session,
+        Some(json!({"provider":"openproject","name":"OP","base_url":"http://127.0.0.1:3000","token":"op-token",
+            "projects":[{"project_id":"42","team_id":imported}]})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{connection}");
+    let (status, refused) = f.send("DELETE", &format!("teams/{imported}"), None).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{refused}");
+
+    let (status, _) = call(
+        &f.app,
+        "DELETE",
+        &format!("{connections}/{}", connection["id"].as_str().unwrap()),
+        &f.owner_session,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (status, removed) = f.send("DELETE", &format!("teams/{imported}"), None).await;
+    assert_eq!(
+        status,
+        StatusCode::NO_CONTENT,
+        "a disconnected tracker releases the team: {removed}"
     );
 
     f.close().await;
