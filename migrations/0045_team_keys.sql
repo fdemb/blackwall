@@ -4,7 +4,9 @@
 
 -- An old server keeps creating teams during the migration. Holding off its
 -- writes until commit means the backfill misses no team the trigger misses.
-LOCK TABLE teams IN SHARE ROW EXCLUSIVE MODE;
+-- EXCLUSIVE also waits out its FOR UPDATE row lockers, whose later team
+-- update would otherwise deadlock with the backfill's foreign key checks.
+LOCK TABLE teams IN EXCLUSIVE MODE;
 
 CREATE TABLE team_keys(
  workspace_id uuid NOT NULL,

@@ -340,10 +340,15 @@ impl Directory {
 
     // Resolving references. Each accepts a UUID as well as the names listed.
 
-    /// A team by UUID, key or name. A key, current or former, belongs to one
-    /// team for good, so it wins over another team's name.
+    /// A team by UUID, current key or name, or else by a key it used to have.
     pub fn find_team(&self, reference: &str) -> Result<Uuid> {
-        if let Some((team, _)) = self.team_keys.iter().find(|(_, key)| same(key, reference)) {
+        let current = self
+            .teams
+            .iter()
+            .any(|t| same(&t.key, reference) || same(&t.name, reference));
+        if !current
+            && let Some((team, _)) = self.team_keys.iter().find(|(_, key)| same(key, reference))
+        {
             return Ok(*team);
         }
         pick(

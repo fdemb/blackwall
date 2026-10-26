@@ -783,7 +783,7 @@ export class FakeServer {
       if (tx.all("issues").some((issue) => issue.team_id === team))
         throw new MutationError(
           409,
-          "team still has issues, including archived or trashed ones; move them to another team or wait for the trash to be emptied",
+          "team still has issues, including archived or trashed ones; restore or unarchive them and move them to another team, or wait for the trash to be emptied",
         );
       this.deleteTeam(tx, team);
     } else if (name === "update_workspace") {

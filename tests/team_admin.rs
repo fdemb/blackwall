@@ -220,6 +220,62 @@ async fn renamed_and_rekeyed_teams_keep_old_issue_keys() {
 }
 
 #[tokio::test]
+async fn former_keys_resolve_only_when_no_current_team_matches() {
+    let f = Fixture::new().await;
+    let frontend = f.team("Web", "WEB").await;
+    let (status, team) = f
+        .send(
+            "PATCH",
+            &format!("teams/{frontend}"),
+            Some(json!({"name":"Frontend","key":"FE"})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{team}");
+    let web = f.team("Web", "WB").await;
+    f.team("FE", "FEX").await;
+
+    for (reference, team) in [("Web", &web), ("WEB", &web), ("WB", &web)] {
+        let (status, created) = f
+            .send(
+                "POST",
+                "issues",
+                Some(json!({"title":reference,"team":reference})),
+            )
+            .await;
+        assert_eq!(status, StatusCode::CREATED, "{reference}: {created}");
+        assert_eq!(created["team"]["id"], json!(team), "{reference}");
+    }
+    let (status, ambiguous) = f
+        .send("POST", "issues", Some(json!({"title":"FE","team":"FE"})))
+        .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "a key and another team's name stay ambiguous: {ambiguous}"
+    );
+
+    let (status, renamed) = f
+        .send(
+            "PATCH",
+            &format!("teams/{web}"),
+            Some(json!({"name":"Website"})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{renamed}");
+    let (status, created) = f
+        .send(
+            "POST",
+            "issues",
+            Some(json!({"title":"Old key","team":"WEB"})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+    assert_eq!(created["team"]["id"], json!(frontend), "{created}");
+
+    f.close().await;
+}
+
+#[tokio::test]
 async fn retired_keys_stay_reserved_for_their_team() {
     let f = Fixture::new().await;
     let eng = f.team("Engineering", "ENG").await;
