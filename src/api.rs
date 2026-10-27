@@ -9,7 +9,7 @@ use crate::{
     store::{OperationResult, Store},
 };
 use axum::{
-    Json, Router,
+    Json, RequestExt, Router,
     extract::{FromRequestParts, Request, State},
     http::{HeaderMap, HeaderValue, StatusCode, header, request::Parts},
     middleware::{self, Next},
@@ -301,6 +301,33 @@ fn page_of<T: serde::de::DeserializeOwned>(value: serde_json::Value) -> Result<P
 pub struct WriteOptions {
     pub if_match: Option<i64>,
     pub idempotency_key: Option<String>,
+    /// What a keyed request sent, recorded by `fingerprint`.
+    pub sent: Option<serde_json::Value>,
+}
+
+#[derive(Clone)]
+struct SentRequest(serde_json::Value);
+
+/// Records the method, path and body hash of a request carrying an `Idempotency-Key`.
+/// Replays are matched against this rather than the command, because PATCH handlers
+/// fill omitted fields from the record as it is when the request arrives.
+async fn fingerprint(request: Request, next: Next) -> Response {
+    use sha2::{Digest, Sha256};
+
+    if !request.headers().contains_key("idempotency-key") {
+        return next.run(request).await;
+    }
+    let (mut parts, body) = request.with_limited_body().into_parts();
+    let Ok(bytes) = axum::body::to_bytes(body, usize::MAX).await else {
+        return StatusCode::PAYLOAD_TOO_LARGE.into_response();
+    };
+    parts.extensions.insert(SentRequest(serde_json::json!({
+        "method": parts.method.as_str(),
+        "path": parts.uri.path_and_query().map(|p| p.as_str()),
+        "body_sha256": hex::encode(Sha256::digest(&bytes)),
+    })));
+    next.run(Request::from_parts(parts, axum::body::Body::from(bytes)))
+        .await
 }
 
 impl FromRequestParts<Store> for WriteOptions {
@@ -334,6 +361,10 @@ impl FromRequestParts<Store> for WriteOptions {
         Ok(Self {
             if_match,
             idempotency_key,
+            sent: parts
+                .extensions
+                .get::<SentRequest>()
+                .map(|sent| sent.0.clone()),
         })
     }
 }
@@ -376,6 +407,7 @@ pub async fn run(
             command,
             expected,
             options.idempotency_key,
+            options.sent,
             None,
             Some(scope.token),
         )
@@ -504,6 +536,7 @@ pub fn router(store: Store) -> Router<Store> {
                 .patch(webhooks::update)
                 .delete(webhooks::delete),
         )
+        .layer(middleware::from_fn(fingerprint))
         .layer(middleware::from_fn_with_state(store.clone(), authenticate));
     let v1 = Router::new()
         .route("/api/v1/openapi.json", get(openapi))

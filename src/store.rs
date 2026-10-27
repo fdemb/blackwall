@@ -363,6 +363,7 @@ impl Store {
             command,
             expected,
             key,
+            None,
             attachment,
             None,
         )
@@ -370,6 +371,8 @@ impl Store {
     }
 
     /// Runs a command as `actor`, recording on its activity and comments that `via` acted for them.
+    /// `sent` is the request as the client sent it; when given, a replayed key is matched
+    /// against it instead of the command.
     #[allow(clippy::too_many_arguments)]
     pub async fn operation_via(
         &self,
@@ -378,6 +381,7 @@ impl Store {
         command: Command,
         expected: BTreeMap<Uuid, i64>,
         key: Option<String>,
+        sent: Option<serde_json::Value>,
         attachment: Option<NewAttachment>,
         via: Option<crate::domain::ViaToken>,
     ) -> Result<OperationResult> {
@@ -392,15 +396,21 @@ impl Store {
             metadata.remove("id");
         }
 
-        let request = serde_json::json!({
-            "command": command_fingerprint,
-            "expected_versions": expected,
-            "attachment": attachment.as_ref().map(|a| serde_json::json!({
-                "filename": a.filename,
-                "content_type": a.content_type,
-                "sha256": hex::encode(Sha256::digest(&a.bytes)),
-            })),
-        });
+        let request = match sent {
+            Some(sent) => serde_json::json!({
+                "sent": sent,
+                "expected_versions": expected,
+            }),
+            None => serde_json::json!({
+                "command": command_fingerprint,
+                "expected_versions": expected,
+                "attachment": attachment.as_ref().map(|a| serde_json::json!({
+                    "filename": a.filename,
+                    "content_type": a.content_type,
+                    "sha256": hex::encode(Sha256::digest(&a.bytes)),
+                })),
+            }),
+        };
 
         let membership = membership_exclusive(&command);
 

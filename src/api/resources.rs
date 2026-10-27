@@ -834,6 +834,7 @@ pub async fn update_project(
             WriteOptions {
                 if_match: options.if_match,
                 idempotency_key: options.idempotency_key.clone(),
+                sent: options.sent.clone(),
             },
         )
         .await?;
