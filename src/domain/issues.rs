@@ -456,7 +456,6 @@ mod mention_tests {
         mentions: BTreeSet<Uuid>,
     }
 
-    /// The client runs the same cases in `web/app/lib/mentions.test.ts`.
     #[test]
     fn mentions_match_the_shared_cases() {
         let cases: Vec<Case> =
