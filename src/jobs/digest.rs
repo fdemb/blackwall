@@ -17,10 +17,10 @@ pub struct Digest {
     pub notification_ids: Vec<Uuid>,
 }
 
-/// Unread notifications a member wants by email and no digest has covered at their current
-/// `created_at`, batched per member once the oldest has waited `$1`. Marks per notification,
-/// not a time cursor, catch a notification whose transaction commits after a later one was sent.
-/// The one-day floor keeps a backlog from flooding inboxes when mail is turned on.
+/// Unread notifications a member still wants in the inbox and by email, and no digest has covered
+/// at their current `created_at`, batched per member once the oldest has waited `$1`. Marks per
+/// notification, not a time cursor, catch a notification whose transaction commits after a later
+/// one was sent. The one-day floor keeps a backlog from flooding inboxes when mail is turned on.
 const DUE_BATCHES: &str = "WITH eligible AS (\
     SELECT n.workspace_id,n.user_id,n.id,n.created_at FROM notifications n \
     JOIN workspace_members m ON m.workspace_id=n.workspace_id AND m.user_id=n.user_id \
@@ -29,11 +29,11 @@ const DUE_BATCHES: &str = "WITH eligible AS (\
     AND NOT EXISTS(SELECT 1 FROM notification_emails e \
         WHERE e.notification_id=n.id AND e.created_at>=n.created_at) \
     AND CASE n.kind \
-        WHEN 'assignment' THEN COALESCE(p.email_assignment,true) \
-        WHEN 'reply' THEN COALESCE(p.email_reply,true) \
-        WHEN 'change' THEN COALESCE(p.email_change,false) \
-        WHEN 'mention' THEN COALESCE(p.email_mention,true) \
-        WHEN 'deadline' THEN COALESCE(p.email_deadline,true) END) \
+        WHEN 'assignment' THEN COALESCE(p.assignment AND p.email_assignment,true) \
+        WHEN 'reply' THEN COALESCE(p.reply AND p.email_reply,true) \
+        WHEN 'change' THEN COALESCE(p.change AND p.email_change,false) \
+        WHEN 'mention' THEN COALESCE(p.mention AND p.email_mention,true) \
+        WHEN 'deadline' THEN COALESCE(p.deadline AND p.email_deadline,true) END) \
     SELECT workspace_id,user_id,array_agg(id ORDER BY created_at,id),\
     array_agg(created_at ORDER BY created_at,id) FROM eligible \
     GROUP BY workspace_id,user_id HAVING min(created_at)<=now()-make_interval(mins=>$1)";
