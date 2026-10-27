@@ -980,3 +980,84 @@ async fn unread_notifications_are_emailed_once_as_a_digest_after_a_delay() {
     tokio::fs::remove_dir_all(spool).await.unwrap();
     f.cleanup().await;
 }
+
+fn alerts(assignment: bool) -> Command {
+    Command::ConfigureAlerts {
+        assignment,
+        reply: true,
+        change: true,
+        mention: true,
+        deadline: true,
+        email_assignment: Some(true),
+        email_reply: Some(true),
+        email_change: Some(true),
+        email_mention: Some(true),
+        email_deadline: Some(true),
+    }
+}
+
+#[tokio::test]
+async fn turning_a_kind_out_of_the_inbox_stops_its_pending_email() {
+    let f = Fixture::new().await;
+    let spool = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("target")
+        .join(format!("digest-spool-{}", Uuid::new_v4()));
+    let mail = Mailer::Spool(spool.clone());
+    let issue = f.create_issue("Rotate certificates", f.stages[0]).await;
+
+    f.backdated(issue, "assignment", 15.0, json!([])).await;
+    f.backdated(issue, "reply", 15.0, json!([])).await;
+    f.run(f.follower.profile.id, alerts(false)).await;
+    jobs::tick(&f.store, &mail).await.unwrap();
+
+    let letters = spooled(&f.store, &spool).await;
+    assert_eq!(letters.len(), 1, "{letters:?}");
+    assert!(
+        letters[0].1.contains("replied on TEAM-1"),
+        "{}",
+        letters[0].1
+    );
+    assert!(!letters[0].1.contains("assigned you"), "{}", letters[0].1);
+
+    f.run(f.follower.profile.id, alerts(true)).await;
+    jobs::tick(&f.store, &mail).await.unwrap();
+    let letters = spooled(&f.store, &spool).await;
+    assert_eq!(letters.len(), 2, "{letters:?}");
+    assert!(
+        letters[1].1.contains("assigned you TEAM-1"),
+        "{}",
+        letters[1].1
+    );
+
+    tokio::fs::remove_dir_all(spool).await.unwrap();
+    f.cleanup().await;
+}
+
+#[tokio::test]
+async fn notifications_older_than_a_day_are_never_emailed() {
+    let f = Fixture::new().await;
+    let spool = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("target")
+        .join(format!("digest-spool-{}", Uuid::new_v4()));
+    let mail = Mailer::Spool(spool.clone());
+    let recent = f.create_issue("Rotate certificates", f.stages[0]).await;
+    let stale = f.create_issue("Audit logs", f.stages[0]).await;
+
+    f.backdated(recent, "assignment", 24.0 * 60.0 - 1.0, json!([]))
+        .await;
+    f.backdated(stale, "assignment", 24.0 * 60.0 + 1.0, json!([]))
+        .await;
+    jobs::tick(&f.store, &mail).await.unwrap();
+
+    let letters = spooled(&f.store, &spool).await;
+    assert_eq!(letters.len(), 1, "{letters:?}");
+    assert!(
+        letters[0].1.contains("assigned you TEAM-1"),
+        "{}",
+        letters[0].1
+    );
+    assert!(!letters[0].1.contains("TEAM-2"), "{}", letters[0].1);
+
+    tokio::fs::remove_dir_all(spool).await.unwrap();
+    f.cleanup().await;
+}
