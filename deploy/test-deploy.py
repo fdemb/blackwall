@@ -3,6 +3,7 @@
 from pathlib import Path
 import os
 import subprocess
+import tarfile
 import tempfile
 
 script = (Path(__file__).resolve().parent / "blackwall-deploy").read_text()
@@ -21,18 +22,34 @@ case "$UNHEALTHY" in *"$release"*) exit 22 ;; esac""",
 }
 
 
-def deploy(work, *, previous=old, unhealthy=(), restart_fails=()):
+def release_files(release):
+    (release / "web").mkdir(parents=True)
+    (release / "web/index.html").write_text("ok")
+    (release / "blackwall").write_text("#!/bin/sh\n")
+    (release / "blackwall").chmod(0o755)
+
+
+def deploy(work, *, previous=old, unhealthy=(), restart_fails=(), archive=None, extra_stubs={}):
     root = work / "opt"
     bins = work / "bin"
     bins.mkdir()
-    for name, body in stubs.items():
+    for name, body in {**stubs, **extra_stubs}.items():
         (bins / name).write_text(f"#!/bin/sh\n{body}\n")
         (bins / name).chmod(0o755)
-    for release in (old, new):
-        (root / "releases" / release / "web").mkdir(parents=True)
-        (root / "releases" / release / "web/index.html").write_text("ok")
-        (root / "releases" / release / "blackwall").write_text("#!/bin/sh\n")
-        (root / "releases" / release / "blackwall").chmod(0o755)
+    release_files(root / "releases" / old)
+    tarball = work / "release.tar.gz"
+    if archive:
+        staging = work / "staging"
+        release_files(staging)
+        outside = work / "outside"
+        outside.write_text(f'#!/bin/sh\necho "outside ran" >> "{work / "calls.log"}"\n')
+        outside.chmod(0o755)
+        archive(staging, work)
+        with tarfile.open(tarball, "w:gz") as tar:
+            for entry in sorted(staging.iterdir()):
+                tar.add(entry, entry.name)
+    else:
+        release_files(root / "releases" / new)
     if previous:
         (root / "current").symlink_to(root / "releases" / previous)
     env_file = work / "blackwall.env"
@@ -45,7 +62,7 @@ def deploy(work, *, previous=old, unhealthy=(), restart_fails=()):
     log = work / "calls.log"
     log.touch()
     result = subprocess.run(
-        ["bash", work / "deploy", "unused.tar.gz", new],
+        ["bash", work / "deploy", tarball, new],
         env=dict(
             os.environ,
             PATH=f"{bins}:{os.environ['PATH']}",
@@ -61,6 +78,7 @@ def deploy(work, *, previous=old, unhealthy=(), restart_fails=()):
     return {
         "code": result.returncode,
         "current": current.resolve().name if current.is_symlink() else None,
+        "installed": (root / "releases" / new).exists(),
         "output": result.stdout + result.stderr,
         "calls": log.read_text().splitlines(),
     }
@@ -114,6 +132,41 @@ def redeploy_unhealthy(o):
     assert "no previous release" in o["output"]
 
 
+def rejected_archive(o):
+    assert o["code"] != 0 and o["current"] == old and not o["installed"]
+    assert "migrating" not in o["output"] and "outside ran" not in o["calls"]
+
+
+def symlinked_binary(staging, work):
+    (staging / "blackwall").unlink()
+    (staging / "blackwall").symlink_to(work / "outside")
+
+
+def symlinked_web_file(staging, work):
+    (staging / "web/index.html").unlink()
+    (staging / "web/index.html").symlink_to(work / "outside")
+
+
+def internal_symlink(staging, work):
+    (staging / "web/home.html").symlink_to("index.html")
+
+
+def absolute_symlink_into_staging(staging, work):
+    (staging / "web/content.html").write_text("ok")
+    (staging / "web/index.html").unlink()
+    (staging / "web/index.html").symlink_to(work / "opt/releases" / f"{new}.tmp/web/content.html")
+
+
+def relative_symlink_into_staging(staging, work):
+    (staging / "web/content.html").write_text("ok")
+    (staging / "web/index.html").unlink()
+    (staging / "web/index.html").symlink_to(f"../../{new}.tmp/web/content.html")
+
+
+def dangling_symlink(staging, work):
+    (staging / "web/home.html").symlink_to("missing.html")
+
+
 case("healthy deploy switches to the new release", healthy_deploy)
 case("failed restart rolls back", rollback_after_failed_restart, restart_fails=[new])
 case("failed health check rolls back and checks the old release", rollback_after_failed_health_check, unhealthy=[new])
@@ -121,6 +174,13 @@ case("both releases unhealthy", both_releases_down, unhealthy=[new, old])
 case("restart fails for both releases", both_releases_down, restart_fails=[new, old])
 case("first deploy has nothing to roll back to", first_deploy_unhealthy, previous=None, unhealthy=[new])
 case("redeploying the current release has nothing to roll back to", redeploy_unhealthy, previous=new, unhealthy=[new])
+case("archive with an internal symlink installs", healthy_deploy, archive=internal_symlink)
+case("archive whose binary is a symlink is rejected", rejected_archive, archive=symlinked_binary)
+case("archive with a file linked outside the release is rejected", rejected_archive, archive=symlinked_web_file)
+case("archive with an absolute link into its unpack dir is rejected", rejected_archive, archive=absolute_symlink_into_staging)
+case("archive with a relative link back into its unpack dir is rejected", rejected_archive, archive=relative_symlink_into_staging)
+case("archive with a dangling link is rejected", rejected_archive, archive=dangling_symlink)
+case("archive is rejected when listing its links fails", rejected_archive, archive=internal_symlink, extra_stubs={"find": "exit 2"})
 
 if failures:
     raise SystemExit(f"{len(failures)} deploy case(s) failed")
