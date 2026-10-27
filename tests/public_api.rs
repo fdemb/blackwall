@@ -1347,3 +1347,82 @@ async fn project_plan_patches_merge_and_lose_a_removed_lead() {
     store.pool.close().await;
     database.cleanup().await;
 }
+
+#[tokio::test]
+async fn keyed_patches_replay_after_unrelated_writes() {
+    let database = support::TestDatabase::new().await;
+    let store = Store::connect(&database.url).await.unwrap();
+    let app = router(store.clone());
+    let owner = account(&store, "owner").await;
+    let ws = workspace(&store, &owner, "Replays").await;
+    let write = token(&app, &owner, json!({"name":"CI","access":"write"})).await;
+    let base = format!("/api/v1/workspaces/{ws}");
+
+    let project = call(
+        &app,
+        "POST",
+        &format!("{base}/projects"),
+        &write,
+        Some(json!({"name":"Launch","team_ids":[]})),
+    )
+    .await;
+    assert_eq!(project.status, StatusCode::CREATED, "{}", project.body);
+    let label = call(
+        &app,
+        "POST",
+        &format!("{base}/labels"),
+        &write,
+        Some(json!({"name":"bug","color":"red"})),
+    )
+    .await;
+    assert_eq!(label.status, StatusCode::CREATED, "{}", label.body);
+
+    for (path, keyed, unrelated, different, field) in [
+        (
+            format!("{base}/projects/{}", project.body["id"].as_str().unwrap()),
+            json!({"status": "completed"}),
+            json!({"health": "at_risk"}),
+            json!({"status": "cancelled"}),
+            "status",
+        ),
+        (
+            format!("{base}/labels/{}", label.body["id"].as_str().unwrap()),
+            json!({"name": "defect"}),
+            json!({"color": "blue"}),
+            json!({"name": "regression"}),
+            "name",
+        ),
+    ] {
+        let key = format!("patch-{field}");
+        let key = [("Idempotency-Key", key.as_str())];
+        let first = send(
+            &app,
+            "PATCH",
+            &path,
+            Some(&write),
+            Some(keyed.clone()),
+            &key,
+        )
+        .await;
+        assert_eq!(first.status, StatusCode::OK, "{path}: {}", first.body);
+        let other = call(&app, "PATCH", &path, &write, Some(unrelated)).await;
+        assert_eq!(other.status, StatusCode::OK, "{path}: {}", other.body);
+
+        let replay = send(&app, "PATCH", &path, Some(&write), Some(keyed), &key).await;
+        assert_eq!(replay.status, StatusCode::OK, "{path}: {}", replay.body);
+        assert_eq!(replay.body[field], first.body[field], "{path}");
+        assert_eq!(replay.body["version"], other.body["version"], "{path}");
+
+        let reused = send(&app, "PATCH", &path, Some(&write), Some(different), &key).await;
+        assert_eq!(
+            reused.status,
+            StatusCode::CONFLICT,
+            "{path}: {}",
+            reused.body
+        );
+    }
+
+    drop(app);
+    store.pool.close().await;
+    database.cleanup().await;
+}
