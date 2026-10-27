@@ -43,6 +43,13 @@ strip = true
 debug = 0
 incremental = false
 
+# Keep password hashing at production cost without running its CPU-intensive code unoptimized.
+[profile.dev.package.argon2]
+opt-level = 3
+
+[profile.dev.package.blake2]
+opt-level = 3
+
 [profile.test]
 debug = 0
 incremental = false

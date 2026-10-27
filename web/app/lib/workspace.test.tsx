@@ -46,7 +46,7 @@ import { queryClient } from "./query-client";
 import { useIssueCount } from "./stats";
 import { SessionProvider } from "./session";
 import { WorkspaceProvider, useWorkspace } from "./workspace";
-import type { Language, Profile, TrackerLink } from "./types";
+import type { Language, Profile, Role, TrackerLink } from "./types";
 import type { ReactNode } from "react";
 
 const profile: Profile = {
@@ -64,7 +64,14 @@ async function fixture({
   otherMember = false,
   storage = new MemoryReplicaStorage(),
   teamId = "team-1",
-}: { online?: boolean; otherMember?: boolean; storage?: ReplicaStorage; teamId?: string } = {}) {
+  role = "owner",
+}: {
+  online?: boolean;
+  otherMember?: boolean;
+  storage?: ReplicaStorage;
+  teamId?: string;
+  role?: Role;
+} = {}) {
   const replica = await storage.open({
     sessionId: "session",
     workspaceId: "workspace",
@@ -86,7 +93,7 @@ async function fixture({
           display_name: profile.display_name,
           avatar_url: null,
           contact: "",
-          role: "owner",
+          role,
           version: 1,
           team_ids: [team.id],
         },
@@ -484,10 +491,23 @@ describe("online-only controls", () => {
       };
       expectGated(members, "Invite people");
       expectGated(members, "Role of Grace");
-      expectGated(members, "Remove member: Grace");
+      expectGated(members, "More actions: Grace");
       expectGated(attach, "Attach files");
     },
   );
+});
+
+describe("members list", () => {
+  it("shows each member's teams", async () => {
+    const engine = await fixture({ otherMember: true });
+    const router = createMemoryRouter([{ path: "/", Component: Members }]);
+    const html = render(engine, <RouterProvider router={router} />);
+    const row = (name: string) => html.split('role="row"').find((r) => r.includes(`>${name}<`))!;
+    expect(row("Ada")).toContain(">TEAM<");
+    expect(row("Ada")).not.toContain("No teams");
+    expect(row("Grace")).toContain("No teams");
+    expect(row("Grace")).not.toContain(">TEAM<");
+  });
 });
 
 describe("workspace settings", () => {
@@ -499,7 +519,32 @@ describe("workspace settings", () => {
     expect(html).toContain('value="workspace"');
     expect(html).toContain("Transfer ownership");
     expect(html).toContain("You&#x27;re the only owner.");
-    expect(/ disabled=""/.test(buttonTags(html, "Leave workspace")[0])).toBe(true);
+    expect(html).toContain("Changes apply to everyone in the workspace.");
+    expect(/ disabled=""/.test(buttonTags(html, "Leave")[0])).toBe(true);
+  });
+
+  it("describes the URL field with the broken-links warning", async () => {
+    const engine = await fixture({ online: true });
+    const router = createMemoryRouter([{ path: "/", Component: General }]);
+    const html = render(engine, <RouterProvider router={router} />);
+    const input = /<input[^>]*value="workspace"[^>]*>/.exec(html)?.[0] ?? "";
+    const ids = /aria-describedby="([^"]*)"/.exec(input)?.[1].split(" ") ?? [];
+    const description = ids
+      .map((id) => new RegExp(`id="${id}"[^>]*>([^<]*)<`).exec(html)?.[1] ?? "")
+      .join(" ");
+    expect(description).toContain("Changing it breaks links that use the old address.");
+  });
+
+  it("shows members the workspace read-only and lets them leave", async () => {
+    const engine = await fixture({ online: true, otherMember: true, role: "member" });
+    const router = createMemoryRouter([{ path: "/", Component: General }]);
+    const html = render(engine, <RouterProvider router={router} />);
+    expect(html).toContain("Replica workspace");
+    expect(html).toContain("2 members");
+    expect(html).not.toContain("<input");
+    expect(html).not.toContain("Transfer ownership");
+    expect(html).not.toContain("Changes apply to everyone in the workspace.");
+    expect(/ disabled=""/.test(buttonTags(html, "Leave")[0])).toBe(false);
   });
 });
 
