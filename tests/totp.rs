@@ -501,3 +501,324 @@ async fn cli_disables_totp_for_one_email() {
     store.pool.close().await;
     database.cleanup().await;
 }
+
+/// Takes the user's row lock, as TOTP enrollment and password changes do, and
+/// holds it until the returned transaction ends.
+async fn lock_user(store: &Store, user: Uuid) -> sqlx::Transaction<'static, sqlx::Postgres> {
+    let mut tx = store.pool.begin().await.unwrap();
+    sqlx::query("SELECT 1 FROM users WHERE id = $1 FOR UPDATE")
+        .bind(user)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx
+}
+
+/// Whether `count` other connections end up waiting on a lock in this database.
+async fn lock_waiters(store: &Store, count: i64) -> bool {
+    for _ in 0..100 {
+        let waiting: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM pg_stat_activity \
+             WHERE datname = current_database() AND wait_event_type = 'Lock'",
+        )
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+        if waiting >= count {
+            return true;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    false
+}
+
+fn spawn_login(
+    store: &Store,
+    email: &str,
+    password: &str,
+) -> tokio::task::JoinHandle<Result<SignIn, Error>> {
+    let (store, input) = (
+        store.clone(),
+        Login {
+            email: email.into(),
+            password: password.into(),
+        },
+    );
+    tokio::spawn(async move { store.login(input).await })
+}
+
+#[tokio::test]
+async fn a_login_decides_after_a_concurrent_enrollment_commits() {
+    let database = support::TestDatabase::new().await;
+    let store = Store::connect(&database.url).await.unwrap();
+    let user = account(&store).await;
+
+    let mut enrollment = lock_user(&store, user.profile.id).await;
+    let login = spawn_login(&store, &user.profile.email, PASSWORD);
+    lock_waiters(&store, 1).await;
+    sqlx::query(
+        "INSERT INTO user_totp (user_id, secret, enabled_at, last_step) \
+         VALUES ($1, '\\x3132333435363738393031323334353637383930', now(), 0)",
+    )
+    .bind(user.profile.id)
+    .execute(&mut *enrollment)
+    .await
+    .unwrap();
+    enrollment.commit().await.unwrap();
+
+    assert!(
+        matches!(login.await.unwrap(), Ok(SignIn::TotpRequired(_))),
+        "a login that checked the password before TOTP turned on still needs a code"
+    );
+
+    store.pool.close().await;
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn enabling_waits_for_a_login_in_progress() {
+    let database = support::TestDatabase::new().await;
+    let store = Store::connect(&database.url).await.unwrap();
+    let app = blackwall::http::router(store.clone());
+    let user = account(&store).await;
+    let token = Some(user.token.as_str());
+    let (_, setup, _) = call(&app, "POST", "/internal-api/auth/totp/setup", token, None).await;
+    let mut authenticator = Authenticator::new(setup["secret"].as_str().unwrap());
+
+    let login = lock_user(&store, user.profile.id).await;
+    let enable = tokio::spawn({
+        let app = app.clone();
+        let (token, code) = (user.token.clone(), authenticator.next());
+        async move {
+            call(
+                &app,
+                "POST",
+                "/internal-api/auth/totp/enable",
+                Some(&token),
+                Some(json!({"password": PASSWORD, "code": code})),
+            )
+            .await
+        }
+    });
+    assert!(
+        lock_waiters(&store, 1).await,
+        "enrollment waits for the user row a login holds"
+    );
+    login.commit().await.unwrap();
+    assert_eq!(enable.await.unwrap().0, StatusCode::OK);
+
+    store.pool.close().await;
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn a_login_fails_if_the_password_changes_before_it_finishes() {
+    let database = support::TestDatabase::new().await;
+    let store = Store::connect(&database.url).await.unwrap();
+    let app = blackwall::http::router(store.clone());
+    let user = account(&store).await;
+    let token = Some(user.token.as_str());
+    let (_, setup, _) = call(&app, "POST", "/internal-api/auth/totp/setup", token, None).await;
+    let mut authenticator = Authenticator::new(setup["secret"].as_str().unwrap());
+    let enable = json!({"password": PASSWORD, "code": authenticator.next()});
+    let (status, _, _) = call(
+        &app,
+        "POST",
+        "/internal-api/auth/totp/enable",
+        token,
+        Some(enable),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let mut change = lock_user(&store, user.profile.id).await;
+    let login = spawn_login(&store, &user.profile.email, PASSWORD);
+    lock_waiters(&store, 1).await;
+    sqlx::query("UPDATE users SET password_hash = 'changed' WHERE id = $1")
+        .bind(user.profile.id)
+        .execute(&mut *change)
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM pending_logins WHERE user_id = $1")
+        .bind(user.profile.id)
+        .execute(&mut *change)
+        .await
+        .unwrap();
+    change.commit().await.unwrap();
+
+    assert!(
+        matches!(login.await.unwrap(), Err(Error::Unauthorized)),
+        "a login that checked the old password gets no pending login after the change"
+    );
+    let pending: i64 = sqlx::query_scalar("SELECT count(*) FROM pending_logins WHERE user_id = $1")
+        .bind(user.profile.id)
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+    assert_eq!(pending, 0);
+
+    store.pool.close().await;
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn enabling_needs_the_password_and_the_session_that_started_setup() {
+    let database = support::TestDatabase::new().await;
+    let store = Store::connect(&database.url).await.unwrap();
+    let app = blackwall::http::router(store.clone());
+    let laptop = account(&store).await;
+    let phone = login(&store, &laptop, PASSWORD).await.session().unwrap();
+    let (laptop_token, phone_token) = (Some(laptop.token.as_str()), Some(phone.token.as_str()));
+    let enabled = || async { store.totp_status(laptop.profile.id).await.unwrap().enabled };
+
+    let (status, setup, _) = call(
+        &app,
+        "POST",
+        "/internal-api/auth/totp/setup",
+        laptop_token,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{setup}");
+    let mut authenticator = Authenticator::new(setup["secret"].as_str().unwrap());
+
+    let (status, _, _) = call(
+        &app,
+        "POST",
+        "/internal-api/auth/totp/enable",
+        phone_token,
+        Some(json!({"password": PASSWORD, "code": authenticator.next()})),
+    )
+    .await;
+    assert_ne!(
+        status,
+        StatusCode::OK,
+        "another session can't confirm the setup"
+    );
+    assert!(!enabled().await);
+
+    let (status, _, _) = call(
+        &app,
+        "POST",
+        "/internal-api/auth/totp/setup",
+        phone_token,
+        None,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CONFLICT,
+        "another session can't replace the secret"
+    );
+
+    let (status, _, _) = call(
+        &app,
+        "POST",
+        "/internal-api/auth/totp/enable",
+        laptop_token,
+        Some(json!({"password": "wrong-password-123", "code": authenticator.next()})),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "enabling needs the password"
+    );
+    assert!(!enabled().await);
+
+    let (status, value, _) = call(
+        &app,
+        "POST",
+        "/internal-api/auth/totp/enable",
+        laptop_token,
+        Some(json!({"password": PASSWORD, "code": authenticator.next()})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{value}");
+    assert!(enabled().await);
+
+    store.pool.close().await;
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn an_abandoned_setup_can_be_restarted_from_another_session() {
+    let database = support::TestDatabase::new().await;
+    let store = Store::connect(&database.url).await.unwrap();
+    let app = blackwall::http::router(store.clone());
+    let laptop = account(&store).await;
+    let phone = login(&store, &laptop, PASSWORD).await.session().unwrap();
+    let phone_token = Some(phone.token.as_str());
+
+    call(
+        &app,
+        "POST",
+        "/internal-api/auth/totp/setup",
+        Some(&laptop.token),
+        None,
+    )
+    .await;
+    sqlx::query("UPDATE user_totp SET setup_started_at = now() - interval '11 minutes'")
+        .execute(&store.pool)
+        .await
+        .unwrap();
+    let (status, setup, _) = call(
+        &app,
+        "POST",
+        "/internal-api/auth/totp/setup",
+        phone_token,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{setup}");
+    let mut authenticator = Authenticator::new(setup["secret"].as_str().unwrap());
+    let (status, value, _) = call(
+        &app,
+        "POST",
+        "/internal-api/auth/totp/enable",
+        phone_token,
+        Some(json!({"password": PASSWORD, "code": authenticator.next()})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{value}");
+
+    store.pool.close().await;
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn the_otpauth_label_keeps_a_percent_sign_in_the_email() {
+    let database = support::TestDatabase::new().await;
+    let store = Store::connect(&database.url).await.unwrap();
+    let app = blackwall::http::router(store.clone());
+    let local = format!("totp-{}%40ops", Uuid::new_v4().simple());
+    let user = store
+        .register(Register {
+            email: format!("{local}@example.com"),
+            password: PASSWORD.into(),
+            display_name: "TOTP".into(),
+            invitation: None,
+        })
+        .await
+        .unwrap()
+        .session()
+        .unwrap();
+
+    let (_, setup, _) = call(
+        &app,
+        "POST",
+        "/internal-api/auth/totp/setup",
+        Some(&user.token),
+        None,
+    )
+    .await;
+    let uri = setup["uri"].as_str().unwrap();
+    let encoded = local.replace('%', "%25");
+    assert!(
+        uri.starts_with(&format!("otpauth://totp/Blackwall:{encoded}@example.com?")),
+        "{uri}"
+    );
+
+    store.pool.close().await;
+    database.cleanup().await;
+}
