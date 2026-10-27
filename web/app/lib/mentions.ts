@@ -22,9 +22,17 @@ export function mentionedUsers(markdown: string): Id[] {
   const ids = new Set<Id>();
   // References and escapes can spell the colon, so look for the bare word.
   if (!markdown.includes("mention")) return [];
-  parser.walkTokens(parser.lexer(markdown), (token) => {
-    const href = token.type === "link" && decodeReferences((token as Tokens.Link).href);
-    const id = href && MENTION_HREF.exec(href)?.[1];
+  // pulldown-cmark never reads an escaped `&`, `#` or `;` as part of a reference, but marked
+  // drops the backslash before references are decoded. None of them can appear in a mention.
+  const source = markdown.replace(ESCAPED, (escape, char: string) =>
+    "&#;".includes(char) ? "\uFFFD" : escape,
+  );
+  parser.walkTokens(parser.lexer(source), (token) => {
+    if (token.type !== "link") return;
+    const link = token as Tokens.Link;
+    // Autolinks keep references as written.
+    const href = link.raw.startsWith("<") ? link.href : decodeReferences(link.href);
+    const id = MENTION_HREF.exec(href)?.[1];
     if (id) ids.add(id.toLowerCase());
   });
   return [...ids].sort();
