@@ -40,6 +40,26 @@
     "mentions": ["0d9b2c64-6f8e-4b3e-9a51-2f6a8e1c7d40"]
   },
   {
+    "name": "autolink",
+    "markdown": "<mention:0d9b2c64-6f8e-4b3e-9a51-2f6a8e1c7d40>",
+    "mentions": ["0d9b2c64-6f8e-4b3e-9a51-2f6a8e1c7d40"]
+  },
+  {
+    "name": "escaped ampersand before an entity",
+    "markdown": "[@Ana](mention:\\&#48;d9b2c64-6f8e-4b3e-9a51-2f6a8e1c7d40)",
+    "mentions": []
+  },
+  {
+    "name": "escaped number sign in an entity",
+    "markdown": "[@Ana](mention:&\\#48;d9b2c64-6f8e-4b3e-9a51-2f6a8e1c7d40)",
+    "mentions": []
+  },
+  {
+    "name": "entity in an autolink",
+    "markdown": "<mention:&#48;d9b2c64-6f8e-4b3e-9a51-2f6a8e1c7d40>",
+    "mentions": []
+  },
+  {
     "name": "decimal entity longer than seven digits",
     "markdown": "[@Ana](mention:&#00000048;d9b2c64-6f8e-4b3e-9a51-2f6a8e1c7d40)",
     "mentions": []
