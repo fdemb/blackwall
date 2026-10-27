@@ -557,28 +557,9 @@ impl UpdateIssue {
         let dir = Directory::load(store, scope).await?;
         let team_id = self.team.map(|t| dir.find_team(&t)).transpose()?;
         let team = team_id.unwrap_or(current.team_id);
-        let labels = match (self.labels, self.add_labels, self.remove_labels) {
-            (Some(_), Some(_), _) | (Some(_), _, Some(_)) => {
-                return Err(Error::BadRequest(
-                    "send labels, or add_labels and remove_labels, not both".into(),
-                ));
-            }
-            (Some(labels), None, None) => Some(label_ids(&dir, &labels)?),
-            (None, None, None) => None,
-            (None, add, remove) => {
-                let add = label_ids(&dir, &add.unwrap_or_default())?;
-                let remove = label_ids(&dir, &remove.unwrap_or_default())?;
-                let mut labels: Vec<Uuid> = current
-                    .labels
-                    .iter()
-                    .copied()
-                    .filter(|id| !remove.contains(id))
-                    .collect();
-                labels.extend(add.into_iter().filter(|id| !remove.contains(id)));
-                labels.dedup();
-                Some(labels)
-            }
-        };
+        let labels = self.labels.map(|l| label_ids(&dir, &l)).transpose()?;
+        let add_labels = label_ids(&dir, &self.add_labels.unwrap_or_default())?;
+        let remove_labels = label_ids(&dir, &self.remove_labels.unwrap_or_default())?;
         let resolve_with = |field: Option<Option<String>>, find: &dyn Fn(&str) -> Result<Uuid>| {
             field
                 .map(|value| value.map(|r| find(&r)).transpose())
@@ -620,6 +601,8 @@ impl UpdateIssue {
             clear_assignee,
             priority: self.priority,
             labels,
+            add_labels,
+            remove_labels,
             estimate,
             clear_estimate,
             deadline,

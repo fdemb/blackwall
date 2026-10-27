@@ -1158,6 +1158,72 @@ mod tests {
     }
 
     #[test]
+    fn bulk_label_changes_keep_each_issues_other_labels() {
+        let (mut w, owner, team) = setup();
+        let now = Utc::now();
+        let [x, y, z] = ["x", "y", "z"].map(|name| {
+            w.apply(
+                owner,
+                Command::CreateLabel {
+                    id: None,
+                    name: name.into(),
+                    color: "#ef4444".into(),
+                },
+                now,
+            )
+            .unwrap()
+            .id
+            .unwrap()
+        });
+        let [first, second] = [vec![x, y], vec![y]].map(|labels| {
+            let mut issue = input(team);
+            issue.labels = labels;
+            w.apply(owner, Command::CreateIssue { input: issue }, now)
+                .unwrap()
+                .id
+                .unwrap()
+        });
+        let labels = |w: &Workspace, id: Uuid| -> std::collections::BTreeSet<Uuid> {
+            let issue = w.issues.iter().find(|i| i.id == id).unwrap();
+            issue.labels.iter().copied().collect()
+        };
+
+        w.apply(
+            owner,
+            Command::BulkIssues {
+                ids: vec![first, second],
+                action: BulkAction::Update(Box::new(IssuePatch {
+                    add_labels: vec![z],
+                    remove_labels: vec![y],
+                    ..Default::default()
+                })),
+            },
+            now,
+        )
+        .unwrap();
+        assert_eq!(labels(&w, first), [x, z].into());
+        assert_eq!(labels(&w, second), [z].into());
+
+        let before = serde_json::to_string(&w).unwrap();
+        assert!(matches!(
+            w.apply(
+                owner,
+                Command::BulkIssues {
+                    ids: vec![first, second],
+                    action: BulkAction::Update(Box::new(IssuePatch {
+                        labels: Some(vec![x]),
+                        add_labels: vec![y],
+                        ..Default::default()
+                    })),
+                },
+                now,
+            ),
+            Err(Error::BadRequest(_))
+        ));
+        assert_eq!(before, serde_json::to_string(&w).unwrap());
+    }
+
+    #[test]
     fn rejects_dependency_and_parent_cycles() {
         let (mut w, owner, team) = setup();
         let first = w

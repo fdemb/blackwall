@@ -372,7 +372,7 @@ impl Operation<'_> {
         let mut i = old.clone();
 
         let team = p.team_id.filter(|team| *team != old.team_id);
-        i.apply_patch(p);
+        i.apply_patch(p)?;
         if let Some(team) = team {
             self.enter_team(&old, &mut i, team).await?;
         }
