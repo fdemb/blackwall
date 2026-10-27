@@ -106,7 +106,7 @@ impl Store {
         op.admin()?;
         op.lock_graph().await?;
         if let Some(key) = &key
-            && let Some(result) = op.claim_key(key, &request).await?
+            && let Some(result) = op.claim_key(key, &request, None).await?
         {
             return Ok(serde_json::from_value(result)?);
         }

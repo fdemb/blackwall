@@ -9,7 +9,7 @@ use crate::{
     store::{OperationResult, Store},
 };
 use axum::{
-    Json, RequestExt, Router,
+    Json, Router,
     extract::{FromRequestParts, Request, State},
     http::{HeaderMap, HeaderValue, StatusCode, header, request::Parts},
     middleware::{self, Next},
@@ -305,6 +305,26 @@ pub struct WriteOptions {
     pub sent: Option<serde_json::Value>,
 }
 
+impl WriteOptions {
+    /// Options for a later command of a request that runs several. Header values can't
+    /// carry `·`, so no client key collides with the step's key, and hashing keeps it short.
+    pub fn step(&self, step: &str) -> Self {
+        use sha2::{Digest, Sha256};
+
+        Self {
+            if_match: self.if_match,
+            idempotency_key: self
+                .idempotency_key
+                .as_ref()
+                .map(|key| format!("{step}·{}", hex::encode(Sha256::digest(key)))),
+            sent: self.sent.clone().map(|mut sent| {
+                sent["step"] = step.into();
+                sent
+            }),
+        }
+    }
+}
+
 #[derive(Clone)]
 struct SentRequest(serde_json::Value);
 
@@ -312,22 +332,57 @@ struct SentRequest(serde_json::Value);
 /// Replays are matched against this rather than the command, because PATCH handlers
 /// fill omitted fields from the record as it is when the request arrives.
 async fn fingerprint(request: Request, next: Next) -> Response {
+    use axum::{body::Bytes, extract::FromRequest};
     use sha2::{Digest, Sha256};
 
     if !request.headers().contains_key("idempotency-key") {
         return next.run(request).await;
     }
-    let (mut parts, body) = request.with_limited_body().into_parts();
-    let Ok(bytes) = axum::body::to_bytes(body, usize::MAX).await else {
-        return StatusCode::PAYLOAD_TOO_LARGE.into_response();
+    let (mut parts, body) = request.into_parts();
+    // Buffer through the extractor handlers use, so limits and read errors answer the same.
+    let mut buffered = Request::new(body);
+    *buffered.extensions_mut() = parts.extensions.clone();
+    let bytes = match Bytes::from_request(buffered, &()).await {
+        Ok(bytes) => bytes,
+        Err(rejection) => return rejection.into_response(),
     };
+    let canonical = serde_json::from_slice::<serde_json::Value>(&bytes)
+        .map(|value| canonical_json(&value).into_bytes());
+    let hashed = canonical.as_deref().unwrap_or(&bytes[..]);
     parts.extensions.insert(SentRequest(serde_json::json!({
         "method": parts.method.as_str(),
         "path": parts.uri.path_and_query().map(|p| p.as_str()),
-        "body_sha256": hex::encode(Sha256::digest(&bytes)),
+        "body_sha256": hex::encode(Sha256::digest(hashed)),
     })));
     next.run(Request::from_parts(parts, axum::body::Body::from(bytes)))
         .await
+}
+
+/// JSON text with object keys sorted at every depth and no whitespace, so bodies that
+/// differ only in key order or formatting hash the same.
+fn canonical_json(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::Object(map) => {
+            let mut entries: Vec<_> = map.iter().collect();
+            entries.sort_by_key(|(key, _)| *key);
+            let fields: Vec<String> = entries
+                .into_iter()
+                .map(|(key, value)| {
+                    format!(
+                        "{}:{}",
+                        serde_json::Value::String(key.clone()),
+                        canonical_json(value)
+                    )
+                })
+                .collect();
+            format!("{{{}}}", fields.join(","))
+        }
+        serde_json::Value::Array(items) => {
+            let items: Vec<String> = items.iter().map(canonical_json).collect();
+            format!("[{}]", items.join(","))
+        }
+        scalar => scalar.to_string(),
+    }
 }
 
 impl FromRequestParts<Store> for WriteOptions {
