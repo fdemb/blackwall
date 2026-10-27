@@ -6,7 +6,7 @@ use axum::{
 };
 use blackwall::{
     auth::{Register, Session},
-    domain::Command,
+    domain::{Command, ProjectStatus},
     http::router,
     store::Store,
 };
@@ -1646,6 +1646,123 @@ async fn keys_recorded_by_command_still_replay() {
         .await;
     assert_eq!(replay.status, StatusCode::OK, "{}", replay.body);
     assert_eq!(replay.body["version"], json!(legacy.versions[&id]));
+    keyed.cleanup().await;
+}
+
+#[tokio::test]
+async fn project_plan_steps_recorded_by_command_still_replay() {
+    let keyed = Keyed::new().await;
+    let created = call(
+        &keyed.app,
+        "POST",
+        &format!("{}/projects", keyed.base),
+        &keyed.write,
+        Some(json!({"name":"Launch","team_ids":[]})),
+    )
+    .await;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    let id = Uuid::parse_str(created.body["id"].as_str().unwrap()).unwrap();
+    let project = format!("{}/projects/{id}", keyed.base);
+    fn field<T: serde::de::DeserializeOwned>(project: &Value, name: &str) -> T {
+        serde_json::from_value(project[name].clone()).unwrap()
+    }
+    // A mixed PATCH stored its plan step under `<key>:plan` before requests were fingerprinted.
+    for (key, command) in [
+        (
+            "legacy",
+            Command::UpdateProject {
+                id,
+                name: "Relaunch".into(),
+                description: field(&created.body, "description"),
+                team_ids: Vec::new(),
+            },
+        ),
+        (
+            "legacy:plan",
+            Command::SetProjectPlan {
+                id,
+                lead_id: field(&created.body, "lead_id"),
+                status: ProjectStatus::Completed,
+                health: field(&created.body, "health"),
+                start_date: field(&created.body, "start_date"),
+                target_date: field(&created.body, "target_date"),
+            },
+        ),
+    ] {
+        keyed
+            .store
+            .operation(
+                keyed.workspace,
+                keyed.owner.profile.id,
+                command,
+                Default::default(),
+                Some(key.into()),
+                None,
+            )
+            .await
+            .unwrap();
+    }
+    let reset = keyed
+        .send(
+            "PATCH",
+            &project,
+            Body::from(r#"{"status":"planned"}"#),
+            None,
+        )
+        .await;
+    assert_eq!(reset.status, StatusCode::OK, "{}", reset.body);
+
+    let replay = keyed
+        .send(
+            "PATCH",
+            &project,
+            Body::from(r#"{"name":"Relaunch","status":"completed"}"#),
+            Some("legacy"),
+        )
+        .await;
+    assert_eq!(replay.status, StatusCode::OK, "{}", replay.body);
+    assert_eq!(
+        replay.body["status"], "planned",
+        "a replay runs neither step again"
+    );
+
+    let other = keyed
+        .send(
+            "PATCH",
+            &project,
+            Body::from(r#"{"name":"Relaunch","status":"cancelled"}"#),
+            Some("legacy"),
+        )
+        .await;
+    assert_eq!(other.status, StatusCode::CONFLICT, "{}", other.body);
+    let current = call(&keyed.app, "GET", &project, &keyed.write, None).await;
+    assert_eq!(current.body["status"], "planned");
+    keyed.cleanup().await;
+}
+
+#[tokio::test]
+async fn keyed_webhook_create_replay_after_delete_is_not_found() {
+    let keyed = Keyed::new().await;
+    let hooks = format!("{}/webhooks", keyed.base);
+    let body = r#"{"name":"Hook","url":"https://hooks.example.com/gone","secret":"whsec_mine"}"#;
+    let created = keyed
+        .send("POST", &hooks, Body::from(body), Some("hook-gone"))
+        .await;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    let deleted = keyed
+        .send(
+            "DELETE",
+            &format!("{hooks}/{}", created.body["id"].as_str().unwrap()),
+            Body::empty(),
+            None,
+        )
+        .await;
+    assert_eq!(deleted.status, StatusCode::NO_CONTENT, "{}", deleted.body);
+
+    let replay = keyed
+        .send("POST", &hooks, Body::from(body), Some("hook-gone"))
+        .await;
+    assert_eq!(replay.status, StatusCode::NOT_FOUND, "{}", replay.body);
     keyed.cleanup().await;
 }
 
