@@ -471,6 +471,7 @@ fn where_schema() -> Value {
             priority: none < low < normal < high < urgent. \
             label: name or UUID; is matches issues with any of them; null = no labels. \
             project, sprint: name or UUID; null = none. \
+            milestone: name or UUID; a name matches that milestone in every project; null = none. \
             parent: issue key or UUID; null = top-level. \
             dependencies: issue key or UUID; null = no dependencies. \
             estimate: whole number as a string; null = no estimate. \
@@ -485,8 +486,8 @@ fn where_schema() -> Value {
                     "type": "string",
                     "enum": [
                         "assignee", "created_by", "team", "stage", "stage_kind", "priority",
-                        "label", "project", "sprint", "parent", "dependencies", "estimate",
-                        "deadline", "created_at", "updated_at"
+                        "label", "project", "milestone", "sprint", "parent", "dependencies",
+                        "estimate", "deadline", "created_at", "updated_at"
                     ]
                 },
                 "op": { "type": "string", "enum": ["is", "is_not", "lt", "lte", "gt", "gte"] },

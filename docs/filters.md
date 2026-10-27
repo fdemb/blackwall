@@ -49,6 +49,7 @@ GET /internal-api/workspaces/{id}/issues?where=[{"field":"stage_kind","op":"is_n
 | `priority` | `none` `low` `normal` `high` `urgent` | not allowed | is, is_not, lt, lte, gt, gte |
 | `labels` | label ids | no labels | is, is_not |
 | `project_id` | project ids | no project | is, is_not |
+| `milestone_id` | milestone ids | no milestone | is, is_not |
 | `sprint_id` | sprint ids | no sprint | is, is_not |
 | `parent_id` | issue ids | top-level issue | is, is_not |
 | `dependencies` | issue ids | no dependencies | is, is_not |

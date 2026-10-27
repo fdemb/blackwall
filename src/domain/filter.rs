@@ -28,6 +28,8 @@ pub enum FilterField {
     Labels,
     #[serde(alias = "project")]
     ProjectId,
+    #[serde(alias = "milestone")]
+    MilestoneId,
     #[serde(alias = "sprint")]
     SprintId,
     #[serde(alias = "parent")]
@@ -78,6 +80,7 @@ impl FilterField {
             Self::Priority => "priority",
             Self::Labels => "labels",
             Self::ProjectId => "project_id",
+            Self::MilestoneId => "milestone_id",
             Self::SprintId => "sprint_id",
             Self::ParentId => "parent_id",
             Self::Dependencies => "dependencies",
@@ -106,6 +109,7 @@ impl FilterField {
                 | Self::CreatedBy
                 | Self::Labels
                 | Self::ProjectId
+                | Self::MilestoneId
                 | Self::SprintId
                 | Self::ParentId
                 | Self::Dependencies
@@ -331,6 +335,7 @@ impl Compiled {
                 F::TeamId => member(Some(issue.team_id), ids, self.null),
                 F::StageId => member(Some(issue.stage_id), ids, self.null),
                 F::ProjectId => member(issue.project_id, ids, self.null),
+                F::MilestoneId => member(issue.milestone_id, ids, self.null),
                 F::SprintId => member(issue.sprint_id, ids, self.null),
                 F::ParentId => member(issue.parent_id, ids, self.null),
                 F::Labels => overlaps(&issue.labels, ids, self.null),
