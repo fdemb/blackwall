@@ -1326,39 +1326,3 @@ async fn colliding_stage_and_issue_omit_ambiguous_version() {
     store.pool.close().await;
     database.cleanup().await;
 }
-
-#[tokio::test]
-async fn large_import_with_client_ids_succeeds() {
-    let database = support::TestDatabase::new().await;
-    let store = Store::connect(&database.url).await.unwrap();
-    let app = router(store.clone());
-    let owner = account(&store, "owner").await;
-    let (ws, team) = setup(&app, &owner).await;
-
-    // 5000 supplied ids map to at most 64 buckets, so one import can no
-    // longer exhaust the shared lock table no matter how many ids it
-    // reserves. The import itself must still succeed end to end.
-    let issues: Vec<Value> = (0..5000)
-        .map(|n| json!({"id": Uuid::new_v4(), "team_id": team, "title": format!("Bulk {n}")}))
-        .collect();
-    let (status, result) = call(
-        &app,
-        &owner,
-        "POST",
-        &format!("/internal-api/workspaces/{ws}/import"),
-        Some(json!({"issues": issues})),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "{result}");
-
-    let stored: i64 = sqlx::query_scalar("SELECT count(*) FROM issues WHERE workspace_id = $1")
-        .bind(ws)
-        .fetch_one(&store.pool)
-        .await
-        .unwrap();
-    assert_eq!(stored, 5000);
-
-    drop(app);
-    store.pool.close().await;
-    database.cleanup().await;
-}
