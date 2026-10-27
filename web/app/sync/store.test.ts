@@ -1011,6 +1011,8 @@ describe("incremental replay", () => {
       expect(logs[0]?.slice(compared)).toEqual(logs[1]?.slice(compared));
       compared = logs[0]?.length ?? 0;
     }
+    // Logs hold events by reference, so this catches a later step mutating an earlier event.
+    expect(logs[0]).toEqual(logs[1]);
     expect(incremental.debug.replays).toBeLessThan(full.debug.replays / 2);
   });
 });
