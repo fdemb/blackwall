@@ -60,6 +60,21 @@
     "mentions": []
   },
   {
+    "name": "reference labels that differ only by an escape",
+    "markdown": "[@Ana][ref\\&]\n\n[ref\\#]: mention:0d9b2c64-6f8e-4b3e-9a51-2f6a8e1c7d40",
+    "mentions": []
+  },
+  {
+    "name": "entity in a reference definition",
+    "markdown": "[@Ana][ref]\n\n[ref]: mention&#58;0d9b2c64-6f8e-4b3e-9a51-2f6a8e1c7d40",
+    "mentions": ["0d9b2c64-6f8e-4b3e-9a51-2f6a8e1c7d40"]
+  },
+  {
+    "name": "escaped ampersand in a reference definition",
+    "markdown": "[@Ana][ref]\n\n[ref]: mention:\\&#48;d9b2c64-6f8e-4b3e-9a51-2f6a8e1c7d40",
+    "mentions": []
+  },
+  {
     "name": "decimal entity longer than seven digits",
     "markdown": "[@Ana](mention:&#00000048;d9b2c64-6f8e-4b3e-9a51-2f6a8e1c7d40)",
     "mentions": []
