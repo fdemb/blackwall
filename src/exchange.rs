@@ -355,6 +355,7 @@ impl Remap<'_> {
                     | FilterField::StageId
                     | FilterField::Labels
                     | FilterField::ProjectId
+                    | FilterField::MilestoneId
                     | FilterField::SprintId
                     | FilterField::ParentId
                     | FilterField::Dependencies

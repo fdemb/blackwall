@@ -117,6 +117,7 @@ export const FIELD_KIND: Record<FilterField, Kind> = {
   priority: "priority",
   labels: "id",
   project_id: "id",
+  milestone_id: "id",
   sprint_id: "id",
   parent_id: "id",
   dependencies: "id",
@@ -131,6 +132,7 @@ export const NULLABLE_FIELDS: ReadonlySet<FilterField> = new Set<FilterField>([
   "created_by",
   "labels",
   "project_id",
+  "milestone_id",
   "sprint_id",
   "parent_id",
   "dependencies",
@@ -338,6 +340,9 @@ export function matchesClause(
     case "project_id":
       hit = member(id(issue.project_id), values, clause.null);
       break;
+    case "milestone_id":
+      hit = member(id(issue.milestone_id), values, clause.null);
+      break;
     case "sprint_id":
       hit = member(id(issue.sprint_id), values, clause.null);
       break;
@@ -415,13 +420,20 @@ function candidates(
 
 // Clause fields backed by a store index of the same name. The index keys raw values, so this
 // relies on the replica holding canonical ids: the server sends PostgreSQL uuids, and mutators
-// only store team, stage, sprint, project and parent ids they found by key.
-type IndexedField = "team_id" | "stage_id" | "sprint_id" | "project_id" | "parent_id";
+// only store team, stage, sprint, project, milestone and parent ids they found by key.
+type IndexedField =
+  | "team_id"
+  | "stage_id"
+  | "sprint_id"
+  | "project_id"
+  | "milestone_id"
+  | "parent_id";
 const INDEXED = new Set<FilterField>([
   "team_id",
   "stage_id",
   "sprint_id",
   "project_id",
+  "milestone_id",
   "parent_id",
 ]);
 

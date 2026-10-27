@@ -389,6 +389,7 @@ export const pl = {
   "group.stage": "Grupuj wg statusu",
   "group.priority": "Grupuj wg priorytetu",
   "group.assignee": "Grupuj wg osoby",
+  "group.milestone": "Grupuj wg kamienia milowego",
   "group.none": "Bez grupowania",
   "group.all": "Wszystkie zadania",
   "sort.label": "Sortuj",

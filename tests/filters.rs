@@ -28,6 +28,7 @@ struct Fixture {
     ws: Uuid,
     owner: Uuid,
     label: Uuid,
+    milestone: Uuid,
     done: Uuid,
     assigned: Uuid,
     labelled: Uuid,
@@ -78,6 +79,20 @@ async fn fixture(database: &support::TestDatabase) -> Fixture {
         json!({"type":"create_label","name":"Ops","color":"#000000"}),
     )
     .await;
+    let project = op(
+        &store,
+        ws,
+        owner,
+        json!({"type":"create_project","name":"Launch","team_ids":[team]}),
+    )
+    .await;
+    let milestone = op(
+        &store,
+        ws,
+        owner,
+        json!({"type":"create_milestone","project_id":project,"name":"Beta","deadline":null}),
+    )
+    .await;
     let due = (Utc::now() + Duration::days(30))
         .date_naive()
         .and_hms_opt(12, 0, 0)
@@ -87,7 +102,7 @@ async fn fixture(database: &support::TestDatabase) -> Fixture {
         &store,
         ws,
         owner,
-        json!({"type":"create_issue","input":{"title":"Assigned urgent","team_id":team,"assignee":owner,"priority":"urgent","estimate":8,"deadline":due}}),
+        json!({"type":"create_issue","input":{"title":"Assigned urgent","team_id":team,"assignee":owner,"priority":"urgent","estimate":8,"deadline":due,"project_id":project,"milestone_id":milestone}}),
     )
     .await;
     let labelled = op(
@@ -109,6 +124,7 @@ async fn fixture(database: &support::TestDatabase) -> Fixture {
         ws,
         owner,
         label,
+        milestone,
         done,
         assigned,
         labelled,
@@ -146,6 +162,7 @@ async fn sql_clauses_match_the_documented_semantics() {
     let owner = f.owner.to_string();
     let label = f.label.to_string();
     let done = f.done.to_string();
+    let milestone = f.milestone.to_string();
     let all = sorted(vec![f.assigned, f.labelled, f.bare]);
     let not_assigned = sorted(vec![f.labelled, f.bare]);
 
@@ -189,6 +206,26 @@ async fn sql_clauses_match_the_documented_semantics() {
         (
             json!([{"field":"labels","op":"is_not","values":[null]}]),
             vec![f.labelled],
+        ),
+        (
+            json!([{"field":"milestone_id","op":"is","values":[milestone]}]),
+            vec![f.assigned],
+        ),
+        (
+            json!([{"field":"milestone_id","op":"is_not","values":[milestone]}]),
+            not_assigned.clone(),
+        ),
+        (
+            json!([{"field":"milestone_id","op":"is","values":[null]}]),
+            not_assigned.clone(),
+        ),
+        (
+            json!([{"field":"milestone_id","op":"is_not","values":[null]}]),
+            vec![f.assigned],
+        ),
+        (
+            json!([{"field":"milestone","op":"is","values":[milestone, null]}]),
+            all.clone(),
         ),
         (
             json!([{"field":"stage_kind","op":"is","values":["done"]}]),

@@ -512,6 +512,71 @@ async fn public_api_on_postgres() {
     )
     .await;
     assert_eq!(unknown_label.status, StatusCode::BAD_REQUEST);
+    // A milestone name matches that milestone in every project.
+    let mut in_beta = vec![];
+    for name in ["Alpha", "Gamma"] {
+        let project = call(
+            &app,
+            "POST",
+            &format!("{base}/projects"),
+            &write,
+            Some(json!({"name": name, "team_ids": [team_id]})),
+        )
+        .await;
+        assert_eq!(project.status, StatusCode::CREATED, "{}", project.body);
+        let milestone = call(
+            &app,
+            "POST",
+            &format!("/internal-api/workspaces/{ws}/commands"),
+            &owner.token,
+            Some(json!({"command": {"type":"create_milestone","project_id":project.body["id"],"name":"Beta","deadline":null}})),
+        )
+        .await;
+        assert_eq!(milestone.status, StatusCode::OK, "{}", milestone.body);
+        let issue = call(
+            &app,
+            "POST",
+            &format!("{base}/issues"),
+            &write,
+            Some(json!({"team": team_id, "title": name, "project": name, "milestone": "beta"})),
+        )
+        .await;
+        assert_eq!(issue.status, StatusCode::CREATED, "{}", issue.body);
+        in_beta.push(issue.body["id"].clone());
+    }
+    let by_milestone = call(
+        &app,
+        "GET",
+        &filtered_path(
+            &base,
+            json!([{"field": "milestone", "op": "is", "values": ["Beta"]}]),
+        ),
+        &read,
+        None,
+    )
+    .await;
+    assert_eq!(by_milestone.status, StatusCode::OK, "{}", by_milestone.body);
+    let mut found: Vec<Value> = by_milestone.body["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| i["id"].clone())
+        .collect();
+    found.sort_by_key(Value::to_string);
+    in_beta.sort_by_key(Value::to_string);
+    assert_eq!(found, in_beta);
+    let unknown_milestone = call(
+        &app,
+        "GET",
+        &filtered_path(
+            &base,
+            json!([{"field": "milestone", "op": "is", "values": ["nope"]}]),
+        ),
+        &read,
+        None,
+    )
+    .await;
+    assert_eq!(unknown_milestone.status, StatusCode::BAD_REQUEST);
     let bad_cursor = call(
         &app,
         "GET",

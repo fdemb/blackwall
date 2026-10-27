@@ -6,7 +6,7 @@ import type {
   Id,
   Issue,
   IssueFilter,
-  IssueGroup,
+  ListGroup,
   Stage,
   Workspace,
 } from "./types";
@@ -89,12 +89,12 @@ export const replaceClause = (filter: IssueFilter, index: number, next: FilterCl
 export function effectiveFilter(
   filter: IssueFilter,
   scope: IssueFilter = {},
-  groupBy?: IssueGroup,
+  groupBy?: ListGroup,
 ): IssueFilter {
   const scoped = clausesOf(scope);
   const own = clausesOf(filter).filter((c) => !scoped.some((s) => s.field === c.field));
   const merged = withClauses({ ...filter, ...scope, trash: false }, [...own, ...scoped]);
-  if (groupBy) merged.group_by = groupBy;
+  if (groupBy && groupBy !== "milestone") merged.group_by = groupBy;
   return merged;
 }
 

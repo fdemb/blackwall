@@ -11,7 +11,7 @@ import {
   Virtualizer,
   type Selection,
 } from "react-aria-components";
-import { Archive, ChevronDown, Trash2, X } from "lucide-react";
+import { Archive, ChevronDown, Flag, Trash2, X } from "lucide-react";
 import { Button } from "~/components/ui/button";
 import { Checkbox } from "~/components/ui/toggles";
 import { Menu, MenuItem, MenuPopover, MenuTrigger, MenuSeparator } from "~/components/ui/menu";
@@ -24,13 +24,14 @@ import { cn } from "~/lib/utils";
 import { PRIORITIES } from "~/lib/format";
 import { useIssueKeyWidth } from "./issue-key";
 import { stageOf, isDoneOnly } from "~/lib/filters";
+import { milestoneGroups, projectMilestones } from "~/lib/projects";
 import { useI18n } from "~/lib/i18n";
 import { useWorkspace } from "~/lib/workspace";
-import type { Id, Issue, IssueGroup, IssuePatch } from "~/lib/types";
+import type { Id, Issue, IssuePatch, ListGroup } from "~/lib/types";
 import { PriorityIcon, StageIcon } from "./icons";
 import { BlockedBadge, SubtaskProgress, TrackerBadge } from "./issue-parts";
 
-export type GroupBy = IssueGroup;
+export type GroupBy = ListGroup;
 
 interface Group {
   id: string;
@@ -69,6 +70,17 @@ export function useGroups(issues: Issue[], groupBy: GroupBy): Group[] {
       const none = issues.filter((i) => !i.assignee);
       if (none.length) groups.push({ id: "none", title: t("assignee.none"), items: none });
       return groups;
+    }
+    if (groupBy === "milestone") {
+      const ordered = ws.projects.flatMap((p) => projectMilestones(ws.milestones, p.id));
+      return milestoneGroups(issues, ordered).map(({ milestone, items }) => ({
+        id: milestone?.id ?? "none",
+        title: milestone?.name ?? t("milestone.none"),
+        icon: milestone ? (
+          <Flag aria-hidden className="size-3.5 shrink-0 text-primary" />
+        ) : undefined,
+        items,
+      }));
     }
     // Stage: merge same-named stages across teams so cross-team lists stay compact.
     const order = new Map<string, Group>();

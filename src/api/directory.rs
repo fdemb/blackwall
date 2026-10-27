@@ -430,8 +430,8 @@ impl Directory {
         )
     }
 
-    /// Every id a filter value names. Stage and sprint names may repeat across teams,
-    /// and a filter on either matches all of them.
+    /// Every id a filter value names. Stage and sprint names may repeat across teams, and
+    /// milestone names across projects; a filter on any of them matches all of that name.
     pub async fn filter_ids(
         &self,
         store: &Store,
@@ -463,6 +463,18 @@ impl Directory {
                     .map(|s| s.stage.id)
                     .collect(),
                 self.stages.iter().map(|s| s.stage.name.as_str()).collect(),
+            ),
+            F::MilestoneId => all(
+                "milestone",
+                self.milestones
+                    .iter()
+                    .filter(|m| same(&m.milestone.name, reference))
+                    .map(|m| m.milestone.id)
+                    .collect(),
+                self.milestones
+                    .iter()
+                    .map(|m| m.milestone.name.as_str())
+                    .collect(),
             ),
             F::SprintId => all(
                 "sprint",

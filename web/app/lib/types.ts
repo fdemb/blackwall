@@ -9,6 +9,8 @@ export type AlertKind = "assignment" | "reply" | "change" | "mention" | "deadlin
 export type InvitationState = "pending" | "accepted" | "cancelled" | "expired";
 export type IssueSort = "position" | "deadline" | "updated" | "priority";
 export type IssueGroup = "stage" | "priority" | "assignee" | "none";
+/** A list's grouping. Milestone grouping is client-only, so saved views and the server lack it. */
+export type ListGroup = IssueGroup | "milestone";
 export type Language = "en" | "pl";
 export type Theme = "light" | "dark" | "system";
 
@@ -267,6 +269,7 @@ export type FilterField =
   | "priority"
   | "labels"
   | "project_id"
+  | "milestone_id"
   | "sprint_id"
   | "parent_id"
   | "dependencies"

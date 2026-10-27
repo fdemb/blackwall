@@ -19,6 +19,7 @@ import {
   ChevronRight,
   CircleDashed,
   CircleDot,
+  Flag,
   Folder,
   Hash,
   History,
@@ -56,6 +57,7 @@ import {
   replaceClause,
 } from "~/lib/filters";
 import { FIELD_KIND, isComparison, opsFor, relativeDays } from "~/lib/issue-filter";
+import { projectMilestones } from "~/lib/projects";
 import { fullDate, PRIORITIES } from "~/lib/format";
 import { useI18n, type Key } from "~/lib/i18n";
 import { usePending } from "~/lib/use-pending";
@@ -78,6 +80,12 @@ import type { GroupBy } from "./issue-list";
 /** What a page can keep out of the bar: fields it scopes itself, and the archive toggle. */
 export type HiddenFilter = FilterField | "archived";
 
+/** The team and project a filter pins with a single `is` value. Choices narrow to them. */
+interface Pinned {
+  team?: string;
+  project?: string;
+}
+
 interface Choice {
   id: string;
   label: string;
@@ -93,6 +101,7 @@ const FIELDS: FilterField[] = [
   "priority",
   "labels",
   "project_id",
+  "milestone_id",
   "sprint_id",
   "team_id",
   "deadline",
@@ -110,6 +119,7 @@ const FIELD_LABEL: Record<FilterField, Key> = {
   priority: "field.priority",
   labels: "field.labels",
   project_id: "field.project",
+  milestone_id: "field.milestone",
   sprint_id: "field.sprint",
   parent_id: "field.parent",
   dependencies: "field.dependencies",
@@ -128,6 +138,7 @@ const FIELD_ICON: Record<FilterField, React.ReactNode> = {
   priority: <SignalHigh />,
   labels: <Tag />,
   project_id: <Folder />,
+  milestone_id: <Flag />,
   sprint_id: <Zap />,
   parent_id: <Workflow />,
   dependencies: <Link2 />,
@@ -143,12 +154,15 @@ const NONE_LABEL: Partial<Record<FilterField, Key>> = {
   created_by: "filter.none.created_by",
   labels: "filter.none.labels",
   project_id: "filter.none.project_id",
+  milestone_id: "milestone.none",
   sprint_id: "filter.none.sprint_id",
   parent_id: "filter.none.parent_id",
   dependencies: "filter.none.dependencies",
   estimate: "filter.none.estimate",
   deadline: "filter.none.deadline",
 };
+
+const ISSUE_GROUPS: readonly GroupBy[] = ["stage", "priority", "assignee", "none"];
 
 const STAGE_KINDS: StageKind[] = ["backlog", "planned", "active", "done", "cancelled"];
 const NONE = "__none";
@@ -181,6 +195,7 @@ export function FilterBar({
   hide = [],
   groupBy,
   onGroupBy,
+  groups = ISSUE_GROUPS,
   saveable = true,
   sortable = true,
   scope,
@@ -190,6 +205,8 @@ export function FilterBar({
   hide?: readonly HiddenFilter[];
   groupBy?: GroupBy;
   onGroupBy?: (g: GroupBy) => void;
+  /** Groupings the menu offers, in order. */
+  groups?: readonly GroupBy[];
   saveable?: boolean;
   /** Off where the order is fixed, like board columns ordered by hand. */
   sortable?: boolean;
@@ -199,14 +216,15 @@ export function FilterBar({
   const { t } = useI18n();
   const set = (patch: Partial<IssueFilter>) => onChange({ ...filter, ...patch });
   const where = clausesOf(filter);
-  const team = pinnedValue(filter, "team_id") ?? pinnedValue(scope ?? {}, "team_id");
+  const pin = (field: FilterField) => pinnedValue(filter, field) ?? pinnedValue(scope ?? {}, field);
+  const pinned: Pinned = { team: pin("team_id"), project: pin("project_id") };
 
   return (
     <div className="flex flex-wrap items-center gap-1.5 px-4 pb-2">
       <SearchFilter value={filter.search} onChange={(search) => set({ search })} />
       <AddFilter
         hide={hide}
-        team={team}
+        pinned={pinned}
         archived={Boolean(filter.archived)}
         onAdd={(next) => onChange(addClause(filter, next))}
         onArchived={() => set({ archived: true })}
@@ -216,7 +234,7 @@ export function FilterBar({
           <ClauseChip
             key={i}
             clause={c}
-            team={team}
+            pinned={pinned}
             onChange={(next) => onChange(replaceClause(filter, i, next))}
             onRemove={() => onChange(removeClause(filter, i))}
           />
@@ -243,7 +261,7 @@ export function FilterBar({
             label={t(`group.${groupBy}`)}
             icon={<LayoutList />}
             selected={groupBy}
-            options={(["stage", "priority", "assignee", "none"] as const).map((g) => ({
+            options={groups.map((g) => ({
               id: g,
               label: t(`group.${g}`),
             }))}
@@ -300,12 +318,12 @@ function RemoveButton({ label, onPress }: { label: string; onPress: () => void }
 /** One clause as `field · op · values · ×`. The op and values segments open their own editors. */
 function ClauseChip({
   clause: c,
-  team,
+  pinned,
   onChange,
   onRemove,
 }: {
   clause: FilterClause;
-  team: string | undefined;
+  pinned: Pinned;
   onChange: (next: FilterClause) => void;
   onRemove: () => void;
 }) {
@@ -357,7 +375,7 @@ function ClauseChip({
             <ValuePicker
               field={c.field}
               current={c}
-              team={team}
+              pinned={pinned}
               onPick={(next, done) => {
                 onChange(next);
                 if (done) setEditing(false);
@@ -460,7 +478,7 @@ function ChoiceMenu({
   );
 }
 
-type NamedField = "team_id" | "stage_id" | "labels" | "project_id" | "sprint_id";
+type NamedField = "team_id" | "stage_id" | "labels" | "project_id" | "milestone_id" | "sprint_id";
 
 /** Names for clause values: people, stages, labels, dates and the rest. */
 function useValueLabels() {
@@ -473,6 +491,7 @@ function useValueLabels() {
     stage_id: ws.teams.flatMap((x) => x.stages),
     labels: ws.labels,
     project_id: ws.projects,
+    milestone_id: ws.milestones,
     sprint_id: ws.sprints,
   };
   const isNamed = (field: FilterField): field is NamedField => field in named;
@@ -515,7 +534,7 @@ function useValueLabels() {
 }
 
 /** The pickable values of an enumerable field. Empty for fields edited by date or number. */
-function useChoices(team: string | undefined): (field: FilterField) => Choice[] {
+function useChoices({ team, project }: Pinned): (field: FilterField) => Choice[] {
   const { t } = useI18n();
   const { ws, members } = useWorkspace();
   const none = (field: FilterField): Choice[] => {
@@ -570,6 +589,17 @@ function useChoices(team: string | undefined): (field: FilterField) => Choice[] 
         ];
       case "project_id":
         return [...none(field), ...ws.projects.map((p) => ({ id: p.id, label: p.name }))];
+      case "milestone_id": {
+        const milestones = project ? projectMilestones(ws.milestones, project) : ws.milestones;
+        const projectName = (id: string) => ws.projects.find((p) => p.id === id)?.name ?? "?";
+        return [
+          ...none(field),
+          ...milestones.map((m) => ({
+            id: m.id,
+            label: project ? m.name : `${m.name} · ${projectName(m.project_id)}`,
+          })),
+        ];
+      }
       case "sprint_id":
         return [
           ...none(field),
@@ -616,18 +646,18 @@ function presetsFor(field: FilterField): Preset[] {
 function ValuePicker({
   field,
   current,
-  team,
+  pinned,
   onPick,
 }: {
   field: FilterField;
   /** The clause being edited, or none when adding. */
   current?: FilterClause;
-  team: string | undefined;
+  pinned: Pinned;
   onPick: (next: FilterClause, done: boolean) => void;
 }) {
   const { t } = useI18n();
   const { contains } = useFilter({ sensitivity: "base" });
-  const choices = useChoices(team)(field);
+  const choices = useChoices(pinned)(field);
   const kind = FIELD_KIND[field];
   const op = current?.op ?? "is";
   const keyOf = (v: FilterValue) => v ?? NONE;
@@ -773,19 +803,19 @@ function EstimateForm({
 /** Two steps: pick what to filter by, then its value. Keeps long people and project lists out of one menu. */
 function AddFilter({
   hide,
-  team,
+  pinned,
   archived,
   onAdd,
   onArchived,
 }: {
   hide: readonly HiddenFilter[];
-  team: string | undefined;
+  pinned: Pinned;
   archived: boolean;
   onAdd: (next: FilterClause) => void;
   onArchived: () => void;
 }) {
   const { t } = useI18n();
-  const choices = useChoices(team);
+  const choices = useChoices(pinned);
   const [open, setOpen] = useState(false);
   const [field, setField] = useState<FilterField | null>(null);
   const fields = FIELDS.filter((f) => {
@@ -855,7 +885,7 @@ function AddFilter({
               </div>
               <ValuePicker
                 field={field}
-                team={team}
+                pinned={pinned}
                 onPick={(next, done) => {
                   onAdd(next);
                   if (done) setOpen(false);
