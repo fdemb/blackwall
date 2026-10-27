@@ -29,8 +29,11 @@ function createProbe(): HTMLSpanElement {
   const span = document.createElement("span");
   span.setAttribute("aria-hidden", "true");
   Object.assign(span.style, {
-    position: "absolute",
+    position: "fixed",
+    top: "0",
+    left: "0",
     visibility: "hidden",
+    pointerEvents: "none",
     whiteSpace: "pre",
     fontSize: `${PROBE_SIZE}px`,
     fontVariantNumeric: "tabular-nums",
