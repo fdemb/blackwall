@@ -24,6 +24,8 @@ pulldown-cmark = "0.13"
 ammonia = "4"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 hmac = "0.12"
+sha1 = "0.10"
+qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 tower-http = { version = "0.7.1", features = ["fs", "compression-gzip", "cors"] }
 base64 = "0.22"
 dotenvy = "0.15.7"

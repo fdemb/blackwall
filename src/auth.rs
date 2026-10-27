@@ -13,6 +13,11 @@ use sha2::{Digest, Sha256};
 use sqlx::{PgConnection, Row, types::Json};
 use uuid::Uuid;
 
+mod totp;
+pub use totp::{
+    PendingLogin, RecoveryCodes, TotpCode, TotpConfirm, TotpLogin, TotpSetup, TotpStatus,
+};
+
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Language {
@@ -131,6 +136,21 @@ pub struct VerifyEmail {
 pub struct Login {
     pub email: String,
     pub password: String,
+}
+
+pub enum SignIn {
+    Session(Session),
+    /// The password was right, and the account also needs a TOTP or recovery code.
+    TotpRequired(PendingLogin),
+}
+
+impl SignIn {
+    pub fn session(self) -> Option<Session> {
+        match self {
+            Self::Session(session) => Some(session),
+            Self::TotpRequired(_) => None,
+        }
+    }
 }
 
 #[derive(Serialize, utoipa::ToSchema)]
@@ -339,37 +359,21 @@ impl Store {
         }
 
         tx.commit().await?;
-        Ok(Registered::Session(self.create_session(profile).await?))
+        let session = create_session(&mut *self.pool.acquire().await?, profile).await?;
+        Ok(Registered::Session(session))
     }
 
-    async fn create_session(&self, profile: Profile) -> Result<Session> {
-        let token = token();
-        let session_id = Uuid::new_v4();
-        sqlx::query(
-            "INSERT INTO sessions (token_hash, user_id, public_id, expires_at) VALUES ($1, $2, $3, $4)",
-        )
-        .bind(hash(&token))
-        .bind(profile.id)
-        .bind(session_id)
-        .bind(Utc::now() + Duration::days(SESSION_LIFETIME_DAYS))
-        .execute(&self.pool)
-        .await?;
-
-        Ok(Session {
-            csrf_token: csrf(&token),
-            token,
-            session_id,
-            profile,
-        })
-    }
-
-    pub async fn login(&self, input: Login) -> Result<Session> {
+    /// Checks the password. Accounts with TOTP get a pending login instead of
+    /// a session, after the same password check as every other account.
+    pub async fn login(&self, input: Login) -> Result<SignIn> {
         if input.password.len() > 256 {
             return Err(Error::Unauthorized);
         }
 
         let row = sqlx::query(
-            "SELECT id, email, password_hash, profile, email_verified_at IS NOT NULL AS verified \
+            "SELECT id, email, password_hash, profile, email_verified_at IS NOT NULL AS verified, \
+             EXISTS(SELECT 1 FROM user_totp WHERE user_id = users.id AND enabled_at IS NOT NULL) \
+               AS totp \
              FROM users WHERE email = $1",
         )
         .bind(input.email.trim().to_lowercase())
@@ -395,8 +399,15 @@ impl Store {
             )));
         }
 
-        self.create_session(row.try_get::<Json<Profile>, _>("profile")?.0)
-            .await
+        if row.try_get::<bool, _>("totp")? {
+            return Ok(SignIn::TotpRequired(
+                self.pending_login(row.try_get("id")?).await?,
+            ));
+        }
+
+        let profile = row.try_get::<Json<Profile>, _>("profile")?.0;
+        let session = create_session(&mut *self.pool.acquire().await?, profile).await?;
+        Ok(SignIn::Session(session))
     }
 
     async fn remind_verification(&self, user: Uuid, email: String) -> Result<()> {
@@ -618,6 +629,10 @@ impl Store {
             .bind(user)
             .execute(&mut *tx)
             .await?;
+        sqlx::query("DELETE FROM pending_logins WHERE user_id = $1")
+            .bind(user)
+            .execute(&mut *tx)
+            .await?;
 
         tx.commit().await?;
 
@@ -719,12 +734,37 @@ impl Store {
             .bind(user)
             .execute(&mut *tx)
             .await?;
+        sqlx::query("DELETE FROM pending_logins WHERE user_id = $1")
+            .bind(user)
+            .execute(&mut *tx)
+            .await?;
         mark_verified(&mut tx, user).await?;
 
         tx.commit().await?;
 
         Ok(())
     }
+}
+
+async fn create_session(conn: &mut PgConnection, profile: Profile) -> Result<Session> {
+    let token = token();
+    let session_id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO sessions (token_hash, user_id, public_id, expires_at) VALUES ($1, $2, $3, $4)",
+    )
+    .bind(hash(&token))
+    .bind(profile.id)
+    .bind(session_id)
+    .bind(Utc::now() + Duration::days(SESSION_LIFETIME_DAYS))
+    .execute(conn)
+    .await?;
+
+    Ok(Session {
+        csrf_token: csrf(&token),
+        token,
+        session_id,
+        profile,
+    })
 }
 
 async fn queue_verification(tx: &mut PgConnection, user: Uuid, email: String) -> Result<()> {

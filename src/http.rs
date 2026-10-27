@@ -219,6 +219,15 @@ pub fn router_with_web(store: Store, web_dir: std::path::PathBuf) -> Router {
         .route("/internal-api/auth/options", get(auth_options))
         .route("/internal-api/auth/register", post(register))
         .route("/internal-api/auth/login", post(login))
+        .route("/internal-api/auth/login/totp", post(login_totp))
+        .route("/internal-api/auth/totp", get(totp_status))
+        .route("/internal-api/auth/totp/setup", post(setup_totp))
+        .route("/internal-api/auth/totp/enable", post(enable_totp))
+        .route("/internal-api/auth/totp/disable", post(disable_totp))
+        .route(
+            "/internal-api/auth/totp/recovery-codes",
+            post(regenerate_recovery_codes),
+        )
         .route("/internal-api/auth/logout", post(logout))
         .route("/internal-api/auth/password", post(change_password))
         .route("/internal-api/auth/reset-request", post(reset_request))
@@ -486,12 +495,105 @@ async fn register(State(store): State<Store>, Json(input): Json<Register>) -> Re
     request_body = Login,
     responses(
         (status = 200, body = Session),
+        (status = 202, description = "The account needs a TOTP or recovery code at /internal-api/auth/login/totp", body = PendingLogin),
         (status = 401, body = crate::error::ErrorBody),
         (status = 403, description = "The email address is not verified yet", body = crate::error::ErrorBody)
     )
 )]
 async fn login(State(store): State<Store>, Json(input): Json<Login>) -> Result<Response> {
-    session_response(store.login(input).await?)
+    match store.login(input).await? {
+        SignIn::Session(session) => session_response(session),
+        SignIn::TotpRequired(pending) => Ok((StatusCode::ACCEPTED, Json(pending)).into_response()),
+    }
+}
+
+#[utoipa::path(
+    post,
+    path = "/internal-api/auth/login/totp",
+    request_body = TotpLogin,
+    responses(
+        (status = 200, body = Session),
+        (status = 400, description = "The pending sign-in expired or took too many wrong codes", body = crate::error::ErrorBody),
+        (status = 401, description = "The code is wrong or already used", body = crate::error::ErrorBody)
+    )
+)]
+async fn login_totp(State(store): State<Store>, Json(input): Json<TotpLogin>) -> Result<Response> {
+    session_response(store.login_totp(input).await?)
+}
+
+#[utoipa::path(
+    get,
+    path = "/internal-api/auth/totp",
+    responses((status = 200, body = TotpStatus))
+)]
+async fn totp_status(State(store): State<Store>, actor: Actor) -> Result<Json<TotpStatus>> {
+    Ok(Json(store.totp_status(actor.profile.id).await?))
+}
+
+/// Starts TOTP setup with a new secret. TOTP stays off until enabled with a code.
+#[utoipa::path(
+    post,
+    path = "/internal-api/auth/totp/setup",
+    responses((status = 200, body = TotpSetup), (status = 409, body = crate::error::ErrorBody))
+)]
+async fn setup_totp(State(store): State<Store>, actor: Actor) -> Result<Json<TotpSetup>> {
+    Ok(Json(store.setup_totp(&actor.profile).await?))
+}
+
+/// Turns TOTP on and signs out every other session.
+#[utoipa::path(
+    post,
+    path = "/internal-api/auth/totp/enable",
+    request_body = TotpCode,
+    responses((status = 200, body = RecoveryCodes), (status = 400, body = crate::error::ErrorBody))
+)]
+async fn enable_totp(
+    State(store): State<Store>,
+    actor: Actor,
+    Json(input): Json<TotpCode>,
+) -> Result<Json<RecoveryCodes>> {
+    Ok(Json(
+        store
+            .enable_totp(actor.profile.id, actor.session_id, input)
+            .await?,
+    ))
+}
+
+/// Turns TOTP off and signs out every other session.
+#[utoipa::path(
+    post,
+    path = "/internal-api/auth/totp/disable",
+    request_body = TotpConfirm,
+    responses((status = 204), (status = 400, body = crate::error::ErrorBody))
+)]
+async fn disable_totp(
+    State(store): State<Store>,
+    actor: Actor,
+    Json(input): Json<TotpConfirm>,
+) -> Result<StatusCode> {
+    store
+        .disable_totp(actor.profile.id, actor.session_id, input)
+        .await?;
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[utoipa::path(
+    post,
+    path = "/internal-api/auth/totp/recovery-codes",
+    request_body = TotpConfirm,
+    responses((status = 200, body = RecoveryCodes), (status = 400, body = crate::error::ErrorBody))
+)]
+async fn regenerate_recovery_codes(
+    State(store): State<Store>,
+    actor: Actor,
+    Json(input): Json<TotpConfirm>,
+) -> Result<Json<RecoveryCodes>> {
+    Ok(Json(
+        store
+            .regenerate_recovery_codes(actor.profile.id, input)
+            .await?,
+    ))
 }
 
 #[utoipa::path(
@@ -1005,6 +1107,12 @@ async fn markdown(
         auth_options,
         register,
         login,
+        login_totp,
+        totp_status,
+        setup_totp,
+        enable_totp,
+        disable_totp,
+        regenerate_recovery_codes,
         logout,
         me,
         edit_profile,

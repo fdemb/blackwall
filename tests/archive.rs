@@ -410,6 +410,8 @@ async fn global_search_spans_live_and_archived_issues() {
             password: "archive-test-password".into(),
         })
         .await
+        .unwrap()
+        .session()
         .unwrap();
     let ws = Uuid::parse_str(
         store

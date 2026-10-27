@@ -737,7 +737,12 @@ const MAINTENANCE_BUDGET: Duration = Duration::from_secs(20);
 async fn sweep(store: &Store, retention_days: i32, failed_retention_days: i32) -> Result<()> {
     let deadline = tokio::time::Instant::now() + MAINTENANCE_BUDGET;
 
-    for table in ["sessions", "password_resets", "email_verifications"] {
+    for table in [
+        "sessions",
+        "password_resets",
+        "email_verifications",
+        "pending_logins",
+    ] {
         drain(deadline, 1000, store.clone(), |s| async move {
             Ok(sqlx::query(&format!(
                 "DELETE FROM {table} WHERE token_hash IN (\
