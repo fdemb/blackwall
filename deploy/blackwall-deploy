@@ -16,8 +16,13 @@ if [[ ! -d $release ]]; then
     rm -rf "$release.tmp"
     mkdir -p "$release.tmp"
     tar -xzf "$archive" -C "$release.tmp" --no-same-owner --no-same-permissions
-    test -x "$release.tmp/blackwall"
+    [[ -x $release.tmp/blackwall && ! -L $release.tmp/blackwall ]]
     test -f "$release.tmp/web/index.html"
+    unpacked=$(readlink -f "$release.tmp")
+    while IFS= read -r -d '' link; do
+        target=$(readlink -f "$link")
+        [[ $target == "$unpacked"/* ]] || { echo "${link#"$release.tmp/"} resolves outside the release" >&2; exit 1; }
+    done < <(find "$release.tmp" -type l -print0)
     mv "$release.tmp" "$release"
 fi
 
