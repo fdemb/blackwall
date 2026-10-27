@@ -1,28 +1,31 @@
-import { useRef, useState } from "react";
+import { useState } from "react";
+import { Link } from "react-router";
 import { Form } from "react-aria-components";
-import { ArrowDown, ArrowUp, Plus, Trash2, Users } from "lucide-react";
+import { ChevronRight, Plus, Users } from "lucide-react";
+import { Avatar } from "~/components/ui/avatar";
 import { Button } from "~/components/ui/button";
 import { Dialog, useDialogDirty } from "~/components/ui/dialog";
-import { FormError, Input, TextField } from "~/components/ui/field";
-import { Checkbox } from "~/components/ui/toggles";
-import { Select } from "~/components/ui/select";
+import { FormError, TextField } from "~/components/ui/field";
 import { EmptyState } from "~/components/app/page";
 import { SettingsBlock, SettingsPage, SettingsSection } from "~/components/app/settings";
 import { MultiMemberPicker } from "~/components/app/pickers";
 import { StageIcon } from "~/components/app/icons";
-import { TeamAppearancePicker, TeamIcon } from "~/components/app/team-icon";
-import { STAGE_KINDS } from "~/lib/format";
+import { TeamIcon } from "~/components/app/team-icon";
 import { useI18n } from "~/lib/i18n";
 import { usePending } from "~/lib/use-pending";
-import { useIssueCount } from "~/lib/stats";
+import { useIssueCount, useStageIssueCounts } from "~/lib/stats";
+import { teamView, type TeamView } from "~/lib/team-settings";
 import { useWorkspace } from "~/lib/workspace";
 import { freeTeamKey, isTeamKey, teamKey, teamKeyInput } from "~/lib/identifiers";
-import type { Id, Stage, StageKind, Team } from "~/lib/types";
+import type { Id } from "~/lib/types";
+
+const MAX_AVATARS = 4;
 
 export default function Teams() {
   const { t } = useI18n();
   const { ws, canAdmin, canWrite, create } = useWorkspace();
   const issueCount = useIssueCount();
+  const counts = useStageIssueCounts();
   const [creating, setCreating] = useState(false);
   return (
     <SettingsPage
@@ -54,7 +57,7 @@ export default function Teams() {
           </div>
         </SettingsBlock>
       )}
-      {ws.teams.length === 0 && (
+      {ws.teams.length === 0 ? (
         <SettingsSection>
           <EmptyState
             icon={<Users />}
@@ -69,14 +72,94 @@ export default function Teams() {
             }
           />
         </SettingsSection>
+      ) : (
+        <SettingsSection>
+          <div
+            aria-hidden
+            className="flex items-center gap-4 border-b border-border bg-background px-4 py-2 text-xs font-medium text-muted-foreground sm:px-5"
+          >
+            <span className="flex-1">{t("teams.colTeam")}</span>
+            <span className="hidden w-45 shrink-0 md:block">{t("teams.colWorkflow")}</span>
+            <span className="hidden w-24 shrink-0 sm:block">{t("teams.colMembers")}</span>
+            <span className="w-16 shrink-0 text-right">{t("teams.colOpen")}</span>
+            <span className="w-4 shrink-0" />
+          </div>
+          <ul className="divide-y divide-border">
+            {ws.teams.map((team) => (
+              <TeamRow key={team.id} view={teamView(team, counts)} />
+            ))}
+          </ul>
+        </SettingsSection>
       )}
-      {ws.teams.map((tm) => (
-        <TeamSection key={tm.id} team={tm} />
-      ))}
       <Dialog title={t("team.create")} size="sm" isOpen={creating} onOpenChange={setCreating}>
         {(close) => <CreateTeam close={close} />}
       </Dialog>
     </SettingsPage>
+  );
+}
+
+function TeamRow({ view: { team, stages, openIssues } }: { view: TeamView }) {
+  const { t } = useI18n();
+  const { ws, member } = useWorkspace();
+  const people = team.members.flatMap((id) => {
+    const m = member(id);
+    return m ? [m] : [];
+  });
+  return (
+    <li>
+      <Link
+        to={`/${ws.slug}/settings/teams/${team.key}`}
+        className="flex items-center gap-4 px-4 py-3.5 outline-none transition-colors hover:bg-muted/60 focus-visible:bg-muted/60 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/60 sm:px-5"
+      >
+        <span className="flex min-w-0 flex-1 items-center gap-3">
+          <TeamIcon team={team} className="size-8 rounded-lg [&_svg]:size-4" />
+          <span className="flex min-w-0 flex-col">
+            <span className="flex items-center gap-2">
+              <span className="truncate font-medium">{team.name}</span>
+              <span className="font-mono text-[11px] text-muted-foreground">{team.key}</span>
+            </span>
+            <span className="truncate text-muted-foreground">
+              {team.archive_after_days === null
+                ? t("teams.archivesNever")
+                : t("teams.archivesAfter", { count: team.archive_after_days })}
+            </span>
+          </span>
+        </span>
+        <span className="hidden w-45 shrink-0 items-center gap-1.5 md:flex">
+          {stages.map(({ stage }) => (
+            <StageIcon key={stage.id} kind={stage.kind} />
+          ))}
+          <span className="pl-0.5 text-muted-foreground">
+            {t("teams.stages", { count: stages.length })}
+          </span>
+        </span>
+        <span
+          role="img"
+          className="hidden w-24 shrink-0 items-center -space-x-1.5 sm:flex"
+          aria-label={t("count.members", { count: people.length })}
+        >
+          {people.slice(0, MAX_AVATARS).map((m) => (
+            <Avatar
+              key={m.id}
+              name={m.display_name}
+              src={m.avatar_url}
+              size={26}
+              className="ring-2 ring-card"
+            />
+          ))}
+          {people.length > MAX_AVATARS && (
+            <span className="pl-2.5 text-xs text-muted-foreground">
+              +{people.length - MAX_AVATARS}
+            </span>
+          )}
+        </span>
+        <span className="w-16 shrink-0 text-right tabular-nums">
+          <span aria-hidden>{openIssues}</span>
+          <span className="sr-only">{t("team.openIssues", { count: openIssues })}</span>
+        </span>
+        <ChevronRight aria-hidden className="size-4 shrink-0 text-muted-foreground" />
+      </Link>
+    </li>
   );
 }
 
@@ -89,7 +172,7 @@ function CreateTeam({ close }: { close: () => void }) {
   const [members, setMembers] = useState<Id[]>([me]);
   const { pending, error, guard } = usePending();
   useDialogDirty(name !== "");
-  const taken = new Set(ws.teams.map((team) => team.key));
+  const taken = new Set(ws.teams.flatMap((team) => [team.key, ...team.former_keys]));
   const shownKey = key ?? freeTeamKey(teamKey(name), taken);
   const keyError = !shownKey
     ? ""
@@ -145,385 +228,6 @@ function CreateTeam({ close }: { close: () => void }) {
           isDisabled={!name.trim() || !shownKey || Boolean(keyError) || pending}
         >
           {pending ? t("action.saving") : t("action.save")}
-        </Button>
-      </div>
-    </Form>
-  );
-}
-
-function TeamSection({ team }: { team: Team }) {
-  const { t } = useI18n();
-  const { run, canAdmin } = useWorkspace();
-  const stages = [...team.stages].sort((a, b) => a.position - b.position);
-  const [adding, setAdding] = useState(false);
-  const [deleting, setDeleting] = useState<Stage | null>(null);
-  const { pending: moving, guard } = usePending();
-  const swap = (a: Stage, b: Stage) =>
-    guard(async () => {
-      await run({
-        type: "update_stage",
-        team_id: team.id,
-        id: a.id,
-        name: a.name,
-        kind: a.kind,
-        position: b.position,
-      });
-      await run({
-        type: "update_stage",
-        team_id: team.id,
-        id: b.id,
-        name: b.name,
-        kind: b.kind,
-        position: a.position,
-      });
-    });
-  return (
-    <SettingsSection
-      title={
-        <span className="flex items-center gap-2">
-          {canAdmin ? (
-            <TeamAppearancePicker
-              team={team}
-              onChange={(appearance) =>
-                run({ type: "set_team_appearance", id: team.id, ...appearance }).catch(() => {})
-              }
-            />
-          ) : (
-            <TeamIcon team={team} className="size-6" />
-          )}
-          <span className="truncate">{team.name}</span>
-          <span className="font-normal tabular-nums text-muted-foreground">{team.key}</span>
-        </span>
-      }
-      actions={
-        canAdmin && (
-          <div className="w-56">
-            <MultiMemberPicker
-              value={team.members}
-              onChange={(members) =>
-                run({ type: "set_team_members", id: team.id, members }).catch(() => {})
-              }
-            />
-          </div>
-        )
-      }
-    >
-      <div className="px-4 py-4 sm:px-5 sm:py-5">
-        <div className="mb-2 flex items-center">
-          <h3 className=" font-medium text-muted-foreground">{t("teams.workflow")}</h3>
-          {canAdmin && (
-            <Button variant="ghost" size="sm" className="ml-auto" onPress={() => setAdding(true)}>
-              <Plus />
-              {t("stage.add")}
-            </Button>
-          )}
-        </div>
-        <ul className="space-y-1">
-          {stages.map((s, i) => (
-            <StageRow
-              key={s.id}
-              team={team}
-              stage={s}
-              first={i === 0}
-              last={i === stages.length - 1}
-              canEdit={canAdmin}
-              busy={moving}
-              onUp={() => void swap(s, stages[i - 1])}
-              onDown={() => void swap(s, stages[i + 1])}
-              onDelete={() => setDeleting(s)}
-            />
-          ))}
-        </ul>
-        <TeamArchive team={team} />
-      </div>
-      <Dialog title={t("stage.add")} size="sm" isOpen={adding} onOpenChange={setAdding}>
-        {(close) => <AddStage team={team} close={close} />}
-      </Dialog>
-      <Dialog
-        title={t("stage.delete")}
-        description={deleting ? t("stage.deleteSub", { name: deleting.name }) : ""}
-        size="sm"
-        isOpen={deleting !== null}
-        onOpenChange={(o) => !o && setDeleting(null)}
-      >
-        {(close) => deleting && <DeleteStage team={team} stage={deleting} close={close} />}
-      </Dialog>
-    </SettingsSection>
-  );
-}
-
-function StageRow({
-  team,
-  stage,
-  first,
-  last,
-  canEdit,
-  busy,
-  onUp,
-  onDown,
-  onDelete,
-}: {
-  team: Team;
-  stage: Stage;
-  first: boolean;
-  last: boolean;
-  canEdit: boolean;
-  busy: boolean;
-  onUp: () => void;
-  onDown: () => void;
-  onDelete: () => void;
-}) {
-  const { t } = useI18n();
-  const { run } = useWorkspace();
-  const [name, setName] = useState(stage.name);
-  const [status, setStatus] = useState<"idle" | "saving" | "saved" | "failed">("idle");
-  const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
-  // Inline edits save on their own, so each row says whether the change landed.
-  const save = async (patch: Partial<Stage>) => {
-    clearTimeout(timer.current);
-    setStatus("saving");
-    try {
-      await run({
-        type: "update_stage",
-        team_id: team.id,
-        id: stage.id,
-        name: (patch.name ?? stage.name).trim(),
-        kind: patch.kind ?? stage.kind,
-        position: stage.position,
-      });
-      setStatus("saved");
-      timer.current = setTimeout(() => setStatus("idle"), 2500);
-    } catch {
-      setName(stage.name);
-      setStatus("failed");
-    }
-  };
-  return (
-    <li className="flex flex-wrap items-center gap-2 sm:flex-nowrap">
-      <StageIcon kind={stage.kind} className="mx-1" />
-      <Input
-        aria-label={t("stage.name")}
-        value={name}
-        disabled={!canEdit}
-        onChange={(e) => setName(e.target.value)}
-        onBlur={() => name.trim() && name !== stage.name && void save({ name })}
-        className="h-8 min-w-0 flex-1 basis-40"
-      />
-      <Select
-        aria-label={t("stage.kind")}
-        className="w-full basis-full sm:w-36 sm:basis-auto"
-        isDisabled={!canEdit}
-        selectedKey={stage.kind}
-        onSelectionChange={(k) => void save({ kind: k as StageKind })}
-        options={STAGE_KINDS.map((k) => ({
-          id: k,
-          label: t(`stage.kind.${k}`),
-          icon: <StageIcon kind={k} />,
-        }))}
-      />
-      {canEdit && (
-        <span className="flex">
-          <Button
-            variant="ghost"
-            size="icon"
-            aria-label={t("action.moveUp")}
-            isDisabled={first || busy}
-            onPress={onUp}
-          >
-            <ArrowUp />
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            aria-label={t("action.moveDown")}
-            isDisabled={last || busy}
-            onPress={onDown}
-          >
-            <ArrowDown />
-          </Button>
-          <Button variant="ghost" size="icon" aria-label={t("action.delete")} onPress={onDelete}>
-            <Trash2 />
-          </Button>
-        </span>
-      )}
-      <span
-        role="status"
-        className={`w-16  ${status === "failed" ? "text-destructive" : "text-muted-foreground"}`}
-      >
-        {status === "saving"
-          ? t("action.saving")
-          : status === "saved"
-            ? t("action.saved")
-            : status === "failed"
-              ? t("action.saveFailed")
-              : ""}
-      </span>
-    </li>
-  );
-}
-
-/** Days after Done before auto-archive, per team. Null means never. Admins only. */
-function TeamArchive({ team }: { team: Team }) {
-  const { t } = useI18n();
-  const { run, canAdmin } = useWorkspace();
-  const [days, setDays] = useState(team.archive_after_days?.toString() ?? "30");
-  const [never, setNever] = useState(team.archive_after_days === null);
-  const [status, setStatus] = useState<"idle" | "saving" | "saved" | "failed">("idle");
-  const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
-  const save = async (value: number | null) => {
-    clearTimeout(timer.current);
-    setStatus("saving");
-    try {
-      await run({ type: "set_team_archive", id: team.id, archive_after_days: value });
-      setStatus("saved");
-      timer.current = setTimeout(() => setStatus("idle"), 2500);
-    } catch {
-      setDays(team.archive_after_days?.toString() ?? "30");
-      setNever(team.archive_after_days === null);
-      setStatus("failed");
-    }
-  };
-  const commitDays = () => {
-    const n = Number(days);
-    if (!Number.isInteger(n) || n < 1 || n > 3650) {
-      setDays(team.archive_after_days?.toString() ?? "30");
-      return;
-    }
-    if (n !== team.archive_after_days) void save(n);
-  };
-  return (
-    <div className="mt-4 border-t border-border pt-3">
-      <h3 className=" font-medium text-muted-foreground">{t("team.archive")}</h3>
-      <p className="mt-0.5  text-muted-foreground">{t("team.archiveSub")}</p>
-      <div className="mt-2 flex flex-wrap items-center gap-3">
-        <Checkbox
-          isSelected={never}
-          isDisabled={!canAdmin}
-          onChange={(on) => {
-            setNever(on);
-            void save(on ? null : Number(days) || 30);
-          }}
-        >
-          {t("team.archiveNever")}
-        </Checkbox>
-        {!never && (
-          <label className="flex items-center gap-2 ">
-            <Input
-              aria-label={t("team.archiveDays")}
-              type="number"
-              min={1}
-              max={3650}
-              disabled={!canAdmin}
-              value={days}
-              onChange={(e) => setDays(e.target.value)}
-              onBlur={commitDays}
-              onKeyDown={(e) => e.key === "Enter" && (e.currentTarget as HTMLInputElement).blur()}
-              className="h-8 w-20"
-            />
-            <span className="text-muted-foreground">{t("team.archiveDays")}</span>
-          </label>
-        )}
-        <span
-          role="status"
-          className={` ${status === "failed" ? "text-destructive" : "text-muted-foreground"}`}
-        >
-          {status === "saving"
-            ? t("action.saving")
-            : status === "saved"
-              ? t("action.saved")
-              : status === "failed"
-                ? t("action.saveFailed")
-                : ""}
-        </span>
-      </div>
-    </div>
-  );
-}
-
-function AddStage({ team, close }: { team: Team; close: () => void }) {
-  const { t } = useI18n();
-  const { run } = useWorkspace();
-  const [name, setName] = useState("");
-  const [kind, setKind] = useState<StageKind>("active");
-  const position = Math.max(0, ...team.stages.map((s) => s.position)) + 1;
-  const { pending, error, guard } = usePending();
-  useDialogDirty(name !== "");
-  return (
-    <Form
-      className="flex flex-col gap-4"
-      onSubmit={(e) => {
-        e.preventDefault();
-        void guard(async () => {
-          await run(
-            { type: "create_stage", team_id: team.id, name: name.trim(), kind, position },
-            { quiet: true },
-          );
-          close();
-        });
-      }}
-    >
-      <TextField label={t("stage.name")} value={name} onChange={setName} autoFocus isRequired />
-      <Select
-        label={t("stage.kind")}
-        selectedKey={kind}
-        onSelectionChange={(k) => setKind(k as StageKind)}
-        options={STAGE_KINDS.map((k) => ({
-          id: k,
-          label: t(`stage.kind.${k}`),
-          icon: <StageIcon kind={k} />,
-        }))}
-      />
-      <FormError>{error}</FormError>
-      <div className="flex justify-end gap-2">
-        <Button variant="ghost" onPress={close}>
-          {t("action.cancel")}
-        </Button>
-        <Button type="submit" variant="primary" isDisabled={!name.trim() || pending}>
-          {pending ? t("action.saving") : t("action.save")}
-        </Button>
-      </div>
-    </Form>
-  );
-}
-
-function DeleteStage({ team, stage, close }: { team: Team; stage: Stage; close: () => void }) {
-  const { t } = useI18n();
-  const { run } = useWorkspace();
-  const others = team.stages.filter((s) => s.id !== stage.id);
-  const [replacement, setReplacement] = useState<Id | undefined>(others[0]?.id);
-  const { pending, error, guard } = usePending();
-  return (
-    <Form
-      className="flex flex-col gap-4"
-      onSubmit={(e) => {
-        e.preventDefault();
-        if (replacement)
-          void guard(async () => {
-            await run(
-              { type: "delete_stage", team_id: team.id, id: stage.id, replacement },
-              { quiet: true, expectedVersions: error ? undefined : { [stage.id]: stage.version } },
-            );
-            close();
-          });
-      }}
-    >
-      <Select
-        label={t("stage.moveTo")}
-        selectedKey={replacement}
-        onSelectionChange={(k) => setReplacement(k as Id)}
-        options={others.map((s) => ({
-          id: s.id,
-          label: s.name,
-          icon: <StageIcon kind={s.kind} />,
-        }))}
-      />
-      <FormError>{error}</FormError>
-      <div className="flex justify-end gap-2">
-        <Button variant="ghost" onPress={close}>
-          {t("action.cancel")}
-        </Button>
-        <Button type="submit" variant="destructive" isDisabled={!replacement || pending}>
-          {t("action.delete")}
         </Button>
       </div>
     </Form>

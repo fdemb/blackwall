@@ -48,6 +48,7 @@ export default [
         route("general", "routes/settings-general.tsx"),
         route("members", "routes/settings-members.tsx"),
         route("teams", "routes/settings-teams.tsx"),
+        route("teams/:teamKey", "routes/settings-team.tsx"),
         route("labels", "routes/settings-labels.tsx"),
         route("integrations", "routes/settings-integrations.tsx"),
         route("data", "routes/settings-data.tsx"),
