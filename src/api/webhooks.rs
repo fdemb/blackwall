@@ -159,8 +159,9 @@ pub async fn create(
         sqlx::query_scalar("SELECT secret FROM integrations WHERE workspace_id=$1 AND id=$2")
             .bind(scope.workspace)
             .bind(id)
-            .fetch_one(&store.pool)
-            .await?;
+            .fetch_optional(&store.pool)
+            .await?
+            .ok_or(Error::NotFound)?;
     let webhook = webhook(&store, scope, id).await?;
     Ok(tagged(
         StatusCode::CREATED,

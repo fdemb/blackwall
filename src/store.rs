@@ -364,6 +364,7 @@ impl Store {
             expected,
             key,
             None,
+            None,
             attachment,
             None,
         )
@@ -372,7 +373,8 @@ impl Store {
 
     /// Runs a command as `actor`, recording on its activity and comments that `via` acted for them.
     /// `sent` is the request as the client sent it; when given, a replayed key is matched
-    /// against it instead of the command.
+    /// against it instead of the command. A record keyed by command under `legacy_key`
+    /// stands in for `key`.
     #[allow(clippy::too_many_arguments)]
     pub async fn operation_via(
         &self,
@@ -381,6 +383,7 @@ impl Store {
         command: Command,
         expected: BTreeMap<Uuid, i64>,
         key: Option<String>,
+        legacy_key: Option<String>,
         sent: Option<serde_json::Value>,
         attachment: Option<NewAttachment>,
         via: Option<crate::domain::ViaToken>,
@@ -437,8 +440,11 @@ impl Store {
 
         if let Some(key) = &key
             && let Some(value) = match &request {
-                Some(request) => op.claim_key(key, request, Some(&by_command)).await?,
-                None => op.claim_key(key, &by_command, None).await?,
+                Some(request) => {
+                    op.claim_key(key, request, Some(&by_command), legacy_key.as_deref())
+                        .await?
+                }
+                None => op.claim_key(key, &by_command, None, None).await?,
             }
         {
             // Replays report the records as they are now, not as the first attempt saw them.
@@ -568,34 +574,55 @@ impl Operation<'_> {
     /// Records `request` under the idempotency key. Returns the stored result
     /// when the key already completed, and rejects a key reused for another request.
     /// A stored record without a `sent` fingerprint predates them and was keyed by
-    /// command, so it still matches `by_command`.
+    /// command, so it still matches `by_command`. Such a record under `legacy`, the
+    /// name this key had back then, stands in for the key.
     pub(super) async fn claim_key(
         &mut self,
         key: &str,
         request: &serde_json::Value,
         by_command: Option<&serde_json::Value>,
+        legacy: Option<&str>,
     ) -> Result<Option<serde_json::Value>> {
         crate::domain::text(key, 200)?;
-        sqlx::query(
-            "INSERT INTO operation_keys(workspace_id,actor,key,request) \
-             VALUES($1,$2,$3,$4) ON CONFLICT DO NOTHING",
-        )
-        .bind(self.workspace_id)
-        .bind(self.actor)
-        .bind(key)
-        .bind(request)
-        .execute(&mut *self.tx)
-        .await?;
+        let legacy = match legacy {
+            Some(legacy) => {
+                sqlx::query(
+                    "SELECT request,result FROM operation_keys \
+                     WHERE workspace_id=$1 AND actor=$2 AND key=$3 AND request->'sent' IS NULL",
+                )
+                .bind(self.workspace_id)
+                .bind(self.actor)
+                .bind(legacy)
+                .fetch_optional(&mut *self.tx)
+                .await?
+            }
+            None => None,
+        };
+        let row = match legacy {
+            Some(row) => row,
+            None => {
+                sqlx::query(
+                    "INSERT INTO operation_keys(workspace_id,actor,key,request) \
+                     VALUES($1,$2,$3,$4) ON CONFLICT DO NOTHING",
+                )
+                .bind(self.workspace_id)
+                .bind(self.actor)
+                .bind(key)
+                .bind(request)
+                .execute(&mut *self.tx)
+                .await?;
 
-        let row = sqlx::query(
-            "SELECT request,result FROM operation_keys \
-             WHERE workspace_id=$1 AND actor=$2 AND key=$3 FOR UPDATE",
-        )
-        .bind(self.workspace_id)
-        .bind(self.actor)
-        .bind(key)
-        .fetch_one(&mut *self.tx)
-        .await?;
+                sqlx::query(
+                    "SELECT request,result FROM operation_keys \
+                     WHERE workspace_id=$1 AND actor=$2 AND key=$3 FOR UPDATE",
+                )
+                .bind(self.workspace_id)
+                .bind(self.actor)
+                .bind(key)
+                .fetch_one(&mut *self.tx)
+                .await?
+            }
+        };
 
         let stored: serde_json::Value = row.try_get("request")?;
         let matches = stored == *request

@@ -303,6 +303,8 @@ pub struct WriteOptions {
     pub idempotency_key: Option<String>,
     /// What a keyed request sent, recorded by `fingerprint`.
     pub sent: Option<serde_json::Value>,
+    /// The key this step ran under before requests were fingerprinted.
+    pub legacy_key: Option<String>,
 }
 
 impl WriteOptions {
@@ -321,6 +323,10 @@ impl WriteOptions {
                 sent["step"] = step.into();
                 sent
             }),
+            legacy_key: self
+                .idempotency_key
+                .as_ref()
+                .map(|key| format!("{key}:{step}")),
         }
     }
 }
@@ -420,6 +426,7 @@ impl FromRequestParts<Store> for WriteOptions {
                 .extensions
                 .get::<SentRequest>()
                 .map(|sent| sent.0.clone()),
+            legacy_key: None,
         })
     }
 }
@@ -462,6 +469,7 @@ pub async fn run(
             command,
             expected,
             options.idempotency_key,
+            options.legacy_key,
             options.sent,
             None,
             Some(scope.token),
