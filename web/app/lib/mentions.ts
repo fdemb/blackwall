@@ -8,7 +8,11 @@ export const MENTION_SCHEME = "mention:";
 export const MENTION_LINK = /\[@((?:\\.|[^\\\]\n])*)\]\(mention:([^)\s]+)\)/;
 
 const MENTION_LINKS = new RegExp(MENTION_LINK.source, "g");
-const MENTION_HREF = /^mention:(\S+)$/;
+const MENTION_HREF =
+  /^mention:([\dA-Fa-f]{8}-[\dA-Fa-f]{4}-[\dA-Fa-f]{4}-[\dA-Fa-f]{4}-[\dA-Fa-f]{12})$/;
+// marked keeps character references in link destinations, while pulldown-cmark on the server
+// decodes them. `&colon;` is the only named reference that spells a character a mention holds.
+const CHARACTER_REFERENCE = /&(?:#(\d{1,7})|#[xX]([\dA-Fa-f]{1,6})|colon);/g;
 // A private instance, so editor tokenizers registered elsewhere never turn links into other tokens.
 const parser = new Marked();
 const ESCAPED = /\\([!-/:-@[-`{-~])/g;
@@ -16,12 +20,22 @@ const ESCAPED = /\\([!-/:-@[-`{-~])/g;
 /** Users mentioned in `markdown`, read from its links as `domain::mentioned_users` reads them. */
 export function mentionedUsers(markdown: string): Id[] {
   const ids = new Set<Id>();
-  if (!markdown.includes(MENTION_SCHEME)) return [];
+  // References and escapes can spell the colon, so look for the bare word.
+  if (!markdown.includes("mention")) return [];
   parser.walkTokens(parser.lexer(markdown), (token) => {
-    const id = token.type === "link" && MENTION_HREF.exec((token as Tokens.Link).href)?.[1];
+    const href = token.type === "link" && decodeReferences((token as Tokens.Link).href);
+    const id = href && MENTION_HREF.exec(href)?.[1];
     if (id) ids.add(id.toLowerCase());
   });
   return [...ids].sort();
+}
+
+function decodeReferences(text: string): string {
+  return text.replace(CHARACTER_REFERENCE, (_, decimal?: string, hex?: string) => {
+    if (decimal === undefined && hex === undefined) return ":";
+    const code = hex === undefined ? Number(decimal) : Number.parseInt(hex, 16);
+    return code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : "\uFFFD";
+  });
 }
 
 /** Users `after` mentions that `before` did not. */

@@ -156,7 +156,8 @@ pub const MARKDOWN_OPTIONS: pulldown_cmark::Options =
 /// Users mentioned in `markdown`, by the id in each mention link.
 pub fn mentioned_users(markdown: &str) -> BTreeSet<Uuid> {
     use pulldown_cmark::{Event, Parser, Tag};
-    if !markdown.contains(MENTION_SCHEME) {
+    // Entities and escapes can spell the colon, so look for the bare word.
+    if !markdown.contains("mention") {
         return BTreeSet::new();
     }
     Parser::new_ext(markdown, MARKDOWN_OPTIONS)
