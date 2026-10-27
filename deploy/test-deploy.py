@@ -29,11 +29,11 @@ def release_files(release):
     (release / "blackwall").chmod(0o755)
 
 
-def deploy(work, *, previous=old, unhealthy=(), restart_fails=(), archive=None):
+def deploy(work, *, previous=old, unhealthy=(), restart_fails=(), archive=None, extra_stubs={}):
     root = work / "opt"
     bins = work / "bin"
     bins.mkdir()
-    for name, body in stubs.items():
+    for name, body in {**stubs, **extra_stubs}.items():
         (bins / name).write_text(f"#!/bin/sh\n{body}\n")
         (bins / name).chmod(0o755)
     release_files(root / "releases" / old)
@@ -44,7 +44,7 @@ def deploy(work, *, previous=old, unhealthy=(), restart_fails=(), archive=None):
         outside = work / "outside"
         outside.write_text(f'#!/bin/sh\necho "outside ran" >> "{work / "calls.log"}"\n')
         outside.chmod(0o755)
-        archive(staging, outside)
+        archive(staging, work)
         with tarfile.open(tarball, "w:gz") as tar:
             for entry in sorted(staging.iterdir()):
                 tar.add(entry, entry.name)
@@ -137,18 +137,34 @@ def rejected_archive(o):
     assert "migrating" not in o["output"] and "outside ran" not in o["calls"]
 
 
-def symlinked_binary(staging, outside):
+def symlinked_binary(staging, work):
     (staging / "blackwall").unlink()
-    (staging / "blackwall").symlink_to(outside)
+    (staging / "blackwall").symlink_to(work / "outside")
 
 
-def symlinked_web_file(staging, outside):
+def symlinked_web_file(staging, work):
     (staging / "web/index.html").unlink()
-    (staging / "web/index.html").symlink_to(outside)
+    (staging / "web/index.html").symlink_to(work / "outside")
 
 
-def internal_symlink(staging, outside):
+def internal_symlink(staging, work):
     (staging / "web/home.html").symlink_to("index.html")
+
+
+def absolute_symlink_into_staging(staging, work):
+    (staging / "web/content.html").write_text("ok")
+    (staging / "web/index.html").unlink()
+    (staging / "web/index.html").symlink_to(work / "opt/releases" / f"{new}.tmp/web/content.html")
+
+
+def relative_symlink_into_staging(staging, work):
+    (staging / "web/content.html").write_text("ok")
+    (staging / "web/index.html").unlink()
+    (staging / "web/index.html").symlink_to(f"../../{new}.tmp/web/content.html")
+
+
+def dangling_symlink(staging, work):
+    (staging / "web/home.html").symlink_to("missing.html")
 
 
 case("healthy deploy switches to the new release", healthy_deploy)
@@ -161,6 +177,10 @@ case("redeploying the current release has nothing to roll back to", redeploy_unh
 case("archive with an internal symlink installs", healthy_deploy, archive=internal_symlink)
 case("archive whose binary is a symlink is rejected", rejected_archive, archive=symlinked_binary)
 case("archive with a file linked outside the release is rejected", rejected_archive, archive=symlinked_web_file)
+case("archive with an absolute link into its unpack dir is rejected", rejected_archive, archive=absolute_symlink_into_staging)
+case("archive with a relative link back into its unpack dir is rejected", rejected_archive, archive=relative_symlink_into_staging)
+case("archive with a dangling link is rejected", rejected_archive, archive=dangling_symlink)
+case("archive is rejected when listing its links fails", rejected_archive, archive=internal_symlink, extra_stubs={"find": "exit 2"})
 
 if failures:
     raise SystemExit(f"{len(failures)} deploy case(s) failed")

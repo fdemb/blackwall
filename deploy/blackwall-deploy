@@ -13,17 +13,20 @@ release=$root/releases/$commit
 previous=$(readlink -e "$root/current" || true)
 
 if [[ ! -d $release ]]; then
-    rm -rf "$release.tmp"
-    mkdir -p "$release.tmp"
-    tar -xzf "$archive" -C "$release.tmp" --no-same-owner --no-same-permissions
-    [[ -x $release.tmp/blackwall && ! -L $release.tmp/blackwall ]]
-    test -f "$release.tmp/web/index.html"
-    unpacked=$(readlink -f "$release.tmp")
+    # A random name keeps archive links from pointing into the unpack dir, which would dangle after the mv.
+    mkdir -p "$root/releases"
+    staging=$(mktemp -d "$root/releases/.unpack.XXXXXXXXXX")
+    trap 'rm -rf "$staging"' EXIT
+    chmod 755 "$staging"
+    tar -xzf "$archive" -C "$staging" --no-same-owner --no-same-permissions
+    [[ -x $staging/blackwall && ! -L $staging/blackwall ]]
+    test -f "$staging/web/index.html"
+    unpacked=$(readlink -f "$staging")
     while IFS= read -r -d '' link; do
-        target=$(readlink -f "$link")
-        [[ $target == "$unpacked"/* ]] || { echo "${link#"$release.tmp/"} resolves outside the release" >&2; exit 1; }
-    done < <(find "$release.tmp" -type l -print0)
-    mv "$release.tmp" "$release"
+        [[ $(readlink -e "$link") == "$unpacked"/* ]] || { echo "${link#"$staging/"} does not resolve to a file in the release" >&2; exit 1; }
+    done < <(find "$staging" -type l -print0)
+    wait $!
+    mv "$staging" "$release"
 fi
 
 bind=$(sed -n 's/^BIND_ADDR=//p' "$env_file")
@@ -77,7 +80,7 @@ fi
 current=$(readlink -f "$root/current")
 ls -1dt "$root"/releases/*/ | tail -n +6 | while read -r dir; do
     dir=${dir%/}
-    [[ $dir == "$current" || $dir == *.tmp ]] || rm -rf "$dir"
+    [[ $dir == "$current" ]] || rm -rf "$dir"
 done
 
 echo "deployed $commit"
