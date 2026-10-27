@@ -339,6 +339,14 @@ function patchedIssue(
   next.assignee = setOrClear(current.assignee, patch.assignee, patch.clear_assignee);
   next.priority = patch.priority ?? current.priority;
   if (patch.labels !== undefined) next.labels = dedupeSortUuids(patch.labels);
+  const add = patch.add_labels ?? [];
+  const remove = patch.remove_labels ?? [];
+  if (add.length > 0 || remove.length > 0) {
+    if (patch.labels !== undefined)
+      throw new MutationError(400, "send labels, or add_labels and remove_labels, not both");
+    const kept = [...next.labels, ...add].filter((id) => !remove.includes(id));
+    next.labels = dedupeSortUuids(kept);
+  }
   next.estimate = setOrClear(current.estimate, patch.estimate, patch.clear_estimate);
   next.deadline = setOrClear(current.deadline, patch.deadline, patch.clear_deadline);
   next.project_id = setOrClear(current.project_id, patch.project_id, patch.clear_project);

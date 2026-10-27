@@ -20,7 +20,7 @@ import {
 } from "./environment";
 import type { Client, User } from "./environment";
 import { sql } from "./setup";
-import { DATE, fixture, scenario, teamMove, type Scenario } from "./scenarios";
+import { DATE, bulkLabels, fixture, scenario, teamMove, type Scenario } from "./scenarios";
 
 const names = Object.keys(MUTATORS).filter((name): name is MutatorName =>
   Object.hasOwn(MUTATORS, name),
@@ -34,6 +34,7 @@ predictions.push({
   label: "to another team past a reopened dependency",
   variant: () => teamMove({ blocked: true }),
 });
+predictions.push({ name: "bulk_issues", label: "adding and removing labels", variant: bulkLabels });
 for (const name of ["save_view", "update_view"] satisfies MutatorName[]) {
   for (const date of [
     "2026-10-10T14:00:00.120000+02:00",
@@ -187,6 +188,22 @@ describe.skipIf(!enabled)(`${suiteName}: prediction contract`, () => {
         value: { type: "move_issue", id: f.issue, stage_id: f.stages[0], before_id: f.issue },
       },
       { c: ownerClient, value: { type: "bulk_issues", ids: [], action: "delete" } },
+      {
+        c: ownerClient,
+        value: {
+          type: "bulk_issues",
+          ids: [f.issue, f.peer],
+          action: { update: { labels: [f.label], remove_labels: [f.label] } },
+        },
+      },
+      {
+        c: ownerClient,
+        value: {
+          type: "bulk_issues",
+          ids: [f.issue, f.peer],
+          action: { update: { milestone_id: f.milestone } },
+        },
+      },
       {
         c: viewerClient,
         value: {

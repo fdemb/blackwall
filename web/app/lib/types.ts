@@ -488,6 +488,8 @@ export interface IssuePatch {
   clear_assignee?: boolean;
   priority?: Priority;
   labels?: Id[];
+  add_labels?: Id[];
+  remove_labels?: Id[];
   estimate?: number;
   clear_estimate?: boolean;
   deadline?: string;

@@ -528,3 +528,27 @@ export function teamMove({ blocked = false } = {}): Scenario {
     command: (f) => ({ type: "update_issue", id: f.issue, patch: { team_id: team } }),
   };
 }
+
+/** Each issue keeps the labels the bulk edit doesn't name. */
+export function bulkLabels(): Scenario {
+  const [kept, added] = [randomUUID(), randomUUID()];
+  return {
+    prepare: async (f) => {
+      for (const [id, name] of [
+        [kept, "Kept"],
+        [added, "Added"],
+      ])
+        await command(f.ws, f.owner, { type: "create_label", id, name, color: "#aabbcc" });
+      await command(f.ws, f.owner, {
+        type: "update_issue",
+        id: f.issue,
+        patch: { labels: [kept] },
+      });
+    },
+    command: (f) => ({
+      type: "bulk_issues",
+      ids: [f.issue, f.peer],
+      action: { update: { add_labels: [added], remove_labels: [f.label] } },
+    }),
+  };
+}

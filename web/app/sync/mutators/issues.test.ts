@@ -972,6 +972,37 @@ describe("bulk_issues", () => {
     expect(live(store, "issue-1").updated_at).toBe(AT);
   });
 
+  it("adds and removes labels while keeping each issue's other labels", () => {
+    const store = seedStore();
+    mutate(store, "update_issue", { id: "issue-2", patch: { labels: [LABEL_TWO] } });
+    mutate(store, "bulk_issues", {
+      ids: ["issue-1", "issue-2"],
+      action: { update: { add_labels: [LABEL_TWO] } },
+    });
+    expect(live(store, "issue-1").labels).toEqual([LABEL_ONE, LABEL_TWO]);
+    expect(live(store, "issue-2").labels).toEqual([LABEL_TWO]);
+
+    mutate(store, "bulk_issues", {
+      ids: ["issue-1", "issue-2"],
+      action: { update: { remove_labels: [LABEL_ONE] } },
+    });
+    expect(live(store, "issue-1").labels).toEqual([LABEL_TWO]);
+    expect(live(store, "issue-2").labels).toEqual([LABEL_TWO]);
+    expect(store.replayErrors().size).toBe(0);
+  });
+
+  it("rejects replacing labels and changing them in one patch", () => {
+    rejects(
+      "bulk_issues",
+      {
+        ids: ["issue-1", "issue-2"],
+        action: { update: { labels: [LABEL_ONE], add_labels: [LABEL_TWO] } },
+      },
+      400,
+      "send labels, or add_labels and remove_labels, not both",
+    );
+  });
+
   it("deletes, restores, archives and unarchives", () => {
     const store = seedStore();
     mutate(store, "bulk_issues", { ids: ["issue-1", "issue-2"], action: "delete" });
