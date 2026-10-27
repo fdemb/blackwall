@@ -1068,7 +1068,7 @@ describe("follow", () => {
     const followed = live(store, "issue-followed");
     mutate(store, "follow", { issue_id: "issue-followed", following: false });
     expect(store.get("issues", "issue-followed")).toEqual(
-      normalize("issues", { ...followed, followers: ["user-owner"] }),
+      normalize("issues", { ...followed, followers: [OWNER] }),
     );
   });
 
