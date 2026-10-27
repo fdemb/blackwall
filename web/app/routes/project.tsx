@@ -32,6 +32,7 @@ import {
   PROJECT_STATUSES,
   localDay,
   planDateTime,
+  projectMilestones,
 } from "~/lib/projects";
 import { effectiveFilter, isNarrowed, whereIs } from "~/lib/filters";
 import type { IssueFilter, Milestone, Project, ProjectStatus } from "~/lib/types";
@@ -45,7 +46,7 @@ export default function ProjectPage() {
   const [milestoneForm, setMilestoneForm] = useState<Milestone | "new" | null>(null);
   const [deletingProject, setDeletingProject] = useState(false);
   const [deletingMilestone, setDeletingMilestone] = useState<Milestone | null>(null);
-  const { filter, setFilter } = useQueueState();
+  const { filter, setFilter, groupBy, setGroupBy } = useQueueState();
   const base: IssueFilter = { where: [whereIs("project_id", projectId ?? "")] };
   const query = useIssues(effectiveFilter(filter, base), Boolean(projectId));
   const project = ws.projects.find((p) => p.id === projectId);
@@ -55,9 +56,7 @@ export default function ProjectPage() {
   const shown = query.items;
   const narrowed = isNarrowed(filter);
   const done = stats?.completed ?? 0;
-  const milestones = ws.milestones
-    .filter((m) => m.project_id === project.id)
-    .sort((a, b) => (a.deadline ?? "9").localeCompare(b.deadline ?? "9"));
+  const milestones = projectMilestones(ws.milestones, project.id);
   const teams = (
     project.team_ids.length ? project.team_ids : (stats?.teams ?? []).map((team) => team.id)
   )
@@ -116,6 +115,9 @@ export default function ProjectPage() {
                   hide={["project_id", "team_id", "sprint_id"]}
                   scope={base}
                   saveable={false}
+                  groupBy={groupBy}
+                  onGroupBy={setGroupBy}
+                  groups={["stage", "milestone", "priority", "assignee", "none"]}
                 />
               </div>
             )}
@@ -123,7 +125,7 @@ export default function ProjectPage() {
             <div className="overflow-hidden rounded-xl border border-border">
               <IssueList
                 issues={shown}
-                groupBy="stage"
+                groupBy={groupBy}
                 showTeam
                 emptyState={
                   narrowed ? (

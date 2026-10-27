@@ -375,6 +375,7 @@ export const en = {
   "group.stage": "Group by status",
   "group.priority": "Group by priority",
   "group.assignee": "Group by assignee",
+  "group.milestone": "Group by milestone",
   "group.none": "No grouping",
   "group.all": "All issues",
   "sort.label": "Sort",

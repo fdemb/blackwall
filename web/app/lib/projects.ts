@@ -1,5 +1,5 @@
 import type { Key } from "./i18n";
-import type { IsoDate, ProjectHealth, ProjectStatus } from "./types";
+import type { IsoDate, Milestone, ProjectHealth, ProjectStatus } from "./types";
 
 type StatusTone = "neutral" | "primary" | "success" | "outline";
 
@@ -48,4 +48,35 @@ export function planDateTime(date: IsoDate): string {
 export function localDay(iso: string): IsoDate {
   const d = new Date(iso);
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+/** A project's milestones by deadline, those without one last. Ties keep the given order. */
+export function projectMilestones<M extends Milestone>(
+  milestones: readonly M[],
+  projectId: string,
+): M[] {
+  return milestones
+    .filter((m) => m.project_id === projectId)
+    .sort((a, b) => (a.deadline ?? "9").localeCompare(b.deadline ?? "9"));
+}
+
+/**
+ * Issues split by milestone, in the order `milestones` gives, then those without a milestone.
+ * Milestones without issues drop out.
+ */
+export function milestoneGroups<I extends { milestone_id: string | null }>(
+  issues: readonly I[],
+  milestones: readonly Milestone[],
+): { milestone: Milestone | null; items: I[] }[] {
+  const items = new Map<string | null, I[]>();
+  for (const issue of issues) {
+    const key = issue.milestone_id ?? null;
+    const list = items.get(key);
+    if (list) list.push(issue);
+    else items.set(key, [issue]);
+  }
+  return [...milestones, null].flatMap((milestone) => {
+    const list = items.get(milestone?.id ?? null);
+    return list ? [{ milestone, items: list }] : [];
+  });
 }
