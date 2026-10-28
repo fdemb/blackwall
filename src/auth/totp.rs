@@ -1,7 +1,7 @@
 //! Time-based one-time passwords (RFC 6238: SHA-1, six digits, 30-second steps)
 //! as a second sign-in factor, with single-use recovery codes.
 
-use super::{Profile, Session, create_session, hash, token, verify};
+use super::{Profile, Session, create_session, hash, lock_user, token, verify};
 use crate::{
     error::{Error, Result},
     store::Store,
@@ -19,6 +19,8 @@ const STEP_SECONDS: i64 = 30;
 const RECOVERY_CODES: usize = 10;
 const PENDING_LOGIN_MINUTES: i64 = 5;
 const PENDING_LOGIN_ATTEMPTS: i32 = 5;
+/// How long an unfinished setup blocks other sessions from starting their own.
+const SETUP_MINUTES: i32 = 10;
 
 /// A correct password on an account with TOTP. Finish signing in with a code.
 #[derive(Serialize, utoipa::ToSchema)]
@@ -49,7 +51,9 @@ pub struct TotpSetup {
 }
 
 #[derive(Deserialize, utoipa::ToSchema)]
-pub struct TotpCode {
+pub struct TotpEnable {
+    pub password: String,
+    /// A six-digit code from the authenticator app.
     pub code: String,
 }
 
@@ -196,6 +200,39 @@ async fn second_factor(tx: &mut PgConnection, user: Uuid, input: &str) -> Result
     Ok(used.rows_affected() == 1)
 }
 
+fn otpauth_uri(email: &str, secret: &str) -> String {
+    let mut uri = reqwest::Url::parse("otpauth://totp/").expect("constant URL parses");
+    uri.path_segments_mut()
+        .expect("otpauth URLs have a path")
+        .pop_if_empty()
+        .push(&format!("Blackwall:{email}"));
+    uri.query_pairs_mut()
+        .append_pair("secret", secret)
+        .append_pair("issuer", "Blackwall")
+        .append_pair("algorithm", "SHA1")
+        .append_pair("digits", "6")
+        .append_pair("period", "30");
+    uri.into()
+}
+
+fn wrong_credentials() -> Error {
+    Error::BadRequest("the password or code is wrong".into())
+}
+
+pub(super) async fn pending_login(tx: &mut PgConnection, user: Uuid) -> Result<PendingLogin> {
+    let token = token();
+    sqlx::query("INSERT INTO pending_logins (token_hash, user_id, expires_at) VALUES ($1, $2, $3)")
+        .bind(hash(&token))
+        .bind(user)
+        .bind(Utc::now() + Duration::minutes(PENDING_LOGIN_MINUTES))
+        .execute(&mut *tx)
+        .await?;
+
+    Ok(PendingLogin {
+        pending_token: token,
+    })
+}
+
 fn qr_svg(uri: &str) -> Result<String> {
     let svg = QrCode::new(uri)
         .map_err(|e| Error::Internal(e.to_string()))?
@@ -210,22 +247,6 @@ fn qr_svg(uri: &str) -> Result<String> {
 }
 
 impl Store {
-    pub(super) async fn pending_login(&self, user: Uuid) -> Result<PendingLogin> {
-        let token = token();
-        sqlx::query(
-            "INSERT INTO pending_logins (token_hash, user_id, expires_at) VALUES ($1, $2, $3)",
-        )
-        .bind(hash(&token))
-        .bind(user)
-        .bind(Utc::now() + Duration::minutes(PENDING_LOGIN_MINUTES))
-        .execute(&self.pool)
-        .await?;
-
-        Ok(PendingLogin {
-            pending_token: token,
-        })
-    }
-
     /// Finishes a sign-in that `login` left pending. Each pending login takes
     /// one successful code and a few wrong ones.
     pub async fn login_totp(&self, input: TotpLogin) -> Result<Session> {
@@ -291,32 +312,43 @@ impl Store {
     }
 
     /// Starts TOTP setup with a fresh secret. TOTP stays off until
-    /// `enable_totp` sees a code from it.
-    pub async fn setup_totp(&self, profile: &Profile) -> Result<TotpSetup> {
+    /// `enable_totp` sees a code from it in the same session. Another session
+    /// can't replace the secret until the setup is `SETUP_MINUTES` old.
+    pub async fn setup_totp(&self, profile: &Profile, session: Uuid) -> Result<TotpSetup> {
         let secret = random::<20>();
         let started = sqlx::query(
-            "INSERT INTO user_totp (user_id, secret) VALUES ($1, $2) \
-             ON CONFLICT (user_id) DO UPDATE SET secret = excluded.secret \
-             WHERE user_totp.enabled_at IS NULL",
+            "INSERT INTO user_totp (user_id, secret, setup_session, setup_started_at) \
+             VALUES ($1, $2, $3, now()) \
+             ON CONFLICT (user_id) DO UPDATE SET secret = excluded.secret, \
+               setup_session = excluded.setup_session, setup_started_at = now() \
+             WHERE user_totp.enabled_at IS NULL AND (user_totp.setup_session = $3 \
+               OR user_totp.setup_started_at < now() - make_interval(mins => $4))",
         )
         .bind(profile.id)
         .bind(&secret[..])
+        .bind(session)
+        .bind(SETUP_MINUTES)
         .execute(&self.pool)
         .await?;
         if started.rows_affected() == 0 {
-            return Err(Error::Conflict("two-factor sign-in is already on".into()));
+            let enabled: bool = sqlx::query_scalar(
+                "SELECT enabled_at IS NOT NULL FROM user_totp WHERE user_id = $1",
+            )
+            .bind(profile.id)
+            .fetch_one(&self.pool)
+            .await?;
+            return Err(Error::Conflict(if enabled {
+                "two-factor sign-in is already on".into()
+            } else {
+                format!(
+                    "two-factor setup is in progress in another session; finish it there or \
+                     try again in {SETUP_MINUTES} minutes"
+                )
+            }));
         }
 
         let secret = base32(&secret);
-        let mut uri = reqwest::Url::parse("otpauth://totp/").expect("constant URL parses");
-        uri.set_path(&format!("/Blackwall:{}", profile.email));
-        uri.query_pairs_mut()
-            .append_pair("secret", &secret)
-            .append_pair("issuer", "Blackwall")
-            .append_pair("algorithm", "SHA1")
-            .append_pair("digits", "6")
-            .append_pair("period", "30");
-        let uri = String::from(uri);
+        let uri = otpauth_uri(&profile.email, &secret);
 
         Ok(TotpSetup {
             qr_svg: qr_svg(&uri)?,
@@ -325,19 +357,22 @@ impl Store {
         })
     }
 
-    /// Turns TOTP on once `code` matches the secret from setup. Other sessions
-    /// are signed out, as on a password change.
+    /// Turns TOTP on once `code` matches the secret this session set up and
+    /// the password is right. Other sessions are signed out, as on a password
+    /// change.
     pub async fn enable_totp(
         &self,
         user: Uuid,
         current_session: Uuid,
-        input: TotpCode,
+        input: TotpEnable,
     ) -> Result<RecoveryCodes> {
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.begin_with_password(user, input.password).await?;
         let secret: Vec<u8> = sqlx::query_scalar(
-            "SELECT secret FROM user_totp WHERE user_id = $1 AND enabled_at IS NULL FOR UPDATE",
+            "SELECT secret FROM user_totp \
+             WHERE user_id = $1 AND enabled_at IS NULL AND setup_session = $2 FOR UPDATE",
         )
         .bind(user)
+        .bind(current_session)
         .fetch_optional(&mut *tx)
         .await?
         .ok_or_else(|| Error::Conflict("two-factor setup is not in progress".into()))?;
@@ -347,11 +382,14 @@ impl Store {
             .and_then(|code| matching_step(&secret, code, now, None))
             .ok_or_else(|| Error::BadRequest("the code doesn't match".into()))?;
 
-        sqlx::query("UPDATE user_totp SET enabled_at = now(), last_step = $2 WHERE user_id = $1")
-            .bind(user)
-            .bind(step)
-            .execute(&mut *tx)
-            .await?;
+        sqlx::query(
+            "UPDATE user_totp SET enabled_at = now(), last_step = $2, setup_session = NULL, \
+             setup_started_at = NULL WHERE user_id = $1",
+        )
+        .bind(user)
+        .bind(step)
+        .execute(&mut *tx)
+        .await?;
         let codes = replace_recovery_codes(&mut tx, user).await?;
         sqlx::query("DELETE FROM sessions WHERE user_id = $1 AND public_id <> $2")
             .bind(user)
@@ -406,18 +444,32 @@ impl Store {
         user: Uuid,
         input: TotpConfirm,
     ) -> Result<Transaction<'static, Postgres>> {
-        let wrong = || Error::BadRequest("the password or code is wrong".into());
+        let mut tx = self.begin_with_password(user, input.password).await?;
+        if !second_factor(&mut tx, user, &input.code).await? {
+            return Err(wrong_credentials());
+        }
+
+        Ok(tx)
+    }
+
+    /// Checks the password, then returns a transaction that holds the user
+    /// row lock, so the password can't change before the transaction commits.
+    async fn begin_with_password(
+        &self,
+        user: Uuid,
+        password: String,
+    ) -> Result<Transaction<'static, Postgres>> {
         let encoded: String = sqlx::query_scalar("SELECT password_hash FROM users WHERE id = $1")
             .bind(user)
             .fetch_one(&self.pool)
             .await?;
-        if input.password.len() > 256 || !verify(input.password, encoded).await? {
-            return Err(wrong());
+        if password.len() > 256 || !verify(password, encoded.clone()).await? {
+            return Err(wrong_credentials());
         }
 
         let mut tx = self.pool.begin().await?;
-        if !second_factor(&mut tx, user, &input.code).await? {
-            return Err(wrong());
+        if lock_user(&mut tx, user).await? != encoded {
+            return Err(wrong_credentials());
         }
 
         Ok(tx)
@@ -428,7 +480,7 @@ impl Store {
     /// was on.
     pub async fn reset_totp(&self, email: &str) -> Result<bool> {
         let reset = sqlx::query(
-            "WITH target AS (SELECT id FROM users WHERE email = $1), \
+            "WITH target AS (SELECT id FROM users WHERE email = $1 FOR NO KEY UPDATE), \
              codes AS (DELETE FROM totp_recovery_codes WHERE user_id IN (SELECT id FROM target)), \
              pending AS (DELETE FROM pending_logins WHERE user_id IN (SELECT id FROM target)) \
              DELETE FROM user_totp WHERE user_id IN (SELECT id FROM target) \
@@ -482,6 +534,15 @@ mod tests {
         assert_eq!(
             matching_step(secret, code(step + 1), now, Some(step)),
             Some(step + 1)
+        );
+    }
+
+    #[test]
+    fn the_otpauth_label_is_one_escaped_path_segment() {
+        assert_eq!(
+            otpauth_uri("alice%40ops@example.com", "MY"),
+            "otpauth://totp/Blackwall:alice%2540ops@example.com?secret=MY&issuer=Blackwall\
+             &algorithm=SHA1&digits=6&period=30"
         );
     }
 

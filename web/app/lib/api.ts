@@ -118,8 +118,11 @@ export const totp = {
     api<{ secret: string; uri: string; qr_svg: string }>("/internal-api/auth/totp/setup", {
       method: "POST",
     }),
-  enable: (code: string) =>
-    api<{ codes: string[] }>("/internal-api/auth/totp/enable", { method: "POST", body: { code } }),
+  enable: (password: string, code: string) =>
+    api<{ codes: string[] }>("/internal-api/auth/totp/enable", {
+      method: "POST",
+      body: { password, code },
+    }),
   disable: (password: string, code: string) =>
     api<null>("/internal-api/auth/totp/disable", { method: "POST", body: { password, code } }),
   regenerateCodes: (password: string, code: string) =>

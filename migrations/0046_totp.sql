@@ -1,10 +1,13 @@
 -- enabled_at stays NULL while setup waits for the first valid code.
 -- last_step is the newest accepted time step, so a code can't be replayed.
+-- setup_session is the session that started setup; only it can finish setup.
 CREATE TABLE user_totp(
     user_id uuid PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
     secret bytea NOT NULL,
     enabled_at timestamptz,
-    last_step bigint
+    last_step bigint,
+    setup_session uuid,
+    setup_started_at timestamptz
 );
 
 CREATE TABLE totp_recovery_codes(

@@ -537,20 +537,22 @@ async fn totp_status(State(store): State<Store>, actor: Actor) -> Result<Json<To
     responses((status = 200, body = TotpSetup), (status = 409, body = crate::error::ErrorBody))
 )]
 async fn setup_totp(State(store): State<Store>, actor: Actor) -> Result<Json<TotpSetup>> {
-    Ok(Json(store.setup_totp(&actor.profile).await?))
+    Ok(Json(
+        store.setup_totp(&actor.profile, actor.session_id).await?,
+    ))
 }
 
 /// Turns TOTP on and signs out every other session.
 #[utoipa::path(
     post,
     path = "/internal-api/auth/totp/enable",
-    request_body = TotpCode,
+    request_body = TotpEnable,
     responses((status = 200, body = RecoveryCodes), (status = 400, body = crate::error::ErrorBody))
 )]
 async fn enable_totp(
     State(store): State<Store>,
     actor: Actor,
-    Json(input): Json<TotpCode>,
+    Json(input): Json<TotpEnable>,
 ) -> Result<Json<RecoveryCodes>> {
     Ok(Json(
         store

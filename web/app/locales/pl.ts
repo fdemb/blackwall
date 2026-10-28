@@ -746,6 +746,8 @@ export const pl = {
   "totp.codeHint": "6-cyfrowy kod z aplikacji uwierzytelniającej albo kod odzyskiwania.",
   "totp.wrongCode": "Ten kod nie zadziałał. Sprawdź go i spróbuj ponownie.",
   "totp.confirmWrong": "Hasło lub kod są nieprawidłowe.",
+  "totp.setupElsewhere":
+    "Konfiguracja logowania dwuetapowego trwa w innej sesji. Dokończ ją tam albo spróbuj ponownie za 10 minut.",
   "totp.codesTitle": "Zapisz kody odzyskiwania",
   "totp.codesSub":
     "Każdy kod pozwala zalogować się raz, jeśli stracisz aplikację uwierzytelniającą. Nie zobaczysz ich ponownie.",

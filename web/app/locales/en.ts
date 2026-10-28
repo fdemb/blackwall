@@ -716,6 +716,8 @@ export const en = {
   "totp.codeHint": "The 6-digit code from your authenticator app, or a recovery code.",
   "totp.wrongCode": "That code didn't work. Check it and try again.",
   "totp.confirmWrong": "The password or code is wrong.",
+  "totp.setupElsewhere":
+    "Two-factor setup is in progress in another session. Finish it there, or try again in 10 minutes.",
   "totp.codesTitle": "Save your recovery codes",
   "totp.codesSub":
     "Each code signs you in once if you lose your authenticator. You won't see them again.",

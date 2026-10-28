@@ -6,7 +6,7 @@ use axum::{
 };
 use blackwall::{
     auth::{
-        Login, Register, ResetPassword, ResetRequest, Session, SignIn, TotpCode, TotpConfirm,
+        Login, Register, ResetPassword, ResetRequest, Session, SignIn, TotpConfirm, TotpEnable,
         TotpLogin,
     },
     error::Error,
@@ -135,13 +135,17 @@ impl Authenticator {
 
 /// Turns TOTP on through the store, returning the authenticator and recovery codes.
 async fn enable(store: &Store, session: &Session) -> (Authenticator, Vec<String>) {
-    let setup = store.setup_totp(&session.profile).await.unwrap();
+    let setup = store
+        .setup_totp(&session.profile, session.session_id)
+        .await
+        .unwrap();
     let mut authenticator = Authenticator::new(&setup.secret);
     let codes = store
         .enable_totp(
             session.profile.id,
             session.session_id,
-            TotpCode {
+            TotpEnable {
+                password: PASSWORD.into(),
                 code: authenticator.next(),
             },
         )
@@ -192,7 +196,7 @@ async fn enabling_needs_a_code_then_login_needs_a_second_factor() {
     assert!(setup["qr_svg"].as_str().unwrap().starts_with("<svg"));
     let mut authenticator = Authenticator::new(secret);
 
-    let wrong = json!({"code": authenticator.wrong()});
+    let wrong = json!({"password": PASSWORD, "code": authenticator.wrong()});
     let (status, _, _) = call(
         &app,
         "POST",
@@ -219,7 +223,7 @@ async fn enabling_needs_a_code_then_login_needs_a_second_factor() {
     assert_eq!(status, StatusCode::OK);
     assert!(cookie.is_some(), "the password alone still signs in");
 
-    let right = json!({"code": authenticator.next()});
+    let right = json!({"password": PASSWORD, "code": authenticator.next()});
     let (status, codes, _) = call(
         &app,
         "POST",

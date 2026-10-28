@@ -15,7 +15,7 @@ use uuid::Uuid;
 
 mod totp;
 pub use totp::{
-    PendingLogin, RecoveryCodes, TotpCode, TotpConfirm, TotpLogin, TotpSetup, TotpStatus,
+    PendingLogin, RecoveryCodes, TotpConfirm, TotpEnable, TotpLogin, TotpSetup, TotpStatus,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
@@ -371,9 +371,7 @@ impl Store {
         }
 
         let row = sqlx::query(
-            "SELECT id, email, password_hash, profile, email_verified_at IS NOT NULL AS verified, \
-             EXISTS(SELECT 1 FROM user_totp WHERE user_id = users.id AND enabled_at IS NOT NULL) \
-               AS totp \
+            "SELECT id, email, password_hash, email_verified_at IS NOT NULL AS verified \
              FROM users WHERE email = $1",
         )
         .bind(input.email.trim().to_lowercase())
@@ -386,7 +384,8 @@ impl Store {
             return Err(Error::Unauthorized);
         };
 
-        if !verify(input.password, row.try_get("password_hash")?).await? {
+        let encoded: String = row.try_get("password_hash")?;
+        if !verify(input.password, encoded.clone()).await? {
             return Err(Error::Unauthorized);
         }
 
@@ -399,15 +398,30 @@ impl Store {
             )));
         }
 
-        if row.try_get::<bool, _>("totp")? {
-            return Ok(SignIn::TotpRequired(
-                self.pending_login(row.try_get("id")?).await?,
-            ));
+        let user: Uuid = row.try_get("id")?;
+        let mut tx = self.pool.begin().await?;
+        if lock_user(&mut tx, user).await? != encoded {
+            return Err(Error::Unauthorized);
         }
+        let needs_code: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM user_totp WHERE user_id = $1 AND enabled_at IS NOT NULL)",
+        )
+        .bind(user)
+        .fetch_one(&mut *tx)
+        .await?;
+        let sign_in = if needs_code {
+            SignIn::TotpRequired(totp::pending_login(&mut tx, user).await?)
+        } else {
+            let profile: Json<Profile> =
+                sqlx::query_scalar("SELECT profile FROM users WHERE id = $1")
+                    .bind(user)
+                    .fetch_one(&mut *tx)
+                    .await?;
+            SignIn::Session(create_session(&mut tx, profile.0).await?)
+        };
+        tx.commit().await?;
 
-        let profile = row.try_get::<Json<Profile>, _>("profile")?.0;
-        let session = create_session(&mut *self.pool.acquire().await?, profile).await?;
-        Ok(SignIn::Session(session))
+        Ok(sign_in)
     }
 
     async fn remind_verification(&self, user: Uuid, email: String) -> Result<()> {
@@ -744,6 +758,19 @@ impl Store {
 
         Ok(())
     }
+}
+
+/// Locks the user row until the transaction ends and returns the password
+/// hash. Sign-in, TOTP enrollment and password changes all take this lock, so a
+/// sign-in decides against credentials no one is changing, and a password
+/// checked against an older hash no longer counts.
+async fn lock_user(tx: &mut PgConnection, user: Uuid) -> Result<String> {
+    Ok(
+        sqlx::query_scalar("SELECT password_hash FROM users WHERE id = $1 FOR NO KEY UPDATE")
+            .bind(user)
+            .fetch_one(&mut *tx)
+            .await?,
+    )
 }
 
 async fn create_session(conn: &mut PgConnection, profile: Profile) -> Result<Session> {

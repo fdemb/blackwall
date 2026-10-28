@@ -37,7 +37,8 @@ export function TwoFactor({ onSessionsChanged }: { onSessionsChanged: () => void
       const setup = await totp.setup();
       setStep({ kind: "setup", secret: setup.secret, qrSvg: setup.qr_svg });
     } catch (err) {
-      toast.error((err as Error).message);
+      const elsewhere = err instanceof ApiError && err.status === 409;
+      toast.error(elsewhere ? t("totp.setupElsewhere") : (err as Error).message);
     }
   };
   const showCodes = (codes: string[]) => {
@@ -128,12 +129,13 @@ function SetupForm({
       className="flex flex-col gap-4"
       onSubmit={async (e) => {
         e.preventDefault();
+        const f = new FormData(e.currentTarget);
         setError("");
         try {
-          onEnabled((await totp.enable(formText(new FormData(e.currentTarget), "code"))).codes);
+          onEnabled((await totp.enable(formText(f, "password"), formText(f, "code"))).codes);
         } catch (err) {
           const wrong = err instanceof ApiError && err.status === 400;
-          setError(wrong ? t("totp.wrongCode") : (err as Error).message);
+          setError(wrong ? t("totp.confirmWrong") : (err as Error).message);
         }
       }}
     >
@@ -151,6 +153,13 @@ function SetupForm({
           {secret}
         </code>
       </div>
+      <TextField
+        name="password"
+        type="password"
+        label={t("account.currentPassword")}
+        autoComplete="current-password"
+        isRequired
+      />
       <TextField
         name="code"
         label={t("totp.code")}
