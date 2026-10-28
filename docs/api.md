@@ -99,7 +99,7 @@ Each delivery is a signed POST:
 - `labels` holds the full id lists before and after.
 - `description` and `dependencies` have only `field`.
 
-`data` is the entity as it was right after the change, sent only when the webhook has `include_data`. Blackwall reads it in the same transaction as the change and stores it with the delivery, so a retry sends the same `data` even if the entity changed since. Fetch the entity through the API for its current state.
+`data` is the entity as it was right after the change, sent only when the webhook has `include_data`. Blackwall reads it in the same transaction as the change and stores it with the delivery, so a retry sends the same `data` even if the entity changed since. Fetch the entity through the API for its current state. Turning `include_data` off affects only later events. Deliveries already queued keep their `data` until they finish.
 
 - Issue events carry the issue as `GET .../issues/{issue}` returns it. `issue.deleted` carries the issue in the trash, with `deleted_at` set.
 - Comment events carry the comment as `GET .../comments/{comment}` returns it.
@@ -107,7 +107,7 @@ Each delivery is a signed POST:
 - `comment.deleted` and `time_entry.deleted` have no `data`, because the record is gone. `entity_id` names it.
 - Other events have no `data`.
 
-`data` is bounded, because every delivery stores its own copy until it is sent. Once a delivery succeeds or fails for good, Blackwall drops `data` from it and keeps the rest of the event for 30 days after success or 90 days after failure, the defaults of `JOBS_RETENTION_DAYS` and `JOBS_FAILED_RETENTION_DAYS`. A failed delivery retried by hand is sent without `data`. An issue `description` or comment `body` over 16 KiB is cut to its first 16 KiB, and `truncated` lists it, as in `"truncated": ["description"]`. If `data` is still over 64 KiB, it is left out and `truncated` is `["data"]`. In both cases fetch the entity for the full text.
+`data` is bounded, because every delivery stores its own copy until it is sent. Once a delivery succeeds or fails for good, Blackwall drops `data` and `truncated` from it and keeps the rest of the event for 30 days after success or 90 days after failure, the defaults of `JOBS_RETENTION_DAYS` and `JOBS_FAILED_RETENTION_DAYS`. A failed delivery retried by hand is sent without `data` or `truncated`. An issue `description` or comment `body` over 16 KiB is cut to its first 16 KiB, and `truncated` lists it, as in `"truncated": ["description"]`. If `data` is still over 64 KiB, it is left out and `truncated` is `["data"]`. In both cases fetch the entity for the full text.
 
 Headers are `X-Blackwall-Event`, `Idempotency-Key` (the same on every retry) and two signatures made with the webhook's secret. Delivery is at least once.
 
