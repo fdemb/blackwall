@@ -588,13 +588,34 @@ mod tests {
         );
     }
 
+    /// Decodes the label, then splits it the way Aegis does: exactly one colon
+    /// gives issuer and account, anything else is all account.
+    fn issuer_and_account(uri: &str) -> (Option<String>, String) {
+        let path = &uri["otpauth://totp/".len()..uri.find('?').unwrap()];
+        let mut bytes = Vec::new();
+        let mut i = 0;
+        while i < path.len() {
+            if path.as_bytes()[i] == b'%' {
+                bytes.push(u8::from_str_radix(&path[i + 1..i + 3], 16).unwrap());
+                i += 3;
+            } else {
+                bytes.push(path.as_bytes()[i]);
+                i += 1;
+            }
+        }
+        let label = String::from_utf8(bytes).unwrap();
+        match label.split(':').collect::<Vec<_>>()[..] {
+            [issuer, account] => (Some(issuer.into()), account.into()),
+            _ => (None, label),
+        }
+    }
+
     #[test]
-    fn a_colon_in_the_email_is_escaped_in_the_label() {
-        assert_eq!(
-            otpauth_uri("alice:ops@example.com", "MY"),
-            "otpauth://totp/Blackwall:alice%3Aops@example.com?secret=MY&issuer=Blackwall\
-             &algorithm=SHA1&digits=6&period=30"
-        );
+    fn a_colon_in_the_email_keeps_the_issuer_after_decoding() {
+        let (issuer, account) = issuer_and_account(&otpauth_uri("alice:ops@example.com", "MY"));
+
+        assert_eq!(issuer.as_deref(), Some("Blackwall"));
+        assert_eq!(account, "alice\u{2236}ops@example.com");
     }
 
     #[test]
