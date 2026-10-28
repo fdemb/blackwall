@@ -1058,6 +1058,20 @@ impl Operation<'_> {
             }
         }
 
+        self.record_sprint_outcome(id, carryover).await?;
+        sqlx::query!(
+            "UPDATE sprints SET state='completed' WHERE workspace_id=$1 AND id=$2",
+            self.workspace_id,
+            id,
+        )
+        .execute(&mut *self.tx)
+        .await?;
+
+        Ok(())
+    }
+
+    /// Moves the sprint's open issues to `carryover` and stores how much of it got done.
+    async fn record_sprint_outcome(&mut self, id: Uuid, carryover: Option<Uuid>) -> Result<()> {
         let rows = sqlx::query!("SELECT i.id,i.estimate,s.kind FROM issues i JOIN stages s ON s.id=i.stage_id AND s.workspace_id=i.workspace_id WHERE i.workspace_id=$1 AND i.sprint_id=$2 AND i.deleted_at IS NULL ORDER BY i.id FOR UPDATE OF i", self.workspace_id, id)
             .fetch_all(&mut *self.tx)
             .await?;
@@ -1080,15 +1094,6 @@ impl Operation<'_> {
         sqlx::query!("INSERT INTO sprint_outcomes(workspace_id,sprint_id,total,completed,effort) VALUES($1,$2,$3,$4,$5)", self.workspace_id, id, rows.len() as i64, completed, effort)
             .execute(&mut *self.tx)
             .await?;
-
-        sqlx::query!(
-            "UPDATE sprints SET state='completed' WHERE workspace_id=$1 AND id=$2",
-            self.workspace_id,
-            id,
-        )
-        .execute(&mut *self.tx)
-        .await?;
-
         Ok(())
     }
 }

@@ -717,6 +717,30 @@ impl Operation<'_> {
         }
 
         let now = Utc::now();
+        self.expire_other_invitations(id, &email, now).await?;
+
+        let token = crate::auth::token();
+        let hash = crate::auth::hash(&token);
+        sqlx::query!(
+            "UPDATE invitations SET token_hash=$3,expires_at=$4,state='pending' \
+            WHERE workspace_id=$1 AND id=$2",
+            self.workspace_id,
+            id,
+            &hash,
+            now + chrono::Duration::days(7),
+        )
+        .execute(&mut *self.tx)
+        .await?;
+        self.invitation_email(id, email, token, hash).await
+    }
+
+    /// Refuses while another live invitation for `email` is pending, and expires the stale ones.
+    async fn expire_other_invitations(
+        &mut self,
+        id: Uuid,
+        email: &str,
+        now: DateTime<Utc>,
+    ) -> Result<()> {
         let other: bool = sqlx::query_scalar!(
             "SELECT EXISTS(SELECT 1 FROM invitations WHERE workspace_id=$1 AND \
             lower(email)=lower($2) AND state='pending' AND id<>$3 AND \
@@ -737,26 +761,13 @@ impl Operation<'_> {
             version=version+1 WHERE workspace_id=$1 AND lower(email)=lower($2) \
             AND state='pending' AND id<>$3 AND expires_at<=$4",
             self.workspace_id,
-            &email,
+            email,
             id,
             now,
         )
         .execute(&mut *self.tx)
         .await?;
-
-        let token = crate::auth::token();
-        let hash = crate::auth::hash(&token);
-        sqlx::query!(
-            "UPDATE invitations SET token_hash=$3,expires_at=$4,state='pending' \
-            WHERE workspace_id=$1 AND id=$2",
-            self.workspace_id,
-            id,
-            &hash,
-            now + chrono::Duration::days(7),
-        )
-        .execute(&mut *self.tx)
-        .await?;
-        self.invitation_email(id, email, token, hash).await
+        Ok(())
     }
 
     async fn cancel_invitation(&mut self, id: Uuid) -> Result<()> {

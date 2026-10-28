@@ -411,6 +411,69 @@ fn next_generation(generation: i64) -> Result<i64> {
     })
 }
 
+/// A connection's settings as stored, or as they will be after an edit.
+struct Settings {
+    name: String,
+    base_url: String,
+    token: String,
+    enabled: bool,
+    options: TrackerOptions,
+    projects: Vec<Mapping>,
+    people: BTreeMap<String, Uuid>,
+}
+
+impl Settings {
+    fn scan_changed(&self, previous: &Settings) -> bool {
+        self.base_url != previous.base_url
+            || self.token != previous.token
+            || self.enabled != previous.enabled
+            || self.projects != previous.projects
+            || self.people != previous.people
+            || self.options.imports_changed(&previous.options)
+    }
+}
+
+/// Locks the connection and returns its provider, settings and scan generation.
+async fn stored(
+    conn: &mut PgConnection,
+    workspace: Uuid,
+    id: Uuid,
+) -> Result<(ProviderKind, Settings, i64)> {
+    let row = sqlx::query!("SELECT provider,name,base_url,token,enabled,options,projects,people_mapping,generation FROM tracker_connections WHERE workspace_id=$1 AND id=$2 AND NOT deleted FOR UPDATE",
+        workspace, id).fetch_optional(&mut *conn).await?.ok_or(Error::NotFound)?;
+    let settings = Settings {
+        name: row.name,
+        base_url: row.base_url,
+        token: row.token,
+        enabled: row.enabled,
+        options: serde_json::from_value(row.options)?,
+        projects: serde_json::from_value(row.projects)?,
+        people: serde_json::from_value(row.people_mapping)?,
+    };
+    Ok((
+        ProviderKind::parse(&row.provider)?,
+        settings,
+        row.generation,
+    ))
+}
+
+/// Saves new settings and restarts the scan from scratch under a new generation.
+async fn restart_scan(
+    conn: &mut PgConnection,
+    workspace: Uuid,
+    id: Uuid,
+    provider: ProviderKind,
+    settings: &Settings,
+    generation: i64,
+) -> Result<()> {
+    sqlx::query!("UPDATE tracker_connections SET name=$3,base_url=$4,token=$5,enabled=$6,projects=$7,people_mapping=$9,generation=$10,options=$11,checkpoint=$8,next_run_at=clock_timestamp(),status='pending',last_error='',push_error=NULL,remote_user_id=CASE WHEN base_url=$4 AND token=$5 THEN remote_user_id END,incremental_supported=true WHERE workspace_id=$1 AND id=$2",
+        workspace, id, settings.name, settings.base_url, settings.token, settings.enabled, json!(settings.projects),
+        provider.checkpoint(false), json!(settings.people), generation, json!(settings.options))
+        .execute(&mut *conn).await?;
+    cancel_pending(conn, id).await?;
+    drop_unmapped(conn, id, &settings.projects).await
+}
+
 async fn configure(
     store: Store,
     actor: Actor,
@@ -425,64 +488,56 @@ async fn configure(
         Some(id) => id,
         None => insert(&mut tx, workspace, &config).await?,
     };
-    let row = sqlx::query!("SELECT provider,name,base_url,token,enabled,options,projects,people_mapping,generation FROM tracker_connections WHERE workspace_id=$1 AND id=$2 AND NOT deleted FOR UPDATE",
-        workspace, id).fetch_optional(&mut *tx).await?.ok_or(Error::NotFound)?;
-    let provider = ProviderKind::parse(&row.provider)?;
+    let (provider, previous, generation) = stored(&mut tx, workspace, id).await?;
     if config.provider.is_some_and(|kind| kind != provider) {
         return Err(Error::BadRequest(
             "provider cannot change; create a new connection".into(),
         ));
     }
-    let previous_name: String = row.name;
-    let name = config.name.unwrap_or(previous_name.clone());
+    let name = config.name.unwrap_or(previous.name.clone());
     crate::domain::text(&name, 200)?;
-    let previous_url: String = row.base_url;
-    let url = updated_url(&mut tx, id, provider, config.base_url, &previous_url).await?;
-    let previous_token: String = row.token;
-    let token = config.token.unwrap_or(previous_token.clone());
+    let base_url = updated_url(&mut tx, id, provider, config.base_url, &previous.base_url).await?;
+    let token = config.token.unwrap_or(previous.token.clone());
     if token.is_empty() || token.len() > 4096 || token.chars().any(char::is_control) {
         return Err(Error::BadRequest("invalid token".into()));
     }
-    let previous_options: TrackerOptions = serde_json::from_value(row.options)?;
     let options = config.options.map_or_else(
-        || previous_options.clone(),
-        |options| options.merged(&previous_options),
+        || previous.options.clone(),
+        |options| options.merged(&previous.options),
     );
     options.validate(&provider.descriptor().fields)?;
-    let previous_projects: Vec<Mapping> = serde_json::from_value(row.projects)?;
-    let projects = config.projects.unwrap_or_else(|| previous_projects.clone());
-    let projects_changed = projects != previous_projects;
-    if projects_changed {
+    let projects = config.projects.unwrap_or_else(|| previous.projects.clone());
+    if projects != previous.projects {
         validate_projects(&mut tx, workspace, provider, &projects).await?;
     }
-    let previous_people: BTreeMap<String, Uuid> = serde_json::from_value(row.people_mapping)?;
     let people =
-        updated_people(&mut tx, workspace, config.people_mapping, &previous_people).await?;
-    let people_changed = people != previous_people;
-    let previous_enabled: bool = row.enabled;
-    let enabled = config.enabled.unwrap_or(previous_enabled);
-    let scan_changed = created
-        || url != previous_url
-        || token != previous_token
-        || enabled != previous_enabled
-        || projects_changed
-        || people_changed
-        || options.imports_changed(&previous_options);
-    if scan_changed {
-        let generation = next_generation(row.generation)?;
-        sqlx::query!("UPDATE tracker_connections SET name=$3,base_url=$4,token=$5,enabled=$6,projects=$7,people_mapping=$9,generation=$10,options=$11,checkpoint=$8,next_run_at=clock_timestamp(),status='pending',last_error='',push_error=NULL,remote_user_id=CASE WHEN base_url=$4 AND token=$5 THEN remote_user_id END,incremental_supported=true WHERE workspace_id=$1 AND id=$2",
-            workspace, id, name, url, token, enabled, json!(projects),
-            provider.checkpoint(false), json!(people), generation, json!(options))
-            .execute(&mut *tx).await?;
-        cancel_pending(&mut tx, id).await?;
-        drop_unmapped(&mut tx, id, &projects).await?;
-    } else if name != previous_name || options != previous_options {
+        updated_people(&mut tx, workspace, config.people_mapping, &previous.people).await?;
+    let next = Settings {
+        name,
+        base_url,
+        token,
+        enabled: config.enabled.unwrap_or(previous.enabled),
+        options,
+        projects,
+        people,
+    };
+    if created || next.scan_changed(&previous) {
+        restart_scan(
+            &mut tx,
+            workspace,
+            id,
+            provider,
+            &next,
+            next_generation(generation)?,
+        )
+        .await?;
+    } else if next.name != previous.name || next.options != previous.options {
         sqlx::query!(
             "UPDATE tracker_connections SET name=$3,options=$4 WHERE workspace_id=$1 AND id=$2",
             workspace,
             id,
-            name,
-            json!(options),
+            next.name,
+            json!(next.options),
         )
         .execute(&mut *tx)
         .await?;
@@ -497,7 +552,7 @@ async fn configure(
     )?;
     tx.commit().await?;
     tracing::debug!(connection_id = %id, workspace_id = %workspace, provider = provider.key(),
-        generation = result.generation, enabled, project_count = result.projects.len(),
+        generation = result.generation, enabled = next.enabled, project_count = result.projects.len(),
         people_override_count = result.people_mapping.len(), "Tracker configuration saved");
     Ok(result)
 }

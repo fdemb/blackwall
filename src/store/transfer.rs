@@ -202,56 +202,9 @@ async fn insert_import(op: &mut Operation<'_>, w: &Workspace) -> Result<()> {
 
 async fn insert_planning(op: &mut Operation<'_>, w: &Workspace) -> Result<()> {
     for team in &w.teams {
-        sqlx::query!(
-            "INSERT INTO teams(id,workspace_id,name,key,archive_after_days,icon,color) VALUES($1,$2,$3,$4,$5::bigint,$6,$7)",
-            team.id,
-            w.id,
-            &team.name,
-            &team.key,
-            team.archive_after_days.map(i64::from),
-            &team.icon,
-            &team.color,
-        )
-        .execute(&mut *op.tx)
-        .await?;
-        op.created("teams", team.id);
-        for key in &team.former_keys {
-            sqlx::query!(
-                "INSERT INTO team_keys(workspace_id,key,team_id) VALUES($1,$2,$3)",
-                w.id,
-                key,
-                team.id,
-            )
-            .execute(&mut *op.tx)
-            .await?;
-        }
-        for user in &team.members {
-            sqlx::query!(
-                "INSERT INTO team_members(workspace_id,team_id,user_id) VALUES($1,$2,$3)",
-                w.id,
-                team.id,
-                *user,
-            )
-            .execute(&mut *op.tx)
-            .await?;
-        }
-
-        for stage in &team.stages {
-            sqlx::query!(
-                "INSERT INTO stages(id,workspace_id,team_id,name,kind,position) VALUES($1,$2,$3,$4,$5,$6)",
-                stage.id,
-                w.id,
-                team.id,
-                &stage.name,
-                enum_text(&stage.kind),
-                stage.position,
-            )
-            .execute(&mut *op.tx)
-            .await?;
-            op.created("stages", stage.id);
-        }
+        insert_team(op, w.id, team).await?;
+        insert_stages(op, w.id, team).await?;
     }
-
     for label in &w.labels {
         sqlx::query!(
             "INSERT INTO labels(id,workspace_id,name,color) VALUES($1,$2,$3,$4)",
@@ -264,35 +217,9 @@ async fn insert_planning(op: &mut Operation<'_>, w: &Workspace) -> Result<()> {
         .await?;
         op.created("labels", label.id);
     }
-
     for project in &w.projects {
-        sqlx::query!(
-            "INSERT INTO projects(id,workspace_id,name,description,lead_id,status,health,start_date,target_date) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)",
-            project.id,
-            w.id,
-            &project.name,
-            &project.description,
-            project.lead_id,
-            enum_text(&project.status),
-            project.health.as_ref().map(enum_text),
-            project.start_date,
-            project.target_date,
-        )
-        .execute(&mut *op.tx)
-        .await?;
-        op.created("projects", project.id);
-        for team in &project.team_ids {
-            sqlx::query!(
-                "INSERT INTO project_teams(workspace_id,project_id,team_id) VALUES($1,$2,$3)",
-                w.id,
-                project.id,
-                *team,
-            )
-            .execute(&mut *op.tx)
-            .await?;
-        }
+        insert_project(op, w.id, project).await?;
     }
-
     for milestone in &w.milestones {
         sqlx::query!(
             "INSERT INTO milestones(id,workspace_id,project_id,name,deadline) VALUES($1,$2,$3,$4,$5)",
@@ -306,36 +233,123 @@ async fn insert_planning(op: &mut Operation<'_>, w: &Workspace) -> Result<()> {
         .await?;
         op.created("milestones", milestone.id);
     }
-
     for sprint in &w.sprints {
+        insert_sprint(op, w.id, sprint).await?;
+    }
+    Ok(())
+}
+
+async fn insert_team(op: &mut Operation<'_>, workspace: Uuid, team: &Team) -> Result<()> {
+    sqlx::query!(
+        "INSERT INTO teams(id,workspace_id,name,key,archive_after_days,icon,color) VALUES($1,$2,$3,$4,$5::bigint,$6,$7)",
+        team.id,
+        workspace,
+        &team.name,
+        &team.key,
+        team.archive_after_days.map(i64::from),
+        &team.icon,
+        &team.color,
+    )
+    .execute(&mut *op.tx)
+    .await?;
+    op.created("teams", team.id);
+    for key in &team.former_keys {
         sqlx::query!(
-            "INSERT INTO sprints(id,workspace_id,team_id,number,name,goal,starts_at,ends_at,state) VALUES($1,$2,$3,(SELECT COALESCE(max(number),0)+1 FROM sprints WHERE workspace_id=$2 AND team_id=$3),$4,$5,$6,$7,$8)",
-            sprint.id,
-            w.id,
-            sprint.team_id,
-            &sprint.name,
-            &sprint.goal,
-            sprint.starts_at,
-            sprint.ends_at,
-            enum_text(&sprint.state),
+            "INSERT INTO team_keys(workspace_id,key,team_id) VALUES($1,$2,$3)",
+            workspace,
+            key,
+            team.id,
         )
         .execute(&mut *op.tx)
         .await?;
-        op.created("sprints", sprint.id);
-        if let Some(outcome) = &sprint.outcome {
-            sqlx::query!(
-                "INSERT INTO sprint_outcomes(workspace_id,sprint_id,total,completed,effort) VALUES($1,$2,$3,$4,$5)",
-                w.id,
-                sprint.id,
-                outcome.total as i64,
-                outcome.completed as i64,
-                outcome.effort as i64,
-            )
-            .execute(&mut *op.tx)
-            .await?;
-        }
     }
+    for user in &team.members {
+        sqlx::query!(
+            "INSERT INTO team_members(workspace_id,team_id,user_id) VALUES($1,$2,$3)",
+            workspace,
+            team.id,
+            *user,
+        )
+        .execute(&mut *op.tx)
+        .await?;
+    }
+    Ok(())
+}
 
+async fn insert_stages(op: &mut Operation<'_>, workspace: Uuid, team: &Team) -> Result<()> {
+    for stage in &team.stages {
+        sqlx::query!(
+            "INSERT INTO stages(id,workspace_id,team_id,name,kind,position) VALUES($1,$2,$3,$4,$5,$6)",
+            stage.id,
+            workspace,
+            team.id,
+            &stage.name,
+            enum_text(&stage.kind),
+            stage.position,
+        )
+        .execute(&mut *op.tx)
+        .await?;
+        op.created("stages", stage.id);
+    }
+    Ok(())
+}
+
+async fn insert_project(op: &mut Operation<'_>, workspace: Uuid, project: &Project) -> Result<()> {
+    sqlx::query!(
+        "INSERT INTO projects(id,workspace_id,name,description,lead_id,status,health,start_date,target_date) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)",
+        project.id,
+        workspace,
+        &project.name,
+        &project.description,
+        project.lead_id,
+        enum_text(&project.status),
+        project.health.as_ref().map(enum_text),
+        project.start_date,
+        project.target_date,
+    )
+    .execute(&mut *op.tx)
+    .await?;
+    op.created("projects", project.id);
+    for team in &project.team_ids {
+        sqlx::query!(
+            "INSERT INTO project_teams(workspace_id,project_id,team_id) VALUES($1,$2,$3)",
+            workspace,
+            project.id,
+            *team,
+        )
+        .execute(&mut *op.tx)
+        .await?;
+    }
+    Ok(())
+}
+
+async fn insert_sprint(op: &mut Operation<'_>, workspace: Uuid, sprint: &Sprint) -> Result<()> {
+    sqlx::query!(
+        "INSERT INTO sprints(id,workspace_id,team_id,number,name,goal,starts_at,ends_at,state) VALUES($1,$2,$3,(SELECT COALESCE(max(number),0)+1 FROM sprints WHERE workspace_id=$2 AND team_id=$3),$4,$5,$6,$7,$8)",
+        sprint.id,
+        workspace,
+        sprint.team_id,
+        &sprint.name,
+        &sprint.goal,
+        sprint.starts_at,
+        sprint.ends_at,
+        enum_text(&sprint.state),
+    )
+    .execute(&mut *op.tx)
+    .await?;
+    op.created("sprints", sprint.id);
+    if let Some(outcome) = &sprint.outcome {
+        sqlx::query!(
+            "INSERT INTO sprint_outcomes(workspace_id,sprint_id,total,completed,effort) VALUES($1,$2,$3,$4,$5)",
+            workspace,
+            sprint.id,
+            outcome.total as i64,
+            outcome.completed as i64,
+            outcome.effort as i64,
+        )
+        .execute(&mut *op.tx)
+        .await?;
+    }
     Ok(())
 }
 
@@ -469,31 +483,8 @@ async fn schedule_imported_reminder(
 /// Comments, time entries, views and activity, minus the trailing import event.
 async fn insert_records(op: &mut Operation<'_>, w: &Workspace) -> Result<()> {
     for comment in &w.comments {
-        sqlx::query!(
-            "INSERT INTO comments(id,workspace_id,issue_id,author,body,created_at,edited_at) VALUES($1,$2,$3,$4,$5,$6,$7)",
-            comment.id,
-            w.id,
-            comment.issue_id,
-            comment.author,
-            &comment.body,
-            comment.created_at,
-            comment.edited_at,
-        )
-        .execute(&mut *op.tx)
-        .await?;
-        op.created("comments", comment.id);
-        for user in &comment.mentions {
-            sqlx::query!(
-                "INSERT INTO comment_mentions(workspace_id,comment_id,user_id) VALUES($1,$2,$3)",
-                w.id,
-                comment.id,
-                *user,
-            )
-            .execute(&mut *op.tx)
-            .await?;
-        }
+        insert_comment(op, w.id, comment).await?;
     }
-
     for entry in &w.time_entries {
         sqlx::query!(
             "INSERT INTO time_entries(id,workspace_id,issue_id,user_id,minutes,note,logged_at) VALUES($1,$2,$3,$4,$5,$6,$7)",
@@ -509,39 +500,73 @@ async fn insert_records(op: &mut Operation<'_>, w: &Workspace) -> Result<()> {
         .await?;
         op.created("time_entries", entry.id);
     }
-
     for view in &w.views {
-        let filter = serde_json::to_value(&view.filter)?;
-        sqlx::query!(
-            "INSERT INTO saved_views(id,workspace_id,owner,name,shared,filter) VALUES($1,$2,$3,$4,$5,$6)",
-            view.id,
-            w.id,
-            view.owner,
-            &view.name,
-            view.shared,
-            filter,
-        )
-        .execute(&mut *op.tx)
-        .await?;
-        op.created("saved_views", view.id);
+        insert_view(op, w.id, view).await?;
     }
-
     for event in w.activity.iter().take(w.activity.len().saturating_sub(1)) {
-        let fields = serde_json::to_value(&event.fields)?;
+        insert_activity(op, w.id, event).await?;
+    }
+    Ok(())
+}
+
+async fn insert_comment(op: &mut Operation<'_>, workspace: Uuid, comment: &Comment) -> Result<()> {
+    sqlx::query!(
+        "INSERT INTO comments(id,workspace_id,issue_id,author,body,created_at,edited_at) VALUES($1,$2,$3,$4,$5,$6,$7)",
+        comment.id,
+        workspace,
+        comment.issue_id,
+        comment.author,
+        &comment.body,
+        comment.created_at,
+        comment.edited_at,
+    )
+    .execute(&mut *op.tx)
+    .await?;
+    op.created("comments", comment.id);
+    for user in &comment.mentions {
         sqlx::query!(
-            "INSERT INTO activity(id,workspace_id,actor,action,entity_id,at,fields) VALUES($1,$2,$3,$4,$5,$6,$7)",
-            event.id,
-            w.id,
-            event.actor,
-            &event.action,
-            event.entity_id,
-            event.at,
-            fields,
+            "INSERT INTO comment_mentions(workspace_id,comment_id,user_id) VALUES($1,$2,$3)",
+            workspace,
+            comment.id,
+            *user,
         )
         .execute(&mut *op.tx)
         .await?;
     }
+    Ok(())
+}
 
+async fn insert_view(op: &mut Operation<'_>, workspace: Uuid, view: &SavedView) -> Result<()> {
+    let filter = serde_json::to_value(&view.filter)?;
+    sqlx::query!(
+        "INSERT INTO saved_views(id,workspace_id,owner,name,shared,filter) VALUES($1,$2,$3,$4,$5,$6)",
+        view.id,
+        workspace,
+        view.owner,
+        &view.name,
+        view.shared,
+        filter,
+    )
+    .execute(&mut *op.tx)
+    .await?;
+    op.created("saved_views", view.id);
+    Ok(())
+}
+
+async fn insert_activity(op: &mut Operation<'_>, workspace: Uuid, event: &Activity) -> Result<()> {
+    let fields = serde_json::to_value(&event.fields)?;
+    sqlx::query!(
+        "INSERT INTO activity(id,workspace_id,actor,action,entity_id,at,fields) VALUES($1,$2,$3,$4,$5,$6,$7)",
+        event.id,
+        workspace,
+        event.actor,
+        &event.action,
+        event.entity_id,
+        event.at,
+        fields,
+    )
+    .execute(&mut *op.tx)
+    .await?;
     Ok(())
 }
 

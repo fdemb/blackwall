@@ -922,18 +922,16 @@ impl Store {
         let mut conn = self.pool.acquire().await?;
         super::reads::authorize(&mut conn, workspace_id, actor).await?;
 
-        if let Some(row) = sqlx::query!(
+        let owner = sqlx::query!(
             "SELECT workspace_id, user_id FROM sync_clients WHERE client_id = $1",
             client_id,
         )
         .fetch_optional(&mut *conn)
-        .await?
-        {
-            if row.workspace_id != workspace_id || row.user_id != actor {
-                return Err(Error::BadRequest(
-                    "client_id belongs to another user or workspace".into(),
-                ));
-            }
+        .await?;
+        if owner.is_some_and(|row| row.workspace_id != workspace_id || row.user_id != actor) {
+            return Err(Error::BadRequest(
+                "client_id belongs to another user or workspace".into(),
+            ));
         }
         Ok(())
     }
