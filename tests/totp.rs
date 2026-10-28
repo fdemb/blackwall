@@ -506,11 +506,12 @@ async fn cli_disables_totp_for_one_email() {
     database.cleanup().await;
 }
 
-/// Takes the user's row lock, as TOTP enrollment and password changes do, and
-/// holds it until the returned transaction ends.
+/// Takes the user's row lock in the mode sign-in and TOTP enrollment take, until
+/// the returned transaction ends. Foreign key checks don't wait for this mode, so
+/// only code that locks the user row itself waits.
 async fn lock_user(store: &Store, user: Uuid) -> sqlx::Transaction<'static, sqlx::Postgres> {
     let mut tx = store.pool.begin().await.unwrap();
-    sqlx::query("SELECT 1 FROM users WHERE id = $1 FOR UPDATE")
+    sqlx::query("SELECT 1 FROM users WHERE id = $1 FOR NO KEY UPDATE")
         .bind(user)
         .execute(&mut *tx)
         .await
