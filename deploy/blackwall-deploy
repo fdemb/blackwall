@@ -17,12 +17,17 @@ env_file=/etc/blackwall/blackwall.env
 release=$root/releases/$commit
 
 mkdir -p "$root/releases"
-# The app user must not be able to open the lock and hold it.
+# The app user must not be able to open the lock and hold it. Older deploys left it world-readable.
 (umask 077 && touch "$root/deploy.lock")
+chown root:root "$root/deploy.lock"
+chmod 600 "$root/deploy.lock"
 exec 9>"$root/deploy.lock"
 flock -n 9 || { echo "another deploy is running (it holds $root/deploy.lock)" >&2; exit 1; }
 
-previous=$(readlink -e "$root/current" || true)
+previous=
+if [[ -e $root/current || -L $root/current ]]; then
+    previous=$(readlink -e "$root/current") || { echo "cannot resolve $root/current; fix or remove it and deploy again" >&2; exit 1; }
+fi
 
 # Every check returns explicitly because callers run this in an || list, where set -e is off.
 check_release() {
@@ -67,7 +72,7 @@ activate() {
 
 healthy() {
     for _ in $(seq 30); do
-        if curl -fsS --max-time 2 "$health_url" >/dev/null 2>&1 \
+        if curl -fsS --max-time 2 "$health_url" >/dev/null 2>&1 9>&- \
             && systemctl is-active --quiet blackwall-worker; then
             return 0
         fi
@@ -81,7 +86,7 @@ run_as_app "$release/blackwall" migrate
 
 echo "switching to $commit"
 if ! activate "$release"; then
-    journalctl -u blackwall-web -u blackwall-worker -n 50 --no-pager || true
+    journalctl -u blackwall-web -u blackwall-worker -n 50 --no-pager 9>&- || true
     echo "$commit failed to start or failed its health check" >&2
     if [[ -z $previous || $previous == "$release" ]]; then
         echo "no previous release to roll back to" >&2
@@ -89,7 +94,7 @@ if ! activate "$release"; then
     fi
     echo "rolling back to $(basename "$previous"); migrations from $commit stay applied" >&2
     if ! activate "$previous"; then
-        journalctl -u blackwall-web -u blackwall-worker -n 50 --no-pager || true
+        journalctl -u blackwall-web -u blackwall-worker -n 50 --no-pager 9>&- || true
         echo "$(basename "$previous") failed too: both releases are down" >&2
         exit 1
     fi
@@ -100,11 +105,13 @@ fi
 # Keep the five newest releases, the current one, and the one it replaced for rollback.
 current=$(readlink -f "$root/current")
 # Deletes the entry, never what it resolves to: a symlinked entry only loses the link.
-ls -1dt "$root"/releases/*/ | tail -n +6 | while read -r dir; do
-    entry=${dir%/}
+# NUL-separated because a release name can hold a newline. A linked release is dated by its target.
+while IFS= read -r -d '' line; do
+    entry=${line#* }
+    [[ ${entry%/*} == "$root/releases" && -n ${entry##*/} ]] || { echo "not pruning $entry: outside $root/releases" >&2; continue; }
     target=$(readlink -f "$entry") || continue
     [[ $target == "$current" || $target == "$previous" ]] && continue
     if [[ -L $entry ]]; then rm -f "$entry"; else rm -rf "$entry"; fi
-done
+done < <(for dir in "$root"/releases/*/; do printf '%s %s\0' "$(stat -L -c %.9Y -- "$dir")" "${dir%/}"; done | sort -zrn | tail -zn +6)
 
 echo "deployed $commit"

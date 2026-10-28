@@ -22,6 +22,7 @@ case "$1 $RESTART_FAILS" in "restart "*"$release"*) exit 17 ;; esac""",
 echo "curl $release" >> "$DEPLOY_LOG"
 case "$UNHEALTHY" in *"$release"*) exit 22 ;; esac""",
     "journalctl": "exit 0",
+    "chown": 'echo "chown $*" >> "$DEPLOY_LOG"',
     "sleep": "exit 0",
 }
 
@@ -209,6 +210,18 @@ def lock_released(o):
 def private_lock(o):
     healthy_deploy(o)
     assert o["lock_mode"] == 0o600, f"deploy.lock has mode {o['lock_mode']:o}"
+    assert [call for call in o["calls"] if call.startswith("chown root:root ") and call.endswith("/deploy.lock")], "deploy.lock was not given to root"
+
+
+def refused_with_unresolvable_current(o):
+    assert o["code"] != 0 and o["current"] == old
+    assert "cannot resolve" in o["output"] and "migrating" not in o["output"]
+    assert not [call for call in o["calls"] if not call.startswith("chown ")], "deploy changed something before refusing"
+
+
+def prune_survives_newline_name(o):
+    assert o["code"] == 0 and o["current_exists"], "pruning removed the current release"
+    assert o["releases"] == sorted([new, rollback_kept] + [str(n) * 40 for n in range(5)]), f"wrong releases pruned: {o['releases']}"
 
 
 def prune_keeps_current_and_rollback(o):
@@ -284,12 +297,23 @@ def old_release_linked_to_releases(root):
     os.utime(root / "releases", (1_000,) * 2)
 
 
+def old_release_named_with_newline(root):
+    old_releases(root)
+    release_files(root / "releases" / "\npoison")
+    os.utime(root / "releases" / "\npoison", (1_000,) * 2)
+
+
+def world_readable_lock(root):
+    (root / "deploy.lock").touch()
+    (root / "deploy.lock").chmod(0o644)
+
+
 def migrate_leaves_a_process(release, work):
     (release / "blackwall").write_text(f'#!/bin/sh\n"{real_sleep}" 30 >/dev/null 2>&1 &\necho $! > "{work / "leftover.pid"}"\n')
 
 
-def readlink_fails_for(path_pattern):
-    return {"readlink": f'case "$1 $2" in "-f "{path_pattern}) exit 1 ;; esac\nexec "{real_readlink}" "$@"'}
+def readlink_fails_for(flag, path_pattern):
+    return {"readlink": f'case "$1 $2" in "{flag} "{path_pattern}) exit 1 ;; esac\nexec "{real_readlink}" "$@"'}
 
 
 def dangling_symlink(staging, work):
@@ -309,18 +333,21 @@ case("archive with a file linked outside the release is rejected", rejected_arch
 case("archive with an absolute link into its unpack dir is rejected", rejected_archive, archive=absolute_symlink_into_staging)
 case("archive with a relative link back into its unpack dir is rejected", rejected_archive, archive=relative_symlink_into_staging)
 case("archive with a dangling link is rejected", rejected_archive, archive=dangling_symlink)
-case("archive is rejected when its unpack dir cannot be resolved", rejected_archive, archive=symlinked_web_file, extra_stubs=readlink_fails_for('*/.unpack.*'))
+case("archive is rejected when its unpack dir cannot be resolved", rejected_archive, archive=symlinked_web_file, extra_stubs=readlink_fails_for('-f', '*/.unpack.*'))
 case("archive is rejected when listing its links fails", rejected_archive, archive=internal_symlink, extra_stubs={"find": "exit 2"})
 case("redeploying an existing release whose binary is a symlink is rejected", rejected_existing_release, existing=existing_symlinked_binary)
 case("redeploying an existing release with a link outside it is rejected", rejected_existing_release, existing=existing_link_outside)
 case("redeploying an existing release with an internal link installs", healthy_deploy_with_link, existing=existing_internal_link)
-case("redeploying an existing release is rejected when it cannot be resolved", rejected_existing_release, existing=existing_link_outside, extra_stubs=readlink_fails_for(f'*/releases/{new}'))
+case("redeploying an existing release is rejected when it cannot be resolved", rejected_existing_release, existing=existing_link_outside, extra_stubs=readlink_fails_for('-f', f'*/releases/{new}'))
 case("deploy is refused while another holds the lock", refused_while_locked, locked=True)
 case("a process left behind by migrate does not hold the lock", lock_released, existing=migrate_leaves_a_process)
 case("the lock file is private to root", private_lock)
+case("a world-readable lock file from an older deploy is made private", private_lock, setup=world_readable_lock)
+case("deploy is refused when the current release cannot be resolved", refused_with_unresolvable_current, unhealthy=[new], extra_stubs=readlink_fails_for('-e', '*/opt/current'))
 case("pruning keeps the current and rollback releases", prune_keeps_current_and_rollback, setup=old_releases)
 case("pruning an old release linked outside removes only the link", prune_removes_only_the_outside_link, setup=old_release_linked_outside)
 case("pruning an old release linked to the releases dir removes only the link", prune_removes_only_the_link, setup=old_release_linked_to_releases)
+case("pruning a release named with a newline keeps the other releases", prune_survives_newline_name, setup=old_release_named_with_newline)
 
 if failures:
     raise SystemExit(f"{len(failures)} deploy case(s) failed")
