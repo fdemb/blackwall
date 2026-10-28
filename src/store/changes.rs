@@ -160,9 +160,12 @@ impl Store {
             return Ok(0);
         };
 
-        sqlx::query!("UPDATE change_horizon SET txid=GREATEST(txid,$1+1)", newest)
-            .execute(&mut *tx)
-            .await?;
+        sqlx::query!(
+            "UPDATE change_horizon SET txid=GREATEST(txid,$1::bigint+1)",
+            newest
+        )
+        .execute(&mut *tx)
+        .await?;
         tx.commit().await?;
 
         Ok(gone.count as u64)

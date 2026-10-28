@@ -723,7 +723,7 @@ async fn maintenance(store: &Store, retention_days: i32, failed_retention_days: 
     }
 
     let outcome = sweep(store, retention_days, failed_retention_days).await;
-    let _ = sqlx::query!("SELECT pg_advisory_unlock(728192404)")
+    let _ = sqlx::query("SELECT pg_advisory_unlock(728192404)")
         .execute(&mut *lock)
         .await;
 

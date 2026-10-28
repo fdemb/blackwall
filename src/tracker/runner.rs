@@ -214,7 +214,7 @@ pub async fn execute(store: &Store, claim: &Claim, job: &TrackerJob) -> Result<(
     let pool_started = Instant::now();
     let mut tx = store.pool.begin().await?;
     let pool_ms = pool_started.elapsed().as_millis();
-    sqlx::query!(
+    sqlx::query(
         "SELECT set_config('lock_timeout','5s',true),set_config('statement_timeout','10s',true)",
     )
     .execute(&mut *tx)

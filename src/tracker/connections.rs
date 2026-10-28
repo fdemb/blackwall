@@ -185,11 +185,11 @@ fn validate_url(value: &str) -> Result<String> {
 
 /// Creates the row with its required fields; `configure` validates and applies the rest.
 async fn insert(conn: &mut PgConnection, workspace: Uuid, config: &Config) -> Result<Uuid> {
-    sqlx::query!(
+    sqlx::query_scalar!(
         "SELECT id FROM workspaces WHERE id=$1 FOR NO KEY UPDATE",
         workspace,
     )
-    .execute(&mut *conn)
+    .fetch_optional(&mut *conn)
     .await?;
     let provider = config
         .provider

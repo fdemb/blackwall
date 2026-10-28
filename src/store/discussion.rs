@@ -229,7 +229,7 @@ impl Operation<'_> {
             self.workspace_id,
             id,
             enabled,
-            events,
+            events.as_deref(),
             include_data,
         )
         .execute(&mut *self.tx)
@@ -1025,8 +1025,8 @@ impl Operation<'_> {
             ORDER BY id FOR UPDATE",
             self.workspace_id,
             self.actor,
-            ids,
-            created,
+            ids.as_deref(),
+            created.as_deref(),
         )
         .fetch_all(&mut *self.tx)
         .await?;
@@ -1142,7 +1142,7 @@ impl Operation<'_> {
             name,
             webhook_url,
             secret,
-            events,
+            &events,
             include_data,
         )
         .execute(&mut *self.tx)
