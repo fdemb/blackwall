@@ -209,7 +209,15 @@ impl Issue {
         set(&mut self.stage_id, p.stage_id);
         set_or_clear(&mut self.assignee, p.assignee, p.clear_assignee);
         set(&mut self.priority, p.priority);
-        set(&mut self.labels, p.labels.map(id_set));
+        match p.labels {
+            Some(LabelChange::Set(labels)) => self.labels = id_set(labels),
+            Some(LabelChange::Edit { add, remove }) => {
+                let kept = self.labels.iter().chain(&add);
+                let labels = kept.filter(|id| !remove.contains(id)).copied();
+                self.labels = id_set(labels.collect());
+            }
+            None => {}
+        }
         set_or_clear(&mut self.estimate, p.estimate, p.clear_estimate);
         set_or_clear(
             &mut self.deadline,
@@ -301,7 +309,7 @@ pub struct IssuePatch {
     #[serde(default)]
     pub clear_assignee: bool,
     pub priority: Option<Priority>,
-    pub labels: Option<Vec<Uuid>>,
+    pub labels: Option<LabelChange>,
     pub estimate: Option<u32>,
     #[serde(default)]
     pub clear_estimate: bool,
@@ -321,6 +329,21 @@ pub struct IssuePatch {
     #[serde(default)]
     pub clear_parent: bool,
     pub dependencies: Option<Vec<Uuid>>,
+}
+
+/// A list replaces every label. `{add, remove}` changes only the labels it names, and a
+/// label in both is removed. Servers from before `{add, remove}` reject it as a type error
+/// instead of acknowledging an edit they can't apply.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(untagged)]
+pub enum LabelChange {
+    Set(Vec<Uuid>),
+    Edit {
+        #[serde(default)]
+        add: Vec<Uuid>,
+        #[serde(default)]
+        remove: Vec<Uuid>,
+    },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]

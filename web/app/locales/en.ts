@@ -406,6 +406,9 @@ export const en = {
   "bulk.selected": "{{n}} selected",
   "bulk.toolbar": "Bulk actions",
   "bulk.sameTeam": "Select issues from one team to change status.",
+  "bulk.sameTeamSprint": "Select issues from one team to change the sprint.",
+  "bulk.sameProject": "Select issues from one project to change the milestone.",
+  "bulk.noProjects": "No project includes every selected team.",
 
   "my.assigned": "Assigned",
   "my.following": "Following",

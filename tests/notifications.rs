@@ -2,7 +2,7 @@ mod support;
 
 use blackwall::{
     auth::{Register, Session},
-    domain::{BulkAction, Command, IssueInput, IssuePatch, SeenNotification},
+    domain::{BulkAction, Command, IssueInput, IssuePatch, LabelChange, SeenNotification},
     error::Error,
     jobs::{self, Mailer},
     store::{CollectionQuery, OperationResult, Store},
@@ -719,7 +719,7 @@ async fn a_patch_that_changes_nothing_leaves_no_trace() {
             id: issue,
             patch: IssuePatch {
                 description: Some("Expires Friday".into()),
-                labels: Some(labels.clone()),
+                labels: Some(LabelChange::Set(labels.clone())),
                 deadline: Some(deadline),
                 ..Default::default()
             },
@@ -738,7 +738,7 @@ async fn a_patch_that_changes_nothing_leaves_no_trace() {
         title: Some("Rotate certificates".into()),
         description: Some("Expires Friday".into()),
         stage_id: Some(f.stages[1]),
-        labels: Some(reordered),
+        labels: Some(LabelChange::Set(reordered)),
         deadline: Some(deadline + chrono::Duration::nanoseconds(400)),
         ..Default::default()
     };

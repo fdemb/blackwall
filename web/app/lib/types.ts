@@ -487,7 +487,8 @@ export interface IssuePatch {
   assignee?: Id;
   clear_assignee?: boolean;
   priority?: Priority;
-  labels?: Id[];
+  /** A list replaces every label. `{add, remove}` changes only the labels it names. */
+  labels?: Id[] | { add?: Id[]; remove?: Id[] };
   estimate?: number;
   clear_estimate?: boolean;
   deadline?: string;

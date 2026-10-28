@@ -328,6 +328,10 @@ function enterTeam(
   next.position = createPosition(tx, next.team_id, next.stage_id, next.id);
 }
 
+function isLabelList(labels: DeepReadonly<IssuePatch["labels"]>): labels is readonly Id[] {
+  return Array.isArray(labels);
+}
+
 function patchedIssue(
   current: DeepReadonly<SyncIssue>,
   patch: DeepReadonly<IssuePatch>,
@@ -338,7 +342,12 @@ function patchedIssue(
   next.stage_id = patch.stage_id ?? current.stage_id;
   next.assignee = setOrClear(current.assignee, patch.assignee, patch.clear_assignee);
   next.priority = patch.priority ?? current.priority;
-  if (patch.labels !== undefined) next.labels = dedupeSortUuids(patch.labels);
+  if (isLabelList(patch.labels)) next.labels = dedupeSortUuids(patch.labels);
+  else if (patch.labels !== undefined) {
+    const { add = [], remove = [] } = patch.labels;
+    const kept = [...next.labels, ...add].filter((id) => !remove.includes(id));
+    next.labels = dedupeSortUuids(kept);
+  }
   next.estimate = setOrClear(current.estimate, patch.estimate, patch.clear_estimate);
   next.deadline = setOrClear(current.deadline, patch.deadline, patch.clear_deadline);
   next.project_id = setOrClear(current.project_id, patch.project_id, patch.clear_project);

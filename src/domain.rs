@@ -1158,6 +1158,98 @@ mod tests {
     }
 
     #[test]
+    fn bulk_label_changes_keep_each_issues_other_labels() {
+        let (mut w, owner, team) = setup();
+        let now = Utc::now();
+        let [x, y, z] = ["x", "y", "z"].map(|name| {
+            w.apply(
+                owner,
+                Command::CreateLabel {
+                    id: None,
+                    name: name.into(),
+                    color: "#ef4444".into(),
+                },
+                now,
+            )
+            .unwrap()
+            .id
+            .unwrap()
+        });
+        let [first, second] = [vec![x, y], vec![y]].map(|labels| {
+            let mut issue = input(team);
+            issue.labels = labels;
+            w.apply(owner, Command::CreateIssue { input: issue }, now)
+                .unwrap()
+                .id
+                .unwrap()
+        });
+        let labels = |w: &Workspace, id: Uuid| -> std::collections::BTreeSet<Uuid> {
+            let issue = w.issues.iter().find(|i| i.id == id).unwrap();
+            issue.labels.iter().copied().collect()
+        };
+
+        w.apply(
+            owner,
+            Command::BulkIssues {
+                ids: vec![first, second],
+                action: BulkAction::Update(Box::new(IssuePatch {
+                    labels: Some(LabelChange::Edit {
+                        add: vec![z],
+                        remove: vec![y],
+                    }),
+                    ..Default::default()
+                })),
+            },
+            now,
+        )
+        .unwrap();
+        assert_eq!(labels(&w, first), [x, z].into());
+        assert_eq!(labels(&w, second), [z].into());
+    }
+
+    #[test]
+    fn label_lists_serialize_as_before_label_edits() {
+        let id = Uuid::new_v4();
+        let label = Uuid::new_v4();
+        let stored = serde_json::json!({
+            "type": "update_issue",
+            "id": id,
+            "patch": {
+                "title": null, "description": null, "team_id": null, "stage_id": null,
+                "assignee": null, "clear_assignee": false, "priority": null,
+                "labels": [label],
+                "estimate": null, "clear_estimate": false,
+                "deadline": null, "clear_deadline": false,
+                "project_id": null, "clear_project": false,
+                "milestone_id": null, "clear_milestone": false,
+                "sprint_id": null, "clear_sprint": false,
+                "parent_id": null, "clear_parent": false,
+                "dependencies": null,
+            },
+        });
+        let command: Command = serde_json::from_value(stored.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&command).unwrap(), stored);
+    }
+
+    #[test]
+    fn label_edits_are_a_type_error_to_servers_without_them() {
+        #[derive(Debug, Deserialize)]
+        struct PatchBeforeLabelEdits {
+            #[allow(dead_code)]
+            labels: Option<Vec<Uuid>>,
+        }
+        let patch = IssuePatch {
+            labels: Some(LabelChange::Edit {
+                add: vec![Uuid::new_v4()],
+                remove: vec![],
+            }),
+            ..Default::default()
+        };
+        let sent = serde_json::to_value(&patch).unwrap();
+        assert!(serde_json::from_value::<PatchBeforeLabelEdits>(sent).is_err());
+    }
+
+    #[test]
     fn rejects_dependency_and_parent_cycles() {
         let (mut w, owner, team) = setup();
         let first = w

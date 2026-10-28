@@ -5,7 +5,7 @@ use super::resources::{Versioned, list_collection, one, record};
 use super::*;
 use crate::domain::{
     Activity, Attachment, Comment, CommentTracker, FilterClause, Issue, IssueFilter, IssueInput,
-    IssuePatch, IssueSort, Priority, SourceLink, TrackerLink, Via, deserialize_where,
+    IssuePatch, IssueSort, LabelChange, Priority, SourceLink, TrackerLink, Via, deserialize_where,
 };
 use crate::store::CollectionQuery;
 use axum::extract::{Path, Query};
@@ -563,21 +563,12 @@ impl UpdateIssue {
                     "send labels, or add_labels and remove_labels, not both".into(),
                 ));
             }
-            (Some(labels), None, None) => Some(label_ids(&dir, &labels)?),
+            (Some(labels), None, None) => Some(LabelChange::Set(label_ids(&dir, &labels)?)),
             (None, None, None) => None,
-            (None, add, remove) => {
-                let add = label_ids(&dir, &add.unwrap_or_default())?;
-                let remove = label_ids(&dir, &remove.unwrap_or_default())?;
-                let mut labels: Vec<Uuid> = current
-                    .labels
-                    .iter()
-                    .copied()
-                    .filter(|id| !remove.contains(id))
-                    .collect();
-                labels.extend(add.into_iter().filter(|id| !remove.contains(id)));
-                labels.dedup();
-                Some(labels)
-            }
+            (None, add, remove) => Some(LabelChange::Edit {
+                add: label_ids(&dir, &add.unwrap_or_default())?,
+                remove: label_ids(&dir, &remove.unwrap_or_default())?,
+            }),
         };
         let resolve_with = |field: Option<Option<String>>, find: &dyn Fn(&str) -> Result<Uuid>| {
             field

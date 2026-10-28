@@ -420,6 +420,9 @@ export const pl = {
   "bulk.selected": "Zaznaczono: {{n}}",
   "bulk.toolbar": "Działania zbiorcze",
   "bulk.sameTeam": "Aby zmienić status, zaznacz zadania z jednego zespołu.",
+  "bulk.sameTeamSprint": "Aby zmienić sprint, zaznacz zadania z jednego zespołu.",
+  "bulk.sameProject": "Aby zmienić kamień milowy, zaznacz zadania z jednego projektu.",
+  "bulk.noProjects": "Żaden projekt nie obejmuje wszystkich zaznaczonych zespołów.",
 
   "my.assigned": "Przypisane",
   "my.following": "Obserwowane",

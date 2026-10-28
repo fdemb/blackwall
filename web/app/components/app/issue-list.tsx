@@ -1,6 +1,9 @@
 import { useMemo, useState } from "react";
 import {
+  Calendar,
   Collection,
+  Dialog,
+  DialogTrigger,
   GridList,
   GridListHeader,
   GridListItem,
@@ -11,23 +14,34 @@ import {
   Virtualizer,
   type Selection,
 } from "react-aria-components";
-import { Archive, ChevronDown, Flag, Trash2, X } from "lucide-react";
+import { Archive, Check, ChevronDown, Flag, Minus, Trash2, X } from "lucide-react";
 import { Button } from "~/components/ui/button";
 import { Checkbox } from "~/components/ui/toggles";
-import { Menu, MenuItem, MenuPopover, MenuTrigger, MenuSeparator } from "~/components/ui/menu";
+import { CalendarBody, fromCalendarDate } from "~/components/ui/date-picker";
+import { Menu, MenuItem, MenuPopover, MenuTrigger } from "~/components/ui/menu";
+import { Popover } from "~/components/ui/popover";
 import { Avatar } from "~/components/ui/avatar";
 import { useToast } from "~/components/ui/toast";
 import { ISSUE_DRAG_TYPE, issueDragItem, readDraggedIssues } from "./board";
 import { ConfirmDialog } from "./confirm";
-import { AssigneeMenu, DeadlineMenu, KeyButton, LabelLinks, PriorityMenu } from "./issue-menus";
+import {
+  AssigneeMenu,
+  DeadlineMenu,
+  ESTIMATES,
+  KeyButton,
+  LabelLinks,
+  PriorityMenu,
+} from "./issue-menus";
+import { IssuePicker } from "./issue-picker";
+import { LabelDot } from "./pickers";
 import { cn } from "~/lib/utils";
-import { PRIORITIES } from "~/lib/format";
+import { PRIORITIES, sprintLabel } from "~/lib/format";
 import { useIssueKeyWidth } from "./issue-key";
 import { stageOf, isDoneOnly } from "~/lib/filters";
 import { milestoneGroups, projectMilestones } from "~/lib/projects";
 import { useI18n } from "~/lib/i18n";
 import { useWorkspace } from "~/lib/workspace";
-import type { Id, Issue, IssuePatch, ListGroup } from "~/lib/types";
+import type { Id, Issue, IssuePatch, ListGroup, Priority } from "~/lib/types";
 import { PriorityIcon, StageIcon } from "./icons";
 import { BlockedBadge, SubtaskProgress, TrackerBadge } from "./issue-parts";
 
@@ -432,6 +446,53 @@ export function TeamCell({ issue }: { issue: Issue }) {
   return <span className="hidden  text-muted-foreground lg:block">{name}</span>;
 }
 
+interface BulkOption {
+  id: string;
+  name: string;
+  icon?: React.ReactNode;
+  /** Trailing state, such as whether every selected issue has a label. */
+  mark?: React.ReactNode;
+}
+
+/** One bulk bar property: a menu that applies the picked option to every selected issue. */
+function BulkMenu({
+  label,
+  options,
+  empty,
+  onAction,
+}: {
+  label: string;
+  options: BulkOption[];
+  empty?: string;
+  onAction: (id: string) => void;
+}) {
+  return (
+    <MenuTrigger>
+      <Button variant="ghost" size="sm">
+        {label}
+      </Button>
+      <MenuPopover placement="top">
+        <Menu
+          aria-label={label}
+          items={options}
+          onAction={(k) => onAction(String(k))}
+          renderEmptyState={() => <p className="px-2 py-1.5  text-muted-foreground">{empty}</p>}
+        >
+          {(o) => (
+            <MenuItem id={o.id} textValue={o.name}>
+              {o.icon}
+              {o.name}
+              {o.mark && <span className="ml-auto">{o.mark}</span>}
+            </MenuItem>
+          )}
+        </Menu>
+      </MenuPopover>
+    </MenuTrigger>
+  );
+}
+
+const NONE = "__none";
+
 function BulkBar({
   issues,
   selected,
@@ -446,11 +507,14 @@ function BulkBar({
   const { ws, members, run } = useWorkspace();
   const [confirm, setConfirm] = useState(false);
   const byId = useMemo(() => new Map(issues.map((i) => [i.id, i] as const)), [issues]);
-  const ids = [...selected].filter((id) => byId.has(id));
-  if (ids.length === 0) return null;
-  const first = byId.get(ids[0]);
-  const team = ws.teams.find((tm) => tm.id === first?.team_id);
-  const same = ids.every((id) => byId.get(id)?.team_id === first?.team_id);
+  const chosen = [...selected].flatMap((id) => byId.get(id) ?? []);
+  if (chosen.length === 0) return null;
+  const ids = chosen.map((i) => i.id);
+  const first = chosen[0];
+  const team = chosen.every((i) => i.team_id === first.team_id)
+    ? ws.teams.find((tm) => tm.id === first.team_id)
+    : undefined;
+  const project = chosen.every((i) => i.project_id === first.project_id) ? first.project_id : null;
   const update = (patch: IssuePatch) =>
     run({ type: "bulk_issues", ids, action: { update: patch } })
       .then(clear)
@@ -467,10 +531,7 @@ function BulkBar({
     });
   };
   // Only Done issues can be archived; the server rejects anything else.
-  const archivable = ids.every((id) => {
-    const issue = byId.get(id);
-    return issue && isDoneOnly(ws, issue);
-  });
+  const archivable = chosen.every((issue) => isDoneOnly(ws, issue));
   const archive = async () => {
     await run({ type: "bulk_issues", ids, action: "archive" }, { quiet: true });
     clear();
@@ -482,6 +543,28 @@ function BulkBar({
           .catch(() => {}),
     });
   };
+  // A label every selected issue has is removed from all of them; any other is added to all.
+  const labelled = (label: Id) => chosen.filter((i) => i.labels.includes(label)).length;
+  const toggleLabel = (label: Id) =>
+    update(
+      labelled(label) === chosen.length
+        ? { labels: { remove: [label] } }
+        : { labels: { add: [label] } },
+    );
+  // A milestone outside the new project would be rejected, so moving issues leaves theirs.
+  const setProject = (id: Id) =>
+    update(
+      chosen.every((i) => i.milestone_id === null || i.project_id === id)
+        ? { project_id: id }
+        : { project_id: id, clear_milestone: true },
+    );
+  const projects = ws.projects.filter((p) => chosen.every((i) => p.team_ids.includes(i.team_id)));
+  const milestones = project ? ws.milestones.filter((m) => m.project_id === project) : [];
+  const sprints = team
+    ? ws.sprints.filter(
+        (s) => s.team_id === team.id && (s.state === "planned" || s.state === "active"),
+      )
+    : [];
   return (
     <div
       role="toolbar"
@@ -489,63 +572,143 @@ function BulkBar({
       className="fixed bottom-4 left-1/2 z-40 flex max-w-[calc(100vw-1.5rem)] -translate-x-1/2 animate-in flex-wrap items-center justify-center gap-1 rounded-xl border border-border bg-popover p-1.5 shadow-xl slide-in-from-bottom-4 fade-in-0 sm:bottom-6"
     >
       <span className="px-2.5  font-medium">{t("bulk.selected", { n: ids.length })}</span>
-      <MenuTrigger>
+      <BulkMenu
+        label={t("field.stage")}
+        empty={t("bulk.sameTeam")}
+        options={(team?.stages ?? []).map((s) => ({
+          id: s.id,
+          name: s.name,
+          icon: <StageIcon kind={s.kind} />,
+        }))}
+        onAction={(id) => update({ stage_id: id })}
+      />
+      <BulkMenu
+        label={t("field.priority")}
+        options={PRIORITIES.map((p) => ({
+          id: p,
+          name: t(`priority.${p}`),
+          icon: <PriorityIcon priority={p} />,
+        }))}
+        onAction={(p) => update({ priority: p as Priority })}
+      />
+      <BulkMenu
+        label={t("field.assignee")}
+        options={[
+          { id: NONE, name: t("assignee.none") },
+          ...members.map((m) => ({
+            id: m.id,
+            name: m.display_name,
+            icon: <Avatar name={m.display_name} src={m.avatar_url} size={16} />,
+          })),
+        ]}
+        onAction={(id) => update(id === NONE ? { clear_assignee: true } : { assignee: id })}
+      />
+      <BulkMenu
+        label={t("field.labels")}
+        options={ws.labels.map((l) => {
+          const count = labelled(l.id);
+          return {
+            id: l.id,
+            name: l.name,
+            icon: <LabelDot color={l.color} />,
+            mark:
+              count === chosen.length ? (
+                <Check aria-hidden className="size-3.5 text-primary" />
+              ) : count > 0 ? (
+                <Minus aria-hidden className="size-3.5" />
+              ) : null,
+          };
+        })}
+        onAction={toggleLabel}
+      />
+      <BulkMenu
+        label={t("field.project")}
+        empty={t("bulk.noProjects")}
+        options={[
+          { id: NONE, name: t("project.none") },
+          ...projects.map((p) => ({ id: p.id, name: p.name })),
+        ]}
+        onAction={(id) =>
+          id === NONE ? update({ clear_project: true, clear_milestone: true }) : setProject(id)
+        }
+      />
+      <BulkMenu
+        label={t("field.milestone")}
+        empty={t("bulk.sameProject")}
+        options={
+          project
+            ? [
+                { id: NONE, name: t("milestone.none") },
+                ...milestones.map((m) => ({ id: m.id, name: m.name })),
+              ]
+            : []
+        }
+        onAction={(id) => update(id === NONE ? { clear_milestone: true } : { milestone_id: id })}
+      />
+      <BulkMenu
+        label={t("field.sprint")}
+        empty={t("bulk.sameTeamSprint")}
+        options={
+          team
+            ? [
+                { id: NONE, name: t("sprint.none") },
+                ...sprints.map((s) => ({ id: s.id, name: sprintLabel(s) })),
+              ]
+            : []
+        }
+        onAction={(id) => update(id === NONE ? { clear_sprint: true } : { sprint_id: id })}
+      />
+      <BulkMenu
+        label={t("field.estimate")}
+        options={[
+          { id: NONE, name: t("estimate.none") },
+          ...ESTIMATES.map((v) => ({ id: String(v), name: `${v} ${t("estimate.unit")}` })),
+        ]}
+        onAction={(v) => update(v === NONE ? { clear_estimate: true } : { estimate: Number(v) })}
+      />
+      <DialogTrigger>
         <Button variant="ghost" size="sm">
-          {t("field.stage")}
+          {t("field.deadline")}
         </Button>
-        <MenuPopover placement="top">
-          <Menu
-            onAction={(k) => update({ stage_id: k as Id })}
-            items={same ? (team?.stages ?? []) : []}
-            renderEmptyState={() => (
-              <p className="px-2 py-1.5  text-muted-foreground">{t("bulk.sameTeam")}</p>
+        <Popover placement="top" className="w-auto min-w-0">
+          <Dialog aria-label={t("field.deadline")} className="p-3 outline-none">
+            {({ close }) => (
+              <>
+                <Calendar
+                  aria-label={t("field.deadline")}
+                  onChange={(d) => {
+                    void update({ deadline: fromCalendarDate(d) ?? undefined });
+                    close();
+                  }}
+                >
+                  <CalendarBody />
+                </Calendar>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="mt-2 w-full"
+                  onPress={() => {
+                    void update({ clear_deadline: true });
+                    close();
+                  }}
+                >
+                  <X aria-hidden />
+                  {t("action.clearField")}
+                </Button>
+              </>
             )}
-          >
-            {(s) => (
-              <MenuItem id={s.id}>
-                <StageIcon kind={s.kind} />
-                {s.name}
-              </MenuItem>
-            )}
-          </Menu>
-        </MenuPopover>
-      </MenuTrigger>
-      <MenuTrigger>
-        <Button variant="ghost" size="sm">
-          {t("field.priority")}
-        </Button>
-        <MenuPopover placement="top">
-          <Menu onAction={(k) => update({ priority: k as never })}>
-            {PRIORITIES.map((p) => (
-              <MenuItem key={p} id={p}>
-                <PriorityIcon priority={p} />
-                {t(`priority.${p}`)}
-              </MenuItem>
-            ))}
-          </Menu>
-        </MenuPopover>
-      </MenuTrigger>
-      <MenuTrigger>
-        <Button variant="ghost" size="sm">
-          {t("field.assignee")}
-        </Button>
-        <MenuPopover placement="top">
-          <Menu
-            onAction={(k) =>
-              k === "__none" ? update({ clear_assignee: true }) : update({ assignee: k as Id })
-            }
-          >
-            <MenuItem id="__none">{t("assignee.none")}</MenuItem>
-            <MenuSeparator />
-            {members.map((m) => (
-              <MenuItem key={m.id} id={m.id} textValue={m.display_name}>
-                <Avatar name={m.display_name} src={m.avatar_url} size={16} />
-                {m.display_name}
-              </MenuItem>
-            ))}
-          </Menu>
-        </MenuPopover>
-      </MenuTrigger>
+          </Dialog>
+        </Popover>
+      </DialogTrigger>
+      <IssuePicker
+        exclude={ids}
+        onPick={(id) => void update({ parent_id: id })}
+        trigger={
+          <Button variant="ghost" size="sm">
+            {t("issue.parent")}
+          </Button>
+        }
+      />
       <Button
         variant="ghost"
         size="sm"
