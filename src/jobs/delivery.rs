@@ -228,13 +228,26 @@ impl Webhook {
     }
 }
 
-fn signature(secret: &[u8], body: &[u8]) -> String {
+fn hmac_hex(secret: &[u8], parts: &[&[u8]]) -> String {
     use hmac::{Hmac, Mac};
     use sha2::Sha256;
 
     let mut mac = Hmac::<Sha256>::new_from_slice(secret).expect("HMAC accepts any key length");
-    mac.update(body);
-    format!("sha256={}", hex::encode(mac.finalize().into_bytes()))
+    for part in parts {
+        mac.update(part);
+    }
+    hex::encode(mac.finalize().into_bytes())
+}
+
+/// `X-Blackwall-Signature`, over the body alone.
+fn signature(secret: &[u8], body: &[u8]) -> String {
+    format!("sha256={}", hmac_hex(secret, &[body]))
+}
+
+/// `Blackwall-Signature`, over `<timestamp>.<body>`, so receivers can reject replays.
+fn timestamped_signature(secret: &[u8], timestamp: i64, body: &[u8]) -> String {
+    let signed = hmac_hex(secret, &[format!("{timestamp}.").as_bytes(), body]);
+    format!("t={timestamp},v1={signed}")
 }
 
 async fn send_webhook(id: &str, webhook: &Webhook, secret: &str) -> Result<(), DeliveryError> {
@@ -249,14 +262,18 @@ async fn send_webhook(id: &str, webhook: &Webhook, secret: &str) -> Result<(), D
     let body = serde_json::to_vec(&webhook.event)
         .map_err(|_| DeliveryError::Permanent("invalid webhook event"))?;
 
-    let signature = signature(secret.as_bytes(), &body);
-
     let client = webhook_client(id, &url).await?;
+    // Signed on every attempt, so a retry carries a fresh timestamp.
+    let timestamp = chrono::Utc::now().timestamp();
     let mut request = client
         .post(url)
         .header("Content-Type", "application/json")
         .header("Idempotency-Key", id)
-        .header("X-Blackwall-Signature", signature);
+        .header("X-Blackwall-Signature", signature(secret.as_bytes(), &body))
+        .header(
+            "Blackwall-Signature",
+            timestamped_signature(secret.as_bytes(), timestamp, &body),
+        );
     // Jobs queued before typed events carry no type.
     if let Some(kind) = webhook.event["type"].as_str() {
         request = request.header("X-Blackwall-Event", kind);
@@ -384,6 +401,82 @@ mod tests {
             super::signature(b"Jefe", b"what do ya want for nothing?"),
             "sha256=5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843"
         );
+    }
+
+    /// The check docs/api.md tells receivers to run on `Blackwall-Signature`.
+    fn receiver_accepts(secret: &[u8], header: &str, body: &[u8], now: i64) -> bool {
+        use hmac::{Hmac, Mac};
+        use sha2::Sha256;
+
+        let Some((t, v1)) = header
+            .split_once(',')
+            .and_then(|(t, v1)| Some((t.strip_prefix("t=")?, v1.strip_prefix("v1=")?)))
+        else {
+            return false;
+        };
+        let Ok(timestamp) = t.parse::<i64>() else {
+            return false;
+        };
+        let mut mac = Hmac::<Sha256>::new_from_slice(secret).unwrap();
+        mac.update(t.as_bytes());
+        mac.update(b".");
+        mac.update(body);
+        let expected = hex::decode(v1).unwrap_or_default();
+        mac.verify_slice(&expected).is_ok() && (now - timestamp).abs() <= 300
+    }
+
+    #[test]
+    fn timestamped_signature_verifies_within_tolerance() {
+        let body = br#"{"type":"issue.updated"}"#;
+        let header = super::timestamped_signature(b"whsec_test", 1_800_000_000, body);
+        assert!(header.starts_with("t=1800000000,v1="));
+        assert!(receiver_accepts(
+            b"whsec_test",
+            &header,
+            body,
+            1_800_000_000 + 300
+        ));
+        assert!(!receiver_accepts(
+            b"whsec_test",
+            &header,
+            body,
+            1_800_000_000 + 301
+        ));
+        assert!(!receiver_accepts(
+            b"whsec_other",
+            &header,
+            body,
+            1_800_000_000
+        ));
+        assert!(!receiver_accepts(
+            b"whsec_test",
+            &header,
+            b"{}",
+            1_800_000_000
+        ));
+        // A replay with its timestamp moved forward no longer matches the signature.
+        let moved = header.replacen("t=1800000000", "t=1800000600", 1);
+        assert!(!receiver_accepts(
+            b"whsec_test",
+            &moved,
+            body,
+            1_800_000_600
+        ));
+    }
+
+    #[test]
+    fn retried_delivery_signs_its_own_timestamp() {
+        let body = br#"{"type":"comment.created"}"#;
+        let first = super::timestamped_signature(b"whsec_test", 1_800_000_000, body);
+        let retry = super::timestamped_signature(b"whsec_test", 1_800_000_900, body);
+        assert_ne!(first, retry);
+        assert!(!receiver_accepts(
+            b"whsec_test",
+            &first,
+            body,
+            1_800_000_900
+        ));
+        assert!(receiver_accepts(b"whsec_test", &retry, body, 1_800_000_900));
     }
 
     #[test]
