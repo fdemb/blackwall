@@ -15,9 +15,11 @@ if cargo nextest --version >/dev/null 2>&1; then
 else
     cargo test --locked
 fi
+cargo run --quiet --locked -- openapi > web/app/lib/openapi.json
 
 cd web
 pnpm install --frozen-lockfile
+pnpm run gen:api
 pnpm run typecheck
 pnpm exec vp check
 pnpm exec vp lint -A all -W eslint/complexity -f json | node ../scripts/complexity.mjs

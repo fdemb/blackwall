@@ -4,7 +4,7 @@ use uuid::Uuid;
 
 type MainResult = Result<(), Box<dyn std::error::Error>>;
 
-const USAGE: &str = "blackwall [serve|worker|migrate|fixtures empty|fixtures rich|queue status|queue failed [limit]|queue retry <uuid>|queue cancel <uuid>|totp disable <email>]\nQueue administration requires shell access and DATABASE_URL credentials. Payloads are never displayed.\n`totp disable` turns off two-factor sign-in for one account that lost its authenticator and recovery codes.";
+const USAGE: &str = "blackwall [serve|worker|migrate|openapi|fixtures empty|fixtures rich|queue status|queue failed [limit]|queue retry <uuid>|queue cancel <uuid>|totp disable <email>]\nQueue administration requires shell access and DATABASE_URL credentials. Payloads are never displayed.\n`totp disable` turns off two-factor sign-in for one account that lost its authenticator and recovery codes.";
 
 #[tokio::main]
 async fn main() -> MainResult {
@@ -22,6 +22,10 @@ async fn main() -> MainResult {
         .is_some_and(|arg| arg == "--help" || arg == "help")
     {
         println!("{USAGE}");
+        return Ok(());
+    }
+    if args == ["openapi"] {
+        println!("{}", <http::ApiDoc as utoipa::OpenApi>::openapi().to_pretty_json()?);
         return Ok(());
     }
 
