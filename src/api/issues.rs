@@ -105,10 +105,10 @@ impl Versioned for ApiIssue {
 
 /// Names the records issues point at, with one directory and one query per relation.
 pub async fn render(store: &Store, scope: Scope, issues: Vec<Issue>) -> Result<Vec<ApiIssue>> {
-    let dir = Directory::load(store, scope).await?;
+    let mut dir = Directory::load(store, scope).await?;
     render_on(
         &mut *store.pool.acquire().await?,
-        dir,
+        &mut dir,
         scope.workspace,
         issues,
     )
@@ -117,7 +117,7 @@ pub async fn render(store: &Store, scope: Scope, issues: Vec<Issue>) -> Result<V
 
 pub(super) async fn render_on(
     conn: &mut PgConnection,
-    mut dir: Directory,
+    dir: &mut Directory,
     workspace: Uuid,
     issues: Vec<Issue>,
 ) -> Result<Vec<ApiIssue>> {
@@ -815,13 +815,13 @@ async fn render_comments(
     scope: Scope,
     comments: Vec<Comment>,
 ) -> Result<Vec<ApiComment>> {
-    let dir = Directory::people(store, scope).await?;
-    render_comments_on(&mut *store.pool.acquire().await?, dir, comments).await
+    let mut dir = Directory::people(store, scope).await?;
+    render_comments_on(&mut *store.pool.acquire().await?, &mut dir, comments).await
 }
 
 pub(super) async fn render_comments_on(
     conn: &mut PgConnection,
-    mut dir: Directory,
+    dir: &mut Directory,
     comments: Vec<Comment>,
 ) -> Result<Vec<ApiComment>> {
     dir.include_people(

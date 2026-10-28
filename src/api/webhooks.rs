@@ -19,6 +19,8 @@ pub struct ApiWebhook {
     pub enabled: bool,
     /// Subscribed event types. Empty means every event.
     pub events: Vec<String>,
+    /// Whether deliveries carry the changed record as `data`.
+    pub include_data: bool,
 }
 
 impl Versioned for ApiWebhook {
@@ -67,10 +69,11 @@ pub struct WebhookEvents {
         `{id, type, workspace_id, occurred_at, actor_id, entity_type, entity_id, fields?, \
         changes?, via?, data?, truncated?}`. `changes` holds the old and new value of each \
         field in `fields`. `data` is the issue, comment or time entry as the API returns it, read \
-        right after the change. Headers are `X-Blackwall-Event`, `Idempotency-Key`, \
+        right after the change, and only webhooks with `include_data` receive it. Headers are \
+        `X-Blackwall-Event`, `Idempotency-Key`, \
         `Blackwall-Signature: t=<unix seconds>,v1=<hex HMAC-SHA256 of t.body>` and \
         `X-Blackwall-Signature: sha256=<hex HMAC-SHA256 of the body>`. Verify \
-        `Blackwall-Signature` and reject timestamps more than 5 minutes old.",
+        `Blackwall-Signature` and reject timestamps more than 5 minutes away from your clock.",
     responses((status = 200, body = WebhookEvents))
 )]
 pub async fn events() -> Json<WebhookEvents> {
@@ -126,6 +129,8 @@ pub struct CreateWebhook {
     pub events: Vec<String>,
     /// Signing secret. Omit to have one generated.
     pub secret: Option<String>,
+    /// Send the changed record as `data`. Defaults to true.
+    pub include_data: Option<bool>,
 }
 
 #[utoipa::path(
@@ -156,6 +161,7 @@ pub async fn create(
                     .secret
                     .unwrap_or_else(|| format!("whsec_{}", crate::auth::token())),
                 events: body.events,
+                include_data: body.include_data.unwrap_or(true),
             })
         },
         None,
@@ -184,6 +190,8 @@ pub struct UpdateWebhook {
     pub enabled: Option<bool>,
     /// Replaces the subscribed event types. Empty means every event.
     pub events: Option<Vec<String>>,
+    /// Send the changed record as `data`.
+    pub include_data: Option<bool>,
 }
 
 #[utoipa::path(
@@ -212,6 +220,7 @@ pub async fn update(
                 id,
                 enabled: body.enabled.unwrap_or(current.enabled),
                 events: body.events,
+                include_data: body.include_data,
             })
         },
         Some(id),
@@ -271,9 +280,11 @@ pub(crate) struct Snapshot {
 
 /// The entity as the API returns it, read inside the transaction that changed it, so every
 /// retry sends the state right after the change. Only issues, comments and time entries have
-/// one, and a comment or time entry the change deleted has none.
+/// one, and a comment or time entry the change deleted has none. `directory` is loaded on the
+/// first entity that needs it and reused by later calls.
 pub(crate) async fn snapshot(
     conn: &mut PgConnection,
+    directory: &mut Option<Directory>,
     workspace: Uuid,
     actor: Uuid,
     entity_type: &str,
@@ -285,7 +296,7 @@ pub(crate) async fn snapshot(
                 Err(Error::NotFound) => return Ok(Snapshot::default()),
                 issue => issue?,
             };
-            let dir = Directory::workspace(conn, workspace).await?;
+            let dir = loaded(conn, directory, workspace).await?;
             let rendered = render_on(conn, dir, workspace, vec![issue]).await?;
             (serde_json::to_value(&rendered[0])?, "description")
         }
@@ -295,7 +306,7 @@ pub(crate) async fn snapshot(
                 return Ok(Snapshot::default());
             };
             let comment: Comment = serde_json::from_value(row)?;
-            let dir = Directory::members(conn, workspace).await?;
+            let dir = loaded(conn, directory, workspace).await?;
             let rendered = render_comments_on(conn, dir, vec![comment]).await?;
             (serde_json::to_value(&rendered[0])?, "body")
         }
@@ -306,7 +317,7 @@ pub(crate) async fn snapshot(
                 return Ok(Snapshot::default());
             };
             let entry: TimeEntry = serde_json::from_value(row)?;
-            let mut dir = Directory::members(conn, workspace).await?;
+            let dir = loaded(conn, directory, workspace).await?;
             dir.include_people(conn, [entry.user_id]).await?;
             let rendered = ApiTimeEntry {
                 id: entry.id,
@@ -322,6 +333,18 @@ pub(crate) async fn snapshot(
         _ => return Ok(Snapshot::default()),
     };
     Ok(bound(data, markdown))
+}
+
+async fn loaded<'a>(
+    conn: &mut PgConnection,
+    directory: &'a mut Option<Directory>,
+    workspace: Uuid,
+) -> Result<&'a mut Directory> {
+    let dir = match directory.take() {
+        Some(dir) => dir,
+        None => Directory::workspace(conn, workspace).await?,
+    };
+    Ok(directory.insert(dir))
 }
 
 /// Cuts the `markdown` field to `TEXT_LIMIT`, then leaves `data` out if it is still over

@@ -4,7 +4,7 @@ import { Copy, Loader2, Plug, Plus, Trash2 } from "lucide-react";
 import { Button } from "~/components/ui/button";
 import { Dialog, useDialogDirty } from "~/components/ui/dialog";
 import { FormError, TextField } from "~/components/ui/field";
-import { Switch } from "~/components/ui/toggles";
+import { Checkbox, Switch } from "~/components/ui/toggles";
 import { EmptyState } from "~/components/app/page";
 import { SettingsList, SettingsPage, SettingsSection } from "~/components/app/settings";
 import { ConfirmDialog } from "~/components/app/confirm";
@@ -89,6 +89,22 @@ export default function Integrations() {
                       <Copy />
                     </Button>
                   </div>
+                  <Checkbox
+                    className="mt-2"
+                    aria-label={`${t("integrations.includeData")}: ${i.name}`}
+                    isSelected={i.include_data}
+                    isDisabled={offline}
+                    onChange={(include_data) =>
+                      run({
+                        type: "update_integration",
+                        id: i.id,
+                        enabled: i.enabled,
+                        include_data,
+                      }).catch(() => {})
+                    }
+                  >
+                    {t("integrations.includeData")}
+                  </Checkbox>
                 </div>
                 <Switch
                   aria-label={`${t("integrations.enabled")}: ${i.name}`}
@@ -147,7 +163,8 @@ function IntegrationForm({ close }: { close: () => void }) {
   const [name, setName] = useState("");
   const [url, setUrl] = useState("");
   const [secret, setSecret] = useState("");
-  useDialogDirty(name !== "" || url !== "" || secret !== "");
+  const [includeData, setIncludeData] = useState(true);
+  useDialogDirty(name !== "" || url !== "" || secret !== "" || !includeData);
   return (
     <Form
       className="flex flex-col gap-4"
@@ -155,7 +172,13 @@ function IntegrationForm({ close }: { close: () => void }) {
         e.preventDefault();
         void guard(async () => {
           await run(
-            { type: "create_integration", name: name.trim(), webhook_url: url.trim(), secret },
+            {
+              type: "create_integration",
+              name: name.trim(),
+              webhook_url: url.trim(),
+              secret,
+              include_data: includeData,
+            },
             { quiet: true },
           );
           close();
@@ -195,6 +218,12 @@ function IntegrationForm({ close }: { close: () => void }) {
         minLength={16}
         description={t("integrations.secretHint")}
       />
+      <div>
+        <Checkbox isSelected={includeData} onChange={setIncludeData}>
+          {t("integrations.includeData")}
+        </Checkbox>
+        <p className="mt-1 pl-6 text-muted-foreground">{t("integrations.includeDataHint")}</p>
+      </div>
       <FormError>{error}</FormError>
       <div className="flex justify-end gap-2">
         <Button variant="ghost" onPress={close}>

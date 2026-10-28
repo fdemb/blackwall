@@ -17,7 +17,11 @@ export const cancelInvitation: Mutator<ArgsOf<"cancel_invitation">> = (tx, args,
 export const updateIntegration: Mutator<ArgsOf<"update_integration">> = (tx, args, ctx) => {
   requireAdmin(requireRole(tx, ctx.actor, "update_integration", args));
   const integration = requireRecord(tx, "integrations", args.id);
-  tx.put("integrations", { ...integration, enabled: args.enabled });
+  tx.put("integrations", {
+    ...integration,
+    enabled: args.enabled,
+    include_data: args.include_data ?? integration.include_data,
+  });
 };
 
 export const deleteIntegration: Mutator<ArgsOf<"delete_integration">> = (tx, args, ctx) => {

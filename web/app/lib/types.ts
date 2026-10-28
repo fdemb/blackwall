@@ -339,6 +339,7 @@ export interface Integration {
   name: string;
   webhook_url: string;
   enabled: boolean;
+  include_data: boolean;
 }
 export interface SessionInfo {
   id: Id;
@@ -631,8 +632,15 @@ export type Command =
       email_mention: boolean;
       email_deadline: boolean;
     }
-  | { type: "create_integration"; id?: Id; name: string; webhook_url: string; secret: string }
-  | { type: "update_integration"; id: Id; enabled: boolean }
+  | {
+      type: "create_integration";
+      id?: Id;
+      name: string;
+      webhook_url: string;
+      secret: string;
+      include_data?: boolean;
+    }
+  | { type: "update_integration"; id: Id; enabled: boolean; include_data?: boolean }
   | { type: "delete_integration"; id: Id }
   | { type: "add_source_link"; issue_id: Id; url: string; title: string }
   | { type: "import_issues"; issues: IssueInput[] };

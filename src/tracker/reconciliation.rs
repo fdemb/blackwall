@@ -919,7 +919,7 @@ impl Writes {
                 .into_iter()
                 .map(|stage| (stage.id, stage.kind))
                 .collect();
-            let effects = persistence::PageEffects::load(conn, workspace, stages).await?;
+            let mut effects = persistence::PageEffects::load(conn, workspace, stages).await?;
             for (before, mut after, fields) in self.changes {
                 after.followers = followers.get(&after.id).cloned().unwrap_or_default();
                 effects

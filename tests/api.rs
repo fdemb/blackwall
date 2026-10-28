@@ -790,6 +790,7 @@ async fn complete_contract_on_postgres() {
             webhook_url: "https://blackwall-test.invalid/hook".into(),
             secret: "integration-test-secret".into(),
             events: vec![],
+            include_data: true,
         },
     )
     .await;
@@ -869,6 +870,7 @@ async fn complete_contract_on_postgres() {
             id: integration,
             enabled: false,
             events: None,
+            include_data: None,
         },
     )
     .await;

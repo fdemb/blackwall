@@ -308,6 +308,9 @@ pub enum Command {
         /// Public webhook event types. Empty means every event.
         #[serde(default)]
         events: Vec<String>,
+        /// Deliveries carry the changed record as `data`. Defaults to true.
+        #[serde(default = "include_data_by_default")]
+        include_data: bool,
     },
     UpdateIntegration {
         id: Uuid,
@@ -315,6 +318,8 @@ pub enum Command {
         /// Replaces the subscribed event types when present.
         #[serde(default)]
         events: Option<Vec<String>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        include_data: Option<bool>,
     },
     DeleteIntegration {
         id: Uuid,
@@ -476,4 +481,8 @@ impl Command {
             Self::MarkAllNotificationsRead { .. } => "mark_all_notifications_read",
         }
     }
+}
+
+fn include_data_by_default() -> bool {
+    true
 }

@@ -381,6 +381,9 @@ pub struct Integration {
     /// Public webhook event types to deliver. Empty means every event.
     #[serde(default)]
     pub events: Vec<String>,
+    /// Whether deliveries carry the changed record as `data`.
+    #[serde(default)]
+    pub include_data: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]

@@ -2166,3 +2166,118 @@ async fn webhook_deliveries_carry_the_changed_record() {
     store.pool.close().await;
     database.cleanup().await;
 }
+
+#[tokio::test]
+async fn webhook_data_is_opt_in_and_dropped_once_finished() {
+    let database = support::TestDatabase::new().await;
+    let store = Store::connect(&database.url).await.unwrap();
+    let app = router(store.clone());
+    let owner = account(&store, "owner").await;
+    let ws = workspace(&store, &owner, "Opt in").await;
+    let write = token(&app, &owner, json!({"name":"CI","access":"write"})).await;
+    let base = format!("/api/v1/workspaces/{ws}");
+    let team = call(
+        &app,
+        "POST",
+        &format!("{base}/teams"),
+        &write,
+        Some(json!({"name":"Platform","key":"PLA"})),
+    )
+    .await;
+    assert_eq!(team.status, StatusCode::CREATED, "{}", team.body);
+    let full = call(
+        &app,
+        "POST",
+        &format!("{base}/webhooks"),
+        &write,
+        Some(json!({"name":"Full","url":"https://hooks.example.com/full"})),
+    )
+    .await;
+    assert_eq!(full.status, StatusCode::CREATED, "{}", full.body);
+    assert_eq!(full.body["include_data"], true);
+    let full = full.body["id"].as_str().unwrap().to_owned();
+    let ids = call(
+        &app,
+        "POST",
+        &format!("{base}/webhooks"),
+        &write,
+        Some(json!({"name":"Ids","url":"https://hooks.example.com/ids","include_data":false})),
+    )
+    .await;
+    assert_eq!(ids.status, StatusCode::CREATED, "{}", ids.body);
+    assert_eq!(ids.body["include_data"], false);
+    let ids = ids.body["id"].as_str().unwrap().to_owned();
+
+    let created = call(
+        &app,
+        "POST",
+        &format!("{base}/issues"),
+        &write,
+        Some(json!({"team":"PLA","title":"Rotate certificates","description":"Private steps"})),
+    )
+    .await;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    let issue_path = format!("{base}/issues/{}", created.body["key"].as_str().unwrap());
+    let events = deliveries(&store, &full, "issue.created").await;
+    assert_eq!(events[0]["data"]["description"], "Private steps");
+    let events = deliveries(&store, &ids, "issue.created").await;
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert_eq!(events[0]["entity_id"], created.body["id"]);
+    assert!(events[0].get("data").is_none(), "{events:?}");
+
+    let opted = call(
+        &app,
+        "PATCH",
+        &format!("{base}/webhooks/{ids}"),
+        &write,
+        Some(json!({"include_data":true})),
+    )
+    .await;
+    assert_eq!(opted.status, StatusCode::OK, "{}", opted.body);
+    assert_eq!(opted.body["include_data"], true);
+    assert_eq!(opted.body["enabled"], true);
+    let patched = call(
+        &app,
+        "PATCH",
+        &issue_path,
+        &write,
+        Some(json!({"priority":"urgent"})),
+    )
+    .await;
+    assert_eq!(patched.status, StatusCode::OK, "{}", patched.body);
+    let urgent = call(&app, "GET", &issue_path, &write, None).await.body;
+    let events = deliveries(&store, &ids, "issue.updated").await;
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert_eq!(events[0]["data"], urgent);
+
+    // A finished delivery keeps its event for debugging, without the record.
+    let outbox = blackwall::store::Outbox::new(store.pool.clone());
+    let claims = outbox.claim("webhook", 10).await.unwrap();
+    assert_eq!(claims.len(), 4);
+    for (n, claim) in claims.iter().enumerate() {
+        if n % 2 == 0 {
+            assert!(outbox.complete(claim).await.unwrap());
+        } else {
+            assert!(outbox.fail(claim, "receiver gone").await.unwrap());
+        }
+    }
+    let finished: Vec<(String, Value)> =
+        sqlx::query_as("SELECT state,payload->'event' FROM jobs WHERE kind='webhook'")
+            .fetch_all(&store.pool)
+            .await
+            .unwrap();
+    assert_eq!(finished.len(), 4);
+    for (state, event) in &finished {
+        assert!(state == "succeeded" || state == "failed", "{state}");
+        assert!(event.get("data").is_none(), "{event}");
+        assert_eq!(event["entity_id"], created.body["id"]);
+        assert!(
+            event["type"].is_string() && event["id"].is_string(),
+            "{event}"
+        );
+    }
+
+    drop(app);
+    store.pool.close().await;
+    database.cleanup().await;
+}

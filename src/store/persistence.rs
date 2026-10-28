@@ -387,6 +387,7 @@ struct Integration {
     url: String,
     /// Subscribed public event types; empty means all.
     events: Vec<String>,
+    include_data: bool,
 }
 
 impl Integration {
@@ -401,9 +402,17 @@ pub(crate) async fn tracker_actor(conn: &mut PgConnection, workspace: Uuid) -> R
         .bind(workspace).fetch_one(conn).await?)
 }
 
+/// What webhook deliveries need, read on the first event that needs it and kept for the rest of
+/// the operation or tracker page, so a change that completes a whole stage reads it once.
+#[derive(Default)]
+pub(crate) struct Deliveries {
+    integrations: Option<Vec<Integration>>,
+    directory: Option<crate::api::directory::Directory>,
+}
+
 pub(crate) struct PageEffects {
     actor: Uuid,
-    integrations: Vec<Integration>,
+    deliveries: Deliveries,
     stages: BTreeMap<Uuid, String>,
 }
 
@@ -415,23 +424,24 @@ impl PageEffects {
     ) -> Result<Self> {
         Ok(Self {
             actor: tracker_actor(conn, workspace).await?,
-            integrations: integrations(conn, workspace).await?,
+            deliveries: Deliveries::default(),
             stages,
         })
     }
 
     pub(crate) async fn apply(
-        &self,
+        &mut self,
         conn: &mut PgConnection,
         workspace: Uuid,
         before: Option<&Issue>,
         after: &Issue,
         fields: Vec<String>,
     ) -> Result<()> {
+        let actor = self.actor;
         issue_effects_with_context(
             conn,
             workspace,
-            self.actor,
+            actor,
             before,
             after,
             IssueEffects::Remote(fields),
@@ -448,13 +458,16 @@ async fn issue_effects_with_context(
     before: Option<&Issue>,
     after: &Issue,
     effects: IssueEffects,
-    context: Option<&PageEffects>,
+    context: Option<&mut PageEffects>,
 ) -> Result<()> {
+    let mut own = Deliveries::default();
+    let (stages, deliveries) = match context {
+        Some(context) => (Some(&context.stages), &mut context.deliveries),
+        None => (None, &mut own),
+    };
     if affects_reminder(before, after) {
-        let completed = match context {
-            Some(context) => {
-                Some(stage_completed(conn, after.stage_id, Some(&context.stages)).await?)
-            }
+        let completed = match stages {
+            Some(stages) => Some(stage_completed(conn, after.stage_id, Some(stages)).await?),
             None => None,
         };
         schedule_reminder_with_stage(conn, workspace, after.id, completed).await?;
@@ -462,7 +475,7 @@ async fn issue_effects_with_context(
 
     let remote = matches!(effects, IssueEffects::Remote(_));
     if let IssueEffects::Remote(fields) = &effects {
-        activity_with_integrations(
+        activity_with(
             conn,
             workspace,
             actor,
@@ -474,7 +487,7 @@ async fn issue_effects_with_context(
             Some(after.id),
             fields.clone(),
             before.map_or_else(Vec::new, |old| old.changes(after)),
-            context.map(|context| context.integrations.as_slice()),
+            deliveries,
         )
         .await?;
     }
@@ -495,10 +508,9 @@ async fn issue_effects_with_context(
     }
 
     if !matches!(effects, IssueEffects::DeleteRestore)
-        && became_completed_with_stages(conn, before, after, context.map(|context| &context.stages))
-            .await?
+        && became_completed_with_stages(conn, before, after, stages).await?
     {
-        activity_with_integrations(
+        activity_with(
             conn,
             workspace,
             actor,
@@ -506,7 +518,7 @@ async fn issue_effects_with_context(
             Some(after.id),
             vec![],
             vec![],
-            context.map(|context| context.integrations.as_slice()),
+            deliveries,
         )
         .await?;
     }
@@ -560,12 +572,23 @@ pub(crate) async fn activity(
     fields: Vec<String>,
     changes: Vec<FieldChange>,
 ) -> Result<()> {
-    activity_with_integrations(conn, workspace, actor, action, issue, fields, changes, None).await
+    activity_with(
+        conn,
+        workspace,
+        actor,
+        action,
+        issue,
+        fields,
+        changes,
+        &mut Deliveries::default(),
+    )
+    .await
 }
 
 async fn integrations(conn: &mut PgConnection, workspace: Uuid) -> Result<Vec<Integration>> {
     let rows = sqlx::query(
-        "SELECT id,webhook_url,events FROM integrations WHERE workspace_id=$1 AND enabled",
+        "SELECT id,webhook_url,events,include_data FROM integrations \
+         WHERE workspace_id=$1 AND enabled",
     )
     .bind(workspace)
     .fetch_all(conn)
@@ -576,13 +599,14 @@ async fn integrations(conn: &mut PgConnection, workspace: Uuid) -> Result<Vec<In
                 id: row.try_get("id")?,
                 url: row.try_get("webhook_url")?,
                 events: row.try_get("events")?,
+                include_data: row.try_get("include_data")?,
             })
         })
         .collect()
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn activity_with_integrations(
+pub(crate) async fn activity_with(
     conn: &mut PgConnection,
     workspace: Uuid,
     actor: Uuid,
@@ -590,7 +614,7 @@ async fn activity_with_integrations(
     issue: Option<Uuid>,
     fields: Vec<String>,
     changes: Vec<FieldChange>,
-    cached: Option<&[Integration]>,
+    deliveries: &mut Deliveries,
 ) -> Result<()> {
     let event = Activity {
         id: Uuid::new_v4(),
@@ -611,13 +635,18 @@ async fn activity_with_integrations(
     let Some((kind, entity_type)) = crate::domain::webhook_event(action) else {
         return Ok(());
     };
-    let loaded;
-    let integrations = if let Some(cached) = cached {
-        cached
-    } else {
-        loaded = integrations(conn, workspace).await?;
-        &loaded
-    };
+    if deliveries.integrations.is_none() {
+        deliveries.integrations = Some(integrations(conn, workspace).await?);
+    }
+    let subscribed: Vec<&Integration> = deliveries
+        .integrations
+        .iter()
+        .flatten()
+        .filter(|i| i.wants(kind))
+        .collect();
+    if subscribed.is_empty() {
+        return Ok(());
+    }
     let mut payload = serde_json::json!({
         "id": event.id,
         "type": kind,
@@ -636,22 +665,33 @@ async fn activity_with_integrations(
     if let Some(via) = via {
         payload["via"] = via;
     }
-    let subscribed: Vec<&Integration> = integrations.iter().filter(|i| i.wants(kind)).collect();
-    if subscribed.is_empty() {
-        return Ok(());
-    }
-    if let Some(id) = issue {
-        let snapshot =
-            crate::api::webhooks::snapshot(conn, workspace, actor, entity_type, id).await?;
+    let mut with_data = payload.clone();
+    if let Some(id) = issue
+        && subscribed.iter().any(|i| i.include_data)
+    {
+        let snapshot = crate::api::webhooks::snapshot(
+            conn,
+            &mut deliveries.directory,
+            workspace,
+            actor,
+            entity_type,
+            id,
+        )
+        .await?;
         if let Some(data) = snapshot.data {
-            payload["data"] = data;
+            with_data["data"] = data;
         }
         if !snapshot.truncated.is_empty() {
-            payload["truncated"] = serde_json::json!(snapshot.truncated);
+            with_data["truncated"] = serde_json::json!(snapshot.truncated);
         }
     }
     for integration in subscribed {
         let id = integration.id;
+        let delivered = if integration.include_data {
+            &with_data
+        } else {
+            &payload
+        };
         Outbox::insert(
             conn,
             &NewJob::now(
@@ -660,7 +700,7 @@ async fn activity_with_integrations(
                     workspace_id: workspace,
                     integration_id: id,
                     url: integration.url.clone(),
-                    event: payload.clone(),
+                    event: delivered.clone(),
                 }),
             ),
         )

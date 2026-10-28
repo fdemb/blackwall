@@ -1123,4 +1123,93 @@ mod tests {
         store.pool.close().await;
         database.cleanup().await;
     }
+
+    #[tokio::test]
+    async fn completing_a_stage_reads_the_directory_once_for_all_its_deliveries() {
+        let database = TestDatabase::new().await;
+        let store = Store::connect(&database.url).await.unwrap();
+        let (workspace, actor, team) = import_workspace(&store, "completing").await;
+        let (stage, name, position): (Uuid, String, i64) = sqlx::query_as(
+            "SELECT id,name,position FROM stages WHERE team_id=$1 AND kind='active' LIMIT 1",
+        )
+        .bind(team)
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+        let issues: Vec<IssueInput> = (0..3)
+            .map(|n| IssueInput {
+                stage_id: Some(stage),
+                ..import_input(team, None, &format!("Active {n}"))
+            })
+            .collect();
+        for command in [
+            Command::ImportIssues { issues },
+            Command::CreateIntegration {
+                id: None,
+                name: "Everything".into(),
+                webhook_url: "https://hooks.example.com/all".into(),
+                secret: "completing-stage-secret".into(),
+                events: vec![],
+                include_data: true,
+            },
+        ] {
+            store
+                .operation(workspace, actor, command, BTreeMap::new(), None, None)
+                .await
+                .unwrap();
+        }
+
+        let tx = store.pool.begin().await.unwrap();
+        let mut op = Operation {
+            tx,
+            workspace_id: workspace,
+            actor,
+            role: Role::Owner,
+            expected: BTreeMap::new(),
+            versions: BTreeMap::new(),
+            activity_fields: Vec::new(),
+            activity_changes: Vec::new(),
+            mail_enabled: true,
+            invitation: None,
+            limits: Limits::default(),
+        };
+        op.run_command(
+            Command::UpdateStage {
+                team_id: team,
+                id: stage,
+                name,
+                kind: crate::domain::StageKind::Done,
+                position,
+            },
+            None,
+        )
+        .await
+        .unwrap();
+
+        let completed: Vec<serde_json::Value> = sqlx::query_scalar(
+            "SELECT payload->'event' FROM jobs WHERE kind='webhook' \
+             AND payload->'event'->>'type'='issue.completed'",
+        )
+        .fetch_all(&mut *op.tx)
+        .await
+        .unwrap();
+        assert_eq!(completed.len(), 3, "{completed:?}");
+        for event in &completed {
+            assert_eq!(event["data"]["id"], event["entity_id"]);
+            assert_eq!(event["data"]["stage"]["kind"], "done");
+        }
+        // Only the directory reads milestones here, so this counts directory loads.
+        let reads: i64 = sqlx::query_scalar(
+            "SELECT seq_scan+COALESCE(idx_scan,0) FROM pg_stat_xact_user_tables \
+             WHERE relname='milestones'",
+        )
+        .fetch_one(&mut *op.tx)
+        .await
+        .unwrap();
+        assert_eq!(reads, 1);
+
+        op.tx.rollback().await.unwrap();
+        store.pool.close().await;
+        database.cleanup().await;
+    }
 }

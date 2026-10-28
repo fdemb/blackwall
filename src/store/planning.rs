@@ -582,11 +582,21 @@ impl Operation<'_> {
         }
 
         let completes = !terminal(previous) && terminal(next);
+        let mut deliveries = persistence::Deliveries::default();
         for (issue_id, deleted) in issues {
             self.schedule_reminder(issue_id).await?;
             if completes && !deleted {
-                self.activity("issue_completed", Some(issue_id), vec![])
-                    .await?;
+                persistence::activity_with(
+                    &mut self.tx,
+                    self.workspace_id,
+                    self.actor,
+                    "issue_completed",
+                    Some(issue_id),
+                    vec![],
+                    vec![],
+                    &mut deliveries,
+                )
+                .await?;
             }
         }
         Ok(())
