@@ -410,7 +410,7 @@ impl Store {
         .fetch_one(&mut *tx)
         .await?;
         let sign_in = if needs_code {
-            SignIn::TotpRequired(totp::pending_login(&mut tx, user).await?)
+            SignIn::TotpRequired(totp::pending_login(&mut tx, user, &encoded).await?)
         } else {
             let profile: Json<Profile> =
                 sqlx::query_scalar("SELECT profile FROM users WHERE id = $1")
@@ -589,15 +589,24 @@ impl Store {
         Ok(())
     }
 
+    /// Signs out every other session and ends pending logins, so a password
+    /// someone else already entered needs entering again.
     pub async fn revoke_other_sessions(&self, user: Uuid, current: Uuid) -> Result<u64> {
-        Ok(
-            sqlx::query("DELETE FROM sessions WHERE user_id = $1 AND public_id <> $2")
-                .bind(user)
-                .bind(current)
-                .execute(&self.pool)
-                .await?
-                .rows_affected(),
-        )
+        let mut tx = self.pool.begin().await?;
+        lock_user(&mut tx, user).await?;
+        sqlx::query("DELETE FROM pending_logins WHERE user_id = $1")
+            .bind(user)
+            .execute(&mut *tx)
+            .await?;
+        let revoked = sqlx::query("DELETE FROM sessions WHERE user_id = $1 AND public_id <> $2")
+            .bind(user)
+            .bind(current)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected();
+        tx.commit().await?;
+
+        Ok(revoked)
     }
 
     /// Changes the password and signs out every other session. The session
@@ -621,18 +630,19 @@ impl Store {
 
         let encoded = password_hash(input.new_password).await?;
         let mut tx = self.pool.begin().await?;
-        let result =
-            sqlx::query("UPDATE users SET password_hash = $1 WHERE id = $2 AND password_hash = $3")
-                .bind(encoded)
-                .bind(user)
-                .bind(previous)
-                .execute(&mut *tx)
-                .await?;
-
-        if result.rows_affected() != 1 {
+        if lock_user(&mut tx, user).await? != previous {
             return Err(Error::Conflict("password changed concurrently".into()));
         }
+        sqlx::query("UPDATE users SET password_hash = $1 WHERE id = $2")
+            .bind(encoded)
+            .bind(user)
+            .execute(&mut *tx)
+            .await?;
 
+        sqlx::query("DELETE FROM pending_logins WHERE user_id = $1")
+            .bind(user)
+            .execute(&mut *tx)
+            .await?;
         sqlx::query("DELETE FROM sessions WHERE user_id = $1 AND public_id <> $2")
             .bind(user)
             .bind(current_session)
@@ -640,10 +650,6 @@ impl Store {
             .await?;
 
         sqlx::query("DELETE FROM password_resets WHERE user_id = $1")
-            .bind(user)
-            .execute(&mut *tx)
-            .await?;
-        sqlx::query("DELETE FROM pending_logins WHERE user_id = $1")
             .bind(user)
             .execute(&mut *tx)
             .await?;
@@ -735,6 +741,10 @@ impl Store {
             .execute(&mut *tx)
             .await?;
 
+        sqlx::query("DELETE FROM pending_logins WHERE user_id = $1")
+            .bind(user)
+            .execute(&mut *tx)
+            .await?;
         sqlx::query("DELETE FROM sessions WHERE user_id = $1")
             .bind(user)
             .execute(&mut *tx)
@@ -748,10 +758,6 @@ impl Store {
             .bind(user)
             .execute(&mut *tx)
             .await?;
-        sqlx::query("DELETE FROM pending_logins WHERE user_id = $1")
-            .bind(user)
-            .execute(&mut *tx)
-            .await?;
         mark_verified(&mut tx, user).await?;
 
         tx.commit().await?;
@@ -761,9 +767,15 @@ impl Store {
 }
 
 /// Locks the user row until the transaction ends and returns the password
-/// hash. Sign-in, TOTP enrollment and password changes all take this lock, so a
-/// sign-in decides against credentials no one is changing, and a password
-/// checked against an older hash no longer counts.
+/// hash, so a sign-in decides against credentials no one is changing.
+///
+/// Every transaction that changes more than one of a user's password, TOTP
+/// state, recovery codes, pending logins and sessions locks in one order: this
+/// user row first, then the `user_totp` row, then `totp_recovery_codes` and
+/// `pending_logins` rows, then `sessions`. Password reset takes the user row
+/// with `FOR UPDATE OF users`, which conflicts with this lock too. Single
+/// statements that touch one table, such as TOTP setup, logout and the expiry
+/// sweep, wait on nothing while holding a lock, so they skip the user lock.
 async fn lock_user(tx: &mut PgConnection, user: Uuid) -> Result<String> {
     Ok(
         sqlx::query_scalar("SELECT password_hash FROM users WHERE id = $1 FOR NO KEY UPDATE")

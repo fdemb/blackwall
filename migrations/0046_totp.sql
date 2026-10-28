@@ -17,9 +17,12 @@ CREATE TABLE totp_recovery_codes(
 );
 
 -- A correct password on an account with TOTP, waiting for its second factor.
+-- credential is the SHA-256 of the password hash the login checked, so a
+-- password change ends the pending login even if the row survives it.
 CREATE TABLE pending_logins(
     token_hash text PRIMARY KEY,
     user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    credential text NOT NULL,
     expires_at timestamptz NOT NULL,
     failed_attempts int NOT NULL DEFAULT 0
 );

@@ -205,7 +205,10 @@ fn otpauth_uri(email: &str, secret: &str) -> String {
     uri.path_segments_mut()
         .expect("otpauth URLs have a path")
         .pop_if_empty()
-        .push(&format!("Blackwall:{email}"));
+        .push(email);
+    // A colon in the account name would read as the issuer separator.
+    let account = uri.path()[1..].replace(':', "%3A");
+    uri.set_path(&format!("/Blackwall:{account}"));
     uri.query_pairs_mut()
         .append_pair("secret", secret)
         .append_pair("issuer", "Blackwall")
@@ -219,14 +222,24 @@ fn wrong_credentials() -> Error {
     Error::BadRequest("the password or code is wrong".into())
 }
 
-pub(super) async fn pending_login(tx: &mut PgConnection, user: Uuid) -> Result<PendingLogin> {
+/// Starts a pending login for `user`, whose password was checked against
+/// `password_hash` under the user lock.
+pub(super) async fn pending_login(
+    tx: &mut PgConnection,
+    user: Uuid,
+    password_hash: &str,
+) -> Result<PendingLogin> {
     let token = token();
-    sqlx::query("INSERT INTO pending_logins (token_hash, user_id, expires_at) VALUES ($1, $2, $3)")
-        .bind(hash(&token))
-        .bind(user)
-        .bind(Utc::now() + Duration::minutes(PENDING_LOGIN_MINUTES))
-        .execute(&mut *tx)
-        .await?;
+    sqlx::query(
+        "INSERT INTO pending_logins (token_hash, user_id, credential, expires_at) \
+         VALUES ($1, $2, $3, $4)",
+    )
+    .bind(hash(&token))
+    .bind(user)
+    .bind(hash(password_hash))
+    .bind(Utc::now() + Duration::minutes(PENDING_LOGIN_MINUTES))
+    .execute(&mut *tx)
+    .await?;
 
     Ok(PendingLogin {
         pending_token: token,
@@ -251,16 +264,30 @@ impl Store {
     /// one successful code and a few wrong ones.
     pub async fn login_totp(&self, input: TotpLogin) -> Result<Session> {
         let token_hash = hash(&input.pending_token);
+        let expired = || Error::BadRequest("sign-in expired; enter your password again".into());
         let mut tx = self.pool.begin().await?;
-        let user: Uuid = sqlx::query_scalar(
-            "SELECT user_id FROM pending_logins WHERE token_hash = $1 AND expires_at > $2 \
-             FOR UPDATE",
+        let user: Uuid =
+            sqlx::query_scalar("SELECT user_id FROM pending_logins WHERE token_hash = $1")
+                .bind(&token_hash)
+                .fetch_optional(&mut *tx)
+                .await?
+                .ok_or_else(expired)?;
+
+        // Only the expiry sweep changes a pending login without the user lock,
+        // so after the lock this read stays true unless the sweep deletes the row.
+        let credential = hash(&lock_user(&mut tx, user).await?);
+        let valid: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM pending_logins WHERE token_hash = $1 \
+             AND expires_at > $2 AND credential = $3)",
         )
         .bind(&token_hash)
         .bind(Utc::now())
-        .fetch_optional(&mut *tx)
-        .await?
-        .ok_or_else(|| Error::BadRequest("sign-in expired; enter your password again".into()))?;
+        .bind(credential)
+        .fetch_one(&mut *tx)
+        .await?;
+        if !valid {
+            return Err(expired());
+        }
 
         if !second_factor(&mut tx, user, &input.code).await? {
             sqlx::query(
@@ -281,10 +308,13 @@ impl Store {
             return Err(Error::Unauthorized);
         }
 
-        sqlx::query("DELETE FROM pending_logins WHERE token_hash = $1")
+        let consumed = sqlx::query("DELETE FROM pending_logins WHERE token_hash = $1")
             .bind(&token_hash)
             .execute(&mut *tx)
             .await?;
+        if consumed.rows_affected() != 1 {
+            return Err(expired());
+        }
         let profile: Json<Profile> = sqlx::query_scalar("SELECT profile FROM users WHERE id = $1")
             .bind(user)
             .fetch_one(&mut *tx)
@@ -380,7 +410,7 @@ impl Store {
         let now = Utc::now().timestamp();
         let step = totp_code(&input.code)
             .and_then(|code| matching_step(&secret, code, now, None))
-            .ok_or_else(|| Error::BadRequest("the code doesn't match".into()))?;
+            .ok_or_else(wrong_credentials)?;
 
         sqlx::query(
             "UPDATE user_totp SET enabled_at = now(), last_step = $2, setup_session = NULL, \
@@ -479,16 +509,28 @@ impl Store {
     /// both their authenticator and their recovery codes. Returns whether TOTP
     /// was on.
     pub async fn reset_totp(&self, email: &str) -> Result<bool> {
-        let reset = sqlx::query(
-            "WITH target AS (SELECT id FROM users WHERE email = $1 FOR NO KEY UPDATE), \
-             codes AS (DELETE FROM totp_recovery_codes WHERE user_id IN (SELECT id FROM target)), \
-             pending AS (DELETE FROM pending_logins WHERE user_id IN (SELECT id FROM target)) \
-             DELETE FROM user_totp WHERE user_id IN (SELECT id FROM target) \
-               AND enabled_at IS NOT NULL",
+        let mut tx = self.pool.begin().await?;
+        let Some(user): Option<Uuid> = sqlx::query_scalar("SELECT id FROM users WHERE email = $1")
+            .bind(email.trim().to_lowercase())
+            .fetch_optional(&mut *tx)
+            .await?
+        else {
+            return Ok(false);
+        };
+        lock_user(&mut tx, user).await?;
+        let reset =
+            sqlx::query("DELETE FROM user_totp WHERE user_id = $1 AND enabled_at IS NOT NULL")
+                .bind(user)
+                .execute(&mut *tx)
+                .await?;
+        sqlx::query(
+            "WITH codes AS (DELETE FROM totp_recovery_codes WHERE user_id = $1) \
+             DELETE FROM pending_logins WHERE user_id = $1",
         )
-        .bind(email.trim().to_lowercase())
-        .execute(&self.pool)
+        .bind(user)
+        .execute(&mut *tx)
         .await?;
+        tx.commit().await?;
 
         Ok(reset.rows_affected() == 1)
     }
