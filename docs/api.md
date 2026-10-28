@@ -61,7 +61,7 @@ The issue list accepts `where` (the JSON clause array described in [filters](fil
 
 `PATCH` with `team` moves an issue to another team under that team's next number. The old key keeps resolving everywhere an issue key is accepted, and the issue lists it in `former_keys`. Numbers are never handed out again. Without `stage` the issue lands in the team's first stage of the same kind. It leaves its sprint, and its project when the project doesn't include the team. Synced issues follow their tracker project and can't move.
 
-`GET .../issues/{issue}/activity` is the issue's history, newest first. Each entry has `actor`, `via`, `action` and the `fields` an update changed.
+`GET .../issues/{issue}/activity` is the issue's history, newest first. Each entry has `actor`, `via`, `action`, the `fields` an update changed and their `changes`, shaped as in webhooks.
 
 Every write runs the same `Command` the app runs, through the same transaction. Validation, roles, activity, notifications, webhooks and issue tracker sends therefore behave exactly as they do in the app.
 
@@ -81,11 +81,24 @@ Each delivery is a signed POST with only the essentials:
   "entity_type": "issue",
   "entity_id": "uuid",
   "fields": ["stage", "assignee"],
+  "changes": [
+    { "field": "stage", "from": "stage uuid", "to": "stage uuid" },
+    { "field": "assignee", "from": null, "to": "user uuid" }
+  ],
   "via": { "kind": "mcp", "token_id": "uuid", "name": "Claude Code" }
 }
 ```
 
-`fields` appears only on issue updates, and `via` only on writes made through a token. Fetch the entity through the API for its current state. Headers are `X-Blackwall-Event`, `Idempotency-Key` (the same on every retry) and `X-Blackwall-Signature: sha256=<hex HMAC-SHA256 of the raw body>`. Delivery is at least once.
+`fields` appears only on issue updates, and `via` only on writes made through a token.
+
+`changes` lists the old and new value of each field in `fields`, in the same order. It is absent for events recorded before it existed and for `issues.bulk_changed`. Each entry has `field`, `from` and `to`:
+
+- `title`, `priority`, `estimate` and `deadline` hold the values.
+- `team`, `stage`, `assignee`, `project`, `milestone`, `sprint` and `parent` hold ids, and `null` means none. A renamed record keeps its id, so look up the current name. A deleted one no longer resolves.
+- `labels` holds the full id lists before and after.
+- `description` and `dependencies` have only `field`.
+
+Fetch the entity through the API for its current state. Headers are `X-Blackwall-Event`, `Idempotency-Key` (the same on every retry) and `X-Blackwall-Signature: sha256=<hex HMAC-SHA256 of the raw body>`. Delivery is at least once.
 
 Personal, private and administrative actions never leave the workspace. These include notifications, alert settings, saved views, follows, invitations and integration changes. `issues.bulk_changed` and `issues.imported` carry no entity id, so list issues by `sort=updated` to see what changed.
 

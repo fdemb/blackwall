@@ -251,26 +251,132 @@ impl Issue {
 
     /// Editable fields changed by the supplied replacement, in activity order.
     pub(crate) fn changed_fields(&self, after: &Issue) -> Vec<String> {
-        [
-            ("title", self.title != after.title),
-            ("description", self.description != after.description),
-            ("team", self.team_id != after.team_id),
-            ("stage", self.stage_id != after.stage_id),
-            ("assignee", self.assignee != after.assignee),
-            ("priority", self.priority != after.priority),
-            ("labels", self.labels != after.labels),
-            ("estimate", self.estimate != after.estimate),
-            ("deadline", self.deadline != after.deadline),
-            ("project", self.project_id != after.project_id),
-            ("milestone", self.milestone_id != after.milestone_id),
-            ("sprint", self.sprint_id != after.sprint_id),
-            ("parent", self.parent_id != after.parent_id),
-            ("dependencies", self.dependencies != after.dependencies),
-        ]
-        .into_iter()
-        .filter(|(_, changed)| *changed)
-        .map(|(name, _)| name.to_string())
-        .collect()
+        self.changes(after)
+            .iter()
+            .map(|change| change.field().to_owned())
+            .collect()
+    }
+
+    /// What the supplied replacement changed, in activity order.
+    pub(crate) fn changes(&self, after: &Issue) -> Vec<FieldChange> {
+        let (old, new) = (self, after);
+        let mut changes = Vec::new();
+        macro_rules! diff {
+            ($field:ident, $variant:ident) => {
+                if old.$field != new.$field {
+                    changes.push(FieldChange::$variant {
+                        from: old.$field.clone(),
+                        to: new.$field.clone(),
+                    });
+                }
+            };
+            (copy $field:ident, $variant:ident) => {
+                if old.$field != new.$field {
+                    changes.push(FieldChange::$variant {
+                        from: old.$field,
+                        to: new.$field,
+                    });
+                }
+            };
+        }
+        diff!(title, Title);
+        if old.description != new.description {
+            changes.push(FieldChange::Description);
+        }
+        diff!(copy team_id, Team);
+        diff!(copy stage_id, Stage);
+        diff!(copy assignee, Assignee);
+        diff!(priority, Priority);
+        diff!(labels, Labels);
+        diff!(copy estimate, Estimate);
+        diff!(copy deadline, Deadline);
+        diff!(copy project_id, Project);
+        diff!(copy milestone_id, Milestone);
+        diff!(copy sprint_id, Sprint);
+        diff!(copy parent_id, Parent);
+        if old.dependencies != new.dependencies {
+            changes.push(FieldChange::Dependencies);
+        }
+        changes
+    }
+}
+
+/// One field an issue update changed. References hold ids, so a later rename shows the new
+/// name. The description and dependencies carry no values: the text can be large, and
+/// consecutive description edits share one activity row.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(tag = "field", rename_all = "snake_case")]
+pub enum FieldChange {
+    Title {
+        from: String,
+        to: String,
+    },
+    Description,
+    Team {
+        from: Uuid,
+        to: Uuid,
+    },
+    Stage {
+        from: Uuid,
+        to: Uuid,
+    },
+    Assignee {
+        from: Option<Uuid>,
+        to: Option<Uuid>,
+    },
+    Priority {
+        from: Priority,
+        to: Priority,
+    },
+    Labels {
+        from: Vec<Uuid>,
+        to: Vec<Uuid>,
+    },
+    Estimate {
+        from: Option<u32>,
+        to: Option<u32>,
+    },
+    Deadline {
+        from: Option<DateTime<Utc>>,
+        to: Option<DateTime<Utc>>,
+    },
+    Project {
+        from: Option<Uuid>,
+        to: Option<Uuid>,
+    },
+    Milestone {
+        from: Option<Uuid>,
+        to: Option<Uuid>,
+    },
+    Sprint {
+        from: Option<Uuid>,
+        to: Option<Uuid>,
+    },
+    Parent {
+        from: Option<Uuid>,
+        to: Option<Uuid>,
+    },
+    Dependencies,
+}
+
+impl FieldChange {
+    pub fn field(&self) -> &'static str {
+        match self {
+            Self::Title { .. } => "title",
+            Self::Description => "description",
+            Self::Team { .. } => "team",
+            Self::Stage { .. } => "stage",
+            Self::Assignee { .. } => "assignee",
+            Self::Priority { .. } => "priority",
+            Self::Labels { .. } => "labels",
+            Self::Estimate { .. } => "estimate",
+            Self::Deadline { .. } => "deadline",
+            Self::Project { .. } => "project",
+            Self::Milestone { .. } => "milestone",
+            Self::Sprint { .. } => "sprint",
+            Self::Parent { .. } => "parent",
+            Self::Dependencies => "dependencies",
+        }
     }
 }
 

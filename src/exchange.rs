@@ -123,6 +123,7 @@ impl Transfer {
             entity_id: None,
             at: now,
             fields: vec![],
+            changes: vec![],
             via: None,
         });
 
@@ -268,6 +269,8 @@ impl Transfer {
         for activity in &mut self.activity {
             activity.id = remap.entity(activity.id)?;
             activity.actor = remap.identity(activity.actor);
+            // Imports give records fresh ids, so stored values would name nothing.
+            activity.changes.clear();
             activity.entity_id = activity.entity_id.and_then(|id| {
                 remap
                     .ids

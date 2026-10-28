@@ -124,6 +124,7 @@ pub(super) struct Operation<'a> {
     /// another table's row with the same id. Collapsed to Uuid keys for responses.
     pub versions: BTreeMap<(String, Uuid), i64>,
     pub activity_fields: Vec<String>,
+    pub activity_changes: Vec<FieldChange>,
     pub mail_enabled: bool,
     pub invitation: Option<crate::domain::IssuedInvitation>,
     pub limits: Limits,
@@ -545,6 +546,7 @@ impl Store {
             expected,
             versions: BTreeMap::new(),
             activity_fields: Vec::new(),
+            activity_changes: Vec::new(),
             mail_enabled: self.mail_enabled,
             invitation: None,
             limits: self.limits,
@@ -674,8 +676,20 @@ impl Operation<'_> {
         };
 
         let fields = std::mem::take(&mut self.activity_fields);
+        let changes = std::mem::take(&mut self.activity_changes);
         if !(update && fields.is_empty()) {
-            self.activity(action, id, fields).await?;
+            // A bulk update has no single issue whose values `changes` could describe.
+            let changes = if id.is_some() { changes } else { Vec::new() };
+            persistence::activity(
+                &mut self.tx,
+                self.workspace_id,
+                self.actor,
+                action,
+                id,
+                fields,
+                changes,
+            )
+            .await?;
         }
 
         Ok(id)
@@ -818,6 +832,7 @@ impl Operation<'_> {
             action,
             id,
             fields,
+            Vec::new(),
         )
         .await
     }
@@ -869,6 +884,7 @@ mod tests {
             expected: BTreeMap::new(),
             versions: BTreeMap::new(),
             activity_fields: Vec::new(),
+            activity_changes: Vec::new(),
             mail_enabled: true,
             invitation: None,
             limits: Limits::default(),
@@ -978,6 +994,7 @@ mod tests {
             expected: BTreeMap::new(),
             versions: BTreeMap::new(),
             activity_fields: Vec::new(),
+            activity_changes: Vec::new(),
             mail_enabled: true,
             invitation: None,
             limits: Limits::default(),
@@ -1018,6 +1035,7 @@ mod tests {
             expected: BTreeMap::new(),
             versions: BTreeMap::new(),
             activity_fields: Vec::new(),
+            activity_changes: Vec::new(),
             mail_enabled: true,
             invitation: None,
             limits: Limits::default(),

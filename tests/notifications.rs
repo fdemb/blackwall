@@ -2,7 +2,9 @@ mod support;
 
 use blackwall::{
     auth::{Register, Session},
-    domain::{BulkAction, Command, IssueInput, IssuePatch, LabelChange, SeenNotification},
+    domain::{
+        BulkAction, Command, IssueInput, IssuePatch, LabelChange, Priority, SeenNotification,
+    },
     error::Error,
     jobs::{self, Mailer},
     store::{CollectionQuery, OperationResult, Store},
@@ -298,6 +300,10 @@ async fn description_autosave_coalesces_notifications_and_activity() {
         .collect();
     assert_eq!(description_rows.len(), 1, "{description_rows:?}");
     assert_eq!(description_rows[0]["fields"], json!(["description"]));
+    assert_eq!(
+        description_rows[0]["changes"],
+        json!([{"field": "description"}])
+    );
 
     f.read(follower, &coalesced[0]).await;
     f.run(owner, description_update(issue, "one two three four five"))
@@ -308,6 +314,100 @@ async fn description_autosave_coalesces_notifications_and_activity() {
     let fresh = unread(&after_read);
     assert_eq!(fresh.len(), 1, "{after_read:?}");
     assert_ne!(fresh[0]["id"], coalesced[0]["id"]);
+
+    f.cleanup().await;
+}
+
+#[tokio::test]
+async fn updates_and_moves_record_old_and_new_values() {
+    let f = Fixture::new().await;
+    let (owner, follower) = (f.owner.profile.id, f.follower.profile.id);
+    let hook = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO integrations(id,workspace_id,name,webhook_url,secret,enabled) \
+         VALUES($1,$2,'hook','https://hooks.example.com','secret',true)",
+    )
+    .bind(hook)
+    .bind(f.workspace)
+    .execute(&f.store.pool)
+    .await
+    .unwrap();
+    let label = f
+        .run(
+            owner,
+            Command::CreateLabel {
+                id: None,
+                name: "tls".into(),
+                color: "#aabbcc".into(),
+            },
+        )
+        .await
+        .result
+        .id
+        .unwrap();
+    let issue = f.create_issue("Rotate certificates", f.stages[0]).await;
+
+    f.run(
+        owner,
+        Command::UpdateIssue {
+            id: issue,
+            patch: IssuePatch {
+                stage_id: Some(f.stages[1]),
+                assignee: Some(follower),
+                priority: Some(Priority::High),
+                labels: Some(LabelChange::Set(vec![label])),
+                ..Default::default()
+            },
+        },
+    )
+    .await;
+    f.run(
+        owner,
+        Command::MoveIssue {
+            id: issue,
+            stage_id: f.stages[2],
+            before_id: None,
+        },
+    )
+    .await;
+
+    let activity = f.activity(issue).await;
+    let row = |action: &str| {
+        activity
+            .iter()
+            .find(|entry| entry["action"] == action)
+            .unwrap_or_else(|| panic!("no {action} in {activity:?}"))
+            .clone()
+    };
+    let update = row("update_issue");
+    let update_changes = json!([
+        {"field": "stage", "from": f.stages[0], "to": f.stages[1]},
+        {"field": "assignee", "from": null, "to": follower},
+        {"field": "priority", "from": "none", "to": "high"},
+        {"field": "labels", "from": [], "to": [label]},
+    ]);
+    assert_eq!(
+        update["fields"],
+        json!(["stage", "assignee", "priority", "labels"])
+    );
+    assert_eq!(update["changes"], update_changes);
+    assert_eq!(
+        row("move_issue")["changes"],
+        json!([{"field": "stage", "from": f.stages[1], "to": f.stages[2]}])
+    );
+    assert_eq!(row("create_issue")["changes"], json!([]));
+
+    let delivered: Value = sqlx::query_scalar(
+        "SELECT payload::jsonb->'event' FROM jobs WHERE kind='webhook' \
+         AND payload::jsonb->'event'->>'id'=$1",
+    )
+    .bind(update["id"].as_str().unwrap())
+    .fetch_one(&f.store.pool)
+    .await
+    .unwrap();
+    assert_eq!(delivered["type"], "issue.updated");
+    assert_eq!(delivered["fields"], update["fields"]);
+    assert_eq!(delivered["changes"], update_changes);
 
     f.cleanup().await;
 }
