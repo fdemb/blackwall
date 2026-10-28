@@ -250,6 +250,32 @@ fn timestamped_signature(secret: &[u8], timestamp: i64, body: &[u8]) -> String {
     format!("t={timestamp},v1={signed}")
 }
 
+/// One delivery attempt's request, signed at `timestamp`.
+fn webhook_request(
+    client: &reqwest::Client,
+    url: reqwest::Url,
+    id: &str,
+    webhook: &Webhook,
+    secret: &str,
+    body: Vec<u8>,
+    timestamp: i64,
+) -> reqwest::RequestBuilder {
+    let mut request = client
+        .post(url)
+        .header("Content-Type", "application/json")
+        .header("Idempotency-Key", id)
+        .header("X-Blackwall-Signature", signature(secret.as_bytes(), &body))
+        .header(
+            "Blackwall-Signature",
+            timestamped_signature(secret.as_bytes(), timestamp, &body),
+        );
+    // Jobs queued before typed events carry no type.
+    if let Some(kind) = webhook.event["type"].as_str() {
+        request = request.header("X-Blackwall-Event", kind);
+    }
+    request.body(body)
+}
+
 async fn send_webhook(id: &str, webhook: &Webhook, secret: &str) -> Result<(), DeliveryError> {
     let url = reqwest::Url::parse(&webhook.url)
         .map_err(|_| DeliveryError::Permanent("invalid webhook URL"))?;
@@ -265,20 +291,8 @@ async fn send_webhook(id: &str, webhook: &Webhook, secret: &str) -> Result<(), D
     let client = webhook_client(id, &url).await?;
     // Signed on every attempt, so a retry carries a fresh timestamp.
     let timestamp = chrono::Utc::now().timestamp();
-    let mut request = client
-        .post(url)
-        .header("Content-Type", "application/json")
-        .header("Idempotency-Key", id)
-        .header("X-Blackwall-Signature", signature(secret.as_bytes(), &body))
-        .header(
-            "Blackwall-Signature",
-            timestamped_signature(secret.as_bytes(), timestamp, &body),
-        );
-    // Jobs queued before typed events carry no type.
-    if let Some(kind) = webhook.event["type"].as_str() {
-        request = request.header("X-Blackwall-Event", kind);
-    }
-    let response = request.body(body).send().await.map_err(|error| {
+    let request = webhook_request(&client, url, id, webhook, secret, body, timestamp);
+    let response = request.send().await.map_err(|error| {
         let timeout = error.is_timeout();
         let connect = error.is_connect();
         let status = error.status();
@@ -462,6 +476,42 @@ mod tests {
             body,
             1_800_000_600
         ));
+    }
+
+    #[test]
+    fn webhook_request_carries_both_signatures() {
+        let webhook = Webhook {
+            workspace_id: Uuid::nil(),
+            integration_id: Uuid::nil(),
+            url: "https://hooks.example.com/all".into(),
+            event: serde_json::json!({"type": "issue.updated", "data": {"title": "Rotate"}}),
+        };
+        let body = serde_json::to_vec(&webhook.event).unwrap();
+        let request = super::webhook_request(
+            &reqwest::Client::new(),
+            reqwest::Url::parse(&webhook.url).unwrap(),
+            "delivery-1",
+            &webhook,
+            "whsec_test",
+            body.clone(),
+            1_800_000_000,
+        )
+        .build()
+        .unwrap();
+        let header = |name: &str| request.headers()[name].to_str().unwrap().to_owned();
+        assert!(receiver_accepts(
+            b"whsec_test",
+            &header("Blackwall-Signature"),
+            &body,
+            1_800_000_000
+        ));
+        assert_eq!(
+            header("X-Blackwall-Signature"),
+            super::signature(b"whsec_test", &body)
+        );
+        assert_eq!(header("X-Blackwall-Event"), "issue.updated");
+        assert_eq!(header("Idempotency-Key"), "delivery-1");
+        assert_eq!(request.body().unwrap().as_bytes(), Some(body.as_slice()));
     }
 
     #[test]
