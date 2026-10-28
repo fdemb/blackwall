@@ -358,6 +358,19 @@ export interface ApiToken {
   expires_at: string | null;
   last_used_at: string | null;
 }
+type Values<F extends string, T> = { field: F; from: T; to: T };
+
+/** One field an issue update changed. References are ids, so they show the current name. */
+export type FieldChange =
+  | Values<"title", string>
+  | Values<"team" | "stage", Id>
+  | Values<"assignee" | "project" | "milestone" | "sprint" | "parent", Id | null>
+  | Values<"priority", Priority>
+  | Values<"labels", readonly Id[]>
+  | Values<"estimate", number | null>
+  | Values<"deadline", string | null>
+  | { field: "description" | "dependencies" };
+
 export interface Activity {
   id: Id;
   actor: Id;
@@ -365,6 +378,8 @@ export interface Activity {
   entity_id: Id | null;
   at: string;
   fields?: readonly string[];
+  /** Absent or empty on rows written before values were stored. */
+  changes?: readonly FieldChange[];
   via?: Via | null;
 }
 

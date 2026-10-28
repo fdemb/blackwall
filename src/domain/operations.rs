@@ -429,6 +429,7 @@ impl Workspace {
                 entity_id: Some(id),
                 at: now,
                 fields: vec![],
+                changes: vec![],
                 via: None,
             });
         }
@@ -612,6 +613,7 @@ impl Workspace {
                 entity_id: result,
                 at: now,
                 fields,
+                changes: vec![],
                 via: None,
             });
         }

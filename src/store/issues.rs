@@ -379,12 +379,12 @@ impl Operation<'_> {
         let entered_stage = i.stage_id != old.stage_id;
         self.fit_sprint(&mut i, entered_stage).await?;
 
-        let fields = old.changed_fields(&i);
-        if fields.is_empty() {
+        let changes = old.changes(&i);
+        if changes.is_empty() {
             return Ok(());
         }
         self.touch_locked("issues", id, version).await?;
-        self.activity_fields.extend(fields);
+        self.record_changes(changes);
         self.validate_issue_sql(&i, Some(&old)).await?;
         if i.stage_id != old.stage_id {
             self.restamp_done(&mut i).await?;
@@ -607,6 +607,12 @@ impl Operation<'_> {
         Ok(result)
     }
 
+    fn record_changes(&mut self, changes: Vec<FieldChange>) {
+        self.activity_fields
+            .extend(changes.iter().map(|change| change.field().to_owned()));
+        self.activity_changes.extend(changes);
+    }
+
     async fn bulk_issues(&mut self, ids: Vec<Uuid>, action: BulkAction) -> Result<()> {
         if ids.is_empty() || ids.len() > 500 {
             return Err(Error::BadRequest("select 1 to 500 issues".into()));
@@ -644,11 +650,8 @@ impl Operation<'_> {
         self.validate_issue_sql(&i, Some(&old)).await?;
         if old.stage_id != stage_id {
             self.restamp_done(&mut i).await?;
-            self.activity_fields.push("stage".into());
         }
-        if old.sprint_id != i.sprint_id {
-            self.activity_fields.push("sprint".into());
-        }
+        self.record_changes(old.changes(&i));
         i.position = match before_id {
             Some(before) => self.position_before(&i, before).await?,
             None => self.position_last(&i).await?,

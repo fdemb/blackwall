@@ -361,6 +361,10 @@ pub struct Activity {
     /// Issue fields an update changed, so the timeline can say what moved.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub fields: Vec<String>,
+    /// Values before and after, for the `fields` that have them. Empty on rows written before
+    /// values were stored.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub changes: Vec<FieldChange>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub via: Option<Via>,
 }

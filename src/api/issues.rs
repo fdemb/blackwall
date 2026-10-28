@@ -4,8 +4,9 @@ use super::directory::{
 use super::resources::{Versioned, list_collection, one, record};
 use super::*;
 use crate::domain::{
-    Activity, Attachment, Comment, CommentTracker, FilterClause, Issue, IssueFilter, IssueInput,
-    IssuePatch, IssueSort, LabelChange, Priority, SourceLink, TrackerLink, Via, deserialize_where,
+    Activity, Attachment, Comment, CommentTracker, FieldChange, FilterClause, Issue, IssueFilter,
+    IssueInput, IssuePatch, IssueSort, LabelChange, Priority, SourceLink, TrackerLink, Via,
+    deserialize_where,
 };
 use crate::store::CollectionQuery;
 use axum::extract::{Path, Query};
@@ -1062,6 +1063,8 @@ pub struct ApiActivity {
     pub action: String,
     /// Fields an `update_issue` changed.
     pub fields: Vec<String>,
+    /// Old and new values of `fields`. Empty on entries older than this list.
+    pub changes: Vec<FieldChange>,
     pub at: DateTime<Utc>,
 }
 
@@ -1101,6 +1104,7 @@ pub async fn issue_activity(
                 via: a.via,
                 action: a.action,
                 fields: a.fields,
+                changes: a.changes,
                 at: a.at,
             })
             .collect(),

@@ -473,6 +473,7 @@ async fn issue_effects_with_context(
             },
             Some(after.id),
             fields.clone(),
+            before.map_or_else(Vec::new, |old| old.changes(after)),
             context.map(|context| context.integrations.as_slice()),
         )
         .await?;
@@ -503,6 +504,7 @@ async fn issue_effects_with_context(
             actor,
             "issue_completed",
             Some(after.id),
+            vec![],
             vec![],
             context.map(|context| context.integrations.as_slice()),
         )
@@ -556,8 +558,9 @@ pub(crate) async fn activity(
     action: &str,
     issue: Option<Uuid>,
     fields: Vec<String>,
+    changes: Vec<FieldChange>,
 ) -> Result<()> {
-    activity_with_integrations(conn, workspace, actor, action, issue, fields, None).await
+    activity_with_integrations(conn, workspace, actor, action, issue, fields, changes, None).await
 }
 
 async fn integrations(conn: &mut PgConnection, workspace: Uuid) -> Result<Vec<Integration>> {
@@ -578,6 +581,7 @@ async fn integrations(conn: &mut PgConnection, workspace: Uuid) -> Result<Vec<In
         .collect()
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn activity_with_integrations(
     conn: &mut PgConnection,
     workspace: Uuid,
@@ -585,6 +589,7 @@ async fn activity_with_integrations(
     action: &str,
     issue: Option<Uuid>,
     fields: Vec<String>,
+    changes: Vec<FieldChange>,
     cached: Option<&[Integration]>,
 ) -> Result<()> {
     let event = Activity {
@@ -594,12 +599,13 @@ async fn activity_with_integrations(
         entity_id: issue,
         at: Utc::now(),
         fields,
+        changes,
         via: None,
     };
     let via: Option<serde_json::Value> = match continued_description_edit(conn, workspace, &event).await? {
         Some(via) => via,
-        None => sqlx::query_scalar("INSERT INTO activity(id,workspace_id,actor,action,entity_id,at,fields) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING via")
-            .bind(event.id).bind(workspace).bind(actor).bind(action).bind(issue).bind(event.at).bind(serde_json::to_value(&event.fields)?).fetch_one(&mut *conn).await?,
+        None => sqlx::query_scalar("INSERT INTO activity(id,workspace_id,actor,action,entity_id,at,fields,changes) VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING via")
+            .bind(event.id).bind(workspace).bind(actor).bind(action).bind(issue).bind(event.at).bind(serde_json::to_value(&event.fields)?).bind(serde_json::to_value(&event.changes)?).fetch_one(&mut *conn).await?,
     };
     // Only public events leave the workspace; see `WEBHOOK_EVENTS`.
     let Some((kind, entity_type)) = crate::domain::webhook_event(action) else {
@@ -623,6 +629,9 @@ async fn activity_with_integrations(
     });
     if !event.fields.is_empty() {
         payload["fields"] = serde_json::json!(event.fields);
+    }
+    if !event.changes.is_empty() {
+        payload["changes"] = serde_json::json!(event.changes);
     }
     if let Some(via) = via {
         payload["via"] = via;
