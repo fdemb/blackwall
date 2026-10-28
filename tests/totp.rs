@@ -1005,9 +1005,10 @@ async fn disabling_during_an_exchange_ends_it_without_a_deadlock() {
         .await
         .unwrap()
         .expect("disabling doesn't deadlock with the exchange");
+    let exchange = exchange.await.unwrap().map(|_| ());
     assert!(
-        matches!(exchange.await.unwrap(), Err(Error::BadRequest(_))),
-        "turning TOTP off ends the pending login"
+        matches!(exchange, Err(Error::BadRequest(_))),
+        "turning TOTP off ends the pending login: {exchange:?}"
     );
     assert_eq!(session_count(&store, user.profile.id).await, 1);
 
@@ -1019,10 +1020,10 @@ async fn disabling_during_an_exchange_ends_it_without_a_deadlock() {
 async fn a_reset_during_an_exchange_signs_out_its_session_without_a_deadlock() {
     let database = support::TestDatabase::new().await;
     let mut store = Store::connect(&database.url).await.unwrap();
-    store.mail_enabled = true;
     let user = account(&store).await;
     let (mut authenticator, _) = enable(&store, &user).await;
     let pending_token = pending(&store, &user).await;
+    store.mail_enabled = true;
     store
         .request_reset(ResetRequest {
             email: user.profile.email.clone(),
