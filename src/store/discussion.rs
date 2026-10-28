@@ -152,16 +152,19 @@ impl Operation<'_> {
                 webhook_url,
                 secret,
                 events,
+                include_data,
             } => {
-                self.create_integration(id, name, webhook_url, secret, events)
+                self.create_integration(id, name, webhook_url, secret, events, include_data)
                     .await?
             }
             Command::UpdateIntegration {
                 id,
                 enabled,
                 events,
+                include_data,
             } => {
-                self.update_integration(id, enabled, events).await?;
+                self.update_integration(id, enabled, events, include_data)
+                    .await?;
                 id
             }
             Command::DeleteIntegration { id } => {
@@ -211,6 +214,7 @@ impl Operation<'_> {
         id: Uuid,
         enabled: bool,
         events: Option<Vec<String>>,
+        include_data: Option<bool>,
     ) -> Result<()> {
         self.admin()?;
         if let Some(events) = &events {
@@ -218,13 +222,14 @@ impl Operation<'_> {
         }
         self.touch("integrations", id).await?;
         sqlx::query(
-            "UPDATE integrations SET enabled=$3,events=COALESCE($4,events) \
-             WHERE workspace_id=$1 AND id=$2",
+            "UPDATE integrations SET enabled=$3,events=COALESCE($4,events),\
+             include_data=COALESCE($5,include_data) WHERE workspace_id=$1 AND id=$2",
         )
         .bind(self.workspace_id)
         .bind(id)
         .bind(enabled)
         .bind(events)
+        .bind(include_data)
         .execute(&mut *self.tx)
         .await?;
         Ok(())
@@ -1067,6 +1072,7 @@ impl Operation<'_> {
         webhook_url: String,
         secret: String,
         events: Vec<String>,
+        include_data: bool,
     ) -> Result<Uuid> {
         self.admin()?;
         crate::domain::text(&name, 200)?;
@@ -1077,8 +1083,8 @@ impl Operation<'_> {
         let id = self.reserve_client_id(id).await?;
 
         sqlx::query(
-            "INSERT INTO integrations(id,workspace_id,name,webhook_url,secret,events) \
-            VALUES($1,$2,$3,$4,$5,$6)",
+            "INSERT INTO integrations(id,workspace_id,name,webhook_url,secret,events,include_data) \
+            VALUES($1,$2,$3,$4,$5,$6,$7)",
         )
         .bind(id)
         .bind(self.workspace_id)
@@ -1086,6 +1092,7 @@ impl Operation<'_> {
         .bind(webhook_url)
         .bind(secret)
         .bind(events)
+        .bind(include_data)
         .execute(&mut *self.tx)
         .await
         .map_err(id_conflict)?;

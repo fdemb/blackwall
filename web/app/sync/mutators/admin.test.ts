@@ -145,6 +145,18 @@ describe("update_integration", () => {
     expect(store.get("integrations", INTEGRATION_DISABLED)?.enabled).toBe(true);
   });
 
+  it("sets include_data only when given", () => {
+    const store = seedStore(OWNER);
+    mutate(store, "update_integration", {
+      id: INTEGRATION_ONE,
+      enabled: true,
+      include_data: false,
+    });
+    expect(store.get("integrations", INTEGRATION_ONE)?.include_data).toBe(false);
+    mutate(store, "update_integration", { id: INTEGRATION_ONE, enabled: false });
+    expect(store.get("integrations", INTEGRATION_ONE)?.include_data).toBe(false);
+  });
+
   it("is idempotent", () => {
     twice("update_integration", { id: INTEGRATION_ONE, enabled: false });
   });

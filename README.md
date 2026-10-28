@@ -117,7 +117,7 @@ Set `REGISTRATION=invite` to close open sign-up. People then register through an
 
 For local mail, set `SMTP_URL=smtp://127.0.0.1:1025` and read Mailpit at `http://127.0.0.1:8025`. Alternatively, set `DEV_MAIL_DIR=./dev-mail` to write private JSON files with mode 0600. `DEV_MAIL_DIR` and `SMTP_URL` are mutually exclusive. Keep the directory private.
 
-Outgoing integration requests carry a minimal typed event (see [webhooks](docs/api.md#webhooks)) with `X-Blackwall-Event`, `Idempotency-Key` and `X-Blackwall-Signature: sha256=<hex HMAC-SHA256>`. Incoming source links use `POST /api/workspaces/{id}/integrations/{integration}/webhook`, signed over the exact request body:
+Outgoing integration requests carry a typed event with the changed record (see [webhooks](docs/api.md#webhooks)), with `X-Blackwall-Event`, `Idempotency-Key`, `Blackwall-Signature: t=<unix seconds>,v1=<hex HMAC-SHA256>` and the older `X-Blackwall-Signature: sha256=<hex HMAC-SHA256>`. Incoming source links use `POST /api/workspaces/{id}/integrations/{integration}/webhook`, signed over the exact request body:
 
 ```json
 {

@@ -814,6 +814,9 @@ export const en = {
   "integrations.urlHint": "Public https endpoint that receives events.",
   "integrations.secret": "Signing secret",
   "integrations.secretHint": "At least 16 characters. Used for HMAC-SHA256 signatures.",
+  "integrations.includeData": "Include the changed record",
+  "integrations.includeDataHint":
+    "Send the issue, comment or time entry as it was after the change. Without it, events carry only ids.",
 
   "data.export": "Export",
   "data.exportSub":
@@ -1109,7 +1112,7 @@ export const en = {
   "integrations.deleteSub": "It stops receiving events and its incoming endpoint stops working.",
   "integrations.setup": "How it works",
   "integrations.setupOut":
-    "Outgoing: Blackwall POSTs a small JSON event (type, entity id, actor, time) to your webhook URL and signs the raw body with HMAC-SHA256 in the X-Blackwall-Signature header. Fetch the current record through the API.",
+    "Outgoing: Blackwall POSTs a JSON event (type, actor, time and, if included, the issue, comment or time entry as it was after the change) to your webhook URL. The Blackwall-Signature header signs a timestamp and the raw body with HMAC-SHA256, so you can reject old or replayed deliveries.",
   "integrations.setupIn":
     "Incoming: POST a source link to the endpoint above. Sign the raw body with the same secret.",
   "account.tokens": "API tokens",

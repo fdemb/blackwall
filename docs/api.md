@@ -67,9 +67,9 @@ Every write runs the same `Command` the app runs, through the same transaction. 
 
 ## Webhooks
 
-Webhooks are the workspace's outgoing integrations, so the app's Integrations settings and the API manage the same records. Managing them requires an owner or administrator. `POST` generates a `whsec_` signing secret unless you supply one, and returns it once. `events` lists the subscribed types from `GET /api/v1/webhook-events`; an empty list subscribes to everything.
+Webhooks are the workspace's outgoing integrations, so the app's Integrations settings and the API manage the same records. Managing them requires an owner or administrator. `POST` generates a `whsec_` signing secret unless you supply one, and returns it once. `events` lists the subscribed types from `GET /api/v1/webhook-events`; an empty list subscribes to everything. `include_data` controls whether deliveries carry `data`, described below. It defaults to `true` for new webhooks. Webhooks created before `data` existed have it `false` until you turn it on with `PATCH`, because their receivers were built for ids only.
 
-Each delivery is a signed POST with only the essentials:
+Each delivery is a signed POST:
 
 ```json
 {
@@ -85,7 +85,8 @@ Each delivery is a signed POST with only the essentials:
     { "field": "stage", "from": "stage uuid", "to": "stage uuid" },
     { "field": "assignee", "from": null, "to": "user uuid" }
   ],
-  "via": { "kind": "mcp", "token_id": "uuid", "name": "Claude Code" }
+  "via": { "kind": "mcp", "token_id": "uuid", "name": "Claude Code" },
+  "data": { "id": "uuid", "key": "ENG-42", "title": "Rotate certificates", "...": "..." }
 }
 ```
 
@@ -98,7 +99,44 @@ Each delivery is a signed POST with only the essentials:
 - `labels` holds the full id lists before and after.
 - `description` and `dependencies` have only `field`.
 
-Fetch the entity through the API for its current state. Headers are `X-Blackwall-Event`, `Idempotency-Key` (the same on every retry) and `X-Blackwall-Signature: sha256=<hex HMAC-SHA256 of the raw body>`. Delivery is at least once.
+`data` is the entity as it was right after the change, sent only when the webhook has `include_data`. Blackwall reads it in the same transaction as the change and stores it with the delivery, so a retry sends the same `data` even if the entity changed since. Fetch the entity through the API for its current state. Turning `include_data` off affects only later events. Deliveries already queued keep their `data` until they finish.
+
+- Issue events carry the issue as `GET .../issues/{issue}` returns it. `issue.deleted` carries the issue in the trash, with `deleted_at` set.
+- Comment events carry the comment as `GET .../comments/{comment}` returns it.
+- Time entry events carry `{id, issue_id, user, minutes, note, logged_at, version}`, with `user` named like a comment's `author`.
+- `comment.deleted` and `time_entry.deleted` have no `data`, because the record is gone. `entity_id` names it.
+- Other events have no `data`.
+
+`data` is bounded, because every delivery stores its own copy until it is sent. Once a delivery succeeds or fails for good, Blackwall drops `data` and `truncated` from it and keeps the rest of the event for 30 days after success or 90 days after failure, the defaults of `JOBS_RETENTION_DAYS` and `JOBS_FAILED_RETENTION_DAYS`. A failed delivery retried by hand is sent without `data` or `truncated`. An issue `description` or comment `body` over 16 KiB is cut to its first 16 KiB, and `truncated` lists it, as in `"truncated": ["description"]`. If `data` is still over 64 KiB, it is left out and `truncated` is `["data"]`. In both cases fetch the entity for the full text.
+
+Headers are `X-Blackwall-Event`, `Idempotency-Key` (the same on every retry) and two signatures made with the webhook's secret. Delivery is at least once.
+
+- `Blackwall-Signature: t=<unix seconds>,v1=<hex>`, where the hex is the HMAC-SHA256 of the timestamp, a `.`, and the raw body. Every attempt, retries included, signs with the time it was sent.
+- `X-Blackwall-Signature: sha256=<hex>`, the HMAC-SHA256 of the raw body alone. It stays for receivers built before `Blackwall-Signature`, but it can't detect a replayed delivery.
+
+To verify `Blackwall-Signature`:
+
+1. Split the header on `,` and read `t` and every `v1`. More than one `v1` may appear if secrets ever rotate.
+2. Compute the HMAC-SHA256 of `t`, `.` and the raw body bytes, with the secret as the key. Compare its hex to each `v1` in constant time, and accept if any matches.
+3. Reject the delivery if `t` is more than 5 minutes away from your clock.
+
+```python
+import hashlib, hmac, time
+
+def verify(secret: bytes, header: str, body: bytes, tolerance: int = 300) -> bool:
+    pairs = [part.strip().partition("=") for part in header.split(",")]
+    timestamps = [value for key, _, value in pairs if key == "t"]
+    signatures = [value.encode() for key, _, value in pairs if key == "v1"]
+    if len(timestamps) != 1 or not (timestamps[0].isascii() and timestamps[0].isdigit()):
+        return False
+    t = timestamps[0]
+    if abs(time.time() - int(t)) > tolerance:
+        return False
+    expected = hmac.new(secret, t.encode() + b"." + body, hashlib.sha256).hexdigest().encode()
+    return any(hmac.compare_digest(expected, signature) for signature in signatures)
+```
+
+Within the tolerance, deduplicate on `Idempotency-Key` to drop a replay of a delivery you already processed.
 
 Personal, private and administrative actions never leave the workspace. These include notifications, alert settings, saved views, follows, invitations and integration changes. `issues.bulk_changed` and `issues.imported` carry no entity id, so list issues by `sort=updated` to see what changed.
 

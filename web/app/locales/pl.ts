@@ -859,6 +859,9 @@ export const pl = {
   "integrations.urlHint": "Publiczny punkt https odbierający zdarzenia.",
   "integrations.secret": "Sekret podpisu",
   "integrations.secretHint": "Co najmniej 16 znaków. Służy do podpisów HMAC-SHA256.",
+  "integrations.includeData": "Dołączaj zmieniony rekord",
+  "integrations.includeDataHint":
+    "Wysyłaj zgłoszenie, komentarz lub wpis czasu w stanie po zmianie. Bez tego zdarzenia zawierają tylko identyfikatory.",
 
   "data.export": "Eksport",
   "data.exportSub":
@@ -1180,7 +1183,7 @@ export const pl = {
     "Przestanie odbierać zdarzenia, a jej adres przychodzący przestanie działać.",
   "integrations.setup": "Jak to działa",
   "integrations.setupOut":
-    "Wychodzące: Blackwall wysyła metodą POST krótkie zdarzenie JSON (typ, identyfikator obiektu, autor, czas) na adres webhooka i podpisuje surową treść algorytmem HMAC-SHA256 w nagłówku X-Blackwall-Signature. Aktualny stan pobierz przez API.",
+    "Wychodzące: Blackwall wysyła metodą POST zdarzenie JSON (typ, autor, czas oraz, jeśli włączone, zgłoszenie, komentarz lub wpis czasu w stanie po zmianie) na adres webhooka. Nagłówek Blackwall-Signature podpisuje algorytmem HMAC-SHA256 znacznik czasu i surową treść, więc możesz odrzucać stare i powtórzone dostawy.",
   "integrations.setupIn":
     "Przychodzące: wyślij odnośnik źródłowy metodą POST na powyższy adres. Podpisz surową treść tym samym sekretem.",
   "account.tokens": "Tokeny API",

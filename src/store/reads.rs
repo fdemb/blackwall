@@ -533,6 +533,24 @@ pub(super) async fn collection_on(
     Ok(q.build_query_scalar::<Value>().fetch_all(conn).await?)
 }
 
+/// One record of `kind` as `actor` may see it. The caller authorizes `actor`.
+pub(crate) async fn record_on(
+    conn: &mut PgConnection,
+    workspace: Uuid,
+    actor: Uuid,
+    kind: &str,
+    id: Uuid,
+) -> Result<Option<Value>> {
+    let (table, expression, _) = collection_select(kind)?;
+    let mut q = QueryBuilder::<Postgres>::new(format!(
+        "SELECT {expression} FROM {table} WHERE t.workspace_id="
+    ));
+    q.push_bind(workspace);
+    push_visibility(&mut q, kind, actor);
+    q.push(" AND t.id=").push_bind(id);
+    Ok(q.build_query_scalar::<Value>().fetch_optional(conn).await?)
+}
+
 impl Store {
     pub async fn list_workspaces(&self, actor: Uuid) -> Result<Vec<Value>> {
         let rows = sqlx::query!(
@@ -793,19 +811,9 @@ impl Store {
         kind: &str,
         id: Uuid,
     ) -> Result<Value> {
-        let (table, expression, _) = collection_select(kind)?;
         let mut conn = self.pool.acquire().await?;
         authorize(&mut conn, workspace, actor).await?;
-
-        let mut q = QueryBuilder::<Postgres>::new(format!(
-            "SELECT {expression} FROM {table} WHERE t.workspace_id="
-        ));
-        q.push_bind(workspace);
-        push_visibility(&mut q, kind, actor);
-        q.push(" AND t.id=").push_bind(id);
-
-        q.build_query_scalar::<Value>()
-            .fetch_optional(&mut *conn)
+        record_on(&mut conn, workspace, actor, kind, id)
             .await?
             .ok_or(Error::NotFound)
     }

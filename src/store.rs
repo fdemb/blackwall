@@ -24,6 +24,7 @@ pub use changes::Change;
 pub(crate) use queue::LEASE_SECONDS;
 pub use queue::{Claim, NewJob, Outbox};
 pub use reads::CollectionQuery;
+pub(crate) use reads::{issue_on, record_on};
 pub use sync::{
     BOOTSTRAP_OVERALL_TIMEOUT, BOOTSTRAP_PERMIT_WAIT, BOOTSTRAP_SEND_TIMEOUT, MutationError,
     MutationResult, MutationStatus, PULL_BATCH_RANGE_SQL, PULL_BATCH_XIP_SQL,
@@ -128,6 +129,8 @@ pub(super) struct Operation<'a> {
     pub mail_enabled: bool,
     pub invitation: Option<crate::domain::IssuedInvitation>,
     pub limits: Limits,
+    /// Reset for every command, so a command sees the integrations its predecessors created.
+    pub deliveries: persistence::Deliveries,
 }
 
 pub(super) fn enum_text<T: serde::Serialize>(v: &T) -> String {
@@ -593,6 +596,7 @@ impl Store {
             mail_enabled: self.mail_enabled,
             invitation: None,
             limits: self.limits,
+            deliveries: persistence::Deliveries::default(),
         })
     }
 }
@@ -717,6 +721,7 @@ impl Operation<'_> {
             return Err(Error::Forbidden);
         }
 
+        self.deliveries = persistence::Deliveries::default();
         let action = command.kind();
         let update = command.is_issue_update();
         let id = match command.family() {
@@ -730,7 +735,7 @@ impl Operation<'_> {
         if !(update && fields.is_empty()) {
             // A bulk update has no single issue whose values `changes` could describe.
             let changes = if id.is_some() { changes } else { Vec::new() };
-            persistence::activity(
+            persistence::activity_with(
                 &mut self.tx,
                 self.workspace_id,
                 self.actor,
@@ -738,6 +743,7 @@ impl Operation<'_> {
                 id,
                 fields,
                 changes,
+                &mut self.deliveries,
             )
             .await?;
         }
@@ -875,7 +881,7 @@ impl Operation<'_> {
         id: Option<Uuid>,
         fields: Vec<String>,
     ) -> Result<()> {
-        persistence::activity(
+        persistence::activity_with(
             &mut self.tx,
             self.workspace_id,
             self.actor,
@@ -883,6 +889,7 @@ impl Operation<'_> {
             id,
             fields,
             Vec::new(),
+            &mut self.deliveries,
         )
         .await
     }
@@ -938,6 +945,7 @@ mod tests {
             mail_enabled: true,
             invitation: None,
             limits: Limits::default(),
+            deliveries: persistence::Deliveries::default(),
         };
 
         // 5000 supplied ids, as in one maximal ImportIssues command.
@@ -1048,6 +1056,7 @@ mod tests {
             mail_enabled: true,
             invitation: None,
             limits: Limits::default(),
+            deliveries: persistence::Deliveries::default(),
         };
 
         let issues: Vec<IssueInput> = (0..20)
@@ -1089,6 +1098,7 @@ mod tests {
             mail_enabled: true,
             invitation: None,
             limits: Limits::default(),
+            deliveries: persistence::Deliveries::default(),
         };
 
         let supplied: Vec<Uuid> = (0..5).map(|_| Uuid::new_v4()).collect();
@@ -1119,6 +1129,201 @@ mod tests {
         );
 
         op.tx.rollback().await.unwrap();
+        store.pool.close().await;
+        database.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn completing_a_stage_reads_the_directory_once_for_all_its_deliveries() {
+        let database = TestDatabase::new().await;
+        let store = Store::connect(&database.url).await.unwrap();
+        let (workspace, actor, team) = import_workspace(&store, "completing").await;
+        let (stage, name, position): (Uuid, String, i64) = sqlx::query_as(
+            "SELECT id,name,position FROM stages WHERE team_id=$1 AND kind='active' LIMIT 1",
+        )
+        .bind(team)
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+        let issues: Vec<IssueInput> = (0..3)
+            .map(|n| IssueInput {
+                stage_id: Some(stage),
+                ..import_input(team, None, &format!("Active {n}"))
+            })
+            .collect();
+        for command in [
+            Command::ImportIssues { issues },
+            Command::CreateIntegration {
+                id: None,
+                name: "Everything".into(),
+                webhook_url: "https://hooks.example.com/all".into(),
+                secret: "completing-stage-secret".into(),
+                events: vec![],
+                include_data: true,
+            },
+        ] {
+            store
+                .operation(workspace, actor, command, BTreeMap::new(), None, None)
+                .await
+                .unwrap();
+        }
+
+        let tx = store.pool.begin().await.unwrap();
+        let mut op = Operation {
+            tx,
+            workspace_id: workspace,
+            actor,
+            role: Role::Owner,
+            expected: BTreeMap::new(),
+            versions: BTreeMap::new(),
+            activity_fields: Vec::new(),
+            activity_changes: Vec::new(),
+            mail_enabled: true,
+            invitation: None,
+            limits: Limits::default(),
+            deliveries: persistence::Deliveries::default(),
+        };
+        op.run_command(
+            Command::UpdateStage {
+                team_id: team,
+                id: stage,
+                name,
+                kind: crate::domain::StageKind::Done,
+                position,
+            },
+            None,
+        )
+        .await
+        .unwrap();
+
+        let completed: Vec<serde_json::Value> = sqlx::query_scalar(
+            "SELECT payload->'event' FROM jobs WHERE kind='webhook' \
+             AND payload->'event'->>'type'='issue.completed'",
+        )
+        .fetch_all(&mut *op.tx)
+        .await
+        .unwrap();
+        assert_eq!(completed.len(), 3, "{completed:?}");
+        for event in &completed {
+            assert_eq!(event["data"]["id"], event["entity_id"]);
+            assert_eq!(event["data"]["stage"]["kind"], "done");
+        }
+        // Only the directory reads milestones here, so this counts directory loads.
+        let reads: i64 = sqlx::query_scalar(
+            "SELECT seq_scan+COALESCE(idx_scan,0) FROM pg_stat_xact_user_tables \
+             WHERE relname='milestones'",
+        )
+        .fetch_one(&mut *op.tx)
+        .await
+        .unwrap();
+        assert_eq!(reads, 1);
+
+        op.tx.rollback().await.unwrap();
+        store.pool.close().await;
+        database.cleanup().await;
+    }
+
+    /// Moves three issues into a done stage in one bulk edit, with one webhook subscribed to
+    /// everything, and returns the `issue.completed` deliveries and the directory loads.
+    async fn bulk_complete(store: &Store, include_data: bool) -> (Vec<serde_json::Value>, i64) {
+        let name = format!("bulk-{include_data}");
+        let (workspace, actor, team) = import_workspace(store, &name).await;
+        let issues: Vec<IssueInput> = (0..3)
+            .map(|n| import_input(team, None, &format!("Bulk {n}")))
+            .collect();
+        for command in [
+            Command::ImportIssues { issues },
+            Command::CreateIntegration {
+                id: None,
+                name: "Everything".into(),
+                webhook_url: "https://hooks.example.com/all".into(),
+                secret: "bulk-complete-secret".into(),
+                events: vec![],
+                include_data,
+            },
+        ] {
+            store
+                .operation(workspace, actor, command, BTreeMap::new(), None, None)
+                .await
+                .unwrap();
+        }
+        let ids: Vec<Uuid> = sqlx::query_scalar("SELECT id FROM issues WHERE workspace_id=$1")
+            .bind(workspace)
+            .fetch_all(&store.pool)
+            .await
+            .unwrap();
+        let done: Uuid =
+            sqlx::query_scalar("SELECT id FROM stages WHERE team_id=$1 AND kind='done' LIMIT 1")
+                .bind(team)
+                .fetch_one(&store.pool)
+                .await
+                .unwrap();
+
+        let mut op = store
+            .begin_operation(workspace, actor, BTreeMap::new(), false)
+            .await
+            .unwrap();
+        let before = milestone_reads(&mut op.tx).await;
+        op.run_command(
+            Command::BulkIssues {
+                ids,
+                action: BulkAction::Update(Box::new(IssuePatch {
+                    stage_id: Some(done),
+                    ..IssuePatch::default()
+                })),
+            },
+            None,
+        )
+        .await
+        .unwrap();
+        let completed: Vec<serde_json::Value> = sqlx::query_scalar(
+            "SELECT payload->'event' FROM jobs WHERE kind='webhook' \
+             AND (payload->'event'->>'workspace_id')::uuid=$1 \
+             AND payload->'event'->>'type'='issue.completed'",
+        )
+        .bind(workspace)
+        .fetch_all(&mut *op.tx)
+        .await
+        .unwrap();
+        let reads = milestone_reads(&mut op.tx).await - before;
+        op.tx.rollback().await.unwrap();
+        (completed, reads)
+    }
+
+    /// Only the directory reads `milestones` here, so this counts directory loads. The counter
+    /// can include reads of earlier transactions on the same connection that Postgres has not
+    /// flushed yet, so callers compare two readings.
+    async fn milestone_reads(conn: &mut PgConnection) -> i64 {
+        sqlx::query_scalar(
+            "SELECT seq_scan+COALESCE(idx_scan,0) FROM pg_stat_xact_user_tables \
+             WHERE relname='milestones'",
+        )
+        .fetch_one(conn)
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_bulk_edit_reads_the_directory_once_and_only_for_data() {
+        let database = TestDatabase::new().await;
+        let store = Store::connect(&database.url).await.unwrap();
+
+        let (completed, reads) = bulk_complete(&store, true).await;
+        assert_eq!(completed.len(), 3, "{completed:?}");
+        for event in &completed {
+            assert_eq!(event["data"]["id"], event["entity_id"]);
+            assert_eq!(event["data"]["stage"]["kind"], "done");
+        }
+        assert_eq!(reads, 1);
+
+        let (completed, reads) = bulk_complete(&store, false).await;
+        assert_eq!(completed.len(), 3, "{completed:?}");
+        assert!(
+            completed.iter().all(|e| e.get("data").is_none()),
+            "{completed:?}"
+        );
+        assert_eq!(reads, 0);
+
         store.pool.close().await;
         database.cleanup().await;
     }

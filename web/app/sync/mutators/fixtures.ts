@@ -455,6 +455,7 @@ function integrations(): SyncIntegration[] {
       name: "Hooks",
       webhook_url: "https://example.com/hook",
       enabled: true,
+      include_data: true,
       secret: "",
     },
     {
@@ -463,6 +464,7 @@ function integrations(): SyncIntegration[] {
       name: "Quiet",
       webhook_url: "https://example.com/quiet",
       enabled: false,
+      include_data: false,
       secret: "",
     },
   ];

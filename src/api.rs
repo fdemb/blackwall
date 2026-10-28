@@ -26,7 +26,7 @@ pub mod directory;
 pub mod issues;
 pub mod resources;
 pub mod tokens;
-mod webhooks;
+pub(crate) mod webhooks;
 
 pub use issues::{ApiComment, ApiIssue, CreateComment, CreateIssue, IssueQuery, UpdateIssue};
 pub use tokens::{Access, TokenGrant};

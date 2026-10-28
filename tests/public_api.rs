@@ -1993,3 +1993,298 @@ async fn keyed_empty_issue_patch_claims_its_key() {
     assert_eq!(replay.body, empty.body);
     keyed.cleanup().await;
 }
+
+/// Stored deliveries of `kind` to `hook`, oldest first. A retry sends the stored event.
+async fn deliveries(store: &Store, hook: &str, kind: &str) -> Vec<Value> {
+    sqlx::query_scalar(
+        "SELECT payload::jsonb->'event' FROM jobs WHERE kind='webhook' \
+         AND payload::jsonb->>'integration_id'=$1 AND payload::jsonb->'event'->>'type'=$2 \
+         ORDER BY (payload::jsonb->'event'->>'occurred_at')::timestamptz",
+    )
+    .bind(hook)
+    .bind(kind)
+    .fetch_all(&store.pool)
+    .await
+    .unwrap()
+}
+
+#[tokio::test]
+async fn webhook_deliveries_carry_the_changed_record() {
+    let database = support::TestDatabase::new().await;
+    let store = Store::connect(&database.url).await.unwrap();
+    let app = router(store.clone());
+    let owner = account(&store, "owner").await;
+    let ws = workspace(&store, &owner, "Deliveries").await;
+    let write = token(&app, &owner, json!({"name":"CI","access":"write"})).await;
+    let base = format!("/api/v1/workspaces/{ws}");
+    let team = call(
+        &app,
+        "POST",
+        &format!("{base}/teams"),
+        &write,
+        Some(json!({"name":"Platform","key":"PLA"})),
+    )
+    .await;
+    assert_eq!(team.status, StatusCode::CREATED, "{}", team.body);
+    let hook = call(
+        &app,
+        "POST",
+        &format!("{base}/webhooks"),
+        &write,
+        Some(json!({"name":"Everything","url":"https://hooks.example.com/all"})),
+    )
+    .await;
+    assert_eq!(hook.status, StatusCode::CREATED, "{}", hook.body);
+    let hook = hook.body["id"].as_str().unwrap().to_owned();
+
+    let created = call(
+        &app,
+        "POST",
+        &format!("{base}/issues"),
+        &write,
+        Some(json!({"team":"PLA","title":"Rotate certificates","description":"Steps"})),
+    )
+    .await;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    let issue_path = format!("{base}/issues/{}", created.body["key"].as_str().unwrap());
+    let issue = call(&app, "GET", &issue_path, &write, None).await.body;
+    let events = deliveries(&store, &hook, "issue.created").await;
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert_eq!(events[0]["data"], issue);
+    assert_eq!(events[0]["entity_id"], issue["id"]);
+    assert!(events[0].get("truncated").is_none());
+
+    let patched = call(
+        &app,
+        "PATCH",
+        &issue_path,
+        &write,
+        Some(json!({"priority":"urgent"})),
+    )
+    .await;
+    assert_eq!(patched.status, StatusCode::OK, "{}", patched.body);
+    let urgent = call(&app, "GET", &issue_path, &write, None).await.body;
+    let events = deliveries(&store, &hook, "issue.updated").await;
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert_eq!(events[0]["fields"], json!(["priority"]));
+    assert_eq!(events[0]["data"], urgent);
+    let first_update = events[0]["id"].clone();
+
+    // A later change leaves the first delivery, and so its retries, as they were.
+    let renamed = call(
+        &app,
+        "PATCH",
+        &issue_path,
+        &write,
+        Some(json!({"title":"Renew certificates"})),
+    )
+    .await;
+    assert_eq!(renamed.status, StatusCode::OK, "{}", renamed.body);
+    let events = deliveries(&store, &hook, "issue.updated").await;
+    assert_eq!(events.len(), 2, "{events:?}");
+    assert_eq!(events[0]["id"], first_update);
+    assert_eq!(events[0]["data"], urgent);
+    assert_eq!(events[1]["data"]["title"], "Renew certificates");
+
+    let comment = call(
+        &app,
+        "POST",
+        &format!("{issue_path}/comments"),
+        &write,
+        Some(json!({"body":"Rotated"})),
+    )
+    .await;
+    assert_eq!(comment.status, StatusCode::CREATED, "{}", comment.body);
+    let comment_path = format!("{base}/comments/{}", comment.body["id"].as_str().unwrap());
+    let fetched = call(&app, "GET", &comment_path, &write, None).await.body;
+    let events = deliveries(&store, &hook, "comment.created").await;
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert_eq!(events[0]["data"], fetched);
+    assert_eq!(events[0]["data"]["author"]["display_name"], "owner");
+
+    let issue_id = Uuid::parse_str(issue["id"].as_str().unwrap()).unwrap();
+    let logged = store
+        .operation(
+            ws,
+            owner.profile.id,
+            Command::LogTime {
+                id: None,
+                issue_id,
+                minutes: 45,
+                note: "Rotation".into(),
+                logged_at: chrono::Utc::now(),
+            },
+            Default::default(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    let events = deliveries(&store, &hook, "time_entry.created").await;
+    assert_eq!(events.len(), 1, "{events:?}");
+    let entry = &events[0]["data"];
+    assert_eq!(entry["id"], json!(logged.result.id.unwrap()));
+    assert_eq!(entry["issue_id"], json!(issue_id));
+    assert_eq!(entry["minutes"], 45);
+    assert_eq!(entry["note"], "Rotation");
+    assert_eq!(entry["user"]["id"], json!(owner.profile.id));
+    assert_eq!(entry["user"]["display_name"], "owner");
+
+    // A deleted comment is gone, so only `entity_id` names it; a deleted issue is in the trash.
+    let removed = call(&app, "DELETE", &comment_path, &write, None).await;
+    assert_eq!(removed.status, StatusCode::NO_CONTENT, "{}", removed.body);
+    let events = deliveries(&store, &hook, "comment.deleted").await;
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert_eq!(events[0]["entity_id"], fetched["id"]);
+    assert!(events[0].get("data").is_none());
+    let trashed = call(&app, "DELETE", &issue_path, &write, None).await;
+    assert_eq!(trashed.status, StatusCode::NO_CONTENT, "{}", trashed.body);
+    let events = deliveries(&store, &hook, "issue.deleted").await;
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert_eq!(events[0]["data"]["id"], issue["id"]);
+    assert!(events[0]["data"]["deleted_at"].is_string());
+
+    // Long Markdown is cut to 16 KiB, and the delivery says so.
+    let long = call(
+        &app,
+        "POST",
+        &format!("{base}/issues"),
+        &write,
+        Some(json!({"team":"PLA","title":"Runbook","description":"x".repeat(20_000)})),
+    )
+    .await;
+    assert_eq!(long.status, StatusCode::CREATED, "{}", long.body);
+    let events = deliveries(&store, &hook, "issue.created").await;
+    let event = events
+        .iter()
+        .find(|event| event["entity_id"] == long.body["id"])
+        .unwrap();
+    assert_eq!(event["data"]["description"], "x".repeat(16 * 1024));
+    assert_eq!(event["truncated"], json!(["description"]));
+
+    drop(app);
+    store.pool.close().await;
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn webhook_data_is_opt_in_and_dropped_once_finished() {
+    let database = support::TestDatabase::new().await;
+    let store = Store::connect(&database.url).await.unwrap();
+    let app = router(store.clone());
+    let owner = account(&store, "owner").await;
+    let ws = workspace(&store, &owner, "Opt in").await;
+    let write = token(&app, &owner, json!({"name":"CI","access":"write"})).await;
+    let base = format!("/api/v1/workspaces/{ws}");
+    let team = call(
+        &app,
+        "POST",
+        &format!("{base}/teams"),
+        &write,
+        Some(json!({"name":"Platform","key":"PLA"})),
+    )
+    .await;
+    assert_eq!(team.status, StatusCode::CREATED, "{}", team.body);
+    let full = call(
+        &app,
+        "POST",
+        &format!("{base}/webhooks"),
+        &write,
+        Some(json!({"name":"Full","url":"https://hooks.example.com/full"})),
+    )
+    .await;
+    assert_eq!(full.status, StatusCode::CREATED, "{}", full.body);
+    assert_eq!(full.body["include_data"], true);
+    let full = full.body["id"].as_str().unwrap().to_owned();
+    let ids = call(
+        &app,
+        "POST",
+        &format!("{base}/webhooks"),
+        &write,
+        Some(json!({"name":"Ids","url":"https://hooks.example.com/ids","include_data":false})),
+    )
+    .await;
+    assert_eq!(ids.status, StatusCode::CREATED, "{}", ids.body);
+    assert_eq!(ids.body["include_data"], false);
+    let ids = ids.body["id"].as_str().unwrap().to_owned();
+
+    let steps = "Private steps ".repeat(2_000);
+    let cut = &steps[..16 * 1024];
+    let created = call(
+        &app,
+        "POST",
+        &format!("{base}/issues"),
+        &write,
+        Some(json!({"team":"PLA","title":"Rotate certificates","description":steps})),
+    )
+    .await;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    let issue_path = format!("{base}/issues/{}", created.body["key"].as_str().unwrap());
+    let events = deliveries(&store, &full, "issue.created").await;
+    assert_eq!(events[0]["data"]["description"], cut);
+    assert_eq!(events[0]["truncated"], json!(["description"]));
+    let events = deliveries(&store, &ids, "issue.created").await;
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert_eq!(events[0]["entity_id"], created.body["id"]);
+    assert!(events[0].get("data").is_none(), "{events:?}");
+    assert!(events[0].get("truncated").is_none(), "{events:?}");
+
+    let opted = call(
+        &app,
+        "PATCH",
+        &format!("{base}/webhooks/{ids}"),
+        &write,
+        Some(json!({"include_data":true})),
+    )
+    .await;
+    assert_eq!(opted.status, StatusCode::OK, "{}", opted.body);
+    assert_eq!(opted.body["include_data"], true);
+    assert_eq!(opted.body["enabled"], true);
+    let patched = call(
+        &app,
+        "PATCH",
+        &issue_path,
+        &write,
+        Some(json!({"priority":"urgent"})),
+    )
+    .await;
+    assert_eq!(patched.status, StatusCode::OK, "{}", patched.body);
+    let mut urgent = call(&app, "GET", &issue_path, &write, None).await.body;
+    urgent["description"] = json!(cut);
+    let events = deliveries(&store, &ids, "issue.updated").await;
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert_eq!(events[0]["data"], urgent);
+
+    // A finished delivery keeps its event for debugging, without the record or what was cut
+    // from it.
+    let outbox = blackwall::store::Outbox::new(store.pool.clone());
+    let claims = outbox.claim("webhook", 10).await.unwrap();
+    assert_eq!(claims.len(), 4);
+    for (n, claim) in claims.iter().enumerate() {
+        if n % 2 == 0 {
+            assert!(outbox.complete(claim).await.unwrap());
+        } else {
+            assert!(outbox.fail(claim, "receiver gone").await.unwrap());
+        }
+    }
+    let finished: Vec<(String, Value)> =
+        sqlx::query_as("SELECT state,payload->'event' FROM jobs WHERE kind='webhook'")
+            .fetch_all(&store.pool)
+            .await
+            .unwrap();
+    assert_eq!(finished.len(), 4);
+    for (state, event) in &finished {
+        assert!(state == "succeeded" || state == "failed", "{state}");
+        assert!(event.get("data").is_none(), "{event}");
+        assert!(event.get("truncated").is_none(), "{event}");
+        assert_eq!(event["entity_id"], created.body["id"]);
+        assert!(
+            event["type"].is_string() && event["id"].is_string(),
+            "{event}"
+        );
+    }
+
+    drop(app);
+    store.pool.close().await;
+    database.cleanup().await;
+}

@@ -317,6 +317,7 @@ impl Workspace {
                 webhook_url,
                 secret,
                 events,
+                include_data,
             } => {
                 self.admin(actor)?;
                 text(&name, 200)?;
@@ -332,6 +333,7 @@ impl Workspace {
                     secret,
                     enabled: true,
                     events,
+                    include_data,
                 });
                 id
             }
@@ -339,6 +341,7 @@ impl Workspace {
                 id,
                 enabled,
                 events,
+                include_data,
             } => {
                 self.admin(actor)?;
                 if let Some(events) = &events {
@@ -348,6 +351,9 @@ impl Workspace {
                 integration.enabled = enabled;
                 if let Some(events) = events {
                     integration.events = events;
+                }
+                if let Some(include_data) = include_data {
+                    integration.include_data = include_data;
                 }
                 id
             }

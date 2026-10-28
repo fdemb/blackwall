@@ -621,6 +621,7 @@ describe("fake sync pull", () => {
         name: "Hook",
         webhook_url: "https://example.test",
         enabled: true,
+        include_data: true,
         secret: "server-field",
       },
     ]);

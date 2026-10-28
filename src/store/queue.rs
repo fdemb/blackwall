@@ -10,6 +10,16 @@ use uuid::Uuid;
 pub const LEASE_SECONDS: i64 = 120;
 const ERROR_BYTES: usize = 2048;
 
+/// A finished job drops its secret token. A finished webhook also drops the copy of the record
+/// in `event.data` and the `event.truncated` that describes it, which only the receiver needed,
+/// and keeps the rest of the event for debugging.
+macro_rules! finished_payload {
+    () => {
+        "CASE WHEN kind='webhook' THEN (payload-'token') #- '{event,data}' #- '{event,truncated}' \
+         ELSE payload-'token' END"
+    };
+}
+
 pub struct NewJob {
     /// Compatibility key, independent of the queue's UUID identity.
     pub id: String,
@@ -176,15 +186,17 @@ impl Outbox {
 
         let mut tx = self.pool.begin().await?;
 
-        sqlx::query(
+        sqlx::query(concat!(
             "WITH exhausted AS (SELECT id FROM jobs WHERE state='running' AND \
             lease_expires_at<=clock_timestamp() AND attempts>=max_attempts \
             ORDER BY lease_expires_at,id FOR UPDATE SKIP LOCKED LIMIT 100) \
             UPDATE jobs SET state='failed',claim_token=NULL,\
             lease_expires_at=NULL,finished_at=clock_timestamp(),\
-            updated_at=clock_timestamp(),payload=payload-'token',last_error='lease expired at maximum \
+            updated_at=clock_timestamp(),payload=",
+            finished_payload!(),
+            ",last_error='lease expired at maximum \
             attempts' FROM exhausted WHERE jobs.id=exhausted.id",
-        )
+        ))
         .execute(&mut *tx)
         .await?;
 
@@ -211,12 +223,14 @@ impl Outbox {
     }
 
     pub async fn complete_in(conn: &mut PgConnection, claim: &Claim) -> Result<bool> {
-        Ok(sqlx::query(
-            "UPDATE jobs SET state='succeeded',payload=payload-'token',claim_token=NULL,\
+        Ok(sqlx::query(concat!(
+            "UPDATE jobs SET state='succeeded',payload=",
+            finished_payload!(),
+            ",claim_token=NULL,\
             lease_expires_at=NULL,last_error='',finished_at=clock_timestamp(),\
             updated_at=clock_timestamp() WHERE id=$1 AND state='running' AND \
             claim_token=$2 AND lease_expires_at>clock_timestamp()",
-        )
+        ))
         .bind(claim.id)
         .bind(claim.token)
         .execute(conn)
@@ -261,15 +275,17 @@ impl Outbox {
             .min(86400);
         let jitter = (Uuid::new_v4().as_u128() % (base as u128 / 4 + 1)) as i64;
 
-        Ok(sqlx::query(
+        Ok(sqlx::query(concat!(
             "UPDATE jobs SET state=CASE WHEN $3 THEN 'failed' ELSE 'pending' END,\
             run_at=clock_timestamp()+make_interval(secs=>$4::double precision),\
             claim_token=NULL,lease_expires_at=NULL,last_error=$5,\
-            payload=CASE WHEN $3 THEN payload-'token' ELSE payload END,\
+            payload=CASE WHEN $3 THEN ",
+            finished_payload!(),
+            " ELSE payload END,\
             finished_at=CASE WHEN $3 THEN clock_timestamp() ELSE NULL END,\
             updated_at=clock_timestamp() WHERE id=$1 AND state='running' AND \
             claim_token=$2 AND lease_expires_at>clock_timestamp()",
-        )
+        ))
         .bind(claim.id)
         .bind(claim.token)
         .bind(failed)
@@ -282,12 +298,14 @@ impl Outbox {
     }
 
     pub async fn cancel(&self, id: Uuid, token: Option<Uuid>) -> Result<bool> {
-        Ok(sqlx::query(
-            "UPDATE jobs SET state='cancelled',payload=payload-'token',claim_token=NULL,\
+        Ok(sqlx::query(concat!(
+            "UPDATE jobs SET state='cancelled',payload=",
+            finished_payload!(),
+            ",claim_token=NULL,\
             lease_expires_at=NULL,finished_at=clock_timestamp(),\
             updated_at=clock_timestamp() WHERE id=$1 AND ((state='pending' AND \
             $2::uuid IS NULL) OR (state='running' AND claim_token=$2))",
-        )
+        ))
         .bind(id)
         .bind(token)
         .execute(&self.pool)
