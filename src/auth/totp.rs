@@ -547,6 +547,15 @@ mod tests {
     }
 
     #[test]
+    fn a_colon_in_the_email_is_escaped_in_the_label() {
+        assert_eq!(
+            otpauth_uri("alice:ops@example.com", "MY"),
+            "otpauth://totp/Blackwall:alice%3Aops@example.com?secret=MY&issuer=Blackwall\
+             &algorithm=SHA1&digits=6&period=30"
+        );
+    }
+
+    #[test]
     fn base32_matches_rfc_4648() {
         assert_eq!(base32(b""), "");
         assert_eq!(base32(b"f"), "MY");

@@ -6,8 +6,8 @@ use axum::{
 };
 use blackwall::{
     auth::{
-        Login, Register, ResetPassword, ResetRequest, Session, SignIn, TotpConfirm, TotpEnable,
-        TotpLogin,
+        Login, PasswordChange, Register, ResetPassword, ResetRequest, Session, SignIn, TotpConfirm,
+        TotpEnable, TotpLogin,
     },
     error::Error,
     store::Store,
@@ -560,7 +560,10 @@ async fn a_login_decides_after_a_concurrent_enrollment_commits() {
 
     let mut enrollment = lock_user(&store, user.profile.id).await;
     let login = spawn_login(&store, &user.profile.email, PASSWORD);
-    lock_waiters(&store, 1).await;
+    assert!(
+        lock_waiters(&store, 1).await,
+        "the login waits for the user row enrollment holds"
+    );
     sqlx::query(
         "INSERT INTO user_totp (user_id, secret, enabled_at, last_step) \
          VALUES ($1, '\\x3132333435363738393031323334353637383930', now(), 0)",
@@ -638,7 +641,10 @@ async fn a_login_fails_if_the_password_changes_before_it_finishes() {
 
     let mut change = lock_user(&store, user.profile.id).await;
     let login = spawn_login(&store, &user.profile.email, PASSWORD);
-    lock_waiters(&store, 1).await;
+    assert!(
+        lock_waiters(&store, 1).await,
+        "the login waits for the user row the password change holds"
+    );
     sqlx::query("UPDATE users SET password_hash = 'changed' WHERE id = $1")
         .bind(user.profile.id)
         .execute(&mut *change)
@@ -716,7 +722,7 @@ async fn enabling_needs_the_password_and_the_session_that_started_setup() {
         "another session can't replace the secret"
     );
 
-    let (status, _, _) = call(
+    let (status, wrong_password, _) = call(
         &app,
         "POST",
         "/internal-api/auth/totp/enable",
@@ -728,6 +734,21 @@ async fn enabling_needs_the_password_and_the_session_that_started_setup() {
         status,
         StatusCode::BAD_REQUEST,
         "enabling needs the password"
+    );
+    assert!(!enabled().await);
+
+    let (status, wrong_code, _) = call(
+        &app,
+        "POST",
+        "/internal-api/auth/totp/enable",
+        laptop_token,
+        Some(json!({"password": PASSWORD, "code": authenticator.wrong()})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        wrong_code, wrong_password,
+        "the error doesn't say whether the password was right"
     );
     assert!(!enabled().await);
 
@@ -822,6 +843,262 @@ async fn the_otpauth_label_keeps_a_percent_sign_in_the_email() {
     assert!(
         uri.starts_with(&format!("otpauth://totp/Blackwall:{encoded}@example.com?")),
         "{uri}"
+    );
+
+    store.pool.close().await;
+    database.cleanup().await;
+}
+
+/// Takes the TOTP row lock that checking a code takes, until the returned
+/// transaction ends.
+async fn lock_totp(store: &Store, user: Uuid) -> sqlx::Transaction<'static, sqlx::Postgres> {
+    let mut tx = store.pool.begin().await.unwrap();
+    sqlx::query("SELECT 1 FROM user_totp WHERE user_id = $1 FOR UPDATE")
+        .bind(user)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx
+}
+
+fn spawn_exchange(
+    store: &Store,
+    pending_token: String,
+    code: String,
+) -> tokio::task::JoinHandle<Result<Session, Error>> {
+    let store = store.clone();
+    tokio::spawn(async move {
+        store
+            .login_totp(TotpLogin {
+                pending_token,
+                code,
+            })
+            .await
+    })
+}
+
+async fn session_count(store: &Store, user: Uuid) -> i64 {
+    sqlx::query_scalar("SELECT count(*) FROM sessions WHERE user_id = $1")
+        .bind(user)
+        .fetch_one(&store.pool)
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn a_pending_login_ends_with_a_password_change_in_progress() {
+    let database = support::TestDatabase::new().await;
+    let store = Store::connect(&database.url).await.unwrap();
+    let user = account(&store).await;
+    let (mut authenticator, _) = enable(&store, &user).await;
+    let pending_token = pending(&store, &user).await;
+
+    let mut change = lock_user(&store, user.profile.id).await;
+    sqlx::query("UPDATE users SET password_hash = 'changed' WHERE id = $1")
+        .bind(user.profile.id)
+        .execute(&mut *change)
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM sessions WHERE user_id = $1")
+        .bind(user.profile.id)
+        .execute(&mut *change)
+        .await
+        .unwrap();
+    let exchange = spawn_exchange(&store, pending_token, authenticator.next());
+    let waited = lock_waiters(&store, 1).await;
+    sqlx::query("DELETE FROM pending_logins WHERE user_id = $1")
+        .bind(user.profile.id)
+        .execute(&mut *change)
+        .await
+        .unwrap();
+    change.commit().await.unwrap();
+
+    assert!(
+        matches!(exchange.await.unwrap(), Err(Error::BadRequest(_))),
+        "a pending login from before the password change can't sign in after it"
+    );
+    assert!(waited, "the exchange waits for the user row");
+    assert_eq!(session_count(&store, user.profile.id).await, 0);
+
+    store.pool.close().await;
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn a_pending_login_is_bound_to_the_password_it_checked() {
+    let database = support::TestDatabase::new().await;
+    let store = Store::connect(&database.url).await.unwrap();
+    let user = account(&store).await;
+    let (mut authenticator, _) = enable(&store, &user).await;
+    let pending_token = pending(&store, &user).await;
+    sqlx::query("CREATE TABLE saved_pending (LIKE pending_logins)")
+        .execute(&store.pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO saved_pending SELECT * FROM pending_logins")
+        .execute(&store.pool)
+        .await
+        .unwrap();
+
+    store
+        .change_password(
+            user.profile.id,
+            user.session_id,
+            PasswordChange {
+                current_password: PASSWORD.into(),
+                new_password: "changed-password-123".into(),
+            },
+        )
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO pending_logins SELECT * FROM saved_pending")
+        .execute(&store.pool)
+        .await
+        .unwrap();
+
+    assert!(
+        matches!(
+            store
+                .login_totp(TotpLogin {
+                    pending_token,
+                    code: authenticator.next(),
+                })
+                .await,
+            Err(Error::BadRequest(_))
+        ),
+        "a pending login that checked the old password can't sign in"
+    );
+
+    store.pool.close().await;
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn disabling_during_an_exchange_ends_it_without_a_deadlock() {
+    let database = support::TestDatabase::new().await;
+    let store = Store::connect(&database.url).await.unwrap();
+    let user = account(&store).await;
+    let (mut authenticator, codes) = enable(&store, &user).await;
+    let pending_token = pending(&store, &user).await;
+
+    let totp = lock_totp(&store, user.profile.id).await;
+    let disable = tokio::spawn({
+        let (store, input) = (
+            store.clone(),
+            TotpConfirm {
+                password: PASSWORD.into(),
+                code: codes[0].clone(),
+            },
+        );
+        let (id, session) = (user.profile.id, user.session_id);
+        async move { store.disable_totp(id, session, input).await }
+    });
+    assert!(
+        lock_waiters(&store, 1).await,
+        "disabling waits for the TOTP row"
+    );
+    let exchange = spawn_exchange(&store, pending_token, authenticator.next());
+    assert!(lock_waiters(&store, 2).await, "the exchange waits too");
+    totp.commit().await.unwrap();
+
+    disable
+        .await
+        .unwrap()
+        .expect("disabling doesn't deadlock with the exchange");
+    assert!(
+        matches!(exchange.await.unwrap(), Err(Error::BadRequest(_))),
+        "turning TOTP off ends the pending login"
+    );
+    assert_eq!(session_count(&store, user.profile.id).await, 1);
+
+    store.pool.close().await;
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn a_reset_during_an_exchange_signs_out_its_session_without_a_deadlock() {
+    let database = support::TestDatabase::new().await;
+    let mut store = Store::connect(&database.url).await.unwrap();
+    store.mail_enabled = true;
+    let user = account(&store).await;
+    let (mut authenticator, _) = enable(&store, &user).await;
+    let pending_token = pending(&store, &user).await;
+    store
+        .request_reset(ResetRequest {
+            email: user.profile.email.clone(),
+        })
+        .await
+        .unwrap();
+    let reset_token: String = sqlx::query_scalar(
+        "SELECT payload->>'token' FROM jobs WHERE kind='email' \
+         AND payload->>'subject'='Reset your Blackwall password' AND payload->>'to'=$1",
+    )
+    .bind(&user.profile.email)
+    .fetch_one(&store.pool)
+    .await
+    .unwrap();
+
+    let totp = lock_totp(&store, user.profile.id).await;
+    let exchange = spawn_exchange(&store, pending_token, authenticator.next());
+    assert!(
+        lock_waiters(&store, 1).await,
+        "the exchange waits for the TOTP row"
+    );
+    let reset = tokio::spawn({
+        let store = store.clone();
+        async move {
+            store
+                .reset_password(ResetPassword {
+                    token: reset_token,
+                    password: "recovered-password-123".into(),
+                })
+                .await
+        }
+    });
+    assert!(lock_waiters(&store, 2).await, "the reset waits too");
+    totp.commit().await.unwrap();
+
+    reset
+        .await
+        .unwrap()
+        .expect("the reset doesn't deadlock with the exchange");
+    let session = exchange
+        .await
+        .unwrap()
+        .expect("the exchange finished before the reset, so it signed in");
+    assert!(
+        store.authenticate(&session.token, None).await.is_err(),
+        "the reset signs out the session the exchange made"
+    );
+
+    store.pool.close().await;
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn signing_out_everywhere_ends_pending_logins() {
+    let database = support::TestDatabase::new().await;
+    let store = Store::connect(&database.url).await.unwrap();
+    let user = account(&store).await;
+    let (mut authenticator, _) = enable(&store, &user).await;
+    let pending_token = pending(&store, &user).await;
+
+    store
+        .revoke_other_sessions(user.profile.id, user.session_id)
+        .await
+        .unwrap();
+
+    assert!(
+        matches!(
+            store
+                .login_totp(TotpLogin {
+                    pending_token,
+                    code: authenticator.next(),
+                })
+                .await,
+            Err(Error::BadRequest(_))
+        ),
+        "a pending login can't outlive signing out everywhere"
     );
 
     store.pool.close().await;
