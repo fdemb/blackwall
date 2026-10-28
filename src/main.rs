@@ -4,7 +4,7 @@ use uuid::Uuid;
 
 type MainResult = Result<(), Box<dyn std::error::Error>>;
 
-const USAGE: &str = "blackwall [serve|worker|migrate|fixtures empty|fixtures rich|queue status|queue failed [limit]|queue retry <uuid>|queue cancel <uuid>]\nQueue administration requires shell access and DATABASE_URL credentials. Payloads are never displayed.";
+const USAGE: &str = "blackwall [serve|worker|migrate|fixtures empty|fixtures rich|queue status|queue failed [limit]|queue retry <uuid>|queue cancel <uuid>|totp disable <email>]\nQueue administration requires shell access and DATABASE_URL credentials. Payloads are never displayed.\n`totp disable` turns off two-factor sign-in for one account that lost its authenticator and recovery codes.";
 
 #[tokio::main]
 async fn main() -> MainResult {
@@ -37,6 +37,7 @@ async fn main() -> MainResult {
             .await
             .map_err(Into::into),
         (Some("queue"), _) => queue_admin(&store, &args[1..]).await,
+        (Some("totp"), 3) if args[1] == "disable" => disable_totp(&store, &args[2]).await,
         (Some("worker"), 1) => run_worker(&store).await,
         (Some("serve"), 1) | (None, _) => serve(&store).await,
         _ => return Err("unknown arguments; use --help".into()),
@@ -107,6 +108,15 @@ async fn queue_admin(store: &Store, args: &[String]) -> MainResult {
         }
         _ => Err("use queue status|failed [limit]|retry <uuid>|cancel <uuid>".into()),
     }
+}
+
+async fn disable_totp(store: &Store, email: &str) -> MainResult {
+    if !store.reset_totp(email).await? {
+        return Err(format!("no account with two-factor sign-in on for {email}").into());
+    }
+
+    println!("two-factor sign-in disabled for {email}");
+    Ok(())
 }
 
 async fn print_queue_status(store: &Store) -> MainResult {

@@ -74,12 +74,21 @@ export type AuthOptions = {
 /** A pending invitation to the registering address. */
 export type Invitation = { workspace_id: string; token: string };
 
+type SignedIn = { csrf_token: string; profile: Profile };
+
 export const auth = {
   me: () => api<Profile & { session_id: string }>("/internal-api/me"),
+  /** Accounts with two-factor sign-in get a pending token for `loginTotp` instead of a session. */
   login: (email: string, password: string) =>
-    api<{ csrf_token: string; profile: Profile }>("/internal-api/auth/login", {
+    api<SignedIn | { pending_token: string }>("/internal-api/auth/login", {
       method: "POST",
       body: { email, password },
+    }),
+  /** `code` is a six-digit authenticator code or a recovery code. */
+  loginTotp: (pending_token: string, code: string) =>
+    api<SignedIn>("/internal-api/auth/login/totp", {
+      method: "POST",
+      body: { pending_token, code },
     }),
   options: () => api<AuthOptions>("/internal-api/auth/options"),
   register: (email: string, password: string, display_name: string, invitation?: Invitation) =>
@@ -101,6 +110,26 @@ export const auth = {
     }),
   editProfile: (profile: Omit<Profile, "id" | "email">) =>
     api<Profile>("/internal-api/me", { method: "PATCH", body: profile }),
+};
+
+export const totp = {
+  status: () => api<{ enabled: boolean; recovery_codes_left: number }>("/internal-api/auth/totp"),
+  setup: () =>
+    api<{ secret: string; uri: string; qr_svg: string }>("/internal-api/auth/totp/setup", {
+      method: "POST",
+    }),
+  enable: (password: string, code: string) =>
+    api<{ codes: string[] }>("/internal-api/auth/totp/enable", {
+      method: "POST",
+      body: { password, code },
+    }),
+  disable: (password: string, code: string) =>
+    api<null>("/internal-api/auth/totp/disable", { method: "POST", body: { password, code } }),
+  regenerateCodes: (password: string, code: string) =>
+    api<{ codes: string[] }>("/internal-api/auth/totp/recovery-codes", {
+      method: "POST",
+      body: { password, code },
+    }),
 };
 
 export const sessions = {

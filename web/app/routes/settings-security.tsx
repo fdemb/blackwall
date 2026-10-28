@@ -7,6 +7,7 @@ import { Button } from "~/components/ui/button";
 import { TextField } from "~/components/ui/field";
 import { useToast } from "~/components/ui/toast";
 import { ConfirmDialog } from "~/components/app/confirm";
+import { TwoFactor } from "~/components/app/two-factor";
 import {
   SettingsList,
   SettingsPage,
@@ -71,6 +72,9 @@ export default function Security() {
           </Button>
         </Form>
       </SettingsSection>
+      <TwoFactor
+        onSessionsChanged={() => void client.invalidateQueries({ queryKey: sessionsKey })}
+      />
       <Sessions />
       <SettingsSection>
         <SettingsRow label={t("nav.signOut")} description={t("account.signOutSub")}>

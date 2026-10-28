@@ -1,0 +1,30 @@
+-- enabled_at stays NULL while setup waits for the first valid code.
+-- last_step is the newest accepted time step, so a code can't be replayed.
+-- setup_session is the session that started setup; only it can finish setup.
+CREATE TABLE user_totp(
+    user_id uuid PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    secret bytea NOT NULL,
+    enabled_at timestamptz,
+    last_step bigint,
+    setup_session uuid,
+    setup_started_at timestamptz
+);
+
+CREATE TABLE totp_recovery_codes(
+    user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    code_hash text NOT NULL,
+    PRIMARY KEY(user_id, code_hash)
+);
+
+-- A correct password on an account with TOTP, waiting for its second factor.
+-- credential is the SHA-256 of the password hash the login checked, so a
+-- password change ends the pending login even if the row survives it.
+CREATE TABLE pending_logins(
+    token_hash text PRIMARY KEY,
+    user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    credential text NOT NULL,
+    expires_at timestamptz NOT NULL,
+    failed_attempts int NOT NULL DEFAULT 0
+);
+CREATE INDEX pending_logins_user ON pending_logins(user_id);
+CREATE INDEX pending_logins_expiry ON pending_logins(expires_at);

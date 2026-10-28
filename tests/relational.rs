@@ -716,6 +716,8 @@ async fn fixtures_load_transactionally_and_migrations_are_repeatable() {
             password: "fixture-password-123".into(),
         })
         .await
+        .unwrap()
+        .session()
         .unwrap();
     assert_eq!(
         login.profile.id,

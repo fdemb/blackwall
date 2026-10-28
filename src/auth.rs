@@ -13,6 +13,11 @@ use sha2::{Digest, Sha256};
 use sqlx::{PgConnection, Row, types::Json};
 use uuid::Uuid;
 
+mod totp;
+pub use totp::{
+    PendingLogin, RecoveryCodes, TotpConfirm, TotpEnable, TotpLogin, TotpSetup, TotpStatus,
+};
+
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Language {
@@ -131,6 +136,21 @@ pub struct VerifyEmail {
 pub struct Login {
     pub email: String,
     pub password: String,
+}
+
+pub enum SignIn {
+    Session(Session),
+    /// The password was right, and the account also needs a TOTP or recovery code.
+    TotpRequired(PendingLogin),
+}
+
+impl SignIn {
+    pub fn session(self) -> Option<Session> {
+        match self {
+            Self::Session(session) => Some(session),
+            Self::TotpRequired(_) => None,
+        }
+    }
 }
 
 #[derive(Serialize, utoipa::ToSchema)]
@@ -339,37 +359,19 @@ impl Store {
         }
 
         tx.commit().await?;
-        Ok(Registered::Session(self.create_session(profile).await?))
+        let session = create_session(&mut *self.pool.acquire().await?, profile).await?;
+        Ok(Registered::Session(session))
     }
 
-    async fn create_session(&self, profile: Profile) -> Result<Session> {
-        let token = token();
-        let session_id = Uuid::new_v4();
-        sqlx::query(
-            "INSERT INTO sessions (token_hash, user_id, public_id, expires_at) VALUES ($1, $2, $3, $4)",
-        )
-        .bind(hash(&token))
-        .bind(profile.id)
-        .bind(session_id)
-        .bind(Utc::now() + Duration::days(SESSION_LIFETIME_DAYS))
-        .execute(&self.pool)
-        .await?;
-
-        Ok(Session {
-            csrf_token: csrf(&token),
-            token,
-            session_id,
-            profile,
-        })
-    }
-
-    pub async fn login(&self, input: Login) -> Result<Session> {
+    /// Checks the password. Accounts with TOTP get a pending login instead of
+    /// a session, after the same password check as every other account.
+    pub async fn login(&self, input: Login) -> Result<SignIn> {
         if input.password.len() > 256 {
             return Err(Error::Unauthorized);
         }
 
         let row = sqlx::query(
-            "SELECT id, email, password_hash, profile, email_verified_at IS NOT NULL AS verified \
+            "SELECT id, email, password_hash, email_verified_at IS NOT NULL AS verified \
              FROM users WHERE email = $1",
         )
         .bind(input.email.trim().to_lowercase())
@@ -382,7 +384,8 @@ impl Store {
             return Err(Error::Unauthorized);
         };
 
-        if !verify(input.password, row.try_get("password_hash")?).await? {
+        let encoded: String = row.try_get("password_hash")?;
+        if !verify(input.password, encoded.clone()).await? {
             return Err(Error::Unauthorized);
         }
 
@@ -395,8 +398,30 @@ impl Store {
             )));
         }
 
-        self.create_session(row.try_get::<Json<Profile>, _>("profile")?.0)
-            .await
+        let user: Uuid = row.try_get("id")?;
+        let mut tx = self.pool.begin().await?;
+        if lock_user(&mut tx, user).await? != encoded {
+            return Err(Error::Unauthorized);
+        }
+        let needs_code: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM user_totp WHERE user_id = $1 AND enabled_at IS NOT NULL)",
+        )
+        .bind(user)
+        .fetch_one(&mut *tx)
+        .await?;
+        let sign_in = if needs_code {
+            SignIn::TotpRequired(totp::pending_login(&mut tx, user, &encoded).await?)
+        } else {
+            let profile: Json<Profile> =
+                sqlx::query_scalar("SELECT profile FROM users WHERE id = $1")
+                    .bind(user)
+                    .fetch_one(&mut *tx)
+                    .await?;
+            SignIn::Session(create_session(&mut tx, profile.0).await?)
+        };
+        tx.commit().await?;
+
+        Ok(sign_in)
     }
 
     async fn remind_verification(&self, user: Uuid, email: String) -> Result<()> {
@@ -564,15 +589,24 @@ impl Store {
         Ok(())
     }
 
+    /// Signs out every other session and ends pending logins, so a password
+    /// someone else already entered needs entering again.
     pub async fn revoke_other_sessions(&self, user: Uuid, current: Uuid) -> Result<u64> {
-        Ok(
-            sqlx::query("DELETE FROM sessions WHERE user_id = $1 AND public_id <> $2")
-                .bind(user)
-                .bind(current)
-                .execute(&self.pool)
-                .await?
-                .rows_affected(),
-        )
+        let mut tx = self.pool.begin().await?;
+        lock_user(&mut tx, user).await?;
+        sqlx::query("DELETE FROM pending_logins WHERE user_id = $1")
+            .bind(user)
+            .execute(&mut *tx)
+            .await?;
+        let revoked = sqlx::query("DELETE FROM sessions WHERE user_id = $1 AND public_id <> $2")
+            .bind(user)
+            .bind(current)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected();
+        tx.commit().await?;
+
+        Ok(revoked)
     }
 
     /// Changes the password and signs out every other session. The session
@@ -596,18 +630,19 @@ impl Store {
 
         let encoded = password_hash(input.new_password).await?;
         let mut tx = self.pool.begin().await?;
-        let result =
-            sqlx::query("UPDATE users SET password_hash = $1 WHERE id = $2 AND password_hash = $3")
-                .bind(encoded)
-                .bind(user)
-                .bind(previous)
-                .execute(&mut *tx)
-                .await?;
-
-        if result.rows_affected() != 1 {
+        if lock_user(&mut tx, user).await? != previous {
             return Err(Error::Conflict("password changed concurrently".into()));
         }
+        sqlx::query("UPDATE users SET password_hash = $1 WHERE id = $2")
+            .bind(encoded)
+            .bind(user)
+            .execute(&mut *tx)
+            .await?;
 
+        sqlx::query("DELETE FROM pending_logins WHERE user_id = $1")
+            .bind(user)
+            .execute(&mut *tx)
+            .await?;
         sqlx::query("DELETE FROM sessions WHERE user_id = $1 AND public_id <> $2")
             .bind(user)
             .bind(current_session)
@@ -706,6 +741,10 @@ impl Store {
             .execute(&mut *tx)
             .await?;
 
+        sqlx::query("DELETE FROM pending_logins WHERE user_id = $1")
+            .bind(user)
+            .execute(&mut *tx)
+            .await?;
         sqlx::query("DELETE FROM sessions WHERE user_id = $1")
             .bind(user)
             .execute(&mut *tx)
@@ -725,6 +764,46 @@ impl Store {
 
         Ok(())
     }
+}
+
+/// Locks the user row until the transaction ends and returns the password
+/// hash, so a sign-in decides against credentials no one is changing.
+///
+/// Every transaction that changes more than one of a user's password, TOTP
+/// state, recovery codes, pending logins and sessions locks in one order: this
+/// user row first, then the `user_totp` row, then `totp_recovery_codes` and
+/// `pending_logins` rows, then `sessions`. Password reset takes the user row
+/// with `FOR UPDATE OF users`, which conflicts with this lock too. Single
+/// statements that touch one table, such as TOTP setup, logout and the expiry
+/// sweep, wait on nothing while holding a lock, so they skip the user lock.
+async fn lock_user(tx: &mut PgConnection, user: Uuid) -> Result<String> {
+    Ok(
+        sqlx::query_scalar("SELECT password_hash FROM users WHERE id = $1 FOR NO KEY UPDATE")
+            .bind(user)
+            .fetch_one(&mut *tx)
+            .await?,
+    )
+}
+
+async fn create_session(conn: &mut PgConnection, profile: Profile) -> Result<Session> {
+    let token = token();
+    let session_id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO sessions (token_hash, user_id, public_id, expires_at) VALUES ($1, $2, $3, $4)",
+    )
+    .bind(hash(&token))
+    .bind(profile.id)
+    .bind(session_id)
+    .bind(Utc::now() + Duration::days(SESSION_LIFETIME_DAYS))
+    .execute(conn)
+    .await?;
+
+    Ok(Session {
+        csrf_token: csrf(&token),
+        token,
+        session_id,
+        profile,
+    })
 }
 
 async fn queue_verification(tx: &mut PgConnection, user: Uuid, email: String) -> Result<()> {

@@ -782,6 +782,8 @@ async fn scopes_return_every_record_for_only_the_requested_target() {
             password: "fixture-password-123".into(),
         })
         .await
+        .unwrap()
+        .session()
         .unwrap();
     let app = router(store.clone());
     let ws = Uuid::from_u128(0x20000000_0000_0000_0000_000000000010);

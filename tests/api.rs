@@ -1078,6 +1078,8 @@ async fn native_identity_and_atomic_password_recovery() {
             password: "test-password-123".into(),
         })
         .await
+        .unwrap()
+        .session()
         .unwrap();
     store.mail_enabled = true;
 
@@ -1222,6 +1224,8 @@ async fn native_identity_and_atomic_password_recovery() {
             password: "recovered-password-123".into(),
         })
         .await
+        .unwrap()
+        .session()
         .unwrap();
 
     store
@@ -1237,6 +1241,8 @@ async fn native_identity_and_atomic_password_recovery() {
             password: "recovered-password-123".into(),
         })
         .await
+        .unwrap()
+        .session()
         .unwrap();
 
     store
@@ -1306,6 +1312,8 @@ async fn native_identity_and_atomic_password_recovery() {
             password: "changed-password-123".into(),
         })
         .await
+        .unwrap()
+        .session()
         .unwrap();
 
     sqlx::query(
@@ -1761,8 +1769,8 @@ async fn sessions_list_revoke_and_survive_password_change() {
             password: "test-password-123".into(),
         })
     };
-    let phone = login().await.unwrap();
-    let tablet = login().await.unwrap();
+    let phone = login().await.unwrap().session().unwrap();
+    let tablet = login().await.unwrap().session().unwrap();
     let stranger = account(&store, "stranger").await;
 
     let response = app
@@ -1845,7 +1853,7 @@ async fn sessions_list_revoke_and_survive_password_change() {
     assert!(store.authenticate(&tablet.token, None).await.is_err());
     assert!(store.authenticate(&laptop.token, None).await.is_ok());
 
-    let desktop = login().await.unwrap();
+    let desktop = login().await.unwrap().session().unwrap();
     let (status, value) = call(
         &app,
         "POST",
