@@ -1224,8 +1224,7 @@ mod tests {
     }
 
     /// Moves three issues into a done stage in one bulk edit, with one webhook subscribed to
-    /// everything, and returns the `issue.completed` deliveries and how often the transaction
-    /// read `milestones`, which only the directory reads here.
+    /// everything, and returns the `issue.completed` deliveries and the directory loads.
     async fn bulk_complete(store: &Store, include_data: bool) -> (Vec<serde_json::Value>, i64) {
         let name = format!("bulk-{include_data}");
         let (workspace, actor, team) = import_workspace(store, &name).await;
@@ -1264,6 +1263,7 @@ mod tests {
             .begin_operation(workspace, actor, BTreeMap::new(), false)
             .await
             .unwrap();
+        let before = milestone_reads(&mut op.tx).await;
         op.run_command(
             Command::BulkIssues {
                 ids,
@@ -1285,15 +1285,22 @@ mod tests {
         .fetch_all(&mut *op.tx)
         .await
         .unwrap();
-        let reads: i64 = sqlx::query_scalar(
+        let reads = milestone_reads(&mut op.tx).await - before;
+        op.tx.rollback().await.unwrap();
+        (completed, reads)
+    }
+
+    /// Only the directory reads `milestones` here, so this counts directory loads. The counter
+    /// can include reads of earlier transactions on the same connection that Postgres has not
+    /// flushed yet, so callers compare two readings.
+    async fn milestone_reads(conn: &mut PgConnection) -> i64 {
+        sqlx::query_scalar(
             "SELECT seq_scan+COALESCE(idx_scan,0) FROM pg_stat_xact_user_tables \
              WHERE relname='milestones'",
         )
-        .fetch_one(&mut *op.tx)
+        .fetch_one(conn)
         .await
-        .unwrap();
-        op.tx.rollback().await.unwrap();
-        (completed, reads)
+        .unwrap()
     }
 
     #[tokio::test]
