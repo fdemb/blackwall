@@ -276,12 +276,14 @@ pub async fn create_team(
     let result = run(
         &store,
         scope,
-        Command::CreateTeam {
-            id: None,
-            name: body.name,
-            key: body.key,
-            members: body.members,
-            default_stage_ids: None,
+        async {
+            Ok(Command::CreateTeam {
+                id: None,
+                name: body.name,
+                key: body.key,
+                members: body.members,
+                default_stage_ids: None,
+            })
         },
         None,
         options,
@@ -315,14 +317,16 @@ pub async fn update_team(
     Json(body): Json<UpdateTeam>,
 ) -> Result<Response> {
     let scope = actor.write(workspace)?;
-    let current: Team = record(&store, scope, "teams", team).await?;
     run(
         &store,
         scope,
-        Command::UpdateTeam {
-            id: team,
-            name: body.name.unwrap_or(current.name),
-            key: body.key.unwrap_or(current.key),
+        async {
+            let current: Team = record(&store, scope, "teams", team).await?;
+            Ok(Command::UpdateTeam {
+                id: team,
+                name: body.name.unwrap_or(current.name),
+                key: body.key.unwrap_or(current.key),
+            })
         },
         Some(team),
         options,
@@ -348,7 +352,7 @@ pub async fn delete_team(
     run(
         &store,
         actor.write(workspace)?,
-        Command::DeleteTeam { id: team },
+        async { Ok(Command::DeleteTeam { id: team }) },
         Some(team),
         options,
     )
@@ -424,27 +428,29 @@ pub async fn create_stage(
     Json(body): Json<CreateStage>,
 ) -> Result<Response> {
     let scope = actor.write(workspace)?;
-    let position = match body.position {
-        Some(position) => position,
-        None => {
-            let current: Team = record(&store, scope, "teams", team).await?;
-            current
-                .stages
-                .iter()
-                .map(|s| s.position + 1)
-                .max()
-                .unwrap_or(0)
-        }
-    };
     let result = run(
         &store,
         scope,
-        Command::CreateStage {
-            id: None,
-            team_id: team,
-            name: body.name,
-            kind: body.kind,
-            position,
+        async {
+            let position = match body.position {
+                Some(position) => position,
+                None => {
+                    let current: Team = record(&store, scope, "teams", team).await?;
+                    current
+                        .stages
+                        .iter()
+                        .map(|s| s.position + 1)
+                        .max()
+                        .unwrap_or(0)
+                }
+            };
+            Ok(Command::CreateStage {
+                id: None,
+                team_id: team,
+                name: body.name,
+                kind: body.kind,
+                position,
+            })
         },
         None,
         options,
@@ -477,16 +483,18 @@ pub async fn update_stage(
     Json(body): Json<UpdateStage>,
 ) -> Result<Response> {
     let scope = actor.write(workspace)?;
-    let current = team_stage(&store, scope, team, stage).await?;
     run(
         &store,
         scope,
-        Command::UpdateStage {
-            team_id: team,
-            id: stage,
-            name: body.name.unwrap_or(current.name),
-            kind: body.kind.unwrap_or(current.kind),
-            position: body.position.unwrap_or(current.position),
+        async {
+            let current = team_stage(&store, scope, team, stage).await?;
+            Ok(Command::UpdateStage {
+                team_id: team,
+                id: stage,
+                name: body.name.unwrap_or(current.name),
+                kind: body.kind.unwrap_or(current.kind),
+                position: body.position.unwrap_or(current.position),
+            })
         },
         Some(stage),
         options,
@@ -520,10 +528,12 @@ pub async fn delete_stage(
     run(
         &store,
         actor.write(workspace)?,
-        Command::DeleteStage {
-            team_id: team,
-            id: stage,
-            replacement: query.replacement,
+        async {
+            Ok(Command::DeleteStage {
+                team_id: team,
+                id: stage,
+                replacement: query.replacement,
+            })
         },
         Some(stage),
         options,
@@ -591,10 +601,12 @@ pub async fn create_label(
     let result = run(
         &store,
         scope,
-        Command::CreateLabel {
-            id: None,
-            name: body.name,
-            color: body.color,
+        async {
+            Ok(Command::CreateLabel {
+                id: None,
+                name: body.name,
+                color: body.color,
+            })
         },
         None,
         options,
@@ -626,14 +638,16 @@ pub async fn update_label(
     Json(body): Json<UpdateLabel>,
 ) -> Result<Response> {
     let scope = actor.write(workspace)?;
-    let current: Label = record(&store, scope, "labels", label).await?;
     run(
         &store,
         scope,
-        Command::UpdateLabel {
-            id: label,
-            name: body.name.unwrap_or(current.name),
-            color: body.color.unwrap_or(current.color),
+        async {
+            let current: Label = record(&store, scope, "labels", label).await?;
+            Ok(Command::UpdateLabel {
+                id: label,
+                name: body.name.unwrap_or(current.name),
+                color: body.color.unwrap_or(current.color),
+            })
         },
         Some(label),
         options,
@@ -659,7 +673,7 @@ pub async fn delete_label(
     run(
         &store,
         actor.write(workspace)?,
-        Command::DeleteLabel { id: label },
+        async { Ok(Command::DeleteLabel { id: label }) },
         Some(label),
         options,
     )
@@ -728,11 +742,13 @@ pub async fn create_project(
     let result = run(
         &store,
         scope,
-        Command::CreateProject {
-            id: None,
-            name: body.name,
-            description: body.description,
-            team_ids: body.team_ids,
+        async {
+            Ok(Command::CreateProject {
+                id: None,
+                name: body.name,
+                description: body.description,
+                team_ids: body.team_ids,
+            })
         },
         None,
         options,
@@ -798,37 +814,40 @@ pub async fn update_project(
         target_date: body.target_date.unwrap_or(current.target_date),
     });
     let details = body.name.is_some() || body.description.is_some() || body.team_ids.is_some();
-    if details
-        && let Some(Command::SetProjectPlan {
-            lead_id,
-            start_date,
-            target_date,
-            ..
-        }) = &plan
-    {
-        crate::domain::validate_project_dates(*start_date, *target_date)?;
-        if let Some(lead) = lead_id {
-            let member: bool = sqlx::query_scalar(
-                "SELECT EXISTS(SELECT 1 FROM workspace_members WHERE workspace_id=$1 AND user_id=$2)",
-            )
-            .bind(workspace)
-            .bind(lead)
-            .fetch_one(&store.pool)
-            .await?;
-            if !member {
-                return Err(Error::Forbidden);
-            }
-        }
-    }
     if details || plan.is_none() {
+        let update = Command::UpdateProject {
+            id: project,
+            name: body.name.unwrap_or(current.name),
+            description: body.description.unwrap_or(current.description),
+            team_ids: body.team_ids.unwrap_or(current.team_ids),
+        };
         let result = run(
             &store,
             scope,
-            Command::UpdateProject {
-                id: project,
-                name: body.name.unwrap_or(current.name),
-                description: body.description.unwrap_or(current.description),
-                team_ids: body.team_ids.unwrap_or(current.team_ids),
+            async {
+                // The plan runs after these details commit, so check it first.
+                if let Some(Command::SetProjectPlan {
+                    lead_id,
+                    start_date,
+                    target_date,
+                    ..
+                }) = &plan
+                {
+                    crate::domain::validate_project_dates(*start_date, *target_date)?;
+                    if let Some(lead) = lead_id {
+                        let member: bool = sqlx::query_scalar(
+                            "SELECT EXISTS(SELECT 1 FROM workspace_members WHERE workspace_id=$1 AND user_id=$2)",
+                        )
+                        .bind(workspace)
+                        .bind(lead)
+                        .fetch_one(&store.pool)
+                        .await?;
+                        if !member {
+                            return Err(Error::Forbidden);
+                        }
+                    }
+                }
+                Ok(update)
             },
             Some(project),
             WriteOptions {
@@ -845,7 +864,7 @@ pub async fn update_project(
         options = options.step("plan");
     }
     if let Some(plan) = plan {
-        run(&store, scope, plan, Some(project), options).await?;
+        run(&store, scope, async { Ok(plan) }, Some(project), options).await?;
     }
     let project: Project = record(&store, scope, "projects", project).await?;
     Ok(one(StatusCode::OK, project))
@@ -867,7 +886,7 @@ pub async fn delete_project(
     run(
         &store,
         actor.write(workspace)?,
-        Command::DeleteProject { id: project },
+        async { Ok(Command::DeleteProject { id: project }) },
         Some(project),
         options,
     )
@@ -926,7 +945,7 @@ pub async fn delete_milestone(
     run(
         &store,
         actor.write(workspace)?,
-        Command::DeleteMilestone { id: milestone },
+        async { Ok(Command::DeleteMilestone { id: milestone }) },
         Some(milestone),
         options,
     )

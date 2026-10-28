@@ -409,12 +409,7 @@ impl Store {
                 "sha256": hex::encode(Sha256::digest(&a.bytes)),
             })),
         });
-        let request = sent.map(|sent| {
-            serde_json::json!({
-                "sent": sent,
-                "expected_versions": expected,
-            })
-        });
+        let request = sent.map(|sent| keyed_request(sent, &expected));
 
         let membership = membership_exclusive(&command);
 
@@ -492,6 +487,52 @@ impl Store {
         Ok(result)
     }
 
+    /// The stored result of a completed keyed request that sent exactly `sent`, so a
+    /// handler can replay it before merging or resolving anything that may have changed
+    /// since. A key recorded for another request is a conflict. Keys recorded by command,
+    /// and keys still in flight, return `None` and resolve inside the operation.
+    pub async fn replay(
+        &self,
+        workspace_id: Uuid,
+        actor: Uuid,
+        key: &str,
+        sent: serde_json::Value,
+        expected: &BTreeMap<Uuid, i64>,
+    ) -> Result<Option<OperationResult>> {
+        let mut conn = self.pool.acquire().await?;
+        let Some(row) = sqlx::query(
+            "SELECT request,result FROM operation_keys \
+             WHERE workspace_id=$1 AND actor=$2 AND key=$3 AND result IS NOT NULL",
+        )
+        .bind(workspace_id)
+        .bind(actor)
+        .bind(key)
+        .fetch_optional(&mut *conn)
+        .await?
+        else {
+            return Ok(None);
+        };
+        let stored: serde_json::Value = row.try_get("request")?;
+        if stored.get("sent").is_none() {
+            return Ok(None);
+        }
+        if stored != keyed_request(sent, expected) {
+            return Err(Error::Conflict(
+                "idempotency key reused for a different request".into(),
+            ));
+        }
+        let mut result: OperationResult = serde_json::from_value(row.try_get("result")?)?;
+        changes::render(
+            &mut conn,
+            workspace_id,
+            actor,
+            &mut result.changes,
+            changes::RecordShape::Rest,
+        )
+        .await?;
+        Ok(Some(result))
+    }
+
     pub(super) async fn begin_operation(
         &self,
         workspace_id: Uuid,
@@ -552,6 +593,13 @@ impl Store {
             limits: self.limits,
         })
     }
+}
+
+fn keyed_request(sent: serde_json::Value, expected: &BTreeMap<Uuid, i64>) -> serde_json::Value {
+    serde_json::json!({
+        "sent": sent,
+        "expected_versions": expected,
+    })
 }
 
 fn database_setting(name: &str, default: u32, min: u32, max: u32) -> Result<u32> {
