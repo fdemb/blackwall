@@ -23,7 +23,8 @@ import { ConfirmDialog } from "~/components/app/confirm";
 import { useToast } from "~/components/ui/toast";
 import { Markdown } from "~/components/app/markdown";
 import { MarkdownEditor } from "~/components/app/editor/rich-editor";
-import { formatMinutes, MAX_UPLOAD, relativeTime } from "~/lib/format";
+import { formatMinutes, MAX_UPLOAD, relativeTime, sprintLabel } from "~/lib/format";
+import { describeChanges, type ChangeNames } from "~/lib/activity-changes";
 import { useI18n, isTranslationKey, type Key } from "~/lib/i18n";
 import { usePending } from "~/lib/use-pending";
 import { useActivity, useComments, useTimeEntries } from "~/lib/queries";
@@ -146,19 +147,22 @@ function TimelineDot({ className, children }: { className?: string; children: Re
 function EventItem({ event, entries }: { event: Activity; entries: Map<Id, TimeEntry> }) {
   const { t, lang } = useI18n();
   const { member } = useWorkspace();
+  const names = useChangeNames();
   const fields = (event.fields ?? []).flatMap((f) => ISSUE_FIELDS[f] ?? []);
   const entry = event.entity_id ? entries.get(event.entity_id) : undefined;
   const meta = EVENTS[event.action];
-  const label =
-    event.action === "update_issue" && fields.length
-      ? t("timeline.changed", {
-          fields: fields.map((f) => t(f.label).toLocaleLowerCase(lang)).join(", "),
-        })
-      : event.action === "log_time" && entry
-        ? t("timeline.log_time", { time: formatMinutes(entry.minutes) })
-        : meta
-          ? t(meta.label)
-          : activityLabel(t, event.action);
+  // Board moves before stored values have no detail to add to "moved this issue".
+  const detailed =
+    fields.length > 0 &&
+    (event.action === "update_issue" ||
+      (event.action === "move_issue" && Boolean(event.changes?.length)));
+  const label = detailed
+    ? describeChanges(event.fields ?? [], event.changes ?? [], { t, lang, names }).join(", ")
+    : event.action === "log_time" && entry
+      ? t("timeline.log_time", { time: formatMinutes(entry.minutes) })
+      : meta
+        ? t(meta.label)
+        : activityLabel(t, event.action);
   // A single-field change shows that field's icon; several fields fall back to the generic edit icon.
   const Icon = (fields.length === 1 ? fields[0].icon : meta?.icon) ?? Pencil;
   return (
@@ -182,6 +186,29 @@ function EventItem({ event, entries }: { event: Activity; entries: Map<Id, TimeE
       </span>
     </li>
   );
+}
+
+/** Current names for the ids an activity row stores. */
+function useChangeNames(): ChangeNames {
+  const { t } = useI18n();
+  const { ws, member, team, stage, issueRef } = useWorkspace();
+  return {
+    team: (id) => team(id)?.name,
+    stage: (id) => stage(id)?.name,
+    assignee: (id) => member(id)?.display_name ?? t("person.unknown"),
+    labels: (id) => ws.labels.find((l) => l.id === id)?.name,
+    project: (id) => ws.projects.find((p) => p.id === id)?.name,
+    milestone: (id) => ws.milestones.find((m) => m.id === id)?.name,
+    sprint: (id) => {
+      const sprint = ws.sprints.find((s) => s.id === id);
+      return sprint && sprintLabel(sprint);
+    },
+    // issueRef falls back to the id itself when the issue is gone.
+    parent: (id) => {
+      const ref = issueRef(id);
+      return ref === id ? undefined : ref;
+    },
+  };
 }
 
 function CommentItem({ comment: c }: { comment: Comment }) {
