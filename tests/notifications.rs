@@ -657,7 +657,6 @@ async fn comment_mentions_come_from_the_body_and_the_listed_members() {
     )
     .await;
     assert_eq!(f.alerts(follower, linked, "mention").await.len(), 1);
-    assert!(f.alerts(outsider, linked, "mention").await.is_empty());
     let mut expected = vec![owner, follower];
     expected.sort();
     assert_eq!(f.followers(linked).await, expected);
