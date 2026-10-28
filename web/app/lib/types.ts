@@ -40,9 +40,10 @@ export type TeamColor = (typeof TEAM_COLORS)[number];
 
 export type Stage = Written<Schemas["Stage"]>;
 /** The server stores any string as icon and color; the client only draws its own sets. */
-export type Team = Without<Written<Schemas["Team"]>, "icon" | "color"> & {
+export type Team = Without<Written<Schemas["Team"]>, "icon" | "color" | "stages"> & {
   icon: TeamIcon;
   color: TeamColor;
+  stages: Stage[];
 };
 export type Label = Written<Schemas["Label"]>;
 export type ProjectStatus = Schemas["ProjectStatus"];
