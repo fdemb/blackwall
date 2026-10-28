@@ -7,7 +7,7 @@ use axum::{
 use blackwall::{
     auth::{
         Login, PasswordChange, Register, ResetPassword, ResetRequest, Session, SignIn, TotpConfirm,
-        TotpEnable, TotpLogin,
+        TotpEnable, TotpLogin, VerifyEmail,
     },
     error::Error,
     store::Store,
@@ -1101,6 +1101,171 @@ async fn signing_out_everywhere_ends_pending_logins() {
         ),
         "a pending login can't outlive signing out everywhere"
     );
+
+    store.pool.close().await;
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn an_expired_pending_login_is_rejected_without_waiting_for_the_user_lock() {
+    let database = support::TestDatabase::new().await;
+    let store = Store::connect(&database.url).await.unwrap();
+    let user = account(&store).await;
+    let (mut authenticator, _) = enable(&store, &user).await;
+    let pending_token = pending(&store, &user).await;
+    sqlx::query("UPDATE pending_logins SET expires_at = now() - interval '1 minute'")
+        .execute(&store.pool)
+        .await
+        .unwrap();
+
+    let held = lock_user(&store, user.profile.id).await;
+    let exchange = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        spawn_exchange(&store, pending_token, authenticator.next()),
+    )
+    .await
+    .expect("the exchange doesn't wait for the user lock")
+    .unwrap();
+    held.rollback().await.unwrap();
+
+    assert!(matches!(exchange, Err(Error::BadRequest(_))));
+
+    store.pool.close().await;
+    database.cleanup().await;
+}
+
+async fn emailed_token(store: &Store, subject: &str, to: &str) -> String {
+    sqlx::query_scalar(
+        "SELECT payload->>'token' FROM jobs WHERE kind='email' \
+         AND payload->>'subject'=$1 AND payload->>'to'=$2",
+    )
+    .bind(subject)
+    .bind(to)
+    .fetch_one(&store.pool)
+    .await
+    .unwrap()
+}
+
+#[tokio::test]
+async fn verifying_an_email_during_a_password_reset_does_not_deadlock() {
+    let database = support::TestDatabase::new().await;
+    let mut store = Store::connect(&database.url).await.unwrap();
+    store.mail_enabled = true;
+    let email = format!("verify-{}@example.com", Uuid::new_v4());
+    store
+        .register(Register {
+            email: email.clone(),
+            password: PASSWORD.into(),
+            display_name: "Verify".into(),
+            invitation: None,
+        })
+        .await
+        .unwrap();
+    store
+        .request_reset(ResetRequest {
+            email: email.clone(),
+        })
+        .await
+        .unwrap();
+    let verification = emailed_token(&store, "Verify your Blackwall email address", &email).await;
+    let reset_token = emailed_token(&store, "Reset your Blackwall password", &email).await;
+
+    let mut held = store.pool.begin().await.unwrap();
+    sqlx::query("SELECT 1 FROM email_verifications FOR UPDATE")
+        .execute(&mut *held)
+        .await
+        .unwrap();
+    let verify = tokio::spawn({
+        let store = store.clone();
+        async move {
+            store
+                .verify_email(VerifyEmail {
+                    token: verification,
+                })
+                .await
+        }
+    });
+    assert!(
+        lock_waiters(&store, 1).await,
+        "verification waits for the token row"
+    );
+    let reset = tokio::spawn({
+        let store = store.clone();
+        async move {
+            store
+                .reset_password(ResetPassword {
+                    token: reset_token,
+                    password: "recovered-password-123".into(),
+                })
+                .await
+        }
+    });
+    assert!(lock_waiters(&store, 2).await, "the reset waits too");
+    held.commit().await.unwrap();
+
+    verify
+        .await
+        .unwrap()
+        .expect("verification doesn't deadlock with the reset");
+    reset
+        .await
+        .unwrap()
+        .expect("the reset doesn't deadlock with verification");
+    let verified: bool =
+        sqlx::query_scalar("SELECT email_verified_at IS NOT NULL FROM users WHERE email = $1")
+            .bind(&email)
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+    assert!(verified);
+
+    store.pool.close().await;
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn a_new_account_appears_together_with_its_session() {
+    let database = support::TestDatabase::new().await;
+    let store = Store::connect(&database.url).await.unwrap();
+    let email = format!("register-{}@example.com", Uuid::new_v4());
+
+    let mut held = store.pool.begin().await.unwrap();
+    sqlx::query("LOCK TABLE sessions IN SHARE MODE")
+        .execute(&mut *held)
+        .await
+        .unwrap();
+    let register = tokio::spawn({
+        let (store, email) = (store.clone(), email.clone());
+        async move {
+            store
+                .register(Register {
+                    email,
+                    password: PASSWORD.into(),
+                    display_name: "Register".into(),
+                    invitation: None,
+                })
+                .await
+        }
+    });
+    assert!(
+        lock_waiters(&store, 1).await,
+        "registration waits to create its session"
+    );
+    // A password change or reset can only revoke sessions of an account it
+    // can see, so a visible account without its session would keep one.
+    let visible: i64 = sqlx::query_scalar("SELECT count(*) FROM users WHERE email = $1")
+        .bind(&email)
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+    held.commit().await.unwrap();
+    let session = register.await.unwrap().unwrap().session().unwrap();
+
+    assert_eq!(
+        visible, 0,
+        "the account stays hidden until its session exists"
+    );
+    store.authenticate(&session.token, None).await.unwrap();
 
     store.pool.close().await;
     database.cleanup().await;

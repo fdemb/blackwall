@@ -358,8 +358,8 @@ impl Store {
             return Ok(Registered::VerificationSent);
         }
 
+        let session = create_session(&mut tx, profile).await?;
         tx.commit().await?;
-        let session = create_session(&mut *self.pool.acquire().await?, profile).await?;
         Ok(Registered::Session(session))
     }
 
@@ -448,18 +448,30 @@ impl Store {
     }
 
     pub async fn verify_email(&self, input: VerifyEmail) -> Result<()> {
+        let token_hash = hash(&input.token);
+        let invalid = || Error::BadRequest("verification link invalid or expired".into());
         let mut tx = self.pool.begin().await?;
         let user: Uuid = sqlx::query_scalar(
-            "DELETE FROM email_verifications WHERE token_hash=$1 AND expires_at>$2 \
-             RETURNING user_id",
+            "SELECT user_id FROM email_verifications WHERE token_hash=$1 AND expires_at>$2",
         )
-        .bind(hash(&input.token))
+        .bind(&token_hash)
         .bind(Utc::now())
         .fetch_optional(&mut *tx)
         .await?
-        .ok_or(Error::BadRequest(
-            "verification link invalid or expired".into(),
-        ))?;
+        .ok_or_else(invalid)?;
+
+        lock_user(&mut tx, user).await?;
+        let consumed = sqlx::query(
+            "DELETE FROM email_verifications WHERE token_hash=$1 AND user_id=$2 AND expires_at>$3",
+        )
+        .bind(token_hash)
+        .bind(user)
+        .bind(Utc::now())
+        .execute(&mut *tx)
+        .await?;
+        if consumed.rows_affected() != 1 {
+            return Err(invalid());
+        }
 
         mark_verified(&mut tx, user).await?;
         tx.commit().await?;
@@ -769,13 +781,17 @@ impl Store {
 /// Locks the user row until the transaction ends and returns the password
 /// hash, so a sign-in decides against credentials no one is changing.
 ///
-/// Every transaction that changes more than one of a user's password, TOTP
-/// state, recovery codes, pending logins and sessions locks in one order: this
-/// user row first, then the `user_totp` row, then `totp_recovery_codes` and
-/// `pending_logins` rows, then `sessions`. Password reset takes the user row
-/// with `FOR UPDATE OF users`, which conflicts with this lock too. Single
-/// statements that touch one table, such as TOTP setup, logout and the expiry
-/// sweep, wait on nothing while holding a lock, so they skip the user lock.
+/// Every transaction that changes more than one of a user's password, email
+/// verifications, TOTP state, recovery codes, pending logins and sessions
+/// takes this lock before it locks or changes any of those rows. Password
+/// reset takes the user row with `FOR UPDATE OF users`, which conflicts with
+/// this lock too. Two such transactions for one user run one after the other,
+/// so the order of their later statements can't deadlock.
+///
+/// Logout, the expiry sweep and TOTP setup skip the user lock. Each is one
+/// statement on one table that waits on nothing while holding a lock. TOTP
+/// setup's insert can wait on the user row for its foreign key check, but
+/// only another setup for the same user can wait on its uncommitted row.
 async fn lock_user(tx: &mut PgConnection, user: Uuid) -> Result<String> {
     Ok(
         sqlx::query_scalar("SELECT password_hash FROM users WHERE id = $1 FOR NO KEY UPDATE")

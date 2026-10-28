@@ -205,9 +205,11 @@ fn otpauth_uri(email: &str, secret: &str) -> String {
     uri.path_segments_mut()
         .expect("otpauth URLs have a path")
         .pop_if_empty()
-        .push(email);
-    // A colon in the account name would read as the issuer separator.
-    let account = uri.path()[1..].replace(':', "%3A");
+        // Authenticators decode the label before they split issuer from
+        // account at the colon, so a colon in the email becomes U+2236 RATIO,
+        // which looks the same and has no compatibility mapping back to `:`.
+        .push(&email.replace(':', "\u{2236}"));
+    let account = uri.path()[1..].to_owned();
     uri.set_path(&format!("/Blackwall:{account}"));
     uri.query_pairs_mut()
         .append_pair("secret", secret)
@@ -266,12 +268,14 @@ impl Store {
         let token_hash = hash(&input.pending_token);
         let expired = || Error::BadRequest("sign-in expired; enter your password again".into());
         let mut tx = self.pool.begin().await?;
-        let user: Uuid =
-            sqlx::query_scalar("SELECT user_id FROM pending_logins WHERE token_hash = $1")
-                .bind(&token_hash)
-                .fetch_optional(&mut *tx)
-                .await?
-                .ok_or_else(expired)?;
+        let user: Uuid = sqlx::query_scalar(
+            "SELECT user_id FROM pending_logins WHERE token_hash = $1 AND expires_at > $2",
+        )
+        .bind(&token_hash)
+        .bind(Utc::now())
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(expired)?;
 
         // Only the expiry sweep changes a pending login without the user lock,
         // so after the lock this read stays true unless the sweep deletes the row.
@@ -439,16 +443,23 @@ impl Store {
         input: TotpConfirm,
     ) -> Result<()> {
         let mut tx = self.confirm_totp(user, input).await?;
-        sqlx::query(
-            "WITH codes AS (DELETE FROM totp_recovery_codes WHERE user_id = $1), \
-             pending AS (DELETE FROM pending_logins WHERE user_id = $1), \
-             others AS (DELETE FROM sessions WHERE user_id = $1 AND public_id <> $2) \
-             DELETE FROM user_totp WHERE user_id = $1",
-        )
-        .bind(user)
-        .bind(current_session)
-        .execute(&mut *tx)
-        .await?;
+        sqlx::query("DELETE FROM user_totp WHERE user_id = $1")
+            .bind(user)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("DELETE FROM totp_recovery_codes WHERE user_id = $1")
+            .bind(user)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("DELETE FROM pending_logins WHERE user_id = $1")
+            .bind(user)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("DELETE FROM sessions WHERE user_id = $1 AND public_id <> $2")
+            .bind(user)
+            .bind(current_session)
+            .execute(&mut *tx)
+            .await?;
         tx.commit().await?;
 
         Ok(())
@@ -523,13 +534,14 @@ impl Store {
                 .bind(user)
                 .execute(&mut *tx)
                 .await?;
-        sqlx::query(
-            "WITH codes AS (DELETE FROM totp_recovery_codes WHERE user_id = $1) \
-             DELETE FROM pending_logins WHERE user_id = $1",
-        )
-        .bind(user)
-        .execute(&mut *tx)
-        .await?;
+        sqlx::query("DELETE FROM totp_recovery_codes WHERE user_id = $1")
+            .bind(user)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("DELETE FROM pending_logins WHERE user_id = $1")
+            .bind(user)
+            .execute(&mut *tx)
+            .await?;
         tx.commit().await?;
 
         Ok(reset.rows_affected() == 1)
@@ -588,13 +600,34 @@ mod tests {
         );
     }
 
+    /// Decodes the label, then splits it the way Aegis does: exactly one colon
+    /// gives issuer and account, anything else is all account.
+    fn issuer_and_account(uri: &str) -> (Option<String>, String) {
+        let path = &uri["otpauth://totp/".len()..uri.find('?').unwrap()];
+        let mut bytes = Vec::new();
+        let mut i = 0;
+        while i < path.len() {
+            if path.as_bytes()[i] == b'%' {
+                bytes.push(u8::from_str_radix(&path[i + 1..i + 3], 16).unwrap());
+                i += 3;
+            } else {
+                bytes.push(path.as_bytes()[i]);
+                i += 1;
+            }
+        }
+        let label = String::from_utf8(bytes).unwrap();
+        match label.split(':').collect::<Vec<_>>()[..] {
+            [issuer, account] => (Some(issuer.into()), account.into()),
+            _ => (None, label),
+        }
+    }
+
     #[test]
-    fn a_colon_in_the_email_is_escaped_in_the_label() {
-        assert_eq!(
-            otpauth_uri("alice:ops@example.com", "MY"),
-            "otpauth://totp/Blackwall:alice%3Aops@example.com?secret=MY&issuer=Blackwall\
-             &algorithm=SHA1&digits=6&period=30"
-        );
+    fn a_colon_in_the_email_keeps_the_issuer_after_decoding() {
+        let (issuer, account) = issuer_and_account(&otpauth_uri("alice:ops@example.com", "MY"));
+
+        assert_eq!(issuer.as_deref(), Some("Blackwall"));
+        assert_eq!(account, "alice\u{2236}ops@example.com");
     }
 
     #[test]
