@@ -1909,8 +1909,14 @@
                 "description": "Client-chosen ids for the default stages, in stage order\n(Backlog, Todo, In progress, Done). Absent means the server\ngenerates them."
               },
               "id": {
-                "type": ["string", "null"],
-                "format": "uuid"
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/components/schemas/TeamId"
+                  }
+                ]
               },
               "key": {
                 "type": "string",
@@ -1937,8 +1943,7 @@
             "required": ["id", "members", "type"],
             "properties": {
               "id": {
-                "type": "string",
-                "format": "uuid"
+                "$ref": "#/components/schemas/TeamId"
               },
               "members": {
                 "type": "array",
@@ -1964,8 +1969,7 @@
                 "minimum": 0
               },
               "id": {
-                "type": "string",
-                "format": "uuid"
+                "$ref": "#/components/schemas/TeamId"
               },
               "type": {
                 "type": "string",
@@ -1984,8 +1988,7 @@
                 "type": "string"
               },
               "id": {
-                "type": "string",
-                "format": "uuid"
+                "$ref": "#/components/schemas/TeamId"
               },
               "type": {
                 "type": "string",
@@ -1999,8 +2002,7 @@
             "required": ["id", "name", "key", "type"],
             "properties": {
               "id": {
-                "type": "string",
-                "format": "uuid"
+                "$ref": "#/components/schemas/TeamId"
               },
               "key": {
                 "type": "string"
@@ -2020,8 +2022,7 @@
             "required": ["id", "type"],
             "properties": {
               "id": {
-                "type": "string",
-                "format": "uuid"
+                "$ref": "#/components/schemas/TeamId"
               },
               "type": {
                 "type": "string",
@@ -2048,8 +2049,7 @@
                 "format": "int64"
               },
               "team_id": {
-                "type": "string",
-                "format": "uuid"
+                "$ref": "#/components/schemas/TeamId"
               },
               "type": {
                 "type": "string",
@@ -2076,8 +2076,7 @@
                 "format": "int64"
               },
               "team_id": {
-                "type": "string",
-                "format": "uuid"
+                "$ref": "#/components/schemas/TeamId"
               },
               "type": {
                 "type": "string",
@@ -2098,8 +2097,7 @@
                 "format": "uuid"
               },
               "team_id": {
-                "type": "string",
-                "format": "uuid"
+                "$ref": "#/components/schemas/TeamId"
               },
               "type": {
                 "type": "string",
@@ -2179,8 +2177,7 @@
               "team_ids": {
                 "type": "array",
                 "items": {
-                  "type": "string",
-                  "format": "uuid"
+                  "$ref": "#/components/schemas/TeamId"
                 }
               },
               "type": {
@@ -2206,8 +2203,7 @@
               "team_ids": {
                 "type": "array",
                 "items": {
-                  "type": "string",
-                  "format": "uuid"
+                  "$ref": "#/components/schemas/TeamId"
                 }
               },
               "type": {
@@ -2354,8 +2350,7 @@
                 "format": "date-time"
               },
               "team_id": {
-                "type": "string",
-                "format": "uuid"
+                "$ref": "#/components/schemas/TeamId"
               },
               "type": {
                 "type": "string",
@@ -2444,8 +2439,7 @@
             "required": ["id", "patch", "type"],
             "properties": {
               "id": {
-                "type": "string",
-                "format": "uuid"
+                "$ref": "#/components/schemas/IssueId"
               },
               "patch": {
                 "$ref": "#/components/schemas/IssuePatch"
@@ -2461,12 +2455,17 @@
             "required": ["id", "stage_id", "type"],
             "properties": {
               "before_id": {
-                "type": ["string", "null"],
-                "format": "uuid"
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/components/schemas/IssueId"
+                  }
+                ]
               },
               "id": {
-                "type": "string",
-                "format": "uuid"
+                "$ref": "#/components/schemas/IssueId"
               },
               "stage_id": {
                 "type": "string",
@@ -2488,8 +2487,7 @@
               "ids": {
                 "type": "array",
                 "items": {
-                  "type": "string",
-                  "format": "uuid"
+                  "$ref": "#/components/schemas/IssueId"
                 }
               },
               "type": {
@@ -2503,8 +2501,7 @@
             "required": ["id", "type"],
             "properties": {
               "id": {
-                "type": "string",
-                "format": "uuid"
+                "$ref": "#/components/schemas/IssueId"
               },
               "type": {
                 "type": "string",
@@ -2517,8 +2514,7 @@
             "required": ["id", "type"],
             "properties": {
               "id": {
-                "type": "string",
-                "format": "uuid"
+                "$ref": "#/components/schemas/IssueId"
               },
               "type": {
                 "type": "string",
@@ -2531,8 +2527,7 @@
             "required": ["id", "type"],
             "properties": {
               "id": {
-                "type": "string",
-                "format": "uuid"
+                "$ref": "#/components/schemas/IssueId"
               },
               "type": {
                 "type": "string",
@@ -2545,8 +2540,7 @@
             "required": ["id", "type"],
             "properties": {
               "id": {
-                "type": "string",
-                "format": "uuid"
+                "$ref": "#/components/schemas/IssueId"
               },
               "type": {
                 "type": "string",
@@ -2562,8 +2556,7 @@
                 "$ref": "#/components/schemas/Attachment"
               },
               "issue_id": {
-                "type": "string",
-                "format": "uuid"
+                "$ref": "#/components/schemas/IssueId"
               },
               "type": {
                 "type": "string",
@@ -2597,8 +2590,7 @@
                 "format": "uuid"
               },
               "issue_id": {
-                "type": "string",
-                "format": "uuid"
+                "$ref": "#/components/schemas/IssueId"
               },
               "type": {
                 "type": "string",
@@ -2624,8 +2616,7 @@
                 "format": "uuid"
               },
               "issue_id": {
-                "type": "string",
-                "format": "uuid"
+                "$ref": "#/components/schemas/IssueId"
               },
               "mentions": {
                 "type": "array",
@@ -2686,8 +2677,7 @@
                 "type": "boolean"
               },
               "issue_id": {
-                "type": "string",
-                "format": "uuid"
+                "$ref": "#/components/schemas/IssueId"
               },
               "type": {
                 "type": "string",
@@ -2709,8 +2699,7 @@
                 "format": "uuid"
               },
               "issue_id": {
-                "type": "string",
-                "format": "uuid"
+                "$ref": "#/components/schemas/IssueId"
               },
               "logged_at": {
                 "type": "string",
@@ -3115,8 +3104,7 @@
             "required": ["issue_id", "url", "title", "type"],
             "properties": {
               "issue_id": {
-                "type": "string",
-                "format": "uuid"
+                "$ref": "#/components/schemas/IssueId"
               },
               "title": {
                 "type": "string"
@@ -4093,6 +4081,10 @@
         "type": "string",
         "enum": ["stage", "priority", "assignee", "none"]
       },
+      "IssueId": {
+        "type": "string",
+        "format": "uuid"
+      },
       "IssueInput": {
         "type": "object",
         "required": ["title", "team_id"],
@@ -4108,8 +4100,7 @@
           "dependencies": {
             "type": "array",
             "items": {
-              "type": "string",
-              "format": "uuid"
+              "$ref": "#/components/schemas/IssueId"
             }
           },
           "description": {
@@ -4121,8 +4112,14 @@
             "minimum": 0
           },
           "id": {
-            "type": ["string", "null"],
-            "format": "uuid"
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/IssueId"
+              }
+            ]
           },
           "labels": {
             "type": "array",
@@ -4136,8 +4133,14 @@
             "format": "uuid"
           },
           "parent_id": {
-            "type": ["string", "null"],
-            "format": "uuid"
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/IssueId"
+              }
+            ]
           },
           "priority": {
             "$ref": "#/components/schemas/Priority"
@@ -4155,8 +4158,7 @@
             "format": "uuid"
           },
           "team_id": {
-            "type": "string",
-            "format": "uuid"
+            "$ref": "#/components/schemas/TeamId"
           },
           "title": {
             "type": "string"
@@ -4198,8 +4200,7 @@
           "dependencies": {
             "type": ["array", "null"],
             "items": {
-              "type": "string",
-              "format": "uuid"
+              "$ref": "#/components/schemas/IssueId"
             }
           },
           "description": {
@@ -4225,8 +4226,14 @@
             "format": "uuid"
           },
           "parent_id": {
-            "type": ["string", "null"],
-            "format": "uuid"
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/IssueId"
+              }
+            ]
           },
           "priority": {
             "oneOf": [
@@ -4251,9 +4258,15 @@
             "format": "uuid"
           },
           "team_id": {
-            "type": ["string", "null"],
-            "format": "uuid",
-            "description": "Moves the issue to another team under that team's next number. Its old key keeps\nresolving. Without `stage_id` it lands in the team's first stage of the same kind. It\nleaves its sprint, and its project when the project doesn't include the team."
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/TeamId",
+                "description": "Moves the issue to another team under that team's next number. Its old key keeps\nresolving. Without `stage_id` it lands in the team's first stage of the same kind. It\nleaves its sprint, and its project when the project doesn't include the team."
+              }
+            ]
           },
           "title": {
             "type": ["string", "null"]
@@ -5172,6 +5185,10 @@
             "format": "int64"
           }
         }
+      },
+      "TeamId": {
+        "type": "string",
+        "format": "uuid"
       },
       "Theme": {
         "type": "string",

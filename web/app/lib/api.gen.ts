@@ -803,8 +803,7 @@ export interface components {
            *     generates them.
            */
           default_stage_ids?: string[] | null;
-          /** Format: uuid */
-          id?: string | null;
+          id?: null | components["schemas"]["TeamId"];
           /** @description Prefixes the team's issue numbers, as in `ENG-42`. Unique in the workspace. */
           key: string;
           members?: string[];
@@ -813,8 +812,7 @@ export interface components {
           type: "create_team";
         }
       | {
-          /** Format: uuid */
-          id: string;
+          id: components["schemas"]["TeamId"];
           members: string[];
           /** @enum {string} */
           type: "set_team_members";
@@ -825,30 +823,26 @@ export interface components {
            * @description Days after Done before auto-archive. Null means never.
            */
           archive_after_days?: number | null;
-          /** Format: uuid */
-          id: string;
+          id: components["schemas"]["TeamId"];
           /** @enum {string} */
           type: "set_team_archive";
         }
       | {
           color: string;
           icon: string;
-          /** Format: uuid */
-          id: string;
+          id: components["schemas"]["TeamId"];
           /** @enum {string} */
           type: "set_team_appearance";
         }
       | {
-          /** Format: uuid */
-          id: string;
+          id: components["schemas"]["TeamId"];
           key: string;
           name: string;
           /** @enum {string} */
           type: "update_team";
         }
       | {
-          /** Format: uuid */
-          id: string;
+          id: components["schemas"]["TeamId"];
           /** @enum {string} */
           type: "delete_team";
         }
@@ -859,8 +853,7 @@ export interface components {
           name: string;
           /** Format: int64 */
           position: number;
-          /** Format: uuid */
-          team_id: string;
+          team_id: components["schemas"]["TeamId"];
           /** @enum {string} */
           type: "create_stage";
         }
@@ -871,8 +864,7 @@ export interface components {
           name: string;
           /** Format: int64 */
           position: number;
-          /** Format: uuid */
-          team_id: string;
+          team_id: components["schemas"]["TeamId"];
           /** @enum {string} */
           type: "update_stage";
         }
@@ -881,8 +873,7 @@ export interface components {
           id: string;
           /** Format: uuid */
           replacement: string;
-          /** Format: uuid */
-          team_id: string;
+          team_id: components["schemas"]["TeamId"];
           /** @enum {string} */
           type: "delete_stage";
         }
@@ -913,7 +904,7 @@ export interface components {
           /** Format: uuid */
           id?: string | null;
           name: string;
-          team_ids: string[];
+          team_ids: components["schemas"]["TeamId"][];
           /** @enum {string} */
           type: "create_project";
         }
@@ -922,7 +913,7 @@ export interface components {
           /** Format: uuid */
           id: string;
           name: string;
-          team_ids: string[];
+          team_ids: components["schemas"]["TeamId"][];
           /** @enum {string} */
           type: "update_project";
         }
@@ -981,8 +972,7 @@ export interface components {
           name: string;
           /** Format: date-time */
           starts_at: string;
-          /** Format: uuid */
-          team_id: string;
+          team_id: components["schemas"]["TeamId"];
           /** @enum {string} */
           type: "create_sprint";
         }
@@ -1019,17 +1009,14 @@ export interface components {
           type: "create_issue";
         }
       | {
-          /** Format: uuid */
-          id: string;
+          id: components["schemas"]["IssueId"];
           patch: components["schemas"]["IssuePatch"];
           /** @enum {string} */
           type: "update_issue";
         }
       | {
-          /** Format: uuid */
-          before_id?: string | null;
-          /** Format: uuid */
-          id: string;
+          before_id?: null | components["schemas"]["IssueId"];
+          id: components["schemas"]["IssueId"];
           /** Format: uuid */
           stage_id: string;
           /** @enum {string} */
@@ -1037,38 +1024,33 @@ export interface components {
         }
       | {
           action: components["schemas"]["BulkAction"];
-          ids: string[];
+          ids: components["schemas"]["IssueId"][];
           /** @enum {string} */
           type: "bulk_issues";
         }
       | {
-          /** Format: uuid */
-          id: string;
+          id: components["schemas"]["IssueId"];
           /** @enum {string} */
           type: "delete_issue";
         }
       | {
-          /** Format: uuid */
-          id: string;
+          id: components["schemas"]["IssueId"];
           /** @enum {string} */
           type: "restore_issue";
         }
       | {
-          /** Format: uuid */
-          id: string;
+          id: components["schemas"]["IssueId"];
           /** @enum {string} */
           type: "archive_issue";
         }
       | {
-          /** Format: uuid */
-          id: string;
+          id: components["schemas"]["IssueId"];
           /** @enum {string} */
           type: "unarchive_issue";
         }
       | {
           attachment: components["schemas"]["Attachment"];
-          /** Format: uuid */
-          issue_id: string;
+          issue_id: components["schemas"]["IssueId"];
           /** @enum {string} */
           type: "add_attachment";
         }
@@ -1082,8 +1064,7 @@ export interface components {
       | {
           /** Format: uuid */
           attachment_id: string;
-          /** Format: uuid */
-          issue_id: string;
+          issue_id: components["schemas"]["IssueId"];
           /** @enum {string} */
           type: "remove_attachment";
         }
@@ -1092,8 +1073,7 @@ export interface components {
           body: string;
           /** Format: uuid */
           id?: string | null;
-          /** Format: uuid */
-          issue_id: string;
+          issue_id: components["schemas"]["IssueId"];
           mentions?: string[];
           /** @enum {string} */
           type: "add_comment";
@@ -1114,8 +1094,7 @@ export interface components {
         }
       | {
           following: boolean;
-          /** Format: uuid */
-          issue_id: string;
+          issue_id: components["schemas"]["IssueId"];
           /** @enum {string} */
           type: "follow";
           /**
@@ -1127,8 +1106,7 @@ export interface components {
       | {
           /** Format: uuid */
           id?: string | null;
-          /** Format: uuid */
-          issue_id: string;
+          issue_id: components["schemas"]["IssueId"];
           /** Format: date-time */
           logged_at: string;
           /** Format: int32 */
@@ -1298,8 +1276,7 @@ export interface components {
           type: "delete_integration";
         }
       | {
-          /** Format: uuid */
-          issue_id: string;
+          issue_id: components["schemas"]["IssueId"];
           title: string;
           /** @enum {string} */
           type: "add_source_link";
@@ -1661,22 +1638,22 @@ export interface components {
     };
     /** @enum {string} */
     IssueGroup: "stage" | "priority" | "assignee" | "none";
+    /** Format: uuid */
+    IssueId: string;
     IssueInput: {
       /** Format: uuid */
       assignee?: string | null;
       /** Format: date-time */
       deadline?: string | null;
-      dependencies?: string[];
+      dependencies?: components["schemas"]["IssueId"][];
       description?: string;
       /** Format: int32 */
       estimate?: number | null;
-      /** Format: uuid */
-      id?: string | null;
+      id?: null | components["schemas"]["IssueId"];
       labels?: string[];
       /** Format: uuid */
       milestone_id?: string | null;
-      /** Format: uuid */
-      parent_id?: string | null;
+      parent_id?: null | components["schemas"]["IssueId"];
       priority?: components["schemas"]["Priority"];
       /** Format: uuid */
       project_id?: string | null;
@@ -1684,8 +1661,7 @@ export interface components {
       sprint_id?: string | null;
       /** Format: uuid */
       stage_id?: string | null;
-      /** Format: uuid */
-      team_id: string;
+      team_id: components["schemas"]["TeamId"];
       title: string;
     };
     IssuePatch: {
@@ -1700,15 +1676,14 @@ export interface components {
       clear_sprint?: boolean;
       /** Format: date-time */
       deadline?: string | null;
-      dependencies?: string[] | null;
+      dependencies?: components["schemas"]["IssueId"][] | null;
       description?: string | null;
       /** Format: int32 */
       estimate?: number | null;
       labels?: null | components["schemas"]["LabelChange"];
       /** Format: uuid */
       milestone_id?: string | null;
-      /** Format: uuid */
-      parent_id?: string | null;
+      parent_id?: null | components["schemas"]["IssueId"];
       priority?: null | components["schemas"]["Priority"];
       /** Format: uuid */
       project_id?: string | null;
@@ -1716,13 +1691,7 @@ export interface components {
       sprint_id?: string | null;
       /** Format: uuid */
       stage_id?: string | null;
-      /**
-       * Format: uuid
-       * @description Moves the issue to another team under that team's next number. Its old key keeps
-       *     resolving. Without `stage_id` it lands in the team's first stage of the same kind. It
-       *     leaves its sprint, and its project when the project doesn't include the team.
-       */
-      team_id?: string | null;
+      team_id?: null | components["schemas"]["TeamId"];
       title?: string | null;
     };
     /** @enum {string} */
@@ -2094,6 +2063,8 @@ export interface components {
       /** Format: int64 */
       version?: number;
     };
+    /** Format: uuid */
+    TeamId: string;
     /** @enum {string} */
     Theme: "light" | "dark" | "system";
     TimeEntry: {
