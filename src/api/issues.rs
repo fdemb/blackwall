@@ -444,8 +444,18 @@ pub async fn create_issue(
     input: CreateIssue,
     options: WriteOptions,
 ) -> Result<ApiIssue> {
-    let input = input.into_input(store, scope).await?;
-    let result = run(store, scope, Command::CreateIssue { input }, None, options).await?;
+    let result = run(
+        store,
+        scope,
+        async {
+            Ok(Command::CreateIssue {
+                input: input.into_input(store, scope).await?,
+            })
+        },
+        None,
+        options,
+    )
+    .await?;
     fetch(store, scope, created_id(&result)?).await
 }
 
@@ -535,25 +545,6 @@ fn split<T>(field: Option<Option<T>>) -> (Option<T>, bool) {
 }
 
 impl UpdateIssue {
-    fn is_empty(&self) -> bool {
-        self.title.is_none()
-            && self.description.is_none()
-            && self.team.is_none()
-            && self.stage.is_none()
-            && self.assignee.is_none()
-            && self.priority.is_none()
-            && self.labels.is_none()
-            && self.add_labels.is_none()
-            && self.remove_labels.is_none()
-            && self.estimate.is_none()
-            && self.deadline.is_none()
-            && self.project.is_none()
-            && self.milestone.is_none()
-            && self.sprint.is_none()
-            && self.parent.is_none()
-            && self.dependencies.is_none()
-    }
-
     async fn into_patch(self, store: &Store, scope: Scope, current: &Issue) -> Result<IssuePatch> {
         let dir = Directory::load(store, scope).await?;
         let team_id = self.team.map(|t| dir.find_team(&t)).transpose()?;
@@ -636,19 +627,18 @@ pub async fn update_issue(
     update: UpdateIssue,
     options: WriteOptions,
 ) -> Result<ApiIssue> {
-    // An empty patch changes nothing, so it records no activity either.
-    if !update.is_empty() {
-        let current = store.get_issue(scope.workspace, scope.user, id).await?;
-        let patch = update.into_patch(store, scope, &current).await?;
-        run(
-            store,
-            scope,
-            Command::UpdateIssue { id, patch },
-            Some(id),
-            options,
-        )
-        .await?;
-    }
+    run(
+        store,
+        scope,
+        async {
+            let current = store.get_issue(scope.workspace, scope.user, id).await?;
+            let patch = update.into_patch(store, scope, &current).await?;
+            Ok(Command::UpdateIssue { id, patch })
+        },
+        Some(id),
+        options,
+    )
+    .await?;
     fetch(store, scope, id).await
 }
 
@@ -682,7 +672,7 @@ pub async fn transition_issue(
     command: Command,
     options: WriteOptions,
 ) -> Result<()> {
-    run(store, scope, command, Some(id), options).await?;
+    run(store, scope, async { Ok(command) }, Some(id), options).await?;
     Ok(())
 }
 
@@ -921,16 +911,17 @@ pub async fn add_comment(
     body: CreateComment,
     options: WriteOptions,
 ) -> Result<ApiComment> {
-    let mentions = mention_ids(store, scope, &body.mentions).await?;
     let result = run(
         store,
         scope,
-        Command::AddComment {
-            id: None,
-            issue_id: issue,
-            body: body.body,
-            mentions,
-            attachments: vec![],
+        async {
+            Ok(Command::AddComment {
+                id: None,
+                issue_id: issue,
+                mentions: mention_ids(store, scope, &body.mentions).await?,
+                body: body.body,
+                attachments: vec![],
+            })
         },
         None,
         options,
@@ -975,21 +966,23 @@ pub async fn edit_comment(
     body: UpdateComment,
     options: WriteOptions,
 ) -> Result<ApiComment> {
-    let mentions = match body.mentions {
-        Some(mentions) => mention_ids(store, scope, &mentions).await?,
-        None => {
-            record::<Comment>(store, scope, "comments", comment)
-                .await?
-                .mentions
-        }
-    };
     run(
         store,
         scope,
-        Command::EditComment {
-            id: comment,
-            body: body.body,
-            mentions,
+        async {
+            let mentions = match body.mentions {
+                Some(mentions) => mention_ids(store, scope, &mentions).await?,
+                None => {
+                    record::<Comment>(store, scope, "comments", comment)
+                        .await?
+                        .mentions
+                }
+            };
+            Ok(Command::EditComment {
+                id: comment,
+                body: body.body,
+                mentions,
+            })
         },
         Some(comment),
         options,
@@ -1027,7 +1020,7 @@ pub async fn remove_comment(
     run(
         store,
         scope,
-        Command::DeleteComment { id: comment },
+        async { Ok(Command::DeleteComment { id: comment }) },
         Some(comment),
         options,
     )

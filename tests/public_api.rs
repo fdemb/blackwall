@@ -1789,3 +1789,207 @@ async fn keyed_body_read_failures_match_unkeyed() {
     }
     keyed.cleanup().await;
 }
+
+#[tokio::test]
+async fn keyed_project_patch_replays_after_dates_move() {
+    let keyed = Keyed::new().await;
+    let created = call(
+        &keyed.app,
+        "POST",
+        &format!("{}/projects", keyed.base),
+        &keyed.write,
+        Some(json!({"name":"Launch","team_ids":[]})),
+    )
+    .await;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    let project = format!(
+        "{}/projects/{}",
+        keyed.base,
+        created.body["id"].as_str().unwrap()
+    );
+    let mixed = r#"{"name":"Relaunch","target_date":"2026-03-01"}"#;
+    let first = keyed
+        .send("PATCH", &project, Body::from(mixed), Some("dated"))
+        .await;
+    assert_eq!(first.status, StatusCode::OK, "{}", first.body);
+    let moved = keyed
+        .send(
+            "PATCH",
+            &project,
+            Body::from(r#"{"start_date":"2026-06-01","target_date":"2026-07-01"}"#),
+            None,
+        )
+        .await;
+    assert_eq!(moved.status, StatusCode::OK, "{}", moved.body);
+
+    let replay = keyed
+        .send("PATCH", &project, Body::from(mixed), Some("dated"))
+        .await;
+    assert_eq!(replay.status, StatusCode::OK, "{}", replay.body);
+    assert_eq!(replay.body["name"], "Relaunch");
+    assert_eq!(replay.body["target_date"], "2026-07-01");
+    assert_eq!(replay.body["version"], moved.body["version"]);
+
+    let reused = keyed
+        .send(
+            "PATCH",
+            &project,
+            Body::from(r#"{"name":"Other","target_date":"2026-03-01"}"#),
+            Some("dated"),
+        )
+        .await;
+    assert_eq!(reused.status, StatusCode::CONFLICT, "{}", reused.body);
+    keyed.cleanup().await;
+}
+
+#[tokio::test]
+async fn keyed_issue_patch_replays_after_its_references_change() {
+    let keyed = Keyed::new().await;
+    let mut stages = Vec::new();
+    for (name, key) in [("Platform", "PLA"), ("Operations", "OPS")] {
+        let team = call(
+            &keyed.app,
+            "POST",
+            &format!("{}/teams", keyed.base),
+            &keyed.write,
+            Some(json!({"name":name,"key":key})),
+        )
+        .await;
+        assert_eq!(team.status, StatusCode::CREATED, "{}", team.body);
+        stages.push(team.body["stages"][1]["id"].as_str().unwrap().to_owned());
+    }
+    let (_, label) = keyed.label().await;
+    let created = call(
+        &keyed.app,
+        "POST",
+        &format!("{}/issues", keyed.base),
+        &keyed.write,
+        Some(json!({"team":"PLA","title":"Moves"})),
+    )
+    .await;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    let issue = format!(
+        "{}/issues/{}",
+        keyed.base,
+        created.body["key"].as_str().unwrap()
+    );
+    let patch = json!({"stage": stages[0], "labels": ["bug"]}).to_string();
+    let first = keyed
+        .send("PATCH", &issue, Body::from(patch.clone()), Some("refs"))
+        .await;
+    assert_eq!(first.status, StatusCode::OK, "{}", first.body);
+
+    let moved = keyed
+        .send(
+            "PATCH",
+            &issue,
+            Body::from(json!({"team": "OPS", "stage": stages[1]}).to_string()),
+            None,
+        )
+        .await;
+    assert_eq!(moved.status, StatusCode::OK, "{}", moved.body);
+    let deleted = keyed.send("DELETE", &label, Body::empty(), None).await;
+    assert_eq!(deleted.status, StatusCode::NO_CONTENT, "{}", deleted.body);
+
+    let replay = keyed
+        .send("PATCH", &issue, Body::from(patch), Some("refs"))
+        .await;
+    assert_eq!(replay.status, StatusCode::OK, "{}", replay.body);
+    assert_eq!(replay.body["team"]["name"], "Operations");
+
+    let reused = keyed
+        .send(
+            "PATCH",
+            &issue,
+            Body::from(r#"{"title":"Other"}"#),
+            Some("refs"),
+        )
+        .await;
+    assert_eq!(reused.status, StatusCode::CONFLICT, "{}", reused.body);
+    keyed.cleanup().await;
+}
+
+#[tokio::test]
+async fn keyed_replay_after_removal_is_forbidden() {
+    let keyed = Keyed::new().await;
+    let member = account(&keyed.store, "member").await;
+    sqlx::query("INSERT INTO workspace_members(workspace_id,user_id,role) VALUES($1,$2,'member')")
+        .bind(keyed.workspace)
+        .bind(member.profile.id)
+        .execute(&keyed.store.pool)
+        .await
+        .unwrap();
+    let write = token(&keyed.app, &member, json!({"name":"CI","access":"write"})).await;
+    let (_, label) = keyed.label().await;
+    let key = [("Idempotency-Key", "drop-label")];
+    let deleted = send(&keyed.app, "DELETE", &label, Some(&write), None, &key).await;
+    assert_eq!(deleted.status, StatusCode::NO_CONTENT, "{}", deleted.body);
+
+    let removed = call(
+        &keyed.app,
+        "POST",
+        &format!("/internal-api/workspaces/{}/commands", keyed.workspace),
+        &keyed.owner.token,
+        Some(json!({"command": {"type":"remove_member","user_id":member.profile.id}})),
+    )
+    .await;
+    assert_eq!(removed.status, StatusCode::OK, "{}", removed.body);
+
+    let replay = send(&keyed.app, "DELETE", &label, Some(&write), None, &key).await;
+    assert_eq!(replay.status, StatusCode::FORBIDDEN, "{}", replay.body);
+    keyed.cleanup().await;
+}
+
+#[tokio::test]
+async fn keyed_empty_issue_patch_claims_its_key() {
+    let keyed = Keyed::new().await;
+    let team = call(
+        &keyed.app,
+        "POST",
+        &format!("{}/teams", keyed.base),
+        &keyed.write,
+        Some(json!({"name":"Platform","key":"PLA"})),
+    )
+    .await;
+    assert_eq!(team.status, StatusCode::CREATED, "{}", team.body);
+    let created = call(
+        &keyed.app,
+        "POST",
+        &format!("{}/issues", keyed.base),
+        &keyed.write,
+        Some(json!({"team":"PLA","title":"Empty"})),
+    )
+    .await;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    let issue = format!(
+        "{}/issues/{}",
+        keyed.base,
+        created.body["key"].as_str().unwrap()
+    );
+
+    let titled = keyed
+        .send(
+            "PATCH",
+            &issue,
+            Body::from(r#"{"title":"Full"}"#),
+            Some("titled"),
+        )
+        .await;
+    assert_eq!(titled.status, StatusCode::OK, "{}", titled.body);
+    let reused = keyed
+        .send("PATCH", &issue, Body::from("{}"), Some("titled"))
+        .await;
+    assert_eq!(reused.status, StatusCode::CONFLICT, "{}", reused.body);
+
+    let empty = keyed
+        .send("PATCH", &issue, Body::from("{}"), Some("empty"))
+        .await;
+    assert_eq!(empty.status, StatusCode::OK, "{}", empty.body);
+    assert_eq!(empty.body["version"], titled.body["version"]);
+    let replay = keyed
+        .send("PATCH", &issue, Body::from("{}"), Some("empty"))
+        .await;
+    assert_eq!(replay.status, StatusCode::OK, "{}", replay.body);
+    assert_eq!(replay.body, empty.body);
+    keyed.cleanup().await;
+}

@@ -450,10 +450,12 @@ pub fn tagged<T: Serialize>(status: StatusCode, version: i64, body: T) -> Respon
 }
 
 /// Runs one command as the scope's user. `If-Match`, when sent, guards `target`.
+/// A keyed request that already completed replays before `command` runs, so merging
+/// and resolving against records that changed since can't fail the replay.
 pub async fn run(
     store: &Store,
     scope: Scope,
-    command: Command,
+    command: impl Future<Output = Result<Command>>,
     target: Option<Uuid>,
     options: WriteOptions,
 ) -> Result<OperationResult> {
@@ -462,6 +464,14 @@ pub async fn run(
         expected.insert(id, version);
     }
     let guarded = !expected.is_empty();
+    if let (Some(key), Some(sent)) = (&options.idempotency_key, &options.sent)
+        && let Some(result) = store
+            .replay(scope.workspace, scope.user, key, sent.clone(), &expected)
+            .await?
+    {
+        return Ok(result);
+    }
+    let command = command.await?;
     store
         .operation_via(
             scope.workspace,

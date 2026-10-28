@@ -136,25 +136,26 @@ pub async fn create(
     Json(body): Json<CreateWebhook>,
 ) -> Result<Response> {
     let scope = actor.write(workspace)?;
-    let secret = body
-        .secret
-        .unwrap_or_else(|| format!("whsec_{}", crate::auth::token()));
     let result = run(
         &store,
         scope,
-        Command::CreateIntegration {
-            id: None,
-            name: body.name,
-            webhook_url: body.url,
-            secret,
-            events: body.events,
+        async {
+            Ok(Command::CreateIntegration {
+                id: None,
+                name: body.name,
+                webhook_url: body.url,
+                secret: body
+                    .secret
+                    .unwrap_or_else(|| format!("whsec_{}", crate::auth::token())),
+                events: body.events,
+            })
         },
         None,
         options,
     )
     .await?;
     let id = created_id(&result)?;
-    // A replayed key generated a fresh secret above; the webhook keeps the first one.
+    // A replay never builds the command, so read the secret the webhook keeps.
     let secret: String =
         sqlx::query_scalar("SELECT secret FROM integrations WHERE workspace_id=$1 AND id=$2")
             .bind(scope.workspace)
@@ -194,14 +195,16 @@ pub async fn update(
 ) -> Result<Response> {
     let scope = actor.write(workspace)?;
     admin(&store, scope).await?;
-    let current = webhook(&store, scope, id).await?;
     run(
         &store,
         scope,
-        Command::UpdateIntegration {
-            id,
-            enabled: body.enabled.unwrap_or(current.enabled),
-            events: body.events,
+        async {
+            let current = webhook(&store, scope, id).await?;
+            Ok(Command::UpdateIntegration {
+                id,
+                enabled: body.enabled.unwrap_or(current.enabled),
+                events: body.events,
+            })
         },
         Some(id),
         options,
@@ -226,7 +229,7 @@ pub async fn delete(
     run(
         &store,
         actor.write(workspace)?,
-        Command::DeleteIntegration { id },
+        async { Ok(Command::DeleteIntegration { id }) },
         Some(id),
         options,
     )
