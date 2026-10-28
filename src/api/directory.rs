@@ -9,6 +9,7 @@ use crate::{
 };
 use chrono::{DateTime, Utc};
 use serde::Serialize;
+use sqlx::PgConnection;
 use std::collections::BTreeMap;
 use uuid::Uuid;
 
@@ -103,15 +104,28 @@ fn parse<T: serde::de::DeserializeOwned>(text: String) -> Result<T> {
 
 impl Directory {
     pub async fn load(store: &Store, scope: Scope) -> Result<Self> {
-        let people = Self::people(store, scope).await?;
-        let pool = &store.pool;
-        let ws = scope.workspace;
+        let mut conn = store.pool.acquire().await?;
+        Self::members(&mut conn, scope.workspace)
+            .await?
+            .acting_as(scope.user)?
+            .with_records(&mut conn, scope.workspace)
+            .await
+    }
 
+    /// The whole directory without an acting user, for records rendered outside a request.
+    pub async fn workspace(conn: &mut PgConnection, workspace: Uuid) -> Result<Self> {
+        Self::members(conn, workspace)
+            .await?
+            .with_records(conn, workspace)
+            .await
+    }
+
+    async fn with_records(self, conn: &mut PgConnection, ws: Uuid) -> Result<Self> {
         let teams = sqlx::query_as::<_, (Uuid, String, String)>(
             "SELECT id,key,name FROM teams WHERE workspace_id=$1 ORDER BY name,id",
         )
         .bind(ws)
-        .fetch_all(pool)
+        .fetch_all(&mut *conn)
         .await?
         .into_iter()
         .map(|(id, key, name)| TeamRef { id, key, name })
@@ -121,14 +135,14 @@ impl Directory {
             "SELECT team_id,key FROM team_keys WHERE workspace_id=$1",
         )
         .bind(ws)
-        .fetch_all(pool)
+        .fetch_all(&mut *conn)
         .await?;
 
         let stages = sqlx::query_as::<_, (Uuid, Uuid, String, String)>(
             "SELECT team_id,id,name,kind FROM stages WHERE workspace_id=$1 ORDER BY team_id,position,id",
         )
         .bind(ws)
-        .fetch_all(pool)
+        .fetch_all(&mut *conn)
         .await?
         .into_iter()
         .map(|(team_id, id, name, kind)| {
@@ -147,7 +161,7 @@ impl Directory {
             "SELECT id,name,color FROM labels WHERE workspace_id=$1 ORDER BY name,id",
         )
         .bind(ws)
-        .fetch_all(pool)
+        .fetch_all(&mut *conn)
         .await?
         .into_iter()
         .map(|(id, name, color)| LabelRef { id, name, color })
@@ -157,7 +171,7 @@ impl Directory {
             "SELECT id,name FROM projects WHERE workspace_id=$1 ORDER BY name,id",
         )
         .bind(ws)
-        .fetch_all(pool)
+        .fetch_all(&mut *conn)
         .await?
         .into_iter()
         .map(|(id, name)| NamedRef { id, name })
@@ -167,7 +181,7 @@ impl Directory {
             "SELECT project_id,id,name,deadline FROM milestones WHERE workspace_id=$1 ORDER BY name,id",
         )
         .bind(ws)
-        .fetch_all(pool)
+        .fetch_all(&mut *conn)
         .await?
         .into_iter()
         .map(|(project_id, id, name, deadline)| MilestoneRow {
@@ -194,7 +208,7 @@ impl Directory {
              WHERE workspace_id=$1 ORDER BY team_id,starts_at,id",
         )
         .bind(ws)
-        .fetch_all(pool)
+        .fetch_all(&mut *conn)
         .await?
         .into_iter()
         .map(
@@ -223,25 +237,29 @@ impl Directory {
             projects,
             milestones,
             sprints,
-            ..people
+            ..self
         })
     }
 
     /// Only the workspace's members, for records that name nothing else.
     pub async fn people(store: &Store, scope: Scope) -> Result<Self> {
+        Self::members(&mut *store.pool.acquire().await?, scope.workspace)
+            .await?
+            .acting_as(scope.user)
+    }
+
+    /// Only the workspace's members, without an acting user.
+    pub async fn members(conn: &mut PgConnection, workspace: Uuid) -> Result<Self> {
         let rows = sqlx::query_as::<_, (Uuid, String, Option<String>)>(
             "SELECT u.id,u.email,u.profile->>'display_name' FROM workspace_members m \
              JOIN users u ON u.id=m.user_id WHERE m.workspace_id=$1 \
              ORDER BY lower(u.profile->>'display_name'),u.id",
         )
-        .bind(scope.workspace)
-        .fetch_all(&store.pool)
+        .bind(workspace)
+        .fetch_all(conn)
         .await?;
-        if !rows.iter().any(|(id, _, _)| *id == scope.user) {
-            return Err(Error::Forbidden);
-        }
         Ok(Self {
-            me: scope.user,
+            me: Uuid::nil(),
             teams: vec![],
             team_keys: vec![],
             stages: vec![],
@@ -257,10 +275,17 @@ impl Directory {
         })
     }
 
+    fn acting_as(self, user: Uuid) -> Result<Self> {
+        if !self.members.contains(&user) {
+            return Err(Error::Forbidden);
+        }
+        Ok(Self { me: user, ..self })
+    }
+
     /// Loads people the records name who have since left the workspace.
     pub async fn include_people(
         &mut self,
-        store: &Store,
+        conn: &mut PgConnection,
         ids: impl IntoIterator<Item = Uuid>,
     ) -> Result<()> {
         let mut missing: Vec<Uuid> = ids
@@ -276,7 +301,7 @@ impl Directory {
             "SELECT id,email,profile->>'display_name' FROM users WHERE id=ANY($1)",
         )
         .bind(&missing)
-        .fetch_all(&store.pool)
+        .fetch_all(conn)
         .await?;
         for (id, email, display_name) in rows {
             self.people.insert(id, person(id, email, display_name));
@@ -501,8 +526,8 @@ impl Directory {
     /// Keys and titles for the issues `ids` name.
     pub async fn issue_refs(
         &self,
-        store: &Store,
-        scope: Scope,
+        conn: &mut PgConnection,
+        workspace: Uuid,
         ids: impl IntoIterator<Item = Uuid>,
     ) -> Result<BTreeMap<Uuid, IssueRef>> {
         let mut ids: Vec<Uuid> = ids.into_iter().collect();
@@ -514,9 +539,9 @@ impl Directory {
         Ok(sqlx::query_as::<_, (Uuid, Uuid, i64, String)>(
             "SELECT id,team_id,number,title FROM issues WHERE workspace_id=$1 AND id=ANY($2)",
         )
-        .bind(scope.workspace)
+        .bind(workspace)
         .bind(&ids)
-        .fetch_all(&store.pool)
+        .fetch_all(conn)
         .await?
         .into_iter()
         .map(|(id, team, number, title)| {

@@ -636,7 +636,21 @@ async fn activity_with_integrations(
     if let Some(via) = via {
         payload["via"] = via;
     }
-    for integration in integrations.iter().filter(|i| i.wants(kind)) {
+    let subscribed: Vec<&Integration> = integrations.iter().filter(|i| i.wants(kind)).collect();
+    if subscribed.is_empty() {
+        return Ok(());
+    }
+    if let Some(id) = issue {
+        let snapshot =
+            crate::api::webhooks::snapshot(conn, workspace, actor, entity_type, id).await?;
+        if let Some(data) = snapshot.data {
+            payload["data"] = data;
+        }
+        if !snapshot.truncated.is_empty() {
+            payload["truncated"] = serde_json::json!(snapshot.truncated);
+        }
+    }
+    for integration in subscribed {
         let id = integration.id;
         Outbox::insert(
             conn,

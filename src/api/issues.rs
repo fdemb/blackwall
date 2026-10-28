@@ -11,6 +11,7 @@ use crate::domain::{
 use crate::store::CollectionQuery;
 use axum::extract::{Path, Query};
 use chrono::{DateTime, Utc};
+use sqlx::PgConnection;
 
 /// The remote item a synced issue links to, without sync bookkeeping.
 #[derive(Serialize, utoipa::ToSchema)]
@@ -104,9 +105,24 @@ impl Versioned for ApiIssue {
 
 /// Names the records issues point at, with one directory and one query per relation.
 pub async fn render(store: &Store, scope: Scope, issues: Vec<Issue>) -> Result<Vec<ApiIssue>> {
-    let mut dir = Directory::load(store, scope).await?;
+    let dir = Directory::load(store, scope).await?;
+    render_on(
+        &mut *store.pool.acquire().await?,
+        dir,
+        scope.workspace,
+        issues,
+    )
+    .await
+}
+
+pub(super) async fn render_on(
+    conn: &mut PgConnection,
+    mut dir: Directory,
+    workspace: Uuid,
+    issues: Vec<Issue>,
+) -> Result<Vec<ApiIssue>> {
     dir.include_people(
-        store,
+        conn,
         issues.iter().flat_map(|i| {
             i.assignee
                 .into_iter()
@@ -117,8 +133,8 @@ pub async fn render(store: &Store, scope: Scope, issues: Vec<Issue>) -> Result<V
     .await?;
     let refs = dir
         .issue_refs(
-            store,
-            scope,
+            conn,
+            workspace,
             issues.iter().flat_map(|i| {
                 i.parent_id
                     .into_iter()
@@ -132,9 +148,9 @@ pub async fn render(store: &Store, scope: Scope, issues: Vec<Issue>) -> Result<V
          WHERE workspace_id=$1 AND entity_id=ANY($2) AND action='create_issue' AND via IS NOT NULL \
          ORDER BY entity_id,at",
     )
-    .bind(scope.workspace)
+    .bind(workspace)
     .bind(&ids)
-    .fetch_all(&store.pool)
+    .fetch_all(&mut *conn)
     .await?
     .into_iter()
     .filter_map(|(id, via)| Some((id, serde_json::from_value(via).ok()?)))
@@ -799,9 +815,17 @@ async fn render_comments(
     scope: Scope,
     comments: Vec<Comment>,
 ) -> Result<Vec<ApiComment>> {
-    let mut dir = Directory::people(store, scope).await?;
+    let dir = Directory::people(store, scope).await?;
+    render_comments_on(&mut *store.pool.acquire().await?, dir, comments).await
+}
+
+pub(super) async fn render_comments_on(
+    conn: &mut PgConnection,
+    mut dir: Directory,
+    comments: Vec<Comment>,
+) -> Result<Vec<ApiComment>> {
     dir.include_people(
-        store,
+        conn,
         comments
             .iter()
             .flat_map(|c| std::iter::once(c.author).chain(c.mentions.iter().copied())),
@@ -1085,8 +1109,11 @@ pub async fn issue_activity(
             .await?,
     )?;
     let mut dir = Directory::people(store, scope).await?;
-    dir.include_people(store, page.data.iter().map(|a| a.actor))
-        .await?;
+    dir.include_people(
+        &mut *store.pool.acquire().await?,
+        page.data.iter().map(|a| a.actor),
+    )
+    .await?;
     Ok(Page {
         data: page
             .data

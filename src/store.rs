@@ -24,6 +24,7 @@ pub use changes::Change;
 pub(crate) use queue::LEASE_SECONDS;
 pub use queue::{Claim, NewJob, Outbox};
 pub use reads::CollectionQuery;
+pub(crate) use reads::{issue_on, record_on};
 pub use sync::{
     BOOTSTRAP_OVERALL_TIMEOUT, BOOTSTRAP_PERMIT_WAIT, BOOTSTRAP_SEND_TIMEOUT, MutationError,
     MutationResult, MutationStatus, PULL_BATCH_RANGE_SQL, PULL_BATCH_XIP_SQL,
