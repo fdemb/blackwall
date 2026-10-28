@@ -489,8 +489,9 @@ impl Store {
 
     /// The stored result of a completed keyed request that sent exactly `sent`, so a
     /// handler can replay it before merging or resolving anything that may have changed
-    /// since. A key recorded for another request is a conflict. Keys recorded by command,
-    /// and keys still in flight, return `None` and resolve inside the operation.
+    /// since. Only members replay. A key recorded for another request is a conflict. Keys
+    /// recorded by command, and keys still in flight, return `None` and resolve inside the
+    /// operation.
     pub async fn replay(
         &self,
         workspace_id: Uuid,
@@ -500,6 +501,7 @@ impl Store {
         expected: &BTreeMap<Uuid, i64>,
     ) -> Result<Option<OperationResult>> {
         let mut conn = self.pool.acquire().await?;
+        reads::authorize(&mut conn, workspace_id, actor).await?;
         let Some(row) = sqlx::query(
             "SELECT request,result FROM operation_keys \
              WHERE workspace_id=$1 AND actor=$2 AND key=$3 AND result IS NOT NULL",
