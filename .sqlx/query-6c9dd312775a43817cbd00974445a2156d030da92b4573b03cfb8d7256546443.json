@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM sync_clients WHERE client_id IN (SELECT client_id FROM sync_clients WHERE updated_at < now() - make_interval(days => $1) ORDER BY updated_at LIMIT 1000 FOR UPDATE SKIP LOCKED)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int4"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "6c9dd312775a43817cbd00974445a2156d030da92b4573b03cfb8d7256546443"
+}

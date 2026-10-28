@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE workspace_creation_keys SET result=$3 WHERE actor=$1 AND key=$2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Jsonb"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "115db37f537002d9a592463bb6c9e8013363b52d9f85fc94bb6eb1da98ca1d6e"
+}

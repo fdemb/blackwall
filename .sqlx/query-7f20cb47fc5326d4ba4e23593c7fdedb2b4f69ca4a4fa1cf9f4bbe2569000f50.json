@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "WITH previous AS (SELECT issue_id FROM issue_key_aliases WHERE workspace_id=$1 AND team_id=$2 AND number=$3 AND issue_id<>$4), claimed AS (INSERT INTO issue_key_aliases(workspace_id,team_id,number,issue_id) VALUES($1,$2,$3,$4) ON CONFLICT(workspace_id,team_id,number) DO UPDATE SET issue_id=excluded.issue_id,seq=excluded.seq) UPDATE issues SET version=version+1 WHERE workspace_id=$1 AND id IN (SELECT issue_id FROM previous)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Int8",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "7f20cb47fc5326d4ba4e23593c7fdedb2b4f69ca4a4fa1cf9f4bbe2569000f50"
+}

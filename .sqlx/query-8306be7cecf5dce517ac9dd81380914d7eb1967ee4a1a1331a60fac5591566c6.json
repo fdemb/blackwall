@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE tracker_connections SET incremental_supported=false,checkpoint=$3,status='syncing',next_run_at=clock_timestamp() WHERE id=$1 AND generation=$2 AND enabled AND NOT deleted AND EXISTS(SELECT 1 FROM jobs WHERE id=$4 AND claim_token=$5 AND state='running' AND lease_expires_at>clock_timestamp())",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Int8",
+        "Jsonb",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "8306be7cecf5dce517ac9dd81380914d7eb1967ee4a1a1331a60fac5591566c6"
+}

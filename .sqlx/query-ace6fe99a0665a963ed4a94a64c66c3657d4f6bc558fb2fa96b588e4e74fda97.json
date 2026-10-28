@@ -1,0 +1,40 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT id,user_id,access,workspace_ids FROM api_tokens WHERE token_hash=$1 AND (expires_at IS NULL OR expires_at>now())",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "user_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "access",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "workspace_ids",
+        "type_info": "UuidArray"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "ace6fe99a0665a963ed4a94a64c66c3657d4f6bc558fb2fa96b588e4e74fda97"
+}

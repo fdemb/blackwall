@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO activity(id,workspace_id,actor,action,entity_id,at,fields,changes) VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING via",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "via",
+        "type_info": "Jsonb"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Uuid",
+        "Timestamptz",
+        "Jsonb",
+        "Jsonb"
+      ]
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "66b4e8befbc8ed97c3e45d1676d582a8528119f49e22ef67de520338dfa44e83"
+}

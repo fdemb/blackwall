@@ -1,0 +1,30 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT a.filename, a.bytes FROM attachments a JOIN issues i ON i.id = a.issue_id JOIN workspace_members m ON m.workspace_id = a.workspace_id WHERE a.workspace_id = $1 AND a.id = $2 AND m.user_id = $3 AND i.deleted_at IS NULL",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "filename",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "bytes",
+        "type_info": "Bytea"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "8441273c538d63819fd5fdba564052e0cd597de196d9e2ac143c735805c6281d"
+}

@@ -1,0 +1,25 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT via AS \"via?\" FROM (SELECT actor,action,fields,at,via FROM activity WHERE workspace_id=$1 AND entity_id=$2 ORDER BY at DESC,id DESC LIMIT 1) latest WHERE actor=$3 AND action='update_issue' AND fields='[\"description\"]'::jsonb AND at>$4 AND via IS NOT DISTINCT FROM nullif(current_setting('blackwall.via',true),'')::jsonb",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "via?",
+        "type_info": "Jsonb"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "53410dcff495d44013e8ef4291c2d45f0f9ac8611c89de4447f2b22bb1267680"
+}

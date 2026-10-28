@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE issues i SET tracker=input.tracker FROM unnest($2::uuid[],$3::jsonb[]) AS input(id,tracker) WHERE i.workspace_id=$1 AND i.id=input.id",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "UuidArray",
+        "JsonbArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "a7511c1cf16706a7b531d0a0962e99884e377000940fd4f8d8e27a16bdd36c00"
+}

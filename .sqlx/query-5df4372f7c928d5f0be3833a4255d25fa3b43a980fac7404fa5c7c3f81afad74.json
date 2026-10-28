@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT id AS \"id!\" FROM (SELECT i.id,0 AS former FROM issues i JOIN team_keys t ON t.workspace_id=i.workspace_id AND t.team_id=i.team_id WHERE i.workspace_id=$1 AND t.key=$2 AND i.number=$3 UNION ALL SELECT k.issue_id,1 FROM issue_key_aliases k JOIN team_keys t ON t.workspace_id=k.workspace_id AND t.team_id=k.team_id WHERE k.workspace_id=$1 AND t.key=$2 AND k.number=$3) found ORDER BY former LIMIT 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id!",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "5df4372f7c928d5f0be3833a4255d25fa3b43a980fac7404fa5c7c3f81afad74"
+}

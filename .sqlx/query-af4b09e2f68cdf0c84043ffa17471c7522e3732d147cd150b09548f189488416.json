@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM pending_logins WHERE token_hash = $1 AND failed_attempts >= $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int4"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "af4b09e2f68cdf0c84043ffa17471c7522e3732d147cd150b09548f189488416"
+}

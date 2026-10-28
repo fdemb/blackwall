@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT id FROM issues WHERE workspace_id=$1 AND (assignee=$2 OR EXISTS(SELECT 1 FROM issue_followers f WHERE f.workspace_id=$1 AND f.issue_id=issues.id AND f.user_id=$2)) ORDER BY id FOR UPDATE",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "923ac2fef31ec51dc3c2b42b12ce33533a4e0d52625f38f0ecbc45a8539bb3ce"
+}

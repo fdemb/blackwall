@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE issues i SET tracker=(i.tracker-'comments_at')||jsonb_strip_nulls(jsonb_build_object('comments_imported',true,'comments_at',input.at)) FROM unnest($2::uuid[],$3::timestamptz[]) AS input(id,at) WHERE i.workspace_id=$1 AND i.id=input.id",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "UuidArray",
+        "TimestamptzArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "75b95ef1e357c581d5ca82f7d8c09c52368a973922fe79d8f15371d40bd7d6b4"
+}

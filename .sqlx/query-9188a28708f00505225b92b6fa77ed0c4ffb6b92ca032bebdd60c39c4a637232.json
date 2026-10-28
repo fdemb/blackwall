@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "WITH gone AS (DELETE FROM changes WHERE id IN (SELECT id FROM changes WHERE created_at<now()-make_interval(days=>$1) ORDER BY created_at,id LIMIT 10000) RETURNING txid) SELECT count(*) AS \"count!\",max(txid) AS newest FROM gone",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "count!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "newest",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int4"
+      ]
+    },
+    "nullable": [
+      null,
+      null
+    ]
+  },
+  "hash": "9188a28708f00505225b92b6fa77ed0c4ffb6b92ca032bebdd60c39c4a637232"
+}

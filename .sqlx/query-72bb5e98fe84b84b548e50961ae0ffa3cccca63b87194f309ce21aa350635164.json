@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE tracker_connections SET checkpoint=$3,next_run_at=CASE WHEN NOT $4 THEN clock_timestamp() WHEN $5 THEN clock_timestamp()+interval '30 minutes' ELSE GREATEST(clock_timestamp()+interval '30 seconds',$6::timestamptz+interval '5 minutes') END,status=$7,last_error='',last_checked_at=CASE WHEN $8 THEN clock_timestamp() ELSE last_checked_at END,last_synced_at=CASE WHEN $4 AND NOT $9 THEN clock_timestamp() ELSE last_synced_at END,poll_watermark=CASE WHEN $4 AND NOT $9 THEN $6 WHEN $4 AND $9 THEN NULL ELSE poll_watermark END,last_discovered_at=CASE WHEN $10 THEN clock_timestamp() ELSE last_discovered_at END WHERE id=$1 AND generation=$2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Int8",
+        "Jsonb",
+        "Bool",
+        "Bool",
+        "Timestamptz",
+        "Text",
+        "Bool",
+        "Bool",
+        "Bool"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "72bb5e98fe84b84b548e50961ae0ffa3cccca63b87194f309ce21aa350635164"
+}

@@ -1,0 +1,25 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT id FROM notifications WHERE workspace_id=$1 AND user_id=$2 AND read_at IS NULL AND ($3::uuid[] IS NULL OR (id,created_at) IN (SELECT * FROM unnest($3::uuid[],$4::timestamptz[]))) ORDER BY id FOR UPDATE",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "UuidArray",
+        "TimestamptzArray"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "32bb69e96f1d6fc7e0b8e8d08717e84276b1ca9c88e208566bbf97b4fef89c3f"
+}

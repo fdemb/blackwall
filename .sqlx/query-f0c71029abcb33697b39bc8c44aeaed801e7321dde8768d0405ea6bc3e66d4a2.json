@@ -1,0 +1,71 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT provider,name,base_url,token,enabled,options,projects,people_mapping,generation FROM tracker_connections WHERE workspace_id=$1 AND id=$2 AND NOT deleted FOR UPDATE",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "provider",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "base_url",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "token",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "enabled",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 5,
+        "name": "options",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 6,
+        "name": "projects",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 7,
+        "name": "people_mapping",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 8,
+        "name": "generation",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "f0c71029abcb33697b39bc8c44aeaed801e7321dde8768d0405ea6bc3e66d4a2"
+}

@@ -1,0 +1,65 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT i.title,i.description,i.stage_id,s.name AS stage_name,i.assignee,u.email AS \"email?\",i.deadline,i.tracker AS \"tracker!\" FROM issues i JOIN stages s ON s.id=i.stage_id LEFT JOIN users u ON u.id=i.assignee WHERE i.workspace_id=$1 AND i.id=$2 AND i.tracker IS NOT NULL",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "title",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "description",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "stage_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
+        "name": "stage_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "assignee",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 5,
+        "name": "email?",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "deadline",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 7,
+        "name": "tracker!",
+        "type_info": "Jsonb"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      true,
+      true
+    ]
+  },
+  "hash": "f7d467a5bef92444c37f95da21e987ea9a76525b0bf2189faef8cbf0ec3925ad"
+}

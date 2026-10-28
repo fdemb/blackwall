@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO inbound_deliveries(workspace_id, integration_id, delivery_id, request_hash) VALUES($1, $2, $3, $4) ON CONFLICT DO NOTHING",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "be892d2e9caf32c0f91b69b6d98437365abf37dba2db94e4cdbe7990e2bda0fa"
+}

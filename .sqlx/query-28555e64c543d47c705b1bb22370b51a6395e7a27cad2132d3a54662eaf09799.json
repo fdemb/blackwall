@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM project_teams WHERE workspace_id=$1 AND project_id=$2 AND NOT(team_id=ANY($3))",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "UuidArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "28555e64c543d47c705b1bb22370b51a6395e7a27cad2132d3a54662eaf09799"
+}

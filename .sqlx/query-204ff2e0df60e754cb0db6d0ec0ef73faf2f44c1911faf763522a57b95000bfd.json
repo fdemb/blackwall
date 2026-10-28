@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT GREATEST((SELECT max(number) FROM issues WHERE workspace_id=$1 AND team_id=$2),(SELECT number FROM purged_issue_numbers WHERE workspace_id=$1 AND team_id=$2),(SELECT max(number) FROM issue_key_aliases WHERE workspace_id=$1 AND team_id=$2),0)+1 AS \"number!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "number!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "204ff2e0df60e754cb0db6d0ec0ef73faf2f44c1911faf763522a57b95000bfd"
+}

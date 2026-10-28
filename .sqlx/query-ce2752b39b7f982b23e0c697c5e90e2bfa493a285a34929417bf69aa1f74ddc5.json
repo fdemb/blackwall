@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM user_totp WHERE user_id = $1 AND enabled_at IS NOT NULL",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "ce2752b39b7f982b23e0c697c5e90e2bfa493a285a34929417bf69aa1f74ddc5"
+}

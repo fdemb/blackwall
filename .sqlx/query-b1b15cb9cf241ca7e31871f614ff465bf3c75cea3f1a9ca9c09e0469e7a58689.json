@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE issues SET project_id=NULL,milestone_id=NULL WHERE workspace_id=$1 AND project_id=$2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "b1b15cb9cf241ca7e31871f614ff465bf3c75cea3f1a9ca9c09e0469e7a58689"
+}

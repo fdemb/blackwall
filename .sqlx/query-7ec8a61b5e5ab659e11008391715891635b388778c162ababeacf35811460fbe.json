@@ -1,0 +1,48 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT n.kind,a.profile->>'display_name' AS actor,n.fields AS \"fields: Json<Vec<String>>\",t.key||'-'||i.number AS \"key!\",i.title FROM notifications n JOIN issues i ON i.workspace_id=n.workspace_id AND i.id=n.issue_id JOIN teams t ON t.id=i.team_id LEFT JOIN users a ON a.id=n.actor_id WHERE n.workspace_id=$1 AND n.user_id=$2 AND n.id=ANY($3) AND n.read_at IS NULL AND i.deleted_at IS NULL ORDER BY n.created_at,n.id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "kind",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "actor",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "fields: Json<Vec<String>>",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 3,
+        "name": "key!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "title",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "UuidArray"
+      ]
+    },
+    "nullable": [
+      false,
+      null,
+      false,
+      null,
+      false
+    ]
+  },
+  "hash": "7ec8a61b5e5ab659e11008391715891635b388778c162ababeacf35811460fbe"
+}

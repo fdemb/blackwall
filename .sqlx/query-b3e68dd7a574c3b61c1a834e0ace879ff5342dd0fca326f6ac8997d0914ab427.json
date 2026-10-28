@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT options FROM tracker_connections WHERE workspace_id=$1 AND id=$2 AND enabled AND NOT deleted AND projects @> jsonb_build_array(jsonb_build_object('project_id',$3::text))",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "options",
+        "type_info": "Jsonb"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "b3e68dd7a574c3b61c1a834e0ace879ff5342dd0fca326f6ac8997d0914ab427"
+}

@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE integrations SET enabled=$3,events=COALESCE($4,events),include_data=COALESCE($5,include_data) WHERE workspace_id=$1 AND id=$2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Bool",
+        "TextArray",
+        "Bool"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "e7fe9817d8f4640cc47257ce6013414a7e3647aa9be38e444349db2d437f3c2e"
+}

@@ -1,0 +1,21 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO jobs(id,kind,payload_version,payload,queue,run_at,dedup_key,max_attempts) VALUES($1,$2,$3,$4,$5,COALESCE(to_timestamp($6),clock_timestamp()),$7,$8) ON CONFLICT DO NOTHING",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Int4",
+        "Jsonb",
+        "Text",
+        "Float8",
+        "Text",
+        "Int4"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "61aec9f5430e558535d8cd97968cb8600d89af37a7b18250971094929854b3f0"
+}

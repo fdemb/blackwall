@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT (tracker->>'connection_id')::uuid AS \"connection_id!\",tracker->>'project_id' AS \"project_id!\" FROM issues WHERE workspace_id=$1 AND id=$2 AND tracker IS NOT NULL",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "connection_id!",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "project_id!",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null,
+      null
+    ]
+  },
+  "hash": "38f582fd78bb27ab69ee1dbc9edd54091dc845c28339983057f0dcd19698f383"
+}

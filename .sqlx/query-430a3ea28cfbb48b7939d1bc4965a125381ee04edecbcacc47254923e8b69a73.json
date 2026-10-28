@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM sync_rejections WHERE client_id = $1 AND mutation_id IN (SELECT mutation_id FROM sync_rejections WHERE client_id = $1 ORDER BY mutation_id DESC OFFSET 1000)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "430a3ea28cfbb48b7939d1bc4965a125381ee04edecbcacc47254923e8b69a73"
+}

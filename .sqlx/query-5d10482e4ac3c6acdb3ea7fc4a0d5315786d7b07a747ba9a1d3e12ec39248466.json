@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE jobs SET run_at=LEAST(run_at,clock_timestamp()) WHERE queue='tracker' AND state='pending' AND payload->>'connection_id'=$1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "5d10482e4ac3c6acdb3ea7fc4a0d5315786d7b07a747ba9a1d3e12ec39248466"
+}

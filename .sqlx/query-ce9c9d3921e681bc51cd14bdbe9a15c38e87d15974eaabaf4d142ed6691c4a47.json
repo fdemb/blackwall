@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT secret FROM integrations WHERE workspace_id=$1 AND id=$2 AND enabled AND webhook_url=$3",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "secret",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "ce9c9d3921e681bc51cd14bdbe9a15c38e87d15974eaabaf4d142ed6691c4a47"
+}

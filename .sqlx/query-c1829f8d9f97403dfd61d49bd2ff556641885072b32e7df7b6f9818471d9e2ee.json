@@ -1,0 +1,38 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT queue AS \"queue!\",state AS \"state!\",count(*) AS \"count!\",COALESCE(EXTRACT(EPOCH FROM clock_timestamp()-min(run_at) FILTER (WHERE state='pending' AND run_at<clock_timestamp())),0)::bigint AS \"oldest_overdue_seconds!\" FROM jobs GROUP BY queue,state ORDER BY queue,state",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "queue!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "state!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "count!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "oldest_overdue_seconds!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      false,
+      null,
+      null
+    ]
+  },
+  "hash": "c1829f8d9f97403dfd61d49bd2ff556641885072b32e7df7b6f9818471d9e2ee"
+}

@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT DISTINCT ON (entity_id) entity_id AS \"entity_id!\",via AS \"via!\" FROM activity WHERE workspace_id=$1 AND entity_id=ANY($2) AND action='create_issue' AND via IS NOT NULL ORDER BY entity_id,at",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "entity_id!",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "via!",
+        "type_info": "Jsonb"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "UuidArray"
+      ]
+    },
+    "nullable": [
+      true,
+      true
+    ]
+  },
+  "hash": "d3c739e768d88311b31fff338c13afd97a9cf9de7bc36730f031977ab02af4b1"
+}

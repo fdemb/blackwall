@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE sync_clients SET last_mutation_id = $1, updated_at = now() WHERE client_id = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "ed821325aa0851b8449e18ea00caa9ca8af0cb7c2a890ec0c598b79e21ff7e80"
+}

@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE change_horizon SET txid=GREATEST(txid,$1::bigint+1)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "3bd29783d9bcc340c45b26fe4724c6b3d9cff95bdccde4f4fcc66a14e8de9a90"
+}
