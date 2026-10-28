@@ -547,7 +547,9 @@ function BulkBar({
   const labelled = (label: Id) => chosen.filter((i) => i.labels.includes(label)).length;
   const toggleLabel = (label: Id) =>
     update(
-      labelled(label) === chosen.length ? { remove_labels: [label] } : { add_labels: [label] },
+      labelled(label) === chosen.length
+        ? { labels: { remove: [label] } }
+        : { labels: { add: [label] } },
     );
   // A milestone outside the new project would be rejected, so moving issues leaves theirs.
   const setProject = (id: Id) =>

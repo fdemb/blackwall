@@ -548,7 +548,7 @@ export function bulkLabels(): Scenario {
     command: (f) => ({
       type: "bulk_issues",
       ids: [f.issue, f.peer],
-      action: { update: { add_labels: [added], remove_labels: [f.label] } },
+      action: { update: { labels: { add: [added], remove: [f.label] } } },
     }),
   };
 }

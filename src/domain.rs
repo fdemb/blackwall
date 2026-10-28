@@ -1193,8 +1193,10 @@ mod tests {
             Command::BulkIssues {
                 ids: vec![first, second],
                 action: BulkAction::Update(Box::new(IssuePatch {
-                    add_labels: vec![z],
-                    remove_labels: vec![y],
+                    labels: Some(LabelChange::Edit {
+                        add: vec![z],
+                        remove: vec![y],
+                    }),
                     ..Default::default()
                 })),
             },
@@ -1203,24 +1205,48 @@ mod tests {
         .unwrap();
         assert_eq!(labels(&w, first), [x, z].into());
         assert_eq!(labels(&w, second), [z].into());
+    }
 
-        let before = serde_json::to_string(&w).unwrap();
-        assert!(matches!(
-            w.apply(
-                owner,
-                Command::BulkIssues {
-                    ids: vec![first, second],
-                    action: BulkAction::Update(Box::new(IssuePatch {
-                        labels: Some(vec![x]),
-                        add_labels: vec![y],
-                        ..Default::default()
-                    })),
-                },
-                now,
-            ),
-            Err(Error::BadRequest(_))
-        ));
-        assert_eq!(before, serde_json::to_string(&w).unwrap());
+    #[test]
+    fn label_lists_serialize_as_before_label_edits() {
+        let id = Uuid::new_v4();
+        let label = Uuid::new_v4();
+        let stored = serde_json::json!({
+            "type": "update_issue",
+            "id": id,
+            "patch": {
+                "title": null, "description": null, "team_id": null, "stage_id": null,
+                "assignee": null, "clear_assignee": false, "priority": null,
+                "labels": [label],
+                "estimate": null, "clear_estimate": false,
+                "deadline": null, "clear_deadline": false,
+                "project_id": null, "clear_project": false,
+                "milestone_id": null, "clear_milestone": false,
+                "sprint_id": null, "clear_sprint": false,
+                "parent_id": null, "clear_parent": false,
+                "dependencies": null,
+            },
+        });
+        let command: Command = serde_json::from_value(stored.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&command).unwrap(), stored);
+    }
+
+    #[test]
+    fn label_edits_are_a_type_error_to_servers_without_them() {
+        #[derive(Debug, Deserialize)]
+        struct PatchBeforeLabelEdits {
+            #[allow(dead_code)]
+            labels: Option<Vec<Uuid>>,
+        }
+        let patch = IssuePatch {
+            labels: Some(LabelChange::Edit {
+                add: vec![Uuid::new_v4()],
+                remove: vec![],
+            }),
+            ..Default::default()
+        };
+        let sent = serde_json::to_value(&patch).unwrap();
+        assert!(serde_json::from_value::<PatchBeforeLabelEdits>(sent).is_err());
     }
 
     #[test]

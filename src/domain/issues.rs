@@ -1,6 +1,6 @@
 use super::filter::{Compiled, FilterClause, compile, deserialize_where};
 use super::initial_version;
-use crate::error::{Error, Result};
+use crate::error::Result;
 use chrono::{DateTime, SubsecRound, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
@@ -203,22 +203,20 @@ impl Issue {
     }
 
     /// Apply field values and clear flags; callers validate and persist the result.
-    pub(crate) fn apply_patch(&mut self, p: IssuePatch) -> Result<()> {
-        if p.labels.is_some() && !(p.add_labels.is_empty() && p.remove_labels.is_empty()) {
-            return Err(Error::BadRequest(
-                "send labels, or add_labels and remove_labels, not both".into(),
-            ));
-        }
+    pub(crate) fn apply_patch(&mut self, p: IssuePatch) {
         set(&mut self.title, p.title);
         set(&mut self.description, p.description);
         set(&mut self.stage_id, p.stage_id);
         set_or_clear(&mut self.assignee, p.assignee, p.clear_assignee);
         set(&mut self.priority, p.priority);
-        set(&mut self.labels, p.labels.map(id_set));
-        if !(p.add_labels.is_empty() && p.remove_labels.is_empty()) {
-            let kept = self.labels.iter().chain(&p.add_labels);
-            let labels = kept.filter(|id| !p.remove_labels.contains(id)).copied();
-            self.labels = id_set(labels.collect());
+        match p.labels {
+            Some(LabelChange::Set(labels)) => self.labels = id_set(labels),
+            Some(LabelChange::Edit { add, remove }) => {
+                let kept = self.labels.iter().chain(&add);
+                let labels = kept.filter(|id| !remove.contains(id)).copied();
+                self.labels = id_set(labels.collect());
+            }
+            None => {}
         }
         set_or_clear(&mut self.estimate, p.estimate, p.clear_estimate);
         set_or_clear(
@@ -235,7 +233,6 @@ impl Issue {
         set_or_clear(&mut self.sprint_id, p.sprint_id, p.clear_sprint);
         set_or_clear(&mut self.parent_id, p.parent_id, p.clear_parent);
         set(&mut self.dependencies, p.dependencies.map(id_set));
-        Ok(())
     }
 
     /// Starts a move to `team`: the current key becomes a former key, and a sprint the patch
@@ -312,14 +309,7 @@ pub struct IssuePatch {
     #[serde(default)]
     pub clear_assignee: bool,
     pub priority: Option<Priority>,
-    /// Replaces every label. A patch that sets it can't also add or remove labels.
-    pub labels: Option<Vec<Uuid>>,
-    /// Added to the issue's current labels, keeping the rest.
-    #[serde(default)]
-    pub add_labels: Vec<Uuid>,
-    /// Removed from the issue's current labels, keeping the rest. Wins over `add_labels`.
-    #[serde(default)]
-    pub remove_labels: Vec<Uuid>,
+    pub labels: Option<LabelChange>,
     pub estimate: Option<u32>,
     #[serde(default)]
     pub clear_estimate: bool,
@@ -339,6 +329,21 @@ pub struct IssuePatch {
     #[serde(default)]
     pub clear_parent: bool,
     pub dependencies: Option<Vec<Uuid>>,
+}
+
+/// A list replaces every label. `{add, remove}` changes only the labels it names, and a
+/// label in both is removed. Servers from before `{add, remove}` reject it as a type error
+/// instead of acknowledging an edit they can't apply.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(untagged)]
+pub enum LabelChange {
+    Set(Vec<Uuid>),
+    Edit {
+        #[serde(default)]
+        add: Vec<Uuid>,
+        #[serde(default)]
+        remove: Vec<Uuid>,
+    },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]

@@ -280,7 +280,7 @@ impl Workspace {
         let (old_assignee, old_stage) = (i.assignee, i.stage_id);
 
         let team = p.team_id.filter(|team| *team != old.team_id);
-        i.apply_patch(p)?;
+        i.apply_patch(p);
         if let Some(team) = team {
             self.enter_team(&old, &mut i, team)?;
         }

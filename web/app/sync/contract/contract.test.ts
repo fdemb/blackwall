@@ -193,14 +193,6 @@ describe.skipIf(!enabled)(`${suiteName}: prediction contract`, () => {
         value: {
           type: "bulk_issues",
           ids: [f.issue, f.peer],
-          action: { update: { labels: [f.label], remove_labels: [f.label] } },
-        },
-      },
-      {
-        c: ownerClient,
-        value: {
-          type: "bulk_issues",
-          ids: [f.issue, f.peer],
           action: { update: { milestone_id: f.milestone } },
         },
       },

@@ -49,8 +49,6 @@ const ISSUE_PATCH: Fields = {
   clear_assignee: defaulted(false),
   priority: option,
   labels: option,
-  add_labels: defaulted([]),
-  remove_labels: defaulted([]),
   estimate: unsignedOption,
   clear_estimate: defaulted(false),
   deadline: timestampOption,

@@ -5,8 +5,6 @@ import { MUTATORS, normalizeArgs } from "./index";
 const ID = "00000000-0000-4000-8000-000000000001";
 const AT = "2026-10-09T12:00:00Z";
 const patchDefaults = {
-  add_labels: [],
-  remove_labels: [],
   clear_assignee: false,
   clear_estimate: false,
   clear_deadline: false,
