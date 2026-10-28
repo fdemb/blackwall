@@ -21,27 +21,24 @@ pub(super) async fn pending(
     workspace: Uuid,
     actor: Uuid,
 ) -> Result<Vec<Change>> {
-    let rows: Vec<(String, Uuid)> = sqlx::query_as(
-        "SELECT DISTINCT entity,entity_id FROM changes \
+    let rows = sqlx::query!(
+        "SELECT DISTINCT entity AS \"entity!\",entity_id AS \"entity_id!\" FROM changes \
          WHERE workspace_id=$1 AND txid=pg_current_xact_id_if_assigned()::text::bigint \
          AND (user_id IS NULL OR user_id=$2) AND entity <> 'roles' ORDER BY entity,entity_id",
+        workspace,
+        actor,
     )
-    .bind(workspace)
-    .bind(actor)
     .fetch_all(conn)
     .await?;
 
-    Ok(refs(rows))
-}
-
-fn refs(rows: Vec<(String, Uuid)>) -> Vec<Change> {
-    rows.into_iter()
-        .map(|(entity, id)| Change {
-            entity,
-            id,
+    Ok(rows
+        .into_iter()
+        .map(|row| Change {
+            entity: row.entity,
+            id: row.entity_id,
             record: None,
         })
-        .collect()
+        .collect())
 }
 
 #[derive(Clone, Copy)]
@@ -148,27 +145,26 @@ impl Store {
     pub async fn prune_changes(&self, retention_days: i32) -> Result<u64> {
         let mut tx = self.pool.begin().await?;
 
-        let (count, newest): (i64, Option<i64>) = sqlx::query_as(
+        let gone = sqlx::query!(
             "WITH gone AS (\
              DELETE FROM changes WHERE id IN (\
              SELECT id FROM changes WHERE created_at<now()-make_interval(days=>$1) \
              ORDER BY created_at,id LIMIT 10000) RETURNING txid) \
-             SELECT count(*),max(txid) FROM gone",
+             SELECT count(*) AS \"count!\",max(txid) AS newest FROM gone",
+            retention_days,
         )
-        .bind(retention_days)
         .fetch_one(&mut *tx)
         .await?;
 
-        let Some(newest) = newest else {
+        let Some(newest) = gone.newest else {
             return Ok(0);
         };
 
-        sqlx::query("UPDATE change_horizon SET txid=GREATEST(txid,$1+1)")
-            .bind(newest)
+        sqlx::query!("UPDATE change_horizon SET txid=GREATEST(txid,$1+1)", newest)
             .execute(&mut *tx)
             .await?;
         tx.commit().await?;
 
-        Ok(count as u64)
+        Ok(gone.count as u64)
     }
 }

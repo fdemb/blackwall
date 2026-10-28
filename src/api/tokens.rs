@@ -141,16 +141,15 @@ impl Store {
 
         let mut tx = self.pool.begin().await?;
         // Serializes concurrent creations per user so the cap holds.
-        sqlx::query("SELECT id FROM users WHERE id=$1 FOR UPDATE")
-            .bind(user)
+        sqlx::query!("SELECT id FROM users WHERE id=$1 FOR UPDATE", user)
             .fetch_one(&mut *tx)
             .await?;
         if let Some(ids) = &workspaces {
-            let member: i64 = sqlx::query_scalar(
-                "SELECT count(*) FROM workspace_members WHERE user_id=$1 AND workspace_id=ANY($2)",
+            let member: i64 = sqlx::query_scalar!(
+                "SELECT count(*) AS \"count!\" FROM workspace_members WHERE user_id=$1 AND workspace_id=ANY($2)",
+                user,
+                ids.as_slice(),
             )
-            .bind(user)
-            .bind(ids)
             .fetch_one(&mut *tx)
             .await?;
             if member != ids.len() as i64 {
@@ -159,10 +158,12 @@ impl Store {
                 ));
             }
         }
-        let count: i64 = sqlx::query_scalar("SELECT count(*) FROM api_tokens WHERE user_id=$1")
-            .bind(user)
-            .fetch_one(&mut *tx)
-            .await?;
+        let count: i64 = sqlx::query_scalar!(
+            "SELECT count(*) AS \"count!\" FROM api_tokens WHERE user_id=$1",
+            user,
+        )
+        .fetch_one(&mut *tx)
+        .await?;
         if count >= MAX_TOKENS_PER_USER {
             return Err(Error::Conflict(format!(
                 "token limit of {MAX_TOKENS_PER_USER} reached; revoke one first"
@@ -209,11 +210,13 @@ impl Store {
     }
 
     pub async fn revoke_api_token(&self, user: Uuid, id: Uuid) -> Result<()> {
-        let deleted = sqlx::query("DELETE FROM api_tokens WHERE user_id=$1 AND id=$2")
-            .bind(user)
-            .bind(id)
-            .execute(&self.pool)
-            .await?;
+        let deleted = sqlx::query!(
+            "DELETE FROM api_tokens WHERE user_id=$1 AND id=$2",
+            user,
+            id
+        )
+        .execute(&self.pool)
+        .await?;
         if deleted.rows_affected() == 0 {
             return Err(Error::NotFound);
         }
@@ -224,27 +227,28 @@ impl Store {
         if !secret.starts_with(TOKEN_PREFIX) || secret.len() > 200 {
             return Err(Error::Unauthorized);
         }
-        let row = sqlx::query(
+        let hash = auth::hash(secret);
+        let row = sqlx::query!(
             "SELECT id,user_id,access,workspace_ids FROM api_tokens \
              WHERE token_hash=$1 AND (expires_at IS NULL OR expires_at>now())",
+            hash,
         )
-        .bind(auth::hash(secret))
         .fetch_optional(&self.pool)
         .await?
         .ok_or(Error::Unauthorized)?;
         let grant = TokenGrant {
-            token_id: row.try_get("id")?,
-            user: row.try_get("user_id")?,
-            access: parse_access(row.try_get("access")?)?,
-            workspaces: row.try_get("workspace_ids")?,
+            token_id: row.id,
+            user: row.user_id,
+            access: parse_access(&row.access)?,
+            workspaces: row.workspace_ids,
         };
 
         // Coarse on purpose: one write per token per minute, not per request.
-        sqlx::query(
+        sqlx::query!(
             "UPDATE api_tokens SET last_used_at=now() WHERE id=$1 \
              AND (last_used_at IS NULL OR last_used_at<now()-interval '1 minute')",
+            grant.token_id,
         )
-        .bind(grant.token_id)
         .execute(&self.pool)
         .await?;
 

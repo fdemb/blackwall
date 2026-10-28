@@ -121,112 +121,115 @@ impl Directory {
     }
 
     pub(crate) async fn with_records(self, conn: &mut PgConnection, ws: Uuid) -> Result<Self> {
-        let teams = sqlx::query_as::<_, (Uuid, String, String)>(
+        let teams = sqlx::query!(
             "SELECT id,key,name FROM teams WHERE workspace_id=$1 ORDER BY name,id",
+            ws,
         )
-        .bind(ws)
         .fetch_all(&mut *conn)
         .await?
         .into_iter()
-        .map(|(id, key, name)| TeamRef { id, key, name })
+        .map(|row| TeamRef {
+            id: row.id,
+            key: row.key,
+            name: row.name,
+        })
         .collect();
 
-        let team_keys = sqlx::query_as::<_, (Uuid, String)>(
+        let team_keys = sqlx::query!(
             "SELECT team_id,key FROM team_keys WHERE workspace_id=$1",
+            ws,
         )
-        .bind(ws)
-        .fetch_all(&mut *conn)
-        .await?;
-
-        let stages = sqlx::query_as::<_, (Uuid, Uuid, String, String)>(
-            "SELECT team_id,id,name,kind FROM stages WHERE workspace_id=$1 ORDER BY team_id,position,id",
-        )
-        .bind(ws)
         .fetch_all(&mut *conn)
         .await?
         .into_iter()
-        .map(|(team_id, id, name, kind)| {
+        .map(|row| (row.team_id, row.key))
+        .collect();
+
+        let stages = sqlx::query!(
+            "SELECT team_id,id,name,kind FROM stages WHERE workspace_id=$1 ORDER BY team_id,position,id",
+            ws,
+        )
+        .fetch_all(&mut *conn)
+        .await?
+        .into_iter()
+        .map(|row| {
             Ok(StageRow {
-                team_id,
+                team_id: row.team_id,
                 stage: StageRef {
-                    id,
-                    name,
-                    kind: parse(kind)?,
+                    id: row.id,
+                    name: row.name,
+                    kind: parse(row.kind)?,
                 },
             })
         })
         .collect::<Result<_>>()?;
 
-        let labels = sqlx::query_as::<_, (Uuid, String, String)>(
+        let labels = sqlx::query!(
             "SELECT id,name,color FROM labels WHERE workspace_id=$1 ORDER BY name,id",
+            ws,
         )
-        .bind(ws)
         .fetch_all(&mut *conn)
         .await?
         .into_iter()
-        .map(|(id, name, color)| LabelRef { id, name, color })
-        .collect();
-
-        let projects = sqlx::query_as::<_, (Uuid, String)>(
-            "SELECT id,name FROM projects WHERE workspace_id=$1 ORDER BY name,id",
-        )
-        .bind(ws)
-        .fetch_all(&mut *conn)
-        .await?
-        .into_iter()
-        .map(|(id, name)| NamedRef { id, name })
-        .collect();
-
-        let milestones = sqlx::query_as::<_, (Uuid, Uuid, String, Option<DateTime<Utc>>)>(
-            "SELECT project_id,id,name,deadline FROM milestones WHERE workspace_id=$1 ORDER BY name,id",
-        )
-        .bind(ws)
-        .fetch_all(&mut *conn)
-        .await?
-        .into_iter()
-        .map(|(project_id, id, name, deadline)| MilestoneRow {
-            project_id,
-            milestone: NamedRef { id, name },
-            deadline,
+        .map(|row| LabelRef {
+            id: row.id,
+            name: row.name,
+            color: row.color,
         })
         .collect();
 
-        let sprints = sqlx::query_as::<
-            _,
-            (
-                Uuid,
-                Uuid,
-                i64,
-                String,
-                String,
-                String,
-                DateTime<Utc>,
-                DateTime<Utc>,
-            ),
-        >(
-            "SELECT team_id,id,number,name,state,goal,starts_at,ends_at FROM sprints \
-             WHERE workspace_id=$1 ORDER BY team_id,starts_at,id",
+        let projects = sqlx::query!(
+            "SELECT id,name FROM projects WHERE workspace_id=$1 ORDER BY name,id",
+            ws,
         )
-        .bind(ws)
         .fetch_all(&mut *conn)
         .await?
         .into_iter()
-        .map(
-            |(team_id, id, number, name, state, goal, starts_at, ends_at)| {
-                Ok(SprintRow {
-                    team_id,
-                    sprint: SprintRef {
-                        id,
-                        number: number.max(0) as u64,
-                        name,
-                        state: parse(state)?,
-                    },
-                    goal,
-                    starts_at,
-                    ends_at,
-                })
-            },
+        .map(|row| NamedRef {
+            id: row.id,
+            name: row.name,
+        })
+        .collect();
+
+        let milestones = sqlx::query!(
+            "SELECT project_id,id,name,deadline FROM milestones WHERE workspace_id=$1 ORDER BY name,id",
+            ws,
         )
+        .fetch_all(&mut *conn)
+        .await?
+        .into_iter()
+        .map(|row| MilestoneRow {
+            project_id: row.project_id,
+            milestone: NamedRef {
+                id: row.id,
+                name: row.name,
+            },
+            deadline: row.deadline,
+        })
+        .collect();
+
+        let sprints = sqlx::query!(
+            "SELECT team_id,id,number,name,state,goal,starts_at,ends_at FROM sprints \
+             WHERE workspace_id=$1 ORDER BY team_id,starts_at,id",
+            ws,
+        )
+        .fetch_all(&mut *conn)
+        .await?
+        .into_iter()
+        .map(|row| {
+            Ok(SprintRow {
+                team_id: row.team_id,
+                sprint: SprintRef {
+                    id: row.id,
+                    number: row.number.max(0) as u64,
+                    name: row.name,
+                    state: parse(row.state)?,
+                },
+                goal: row.goal,
+                starts_at: row.starts_at,
+                ends_at: row.ends_at,
+            })
+        })
         .collect::<Result<_>>()?;
 
         Ok(Self {
@@ -250,14 +253,17 @@ impl Directory {
 
     /// Only the workspace's members, without an acting user.
     pub async fn members(conn: &mut PgConnection, workspace: Uuid) -> Result<Self> {
-        let rows = sqlx::query_as::<_, (Uuid, String, Option<String>)>(
-            "SELECT u.id,u.email,u.profile->>'display_name' FROM workspace_members m \
+        let rows: Vec<(Uuid, String, Option<String>)> = sqlx::query!(
+            "SELECT u.id,u.email,u.profile->>'display_name' AS display_name FROM workspace_members m \
              JOIN users u ON u.id=m.user_id WHERE m.workspace_id=$1 \
              ORDER BY lower(u.profile->>'display_name'),u.id",
+            workspace,
         )
-        .bind(workspace)
         .fetch_all(conn)
-        .await?;
+        .await?
+        .into_iter()
+        .map(|row| (row.id, row.email, row.display_name))
+        .collect();
         Ok(Self {
             me: Uuid::nil(),
             teams: vec![],
@@ -297,14 +303,15 @@ impl Directory {
         if missing.is_empty() {
             return Ok(());
         }
-        let rows = sqlx::query_as::<_, (Uuid, String, Option<String>)>(
-            "SELECT id,email,profile->>'display_name' FROM users WHERE id=ANY($1)",
+        let rows = sqlx::query!(
+            "SELECT id,email,profile->>'display_name' AS display_name FROM users WHERE id=ANY($1)",
+            &missing,
         )
-        .bind(&missing)
         .fetch_all(conn)
         .await?;
-        for (id, email, display_name) in rows {
-            self.people.insert(id, person(id, email, display_name));
+        for row in rows {
+            self.people
+                .insert(row.id, person(row.id, row.email, row.display_name));
         }
         Ok(())
     }
@@ -536,17 +543,24 @@ impl Directory {
         if ids.is_empty() {
             return Ok(BTreeMap::new());
         }
-        Ok(sqlx::query_as::<_, (Uuid, Uuid, i64, String)>(
+        Ok(sqlx::query!(
             "SELECT id,team_id,number,title FROM issues WHERE workspace_id=$1 AND id=ANY($2)",
+            workspace,
+            &ids,
         )
-        .bind(workspace)
-        .bind(&ids)
         .fetch_all(conn)
         .await?
         .into_iter()
-        .map(|(id, team, number, title)| {
-            let key = self.issue_key(team, number.max(0) as u64);
-            (id, IssueRef { id, key, title })
+        .map(|row| {
+            let key = self.issue_key(row.team_id, row.number.max(0) as u64);
+            (
+                row.id,
+                IssueRef {
+                    id: row.id,
+                    key,
+                    title: row.title,
+                },
+            )
         })
         .collect())
     }

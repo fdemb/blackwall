@@ -170,13 +170,14 @@ pub async fn create(
     .await?;
     let id = created_id(&result)?;
     // A replay never builds the command, so read the secret the webhook keeps.
-    let secret: String =
-        sqlx::query_scalar("SELECT secret FROM integrations WHERE workspace_id=$1 AND id=$2")
-            .bind(scope.workspace)
-            .bind(id)
-            .fetch_optional(&store.pool)
-            .await?
-            .ok_or(Error::NotFound)?;
+    let secret: String = sqlx::query_scalar!(
+        "SELECT secret FROM integrations WHERE workspace_id=$1 AND id=$2",
+        scope.workspace,
+        id,
+    )
+    .fetch_optional(&store.pool)
+    .await?
+    .ok_or(Error::NotFound)?;
     let webhook = webhook(&store, scope, id).await?;
     Ok(tagged(
         StatusCode::CREATED,

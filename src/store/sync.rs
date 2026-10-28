@@ -207,29 +207,27 @@ async fn apply_mutation(
     mutation: &SyncMutation,
     built: Result<Command>,
 ) -> std::result::Result<PushStep, (Error, &'static str)> {
-    sqlx::query(
+    sqlx::query!(
         "INSERT INTO sync_clients (client_id, workspace_id, user_id) VALUES ($1, $2, $3) \
          ON CONFLICT (client_id) DO NOTHING",
+        client_id,
+        op.workspace_id,
+        op.actor,
     )
-    .bind(client_id)
-    .bind(op.workspace_id)
-    .bind(op.actor)
     .execute(&mut *op.tx)
     .await
     .phase("client row")?;
 
-    let row = sqlx::query(
+    let row = sqlx::query!(
         "SELECT workspace_id, user_id, last_mutation_id FROM sync_clients \
          WHERE client_id = $1 FOR UPDATE",
+        client_id,
     )
-    .bind(client_id)
     .fetch_one(&mut *op.tx)
     .await
     .phase("client row")?;
-    let owner_ws: Uuid = row.try_get("workspace_id").phase("client row")?;
-    let owner: Uuid = row.try_get("user_id").phase("client row")?;
-    let stored: i64 = row.try_get("last_mutation_id").phase("client row")?;
-    if owner_ws != op.workspace_id || owner != op.actor {
+    let stored = row.last_mutation_id;
+    if row.workspace_id != op.workspace_id || row.user_id != op.actor {
         return Ok(PushStep::ClientTaken);
     }
     if mutation.id <= stored {
@@ -258,12 +256,12 @@ async fn apply_mutation(
         remember_rejection(op, client_id, mutation.id, error).await?;
     }
 
-    sqlx::query(
+    sqlx::query!(
         "UPDATE sync_clients SET last_mutation_id = $1, updated_at = now() \
          WHERE client_id = $2",
+        mutation.id,
+        client_id,
     )
-    .bind(mutation.id)
-    .bind(client_id)
     .execute(&mut *op.tx)
     .await
     .phase("advance")?;
@@ -277,17 +275,17 @@ async fn remembered_result(
     client_id: Uuid,
     mutation_id: i64,
 ) -> std::result::Result<MutationResult, (Error, &'static str)> {
-    let remembered = sqlx::query_as::<_, (i16, String)>(
+    let remembered = sqlx::query!(
         "SELECT status, message FROM sync_rejections WHERE client_id = $1 AND mutation_id = $2",
+        client_id,
+        mutation_id,
     )
-    .bind(client_id)
-    .bind(mutation_id)
     .fetch_optional(&mut *op.tx)
     .await
     .phase("rejection lookup")?;
-    let error = remembered.map(|(status, message)| MutationError {
-        status: status as u16,
-        message,
+    let error = remembered.map(|row| MutationError {
+        status: row.status as u16,
+        message: row.message,
     });
     Ok(MutationResult {
         id: mutation_id,
@@ -339,23 +337,23 @@ async fn remember_rejection(
     mutation_id: i64,
     error: &MutationError,
 ) -> std::result::Result<(), (Error, &'static str)> {
-    sqlx::query(
+    sqlx::query!(
         "INSERT INTO sync_rejections (client_id, mutation_id, status, message) \
          VALUES ($1, $2, $3, $4)",
+        client_id,
+        mutation_id,
+        error.status as i16,
+        &error.message,
     )
-    .bind(client_id)
-    .bind(mutation_id)
-    .bind(error.status as i16)
-    .bind(&error.message)
     .execute(&mut *op.tx)
     .await
     .phase("remember rejection")?;
-    sqlx::query(
+    sqlx::query!(
         "DELETE FROM sync_rejections WHERE client_id = $1 AND mutation_id IN (\
          SELECT mutation_id FROM sync_rejections WHERE client_id = $1 \
          ORDER BY mutation_id DESC OFFSET 1000)",
+        client_id,
     )
-    .bind(client_id)
     .execute(&mut *op.tx)
     .await
     .phase("prune rejections")?;
@@ -450,24 +448,20 @@ impl Store {
             }
         }
 
-        let row = sqlx::query(
+        let row = sqlx::query!(
             "SELECT workspace_id, user_id, last_mutation_id FROM sync_clients WHERE client_id = $1",
+            client_id,
         )
-        .bind(client_id)
         .fetch_optional(&self.pool)
         .await
         .map_err(|e| transient(e.into()))?;
         let Some(row) = row else {
             return Ok(0);
         };
-        let read = |column: &str| -> std::result::Result<Uuid, PushFailure> {
-            row.try_get(column).map_err(|e| transient(e.into()))
-        };
-        if read("workspace_id")? != workspace_id || read("user_id")? != actor {
+        if row.workspace_id != workspace_id || row.user_id != actor {
             return Err(PushFailure::ClientTaken);
         }
-        row.try_get("last_mutation_id")
-            .map_err(|e| transient(e.into()))
+        Ok(row.last_mutation_id)
     }
 
     async fn push_mutation(
@@ -525,13 +519,13 @@ impl Store {
     /// Deletes sync clients idle longer than the session lifetime. A pruned
     /// client cannot still have a live replica, because its session expired first.
     pub async fn prune_sync_clients(&self) -> Result<u64> {
-        Ok(sqlx::query(
+        Ok(sqlx::query!(
             "DELETE FROM sync_clients WHERE client_id IN (\
              SELECT client_id FROM sync_clients \
              WHERE updated_at < now() - make_interval(days => $1) \
              ORDER BY updated_at LIMIT 1000 FOR UPDATE SKIP LOCKED)",
+            crate::auth::SESSION_LIFETIME_DAYS as i32,
         )
-        .bind(crate::auth::SESSION_LIFETIME_DAYS as i32)
         .execute(&self.pool)
         .await?
         .rows_affected())
@@ -634,19 +628,25 @@ fn parse_cursor(cursor: &str, snapshot_xmax: i64) -> Result<Snapshot> {
 /// transaction open elsewhere only sits in xip lists; it never holds the
 /// cursor back.
 async fn pull_snapshot(tx: &mut PgConnection) -> Result<(String, Snapshot, i64)> {
-    let (text, xmin, xmax, mut xip, horizon): (String, i64, i64, Vec<i64>, i64) = sqlx::query_as(
-        "SELECT pg_current_snapshot()::text, \
-              pg_snapshot_xmin(pg_current_snapshot())::text::bigint, \
-              pg_snapshot_xmax(pg_current_snapshot())::text::bigint, \
+    let row = sqlx::query!(
+        "SELECT pg_current_snapshot()::text AS \"text!\", \
+              pg_snapshot_xmin(pg_current_snapshot())::text::bigint AS \"xmin!\", \
+              pg_snapshot_xmax(pg_current_snapshot())::text::bigint AS \"xmax!\", \
               COALESCE((SELECT array_agg(x::text::bigint) \
-                        FROM pg_snapshot_xip(pg_current_snapshot()) AS t(x)), '{}'::bigint[]), \
-              (SELECT txid FROM change_horizon)",
+                        FROM pg_snapshot_xip(pg_current_snapshot()) AS t(x)), '{}'::bigint[]) AS \"xip!\", \
+              (SELECT txid FROM change_horizon) AS \"horizon!\"",
     )
     .fetch_one(&mut *tx)
     .await?;
+    let mut xip = row.xip;
     xip.sort_unstable();
     xip.dedup();
-    Ok((text, Snapshot { xmin, xmax, xip }, horizon))
+    let snapshot = Snapshot {
+        xmin: row.xmin,
+        xmax: row.xmax,
+        xip,
+    };
+    Ok((row.text, snapshot, row.horizon))
 }
 
 /// Distinct changed records from whole transactions, and the first
@@ -890,22 +890,20 @@ impl Store {
 
         super::reads::authorize(&mut tx, workspace_id, actor).await?;
 
-        let row = sqlx::query(
+        let row = sqlx::query!(
             "SELECT workspace_id, user_id, last_mutation_id FROM sync_clients \
              WHERE client_id = $1",
+            client_id,
         )
-        .bind(client_id)
         .fetch_optional(&mut *tx)
         .await?;
         let last_mutation_id = if let Some(row) = row {
-            let owner_ws: Uuid = row.try_get("workspace_id")?;
-            let owner: Uuid = row.try_get("user_id")?;
-            if owner_ws != workspace_id || owner != actor {
+            if row.workspace_id != workspace_id || row.user_id != actor {
                 return Err(Error::BadRequest(
                     "client_id belongs to another user or workspace".into(),
                 ));
             }
-            row.try_get::<i64, _>("last_mutation_id")?
+            row.last_mutation_id
         } else {
             0
         };
@@ -924,15 +922,14 @@ impl Store {
         let mut conn = self.pool.acquire().await?;
         super::reads::authorize(&mut conn, workspace_id, actor).await?;
 
-        if let Some(row) =
-            sqlx::query("SELECT workspace_id, user_id FROM sync_clients WHERE client_id = $1")
-                .bind(client_id)
-                .fetch_optional(&mut *conn)
-                .await?
+        if let Some(row) = sqlx::query!(
+            "SELECT workspace_id, user_id FROM sync_clients WHERE client_id = $1",
+            client_id,
+        )
+        .fetch_optional(&mut *conn)
+        .await?
         {
-            let owner_ws: Uuid = row.try_get("workspace_id")?;
-            let owner: Uuid = row.try_get("user_id")?;
-            if owner_ws != workspace_id || owner != actor {
+            if row.workspace_id != workspace_id || row.user_id != actor {
                 return Err(Error::BadRequest(
                     "client_id belongs to another user or workspace".into(),
                 ));
@@ -1119,9 +1116,10 @@ impl Store {
             let prepared: Result<_> = async {
                 let (mut tx, last_mutation_id) =
                     store.sync_read(workspace, actor, client_id).await?;
-                let cursor: String = sqlx::query_scalar("SELECT pg_current_snapshot()::text")
-                    .fetch_one(&mut *tx)
-                    .await?;
+                let cursor: String =
+                    sqlx::query_scalar!(r#"SELECT pg_current_snapshot()::text AS "cursor!""#)
+                        .fetch_one(&mut *tx)
+                        .await?;
                 Ok((
                     tx,
                     serde_json::json!({

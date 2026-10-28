@@ -9,7 +9,6 @@ use crate::{
 };
 use axum::extract::{Path, Query};
 use chrono::NaiveDate;
-use sqlx::Row;
 
 /// Records whose version is their ETag.
 pub trait Versioned {
@@ -120,24 +119,24 @@ async fn workspace_rows(
     actor: &ApiActor,
     only: Option<Uuid>,
 ) -> Result<Vec<ApiWorkspace>> {
-    sqlx::query(
+    sqlx::query!(
         "SELECT w.id,w.name,w.slug,m.role FROM workspaces w \
          JOIN workspace_members m ON m.workspace_id=w.id \
          WHERE m.user_id=$1 AND ($2::uuid[] IS NULL OR w.id=ANY($2)) AND ($3::uuid IS NULL OR w.id=$3) \
          ORDER BY w.name,w.id",
+        actor.user(),
+        actor.0.workspaces.as_deref(),
+        only,
     )
-    .bind(actor.user())
-    .bind(&actor.0.workspaces)
-    .bind(only)
     .fetch_all(&store.pool)
     .await?
     .into_iter()
     .map(|row| {
         Ok(ApiWorkspace {
-            id: row.try_get("id")?,
-            name: row.try_get("name")?,
-            slug: row.try_get("slug")?,
-            role: serde_json::from_value(serde_json::Value::String(row.try_get("role")?))?,
+            id: row.id,
+            name: row.name,
+            slug: row.slug,
+            role: serde_json::from_value(serde_json::Value::String(row.role))?,
         })
     })
     .collect()
@@ -835,11 +834,11 @@ pub async fn update_project(
                 {
                     crate::domain::validate_project_dates(*start_date, *target_date)?;
                     if let Some(lead) = lead_id {
-                        let member: bool = sqlx::query_scalar(
-                            "SELECT EXISTS(SELECT 1 FROM workspace_members WHERE workspace_id=$1 AND user_id=$2)",
+                        let member: bool = sqlx::query_scalar!(
+                            "SELECT EXISTS(SELECT 1 FROM workspace_members WHERE workspace_id=$1 AND user_id=$2) AS \"exists!\"",
+                            workspace,
+                            *lead,
                         )
-                        .bind(workspace)
-                        .bind(lead)
                         .fetch_one(&store.pool)
                         .await?;
                         if !member {

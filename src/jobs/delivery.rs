@@ -153,14 +153,14 @@ impl Job {
                     },
                 ..
             }) => {
-                sqlx::query_scalar::<_, bool>(
+                sqlx::query_scalar!(
                     "SELECT EXISTS(SELECT 1 FROM invitations \
                      WHERE workspace_id=$1 AND id=$2 AND token_hash=$3 \
-                     AND state='pending' AND expires_at>clock_timestamp())",
+                     AND state='pending' AND expires_at>clock_timestamp()) AS \"exists!\"",
+                    *workspace_id,
+                    *invitation_id,
+                    token_hash.as_str(),
                 )
-                .bind(workspace_id)
-                .bind(invitation_id)
-                .bind(token_hash)
                 .fetch_one(&store.pool)
                 .await
             }
@@ -172,12 +172,12 @@ impl Job {
                     },
                 ..
             }) => {
-                sqlx::query_scalar::<_, bool>(
+                sqlx::query_scalar!(
                     "SELECT EXISTS(SELECT 1 FROM password_resets \
-                     WHERE user_id=$1 AND token_hash=$2 AND expires_at>clock_timestamp())",
+                     WHERE user_id=$1 AND token_hash=$2 AND expires_at>clock_timestamp()) AS \"exists!\"",
+                    *user_id,
+                    token_hash.as_str(),
                 )
-                .bind(user_id)
-                .bind(token_hash)
                 .fetch_one(&store.pool)
                 .await
             }
@@ -189,14 +189,14 @@ impl Job {
                     },
                 ..
             }) => {
-                sqlx::query_scalar::<_, bool>(
+                sqlx::query_scalar!(
                     "SELECT EXISTS(SELECT 1 FROM email_verifications \
                      JOIN users ON users.id=email_verifications.user_id \
                      WHERE user_id=$1 AND token_hash=$2 AND expires_at>clock_timestamp() \
-                     AND users.email_verified_at IS NULL)",
+                     AND users.email_verified_at IS NULL) AS \"exists!\"",
+                    *user_id,
+                    verification_hash.as_str(),
                 )
-                .bind(user_id)
-                .bind(verification_hash)
                 .fetch_one(&store.pool)
                 .await
             }
@@ -212,13 +212,13 @@ impl Job {
 
 impl Webhook {
     pub async fn current_secret(&self, store: &Store) -> Result<Option<String>, DeliveryError> {
-        sqlx::query_scalar::<_, String>(
+        sqlx::query_scalar!(
             "SELECT secret FROM integrations \
              WHERE workspace_id=$1 AND id=$2 AND enabled AND webhook_url=$3",
+            self.workspace_id,
+            self.integration_id,
+            self.url.as_str(),
         )
-        .bind(self.workspace_id)
-        .bind(self.integration_id)
-        .bind(&self.url)
         .fetch_optional(&store.pool)
         .await
         .map_err(|error| {

@@ -138,22 +138,22 @@ pub(crate) async fn attachment_response(
     user: Uuid,
     attachment: Uuid,
 ) -> Result<Response> {
-    let row = sqlx::query(
+    let row = sqlx::query!(
         "SELECT a.filename, a.bytes FROM attachments a \
          JOIN issues i ON i.id = a.issue_id \
          JOIN workspace_members m ON m.workspace_id = a.workspace_id \
          WHERE a.workspace_id = $1 AND a.id = $2 AND m.user_id = $3 \
          AND i.deleted_at IS NULL",
+        id,
+        attachment,
+        user,
     )
-    .bind(id)
-    .bind(attachment)
-    .bind(user)
     .fetch_optional(&store.pool)
     .await?
     .ok_or(Error::NotFound)?;
 
-    let name: String = row.try_get("filename")?;
-    let bytes: Vec<u8> = row.try_get("bytes")?;
+    let name: String = row.filename;
+    let bytes: Vec<u8> = row.bytes;
 
     let mut response = bytes.into_response();
     response.headers_mut().insert(
@@ -256,12 +256,12 @@ pub(super) async fn incoming(
     use hmac::{Hmac, Mac};
     use sha2::{Digest, Sha256};
 
-    let owner: Uuid = sqlx::query_scalar(
+    let owner: Uuid = sqlx::query_scalar!(
         "SELECT user_id FROM workspace_members \
          WHERE workspace_id = $1 AND role = 'owner' \
          ORDER BY user_id LIMIT 1",
+        id,
     )
-    .bind(id)
     .fetch_optional(&store.pool)
     .await?
     .ok_or(Error::NotFound)?;
@@ -269,15 +269,14 @@ pub(super) async fn incoming(
     let mut op = store
         .begin_operation(id, owner, BTreeMap::new(), false)
         .await?;
-    let row = sqlx::query(
+    let secret: String = sqlx::query_scalar!(
         "SELECT secret FROM integrations WHERE workspace_id=$1 AND id=$2 AND enabled FOR SHARE",
+        id,
+        integration_id,
     )
-    .bind(id)
-    .bind(integration_id)
     .fetch_optional(&mut *op.tx)
     .await?
     .ok_or(Error::NotFound)?;
-    let secret: String = row.try_get("secret")?;
 
     let signature = headers
         .get("x-blackwall-signature")
@@ -295,32 +294,32 @@ pub(super) async fn incoming(
         serde_json::from_slice(&body).map_err(|e| Error::BadRequest(e.to_string()))?;
     let hash = hex::encode(Sha256::digest(&body));
 
-    sqlx::query(
+    sqlx::query!(
         "INSERT INTO inbound_deliveries(workspace_id, integration_id, delivery_id, request_hash) \
          VALUES($1, $2, $3, $4) ON CONFLICT DO NOTHING",
+        id,
+        integration_id,
+        input.delivery_id,
+        &hash,
     )
-    .bind(id)
-    .bind(integration_id)
-    .bind(input.delivery_id)
-    .bind(&hash)
     .execute(&mut *op.tx)
     .await?;
 
-    let row = sqlx::query(
+    let row = sqlx::query!(
         "SELECT request_hash, result FROM inbound_deliveries \
          WHERE integration_id = $1 AND delivery_id = $2 FOR UPDATE",
+        integration_id,
+        input.delivery_id,
     )
-    .bind(integration_id)
-    .bind(input.delivery_id)
     .fetch_one(&mut *op.tx)
     .await?;
 
-    if row.try_get::<String, _>("request_hash")? != hash {
+    if row.request_hash != hash {
         return Err(Error::Conflict(
             "delivery ID reused for a different request".into(),
         ));
     }
-    if let Some(result) = row.try_get::<Option<Value>, _>("result")? {
+    if let Some(result) = row.result {
         return Ok(Json(serde_json::from_value(result)?));
     }
 
@@ -329,13 +328,14 @@ pub(super) async fn incoming(
         url: input.url,
         title: input.title,
     };
-    let version: i64 =
-        sqlx::query_scalar("SELECT version FROM issues WHERE workspace_id=$1 AND id=$2 FOR UPDATE")
-            .bind(id)
-            .bind(input.issue_id)
-            .fetch_optional(&mut *op.tx)
-            .await?
-            .ok_or(Error::NotFound)?;
+    let version: i64 = sqlx::query_scalar!(
+        "SELECT version FROM issues WHERE workspace_id=$1 AND id=$2 FOR UPDATE",
+        id,
+        input.issue_id,
+    )
+    .fetch_optional(&mut *op.tx)
+    .await?
+    .ok_or(Error::NotFound)?;
 
     op.expected.insert(input.issue_id, version);
 
@@ -351,12 +351,13 @@ pub(super) async fn incoming(
         versions: op.response_versions(),
         changes: Vec::new(),
     };
-    sqlx::query(
+    let stored = serde_json::to_value(&result)?;
+    sqlx::query!(
         "UPDATE inbound_deliveries SET result=$3 WHERE integration_id=$1 AND delivery_id=$2",
+        integration_id,
+        input.delivery_id,
+        stored,
     )
-    .bind(integration_id)
-    .bind(input.delivery_id)
-    .bind(serde_json::to_value(&result)?)
     .execute(&mut *op.tx)
     .await?;
 

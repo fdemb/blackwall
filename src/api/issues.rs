@@ -143,17 +143,17 @@ pub(super) async fn render_on(
         )
         .await?;
     let ids: Vec<Uuid> = issues.iter().map(|i| i.id).collect();
-    let created_via: BTreeMap<Uuid, Via> = sqlx::query_as::<_, (Uuid, serde_json::Value)>(
-        "SELECT DISTINCT ON (entity_id) entity_id,via FROM activity \
+    let created_via: BTreeMap<Uuid, Via> = sqlx::query!(
+        "SELECT DISTINCT ON (entity_id) entity_id AS \"entity_id!\",via AS \"via!\" FROM activity \
          WHERE workspace_id=$1 AND entity_id=ANY($2) AND action='create_issue' AND via IS NOT NULL \
          ORDER BY entity_id,at",
+        workspace,
+        &ids,
     )
-    .bind(workspace)
-    .bind(&ids)
     .fetch_all(&mut *conn)
     .await?
     .into_iter()
-    .filter_map(|(id, via)| Some((id, serde_json::from_value(via).ok()?)))
+    .filter_map(|row| Some((row.entity_id, serde_json::from_value(row.via).ok()?)))
     .collect();
 
     Ok(issues

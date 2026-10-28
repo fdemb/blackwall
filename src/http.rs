@@ -16,7 +16,6 @@ use axum::{
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use sqlx::Row;
 use std::collections::BTreeMap;
 use utoipa::OpenApi;
 use uuid::Uuid;
@@ -772,7 +771,7 @@ async fn verify_email(
     responses((status = 200, body = Health))
 )]
 async fn health(State(store): State<Store>) -> Result<Json<Health>> {
-    sqlx::query("SELECT 1").execute(&store.pool).await?;
+    sqlx::query!("SELECT 1 AS one").execute(&store.pool).await?;
 
     Ok(Json(Health {
         status: "ok".into(),

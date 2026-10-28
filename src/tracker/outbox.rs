@@ -26,8 +26,8 @@ async fn exporting(
     connection: Uuid,
     project: &str,
 ) -> Result<Option<TrackerOptions>> {
-    let options: Option<serde_json::Value> = sqlx::query_scalar("SELECT options FROM tracker_connections WHERE workspace_id=$1 AND id=$2 AND enabled AND NOT deleted AND projects @> jsonb_build_array(jsonb_build_object('project_id',$3::text))")
-        .bind(workspace).bind(connection).bind(project).fetch_optional(&mut *conn).await?;
+    let options: Option<serde_json::Value> = sqlx::query_scalar!("SELECT options FROM tracker_connections WHERE workspace_id=$1 AND id=$2 AND enabled AND NOT deleted AND projects @> jsonb_build_array(jsonb_build_object('project_id',$3::text))", workspace, connection, project)
+        .fetch_optional(&mut *conn).await?;
     Ok(options.map(serde_json::from_value).transpose()?)
 }
 
@@ -64,8 +64,8 @@ pub(crate) async fn enqueue_fields(
         return Ok(());
     }
     // A new edit restarts the backoff of a failing row.
-    sqlx::query("INSERT INTO tracker_outbox(id,workspace_id,connection_id,issue_id,kind,fields) VALUES($1,$2,$3,$4,'fields',$5) ON CONFLICT(connection_id,issue_id) WHERE kind='fields' DO UPDATE SET fields=ARRAY(SELECT DISTINCT field FROM unnest(tracker_outbox.fields||EXCLUDED.fields) AS field ORDER BY field),revision=tracker_outbox.revision+1,attempts=0,retry_at=NULL")
-        .bind(Uuid::new_v4()).bind(workspace).bind(link.connection_id).bind(after.id).bind(&fields)
+    sqlx::query!("INSERT INTO tracker_outbox(id,workspace_id,connection_id,issue_id,kind,fields) VALUES($1,$2,$3,$4,'fields',$5) ON CONFLICT(connection_id,issue_id) WHERE kind='fields' DO UPDATE SET fields=ARRAY(SELECT DISTINCT field FROM unnest(tracker_outbox.fields||EXCLUDED.fields) AS field ORDER BY field),revision=tracker_outbox.revision+1,attempts=0,retry_at=NULL",
+        Uuid::new_v4(), workspace, link.connection_id, after.id, &fields as _)
         .execute(&mut *conn).await?;
     tracing::debug!(issue_id = %after.id, connection_id = %link.connection_id, fields = ?fields, "Tracker push queued");
     wake(conn, link.connection_id).await
@@ -78,24 +78,25 @@ pub(crate) async fn enqueue_comment(
     issue: Uuid,
     comment: Uuid,
 ) -> Result<()> {
-    let connection: Option<(Uuid, String)> = sqlx::query_as(
-        "SELECT (tracker->>'connection_id')::uuid,tracker->>'project_id' FROM issues WHERE workspace_id=$1 AND id=$2 AND tracker IS NOT NULL",
+    let connection = sqlx::query!(
+        r#"SELECT (tracker->>'connection_id')::uuid AS "connection_id!",tracker->>'project_id' AS "project_id!" FROM issues WHERE workspace_id=$1 AND id=$2 AND tracker IS NOT NULL"#,
+        workspace,
+        issue,
     )
-    .bind(workspace)
-    .bind(issue)
     .fetch_optional(&mut *conn)
     .await?;
-    let Some((id, project)) = connection else {
+    let Some(row) = connection else {
         return Ok(());
     };
+    let (id, project) = (row.connection_id, row.project_id);
     let Some(options) = exporting(conn, workspace, id, &project).await? else {
         return Ok(());
     };
     if !options.get(TrackerField::Comments).export {
         return Ok(());
     }
-    sqlx::query("INSERT INTO tracker_outbox(id,workspace_id,connection_id,issue_id,kind,comment_id) VALUES($1,$2,$3,$4,'comment',$5)")
-        .bind(Uuid::new_v4()).bind(workspace).bind(id).bind(issue).bind(comment)
+    sqlx::query!("INSERT INTO tracker_outbox(id,workspace_id,connection_id,issue_id,kind,comment_id) VALUES($1,$2,$3,$4,'comment',$5)",
+        Uuid::new_v4(), workspace, id, issue, comment)
         .execute(&mut *conn).await?;
     tracing::debug!(issue_id = %issue, connection_id = %id, "Tracker comment queued");
     wake(conn, id).await
@@ -107,8 +108,8 @@ pub(crate) async fn enqueue_comment(
 /// cannot starve it. When a job is already running, the scheduler starts another for the
 /// rows it left behind.
 async fn wake(conn: &mut PgConnection, connection: Uuid) -> Result<()> {
-    let pending = sqlx::query("UPDATE jobs SET run_at=LEAST(run_at,clock_timestamp()) WHERE queue='tracker' AND state='pending' AND payload->>'connection_id'=$1")
-        .bind(connection.to_string()).execute(&mut *conn).await?.rows_affected();
+    let pending = sqlx::query!("UPDATE jobs SET run_at=LEAST(run_at,clock_timestamp()) WHERE queue='tracker' AND state='pending' AND payload->>'connection_id'=$1", connection.to_string())
+        .execute(&mut *conn).await?.rows_affected();
     if pending == 0 {
         runner::schedule_due(conn, Some(connection)).await?;
     }
@@ -120,17 +121,17 @@ pub(super) async fn pending_fields(
     conn: &mut PgConnection,
     issues: &[Uuid],
 ) -> Result<BTreeMap<Uuid, BTreeSet<TrackerField>>> {
-    let rows: Vec<(Uuid, Vec<String>)> = sqlx::query_as(
+    let rows = sqlx::query!(
         "SELECT issue_id,fields FROM tracker_outbox WHERE kind='fields' AND issue_id=ANY($1)",
+        issues,
     )
-    .bind(issues)
     .fetch_all(conn)
     .await?;
     Ok(rows
         .into_iter()
-        .map(|(issue, fields)| {
-            let fields = fields.iter().filter_map(|key| TrackerField::parse(key));
-            (issue, fields.collect())
+        .map(|row| {
+            let fields = row.fields.iter().filter_map(|key| TrackerField::parse(key));
+            (row.issue_id, fields.collect())
         })
         .collect())
 }

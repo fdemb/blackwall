@@ -817,16 +817,16 @@ async fn overview(store: &Store, scope: Scope) -> Result<Value> {
             .map(|m| (m.id, m.role))
             .collect();
     let team_keys = |ids: &[Uuid]| ids.iter().map(|id| dir.team(*id).key).collect::<Vec<_>>();
-    let project_teams: std::collections::BTreeMap<Uuid, Vec<Uuid>> =
-        sqlx::query_as::<_, (Uuid, Vec<Uuid>)>(
-            "SELECT project_id,array_agg(team_id ORDER BY team_id) FROM project_teams \
-         WHERE workspace_id=$1 GROUP BY project_id",
-        )
-        .bind(scope.workspace)
-        .fetch_all(&store.pool)
-        .await?
-        .into_iter()
-        .collect();
+    let project_teams: std::collections::BTreeMap<Uuid, Vec<Uuid>> = sqlx::query!(
+        "SELECT project_id AS \"project_id!\",array_agg(team_id ORDER BY team_id) AS \"team_ids!\" \
+             FROM project_teams WHERE workspace_id=$1 GROUP BY project_id",
+        scope.workspace,
+    )
+    .fetch_all(&store.pool)
+    .await?
+    .into_iter()
+    .map(|row| (row.project_id, row.team_ids))
+    .collect();
 
     Ok(json!({
         "me": { "id": me.id, "display_name": me.display_name, "email": me.email },

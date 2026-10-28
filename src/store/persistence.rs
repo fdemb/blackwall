@@ -17,12 +17,14 @@ pub(crate) async fn create(
     origin: Origin<'_>,
 ) -> Result<()> {
     i.number = next_number(conn, workspace, i.team_id).await?;
-    i.position = sqlx::query_scalar("SELECT COALESCE(max(position),-1024)+1024 FROM issues WHERE workspace_id=$1 AND team_id=$2 AND stage_id=$3 AND deleted_at IS NULL")
-            .bind(workspace)
-            .bind(i.team_id)
-            .bind(i.stage_id)
-            .fetch_one(&mut *conn)
-            .await?;
+    i.position = sqlx::query_scalar!(
+        "SELECT COALESCE(max(position),-1024)+1024 AS \"position!\" FROM issues WHERE workspace_id=$1 AND team_id=$2 AND stage_id=$3 AND deleted_at IS NULL",
+        workspace,
+        i.team_id,
+        i.stage_id,
+    )
+    .fetch_one(&mut *conn)
+    .await?;
     insert(conn, workspace, i, origin).await
 }
 
@@ -32,12 +34,14 @@ pub(crate) async fn lock_team_numbers(
     workspace: Uuid,
     team: Uuid,
 ) -> Result<()> {
-    sqlx::query("SELECT 1 FROM teams WHERE workspace_id=$1 AND id=$2 FOR NO KEY UPDATE")
-        .bind(workspace)
-        .bind(team)
-        .fetch_optional(&mut *conn)
-        .await?
-        .ok_or(Error::NotFound)?;
+    sqlx::query_scalar!(
+        "SELECT 1 AS one FROM teams WHERE workspace_id=$1 AND id=$2 FOR NO KEY UPDATE",
+        workspace,
+        team,
+    )
+    .fetch_optional(&mut *conn)
+    .await?
+    .ok_or(Error::NotFound)?;
     Ok(())
 }
 
@@ -47,13 +51,14 @@ pub(crate) async fn next_number(
     team: Uuid,
 ) -> Result<u64> {
     lock_team_numbers(conn, workspace, team).await?;
-    let number: i64 = sqlx::query_scalar(
+    let number: i64 = sqlx::query_scalar!(
         "SELECT GREATEST((SELECT max(number) FROM issues WHERE workspace_id=$1 AND team_id=$2),\
          (SELECT number FROM purged_issue_numbers WHERE workspace_id=$1 AND team_id=$2),\
-         (SELECT max(number) FROM issue_key_aliases WHERE workspace_id=$1 AND team_id=$2),0)+1",
+         (SELECT max(number) FROM issue_key_aliases WHERE workspace_id=$1 AND team_id=$2),0)+1 \
+         AS \"number!\"",
+        workspace,
+        team,
     )
-    .bind(workspace)
-    .bind(team)
     .fetch_one(&mut *conn)
     .await?;
     Ok(number as u64)
@@ -66,15 +71,16 @@ pub(crate) async fn claim_former_key(
     key: FormerKey,
 ) -> Result<()> {
     // The issue losing the key changes too, so replicas stop resolving the key to it.
-    sqlx::query("WITH previous AS (SELECT issue_id FROM issue_key_aliases WHERE workspace_id=$1 AND team_id=$2 AND number=$3 AND issue_id<>$4), \
+    sqlx::query!("WITH previous AS (SELECT issue_id FROM issue_key_aliases WHERE workspace_id=$1 AND team_id=$2 AND number=$3 AND issue_id<>$4), \
          claimed AS (INSERT INTO issue_key_aliases(workspace_id,team_id,number,issue_id) VALUES($1,$2,$3,$4) ON CONFLICT(workspace_id,team_id,number) DO UPDATE SET issue_id=excluded.issue_id,seq=excluded.seq) \
-         UPDATE issues SET version=version+1 WHERE workspace_id=$1 AND id IN (SELECT issue_id FROM previous)")
-        .bind(workspace)
-        .bind(key.team_id)
-        .bind(key.number as i64)
-        .bind(issue)
-        .execute(conn)
-        .await?;
+         UPDATE issues SET version=version+1 WHERE workspace_id=$1 AND id IN (SELECT issue_id FROM previous)",
+        workspace,
+        key.team_id,
+        key.number as i64,
+        issue,
+    )
+    .execute(conn)
+    .await?;
     Ok(())
 }
 
@@ -105,11 +111,16 @@ pub(crate) async fn allocate_creations(
     team: Uuid,
 ) -> Result<CreationBatch> {
     let next_number = next_number(conn, workspace, team).await?;
-    let rows = sqlx::query("SELECT stage_id,max(position) AS position FROM issues WHERE workspace_id=$1 AND team_id=$2 AND deleted_at IS NULL GROUP BY stage_id")
-        .bind(workspace).bind(team).fetch_all(&mut *conn).await?;
+    let rows = sqlx::query!(
+        "SELECT stage_id,max(position) AS \"position!\" FROM issues WHERE workspace_id=$1 AND team_id=$2 AND deleted_at IS NULL GROUP BY stage_id",
+        workspace,
+        team,
+    )
+    .fetch_all(&mut *conn)
+    .await?;
     let mut positions = BTreeMap::new();
     for row in rows {
-        positions.insert(row.try_get("stage_id")?, row.try_get("position")?);
+        positions.insert(row.stage_id, row.position);
     }
     Ok(CreationBatch {
         next_number,
@@ -148,30 +159,32 @@ async fn insert(
     origin: Origin<'_>,
 ) -> Result<()> {
     let source = source_value(origin)?;
-    sqlx::query("INSERT INTO issues(id,workspace_id,number,title,description,team_id,stage_id,assignee,priority,estimate,deadline,project_id,milestone_id,sprint_id,parent_id,position,archived_at,done_at,created_at,updated_at,tracker,created_by) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$19,$20,$21)")
-            .bind(i.id)
-            .bind(workspace)
-            .bind(i.number as i64)
-            .bind(&i.title)
-            .bind(&i.description)
-            .bind(i.team_id)
-            .bind(i.stage_id)
-            .bind(i.assignee)
-            .bind(enum_text(&i.priority))
-            .bind(i.estimate.map(i64::from))
-            .bind(i.deadline)
-            .bind(i.project_id)
-            .bind(i.milestone_id)
-            .bind(i.sprint_id)
-            .bind(i.parent_id)
-            .bind(i.position)
-            .bind(i.archived_at)
-            .bind(i.done_at)
-            .bind(i.created_at)
-            .bind(source)
-            .bind(i.created_by)
-            .execute(&mut *conn)
-            .await?;
+    sqlx::query!(
+        "INSERT INTO issues(id,workspace_id,number,title,description,team_id,stage_id,assignee,priority,estimate,deadline,project_id,milestone_id,sprint_id,parent_id,position,archived_at,done_at,created_at,updated_at,tracker,created_by) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$19,$20,$21)",
+        i.id,
+        workspace,
+        i.number as i64,
+        &i.title,
+        &i.description,
+        i.team_id,
+        i.stage_id,
+        i.assignee,
+        enum_text(&i.priority),
+        i.estimate.map(i64::from),
+        i.deadline,
+        i.project_id,
+        i.milestone_id,
+        i.sprint_id,
+        i.parent_id,
+        i.position,
+        i.archived_at,
+        i.done_at,
+        i.created_at,
+        source,
+        i.created_by,
+    )
+    .execute(&mut *conn)
+    .await?;
     if matches!(origin, Origin::Local) {
         save_relations(conn, workspace, i).await?;
     }
@@ -204,31 +217,33 @@ async fn save_fields(
 ) -> Result<()> {
     let source = source_value(origin)?;
     let remote = matches!(origin, Origin::Remote(_));
-    sqlx::query("UPDATE issues SET title=$3,description=$4,team_id=$16,stage_id=$5,assignee=$6,priority=$7,estimate=$8,deadline=$9,project_id=$10,milestone_id=$11,sprint_id=$12,parent_id=$13,position=$14,deleted_at=$15,updated_at=now(),tracker=CASE WHEN $21 THEN $17 ELSE tracker END,archived_at=$18,done_at=$19,version=version+CASE WHEN $20 THEN 1 ELSE 0 END,number=$22 WHERE workspace_id=$1 AND id=$2")
-            .bind(workspace)
-            .bind(i.id)
-            .bind(&i.title)
-            .bind(&i.description)
-            .bind(i.stage_id)
-            .bind(i.assignee)
-            .bind(enum_text(&i.priority))
-            .bind(i.estimate.map(i64::from))
-            .bind(i.deadline)
-            .bind(i.project_id)
-            .bind(i.milestone_id)
-            .bind(i.sprint_id)
-            .bind(i.parent_id)
-            .bind(i.position)
-            .bind(i.deleted_at)
-            .bind(i.team_id)
-            .bind(source)
-            .bind(i.archived_at)
-            .bind(i.done_at)
-            .bind(increment_version)
-            .bind(remote)
-            .bind(i.number as i64)
-            .execute(&mut *conn)
-            .await?;
+    sqlx::query!(
+        "UPDATE issues SET title=$3,description=$4,team_id=$16,stage_id=$5,assignee=$6,priority=$7,estimate=$8,deadline=$9,project_id=$10,milestone_id=$11,sprint_id=$12,parent_id=$13,position=$14,deleted_at=$15,updated_at=now(),tracker=CASE WHEN $21 THEN $17 ELSE tracker END,archived_at=$18,done_at=$19,version=version+CASE WHEN $20 THEN 1 ELSE 0 END,number=$22 WHERE workspace_id=$1 AND id=$2",
+        workspace,
+        i.id,
+        &i.title,
+        &i.description,
+        i.stage_id,
+        i.assignee,
+        enum_text(&i.priority),
+        i.estimate.map(i64::from),
+        i.deadline,
+        i.project_id,
+        i.milestone_id,
+        i.sprint_id,
+        i.parent_id,
+        i.position,
+        i.deleted_at,
+        i.team_id,
+        source,
+        i.archived_at,
+        i.done_at,
+        increment_version,
+        remote,
+        i.number as i64,
+    )
+    .execute(&mut *conn)
+    .await?;
 
     if remote {
         return Ok(());
@@ -238,31 +253,31 @@ async fn save_fields(
 }
 
 async fn save_relations(conn: &mut PgConnection, workspace: Uuid, i: &Issue) -> Result<()> {
-    sqlx::query("DELETE FROM issue_labels WHERE issue_id=$1")
-        .bind(i.id)
+    sqlx::query!("DELETE FROM issue_labels WHERE issue_id=$1", i.id)
         .execute(&mut *conn)
         .await?;
 
     for label in i.labels.iter().copied().collect::<BTreeSet<_>>() {
-        sqlx::query("INSERT INTO issue_labels(workspace_id,issue_id,label_id) VALUES($1,$2,$3)")
-            .bind(workspace)
-            .bind(i.id)
-            .bind(label)
-            .execute(&mut *conn)
-            .await?;
+        sqlx::query!(
+            "INSERT INTO issue_labels(workspace_id,issue_id,label_id) VALUES($1,$2,$3)",
+            workspace,
+            i.id,
+            label,
+        )
+        .execute(&mut *conn)
+        .await?;
     }
 
-    sqlx::query("DELETE FROM issue_dependencies WHERE issue_id=$1")
-        .bind(i.id)
+    sqlx::query!("DELETE FROM issue_dependencies WHERE issue_id=$1", i.id)
         .execute(&mut *conn)
         .await?;
     for dep in i.dependencies.iter().copied().collect::<BTreeSet<_>>() {
-        sqlx::query(
+        sqlx::query!(
             "INSERT INTO issue_dependencies(workspace_id,issue_id,dependency_id) VALUES($1,$2,$3)",
+            workspace,
+            i.id,
+            dep,
         )
-        .bind(workspace)
-        .bind(i.id)
-        .bind(dep)
         .execute(&mut *conn)
         .await?;
     }
@@ -284,15 +299,17 @@ async fn schedule_reminder_with_stage(
     id: Uuid,
     completed: Option<bool>,
 ) -> Result<()> {
-    let row = sqlx::query("UPDATE issues SET reminder_generation=reminder_generation+1 WHERE workspace_id=$1 AND id=$2 RETURNING deadline,reminder_generation,stage_id,deleted_at")
-            .bind(workspace)
-            .bind(id)
-            .fetch_one(&mut *conn)
-            .await?;
+    let row = sqlx::query!(
+        "UPDATE issues SET reminder_generation=reminder_generation+1 WHERE workspace_id=$1 AND id=$2 RETURNING deadline,reminder_generation,stage_id,deleted_at",
+        workspace,
+        id,
+    )
+    .fetch_one(&mut *conn)
+    .await?;
 
-    let deadline: Option<DateTime<Utc>> = row.try_get("deadline")?;
-    let generation: i64 = row.try_get("reminder_generation")?;
-    let stage: Uuid = row.try_get("stage_id")?;
+    let deadline = row.deadline;
+    let generation = row.reminder_generation;
+    let stage = row.stage_id;
     let done = match completed {
         Some(done) => done,
         None => stage_completed(conn, stage, None).await?,
@@ -300,9 +317,7 @@ async fn schedule_reminder_with_stage(
 
     if let Some(deadline) = deadline
         && !done
-        && row
-            .try_get::<Option<DateTime<Utc>>, _>("deleted_at")?
-            .is_none()
+        && row.deleted_at.is_none()
     {
         Outbox::insert(
             conn,
@@ -332,12 +347,12 @@ async fn stage_completed(
         let kind = stages.get(&stage).ok_or(Error::NotFound)?;
         return Ok(matches!(kind.as_str(), "done" | "cancelled"));
     }
-    Ok(
-        sqlx::query_scalar("SELECT kind IN ('done','cancelled') FROM stages WHERE id=$1")
-            .bind(stage)
-            .fetch_one(conn)
-            .await?,
+    Ok(sqlx::query_scalar!(
+        "SELECT kind IN ('done','cancelled') AS \"completed!\" FROM stages WHERE id=$1",
+        stage,
     )
+    .fetch_one(conn)
+    .await?)
 }
 
 async fn became_completed_with_stages(
@@ -402,8 +417,12 @@ impl Integration {
 
 /// The member that tracker activity is attributed to: the workspace's first owner.
 pub(crate) async fn tracker_actor(conn: &mut PgConnection, workspace: Uuid) -> Result<Uuid> {
-    Ok(sqlx::query_scalar("SELECT user_id FROM workspace_members WHERE workspace_id=$1 AND role='owner' ORDER BY user_id LIMIT 1")
-        .bind(workspace).fetch_one(conn).await?)
+    Ok(sqlx::query_scalar!(
+        "SELECT user_id FROM workspace_members WHERE workspace_id=$1 AND role='owner' ORDER BY user_id LIMIT 1",
+        workspace,
+    )
+    .fetch_one(conn)
+    .await?)
 }
 
 /// What webhook deliveries need, read on the first event that needs it and kept for the rest of
@@ -566,23 +585,22 @@ async fn notify_new_assignee(
 }
 
 async fn integrations(conn: &mut PgConnection, workspace: Uuid) -> Result<Vec<Integration>> {
-    let rows = sqlx::query(
+    let rows = sqlx::query!(
         "SELECT id,webhook_url,events,include_data FROM integrations \
          WHERE workspace_id=$1 AND enabled",
+        workspace,
     )
-    .bind(workspace)
     .fetch_all(conn)
     .await?;
-    rows.into_iter()
-        .map(|row| {
-            Ok(Integration {
-                id: row.try_get("id")?,
-                url: row.try_get("webhook_url")?,
-                events: row.try_get("events")?,
-                include_data: row.try_get("include_data")?,
-            })
+    Ok(rows
+        .into_iter()
+        .map(|row| Integration {
+            id: row.id,
+            url: row.webhook_url,
+            events: row.events,
+            include_data: row.include_data,
         })
-        .collect()
+        .collect())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -608,8 +626,19 @@ pub(crate) async fn activity_with(
     };
     let via: Option<serde_json::Value> = match continued_description_edit(conn, workspace, &event).await? {
         Some(via) => via,
-        None => sqlx::query_scalar("INSERT INTO activity(id,workspace_id,actor,action,entity_id,at,fields,changes) VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING via")
-            .bind(event.id).bind(workspace).bind(actor).bind(action).bind(issue).bind(event.at).bind(serde_json::to_value(&event.fields)?).bind(serde_json::to_value(&event.changes)?).fetch_one(&mut *conn).await?,
+        None => sqlx::query_scalar!(
+            "INSERT INTO activity(id,workspace_id,actor,action,entity_id,at,fields,changes) VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING via",
+            event.id,
+            workspace,
+            actor,
+            action,
+            issue,
+            event.at,
+            serde_json::to_value(&event.fields)?,
+            serde_json::to_value(&event.changes)?,
+        )
+        .fetch_one(&mut *conn)
+        .await?,
     };
     // Only public events leave the workspace; see `WEBHOOK_EVENTS`.
     let Some((kind, entity_type)) = crate::domain::webhook_event(action) else {
@@ -705,16 +734,16 @@ async fn continued_description_edit(
     if event.action != "update_issue" || event.fields != ["description"] {
         return Ok(None);
     }
-    Ok(sqlx::query_scalar(
-        "SELECT via FROM (SELECT actor,action,fields,at,via FROM activity \
+    Ok(sqlx::query_scalar!(
+        "SELECT via AS \"via?\" FROM (SELECT actor,action,fields,at,via FROM activity \
          WHERE workspace_id=$1 AND entity_id=$2 ORDER BY at DESC,id DESC LIMIT 1) latest \
          WHERE actor=$3 AND action='update_issue' AND fields='[\"description\"]'::jsonb AND at>$4 \
          AND via IS NOT DISTINCT FROM nullif(current_setting('blackwall.via',true),'')::jsonb",
+        workspace,
+        issue,
+        event.actor,
+        event.at - chrono::TimeDelta::minutes(10),
     )
-    .bind(workspace)
-    .bind(issue)
-    .bind(event.actor)
-    .bind(event.at - chrono::TimeDelta::minutes(10))
     .fetch_optional(conn)
     .await?)
 }
@@ -741,9 +770,19 @@ async fn notify_changes(
         .iter()
         .map(|user| format!("change:{}:{user}", issue.id))
         .collect();
-    sqlx::query("INSERT INTO notifications(id,workspace_id,user_id,issue_id,kind,message,created_at,dedup_key,actor_id,fields) SELECT input.id,$1,input.user_id,$2,'change',$3,now(),input.key,$7,$8 FROM unnest($4::uuid[],$5::uuid[],$6::text[]) AS input(id,user_id,key) JOIN workspace_members m ON m.workspace_id=$1 AND m.user_id=input.user_id LEFT JOIN alert_preferences p ON p.workspace_id=$1 AND p.user_id=input.user_id WHERE COALESCE(p.change,true) ON CONFLICT(workspace_id,dedup_key) DO UPDATE SET message=EXCLUDED.message,created_at=EXCLUDED.created_at,actor_id=EXCLUDED.actor_id,fields=COALESCE((SELECT jsonb_agg(DISTINCT f) FROM jsonb_array_elements_text(notifications.fields||EXCLUDED.fields) f),'[]'),version=notifications.version+1 WHERE notifications.read_at IS NULL")
-        .bind(workspace).bind(issue.id).bind(&issue.title).bind(ids).bind(users).bind(keys).bind((!remote).then_some(actor)).bind(serde_json::to_value(fields)?)
-        .execute(conn).await?;
+    sqlx::query!(
+        "INSERT INTO notifications(id,workspace_id,user_id,issue_id,kind,message,created_at,dedup_key,actor_id,fields) SELECT input.id,$1,input.user_id,$2,'change',$3,now(),input.key,$7,$8 FROM unnest($4::uuid[],$5::uuid[],$6::text[]) AS input(id,user_id,key) JOIN workspace_members m ON m.workspace_id=$1 AND m.user_id=input.user_id LEFT JOIN alert_preferences p ON p.workspace_id=$1 AND p.user_id=input.user_id WHERE COALESCE(p.change,true) ON CONFLICT(workspace_id,dedup_key) DO UPDATE SET message=EXCLUDED.message,created_at=EXCLUDED.created_at,actor_id=EXCLUDED.actor_id,fields=COALESCE((SELECT jsonb_agg(DISTINCT f) FROM jsonb_array_elements_text(notifications.fields||EXCLUDED.fields) f),'[]'),version=notifications.version+1 WHERE notifications.read_at IS NULL",
+        workspace,
+        issue.id,
+        &issue.title,
+        &ids,
+        &users,
+        &keys,
+        (!remote).then_some(actor),
+        serde_json::to_value(fields)?,
+    )
+    .execute(conn)
+    .await?;
     Ok(())
 }
 
@@ -795,10 +834,12 @@ pub(crate) async fn room(
         return Ok(None);
     };
     let table = resource.table();
-    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,30269))")
-        .bind(format!("{}:{table}", workspace))
-        .execute(&mut *conn)
-        .await?;
+    sqlx::query_scalar!(
+        "SELECT pg_advisory_xact_lock(hashtextextended($1,30269))",
+        format!("{}:{table}", workspace),
+    )
+    .fetch_one(&mut *conn)
+    .await?;
     let count: i64 = sqlx::query_scalar(&format!(
         "SELECT count(*) FROM {table} WHERE workspace_id=$1"
     ))

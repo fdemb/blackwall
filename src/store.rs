@@ -198,14 +198,16 @@ impl Operation<'_> {
         buckets.dedup();
 
         for bucket in buckets {
-            sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 53177))")
-                .bind(format!("client-id-bucket:{bucket}"))
-                .execute(&mut *self.tx)
-                .await?;
+            sqlx::query_scalar!(
+                "SELECT pg_advisory_xact_lock(hashtextextended($1, 53177))",
+                format!("client-id-bucket:{bucket}"),
+            )
+            .fetch_one(&mut *self.tx)
+            .await?;
         }
 
         if !ordered.is_empty() {
-            let taken: bool = sqlx::query_scalar(
+            let taken: bool = sqlx::query_scalar!(
                 "SELECT EXISTS(SELECT 1 FROM issues WHERE id = ANY($1)) \
                  OR EXISTS(SELECT 1 FROM teams WHERE id = ANY($1)) \
                  OR EXISTS(SELECT 1 FROM stages WHERE id = ANY($1)) \
@@ -224,9 +226,9 @@ impl Operation<'_> {
                  OR EXISTS(SELECT 1 FROM workspaces WHERE id = ANY($1)) \
                  OR EXISTS(SELECT 1 FROM activity WHERE id = ANY($1)) \
                  OR EXISTS(SELECT 1 FROM source_links WHERE id = ANY($1)) \
-                 OR EXISTS(SELECT 1 FROM tracker_connections WHERE id = ANY($1))",
+                 OR EXISTS(SELECT 1 FROM tracker_connections WHERE id = ANY($1)) AS \"taken!\"",
+                &ordered,
             )
-            .bind(&ordered)
             .fetch_one(&mut *self.tx)
             .await?;
 
@@ -421,19 +423,17 @@ impl Store {
             .await?;
         if let Some(via) = via {
             // Column defaults on activity and comments read this until the transaction ends.
-            sqlx::query(
+            sqlx::query_scalar!(
                 "SELECT set_config('blackwall.via', \
                  jsonb_build_object('kind',$1::text,'token_id',id,'name',name)::text, true) \
                  FROM api_tokens WHERE id=$2",
-            )
-            .bind(
                 serde_json::to_value(via.kind)?
                     .as_str()
                     .unwrap_or_default()
                     .to_owned(),
+                via.token_id,
             )
-            .bind(via.token_id)
-            .execute(&mut *op.tx)
+            .fetch_optional(&mut *op.tx)
             .await?;
         }
 
@@ -505,19 +505,19 @@ impl Store {
     ) -> Result<Option<OperationResult>> {
         let mut conn = self.pool.acquire().await?;
         reads::authorize(&mut conn, workspace_id, actor).await?;
-        let Some(row) = sqlx::query(
-            "SELECT request,result FROM operation_keys \
+        let Some(row) = sqlx::query!(
+            "SELECT request,result AS \"result!\" FROM operation_keys \
              WHERE workspace_id=$1 AND actor=$2 AND key=$3 AND result IS NOT NULL",
+            workspace_id,
+            actor,
+            key,
         )
-        .bind(workspace_id)
-        .bind(actor)
-        .bind(key)
         .fetch_optional(&mut *conn)
         .await?
         else {
             return Ok(None);
         };
-        let stored: serde_json::Value = row.try_get("request")?;
+        let stored = row.request;
         if stored.get("sent").is_none() {
             return Ok(None);
         }
@@ -526,7 +526,7 @@ impl Store {
                 "idempotency key reused for a different request".into(),
             ));
         }
-        let mut result: OperationResult = serde_json::from_value(row.try_get("result")?)?;
+        let mut result: OperationResult = serde_json::from_value(row.result)?;
         changes::render(
             &mut conn,
             workspace_id,
@@ -547,41 +547,45 @@ impl Store {
     ) -> Result<Operation<'static>> {
         let mut tx = self.pool.begin().await?;
 
-        let auth_lock = if exclusive {
-            "SELECT pg_advisory_xact_lock(hashtextextended($1, 74103))"
-        } else {
-            "SELECT pg_advisory_xact_lock_shared(hashtextextended($1, 74103))"
-        };
-
-        sqlx::query(auth_lock)
-            .bind(workspace_id.to_string())
-            .execute(&mut *tx)
+        if exclusive {
+            sqlx::query_scalar!(
+                "SELECT pg_advisory_xact_lock(hashtextextended($1, 74103))",
+                workspace_id.to_string(),
+            )
+            .fetch_one(&mut *tx)
             .await?;
+        } else {
+            sqlx::query_scalar!(
+                "SELECT pg_advisory_xact_lock_shared(hashtextextended($1, 74103))",
+                workspace_id.to_string(),
+            )
+            .fetch_one(&mut *tx)
+            .await?;
+        }
 
         // Membership changes lock every member in UUID order. Other mutations retain shared locks.
         let role = if exclusive {
-            let rows = sqlx::query(
+            let rows = sqlx::query!(
                 "SELECT user_id,role FROM workspace_members \
                  WHERE workspace_id=$1 ORDER BY user_id FOR UPDATE",
+                workspace_id,
             )
-            .bind(workspace_id)
             .fetch_all(&mut *tx)
             .await?;
 
             rows.into_iter()
-                .find(|r| r.get::<Uuid, _>("user_id") == actor)
-                .map(|r| r.get::<String, _>("role"))
+                .find(|r| r.user_id == actor)
+                .map(|r| r.role)
                 .ok_or(Error::Forbidden)?
         } else {
-            sqlx::query(
+            sqlx::query_scalar!(
                 "SELECT role FROM workspace_members WHERE workspace_id=$1 AND user_id=$2 FOR SHARE",
+                workspace_id,
+                actor,
             )
-            .bind(workspace_id)
-            .bind(actor)
             .fetch_optional(&mut *tx)
             .await?
             .ok_or(Error::Forbidden)?
-            .try_get::<String, _>("role")?
         };
 
         Ok(Operation {
@@ -641,46 +645,45 @@ impl Operation<'_> {
     ) -> Result<Option<serde_json::Value>> {
         crate::domain::text(key, 200)?;
         let legacy = match legacy {
-            Some(legacy) => {
-                sqlx::query(
-                    "SELECT request,result FROM operation_keys \
-                     WHERE workspace_id=$1 AND actor=$2 AND key=$3 AND request->'sent' IS NULL",
-                )
-                .bind(self.workspace_id)
-                .bind(self.actor)
-                .bind(legacy)
-                .fetch_optional(&mut *self.tx)
-                .await?
-            }
+            Some(legacy) => sqlx::query!(
+                "SELECT request,result FROM operation_keys \
+                 WHERE workspace_id=$1 AND actor=$2 AND key=$3 AND request->'sent' IS NULL",
+                self.workspace_id,
+                self.actor,
+                legacy,
+            )
+            .fetch_optional(&mut *self.tx)
+            .await?
+            .map(|row| (row.request, row.result)),
             None => None,
         };
-        let row = match legacy {
+        let (stored, result) = match legacy {
             Some(row) => row,
             None => {
-                sqlx::query(
+                sqlx::query!(
                     "INSERT INTO operation_keys(workspace_id,actor,key,request) \
                      VALUES($1,$2,$3,$4) ON CONFLICT DO NOTHING",
+                    self.workspace_id,
+                    self.actor,
+                    key,
+                    request,
                 )
-                .bind(self.workspace_id)
-                .bind(self.actor)
-                .bind(key)
-                .bind(request)
                 .execute(&mut *self.tx)
                 .await?;
 
-                sqlx::query(
+                let row = sqlx::query!(
                     "SELECT request,result FROM operation_keys \
                      WHERE workspace_id=$1 AND actor=$2 AND key=$3 FOR UPDATE",
+                    self.workspace_id,
+                    self.actor,
+                    key,
                 )
-                .bind(self.workspace_id)
-                .bind(self.actor)
-                .bind(key)
                 .fetch_one(&mut *self.tx)
-                .await?
+                .await?;
+                (row.request, row.result)
             }
         };
 
-        let stored: serde_json::Value = row.try_get("request")?;
         let matches = stored == *request
             || by_command
                 .is_some_and(|by_command| stored.get("sent").is_none() && stored == *by_command);
@@ -689,7 +692,7 @@ impl Operation<'_> {
                 "idempotency key reused for a different request".into(),
             ));
         }
-        Ok(row.try_get("result")?)
+        Ok(result)
     }
 
     pub(super) async fn save_key_result(
@@ -697,13 +700,13 @@ impl Operation<'_> {
         key: &str,
         result: serde_json::Value,
     ) -> Result<()> {
-        sqlx::query(
+        sqlx::query!(
             "UPDATE operation_keys SET result=$4 WHERE workspace_id=$1 AND actor=$2 AND key=$3",
+            self.workspace_id,
+            self.actor,
+            key,
+            result,
         )
-        .bind(self.workspace_id)
-        .bind(self.actor)
-        .bind(key)
-        .bind(result)
         .execute(&mut *self.tx)
         .await?;
         Ok(())
@@ -760,11 +763,11 @@ impl Operation<'_> {
     }
 
     pub async fn member(&mut self, user: Uuid) -> Result<()> {
-        sqlx::query(
+        sqlx::query_scalar!(
             "SELECT user_id FROM workspace_members WHERE workspace_id=$1 AND user_id=$2 FOR SHARE",
+            self.workspace_id,
+            user,
         )
-        .bind(self.workspace_id)
-        .bind(user)
         .fetch_optional(&mut *self.tx)
         .await?
         .ok_or(Error::Forbidden)?;
@@ -774,11 +777,13 @@ impl Operation<'_> {
 
     /// Subscribes `user` to the issue; repeat calls change nothing.
     async fn add_follower(&mut self, issue: Uuid, user: Uuid) -> Result<()> {
-        sqlx::query("INSERT INTO issue_followers(workspace_id,issue_id,user_id) VALUES($1,$2,$3) ON CONFLICT DO NOTHING")
-            .bind(self.workspace_id)
-            .bind(issue)
-            .bind(user)
-            .execute(&mut *self.tx)
+        sqlx::query!(
+            "INSERT INTO issue_followers(workspace_id,issue_id,user_id) VALUES($1,$2,$3) ON CONFLICT DO NOTHING",
+            self.workspace_id,
+            issue,
+            user,
+        )
+        .execute(&mut *self.tx)
             .await?;
         Ok(())
     }

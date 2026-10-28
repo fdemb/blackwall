@@ -198,21 +198,22 @@ impl Operation<'_> {
         }
         let team_id = resolved[0];
 
-        let taken: Vec<String> =
-            sqlx::query_scalar("SELECT color FROM teams WHERE workspace_id=$1")
-                .bind(self.workspace_id)
-                .fetch_all(&mut *self.tx)
-                .await?;
-        let color = crate::domain::least_used_team_color(taken.iter().map(String::as_str));
-        sqlx::query(
-            "INSERT INTO teams(id,workspace_id,name,key,archive_after_days,icon,color) VALUES($1,$2,$3,$4,30,$5,$6)",
+        let taken: Vec<String> = sqlx::query_scalar!(
+            "SELECT color FROM teams WHERE workspace_id=$1",
+            self.workspace_id,
         )
-        .bind(team_id)
-        .bind(self.workspace_id)
-        .bind(name)
-        .bind(key)
-        .bind(crate::domain::TEAM_ICONS[0])
-        .bind(color)
+        .fetch_all(&mut *self.tx)
+        .await?;
+        let color = crate::domain::least_used_team_color(taken.iter().map(String::as_str));
+        sqlx::query!(
+            "INSERT INTO teams(id,workspace_id,name,key,archive_after_days,icon,color) VALUES($1,$2,$3,$4,30,$5,$6)",
+            team_id,
+            self.workspace_id,
+            name,
+            key,
+            crate::domain::TEAM_ICONS[0],
+            color,
+        )
         .execute(&mut *self.tx)
         .await
         .map_err(team_conflict)?;
@@ -235,12 +236,14 @@ impl Operation<'_> {
 
     async fn insert_team_members(&mut self, team_id: Uuid, members: Vec<Uuid>) -> Result<()> {
         for user in members {
-            sqlx::query("INSERT INTO team_members(workspace_id,team_id,user_id) VALUES($1,$2,$3)")
-                .bind(self.workspace_id)
-                .bind(team_id)
-                .bind(user)
-                .execute(&mut *self.tx)
-                .await?;
+            sqlx::query!(
+                "INSERT INTO team_members(workspace_id,team_id,user_id) VALUES($1,$2,$3)",
+                self.workspace_id,
+                team_id,
+                user,
+            )
+            .execute(&mut *self.tx)
+            .await?;
         }
         Ok(())
     }
@@ -253,13 +256,7 @@ impl Operation<'_> {
         kind: &StageKind,
         position: i64,
     ) -> Result<()> {
-        sqlx::query("INSERT INTO stages(id,workspace_id,team_id,name,kind,position) VALUES($1,$2,$3,$4,$5,$6)")
-            .bind(id)
-            .bind(self.workspace_id)
-            .bind(team_id)
-            .bind(name)
-            .bind(enum_text(kind))
-            .bind(position)
+        sqlx::query!("INSERT INTO stages(id,workspace_id,team_id,name,kind,position) VALUES($1,$2,$3,$4,$5,$6)", id, self.workspace_id, team_id, name, enum_text(kind), position)
             .execute(&mut *self.tx)
             .await
             .map_err(id_conflict)?;
@@ -274,11 +271,13 @@ impl Operation<'_> {
         }
 
         self.touch("teams", id).await?;
-        sqlx::query("DELETE FROM team_members WHERE workspace_id=$1 AND team_id=$2")
-            .bind(self.workspace_id)
-            .bind(id)
-            .execute(&mut *self.tx)
-            .await?;
+        sqlx::query!(
+            "DELETE FROM team_members WHERE workspace_id=$1 AND team_id=$2",
+            self.workspace_id,
+            id,
+        )
+        .execute(&mut *self.tx)
+        .await?;
         self.insert_team_members(id, members).await
     }
 
@@ -286,12 +285,14 @@ impl Operation<'_> {
         self.admin()?;
         crate::domain::validate_archive_days(archive_after_days)?;
         self.touch("teams", id).await?;
-        sqlx::query("UPDATE teams SET archive_after_days=$3 WHERE workspace_id=$1 AND id=$2")
-            .bind(self.workspace_id)
-            .bind(id)
-            .bind(archive_after_days.map(i64::from))
-            .execute(&mut *self.tx)
-            .await?;
+        sqlx::query!(
+            "UPDATE teams SET archive_after_days=$3::bigint WHERE workspace_id=$1 AND id=$2",
+            self.workspace_id,
+            id,
+            archive_after_days.map(i64::from),
+        )
+        .execute(&mut *self.tx)
+        .await?;
         Ok(())
     }
 
@@ -299,13 +300,15 @@ impl Operation<'_> {
         self.admin()?;
         crate::domain::validate_team_appearance(&icon, &color)?;
         self.touch("teams", id).await?;
-        sqlx::query("UPDATE teams SET icon=$3,color=$4 WHERE workspace_id=$1 AND id=$2")
-            .bind(self.workspace_id)
-            .bind(id)
-            .bind(icon)
-            .bind(color)
-            .execute(&mut *self.tx)
-            .await?;
+        sqlx::query!(
+            "UPDATE teams SET icon=$3,color=$4 WHERE workspace_id=$1 AND id=$2",
+            self.workspace_id,
+            id,
+            icon,
+            color,
+        )
+        .execute(&mut *self.tx)
+        .await?;
         Ok(())
     }
 
@@ -315,14 +318,16 @@ impl Operation<'_> {
         crate::domain::validate_team_key(&key)?;
         self.touch("teams", id).await?;
         // The `claim_team_key` trigger keeps the old key as a former key.
-        sqlx::query("UPDATE teams SET name=$3,key=$4 WHERE workspace_id=$1 AND id=$2")
-            .bind(self.workspace_id)
-            .bind(id)
-            .bind(name)
-            .bind(key)
-            .execute(&mut *self.tx)
-            .await
-            .map_err(team_conflict)?;
+        sqlx::query!(
+            "UPDATE teams SET name=$3,key=$4 WHERE workspace_id=$1 AND id=$2",
+            self.workspace_id,
+            id,
+            name,
+            key,
+        )
+        .execute(&mut *self.tx)
+        .await
+        .map_err(team_conflict)?;
         Ok(())
     }
 
@@ -333,11 +338,11 @@ impl Operation<'_> {
         // Creating or moving an issue into the team locks it, so the emptiness
         // check below holds until commit.
         self.lock("teams", id).await?;
-        let has_issues: bool = sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM issues WHERE workspace_id=$1 AND team_id=$2)",
+        let has_issues: bool = sqlx::query_scalar!(
+            "SELECT EXISTS(SELECT 1 FROM issues WHERE workspace_id=$1 AND team_id=$2) AS \"exists!\"",
+            self.workspace_id,
+            id,
         )
-        .bind(self.workspace_id)
-        .bind(id)
         .fetch_one(&mut *self.tx)
         .await?;
         if has_issues {
@@ -345,12 +350,12 @@ impl Operation<'_> {
                 "team still has issues, including archived or trashed ones; restore or unarchive them and move them to another team, or wait for the trash to be emptied".into(),
             ));
         }
-        let tracked: bool = sqlx::query_scalar(
+        let tracked: bool = sqlx::query_scalar!(
             "SELECT EXISTS(SELECT 1 FROM tracker_connections c, jsonb_array_elements(c.projects) mapping \
-             WHERE c.workspace_id=$1 AND NOT c.deleted AND mapping->>'team_id'=$2)",
+             WHERE c.workspace_id=$1 AND NOT c.deleted AND mapping->>'team_id'=$2) AS \"exists!\"",
+            self.workspace_id,
+            id.to_string(),
         )
-        .bind(self.workspace_id)
-        .bind(id.to_string())
         .fetch_one(&mut *self.tx)
         .await?;
         if tracked {
@@ -365,11 +370,11 @@ impl Operation<'_> {
             id,
         )
         .await?;
-        let projects: Vec<Uuid> = sqlx::query_scalar(
+        let projects: Vec<Uuid> = sqlx::query_scalar!(
             "SELECT project_id FROM project_teams WHERE workspace_id=$1 AND team_id=$2 ORDER BY project_id",
+            self.workspace_id,
+            id,
         )
-        .bind(self.workspace_id)
-        .bind(id)
         .fetch_all(&mut *self.tx)
         .await?;
         for project in projects {
@@ -403,12 +408,13 @@ impl Operation<'_> {
         self.admin()?;
         text(&name, 200)?;
         self.lock_team(team_id, true).await?;
-        let count: i64 =
-            sqlx::query_scalar("SELECT count(*) FROM stages WHERE workspace_id=$1 AND team_id=$2")
-                .bind(self.workspace_id)
-                .bind(team_id)
-                .fetch_one(&mut *self.tx)
-                .await?;
+        let count: i64 = sqlx::query_scalar!(
+            "SELECT count(*) AS \"count!\" FROM stages WHERE workspace_id=$1 AND team_id=$2",
+            self.workspace_id,
+            team_id,
+        )
+        .fetch_one(&mut *self.tx)
+        .await?;
         if count >= 100 {
             return Err(Error::BadRequest(
                 "team must contain 1 to 100 stages".into(),
@@ -434,12 +440,12 @@ impl Operation<'_> {
         text(&name, 200)?;
         self.lock_graph().await?;
         self.lock_team(team_id, false).await?;
-        let previous: String = sqlx::query_scalar(
+        let previous: String = sqlx::query_scalar!(
             "SELECT kind FROM stages WHERE workspace_id=$1 AND team_id=$2 AND id=$3 FOR UPDATE",
+            self.workspace_id,
+            team_id,
+            id,
         )
-        .bind(self.workspace_id)
-        .bind(team_id)
-        .bind(id)
         .fetch_optional(&mut *self.tx)
         .await?
         .ok_or(Error::NotFound)?;
@@ -453,13 +459,7 @@ impl Operation<'_> {
             vec![]
         };
 
-        sqlx::query("UPDATE stages SET name=$4,kind=$5,position=$6 WHERE workspace_id=$1 AND team_id=$2 AND id=$3")
-            .bind(self.workspace_id)
-            .bind(team_id)
-            .bind(id)
-            .bind(name)
-            .bind(&next)
-            .bind(position)
+        sqlx::query!("UPDATE stages SET name=$4,kind=$5,position=$6 WHERE workspace_id=$1 AND team_id=$2 AND id=$3", self.workspace_id, team_id, id, name, &next, position)
             .execute(&mut *self.tx)
             .await?;
 
@@ -480,23 +480,21 @@ impl Operation<'_> {
         self.lock_graph().await?;
         let mappings = self.lock_stage_mappings(id).await?;
         self.lock_team(team_id, true).await?;
-        let stages = sqlx::query("SELECT id,kind FROM stages WHERE workspace_id=$1 AND team_id=$2 AND id=ANY($3) ORDER BY id FOR UPDATE")
-            .bind(self.workspace_id)
-            .bind(team_id)
-            .bind(vec![id, replacement])
+        let stages = sqlx::query!("SELECT id,kind FROM stages WHERE workspace_id=$1 AND team_id=$2 AND id=ANY($3) ORDER BY id FOR UPDATE", self.workspace_id, team_id, &[id, replacement][..])
             .fetch_all(&mut *self.tx)
             .await?;
         if stages.len() != 2 {
             return Err(Error::BadRequest("invalid replacement stage".into()));
         }
-        let kind_of = |stage: Uuid| -> Result<String> {
-            let row = stages
+        let kind_of = |stage: Uuid| -> String {
+            stages
                 .iter()
-                .find(|row| row.get::<Uuid, _>("id") == stage)
-                .expect("both stages were locked");
-            Ok(row.try_get("kind")?)
+                .find(|row| row.id == stage)
+                .expect("both stages were locked")
+                .kind
+                .clone()
         };
-        let (previous, next) = (kind_of(id)?, kind_of(replacement)?);
+        let (previous, next) = (kind_of(id), kind_of(replacement));
 
         self.touch("stages", id).await?;
         let issues = self.stage_issues(id).await?;
@@ -517,11 +515,13 @@ impl Operation<'_> {
             crate::tracker::enqueue_fields(&mut self.tx, self.workspace_id, &before, &after)
                 .await?;
         }
-        sqlx::query("DELETE FROM stages WHERE workspace_id=$1 AND id=$2")
-            .bind(self.workspace_id)
-            .bind(id)
-            .execute(&mut *self.tx)
-            .await?;
+        sqlx::query!(
+            "DELETE FROM stages WHERE workspace_id=$1 AND id=$2",
+            self.workspace_id,
+            id,
+        )
+        .execute(&mut *self.tx)
+        .await?;
 
         self.after_stage_kind_change(replacement, issues, &previous, &next)
             .await
@@ -529,9 +529,7 @@ impl Operation<'_> {
 
     /// Live tracker-linked issues in the stage, read before it is replaced.
     async fn synced_stage_issues(&mut self, stage_id: Uuid) -> Result<Vec<Issue>> {
-        let ids: Vec<Uuid> = sqlx::query_scalar("SELECT id FROM issues WHERE workspace_id=$1 AND stage_id=$2 AND tracker IS NOT NULL AND deleted_at IS NULL ORDER BY id")
-            .bind(self.workspace_id)
-            .bind(stage_id)
+        let ids: Vec<Uuid> = sqlx::query_scalar!("SELECT id FROM issues WHERE workspace_id=$1 AND stage_id=$2 AND tracker IS NOT NULL AND deleted_at IS NULL ORDER BY id", self.workspace_id, stage_id)
             .fetch_all(&mut *self.tx)
             .await?;
         let mut issues = Vec::with_capacity(ids.len());
@@ -542,12 +540,12 @@ impl Operation<'_> {
     }
 
     async fn move_stage_issues(&mut self, id: Uuid, replacement: Uuid) -> Result<()> {
-        sqlx::query(
+        sqlx::query!(
             "UPDATE issues SET stage_id=$3,updated_at=now() WHERE workspace_id=$1 AND stage_id=$2",
+            self.workspace_id,
+            id,
+            replacement,
         )
-        .bind(self.workspace_id)
-        .bind(id)
-        .bind(replacement)
         .execute(&mut *self.tx)
         .await?;
         Ok(())
@@ -565,15 +563,11 @@ impl Operation<'_> {
         next: &str,
     ) -> Result<()> {
         if next == "done" {
-            sqlx::query("UPDATE issues SET done_at=COALESCE(done_at,now()),updated_at=now() WHERE workspace_id=$1 AND stage_id=$2 AND archived_at IS NULL AND done_at IS NULL")
-                .bind(self.workspace_id)
-                .bind(stage)
+            sqlx::query!("UPDATE issues SET done_at=COALESCE(done_at,now()),updated_at=now() WHERE workspace_id=$1 AND stage_id=$2 AND archived_at IS NULL AND done_at IS NULL", self.workspace_id, stage)
                 .execute(&mut *self.tx)
                 .await?;
         } else if previous == "done" {
-            sqlx::query("UPDATE issues SET done_at=NULL,updated_at=now() WHERE workspace_id=$1 AND stage_id=$2 AND archived_at IS NULL")
-                .bind(self.workspace_id)
-                .bind(stage)
+            sqlx::query!("UPDATE issues SET done_at=NULL,updated_at=now() WHERE workspace_id=$1 AND stage_id=$2 AND archived_at IS NULL", self.workspace_id, stage)
                 .execute(&mut *self.tx)
                 .await?;
         }
@@ -601,14 +595,16 @@ impl Operation<'_> {
         validate_label(&name, &color)?;
         self.capacity(Resource::Labels, 1).await?;
         let id = self.reserve_client_id(id).await?;
-        sqlx::query("INSERT INTO labels(id,workspace_id,name,color) VALUES($1,$2,$3,$4)")
-            .bind(id)
-            .bind(self.workspace_id)
-            .bind(name)
-            .bind(color)
-            .execute(&mut *self.tx)
-            .await
-            .map_err(id_conflict)?;
+        sqlx::query!(
+            "INSERT INTO labels(id,workspace_id,name,color) VALUES($1,$2,$3,$4)",
+            id,
+            self.workspace_id,
+            name,
+            color,
+        )
+        .execute(&mut *self.tx)
+        .await
+        .map_err(id_conflict)?;
         self.created("labels", id);
         Ok(id)
     }
@@ -616,13 +612,15 @@ impl Operation<'_> {
     async fn update_label(&mut self, id: Uuid, name: String, color: String) -> Result<()> {
         validate_label(&name, &color)?;
         self.touch("labels", id).await?;
-        sqlx::query("UPDATE labels SET name=$3,color=$4 WHERE workspace_id=$1 AND id=$2")
-            .bind(self.workspace_id)
-            .bind(id)
-            .bind(name)
-            .bind(color)
-            .execute(&mut *self.tx)
-            .await?;
+        sqlx::query!(
+            "UPDATE labels SET name=$3,color=$4 WHERE workspace_id=$1 AND id=$2",
+            self.workspace_id,
+            id,
+            name,
+            color,
+        )
+        .execute(&mut *self.tx)
+        .await?;
         Ok(())
     }
 
@@ -631,11 +629,13 @@ impl Operation<'_> {
         self.touch("labels", id).await?;
         self.touch_referencing_issues("SELECT i.id FROM issues i JOIN issue_labels l ON l.issue_id=i.id WHERE i.workspace_id=$1 AND l.label_id=$2 ORDER BY i.id FOR UPDATE OF i", id)
             .await?;
-        sqlx::query("DELETE FROM issue_labels WHERE workspace_id=$1 AND label_id=$2")
-            .bind(self.workspace_id)
-            .bind(id)
-            .execute(&mut *self.tx)
-            .await?;
+        sqlx::query!(
+            "DELETE FROM issue_labels WHERE workspace_id=$1 AND label_id=$2",
+            self.workspace_id,
+            id,
+        )
+        .execute(&mut *self.tx)
+        .await?;
         self.delete_planning_row("labels", id).await
     }
 
@@ -648,11 +648,13 @@ impl Operation<'_> {
         for issue in &issues {
             self.touch("issues", *issue).await?;
         }
-        sqlx::query("UPDATE issues SET updated_at=now() WHERE workspace_id=$1 AND id=ANY($2)")
-            .bind(self.workspace_id)
-            .bind(&issues)
-            .execute(&mut *self.tx)
-            .await?;
+        sqlx::query!(
+            "UPDATE issues SET updated_at=now() WHERE workspace_id=$1 AND id=ANY($2)",
+            self.workspace_id,
+            &issues,
+        )
+        .execute(&mut *self.tx)
+        .await?;
         Ok(())
     }
 
@@ -689,14 +691,16 @@ impl Operation<'_> {
         let team_ids = self.lock_project_teams(team_ids).await?;
 
         let id = self.reserve_client_id(id).await?;
-        sqlx::query("INSERT INTO projects(id,workspace_id,name,description) VALUES($1,$2,$3,$4)")
-            .bind(id)
-            .bind(self.workspace_id)
-            .bind(name)
-            .bind(description)
-            .execute(&mut *self.tx)
-            .await
-            .map_err(id_conflict)?;
+        sqlx::query!(
+            "INSERT INTO projects(id,workspace_id,name,description) VALUES($1,$2,$3,$4)",
+            id,
+            self.workspace_id,
+            name,
+            description,
+        )
+        .execute(&mut *self.tx)
+        .await
+        .map_err(id_conflict)?;
 
         self.replace_project_teams(id, team_ids).await?;
         self.created("projects", id);
@@ -714,23 +718,22 @@ impl Operation<'_> {
         let team_ids = self.lock_project_teams(team_ids).await?;
 
         self.touch("projects", id).await?;
-        let has_issues: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM issues WHERE workspace_id=$1 AND project_id=$2 AND NOT(team_id=ANY($3)))")
-            .bind(self.workspace_id)
-            .bind(id)
-            .bind(&team_ids)
+        let has_issues: bool = sqlx::query_scalar!("SELECT EXISTS(SELECT 1 FROM issues WHERE workspace_id=$1 AND project_id=$2 AND NOT(team_id=ANY($3))) AS \"exists!\"", self.workspace_id, id, &team_ids)
             .fetch_one(&mut *self.tx)
             .await?;
         if has_issues {
             return Err(Error::Conflict("project teams still contain issues".into()));
         }
 
-        sqlx::query("UPDATE projects SET name=$3,description=$4 WHERE workspace_id=$1 AND id=$2")
-            .bind(self.workspace_id)
-            .bind(id)
-            .bind(name)
-            .bind(description)
-            .execute(&mut *self.tx)
-            .await?;
+        sqlx::query!(
+            "UPDATE projects SET name=$3,description=$4 WHERE workspace_id=$1 AND id=$2",
+            self.workspace_id,
+            id,
+            name,
+            description,
+        )
+        .execute(&mut *self.tx)
+        .await?;
         self.replace_project_teams(id, team_ids).await
     }
 
@@ -748,14 +751,7 @@ impl Operation<'_> {
             self.member(lead).await?;
         }
         self.touch("projects", id).await?;
-        sqlx::query("UPDATE projects SET lead_id=$3,status=$4,health=$5,start_date=$6,target_date=$7 WHERE workspace_id=$1 AND id=$2")
-            .bind(self.workspace_id)
-            .bind(id)
-            .bind(lead_id)
-            .bind(enum_text(&status))
-            .bind(health.as_ref().map(enum_text))
-            .bind(start_date)
-            .bind(target_date)
+        sqlx::query!("UPDATE projects SET lead_id=$3,status=$4,health=$5,start_date=$6,target_date=$7 WHERE workspace_id=$1 AND id=$2", self.workspace_id, id, lead_id, enum_text(&status), health.as_ref().map(enum_text), start_date, target_date)
             .execute(&mut *self.tx)
             .await?;
         Ok(())
@@ -769,21 +765,23 @@ impl Operation<'_> {
             id,
         )
         .await?;
-        sqlx::query("UPDATE issues SET project_id=NULL,milestone_id=NULL WHERE workspace_id=$1 AND project_id=$2")
-            .bind(self.workspace_id)
-            .bind(id)
+        sqlx::query!("UPDATE issues SET project_id=NULL,milestone_id=NULL WHERE workspace_id=$1 AND project_id=$2", self.workspace_id, id)
             .execute(&mut *self.tx)
             .await?;
-        sqlx::query("DELETE FROM milestones WHERE workspace_id=$1 AND project_id=$2")
-            .bind(self.workspace_id)
-            .bind(id)
-            .execute(&mut *self.tx)
-            .await?;
-        sqlx::query("DELETE FROM project_teams WHERE workspace_id=$1 AND project_id=$2")
-            .bind(self.workspace_id)
-            .bind(id)
-            .execute(&mut *self.tx)
-            .await?;
+        sqlx::query!(
+            "DELETE FROM milestones WHERE workspace_id=$1 AND project_id=$2",
+            self.workspace_id,
+            id,
+        )
+        .execute(&mut *self.tx)
+        .await?;
+        sqlx::query!(
+            "DELETE FROM project_teams WHERE workspace_id=$1 AND project_id=$2",
+            self.workspace_id,
+            id,
+        )
+        .execute(&mut *self.tx)
+        .await?;
         self.delete_planning_row("projects", id).await
     }
 
@@ -797,20 +795,17 @@ impl Operation<'_> {
         text(&name, 200)?;
         crate::domain::optional_timestamp(deadline)?;
         self.capacity(Resource::Milestones, 1).await?;
-        sqlx::query("SELECT id FROM projects WHERE workspace_id=$1 AND id=$2 FOR SHARE")
-            .bind(self.workspace_id)
-            .bind(project_id)
-            .fetch_optional(&mut *self.tx)
-            .await?
-            .ok_or(Error::NotFound)?;
+        sqlx::query!(
+            "SELECT id FROM projects WHERE workspace_id=$1 AND id=$2 FOR SHARE",
+            self.workspace_id,
+            project_id,
+        )
+        .fetch_optional(&mut *self.tx)
+        .await?
+        .ok_or(Error::NotFound)?;
 
         let id = self.reserve_client_id(id).await?;
-        sqlx::query("INSERT INTO milestones(id,workspace_id,project_id,name,deadline) VALUES($1,$2,$3,$4,$5)")
-            .bind(id)
-            .bind(self.workspace_id)
-            .bind(project_id)
-            .bind(name)
-            .bind(deadline)
+        sqlx::query!("INSERT INTO milestones(id,workspace_id,project_id,name,deadline) VALUES($1,$2,$3,$4,$5)", id, self.workspace_id, project_id, name, deadline)
             .execute(&mut *self.tx)
             .await
             .map_err(id_conflict)?;
@@ -827,13 +822,15 @@ impl Operation<'_> {
         text(&name, 200)?;
         crate::domain::optional_timestamp(deadline)?;
         self.touch("milestones", id).await?;
-        sqlx::query("UPDATE milestones SET name=$3,deadline=$4 WHERE workspace_id=$1 AND id=$2")
-            .bind(self.workspace_id)
-            .bind(id)
-            .bind(name)
-            .bind(deadline)
-            .execute(&mut *self.tx)
-            .await?;
+        sqlx::query!(
+            "UPDATE milestones SET name=$3,deadline=$4 WHERE workspace_id=$1 AND id=$2",
+            self.workspace_id,
+            id,
+            name,
+            deadline,
+        )
+        .execute(&mut *self.tx)
+        .await?;
         Ok(())
     }
 
@@ -842,11 +839,11 @@ impl Operation<'_> {
         self.touch("milestones", id).await?;
         self.touch_referencing_issues("SELECT id FROM issues WHERE workspace_id=$1 AND milestone_id=$2 ORDER BY id FOR UPDATE", id)
             .await?;
-        sqlx::query(
+        sqlx::query!(
             "UPDATE issues SET milestone_id=NULL WHERE workspace_id=$1 AND milestone_id=$2",
+            self.workspace_id,
+            id,
         )
-        .bind(self.workspace_id)
-        .bind(id)
         .execute(&mut *self.tx)
         .await?;
         self.delete_planning_row("milestones", id).await
@@ -865,14 +862,7 @@ impl Operation<'_> {
         self.capacity(Resource::Sprints, 1).await?;
         persistence::lock_team_numbers(&mut self.tx, self.workspace_id, team_id).await?;
         let id = self.reserve_client_id(id).await?;
-        sqlx::query("INSERT INTO sprints(id,workspace_id,team_id,number,name,goal,starts_at,ends_at,state) VALUES($1,$2,$3,(SELECT COALESCE(max(number),0)+1 FROM sprints WHERE workspace_id=$2 AND team_id=$3),$4,$5,$6,$7,'planned')")
-            .bind(id)
-            .bind(self.workspace_id)
-            .bind(team_id)
-            .bind(name)
-            .bind(goal)
-            .bind(starts_at)
-            .bind(ends_at)
+        sqlx::query!("INSERT INTO sprints(id,workspace_id,team_id,number,name,goal,starts_at,ends_at,state) VALUES($1,$2,$3,(SELECT COALESCE(max(number),0)+1 FROM sprints WHERE workspace_id=$2 AND team_id=$3),$4,$5,$6,$7,'planned')", id, self.workspace_id, team_id, name, goal, starts_at, ends_at)
             .execute(&mut *self.tx)
             .await
             .map_err(id_conflict)?;
@@ -901,14 +891,7 @@ impl Operation<'_> {
             return Err(Error::Conflict("sprint already completed".into()));
         }
 
-        sqlx::query("UPDATE sprints SET name=$3,goal=$4,starts_at=$5,ends_at=$6,state=$7 WHERE workspace_id=$1 AND id=$2")
-            .bind(self.workspace_id)
-            .bind(id)
-            .bind(name)
-            .bind(goal)
-            .bind(starts_at)
-            .bind(ends_at)
-            .bind(enum_text(&state))
+        sqlx::query!("UPDATE sprints SET name=$3,goal=$4,starts_at=$5,ends_at=$6,state=$7 WHERE workspace_id=$1 AND id=$2", self.workspace_id, id, name, goal, starts_at, ends_at, enum_text(&state))
             .execute(&mut *self.tx)
             .await?;
         Ok(())
@@ -920,37 +903,45 @@ impl Operation<'_> {
             return Err(Error::BadRequest("complete sprint before archiving".into()));
         }
 
-        sqlx::query("UPDATE sprints SET state='archived' WHERE workspace_id=$1 AND id=$2")
-            .bind(self.workspace_id)
-            .bind(id)
-            .execute(&mut *self.tx)
-            .await?;
+        sqlx::query!(
+            "UPDATE sprints SET state='archived' WHERE workspace_id=$1 AND id=$2",
+            self.workspace_id,
+            id,
+        )
+        .execute(&mut *self.tx)
+        .await?;
         Ok(())
     }
 
     async fn sprint_state(&mut self, id: Uuid) -> Result<String> {
-        Ok(
-            sqlx::query_scalar("SELECT state FROM sprints WHERE workspace_id=$1 AND id=$2")
-                .bind(self.workspace_id)
-                .bind(id)
-                .fetch_one(&mut *self.tx)
-                .await?,
+        Ok(sqlx::query_scalar!(
+            "SELECT state FROM sprints WHERE workspace_id=$1 AND id=$2",
+            self.workspace_id,
+            id,
         )
+        .fetch_one(&mut *self.tx)
+        .await?)
     }
 
     async fn lock_team(&mut self, id: Uuid, exclusive: bool) -> Result<()> {
-        let sql = if exclusive {
-            "SELECT id FROM teams WHERE workspace_id=$1 AND id=$2 FOR UPDATE"
-        } else {
-            "SELECT id FROM teams WHERE workspace_id=$1 AND id=$2 FOR SHARE"
-        };
-
-        sqlx::query(sql)
-            .bind(self.workspace_id)
-            .bind(id)
+        let found = if exclusive {
+            sqlx::query_scalar!(
+                "SELECT id FROM teams WHERE workspace_id=$1 AND id=$2 FOR UPDATE",
+                self.workspace_id,
+                id,
+            )
             .fetch_optional(&mut *self.tx)
             .await?
-            .ok_or(Error::NotFound)?;
+        } else {
+            sqlx::query_scalar!(
+                "SELECT id FROM teams WHERE workspace_id=$1 AND id=$2 FOR SHARE",
+                self.workspace_id,
+                id,
+            )
+            .fetch_optional(&mut *self.tx)
+            .await?
+        };
+        found.ok_or(Error::NotFound)?;
 
         Ok(())
     }
@@ -959,15 +950,10 @@ impl Operation<'_> {
         &mut self,
         stage: Uuid,
     ) -> Result<Vec<(Uuid, Vec<crate::tracker::Mapping>)>> {
-        let rows = sqlx::query("SELECT id,projects FROM tracker_connections WHERE workspace_id=$1 AND EXISTS(SELECT 1 FROM jsonb_array_elements(projects) mapping, jsonb_each_text(COALESCE(mapping->'stage_mapping','{}'::jsonb)) entry WHERE entry.value=$2) ORDER BY id FOR NO KEY UPDATE")
-            .bind(self.workspace_id).bind(stage.to_string()).fetch_all(&mut *self.tx).await?;
+        let rows = sqlx::query!("SELECT id,projects FROM tracker_connections WHERE workspace_id=$1 AND EXISTS(SELECT 1 FROM jsonb_array_elements(projects) mapping, jsonb_each_text(COALESCE(mapping->'stage_mapping','{}'::jsonb)) entry WHERE entry.value=$2) ORDER BY id FOR NO KEY UPDATE", self.workspace_id, stage.to_string())
+            .fetch_all(&mut *self.tx).await?;
         rows.into_iter()
-            .map(|row| {
-                Ok((
-                    row.try_get("id")?,
-                    serde_json::from_value(row.try_get("projects")?)?,
-                ))
-            })
+            .map(|row| Ok((row.id, serde_json::from_value(row.projects)?)))
             .collect()
     }
 
@@ -986,58 +972,43 @@ impl Operation<'_> {
                 }
             }
             // Fence pages fetched with the previous mapping; the pagination cursor remains valid.
-            sqlx::query("UPDATE tracker_connections SET projects=$3,generation=generation+1,next_run_at=clock_timestamp(),status='pending',last_error='',push_error=NULL WHERE workspace_id=$1 AND id=$2")
-                .bind(self.workspace_id).bind(connection).bind(serde_json::to_value(projects)?)
+            sqlx::query!("UPDATE tracker_connections SET projects=$3,generation=generation+1,next_run_at=clock_timestamp(),status='pending',last_error='',push_error=NULL WHERE workspace_id=$1 AND id=$2", self.workspace_id, connection, serde_json::to_value(projects)?)
                 .execute(&mut *self.tx).await?;
-            sqlx::query("UPDATE jobs SET state='cancelled',finished_at=clock_timestamp(),updated_at=clock_timestamp() WHERE queue='tracker' AND state='pending' AND payload->>'connection_id'=$1")
-                .bind(connection.to_string()).execute(&mut *self.tx).await?;
+            sqlx::query!("UPDATE jobs SET state='cancelled',finished_at=clock_timestamp(),updated_at=clock_timestamp() WHERE queue='tracker' AND state='pending' AND payload->>'connection_id'=$1", connection.to_string())
+                .execute(&mut *self.tx).await?;
         }
         Ok(())
     }
 
     /// Clears the sprint of every issue in a backlog stage.
     async fn leave_sprints(&mut self, stage: Uuid) -> Result<()> {
-        let ids: Vec<Uuid> = sqlx::query_scalar("SELECT id FROM issues WHERE workspace_id=$1 AND stage_id=$2 AND sprint_id IS NOT NULL ORDER BY id")
-            .bind(self.workspace_id)
-            .bind(stage)
+        let ids: Vec<Uuid> = sqlx::query_scalar!("SELECT id FROM issues WHERE workspace_id=$1 AND stage_id=$2 AND sprint_id IS NOT NULL ORDER BY id", self.workspace_id, stage)
             .fetch_all(&mut *self.tx)
             .await?;
         for id in &ids {
             self.touch("issues", *id).await?;
         }
-        sqlx::query("UPDATE issues SET sprint_id=NULL,updated_at=now() WHERE workspace_id=$1 AND id=ANY($2)")
-            .bind(self.workspace_id)
-            .bind(&ids)
+        sqlx::query!("UPDATE issues SET sprint_id=NULL,updated_at=now() WHERE workspace_id=$1 AND id=ANY($2)", self.workspace_id, &ids)
             .execute(&mut *self.tx)
             .await?;
         Ok(())
     }
 
     async fn stage_issues(&mut self, stage_id: Uuid) -> Result<Vec<(Uuid, bool)>> {
-        let rows = sqlx::query("SELECT id,deleted_at IS NOT NULL AS deleted FROM issues WHERE workspace_id=$1 AND stage_id=$2 ORDER BY id FOR UPDATE")
-            .bind(self.workspace_id)
-            .bind(stage_id)
+        let rows = sqlx::query!("SELECT id,deleted_at IS NOT NULL AS \"deleted!\" FROM issues WHERE workspace_id=$1 AND stage_id=$2 ORDER BY id FOR UPDATE", self.workspace_id, stage_id)
             .fetch_all(&mut *self.tx)
             .await?;
 
-        rows.into_iter()
-            .map(|row| Ok((row.try_get("id")?, row.try_get("deleted")?)))
-            .collect()
+        Ok(rows.into_iter().map(|row| (row.id, row.deleted)).collect())
     }
 
     async fn replace_project_teams(&mut self, project_id: Uuid, team_ids: Vec<Uuid>) -> Result<()> {
-        sqlx::query("DELETE FROM project_teams WHERE workspace_id=$1 AND project_id=$2 AND NOT(team_id=ANY($3))")
-            .bind(self.workspace_id)
-            .bind(project_id)
-            .bind(&team_ids)
+        sqlx::query!("DELETE FROM project_teams WHERE workspace_id=$1 AND project_id=$2 AND NOT(team_id=ANY($3))", self.workspace_id, project_id, &team_ids)
             .execute(&mut *self.tx)
             .await?;
 
         for team_id in team_ids {
-            sqlx::query("INSERT INTO project_teams(workspace_id,project_id,team_id) VALUES($1,$2,$3) ON CONFLICT DO NOTHING")
-                .bind(self.workspace_id)
-                .bind(project_id)
-                .bind(team_id)
+            sqlx::query!("INSERT INTO project_teams(workspace_id,project_id,team_id) VALUES($1,$2,$3) ON CONFLICT DO NOTHING", self.workspace_id, project_id, team_id)
                 .execute(&mut *self.tx)
                 .await?;
         }
@@ -1054,18 +1025,16 @@ impl Operation<'_> {
 
         sprint_ids.sort_unstable();
         sprint_ids.dedup();
-        let sprints = sqlx::query("SELECT id,team_id,state FROM sprints WHERE workspace_id=$1 AND id=ANY($2) ORDER BY id FOR UPDATE")
-            .bind(self.workspace_id)
-            .bind(sprint_ids)
+        let sprints = sqlx::query!("SELECT id,team_id,state FROM sprints WHERE workspace_id=$1 AND id=ANY($2) ORDER BY id FOR UPDATE", self.workspace_id, &sprint_ids)
             .fetch_all(&mut *self.tx)
             .await?;
 
         let sprint = sprints
             .iter()
-            .find(|row| row.get::<Uuid, _>("id") == id)
+            .find(|row| row.id == id)
             .ok_or(Error::NotFound)?;
 
-        let state: String = sprint.try_get("state")?;
+        let state = &sprint.state;
         if state == "archived" {
             return Err(Error::Conflict("sprint archived".into()));
         }
@@ -1078,55 +1047,47 @@ impl Operation<'_> {
         if let Some(target) = carryover {
             let target_row = sprints
                 .iter()
-                .find(|row| row.get::<Uuid, _>("id") == target)
+                .find(|row| row.id == target)
                 .ok_or(Error::NotFound)?;
 
             if target == id
-                || target_row.get::<Uuid, _>("team_id") != sprint.get::<Uuid, _>("team_id")
-                || terminal_sprint(&target_row.get::<String, _>("state"))
+                || target_row.team_id != sprint.team_id
+                || terminal_sprint(&target_row.state)
             {
                 return Err(Error::BadRequest("invalid carryover sprint".into()));
             }
         }
 
-        let rows = sqlx::query("SELECT i.id,i.estimate,s.kind FROM issues i JOIN stages s ON s.id=i.stage_id AND s.workspace_id=i.workspace_id WHERE i.workspace_id=$1 AND i.sprint_id=$2 AND i.deleted_at IS NULL ORDER BY i.id FOR UPDATE OF i")
-            .bind(self.workspace_id)
-            .bind(id)
+        let rows = sqlx::query!("SELECT i.id,i.estimate,s.kind FROM issues i JOIN stages s ON s.id=i.stage_id AND s.workspace_id=i.workspace_id WHERE i.workspace_id=$1 AND i.sprint_id=$2 AND i.deleted_at IS NULL ORDER BY i.id FOR UPDATE OF i", self.workspace_id, id)
             .fetch_all(&mut *self.tx)
             .await?;
 
         let mut completed = 0_i64;
         let mut effort = 0_i64;
         for row in &rows {
-            let issue_id: Uuid = row.try_get("id")?;
+            let issue_id = row.id;
             self.touch("issues", issue_id).await?;
-            effort += row.try_get::<Option<i64>, _>("estimate")?.unwrap_or(0);
-            if terminal(&row.try_get::<String, _>("kind")?) {
+            effort += row.estimate.unwrap_or(0);
+            if terminal(&row.kind) {
                 completed += 1;
             } else {
-                sqlx::query("UPDATE issues SET sprint_id=$3,updated_at=now() WHERE workspace_id=$1 AND id=$2")
-                    .bind(self.workspace_id)
-                    .bind(issue_id)
-                    .bind(carryover)
+                sqlx::query!("UPDATE issues SET sprint_id=$3,updated_at=now() WHERE workspace_id=$1 AND id=$2", self.workspace_id, issue_id, carryover)
                     .execute(&mut *self.tx)
                     .await?;
             }
         }
 
-        sqlx::query("INSERT INTO sprint_outcomes(workspace_id,sprint_id,total,completed,effort) VALUES($1,$2,$3,$4,$5)")
-            .bind(self.workspace_id)
-            .bind(id)
-            .bind(rows.len() as i64)
-            .bind(completed)
-            .bind(effort)
+        sqlx::query!("INSERT INTO sprint_outcomes(workspace_id,sprint_id,total,completed,effort) VALUES($1,$2,$3,$4,$5)", self.workspace_id, id, rows.len() as i64, completed, effort)
             .execute(&mut *self.tx)
             .await?;
 
-        sqlx::query("UPDATE sprints SET state='completed' WHERE workspace_id=$1 AND id=$2")
-            .bind(self.workspace_id)
-            .bind(id)
-            .execute(&mut *self.tx)
-            .await?;
+        sqlx::query!(
+            "UPDATE sprints SET state='completed' WHERE workspace_id=$1 AND id=$2",
+            self.workspace_id,
+            id,
+        )
+        .execute(&mut *self.tx)
+        .await?;
 
         Ok(())
     }
