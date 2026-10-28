@@ -834,13 +834,15 @@ pub async fn update_project(
             WriteOptions {
                 if_match: options.if_match,
                 idempotency_key: options.idempotency_key.clone(),
+                sent: options.sent.clone(),
+                legacy_key: None,
             },
         )
         .await?;
         options.if_match = options
             .if_match
             .and_then(|_| result.versions.get(&project).copied());
-        options.idempotency_key = options.idempotency_key.map(|key| format!("{key}:plan"));
+        options = options.step("plan");
     }
     if let Some(plan) = plan {
         run(&store, scope, plan, Some(project), options).await?;

@@ -146,14 +146,23 @@ pub async fn create(
             id: None,
             name: body.name,
             webhook_url: body.url,
-            secret: secret.clone(),
+            secret,
             events: body.events,
         },
         None,
         options,
     )
     .await?;
-    let webhook = webhook(&store, scope, created_id(&result)?).await?;
+    let id = created_id(&result)?;
+    // A replayed key generated a fresh secret above; the webhook keeps the first one.
+    let secret: String =
+        sqlx::query_scalar("SELECT secret FROM integrations WHERE workspace_id=$1 AND id=$2")
+            .bind(scope.workspace)
+            .bind(id)
+            .fetch_optional(&store.pool)
+            .await?
+            .ok_or(Error::NotFound)?;
+    let webhook = webhook(&store, scope, id).await?;
     Ok(tagged(
         StatusCode::CREATED,
         webhook.version,

@@ -6,6 +6,7 @@ use axum::{
 };
 use blackwall::{
     auth::{Register, Session},
+    domain::{Command, ProjectStatus},
     http::router,
     store::Store,
 };
@@ -28,6 +29,32 @@ async fn send(
     body: Option<Value>,
     headers: &[(&str, &str)],
 ) -> Reply {
+    match body {
+        Some(body) => {
+            let mut headers = headers.to_vec();
+            headers.push(("Content-Type", "application/json"));
+            send_body(
+                app,
+                method,
+                path,
+                token,
+                Body::from(body.to_string()),
+                &headers,
+            )
+            .await
+        }
+        None => send_body(app, method, path, token, Body::empty(), headers).await,
+    }
+}
+
+async fn send_body(
+    app: &axum::Router,
+    method: &str,
+    path: &str,
+    token: Option<&str>,
+    body: Body,
+    headers: &[(&str, &str)],
+) -> Reply {
     let mut request = Request::builder().method(method).uri(path);
     if let Some(token) = token {
         request = request.header("Authorization", format!("Bearer {token}"));
@@ -35,13 +62,6 @@ async fn send(
     for (name, value) in headers {
         request = request.header(*name, *value);
     }
-    let body = match body {
-        Some(body) => {
-            request = request.header("Content-Type", "application/json");
-            Body::from(body.to_string())
-        }
-        None => Body::empty(),
-    };
     let response = app
         .clone()
         .oneshot(request.body(body).unwrap())
@@ -1346,4 +1366,426 @@ async fn project_plan_patches_merge_and_lose_a_removed_lead() {
     drop(app);
     store.pool.close().await;
     database.cleanup().await;
+}
+
+#[tokio::test]
+async fn keyed_patches_replay_after_unrelated_writes() {
+    let database = support::TestDatabase::new().await;
+    let store = Store::connect(&database.url).await.unwrap();
+    let app = router(store.clone());
+    let owner = account(&store, "owner").await;
+    let ws = workspace(&store, &owner, "Replays").await;
+    let write = token(&app, &owner, json!({"name":"CI","access":"write"})).await;
+    let base = format!("/api/v1/workspaces/{ws}");
+
+    let project = call(
+        &app,
+        "POST",
+        &format!("{base}/projects"),
+        &write,
+        Some(json!({"name":"Launch","team_ids":[]})),
+    )
+    .await;
+    assert_eq!(project.status, StatusCode::CREATED, "{}", project.body);
+    let label = call(
+        &app,
+        "POST",
+        &format!("{base}/labels"),
+        &write,
+        Some(json!({"name":"bug","color":"red"})),
+    )
+    .await;
+    assert_eq!(label.status, StatusCode::CREATED, "{}", label.body);
+
+    for (path, keyed, unrelated, different, field) in [
+        (
+            format!("{base}/projects/{}", project.body["id"].as_str().unwrap()),
+            json!({"status": "completed"}),
+            json!({"health": "at_risk"}),
+            json!({"status": "cancelled"}),
+            "status",
+        ),
+        (
+            format!("{base}/labels/{}", label.body["id"].as_str().unwrap()),
+            json!({"name": "defect"}),
+            json!({"color": "blue"}),
+            json!({"name": "regression"}),
+            "name",
+        ),
+    ] {
+        let key = format!("patch-{field}");
+        let key = [("Idempotency-Key", key.as_str())];
+        let first = send(
+            &app,
+            "PATCH",
+            &path,
+            Some(&write),
+            Some(keyed.clone()),
+            &key,
+        )
+        .await;
+        assert_eq!(first.status, StatusCode::OK, "{path}: {}", first.body);
+        let other = call(&app, "PATCH", &path, &write, Some(unrelated)).await;
+        assert_eq!(other.status, StatusCode::OK, "{path}: {}", other.body);
+
+        let replay = send(&app, "PATCH", &path, Some(&write), Some(keyed), &key).await;
+        assert_eq!(replay.status, StatusCode::OK, "{path}: {}", replay.body);
+        assert_eq!(replay.body[field], first.body[field], "{path}");
+        assert_eq!(replay.body["version"], other.body["version"], "{path}");
+
+        let reused = send(&app, "PATCH", &path, Some(&write), Some(different), &key).await;
+        assert_eq!(
+            reused.status,
+            StatusCode::CONFLICT,
+            "{path}: {}",
+            reused.body
+        );
+    }
+
+    drop(app);
+    store.pool.close().await;
+    database.cleanup().await;
+}
+
+/// A workspace with an owner's write token, for keyed request tests.
+struct Keyed {
+    database: support::TestDatabase,
+    store: Store,
+    app: axum::Router,
+    owner: Session,
+    workspace: Uuid,
+    write: String,
+    base: String,
+}
+
+impl Keyed {
+    async fn new() -> Self {
+        let database = support::TestDatabase::new().await;
+        let store = Store::connect(&database.url).await.unwrap();
+        let app = router(store.clone());
+        let owner = account(&store, "owner").await;
+        let workspace = workspace(&store, &owner, "Keys").await;
+        let write = token(&app, &owner, json!({"name":"CI","access":"write"})).await;
+        let base = format!("/api/v1/workspaces/{workspace}");
+        Self {
+            database,
+            store,
+            app,
+            owner,
+            workspace,
+            write,
+            base,
+        }
+    }
+
+    async fn send(&self, method: &str, path: &str, body: Body, key: Option<&str>) -> Reply {
+        let mut headers = vec![("Content-Type", "application/json")];
+        headers.extend(key.map(|key| ("Idempotency-Key", key)));
+        send_body(&self.app, method, path, Some(&self.write), body, &headers).await
+    }
+
+    async fn label(&self) -> (Uuid, String) {
+        let label = call(
+            &self.app,
+            "POST",
+            &format!("{}/labels", self.base),
+            &self.write,
+            Some(json!({"name":"bug","color":"red"})),
+        )
+        .await;
+        assert_eq!(label.status, StatusCode::CREATED, "{}", label.body);
+        let id = Uuid::parse_str(label.body["id"].as_str().unwrap()).unwrap();
+        (id, format!("{}/labels/{id}", self.base))
+    }
+
+    async fn cleanup(self) {
+        drop(self.app);
+        self.store.pool.close().await;
+        self.database.cleanup().await;
+    }
+}
+
+#[tokio::test]
+async fn keyed_webhook_create_replays_its_secret() {
+    let keyed = Keyed::new().await;
+    let hooks = format!("{}/webhooks", keyed.base);
+    let body = r#"{"name":"Hook","url":"https://hooks.example.com/keyed"}"#;
+    let mut secrets = Vec::new();
+    for _ in 0..2 {
+        let reply = keyed
+            .send("POST", &hooks, Body::from(body), Some("hook-once"))
+            .await;
+        assert_eq!(reply.status, StatusCode::CREATED, "{}", reply.body);
+        let stored: String = sqlx::query_scalar("SELECT secret FROM integrations WHERE id=$1")
+            .bind(Uuid::parse_str(reply.body["id"].as_str().unwrap()).unwrap())
+            .fetch_one(&keyed.store.pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            reply.body["secret"], stored,
+            "the secret deliveries are signed with"
+        );
+        secrets.push(stored);
+    }
+    assert_eq!(secrets[0], secrets[1]);
+    keyed.cleanup().await;
+}
+
+#[tokio::test]
+async fn keyed_project_plan_step_ignores_client_keys() {
+    let keyed = Keyed::new().await;
+    let project = call(
+        &keyed.app,
+        "POST",
+        &format!("{}/projects", keyed.base),
+        &keyed.write,
+        Some(json!({"name":"Launch","team_ids":[]})),
+    )
+    .await;
+    let project = format!(
+        "{}/projects/{}",
+        keyed.base,
+        project.body["id"].as_str().unwrap()
+    );
+    let mixed = r#"{"name":"Relaunch","status":"completed"}"#;
+    let reset = || {
+        keyed.send(
+            "PATCH",
+            &project,
+            Body::from(r#"{"status":"planned"}"#),
+            None,
+        )
+    };
+    // The plan step used to run under `<key>:plan`, which a client may also send.
+    for key in ["mixed:plan", "mixed"] {
+        assert_eq!(reset().await.status, StatusCode::OK);
+        let reply = keyed
+            .send("PATCH", &project, Body::from(mixed), Some(key))
+            .await;
+        assert_eq!(reply.status, StatusCode::OK, "{key}: {}", reply.body);
+        assert_eq!(reply.body["status"], "completed", "{key}");
+    }
+
+    assert_eq!(reset().await.status, StatusCode::OK);
+    let replay = keyed
+        .send("PATCH", &project, Body::from(mixed), Some("mixed"))
+        .await;
+    assert_eq!(replay.status, StatusCode::OK, "{}", replay.body);
+    assert_eq!(replay.body["name"], "Relaunch");
+    assert_eq!(
+        replay.body["status"], "planned",
+        "a replay runs neither step again"
+    );
+    keyed.cleanup().await;
+}
+
+#[tokio::test]
+async fn keyed_requests_compare_canonical_json() {
+    let keyed = Keyed::new().await;
+    let (_, label) = keyed.label().await;
+    let first = keyed
+        .send(
+            "PATCH",
+            &label,
+            Body::from(r#"{"name":"triage","color":"red"}"#),
+            Some("reordered"),
+        )
+        .await;
+    assert_eq!(first.status, StatusCode::OK, "{}", first.body);
+    let reordered = keyed
+        .send(
+            "PATCH",
+            &label,
+            Body::from("{\n  \"color\": \"red\",\n  \"name\": \"triage\"\n}"),
+            Some("reordered"),
+        )
+        .await;
+    assert_eq!(reordered.status, StatusCode::OK, "{}", reordered.body);
+    assert_eq!(reordered.body["version"], first.body["version"]);
+
+    for (body, status) in [
+        (r#"{"name":"triaged"}"#, StatusCode::OK),
+        (r#"{"name":"triaged","color":null}"#, StatusCode::CONFLICT),
+    ] {
+        let reply = keyed
+            .send("PATCH", &label, Body::from(body), Some("null"))
+            .await;
+        assert_eq!(reply.status, status, "{body}: {}", reply.body);
+    }
+    keyed.cleanup().await;
+}
+
+#[tokio::test]
+async fn keys_recorded_by_command_still_replay() {
+    let keyed = Keyed::new().await;
+    let (id, label) = keyed.label().await;
+    // Keys stored before requests were fingerprinted hold the command.
+    let legacy = keyed
+        .store
+        .operation(
+            keyed.workspace,
+            keyed.owner.profile.id,
+            Command::UpdateLabel {
+                id,
+                name: "legacy".into(),
+                color: "red".into(),
+            },
+            Default::default(),
+            Some("legacy".into()),
+            None,
+        )
+        .await
+        .unwrap();
+    let replay = keyed
+        .send(
+            "PATCH",
+            &label,
+            Body::from(r#"{"name":"legacy"}"#),
+            Some("legacy"),
+        )
+        .await;
+    assert_eq!(replay.status, StatusCode::OK, "{}", replay.body);
+    assert_eq!(replay.body["version"], json!(legacy.versions[&id]));
+    keyed.cleanup().await;
+}
+
+#[tokio::test]
+async fn project_plan_steps_recorded_by_command_still_replay() {
+    let keyed = Keyed::new().await;
+    let created = call(
+        &keyed.app,
+        "POST",
+        &format!("{}/projects", keyed.base),
+        &keyed.write,
+        Some(json!({"name":"Launch","team_ids":[]})),
+    )
+    .await;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    let id = Uuid::parse_str(created.body["id"].as_str().unwrap()).unwrap();
+    let project = format!("{}/projects/{id}", keyed.base);
+    fn field<T: serde::de::DeserializeOwned>(project: &Value, name: &str) -> T {
+        serde_json::from_value(project[name].clone()).unwrap()
+    }
+    // A mixed PATCH stored its plan step under `<key>:plan` before requests were fingerprinted.
+    for (key, command) in [
+        (
+            "legacy",
+            Command::UpdateProject {
+                id,
+                name: "Relaunch".into(),
+                description: field(&created.body, "description"),
+                team_ids: Vec::new(),
+            },
+        ),
+        (
+            "legacy:plan",
+            Command::SetProjectPlan {
+                id,
+                lead_id: field(&created.body, "lead_id"),
+                status: ProjectStatus::Completed,
+                health: field(&created.body, "health"),
+                start_date: field(&created.body, "start_date"),
+                target_date: field(&created.body, "target_date"),
+            },
+        ),
+    ] {
+        keyed
+            .store
+            .operation(
+                keyed.workspace,
+                keyed.owner.profile.id,
+                command,
+                Default::default(),
+                Some(key.into()),
+                None,
+            )
+            .await
+            .unwrap();
+    }
+    let reset = keyed
+        .send(
+            "PATCH",
+            &project,
+            Body::from(r#"{"status":"planned"}"#),
+            None,
+        )
+        .await;
+    assert_eq!(reset.status, StatusCode::OK, "{}", reset.body);
+
+    let replay = keyed
+        .send(
+            "PATCH",
+            &project,
+            Body::from(r#"{"name":"Relaunch","status":"completed"}"#),
+            Some("legacy"),
+        )
+        .await;
+    assert_eq!(replay.status, StatusCode::OK, "{}", replay.body);
+    assert_eq!(
+        replay.body["status"], "planned",
+        "a replay runs neither step again"
+    );
+
+    let other = keyed
+        .send(
+            "PATCH",
+            &project,
+            Body::from(r#"{"name":"Relaunch","status":"cancelled"}"#),
+            Some("legacy"),
+        )
+        .await;
+    assert_eq!(other.status, StatusCode::CONFLICT, "{}", other.body);
+    let current = call(&keyed.app, "GET", &project, &keyed.write, None).await;
+    assert_eq!(current.body["status"], "planned");
+    keyed.cleanup().await;
+}
+
+#[tokio::test]
+async fn keyed_webhook_create_replay_after_delete_is_not_found() {
+    let keyed = Keyed::new().await;
+    let hooks = format!("{}/webhooks", keyed.base);
+    let body = r#"{"name":"Hook","url":"https://hooks.example.com/gone","secret":"whsec_mine"}"#;
+    let created = keyed
+        .send("POST", &hooks, Body::from(body), Some("hook-gone"))
+        .await;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    let deleted = keyed
+        .send(
+            "DELETE",
+            &format!("{hooks}/{}", created.body["id"].as_str().unwrap()),
+            Body::empty(),
+            None,
+        )
+        .await;
+    assert_eq!(deleted.status, StatusCode::NO_CONTENT, "{}", deleted.body);
+
+    let replay = keyed
+        .send("POST", &hooks, Body::from(body), Some("hook-gone"))
+        .await;
+    assert_eq!(replay.status, StatusCode::NOT_FOUND, "{}", replay.body);
+    keyed.cleanup().await;
+}
+
+#[tokio::test]
+async fn keyed_body_read_failures_match_unkeyed() {
+    let keyed = Keyed::new().await;
+    let (_, label) = keyed.label().await;
+    let oversized = || Body::from(format!(r#"{{"name":"{}"}}"#, "x".repeat(7 * 1024 * 1024)));
+    let failing = || {
+        Body::from_stream(tokio_stream::iter([Err::<axum::body::Bytes, _>(
+            std::io::Error::other("connection reset"),
+        )]))
+    };
+    for (body, status) in [
+        (oversized as fn() -> Body, StatusCode::PAYLOAD_TOO_LARGE),
+        (failing as fn() -> Body, StatusCode::BAD_REQUEST),
+    ] {
+        let unkeyed = keyed.send("PATCH", &label, body(), None).await;
+        let with_key = keyed.send("PATCH", &label, body(), Some("unread")).await;
+        assert_eq!(unkeyed.status, status, "{}", unkeyed.body);
+        assert_eq!(with_key.status, status, "{}", with_key.body);
+        assert!(with_key.body["error"].is_string(), "{}", with_key.body);
+        assert_eq!(with_key.body, unkeyed.body);
+    }
+    keyed.cleanup().await;
 }
