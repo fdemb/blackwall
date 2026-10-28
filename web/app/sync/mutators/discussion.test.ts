@@ -142,6 +142,18 @@ describe("add_comment", () => {
     });
     twice("add_comment", args);
   });
+  it("adds the members the body links to the listed mentions", () => {
+    const store = seedStore();
+    mutate(store, "add_comment", {
+      id: "comment-linked",
+      issue_id: "issue-2",
+      body: `cc [@Admin](mention:${ADMIN}) and [@Ghost](mention:${GHOST})`,
+      mentions: [OWNER],
+    });
+    expect(liveComment(store, "comment-linked").mentions).toEqual([ADMIN, OWNER].sort());
+    expect(store.get("issues", "issue-2")?.followers).toEqual([ADMIN, MEMBER, OWNER].sort());
+  });
+
   it("creates with the actor as author and sorted mentions", () => {
     const store = seedStore();
     mutate(store, "add_comment", {
@@ -333,6 +345,14 @@ describe("edit_comment", () => {
   it("makes newly mentioned members followers", () => {
     const store = seedStore(OWNER);
     mutate(store, "edit_comment", { id: COMMENT_OTHER_ISSUE, body: "cc", mentions: [ADMIN] });
+    expect(store.get("issues", "issue-2")?.followers).toEqual([ADMIN]);
+  });
+
+  it("makes members the new body links followers", () => {
+    const store = seedStore(OWNER);
+    const body = `cc [@Admin](mention:${ADMIN}) and [@Ghost](mention:${GHOST})`;
+    mutate(store, "edit_comment", { id: COMMENT_OTHER_ISSUE, body, mentions: [] });
+    expect(liveComment(store, COMMENT_OTHER_ISSUE).mentions).toEqual([ADMIN]);
     expect(store.get("issues", "issue-2")?.followers).toEqual([ADMIN]);
   });
 

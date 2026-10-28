@@ -401,14 +401,19 @@ export const scenarios = {
       return {
         type: "add_comment",
         issue_id: f.issue,
-        body: "Reply 🦊",
+        body: `Reply 🦊 [@Owner](mention:${f.owner.id})`,
         mentions: [f.member.id, f.member.id],
         attachments: [{ id, name: "ignored", content_type: "text/plain", size: 1 }],
       };
     },
   },
   edit_comment: {
-    command: (f) => ({ type: "edit_comment", id: f.comment, body: "Edited 🦊", mentions: [] }),
+    command: (f) => ({
+      type: "edit_comment",
+      id: f.comment,
+      body: `Edited 🦊 [@Member](mention:${f.member.id})`,
+      mentions: [],
+    }),
   },
   delete_comment: { command: (f) => ({ type: "delete_comment", id: f.comment }) },
   log_time: {

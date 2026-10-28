@@ -597,6 +597,108 @@ async fn editing_a_comment_alerts_only_people_it_newly_mentions() {
     f.cleanup().await;
 }
 
+impl Fixture {
+    async fn join(&self, name: &str) -> Uuid {
+        let user = account(&self.store, name).await.profile.id;
+        sqlx::query(
+            "INSERT INTO workspace_members(workspace_id,user_id,role) VALUES($1,$2,'member')",
+        )
+        .bind(self.workspace)
+        .bind(user)
+        .execute(&self.store.pool)
+        .await
+        .unwrap();
+        user
+    }
+
+    async fn comment(&self, issue: Uuid, body: String, mentions: Vec<Uuid>) -> Uuid {
+        let command = Command::AddComment {
+            id: None,
+            issue_id: issue,
+            body,
+            mentions,
+            attachments: vec![],
+        };
+        self.run(self.owner.profile.id, command)
+            .await
+            .result
+            .id
+            .unwrap()
+    }
+}
+
+#[tokio::test]
+async fn comment_mentions_come_from_the_body_and_the_listed_members() {
+    let f = Fixture::new().await;
+    let (owner, follower) = (f.owner.profile.id, f.follower.profile.id);
+    let reviewer = f.join("reviewer").await;
+    let outsider = account(&f.store, "outsider").await.profile.id;
+
+    // The web editor's parser trims the no-break space; the server's does not.
+    let misparsed = f.create_issue("Misparsed", f.stages[1]).await;
+    f.comment(
+        misparsed,
+        format!("cc [@follower](mention:{follower}\u{a0})"),
+        vec![],
+    )
+    .await;
+    assert!(f.alerts(follower, misparsed, "mention").await.is_empty());
+    assert!(!f.followers(misparsed).await.contains(&follower));
+
+    let linked = f.create_issue("Linked", f.stages[1]).await;
+    f.comment(
+        linked,
+        format!(
+            "cc {} and {}",
+            mention(follower, "follower"),
+            mention(outsider, "outsider")
+        ),
+        vec![],
+    )
+    .await;
+    assert_eq!(f.alerts(follower, linked, "mention").await.len(), 1);
+    assert!(f.alerts(outsider, linked, "mention").await.is_empty());
+    let mut expected = vec![owner, follower];
+    expected.sort();
+    assert_eq!(f.followers(linked).await, expected);
+
+    let listed = f.create_issue("Listed", f.stages[1]).await;
+    f.comment(listed, "Paging the reviewer".into(), vec![reviewer])
+        .await;
+    assert_eq!(f.alerts(reviewer, listed, "mention").await.len(), 1);
+    assert!(f.followers(listed).await.contains(&reviewer));
+
+    let edited = f.create_issue("Edited", f.stages[1]).await;
+    let comment = f
+        .comment(
+            edited,
+            format!("cc {}", mention(follower, "follower")),
+            vec![],
+        )
+        .await;
+    let both = format!(
+        "cc {} and {}",
+        mention(follower, "follower"),
+        mention(reviewer, "reviewer")
+    );
+    for _ in 0..2 {
+        f.run(
+            owner,
+            Command::EditComment {
+                id: comment,
+                body: both.clone(),
+                mentions: vec![],
+            },
+        )
+        .await;
+    }
+    assert_eq!(f.alerts(follower, edited, "mention").await.len(), 1);
+    assert_eq!(f.alerts(reviewer, edited, "mention").await.len(), 1);
+    assert!(f.followers(edited).await.contains(&reviewer));
+
+    f.cleanup().await;
+}
+
 #[tokio::test]
 async fn change_notifications_name_the_latest_actor_and_every_field_since_the_last_read() {
     let f = Fixture::new().await;
