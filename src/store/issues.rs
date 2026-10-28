@@ -358,6 +358,7 @@ impl Operation<'_> {
             before,
             after,
             effects,
+            &mut self.deliveries,
         )
         .await
     }

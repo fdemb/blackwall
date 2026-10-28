@@ -120,7 +120,7 @@ impl Directory {
             .await
     }
 
-    async fn with_records(self, conn: &mut PgConnection, ws: Uuid) -> Result<Self> {
+    pub(crate) async fn with_records(self, conn: &mut PgConnection, ws: Uuid) -> Result<Self> {
         let teams = sqlx::query_as::<_, (Uuid, String, String)>(
             "SELECT id,key,name FROM teams WHERE workspace_id=$1 ORDER BY name,id",
         )

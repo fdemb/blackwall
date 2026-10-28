@@ -280,11 +280,10 @@ pub(crate) struct Snapshot {
 
 /// The entity as the API returns it, read inside the transaction that changed it, so every
 /// retry sends the state right after the change. Only issues, comments and time entries have
-/// one, and a comment or time entry the change deleted has none. `directory` is loaded on the
-/// first entity that needs it and reused by later calls.
+/// one, and a comment or time entry the change deleted has none.
 pub(crate) async fn snapshot(
     conn: &mut PgConnection,
-    directory: &mut Option<Directory>,
+    names: &mut Names,
     workspace: Uuid,
     actor: Uuid,
     entity_type: &str,
@@ -296,7 +295,7 @@ pub(crate) async fn snapshot(
                 Err(Error::NotFound) => return Ok(Snapshot::default()),
                 issue => issue?,
             };
-            let dir = loaded(conn, directory, workspace).await?;
+            let dir = names.workspace(conn, workspace).await?;
             let rendered = render_on(conn, dir, workspace, vec![issue]).await?;
             (serde_json::to_value(&rendered[0])?, "description")
         }
@@ -306,7 +305,7 @@ pub(crate) async fn snapshot(
                 return Ok(Snapshot::default());
             };
             let comment: Comment = serde_json::from_value(row)?;
-            let dir = loaded(conn, directory, workspace).await?;
+            let dir = names.people(conn, workspace).await?;
             let rendered = render_comments_on(conn, dir, vec![comment]).await?;
             (serde_json::to_value(&rendered[0])?, "body")
         }
@@ -317,7 +316,7 @@ pub(crate) async fn snapshot(
                 return Ok(Snapshot::default());
             };
             let entry: TimeEntry = serde_json::from_value(row)?;
-            let dir = loaded(conn, directory, workspace).await?;
+            let dir = names.people(conn, workspace).await?;
             dir.include_people(conn, [entry.user_id]).await?;
             let rendered = ApiTimeEntry {
                 id: entry.id,
@@ -335,16 +334,37 @@ pub(crate) async fn snapshot(
     Ok(bound(data, markdown))
 }
 
-async fn loaded<'a>(
-    conn: &mut PgConnection,
-    directory: &'a mut Option<Directory>,
-    workspace: Uuid,
-) -> Result<&'a mut Directory> {
-    let dir = match directory.take() {
-        Some(dir) => dir,
-        None => Directory::workspace(conn, workspace).await?,
-    };
-    Ok(directory.insert(dir))
+/// The directory snapshots name records from, loaded on the first snapshot and kept for later
+/// ones. Comments and time entries name only people, so it holds only members until an issue
+/// needs the rest.
+#[derive(Default)]
+pub(crate) struct Names {
+    directory: Option<Directory>,
+    records: bool,
+}
+
+impl Names {
+    async fn people(&mut self, conn: &mut PgConnection, workspace: Uuid) -> Result<&mut Directory> {
+        let dir = match self.directory.take() {
+            Some(dir) => dir,
+            None => Directory::members(conn, workspace).await?,
+        };
+        Ok(self.directory.insert(dir))
+    }
+
+    async fn workspace(
+        &mut self,
+        conn: &mut PgConnection,
+        workspace: Uuid,
+    ) -> Result<&mut Directory> {
+        let dir = match self.directory.take() {
+            Some(dir) if self.records => dir,
+            Some(dir) => dir.with_records(conn, workspace).await?,
+            None => Directory::workspace(conn, workspace).await?,
+        };
+        self.records = true;
+        Ok(self.directory.insert(dir))
+    }
 }
 
 /// Cuts the `markdown` field to `TEXT_LIMIT`, then leaves `data` out if it is still over

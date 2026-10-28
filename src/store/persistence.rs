@@ -374,12 +374,16 @@ pub(crate) async fn issue_effects(
     before: Option<&Issue>,
     after: &Issue,
     effects: IssueEffects,
+    deliveries: &mut Deliveries,
 ) -> Result<()> {
     // Local edits of synced issues queue their exported fields; imports use `PageEffects`.
     if let (IssueEffects::Update | IssueEffects::Move, Some(before)) = (&effects, before) {
         crate::tracker::enqueue_fields(conn, workspace, before, after).await?;
     }
-    issue_effects_with_context(conn, workspace, actor, before, after, effects, None).await
+    issue_effects_with_context(
+        conn, workspace, actor, before, after, effects, None, deliveries,
+    )
+    .await
 }
 
 struct Integration {
@@ -403,11 +407,12 @@ pub(crate) async fn tracker_actor(conn: &mut PgConnection, workspace: Uuid) -> R
 }
 
 /// What webhook deliveries need, read on the first event that needs it and kept for the rest of
-/// the operation or tracker page, so a change that completes a whole stage reads it once.
+/// the command or tracker page, so an import, a bulk edit or completing a whole stage reads it
+/// once.
 #[derive(Default)]
 pub(crate) struct Deliveries {
     integrations: Option<Vec<Integration>>,
-    directory: Option<crate::api::directory::Directory>,
+    names: crate::api::webhooks::Names,
 }
 
 pub(crate) struct PageEffects {
@@ -437,20 +442,21 @@ impl PageEffects {
         after: &Issue,
         fields: Vec<String>,
     ) -> Result<()> {
-        let actor = self.actor;
         issue_effects_with_context(
             conn,
             workspace,
-            actor,
+            self.actor,
             before,
             after,
             IssueEffects::Remote(fields),
-            Some(self),
+            Some(&self.stages),
+            &mut self.deliveries,
         )
         .await
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn issue_effects_with_context(
     conn: &mut PgConnection,
     workspace: Uuid,
@@ -458,13 +464,9 @@ async fn issue_effects_with_context(
     before: Option<&Issue>,
     after: &Issue,
     effects: IssueEffects,
-    context: Option<&mut PageEffects>,
+    stages: Option<&BTreeMap<Uuid, String>>,
+    deliveries: &mut Deliveries,
 ) -> Result<()> {
-    let mut own = Deliveries::default();
-    let (stages, deliveries) = match context {
-        Some(context) => (Some(&context.stages), &mut context.deliveries),
-        None => (None, &mut own),
-    };
     if affects_reminder(before, after) {
         let completed = match stages {
             Some(stages) => Some(stage_completed(conn, after.stage_id, Some(stages)).await?),
@@ -563,28 +565,6 @@ async fn notify_new_assignee(
     .await
 }
 
-pub(crate) async fn activity(
-    conn: &mut PgConnection,
-    workspace: Uuid,
-    actor: Uuid,
-    action: &str,
-    issue: Option<Uuid>,
-    fields: Vec<String>,
-    changes: Vec<FieldChange>,
-) -> Result<()> {
-    activity_with(
-        conn,
-        workspace,
-        actor,
-        action,
-        issue,
-        fields,
-        changes,
-        &mut Deliveries::default(),
-    )
-    .await
-}
-
 async fn integrations(conn: &mut PgConnection, workspace: Uuid) -> Result<Vec<Integration>> {
     let rows = sqlx::query(
         "SELECT id,webhook_url,events,include_data FROM integrations \
@@ -671,7 +651,7 @@ pub(crate) async fn activity_with(
     {
         let snapshot = crate::api::webhooks::snapshot(
             conn,
-            &mut deliveries.directory,
+            &mut deliveries.names,
             workspace,
             actor,
             entity_type,
