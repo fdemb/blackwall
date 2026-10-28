@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
 """Run blackwall-deploy against a scratch root with systemctl, curl and runuser stubbed."""
 from pathlib import Path
+import fcntl
 import os
+import shutil
+import signal
 import subprocess
 import tarfile
 import tempfile
 
 script = (Path(__file__).resolve().parent / "blackwall-deploy").read_text()
 old, new = "a" * 40, "b" * 40
+real_readlink, real_sleep = shutil.which("readlink"), shutil.which("sleep")
 
 stubs = {
     "runuser": 'shift 3\nexec "$@"',
@@ -18,6 +22,7 @@ case "$1 $RESTART_FAILS" in "restart "*"$release"*) exit 17 ;; esac""",
 echo "curl $release" >> "$DEPLOY_LOG"
 case "$UNHEALTHY" in *"$release"*) exit 22 ;; esac""",
     "journalctl": "exit 0",
+    "chown": 'echo "chown $*" >> "$DEPLOY_LOG"',
     "sleep": "exit 0",
 }
 
@@ -29,7 +34,7 @@ def release_files(release):
     (release / "blackwall").chmod(0o755)
 
 
-def deploy(work, *, previous=old, unhealthy=(), restart_fails=(), archive=None, extra_stubs={}):
+def deploy(work, *, previous=old, unhealthy=(), restart_fails=(), archive=None, existing=None, setup=None, locked=False, extra_stubs={}):
     root = work / "opt"
     bins = work / "bin"
     bins.mkdir()
@@ -38,18 +43,20 @@ def deploy(work, *, previous=old, unhealthy=(), restart_fails=(), archive=None, 
         (bins / name).chmod(0o755)
     release_files(root / "releases" / old)
     tarball = work / "release.tar.gz"
+    outside = work / "outside"
+    outside.write_text(f'#!/bin/sh\necho "outside ran" >> "{work / "calls.log"}"\n')
+    outside.chmod(0o755)
     if archive:
         staging = work / "staging"
         release_files(staging)
-        outside = work / "outside"
-        outside.write_text(f'#!/bin/sh\necho "outside ran" >> "{work / "calls.log"}"\n')
-        outside.chmod(0o755)
         archive(staging, work)
         with tarfile.open(tarball, "w:gz") as tar:
             for entry in sorted(staging.iterdir()):
                 tar.add(entry, entry.name)
     else:
         release_files(root / "releases" / new)
+        if existing:
+            existing(root / "releases" / new, work)
     if previous:
         (root / "current").symlink_to(root / "releases" / previous)
     env_file = work / "blackwall.env"
@@ -61,6 +68,11 @@ def deploy(work, *, previous=old, unhealthy=(), restart_fails=(), archive=None, 
     (work / "deploy").write_text(patched)
     log = work / "calls.log"
     log.touch()
+    if setup:
+        setup(root)
+    if locked:
+        lock = open(root / "deploy.lock", "w")
+        fcntl.flock(lock, fcntl.LOCK_EX)
     result = subprocess.run(
         ["bash", work / "deploy", tarball, new],
         env=dict(
@@ -74,10 +86,29 @@ def deploy(work, *, previous=old, unhealthy=(), restart_fails=(), archive=None, 
         capture_output=True,
         text=True,
     )
+    if locked:
+        lock.close()
+    lock_free = True
+    with open(root / "deploy.lock") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            lock_free = False
+    leftover = work / "leftover.pid"
+    if leftover.exists():
+        os.kill(int(leftover.read_text()), signal.SIGTERM)
     current = root / "current"
+    links = [path for path in current.rglob("*") if path.is_symlink()] if current.exists() else []
     return {
         "code": result.returncode,
         "current": current.resolve().name if current.is_symlink() else None,
+        "current_exists": (current / "blackwall").is_file() and (current / "web/index.html").is_file(),
+        "dangling": [str(link) for link in links if not link.exists()],
+        "links": len(links),
+        "releases": sorted(path.name for path in (root / "releases").iterdir()) if (root / "releases").is_dir() else [],
+        "elsewhere_kept": (work / "elsewhere/keep").is_file(),
+        "lock_free": lock_free,
+        "lock_mode": (root / "deploy.lock").stat().st_mode & 0o777,
         "installed": (root / "releases" / new).exists(),
         "output": result.stdout + result.stderr,
         "calls": log.read_text().splitlines(),
@@ -102,6 +133,13 @@ def case(name, check, **kwargs):
 def healthy_deploy(o):
     assert o["code"] == 0 and o["current"] == new
     assert f"deployed {new}" in o["output"]
+    assert o["current_exists"], "current release is missing its files"
+    assert not o["dangling"], f"dangling links in the current release: {o['dangling']}"
+
+
+def healthy_deploy_with_link(o):
+    healthy_deploy(o)
+    assert o["links"] == 1, "the release lost its internal link"
 
 
 def rollback_after_failed_restart(o):
@@ -135,6 +173,61 @@ def redeploy_unhealthy(o):
 def rejected_archive(o):
     assert o["code"] != 0 and o["current"] == old and not o["installed"]
     assert "migrating" not in o["output"] and "outside ran" not in o["calls"]
+    assert not [name for name in o["releases"] if name.startswith(".unpack.")], "unpack dir left behind"
+
+
+def rejected_existing_release(o):
+    assert o["code"] != 0 and o["current"] == old
+    assert "migrating" not in o["output"] and "outside ran" not in o["calls"]
+    assert "failed its checks" in o["output"]
+
+
+def refused_while_locked(o):
+    assert o["code"] != 0 and o["current"] == old
+    assert "another deploy is running" in o["output"] and "migrating" not in o["output"]
+
+
+rollback_kept = "c" * 40
+pruned = "d" * 40
+linked = "e" * 40
+
+
+def prune_removes_only_the_link(o):
+    prune_keeps_current_and_rollback(o)
+    assert linked not in o["releases"], f"the old release link was not pruned: {o['releases']}"
+
+
+def prune_removes_only_the_outside_link(o):
+    assert o["elsewhere_kept"], "pruning deleted the directory a release link points to"
+    prune_removes_only_the_link(o)
+
+
+def lock_released(o):
+    healthy_deploy(o)
+    assert o["lock_free"], "a process left behind by migrate still holds the deploy lock"
+
+
+def private_lock(o):
+    healthy_deploy(o)
+    assert o["lock_mode"] == 0o600, f"deploy.lock has mode {o['lock_mode']:o}"
+    assert [call for call in o["calls"] if call.startswith("chown root:root ") and call.endswith("/deploy.lock")], "deploy.lock was not given to root"
+
+
+def refused_with_unresolvable_current(o):
+    assert o["code"] != 0 and o["current"] == old
+    assert "cannot resolve" in o["output"] and "migrating" not in o["output"]
+    assert not [call for call in o["calls"] if not call.startswith("chown ")], "deploy changed something before refusing"
+
+
+def prune_survives_newline_name(o):
+    assert o["code"] == 0 and o["current_exists"], "pruning removed the current release"
+    assert o["releases"] == sorted([new, rollback_kept] + [str(n) * 40 for n in range(5)]), f"wrong releases pruned: {o['releases']}"
+
+
+def prune_keeps_current_and_rollback(o):
+    assert o["code"] == 0 and o["current"] == new
+    assert new in o["releases"] and rollback_kept in o["releases"], f"pruned too much: {o['releases']}"
+    assert pruned not in o["releases"] and old not in o["releases"], f"nothing was pruned: {o['releases']}"
 
 
 def symlinked_binary(staging, work):
@@ -163,6 +256,66 @@ def relative_symlink_into_staging(staging, work):
     (staging / "web/index.html").symlink_to(f"../../{new}.tmp/web/content.html")
 
 
+def existing_symlinked_binary(release, work):
+    (release / "blackwall").unlink()
+    (release / "blackwall").symlink_to(work / "outside")
+
+
+def existing_link_outside(release, work):
+    (release / "web/index.html").unlink()
+    (release / "web/index.html").symlink_to(work / "outside")
+
+
+def existing_internal_link(release, work):
+    (release / "web/home.html").symlink_to("index.html")
+
+
+def old_releases(root):
+    # The new release and the rollback release are older than five others, so only the guards keep them.
+    releases = root / "releases"
+    for name in [rollback_kept, new, pruned, old] + [str(n) * 40 for n in range(5)]:
+        if not (releases / name).exists():
+            release_files(releases / name)
+    (root / "current").unlink()
+    (root / "current").symlink_to(releases / rollback_kept)
+    for age, name in enumerate([str(n) * 40 for n in range(5)] + [old, pruned, new, rollback_kept]):
+        os.utime(releases / name, (1_000_000 - age * 1000,) * 2)
+
+
+def old_release_linked_outside(root):
+    old_releases(root)
+    elsewhere = root.parent / "elsewhere"
+    release_files(elsewhere)
+    (elsewhere / "keep").write_text("ok")
+    (root / "releases" / linked).symlink_to(elsewhere)
+    os.utime(elsewhere, (1_000,) * 2)
+
+
+def old_release_linked_to_releases(root):
+    old_releases(root)
+    (root / "releases" / linked).symlink_to(root / "releases")
+    os.utime(root / "releases", (1_000,) * 2)
+
+
+def old_release_named_with_newline(root):
+    old_releases(root)
+    release_files(root / "releases" / "\npoison")
+    os.utime(root / "releases" / "\npoison", (1_000,) * 2)
+
+
+def world_readable_lock(root):
+    (root / "deploy.lock").touch()
+    (root / "deploy.lock").chmod(0o644)
+
+
+def migrate_leaves_a_process(release, work):
+    (release / "blackwall").write_text(f'#!/bin/sh\n"{real_sleep}" 30 >/dev/null 2>&1 &\necho $! > "{work / "leftover.pid"}"\n')
+
+
+def readlink_fails_for(flag, path_pattern):
+    return {"readlink": f'case "$1 $2" in "{flag} "{path_pattern}) exit 1 ;; esac\nexec "{real_readlink}" "$@"'}
+
+
 def dangling_symlink(staging, work):
     (staging / "web/home.html").symlink_to("missing.html")
 
@@ -174,13 +327,27 @@ case("both releases unhealthy", both_releases_down, unhealthy=[new, old])
 case("restart fails for both releases", both_releases_down, restart_fails=[new, old])
 case("first deploy has nothing to roll back to", first_deploy_unhealthy, previous=None, unhealthy=[new])
 case("redeploying the current release has nothing to roll back to", redeploy_unhealthy, previous=new, unhealthy=[new])
-case("archive with an internal symlink installs", healthy_deploy, archive=internal_symlink)
+case("archive with an internal symlink installs", healthy_deploy_with_link, archive=internal_symlink)
 case("archive whose binary is a symlink is rejected", rejected_archive, archive=symlinked_binary)
 case("archive with a file linked outside the release is rejected", rejected_archive, archive=symlinked_web_file)
 case("archive with an absolute link into its unpack dir is rejected", rejected_archive, archive=absolute_symlink_into_staging)
 case("archive with a relative link back into its unpack dir is rejected", rejected_archive, archive=relative_symlink_into_staging)
 case("archive with a dangling link is rejected", rejected_archive, archive=dangling_symlink)
+case("archive is rejected when its unpack dir cannot be resolved", rejected_archive, archive=symlinked_web_file, extra_stubs=readlink_fails_for('-f', '*/.unpack.*'))
 case("archive is rejected when listing its links fails", rejected_archive, archive=internal_symlink, extra_stubs={"find": "exit 2"})
+case("redeploying an existing release whose binary is a symlink is rejected", rejected_existing_release, existing=existing_symlinked_binary)
+case("redeploying an existing release with a link outside it is rejected", rejected_existing_release, existing=existing_link_outside)
+case("redeploying an existing release with an internal link installs", healthy_deploy_with_link, existing=existing_internal_link)
+case("redeploying an existing release is rejected when it cannot be resolved", rejected_existing_release, existing=existing_link_outside, extra_stubs=readlink_fails_for('-f', f'*/releases/{new}'))
+case("deploy is refused while another holds the lock", refused_while_locked, locked=True)
+case("a process left behind by migrate does not hold the lock", lock_released, existing=migrate_leaves_a_process)
+case("the lock file is private to root", private_lock)
+case("a world-readable lock file from an older deploy is made private", private_lock, setup=world_readable_lock)
+case("deploy is refused when the current release cannot be resolved", refused_with_unresolvable_current, unhealthy=[new], extra_stubs=readlink_fails_for('-e', '*/opt/current'))
+case("pruning keeps the current and rollback releases", prune_keeps_current_and_rollback, setup=old_releases)
+case("pruning an old release linked outside removes only the link", prune_removes_only_the_outside_link, setup=old_release_linked_outside)
+case("pruning an old release linked to the releases dir removes only the link", prune_removes_only_the_link, setup=old_release_linked_to_releases)
+case("pruning a release named with a newline keeps the other releases", prune_survives_newline_name, setup=old_release_named_with_newline)
 
 if failures:
     raise SystemExit(f"{len(failures)} deploy case(s) failed")

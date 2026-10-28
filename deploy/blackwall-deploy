@@ -2,6 +2,11 @@
 # Install a CI release archive, migrate, switch, and roll back if it fails its health check.
 # Usage (as root): blackwall-deploy <archive.tar.gz> <commit-sha>
 set -euo pipefail
+# check_release waits on a process substitution, which needs bash 4.4.
+if (( BASH_VERSINFO[0] * 100 + BASH_VERSINFO[1] < 404 )); then
+    echo "blackwall-deploy needs bash 4.4 or newer, this is $BASH_VERSION" >&2
+    exit 2
+fi
 
 archive=${1:?usage: blackwall-deploy <archive.tar.gz> <commit-sha>}
 commit=${2:?usage: blackwall-deploy <archive.tar.gz> <commit-sha>}
@@ -10,22 +15,42 @@ commit=${2:?usage: blackwall-deploy <archive.tar.gz> <commit-sha>}
 root=/opt/blackwall
 env_file=/etc/blackwall/blackwall.env
 release=$root/releases/$commit
-previous=$(readlink -e "$root/current" || true)
 
-if [[ ! -d $release ]]; then
+mkdir -p "$root/releases"
+# The app user must not be able to open the lock and hold it. Older deploys left it world-readable.
+(umask 077 && touch "$root/deploy.lock")
+chown root:root "$root/deploy.lock"
+chmod 600 "$root/deploy.lock"
+exec 9>"$root/deploy.lock"
+flock -n 9 || { echo "another deploy is running (it holds $root/deploy.lock)" >&2; exit 1; }
+
+previous=
+if [[ -e $root/current || -L $root/current ]]; then
+    previous=$(readlink -e "$root/current") || { echo "cannot resolve $root/current; fix or remove it and deploy again" >&2; exit 1; }
+fi
+
+# Every check returns explicitly because callers run this in an || list, where set -e is off.
+check_release() {
+    local dir=$1 resolved link
+    [[ -x $dir/blackwall && ! -L $dir/blackwall ]] || { echo "blackwall is not an executable file in the release" >&2; return 1; }
+    [[ -f $dir/web/index.html ]] || { echo "web/index.html is missing from the release" >&2; return 1; }
+    resolved=$(readlink -f "$dir") && [[ -n $resolved ]] || { echo "cannot resolve $dir" >&2; return 1; }
+    while IFS= read -r -d '' link; do
+        [[ $(readlink -e "$link") == "$resolved"/* ]] || { echo "${link#"$dir/"} does not resolve to a file in the release" >&2; return 1; }
+    done < <(find "$dir" -type l -print0)
+    wait $!
+}
+
+if [[ -d $release ]]; then
+    # Releases installed by older versions of this script were never checked.
+    check_release "$release" || { echo "existing $release failed its checks; remove it and deploy again" >&2; exit 1; }
+else
     # A random name keeps archive links from pointing into the unpack dir, which would dangle after the mv.
-    mkdir -p "$root/releases"
     staging=$(mktemp -d "$root/releases/.unpack.XXXXXXXXXX")
     trap 'rm -rf "$staging"' EXIT
     chmod 755 "$staging"
     tar -xzf "$archive" -C "$staging" --no-same-owner --no-same-permissions
-    [[ -x $staging/blackwall && ! -L $staging/blackwall ]]
-    test -f "$staging/web/index.html"
-    unpacked=$(readlink -f "$staging")
-    while IFS= read -r -d '' link; do
-        [[ $(readlink -e "$link") == "$unpacked"/* ]] || { echo "${link#"$staging/"} does not resolve to a file in the release" >&2; exit 1; }
-    done < <(find "$staging" -type l -print0)
-    wait $!
+    check_release "$staging" || exit 1
     mv "$staging" "$release"
 fi
 
@@ -33,7 +58,8 @@ bind=$(sed -n 's/^BIND_ADDR=//p' "$env_file")
 health_url="http://${bind:-127.0.0.1:3000}/health"
 
 run_as_app() {
-    (set -a; . "$env_file"; set +a; exec runuser -u blackwall -- "$@")
+    # Closing the lock keeps a process the app leaves behind from blocking the next deploy.
+    (set -a; . "$env_file"; set +a; exec runuser -u blackwall -- "$@" 9>&-)
 }
 
 # Runs as an if condition, where set -e is off, so every step chains with &&.
@@ -46,7 +72,7 @@ activate() {
 
 healthy() {
     for _ in $(seq 30); do
-        if curl -fsS --max-time 2 "$health_url" >/dev/null 2>&1 \
+        if curl -fsS --max-time 2 "$health_url" >/dev/null 2>&1 9>&- \
             && systemctl is-active --quiet blackwall-worker; then
             return 0
         fi
@@ -60,7 +86,7 @@ run_as_app "$release/blackwall" migrate
 
 echo "switching to $commit"
 if ! activate "$release"; then
-    journalctl -u blackwall-web -u blackwall-worker -n 50 --no-pager || true
+    journalctl -u blackwall-web -u blackwall-worker -n 50 --no-pager 9>&- || true
     echo "$commit failed to start or failed its health check" >&2
     if [[ -z $previous || $previous == "$release" ]]; then
         echo "no previous release to roll back to" >&2
@@ -68,7 +94,7 @@ if ! activate "$release"; then
     fi
     echo "rolling back to $(basename "$previous"); migrations from $commit stay applied" >&2
     if ! activate "$previous"; then
-        journalctl -u blackwall-web -u blackwall-worker -n 50 --no-pager || true
+        journalctl -u blackwall-web -u blackwall-worker -n 50 --no-pager 9>&- || true
         echo "$(basename "$previous") failed too: both releases are down" >&2
         exit 1
     fi
@@ -76,11 +102,16 @@ if ! activate "$release"; then
     exit 1
 fi
 
-# Keep the five newest releases plus whatever is current.
+# Keep the five newest releases, the current one, and the one it replaced for rollback.
 current=$(readlink -f "$root/current")
-ls -1dt "$root"/releases/*/ | tail -n +6 | while read -r dir; do
-    dir=${dir%/}
-    [[ $dir == "$current" ]] || rm -rf "$dir"
-done
+# Deletes the entry, never what it resolves to: a symlinked entry only loses the link.
+# NUL-separated because a release name can hold a newline. A linked release is dated by its target.
+while IFS= read -r -d '' line; do
+    entry=${line#* }
+    [[ ${entry%/*} == "$root/releases" && -n ${entry##*/} ]] || { echo "not pruning $entry: outside $root/releases" >&2; continue; }
+    target=$(readlink -f "$entry") || continue
+    [[ $target == "$current" || $target == "$previous" ]] && continue
+    if [[ -L $entry ]]; then rm -f "$entry"; else rm -rf "$entry"; fi
+done < <(for dir in "$root"/releases/*/; do printf '%s %s\0' "$(stat -L -c %.9Y -- "$dir")" "${dir%/}"; done | sort -zrn | tail -zn +6)
 
 echo "deployed $commit"
