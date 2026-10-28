@@ -3,12 +3,15 @@
 from pathlib import Path
 import fcntl
 import os
+import shutil
+import signal
 import subprocess
 import tarfile
 import tempfile
 
 script = (Path(__file__).resolve().parent / "blackwall-deploy").read_text()
 old, new = "a" * 40, "b" * 40
+real_readlink, real_sleep = shutil.which("readlink"), shutil.which("sleep")
 
 stubs = {
     "runuser": 'shift 3\nexec "$@"',
@@ -66,8 +69,8 @@ def deploy(work, *, previous=old, unhealthy=(), restart_fails=(), archive=None, 
     log.touch()
     if setup:
         setup(root)
-    lock = open(root / "deploy.lock", "w")
     if locked:
+        lock = open(root / "deploy.lock", "w")
         fcntl.flock(lock, fcntl.LOCK_EX)
     result = subprocess.run(
         ["bash", work / "deploy", tarball, new],
@@ -82,7 +85,17 @@ def deploy(work, *, previous=old, unhealthy=(), restart_fails=(), archive=None, 
         capture_output=True,
         text=True,
     )
-    lock.close()
+    if locked:
+        lock.close()
+    lock_free = True
+    with open(root / "deploy.lock") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            lock_free = False
+    leftover = work / "leftover.pid"
+    if leftover.exists():
+        os.kill(int(leftover.read_text()), signal.SIGTERM)
     current = root / "current"
     links = [path for path in current.rglob("*") if path.is_symlink()] if current.exists() else []
     return {
@@ -91,7 +104,10 @@ def deploy(work, *, previous=old, unhealthy=(), restart_fails=(), archive=None, 
         "current_exists": (current / "blackwall").is_file() and (current / "web/index.html").is_file(),
         "dangling": [str(link) for link in links if not link.exists()],
         "links": len(links),
-        "releases": sorted(path.name for path in (root / "releases").iterdir()),
+        "releases": sorted(path.name for path in (root / "releases").iterdir()) if (root / "releases").is_dir() else [],
+        "elsewhere_kept": (work / "elsewhere/keep").is_file(),
+        "lock_free": lock_free,
+        "lock_mode": (root / "deploy.lock").stat().st_mode & 0o777,
         "installed": (root / "releases" / new).exists(),
         "output": result.stdout + result.stderr,
         "calls": log.read_text().splitlines(),
@@ -172,6 +188,27 @@ def refused_while_locked(o):
 
 rollback_kept = "c" * 40
 pruned = "d" * 40
+linked = "e" * 40
+
+
+def prune_removes_only_the_link(o):
+    prune_keeps_current_and_rollback(o)
+    assert linked not in o["releases"], f"the old release link was not pruned: {o['releases']}"
+
+
+def prune_removes_only_the_outside_link(o):
+    assert o["elsewhere_kept"], "pruning deleted the directory a release link points to"
+    prune_removes_only_the_link(o)
+
+
+def lock_released(o):
+    healthy_deploy(o)
+    assert o["lock_free"], "a process left behind by migrate still holds the deploy lock"
+
+
+def private_lock(o):
+    healthy_deploy(o)
+    assert o["lock_mode"] == 0o600, f"deploy.lock has mode {o['lock_mode']:o}"
 
 
 def prune_keeps_current_and_rollback(o):
@@ -232,6 +269,29 @@ def old_releases(root):
         os.utime(releases / name, (1_000_000 - age * 1000,) * 2)
 
 
+def old_release_linked_outside(root):
+    old_releases(root)
+    elsewhere = root.parent / "elsewhere"
+    release_files(elsewhere)
+    (elsewhere / "keep").write_text("ok")
+    (root / "releases" / linked).symlink_to(elsewhere)
+    os.utime(elsewhere, (1_000,) * 2)
+
+
+def old_release_linked_to_releases(root):
+    old_releases(root)
+    (root / "releases" / linked).symlink_to(root / "releases")
+    os.utime(root / "releases", (1_000,) * 2)
+
+
+def migrate_leaves_a_process(release, work):
+    (release / "blackwall").write_text(f'#!/bin/sh\n"{real_sleep}" 30 >/dev/null 2>&1 &\necho $! > "{work / "leftover.pid"}"\n')
+
+
+def readlink_fails_for(path_pattern):
+    return {"readlink": f'case "$1 $2" in "-f "{path_pattern}) exit 1 ;; esac\nexec "{real_readlink}" "$@"'}
+
+
 def dangling_symlink(staging, work):
     (staging / "web/home.html").symlink_to("missing.html")
 
@@ -249,12 +309,18 @@ case("archive with a file linked outside the release is rejected", rejected_arch
 case("archive with an absolute link into its unpack dir is rejected", rejected_archive, archive=absolute_symlink_into_staging)
 case("archive with a relative link back into its unpack dir is rejected", rejected_archive, archive=relative_symlink_into_staging)
 case("archive with a dangling link is rejected", rejected_archive, archive=dangling_symlink)
+case("archive is rejected when its unpack dir cannot be resolved", rejected_archive, archive=symlinked_web_file, extra_stubs=readlink_fails_for('*/.unpack.*'))
 case("archive is rejected when listing its links fails", rejected_archive, archive=internal_symlink, extra_stubs={"find": "exit 2"})
 case("redeploying an existing release whose binary is a symlink is rejected", rejected_existing_release, existing=existing_symlinked_binary)
 case("redeploying an existing release with a link outside it is rejected", rejected_existing_release, existing=existing_link_outside)
 case("redeploying an existing release with an internal link installs", healthy_deploy_with_link, existing=existing_internal_link)
+case("redeploying an existing release is rejected when it cannot be resolved", rejected_existing_release, existing=existing_link_outside, extra_stubs=readlink_fails_for(f'*/releases/{new}'))
 case("deploy is refused while another holds the lock", refused_while_locked, locked=True)
+case("a process left behind by migrate does not hold the lock", lock_released, existing=migrate_leaves_a_process)
+case("the lock file is private to root", private_lock)
 case("pruning keeps the current and rollback releases", prune_keeps_current_and_rollback, setup=old_releases)
+case("pruning an old release linked outside removes only the link", prune_removes_only_the_outside_link, setup=old_release_linked_outside)
+case("pruning an old release linked to the releases dir removes only the link", prune_removes_only_the_link, setup=old_release_linked_to_releases)
 
 if failures:
     raise SystemExit(f"{len(failures)} deploy case(s) failed")

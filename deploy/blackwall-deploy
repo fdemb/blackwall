@@ -17,6 +17,8 @@ env_file=/etc/blackwall/blackwall.env
 release=$root/releases/$commit
 
 mkdir -p "$root/releases"
+# The app user must not be able to open the lock and hold it.
+(umask 077 && touch "$root/deploy.lock")
 exec 9>"$root/deploy.lock"
 flock -n 9 || { echo "another deploy is running (it holds $root/deploy.lock)" >&2; exit 1; }
 
@@ -27,7 +29,7 @@ check_release() {
     local dir=$1 resolved link
     [[ -x $dir/blackwall && ! -L $dir/blackwall ]] || { echo "blackwall is not an executable file in the release" >&2; return 1; }
     [[ -f $dir/web/index.html ]] || { echo "web/index.html is missing from the release" >&2; return 1; }
-    resolved=$(readlink -f "$dir")
+    resolved=$(readlink -f "$dir") && [[ -n $resolved ]] || { echo "cannot resolve $dir" >&2; return 1; }
     while IFS= read -r -d '' link; do
         [[ $(readlink -e "$link") == "$resolved"/* ]] || { echo "${link#"$dir/"} does not resolve to a file in the release" >&2; return 1; }
     done < <(find "$dir" -type l -print0)
@@ -51,7 +53,8 @@ bind=$(sed -n 's/^BIND_ADDR=//p' "$env_file")
 health_url="http://${bind:-127.0.0.1:3000}/health"
 
 run_as_app() {
-    (set -a; . "$env_file"; set +a; exec runuser -u blackwall -- "$@")
+    # Closing the lock keeps a process the app leaves behind from blocking the next deploy.
+    (set -a; . "$env_file"; set +a; exec runuser -u blackwall -- "$@" 9>&-)
 }
 
 # Runs as an if condition, where set -e is off, so every step chains with &&.
@@ -96,9 +99,12 @@ fi
 
 # Keep the five newest releases, the current one, and the one it replaced for rollback.
 current=$(readlink -f "$root/current")
+# Deletes the entry, never what it resolves to: a symlinked entry only loses the link.
 ls -1dt "$root"/releases/*/ | tail -n +6 | while read -r dir; do
-    dir=$(readlink -f "$dir")
-    [[ $dir == "$current" || $dir == "$previous" ]] || rm -rf "$dir"
+    entry=${dir%/}
+    target=$(readlink -f "$entry") || continue
+    [[ $target == "$current" || $target == "$previous" ]] && continue
+    if [[ -L $entry ]]; then rm -f "$entry"; else rm -rf "$entry"; fi
 done
 
 echo "deployed $commit"
