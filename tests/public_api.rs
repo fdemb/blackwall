@@ -2208,22 +2208,26 @@ async fn webhook_data_is_opt_in_and_dropped_once_finished() {
     assert_eq!(ids.body["include_data"], false);
     let ids = ids.body["id"].as_str().unwrap().to_owned();
 
+    let steps = "Private steps ".repeat(2_000);
+    let cut = &steps[..16 * 1024];
     let created = call(
         &app,
         "POST",
         &format!("{base}/issues"),
         &write,
-        Some(json!({"team":"PLA","title":"Rotate certificates","description":"Private steps"})),
+        Some(json!({"team":"PLA","title":"Rotate certificates","description":steps})),
     )
     .await;
     assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
     let issue_path = format!("{base}/issues/{}", created.body["key"].as_str().unwrap());
     let events = deliveries(&store, &full, "issue.created").await;
-    assert_eq!(events[0]["data"]["description"], "Private steps");
+    assert_eq!(events[0]["data"]["description"], cut);
+    assert_eq!(events[0]["truncated"], json!(["description"]));
     let events = deliveries(&store, &ids, "issue.created").await;
     assert_eq!(events.len(), 1, "{events:?}");
     assert_eq!(events[0]["entity_id"], created.body["id"]);
     assert!(events[0].get("data").is_none(), "{events:?}");
+    assert!(events[0].get("truncated").is_none(), "{events:?}");
 
     let opted = call(
         &app,
@@ -2245,12 +2249,14 @@ async fn webhook_data_is_opt_in_and_dropped_once_finished() {
     )
     .await;
     assert_eq!(patched.status, StatusCode::OK, "{}", patched.body);
-    let urgent = call(&app, "GET", &issue_path, &write, None).await.body;
+    let mut urgent = call(&app, "GET", &issue_path, &write, None).await.body;
+    urgent["description"] = json!(cut);
     let events = deliveries(&store, &ids, "issue.updated").await;
     assert_eq!(events.len(), 1, "{events:?}");
     assert_eq!(events[0]["data"], urgent);
 
-    // A finished delivery keeps its event for debugging, without the record.
+    // A finished delivery keeps its event for debugging, without the record or what was cut
+    // from it.
     let outbox = blackwall::store::Outbox::new(store.pool.clone());
     let claims = outbox.claim("webhook", 10).await.unwrap();
     assert_eq!(claims.len(), 4);
@@ -2270,6 +2276,7 @@ async fn webhook_data_is_opt_in_and_dropped_once_finished() {
     for (state, event) in &finished {
         assert!(state == "succeeded" || state == "failed", "{state}");
         assert!(event.get("data").is_none(), "{event}");
+        assert!(event.get("truncated").is_none(), "{event}");
         assert_eq!(event["entity_id"], created.body["id"]);
         assert!(
             event["type"].is_string() && event["id"].is_string(),

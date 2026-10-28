@@ -11,10 +11,12 @@ pub const LEASE_SECONDS: i64 = 120;
 const ERROR_BYTES: usize = 2048;
 
 /// A finished job drops its secret token. A finished webhook also drops the copy of the record
-/// in `event.data`, which only the receiver needed, and keeps the rest of the event for debugging.
+/// in `event.data` and the `event.truncated` that describes it, which only the receiver needed,
+/// and keeps the rest of the event for debugging.
 macro_rules! finished_payload {
     () => {
-        "CASE WHEN kind='webhook' THEN (payload-'token') #- '{event,data}' ELSE payload-'token' END"
+        "CASE WHEN kind='webhook' THEN (payload-'token') #- '{event,data}' #- '{event,truncated}' \
+         ELSE payload-'token' END"
     };
 }
 
