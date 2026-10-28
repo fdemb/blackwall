@@ -92,7 +92,7 @@ pub async fn events() -> Json<WebhookEvents> {
 pub async fn list(
     State(store): State<Store>,
     actor: ApiActor,
-    Path(workspace): Path<Uuid>,
+    Path(workspace): Path<WorkspaceId>,
     axum::extract::Query(params): axum::extract::Query<PageParams>,
 ) -> Result<Json<Page<ApiWebhook>>> {
     let scope = actor.read(workspace)?;
@@ -112,7 +112,7 @@ pub async fn list(
 pub async fn get(
     State(store): State<Store>,
     actor: ApiActor,
-    Path((workspace, id)): Path<(Uuid, Uuid)>,
+    Path((workspace, id)): Path<(WorkspaceId, Uuid)>,
 ) -> Result<Response> {
     let scope = actor.read(workspace)?;
     admin(&store, scope).await?;
@@ -144,7 +144,7 @@ pub struct CreateWebhook {
 pub async fn create(
     State(store): State<Store>,
     actor: ApiActor,
-    Path(workspace): Path<Uuid>,
+    Path(workspace): Path<WorkspaceId>,
     options: WriteOptions,
     Json(body): Json<CreateWebhook>,
 ) -> Result<Response> {
@@ -172,7 +172,7 @@ pub async fn create(
     // A replay never builds the command, so read the secret the webhook keeps.
     let secret: String = sqlx::query_scalar!(
         "SELECT secret FROM integrations WHERE workspace_id=$1 AND id=$2",
-        scope.workspace,
+        scope.workspace.0,
         id,
     )
     .fetch_optional(&store.pool)
@@ -206,7 +206,7 @@ pub struct UpdateWebhook {
 pub async fn update(
     State(store): State<Store>,
     actor: ApiActor,
-    Path((workspace, id)): Path<(Uuid, Uuid)>,
+    Path((workspace, id)): Path<(WorkspaceId, Uuid)>,
     options: WriteOptions,
     Json(body): Json<UpdateWebhook>,
 ) -> Result<Response> {
@@ -241,7 +241,7 @@ pub async fn update(
 pub async fn delete(
     State(store): State<Store>,
     actor: ApiActor,
-    Path((workspace, id)): Path<(Uuid, Uuid)>,
+    Path((workspace, id)): Path<(WorkspaceId, Uuid)>,
     options: WriteOptions,
 ) -> Result<StatusCode> {
     run(

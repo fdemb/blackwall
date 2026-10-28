@@ -1,5 +1,6 @@
 use super::*;
 use crate::domain::{AlertPreferences, mentioned_users, validate_email, validate_url};
+use crate::ids::IssueId;
 use crate::jobs::{Email, Grant, Job};
 use std::collections::BTreeSet;
 
@@ -14,11 +15,11 @@ impl Operation<'_> {
                 issue_id,
                 attachment,
             } => {
-                self.touch("issues", issue_id).await?;
-                self.attachment_issue(issue_id).await?;
-                self.insert_attachment(issue_id, None, attachment, upload)
+                self.touch("issues", issue_id.0).await?;
+                self.attachment_issue(issue_id.0).await?;
+                self.insert_attachment(issue_id.0, None, attachment, upload)
                     .await?;
-                issue_id
+                issue_id.0
             }
             Command::AttachCommentFile {
                 comment_id,
@@ -33,7 +34,7 @@ impl Operation<'_> {
                 attachment_id,
             } => {
                 self.remove_attachment(issue_id, attachment_id).await?;
-                issue_id
+                issue_id.0
             }
             Command::AddComment {
                 id,
@@ -277,7 +278,8 @@ impl Operation<'_> {
             .await
     }
 
-    async fn remove_attachment(&mut self, issue_id: Uuid, attachment_id: Uuid) -> Result<()> {
+    async fn remove_attachment(&mut self, issue_id: IssueId, attachment_id: Uuid) -> Result<()> {
+        let issue_id = issue_id.0;
         self.touch("issues", issue_id).await?;
         self.attachment_issue(issue_id).await?;
 
@@ -299,11 +301,12 @@ impl Operation<'_> {
     async fn add_comment(
         &mut self,
         id: Option<Uuid>,
-        issue_id: Uuid,
+        issue_id: IssueId,
         body: String,
         mentions: Vec<Uuid>,
         attachments: Vec<Attachment>,
     ) -> Result<Uuid> {
+        let issue_id = issue_id.0;
         self.discussion_issue(issue_id).await?;
         crate::domain::text(&body, 100_000)?;
         let mentions = self.comment_mentions(&body, mentions).await?;
@@ -501,11 +504,12 @@ impl Operation<'_> {
     async fn log_time(
         &mut self,
         id: Option<Uuid>,
-        issue_id: Uuid,
+        issue_id: IssueId,
         minutes: u32,
         note: String,
         logged_at: DateTime<Utc>,
     ) -> Result<Uuid> {
+        let issue_id = issue_id.0;
         self.discussion_issue(issue_id).await?;
         validate_time(minutes, &note)?;
         crate::domain::timestamp(logged_at)?;
@@ -1355,11 +1359,12 @@ impl Operation<'_> {
 impl Store {
     pub async fn accept_invitation(
         &self,
-        workspace_id: Uuid,
+        workspace_id: WorkspaceId,
         actor: Uuid,
         email: &str,
         token: &str,
     ) -> Result<()> {
+        let workspace_id = workspace_id.0;
         let mut tx = self.pool.begin().await?;
 
         let row = sqlx::query!(
@@ -1430,7 +1435,7 @@ mod tests {
 
     async fn command(
         store: &Store,
-        workspace: Uuid,
+        workspace: WorkspaceId,
         actor: Uuid,
         value: serde_json::Value,
         expected: BTreeMap<Uuid, i64>,
@@ -1477,7 +1482,7 @@ mod tests {
             .create_workspace("Discussion".into(), owner)
             .await
             .unwrap();
-        let workspace: Uuid = serde_json::from_value(workspace["id"].clone()).unwrap();
+        let workspace: WorkspaceId = serde_json::from_value(workspace["id"].clone()).unwrap();
         let team = command(
             &store,
             workspace,
@@ -1590,7 +1595,7 @@ mod tests {
                 workspace,
                 owner,
                 Command::AddAttachment {
-                    issue_id: issue,
+                    issue_id: IssueId(issue),
                     attachment: metadata,
                 },
                 BTreeMap::from([(issue, 1)]),
@@ -1787,7 +1792,7 @@ mod tests {
             unreachable!()
         };
         let created = store.create_workspace("Acme".into(), owner).await.unwrap();
-        let workspace: Uuid = serde_json::from_value(created["id"].clone()).unwrap();
+        let workspace: WorkspaceId = serde_json::from_value(created["id"].clone()).unwrap();
         store
             .create_workspace("Taken".into(), outsider)
             .await

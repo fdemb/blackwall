@@ -801,7 +801,7 @@ async fn representative_workspace_lists_reports_and_indexed_board_plan() {
     let database = support::TestDatabase::new().await;
     let store = Store::connect(&database.url).await.unwrap();
     blackwall::fixtures::load(&store, "rich").await.unwrap();
-    let ws = Uuid::from_u128(0x20000000_0000_0000_0000_000000000010);
+    let ws = blackwall::ids::WorkspaceId(Uuid::from_u128(0x20000000_0000_0000_0000_000000000010));
     let owner = Uuid::from_u128(0x20000000_0000_0000_0000_000000000001);
     let team = Uuid::from_u128(0x20000000_0000_0000_0000_000000000020);
     let stage = Uuid::from_u128(0x20000000_0000_0000_0000_000000000021);

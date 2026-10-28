@@ -8,6 +8,7 @@ use axum::{
 use blackwall::{
     auth::{Register, Session},
     http::router,
+    ids::WorkspaceId,
     store::{SYNC_SCHEMA, Store, StoreConfig},
 };
 use http_body_util::BodyExt;
@@ -644,7 +645,7 @@ async fn bootstrap_streams_5000_issues_with_backpressure_and_disconnect_cleanup(
     bulk_issues(&store, ws, team).await;
     let client = Uuid::new_v4();
     let mut receiver = store
-        .sync_bootstrap(ws, owner.profile.id, client)
+        .sync_bootstrap(WorkspaceId(ws), owner.profile.id, client)
         .await
         .unwrap();
     let header = lines(&receiver.recv().await.unwrap().unwrap())
@@ -1084,7 +1085,7 @@ async fn bootstrap_concurrency_limit_returns_503_and_spares_rest() {
     bulk_issues_n(&store, ws, team, 200).await;
     let client = Uuid::new_v4();
     let mut filler = store
-        .sync_bootstrap(ws, owner.profile.id, client)
+        .sync_bootstrap(WorkspaceId(ws), owner.profile.id, client)
         .await
         .unwrap();
     lines(&filler.recv().await.unwrap().unwrap());
@@ -1165,7 +1166,7 @@ async fn bootstrap_slow_reader_ends_without_trailer_and_frees_connection() {
     let (owner, ws, team) = setup(&store, &app).await;
     bulk_issues_n(&store, ws, team, 200).await;
     let mut receiver = store
-        .sync_bootstrap(ws, owner.profile.id, Uuid::new_v4())
+        .sync_bootstrap(WorkspaceId(ws), owner.profile.id, Uuid::new_v4())
         .await
         .unwrap();
     lines(&receiver.recv().await.unwrap().unwrap());

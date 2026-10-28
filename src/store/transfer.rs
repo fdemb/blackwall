@@ -18,7 +18,8 @@ async fn records<T: DeserializeOwned>(
 }
 
 impl Store {
-    pub async fn export_transfer(&self, workspace: Uuid, actor: Uuid) -> Result<Transfer> {
+    pub async fn export_transfer(&self, workspace: WorkspaceId, actor: Uuid) -> Result<Transfer> {
+        let workspace = workspace.0;
         let mut tx = self.pool.begin().await?;
         sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
             .execute(&mut *tx)
@@ -83,12 +84,13 @@ impl Store {
 
     pub async fn import_transfer(
         &self,
-        workspace: Uuid,
+        workspace: WorkspaceId,
         actor: Uuid,
         mut transfer: Transfer,
         expected: BTreeMap<Uuid, i64>,
         key: Option<String>,
     ) -> Result<(ImportSummary, BTreeMap<Uuid, i64>)> {
+        let workspace = workspace.0;
         if transfer.issues.iter().any(|issue| issue.tracker.is_some()) {
             return Err(Error::BadRequest(
                 "tracker links cannot be imported through transfers".into(),
@@ -573,12 +575,12 @@ async fn insert_activity(op: &mut Operation<'_>, workspace: Uuid, event: &Activi
 #[cfg(test)]
 mod tests {
     use crate::test_support as support;
-    use crate::{auth::Register, domain::Command, store::Store};
+    use crate::{auth::Register, domain::Command, ids::WorkspaceId, store::Store};
     use serde_json::{Value, json};
     use std::collections::BTreeMap;
     use uuid::Uuid;
 
-    async fn create(store: &Store, ws: Uuid, user: Uuid, cmd: Value) -> Uuid {
+    async fn create(store: &Store, ws: WorkspaceId, user: Uuid, cmd: Value) -> Uuid {
         store
             .operation(
                 ws,
@@ -613,17 +615,13 @@ mod tests {
             .profile
             .id;
 
-        let source = Uuid::parse_str(
-            store.create_workspace("Source".into(), user).await.unwrap()["id"]
-                .as_str()
-                .unwrap(),
+        let source: WorkspaceId = serde_json::from_value(
+            store.create_workspace("Source".into(), user).await.unwrap()["id"].clone(),
         )
         .unwrap();
 
-        let target = Uuid::parse_str(
-            store.create_workspace("Target".into(), user).await.unwrap()["id"]
-                .as_str()
-                .unwrap(),
+        let target: WorkspaceId = serde_json::from_value(
+            store.create_workspace("Target".into(), user).await.unwrap()["id"].clone(),
         )
         .unwrap();
 

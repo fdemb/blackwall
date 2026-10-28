@@ -1,5 +1,6 @@
 use super::super::*;
 use super::find_mut;
+use crate::ids::TeamId;
 use std::collections::BTreeSet;
 
 impl Workspace {
@@ -23,7 +24,7 @@ impl Workspace {
                     self.member(*user)?;
                 }
                 self.team_mut(id)?.members = members;
-                Ok(id)
+                Ok(id.0)
             }
             Command::SetTeamArchive {
                 id,
@@ -32,7 +33,7 @@ impl Workspace {
                 self.admin(actor)?;
                 super::super::validate_archive_days(archive_after_days)?;
                 self.team_mut(id)?.archive_after_days = archive_after_days;
-                Ok(id)
+                Ok(id.0)
             }
             Command::SetTeamAppearance { id, icon, color } => {
                 self.admin(actor)?;
@@ -40,15 +41,15 @@ impl Workspace {
                 let team = self.team_mut(id)?;
                 team.icon = icon;
                 team.color = color;
-                Ok(id)
+                Ok(id.0)
             }
             Command::UpdateTeam { id, name, key } => {
                 self.update_team(actor, id, name, key)?;
-                Ok(id)
+                Ok(id.0)
             }
             Command::DeleteTeam { id } => {
                 self.delete_team(actor, id)?;
-                Ok(id)
+                Ok(id.0)
             }
             Command::CreateStage {
                 id,
@@ -125,7 +126,7 @@ impl Workspace {
             } => {
                 text(&name, 200)?;
                 for team in &team_ids {
-                    self.team(*team)?;
+                    self.team(team.0)?;
                 }
                 let id = self.take_client_id(id)?;
                 self.projects.push(Project {
@@ -133,7 +134,7 @@ impl Workspace {
                     id,
                     name,
                     description,
-                    team_ids,
+                    team_ids: team_ids.into_iter().map(|team| team.0).collect(),
                     lead_id: None,
                     status: ProjectStatus::Planned,
                     health: None,
@@ -232,7 +233,7 @@ impl Workspace {
                 starts_at,
                 ends_at,
             } => {
-                self.team(team_id)?;
+                self.team(team_id.0)?;
                 validate_sprint_fields(&name, starts_at, ends_at)?;
                 if ends_at <= starts_at {
                     return Err(Error::BadRequest("sprint end must follow start".into()));
@@ -241,7 +242,7 @@ impl Workspace {
                 let number = self
                     .sprints
                     .iter()
-                    .filter(|s| s.team_id == team_id)
+                    .filter(|s| s.team_id == team_id.0)
                     .map(|s| s.number)
                     .max()
                     .unwrap_or(0)
@@ -249,7 +250,7 @@ impl Workspace {
                 self.sprints.push(Sprint {
                     version: 1,
                     id,
-                    team_id,
+                    team_id: team_id.0,
                     number,
                     name,
                     goal,
@@ -290,23 +291,21 @@ impl Workspace {
         }
     }
 
-    fn team_mut(&mut self, id: Uuid) -> Result<&mut Team> {
-        find_mut(&mut self.teams, |t| t.id == id)
+    fn team_mut(&mut self, id: TeamId) -> Result<&mut Team> {
+        find_mut(&mut self.teams, |t| t.id == id.0)
     }
 
     /// Fails when another team holds `key`, now or as a former key.
-    fn claimable_team_key(&self, team: Option<Uuid>, key: &str) -> Result<()> {
-        if self
-            .teams
-            .iter()
-            .any(|t| Some(t.id) != team && (t.key == key || t.former_keys.iter().any(|k| k == key)))
-        {
+    fn claimable_team_key(&self, team: Option<TeamId>, key: &str) -> Result<()> {
+        if self.teams.iter().any(|t| {
+            Some(TeamId(t.id)) != team && (t.key == key || t.former_keys.iter().any(|k| k == key))
+        }) {
             return Err(Error::Conflict("team key already exists".into()));
         }
         Ok(())
     }
 
-    fn update_team(&mut self, actor: Uuid, id: Uuid, name: String, key: String) -> Result<()> {
+    fn update_team(&mut self, actor: Uuid, id: TeamId, name: String, key: String) -> Result<()> {
         self.admin(actor)?;
         text(&name, 200)?;
         super::super::validate_team_key(&key)?;
@@ -322,8 +321,9 @@ impl Workspace {
         Ok(())
     }
 
-    fn delete_team(&mut self, actor: Uuid, id: Uuid) -> Result<()> {
+    fn delete_team(&mut self, actor: Uuid, id: TeamId) -> Result<()> {
         self.admin(actor)?;
+        let id = id.0;
         self.team(id)?;
         if self.issues.iter().any(|i| i.team_id == id) {
             return Err(Error::Conflict(
@@ -344,7 +344,7 @@ impl Workspace {
     fn create_team(
         &mut self,
         actor: Uuid,
-        id: Option<Uuid>,
+        id: Option<TeamId>,
         name: String,
         key: String,
         members: Vec<Uuid>,
@@ -361,7 +361,7 @@ impl Workspace {
         if let Some(ids) = &default_stage_ids {
             self.check_default_stage_ids(ids)?;
         }
-        let id = self.take_client_id(id)?;
+        let id = self.take_client_id(id.map(|id| id.0))?;
         if default_stage_ids
             .as_ref()
             .is_some_and(|ids| ids.contains(&id))
@@ -419,7 +419,7 @@ impl Workspace {
 
     fn update_stage(
         &mut self,
-        team_id: Uuid,
+        team_id: TeamId,
         id: Uuid,
         name: String,
         kind: StageKind,
@@ -449,12 +449,12 @@ impl Workspace {
 
     fn delete_stage(
         &mut self,
-        team_id: Uuid,
+        team_id: TeamId,
         id: Uuid,
         replacement: Uuid,
         now: DateTime<Utc>,
     ) -> Result<()> {
-        let stages = &self.team(team_id)?.stages;
+        let stages = &self.team(team_id.0)?.stages;
         let replacement_stage = stages.iter().find(|s| s.id == replacement);
         if id == replacement || replacement_stage.is_none() || !stages.iter().any(|s| s.id == id) {
             return Err(Error::BadRequest("invalid replacement stage".into()));
@@ -491,9 +491,10 @@ impl Workspace {
         id: Uuid,
         name: String,
         description: String,
-        team_ids: Vec<Uuid>,
+        team_ids: Vec<TeamId>,
     ) -> Result<()> {
         text(&name, 200)?;
+        let team_ids: Vec<Uuid> = team_ids.into_iter().map(|team| team.0).collect();
         for team in &team_ids {
             self.team(*team)?;
         }

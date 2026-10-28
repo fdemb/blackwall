@@ -1,4 +1,5 @@
 use super::*;
+use crate::ids::TeamId;
 
 impl Operation<'_> {
     pub(super) async fn planning(&mut self, command: Command) -> Result<Option<Uuid>> {
@@ -15,26 +16,26 @@ impl Operation<'_> {
             }
             Command::SetTeamMembers { id, members } => {
                 self.set_team_members(id, members).await?;
-                id
+                id.0
             }
             Command::SetTeamArchive {
                 id,
                 archive_after_days,
             } => {
                 self.set_team_archive(id, archive_after_days).await?;
-                id
+                id.0
             }
             Command::SetTeamAppearance { id, icon, color } => {
                 self.set_team_appearance(id, icon, color).await?;
-                id
+                id.0
             }
             Command::UpdateTeam { id, name, key } => {
                 self.update_team(id, name, key).await?;
-                id
+                id.0
             }
             Command::DeleteTeam { id } => {
                 self.delete_team(id).await?;
-                id
+                id.0
             }
             Command::CreateStage {
                 id,
@@ -164,7 +165,7 @@ impl Operation<'_> {
 
     async fn create_team(
         &mut self,
-        id: Option<Uuid>,
+        id: Option<TeamId>,
         name: String,
         key: String,
         members: Vec<Uuid>,
@@ -189,7 +190,7 @@ impl Operation<'_> {
         }
         // Reserve the team id together with the stage ids in one
         // batch call, so a collision on any of them is a 409.
-        let mut provided = vec![id];
+        let mut provided = vec![id.map(|id| id.0)];
         provided.extend(default_stage_ids.iter().flatten().map(|stage| Some(*stage)));
         let resolved = self.reserve_client_ids(&provided).await?;
         let unique: std::collections::BTreeSet<_> = resolved.iter().collect();
@@ -263,7 +264,8 @@ impl Operation<'_> {
         Ok(())
     }
 
-    async fn set_team_members(&mut self, id: Uuid, members: Vec<Uuid>) -> Result<()> {
+    async fn set_team_members(&mut self, id: TeamId, members: Vec<Uuid>) -> Result<()> {
+        let id = id.0;
         self.admin()?;
         let members = sorted_unique(members);
         for user in &members {
@@ -281,7 +283,12 @@ impl Operation<'_> {
         self.insert_team_members(id, members).await
     }
 
-    async fn set_team_archive(&mut self, id: Uuid, archive_after_days: Option<u32>) -> Result<()> {
+    async fn set_team_archive(
+        &mut self,
+        id: TeamId,
+        archive_after_days: Option<u32>,
+    ) -> Result<()> {
+        let id = id.0;
         self.admin()?;
         crate::domain::validate_archive_days(archive_after_days)?;
         self.touch("teams", id).await?;
@@ -296,7 +303,8 @@ impl Operation<'_> {
         Ok(())
     }
 
-    async fn set_team_appearance(&mut self, id: Uuid, icon: String, color: String) -> Result<()> {
+    async fn set_team_appearance(&mut self, id: TeamId, icon: String, color: String) -> Result<()> {
+        let id = id.0;
         self.admin()?;
         crate::domain::validate_team_appearance(&icon, &color)?;
         self.touch("teams", id).await?;
@@ -312,7 +320,8 @@ impl Operation<'_> {
         Ok(())
     }
 
-    async fn update_team(&mut self, id: Uuid, name: String, key: String) -> Result<()> {
+    async fn update_team(&mut self, id: TeamId, name: String, key: String) -> Result<()> {
+        let id = id.0;
         self.admin()?;
         text(&name, 200)?;
         crate::domain::validate_team_key(&key)?;
@@ -331,7 +340,8 @@ impl Operation<'_> {
         Ok(())
     }
 
-    async fn delete_team(&mut self, id: Uuid) -> Result<()> {
+    async fn delete_team(&mut self, id: TeamId) -> Result<()> {
+        let id = id.0;
         self.admin()?;
         // Tracker pages lock the issue graph before their connection.
         self.lock_graph().await?;
@@ -400,11 +410,12 @@ impl Operation<'_> {
     async fn create_stage(
         &mut self,
         id: Option<Uuid>,
-        team_id: Uuid,
+        team_id: TeamId,
         name: String,
         kind: StageKind,
         position: i64,
     ) -> Result<Uuid> {
+        let team_id = team_id.0;
         self.admin()?;
         text(&name, 200)?;
         self.lock_team(team_id, true).await?;
@@ -430,12 +441,13 @@ impl Operation<'_> {
 
     async fn update_stage(
         &mut self,
-        team_id: Uuid,
+        team_id: TeamId,
         id: Uuid,
         name: String,
         kind: StageKind,
         position: i64,
     ) -> Result<()> {
+        let team_id = team_id.0;
         self.admin()?;
         text(&name, 200)?;
         self.lock_graph().await?;
@@ -470,7 +482,8 @@ impl Operation<'_> {
         Ok(())
     }
 
-    async fn delete_stage(&mut self, team_id: Uuid, id: Uuid, replacement: Uuid) -> Result<()> {
+    async fn delete_stage(&mut self, team_id: TeamId, id: Uuid, replacement: Uuid) -> Result<()> {
+        let team_id = team_id.0;
         self.admin()?;
         if id == replacement {
             return Err(Error::BadRequest("invalid replacement stage".into()));
@@ -671,8 +684,8 @@ impl Operation<'_> {
     }
 
     /// Sorts and dedupes the teams and locks each one for the project write.
-    async fn lock_project_teams(&mut self, team_ids: Vec<Uuid>) -> Result<Vec<Uuid>> {
-        let team_ids = sorted_unique(team_ids);
+    async fn lock_project_teams(&mut self, team_ids: Vec<TeamId>) -> Result<Vec<Uuid>> {
+        let team_ids = sorted_unique(team_ids.into_iter().map(|team| team.0).collect());
         for team in &team_ids {
             self.lock_team(*team, false).await?;
         }
@@ -684,7 +697,7 @@ impl Operation<'_> {
         id: Option<Uuid>,
         name: String,
         description: String,
-        team_ids: Vec<Uuid>,
+        team_ids: Vec<TeamId>,
     ) -> Result<Uuid> {
         validate_project(&name, &description)?;
         self.capacity(Resource::Projects, 1).await?;
@@ -712,7 +725,7 @@ impl Operation<'_> {
         id: Uuid,
         name: String,
         description: String,
-        team_ids: Vec<Uuid>,
+        team_ids: Vec<TeamId>,
     ) -> Result<()> {
         validate_project(&name, &description)?;
         let team_ids = self.lock_project_teams(team_ids).await?;
@@ -852,12 +865,13 @@ impl Operation<'_> {
     async fn create_sprint(
         &mut self,
         id: Option<Uuid>,
-        team_id: Uuid,
+        team_id: TeamId,
         name: String,
         goal: String,
         starts_at: DateTime<Utc>,
         ends_at: DateTime<Utc>,
     ) -> Result<Uuid> {
+        let team_id = team_id.0;
         validate_sprint(&name, &goal, starts_at, ends_at)?;
         self.capacity(Resource::Sprints, 1).await?;
         persistence::lock_team_numbers(&mut self.tx, self.workspace_id, team_id).await?;
@@ -1156,7 +1170,7 @@ mod tests {
     use crate::test_support as support;
     use serde_json::json;
 
-    async fn setup() -> (support::TestDatabase, Store, Uuid, Uuid) {
+    async fn setup() -> (support::TestDatabase, Store, WorkspaceId, Uuid) {
         let database = support::TestDatabase::new().await;
         let store = Store::connect(&database.url).await.unwrap();
         let owner = store
@@ -1172,7 +1186,7 @@ mod tests {
             .unwrap()
             .profile
             .id;
-        let workspace: Uuid = serde_json::from_value(
+        let workspace: WorkspaceId = serde_json::from_value(
             store.create_workspace("Teams".into(), owner).await.unwrap()["id"].clone(),
         )
         .unwrap();

@@ -409,6 +409,7 @@ impl Remap<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ids::{IssueId, TeamId};
 
     #[test]
     fn roundtrip_remaps_relations_and_preserves_sprint_history() {
@@ -438,7 +439,7 @@ mod tests {
                 source_user,
                 Command::CreateSprint {
                     id: None,
-                    team_id: team,
+                    team_id: TeamId(team),
                     name: "September".into(),
                     goal: "Deliver".into(),
                     starts_at: now,
@@ -454,7 +455,7 @@ mod tests {
             id: None,
             title: title.into(),
             description: "Description".into(),
-            team_id: team,
+            team_id: TeamId(team),
             stage_id: Some(source.teams[0].stages[3].id),
             assignee: Some(source_user),
             priority: Priority::High,
@@ -480,8 +481,8 @@ mod tests {
             .id
             .unwrap();
 
-        second_input.dependencies = vec![first];
-        second_input.parent_id = Some(first);
+        second_input.dependencies = vec![IssueId(first)];
+        second_input.parent_id = Some(IssueId(first));
         let second = source
             .apply(
                 source_user,
@@ -499,7 +500,7 @@ mod tests {
                 source_user,
                 Command::AddComment {
                     id: None,
-                    issue_id: second,
+                    issue_id: IssueId(second),
                     body: "Done".into(),
                     mentions: vec![source_user],
                     attachments: vec![],
@@ -513,7 +514,7 @@ mod tests {
                 source_user,
                 Command::LogTime {
                     id: None,
-                    issue_id: second,
+                    issue_id: IssueId(second),
                     minutes: 45,
                     note: "Review".into(),
                     logged_at: now,
@@ -664,7 +665,7 @@ mod tests {
                         id: None,
                         title: "Timed".into(),
                         description: String::new(),
-                        team_id: team,
+                        team_id: TeamId(team),
                         stage_id: None,
                         assignee: None,
                         priority: Priority::Normal,
@@ -734,7 +735,7 @@ mod tests {
             id: None,
             name: name.into(),
             description: String::new(),
-            team_ids: vec![team],
+            team_ids: vec![TeamId(team)],
         };
         let kept_project = run(project("kept"));
         let gone_project = run(project("gone"));
@@ -762,7 +763,7 @@ mod tests {
         run(Command::DeleteProject { id: gone_project });
         run(Command::DeleteMilestone { id: milestone });
         run(Command::DeleteStage {
-            team_id: team,
+            team_id: TeamId(team),
             id: stages[3],
             replacement: stages[0],
         });

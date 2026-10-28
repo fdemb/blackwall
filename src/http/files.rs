@@ -1,4 +1,5 @@
 use super::*;
+use crate::ids::IssueId;
 use crate::store::NewAttachment;
 use axum::{body::Bytes, extract::Multipart, http::HeaderMap};
 
@@ -12,7 +13,7 @@ use axum::{body::Bytes, extract::Multipart, http::HeaderMap};
 pub(super) async fn upload(
     State(store): State<Store>,
     actor: Actor,
-    Path((id, issue)): Path<(Uuid, Uuid)>,
+    Path((id, issue)): Path<(WorkspaceId, Uuid)>,
     mut multipart: Multipart,
 ) -> Result<Json<CommandResponse>> {
     let mut uploaded = None;
@@ -65,7 +66,7 @@ pub(super) async fn upload(
         }
     } else {
         Command::AddAttachment {
-            issue_id: issue,
+            issue_id: IssueId(issue),
             attachment: metadata,
         }
     };
@@ -126,7 +127,7 @@ async fn read_file(
 pub(super) async fn download(
     State(store): State<Store>,
     actor: Actor,
-    Path((id, attachment)): Path<(Uuid, Uuid)>,
+    Path((id, attachment)): Path<(WorkspaceId, Uuid)>,
 ) -> Result<Response> {
     attachment_response(&store, id, actor.profile.id, attachment).await
 }
@@ -134,7 +135,7 @@ pub(super) async fn download(
 /// The attachment's bytes, if `user` belongs to the workspace and its issue is not trashed.
 pub(crate) async fn attachment_response(
     store: &Store,
-    id: Uuid,
+    id: WorkspaceId,
     user: Uuid,
     attachment: Uuid,
 ) -> Result<Response> {
@@ -144,7 +145,7 @@ pub(crate) async fn attachment_response(
          JOIN workspace_members m ON m.workspace_id = a.workspace_id \
          WHERE a.workspace_id = $1 AND a.id = $2 AND m.user_id = $3 \
          AND i.deleted_at IS NULL",
-        id,
+        id.0,
         attachment,
         user,
     )
@@ -183,7 +184,7 @@ pub(crate) async fn attachment_response(
 pub(super) async fn export(
     State(store): State<Store>,
     actor: Actor,
-    Path(id): Path<Uuid>,
+    Path(id): Path<WorkspaceId>,
 ) -> Result<Json<crate::exchange::Transfer>> {
     Ok(Json(store.export_transfer(id, actor.profile.id).await?))
 }
@@ -198,7 +199,7 @@ pub(super) async fn export(
 pub(super) async fn import(
     State(store): State<Store>,
     actor: Actor,
-    Path(id): Path<Uuid>,
+    Path(id): Path<WorkspaceId>,
     Json(input): Json<ImportRequest>,
 ) -> Result<Json<ImportResponse>> {
     match (input.issues, input.transfer) {
@@ -249,13 +250,14 @@ pub(super) async fn import(
 )]
 pub(super) async fn incoming(
     State(store): State<Store>,
-    Path((id, integration_id)): Path<(Uuid, Uuid)>,
+    Path((id, integration_id)): Path<(WorkspaceId, Uuid)>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Json<CommandResponse>> {
     use hmac::{Hmac, Mac};
     use sha2::{Digest, Sha256};
 
+    let id = id.0;
     let owner: Uuid = sqlx::query_scalar!(
         "SELECT user_id FROM workspace_members \
          WHERE workspace_id = $1 AND role = 'owner' \
@@ -324,7 +326,7 @@ pub(super) async fn incoming(
     }
 
     let command = Command::AddSourceLink {
-        issue_id: input.issue_id,
+        issue_id: IssueId(input.issue_id),
         url: input.url,
         title: input.title,
     };

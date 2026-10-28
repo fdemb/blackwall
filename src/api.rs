@@ -6,6 +6,7 @@
 use crate::{
     domain::{Command, ViaKind, ViaToken},
     error::{Error, Result},
+    ids::WorkspaceId,
     store::{OperationResult, Store},
 };
 use axum::{
@@ -40,7 +41,7 @@ pub struct ApiActor(pub TokenGrant, pub ViaKind);
 /// Handlers take one of these, so a token's scope can't be skipped.
 #[derive(Clone, Copy, Debug)]
 pub struct Scope {
-    pub workspace: Uuid,
+    pub workspace: WorkspaceId,
     pub user: Uuid,
     /// Recorded on every write, so activity and comments say which token acted.
     pub token: ViaToken,
@@ -51,14 +52,14 @@ impl ApiActor {
         self.0.user
     }
 
-    pub fn allows(&self, workspace: Uuid) -> bool {
+    pub fn allows(&self, workspace: WorkspaceId) -> bool {
         self.0
             .workspaces
             .as_ref()
-            .is_none_or(|ids| ids.contains(&workspace))
+            .is_none_or(|ids| ids.contains(&workspace.0))
     }
 
-    pub fn read(&self, workspace: Uuid) -> Result<Scope> {
+    pub fn read(&self, workspace: WorkspaceId) -> Result<Scope> {
         if !self.allows(workspace) {
             return Err(Error::Denied(
                 "this token is not allowed to access the workspace".into(),
@@ -74,7 +75,7 @@ impl ApiActor {
         })
     }
 
-    pub fn write(&self, workspace: Uuid) -> Result<Scope> {
+    pub fn write(&self, workspace: WorkspaceId) -> Result<Scope> {
         match self.0.access {
             Access::Write => self.read(workspace),
             Access::Comment => Err(Error::Denied(
@@ -85,7 +86,7 @@ impl ApiActor {
     }
 
     /// Writing, editing or deleting comments, which comment tokens may also do.
-    pub fn comment(&self, workspace: Uuid) -> Result<Scope> {
+    pub fn comment(&self, workspace: WorkspaceId) -> Result<Scope> {
         match self.0.access {
             Access::Write | Access::Comment => self.read(workspace),
             Access::Read => Err(Error::Denied("this token is read-only".into())),

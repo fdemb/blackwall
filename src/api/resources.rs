@@ -5,6 +5,7 @@ use crate::{
         StageKind, Team,
     },
     http::MemberProfile,
+    ids::TeamId,
     store::CollectionQuery,
 };
 use axum::extract::{Path, Query};
@@ -174,10 +175,10 @@ pub async fn workspaces(
 pub async fn workspace(
     State(store): State<Store>,
     actor: ApiActor,
-    Path(workspace): Path<Uuid>,
+    Path(workspace): Path<WorkspaceId>,
 ) -> Result<Json<ApiWorkspace>> {
     actor.read(workspace)?;
-    workspace_rows(&store, &actor, Some(workspace))
+    workspace_rows(&store, &actor, Some(workspace.0))
         .await?
         .pop()
         .map(Json)
@@ -202,7 +203,7 @@ pub async fn member_list(store: &Store, scope: Scope) -> Result<Vec<MemberProfil
 pub async fn members(
     State(store): State<Store>,
     actor: ApiActor,
-    Path(workspace): Path<Uuid>,
+    Path(workspace): Path<WorkspaceId>,
 ) -> Result<Json<Page<MemberProfile>>> {
     Ok(Json(Page {
         data: member_list(&store, actor.read(workspace)?).await?,
@@ -221,7 +222,7 @@ pub async fn members(
 pub async fn teams(
     State(store): State<Store>,
     actor: ApiActor,
-    Path(workspace): Path<Uuid>,
+    Path(workspace): Path<WorkspaceId>,
     Query(params): Query<PageParams>,
 ) -> Result<Json<Page<Team>>> {
     Ok(Json(
@@ -239,7 +240,7 @@ pub async fn teams(
 pub async fn team(
     State(store): State<Store>,
     actor: ApiActor,
-    Path((workspace, team)): Path<(Uuid, Uuid)>,
+    Path((workspace, team)): Path<(WorkspaceId, Uuid)>,
 ) -> Result<Response> {
     let team: Team = record(&store, actor.read(workspace)?, "teams", team).await?;
     Ok(one(StatusCode::OK, team))
@@ -267,7 +268,7 @@ pub struct CreateTeam {
 pub async fn create_team(
     State(store): State<Store>,
     actor: ApiActor,
-    Path(workspace): Path<Uuid>,
+    Path(workspace): Path<WorkspaceId>,
     options: WriteOptions,
     Json(body): Json<CreateTeam>,
 ) -> Result<Response> {
@@ -311,7 +312,7 @@ pub struct UpdateTeam {
 pub async fn update_team(
     State(store): State<Store>,
     actor: ApiActor,
-    Path((workspace, team)): Path<(Uuid, Uuid)>,
+    Path((workspace, team)): Path<(WorkspaceId, Uuid)>,
     options: WriteOptions,
     Json(body): Json<UpdateTeam>,
 ) -> Result<Response> {
@@ -322,7 +323,7 @@ pub async fn update_team(
         async {
             let current: Team = record(&store, scope, "teams", team).await?;
             Ok(Command::UpdateTeam {
-                id: team,
+                id: TeamId(team),
                 name: body.name.unwrap_or(current.name),
                 key: body.key.unwrap_or(current.key),
             })
@@ -345,13 +346,13 @@ pub async fn update_team(
 pub async fn delete_team(
     State(store): State<Store>,
     actor: ApiActor,
-    Path((workspace, team)): Path<(Uuid, Uuid)>,
+    Path((workspace, team)): Path<(WorkspaceId, Uuid)>,
     options: WriteOptions,
 ) -> Result<StatusCode> {
     run(
         &store,
         actor.write(workspace)?,
-        async { Ok(Command::DeleteTeam { id: team }) },
+        async { Ok(Command::DeleteTeam { id: TeamId(team) }) },
         Some(team),
         options,
     )
@@ -377,7 +378,7 @@ async fn team_stage(store: &Store, scope: Scope, team: Uuid, stage: Uuid) -> Res
 pub async fn stages(
     State(store): State<Store>,
     actor: ApiActor,
-    Path((workspace, team)): Path<(Uuid, Uuid)>,
+    Path((workspace, team)): Path<(WorkspaceId, Uuid)>,
 ) -> Result<Json<Page<Stage>>> {
     let team: Team = record(&store, actor.read(workspace)?, "teams", team).await?;
     Ok(Json(Page {
@@ -397,7 +398,7 @@ pub async fn stages(
 pub async fn stage(
     State(store): State<Store>,
     actor: ApiActor,
-    Path((workspace, team, stage)): Path<(Uuid, Uuid, Uuid)>,
+    Path((workspace, team, stage)): Path<(WorkspaceId, Uuid, Uuid)>,
 ) -> Result<Response> {
     let stage = team_stage(&store, actor.read(workspace)?, team, stage).await?;
     Ok(one(StatusCode::OK, stage))
@@ -422,7 +423,7 @@ pub struct CreateStage {
 pub async fn create_stage(
     State(store): State<Store>,
     actor: ApiActor,
-    Path((workspace, team)): Path<(Uuid, Uuid)>,
+    Path((workspace, team)): Path<(WorkspaceId, Uuid)>,
     options: WriteOptions,
     Json(body): Json<CreateStage>,
 ) -> Result<Response> {
@@ -445,7 +446,7 @@ pub async fn create_stage(
             };
             Ok(Command::CreateStage {
                 id: None,
-                team_id: team,
+                team_id: TeamId(team),
                 name: body.name,
                 kind: body.kind,
                 position,
@@ -477,7 +478,7 @@ pub struct UpdateStage {
 pub async fn update_stage(
     State(store): State<Store>,
     actor: ApiActor,
-    Path((workspace, team, stage)): Path<(Uuid, Uuid, Uuid)>,
+    Path((workspace, team, stage)): Path<(WorkspaceId, Uuid, Uuid)>,
     options: WriteOptions,
     Json(body): Json<UpdateStage>,
 ) -> Result<Response> {
@@ -488,7 +489,7 @@ pub async fn update_stage(
         async {
             let current = team_stage(&store, scope, team, stage).await?;
             Ok(Command::UpdateStage {
-                team_id: team,
+                team_id: TeamId(team),
                 id: stage,
                 name: body.name.unwrap_or(current.name),
                 kind: body.kind.unwrap_or(current.kind),
@@ -520,7 +521,7 @@ pub struct DeleteStage {
 pub async fn delete_stage(
     State(store): State<Store>,
     actor: ApiActor,
-    Path((workspace, team, stage)): Path<(Uuid, Uuid, Uuid)>,
+    Path((workspace, team, stage)): Path<(WorkspaceId, Uuid, Uuid)>,
     Query(query): Query<DeleteStage>,
     options: WriteOptions,
 ) -> Result<StatusCode> {
@@ -529,7 +530,7 @@ pub async fn delete_stage(
         actor.write(workspace)?,
         async {
             Ok(Command::DeleteStage {
-                team_id: team,
+                team_id: TeamId(team),
                 id: stage,
                 replacement: query.replacement,
             })
@@ -551,7 +552,7 @@ pub async fn delete_stage(
 pub async fn labels(
     State(store): State<Store>,
     actor: ApiActor,
-    Path(workspace): Path<Uuid>,
+    Path(workspace): Path<WorkspaceId>,
     Query(params): Query<PageParams>,
 ) -> Result<Json<Page<Label>>> {
     Ok(Json(
@@ -569,7 +570,7 @@ pub async fn labels(
 pub async fn label(
     State(store): State<Store>,
     actor: ApiActor,
-    Path((workspace, label)): Path<(Uuid, Uuid)>,
+    Path((workspace, label)): Path<(WorkspaceId, Uuid)>,
 ) -> Result<Response> {
     let label: Label = record(&store, actor.read(workspace)?, "labels", label).await?;
     Ok(one(StatusCode::OK, label))
@@ -592,7 +593,7 @@ pub struct CreateLabel {
 pub async fn create_label(
     State(store): State<Store>,
     actor: ApiActor,
-    Path(workspace): Path<Uuid>,
+    Path(workspace): Path<WorkspaceId>,
     options: WriteOptions,
     Json(body): Json<CreateLabel>,
 ) -> Result<Response> {
@@ -632,7 +633,7 @@ pub struct UpdateLabel {
 pub async fn update_label(
     State(store): State<Store>,
     actor: ApiActor,
-    Path((workspace, label)): Path<(Uuid, Uuid)>,
+    Path((workspace, label)): Path<(WorkspaceId, Uuid)>,
     options: WriteOptions,
     Json(body): Json<UpdateLabel>,
 ) -> Result<Response> {
@@ -666,7 +667,7 @@ pub async fn update_label(
 pub async fn delete_label(
     State(store): State<Store>,
     actor: ApiActor,
-    Path((workspace, label)): Path<(Uuid, Uuid)>,
+    Path((workspace, label)): Path<(WorkspaceId, Uuid)>,
     options: WriteOptions,
 ) -> Result<StatusCode> {
     run(
@@ -690,7 +691,7 @@ pub async fn delete_label(
 pub async fn projects(
     State(store): State<Store>,
     actor: ApiActor,
-    Path(workspace): Path<Uuid>,
+    Path(workspace): Path<WorkspaceId>,
     Query(params): Query<PageParams>,
 ) -> Result<Json<Page<Project>>> {
     Ok(Json(
@@ -708,7 +709,7 @@ pub async fn projects(
 pub async fn project(
     State(store): State<Store>,
     actor: ApiActor,
-    Path((workspace, project)): Path<(Uuid, Uuid)>,
+    Path((workspace, project)): Path<(WorkspaceId, Uuid)>,
 ) -> Result<Response> {
     let project: Project = record(&store, actor.read(workspace)?, "projects", project).await?;
     Ok(one(StatusCode::OK, project))
@@ -733,7 +734,7 @@ pub struct CreateProject {
 pub async fn create_project(
     State(store): State<Store>,
     actor: ApiActor,
-    Path(workspace): Path<Uuid>,
+    Path(workspace): Path<WorkspaceId>,
     options: WriteOptions,
     Json(body): Json<CreateProject>,
 ) -> Result<Response> {
@@ -746,7 +747,7 @@ pub async fn create_project(
                 id: None,
                 name: body.name,
                 description: body.description,
-                team_ids: body.team_ids,
+                team_ids: body.team_ids.into_iter().map(TeamId).collect(),
             })
         },
         None,
@@ -793,7 +794,7 @@ pub struct UpdateProject {
 pub async fn update_project(
     State(store): State<Store>,
     actor: ApiActor,
-    Path((workspace, project)): Path<(Uuid, Uuid)>,
+    Path((workspace, project)): Path<(WorkspaceId, Uuid)>,
     mut options: WriteOptions,
     Json(body): Json<UpdateProject>,
 ) -> Result<Response> {
@@ -818,7 +819,12 @@ pub async fn update_project(
             id: project,
             name: body.name.unwrap_or(current.name),
             description: body.description.unwrap_or(current.description),
-            team_ids: body.team_ids.unwrap_or(current.team_ids),
+            team_ids: body
+                .team_ids
+                .unwrap_or(current.team_ids)
+                .into_iter()
+                .map(TeamId)
+                .collect(),
         };
         let result = run(
             &store,
@@ -836,7 +842,7 @@ pub async fn update_project(
                     if let Some(lead) = lead_id {
                         let member: bool = sqlx::query_scalar!(
                             "SELECT EXISTS(SELECT 1 FROM workspace_members WHERE workspace_id=$1 AND user_id=$2) AS \"exists!\"",
-                            workspace,
+                            workspace.0,
                             *lead,
                         )
                         .fetch_one(&store.pool)
@@ -879,7 +885,7 @@ pub async fn update_project(
 pub async fn delete_project(
     State(store): State<Store>,
     actor: ApiActor,
-    Path((workspace, project)): Path<(Uuid, Uuid)>,
+    Path((workspace, project)): Path<(WorkspaceId, Uuid)>,
     options: WriteOptions,
 ) -> Result<StatusCode> {
     run(
@@ -903,7 +909,7 @@ pub async fn delete_project(
 pub async fn milestones(
     State(store): State<Store>,
     actor: ApiActor,
-    Path(workspace): Path<Uuid>,
+    Path(workspace): Path<WorkspaceId>,
     Query(params): Query<PageParams>,
 ) -> Result<Json<Page<Milestone>>> {
     Ok(Json(
@@ -921,7 +927,7 @@ pub async fn milestones(
 pub async fn milestone(
     State(store): State<Store>,
     actor: ApiActor,
-    Path((workspace, milestone)): Path<(Uuid, Uuid)>,
+    Path((workspace, milestone)): Path<(WorkspaceId, Uuid)>,
 ) -> Result<Response> {
     let milestone: Milestone =
         record(&store, actor.read(workspace)?, "milestones", milestone).await?;
@@ -938,7 +944,7 @@ pub async fn milestone(
 pub async fn delete_milestone(
     State(store): State<Store>,
     actor: ApiActor,
-    Path((workspace, milestone)): Path<(Uuid, Uuid)>,
+    Path((workspace, milestone)): Path<(WorkspaceId, Uuid)>,
     options: WriteOptions,
 ) -> Result<StatusCode> {
     run(
@@ -963,7 +969,7 @@ pub async fn delete_milestone(
 pub async fn sprints(
     State(store): State<Store>,
     actor: ApiActor,
-    Path(workspace): Path<Uuid>,
+    Path(workspace): Path<WorkspaceId>,
     Query(params): Query<PageParams>,
 ) -> Result<Json<Page<Sprint>>> {
     Ok(Json(
@@ -981,7 +987,7 @@ pub async fn sprints(
 pub async fn sprint(
     State(store): State<Store>,
     actor: ApiActor,
-    Path((workspace, sprint)): Path<(Uuid, Uuid)>,
+    Path((workspace, sprint)): Path<(WorkspaceId, Uuid)>,
 ) -> Result<Response> {
     let sprint: Sprint = record(&store, actor.read(workspace)?, "sprints", sprint).await?;
     Ok(one(StatusCode::OK, sprint))

@@ -1,4 +1,5 @@
 use super::*;
+use crate::ids::{IssueId, TeamId};
 use crate::jobs::Reminder;
 use std::collections::BTreeSet;
 
@@ -260,14 +261,14 @@ impl Operation<'_> {
 
         let stage_id = match input.stage_id {
             Some(id) => id,
-            None => sqlx::query_scalar!("SELECT id FROM stages WHERE workspace_id=$1 AND team_id=$2 ORDER BY position,id LIMIT 1", self.workspace_id, input.team_id)
+            None => sqlx::query_scalar!("SELECT id FROM stages WHERE workspace_id=$1 AND team_id=$2 ORDER BY position,id LIMIT 1", self.workspace_id, input.team_id.0)
                 .fetch_optional(&mut *self.tx)
                 .await?
                 .ok_or(Error::NotFound)?
         };
 
         let now = Utc::now();
-        let id = self.reserve_client_id(input.id).await?;
+        let id = self.reserve_client_id(input.id.map(|id| id.0)).await?;
         let mut i = Issue {
             tracker: None,
             blocked_count: 0,
@@ -279,7 +280,7 @@ impl Operation<'_> {
             former_keys: vec![],
             title: input.title,
             description: input.description,
-            team_id: input.team_id,
+            team_id: input.team_id.0,
             stage_id,
             assignee: input.assignee,
             created_by: Some(self.actor),
@@ -290,8 +291,8 @@ impl Operation<'_> {
             project_id: input.project_id,
             milestone_id: input.milestone_id,
             sprint_id: input.sprint_id,
-            parent_id: input.parent_id,
-            dependencies: input.dependencies,
+            parent_id: input.parent_id.map(|id| id.0),
+            dependencies: input.dependencies.into_iter().map(|id| id.0).collect(),
             position: 0,
             followers: vec![self.actor],
             attachments: vec![],
@@ -355,7 +356,8 @@ impl Operation<'_> {
         .await
     }
 
-    async fn patch_issue_sql(&mut self, id: Uuid, p: IssuePatch) -> Result<()> {
+    async fn patch_issue_sql(&mut self, id: IssueId, p: IssuePatch) -> Result<()> {
+        let id = id.0;
         let version = self.lock("issues", id).await?;
 
         let old = self.issue(id).await?;
@@ -364,7 +366,7 @@ impl Operation<'_> {
         }
         let mut i = old.clone();
 
-        let team = p.team_id.filter(|team| *team != old.team_id);
+        let team = p.team_id.filter(|team| team.0 != old.team_id);
         i.apply_patch(p);
         if let Some(team) = team {
             self.enter_team(&old, &mut i, team).await?;
@@ -402,13 +404,13 @@ impl Operation<'_> {
         self.mention(Some(&old), &i).await
     }
 
-    async fn enter_team(&mut self, old: &Issue, i: &mut Issue, team: Uuid) -> Result<()> {
+    async fn enter_team(&mut self, old: &Issue, i: &mut Issue, team: TeamId) -> Result<()> {
         if old.tracker.is_some() {
             return Err(Error::BadRequest(
                 "synced issues follow their tracker project's team".into(),
             ));
         }
-        i.leave_team(old, team);
+        i.leave_team(old, team.0);
         i.number = persistence::next_number(&mut self.tx, self.workspace_id, i.team_id).await?;
         if i.stage_id == old.stage_id {
             let kind = self.stage_kind(old.stage_id).await?;
@@ -466,8 +468,8 @@ impl Operation<'_> {
         reads::issue_on(&mut self.tx, self.workspace_id, id, true).await
     }
 
-    async fn delete_issue(&mut self, id: Uuid) -> Result<()> {
-        let mut i = self.issue_for_lifecycle(id).await?;
+    async fn delete_issue(&mut self, id: IssueId) -> Result<()> {
+        let mut i = self.issue_for_lifecycle(id.0).await?;
         let old = i.clone();
         if i.deleted_at.is_some() {
             return Err(Error::NotFound);
@@ -478,8 +480,8 @@ impl Operation<'_> {
             .await
     }
 
-    async fn restore_issue(&mut self, id: Uuid) -> Result<()> {
-        let mut i = self.issue_for_lifecycle(id).await?;
+    async fn restore_issue(&mut self, id: IssueId) -> Result<()> {
+        let mut i = self.issue_for_lifecycle(id.0).await?;
         let old = i.clone();
         if i.deleted_at.is_none() {
             return Err(Error::BadRequest("issue is not deleted".into()));
@@ -491,8 +493,8 @@ impl Operation<'_> {
             .await
     }
 
-    async fn archive_issue(&mut self, id: Uuid) -> Result<()> {
-        let mut i = self.issue_for_lifecycle(id).await?;
+    async fn archive_issue(&mut self, id: IssueId) -> Result<()> {
+        let mut i = self.issue_for_lifecycle(id.0).await?;
         if i.deleted_at.is_some() {
             return Err(Error::NotFound);
         }
@@ -508,8 +510,8 @@ impl Operation<'_> {
         self.save_issue_fields(&i).await
     }
 
-    async fn unarchive_issue(&mut self, id: Uuid) -> Result<()> {
-        let mut i = self.issue_for_lifecycle(id).await?;
+    async fn unarchive_issue(&mut self, id: IssueId) -> Result<()> {
+        let mut i = self.issue_for_lifecycle(id.0).await?;
         if i.deleted_at.is_some() {
             return Err(Error::NotFound);
         }
@@ -538,25 +540,25 @@ impl Operation<'_> {
             Command::CreateIssue { input } => Some(self.create_issue_sql(input).await?),
             Command::UpdateIssue { id, patch } => {
                 self.patch_issue_sql(id, patch).await?;
-                Some(id)
+                Some(id.0)
             }
             Command::DeleteIssue { id } => {
                 self.delete_issue(id).await?;
-                Some(id)
+                Some(id.0)
             }
             Command::RestoreIssue { id } => {
                 self.restore_issue(id).await?;
-                Some(id)
+                Some(id.0)
             }
             Command::ArchiveIssue { id } => {
                 self.archive_issue(id).await?;
                 self.activity_fields.push("archived".into());
-                Some(id)
+                Some(id.0)
             }
             Command::UnarchiveIssue { id } => {
                 self.unarchive_issue(id).await?;
                 self.activity_fields.push("archived".into());
-                Some(id)
+                Some(id.0)
             }
             Command::BulkIssues { ids, action } => {
                 self.bulk_issues(ids, action).await?;
@@ -568,7 +570,7 @@ impl Operation<'_> {
                 before_id,
             } => {
                 self.move_issue(id, stage_id, before_id).await?;
-                Some(id)
+                Some(id.0)
             }
             Command::Follow {
                 issue_id,
@@ -576,7 +578,7 @@ impl Operation<'_> {
                 user_id,
             } => {
                 self.follow_issue(issue_id, following, user_id).await?;
-                Some(issue_id)
+                Some(issue_id.0)
             }
             Command::AddSourceLink {
                 issue_id,
@@ -584,7 +586,7 @@ impl Operation<'_> {
                 title,
             } => {
                 self.add_source_link(issue_id, url, title).await?;
-                Some(issue_id)
+                Some(issue_id.0)
             }
             Command::ImportIssues { issues } => {
                 self.import_issues(issues).await?;
@@ -602,13 +604,13 @@ impl Operation<'_> {
         self.activity_changes.extend(changes);
     }
 
-    async fn bulk_issues(&mut self, ids: Vec<Uuid>, action: BulkAction) -> Result<()> {
+    async fn bulk_issues(&mut self, ids: Vec<IssueId>, action: BulkAction) -> Result<()> {
         if ids.is_empty() || ids.len() > 500 {
             return Err(Error::BadRequest("select 1 to 500 issues".into()));
         }
         let ids: BTreeSet<_> = ids.into_iter().collect();
         for id in &ids {
-            self.lock("issues", *id).await?;
+            self.lock("issues", id.0).await?;
         }
         for id in ids {
             match &action {
@@ -624,10 +626,11 @@ impl Operation<'_> {
 
     async fn move_issue(
         &mut self,
-        id: Uuid,
+        id: IssueId,
         stage_id: Uuid,
-        before_id: Option<Uuid>,
+        before_id: Option<IssueId>,
     ) -> Result<()> {
+        let id = id.0;
         self.touch("issues", id).await?;
         let old = self.issue(id).await?;
         if old.archived_at.is_some() {
@@ -642,7 +645,7 @@ impl Operation<'_> {
         }
         self.record_changes(old.changes(&i));
         i.position = match before_id {
-            Some(before) => self.position_before(&i, before).await?,
+            Some(before) => self.position_before(&i, before.0).await?,
             None => self.position_last(&i).await?,
         };
         self.save_issue_fields(&i).await?;
@@ -706,10 +709,11 @@ impl Operation<'_> {
 
     async fn follow_issue(
         &mut self,
-        issue_id: Uuid,
+        issue_id: IssueId,
         following: bool,
         user_id: Option<Uuid>,
     ) -> Result<()> {
+        let issue_id = issue_id.0;
         let user = user_id.unwrap_or(self.actor);
         self.member(user).await?;
         self.touch("issues", issue_id).await?;
@@ -729,7 +733,13 @@ impl Operation<'_> {
         Ok(())
     }
 
-    async fn add_source_link(&mut self, issue_id: Uuid, url: String, title: String) -> Result<()> {
+    async fn add_source_link(
+        &mut self,
+        issue_id: IssueId,
+        url: String,
+        title: String,
+    ) -> Result<()> {
+        let issue_id = issue_id.0;
         crate::domain::text(&title, 500)?;
         let parsed =
             reqwest::Url::parse(&url).map_err(|_| Error::BadRequest("invalid URL".into()))?;
@@ -757,7 +767,8 @@ impl Operation<'_> {
         // are already held when create_issue_sql re-reserves them.
         // Issues still insert in request order so parents
         // come before children.
-        let supplied: Vec<Option<Uuid>> = issues.iter().map(|input| input.id).collect();
+        let supplied: Vec<Option<Uuid>> =
+            issues.iter().map(|input| input.id.map(|id| id.0)).collect();
         self.reserve_client_ids(&supplied).await?;
         for input in issues {
             self.create_issue_sql(input).await?;

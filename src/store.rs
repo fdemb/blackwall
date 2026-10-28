@@ -1,6 +1,7 @@
 use crate::{
     domain::*,
     error::{Error, Result},
+    ids::WorkspaceId,
     limits::{Limits, Resource, Usage},
 };
 use chrono::{DateTime, Utc};
@@ -325,8 +326,8 @@ impl Store {
 
     /// Broadcasts a workspace poke to live `/sync/events` streams. Tests use
     /// it to flood subscribers without touching the database.
-    pub fn sync_broadcast_poke(&self, workspace: Uuid) {
-        let _ = self.sync_broadcast.send(workspace);
+    pub fn sync_broadcast_poke(&self, workspace: WorkspaceId) {
+        let _ = self.sync_broadcast.send(workspace.0);
     }
 
     /// Ends open `/sync/events` streams and refuses to hold new ones open.
@@ -356,7 +357,7 @@ impl Store {
 
     pub async fn operation(
         &self,
-        workspace_id: Uuid,
+        workspace_id: WorkspaceId,
         actor: Uuid,
         command: Command,
         expected: BTreeMap<Uuid, i64>,
@@ -384,7 +385,7 @@ impl Store {
     #[allow(clippy::too_many_arguments)]
     pub async fn operation_via(
         &self,
-        workspace_id: Uuid,
+        workspace_id: WorkspaceId,
         actor: Uuid,
         command: Command,
         expected: BTreeMap<Uuid, i64>,
@@ -396,6 +397,7 @@ impl Store {
     ) -> Result<OperationResult> {
         use sha2::{Digest, Sha256};
 
+        let workspace_id = workspace_id.0;
         let mut command_fingerprint = serde_json::to_value(&command)?;
         if attachment.is_some()
             && let Some(metadata) = command_fingerprint
@@ -497,12 +499,13 @@ impl Store {
     /// operation.
     pub async fn replay(
         &self,
-        workspace_id: Uuid,
+        workspace_id: WorkspaceId,
         actor: Uuid,
         key: &str,
         sent: serde_json::Value,
         expected: &BTreeMap<Uuid, i64>,
     ) -> Result<Option<OperationResult>> {
+        let workspace_id = workspace_id.0;
         let mut conn = self.pool.acquire().await?;
         reads::authorize(&mut conn, workspace_id, actor).await?;
         let Some(row) = sqlx::query!(
@@ -930,6 +933,7 @@ impl Operation<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ids::{IssueId, TeamId};
     use crate::test_support::TestDatabase;
 
     #[tokio::test]
@@ -977,9 +981,9 @@ mod tests {
         database.cleanup().await;
     }
 
-    fn import_input(team: Uuid, id: Option<Uuid>, title: &str) -> IssueInput {
+    fn import_input(team: TeamId, id: Option<Uuid>, title: &str) -> IssueInput {
         IssueInput {
-            id,
+            id: id.map(IssueId),
             title: title.into(),
             description: String::new(),
             team_id: team,
@@ -997,7 +1001,7 @@ mod tests {
         }
     }
 
-    async fn import_workspace(store: &Store, name: &str) -> (Uuid, Uuid, Uuid) {
+    async fn import_workspace(store: &Store, name: &str) -> (WorkspaceId, Uuid, TeamId) {
         let actor = store
             .register(crate::auth::Register {
                 email: format!("{name}-{}@example.com", Uuid::new_v4()),
@@ -1011,7 +1015,7 @@ mod tests {
             .unwrap()
             .profile
             .id;
-        let workspace: Uuid = serde_json::from_value(
+        let workspace: WorkspaceId = serde_json::from_value(
             store
                 .create_workspace("Import locks".into(), actor)
                 .await
@@ -1039,7 +1043,7 @@ mod tests {
             .result
             .id
             .unwrap();
-        (workspace, actor, team)
+        (workspace, actor, TeamId(team))
     }
 
     #[tokio::test]
@@ -1051,7 +1055,7 @@ mod tests {
         let tx = store.pool.begin().await.unwrap();
         let mut op = Operation {
             tx,
-            workspace_id: workspace,
+            workspace_id: workspace.0,
             actor,
             role: Role::Owner,
             expected: BTreeMap::new(),
@@ -1093,7 +1097,7 @@ mod tests {
         let tx = store.pool.begin().await.unwrap();
         let mut op = Operation {
             tx,
-            workspace_id: workspace,
+            workspace_id: workspace.0,
             actor,
             role: Role::Owner,
             expected: BTreeMap::new(),
@@ -1176,7 +1180,7 @@ mod tests {
         let tx = store.pool.begin().await.unwrap();
         let mut op = Operation {
             tx,
-            workspace_id: workspace,
+            workspace_id: workspace.0,
             actor,
             role: Role::Owner,
             expected: BTreeMap::new(),
@@ -1252,7 +1256,7 @@ mod tests {
                 .await
                 .unwrap();
         }
-        let ids: Vec<Uuid> = sqlx::query_scalar("SELECT id FROM issues WHERE workspace_id=$1")
+        let ids: Vec<IssueId> = sqlx::query_scalar("SELECT id FROM issues WHERE workspace_id=$1")
             .bind(workspace)
             .fetch_all(&store.pool)
             .await
@@ -1265,7 +1269,7 @@ mod tests {
                 .unwrap();
 
         let mut op = store
-            .begin_operation(workspace, actor, BTreeMap::new(), false)
+            .begin_operation(workspace.0, actor, BTreeMap::new(), false)
             .await
             .unwrap();
         let before = milestone_reads(&mut op.tx).await;

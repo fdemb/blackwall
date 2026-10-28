@@ -120,13 +120,21 @@ async fn pages_reuse_http_connection_and_unchanged_scan_preserves_local_data() {
         .bind(b"local data".as_slice()).execute(&fixture.store.pool).await.unwrap();
     let before = fixture
         .store
-        .get_issue(fixture.workspace, fixture.owner.profile.id, issue)
+        .get_issue(
+            WorkspaceId(fixture.workspace),
+            fixture.owner.profile.id,
+            issue,
+        )
         .await
         .unwrap();
     fixture.sync_now().await;
     let after = fixture
         .store
-        .get_issue(fixture.workspace, fixture.owner.profile.id, issue)
+        .get_issue(
+            WorkspaceId(fixture.workspace),
+            fixture.owner.profile.id,
+            issue,
+        )
         .await
         .unwrap();
     assert_eq!(
@@ -144,7 +152,11 @@ async fn pages_reuse_http_connection_and_unchanged_scan_preserves_local_data() {
     fixture.sync_now().await;
     let repaired = fixture
         .store
-        .get_issue(fixture.workspace, fixture.owner.profile.id, issue)
+        .get_issue(
+            WorkspaceId(fixture.workspace),
+            fixture.owner.profile.id,
+            issue,
+        )
         .await
         .unwrap();
     assert_eq!(repaired.version, after.version);
@@ -590,7 +602,7 @@ async fn benchmark_thousand_issue_scans() {
     tokio::join!(drain(&fixture.store), async {
         for index in 0..25 {
             let start = std::time::Instant::now();
-            fixture.store.operation(fixture.workspace, fixture.owner.profile.id,
+            fixture.store.operation(WorkspaceId(fixture.workspace), fixture.owner.profile.id,
                 serde_json::from_value(json!({"type":"create_issue","input":{"team_id":fixture.team,"title":format!("Concurrent local issue {index}")}})).unwrap(),
                 BTreeMap::new(),None,None).await.unwrap();
             interactive_ms.push(start.elapsed().as_millis());

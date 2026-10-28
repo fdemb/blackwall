@@ -4,6 +4,7 @@ use blackwall::{
     auth::{Login, Register},
     domain::{Command, IssueFilter},
     http::router,
+    ids::WorkspaceId,
     store::Store,
 };
 use serde_json::{Value, json};
@@ -28,7 +29,7 @@ async fn account(store: &Store, name: &str) -> Uuid {
 
 async fn op(
     store: &Store,
-    ws: Uuid,
+    ws: WorkspaceId,
     actor: Uuid,
     cmd: Value,
     expected: BTreeMap<Uuid, i64>,
@@ -67,13 +68,12 @@ async fn done_issues_archive_on_team_deadline_and_stay_out_of_lists() {
     let database = support::TestDatabase::new().await;
     let store = Store::connect(&database.url).await.unwrap();
     let owner = account(&store, "owner").await;
-    let ws = Uuid::parse_str(
+    let ws: WorkspaceId = serde_json::from_value(
         store
             .create_workspace("Archive".into(), owner)
             .await
             .unwrap()["id"]
-            .as_str()
-            .unwrap(),
+            .clone(),
     )
     .unwrap();
 
@@ -413,13 +413,12 @@ async fn global_search_spans_live_and_archived_issues() {
         .unwrap()
         .session()
         .unwrap();
-    let ws = Uuid::parse_str(
+    let ws: WorkspaceId = serde_json::from_value(
         store
             .create_workspace("Search".into(), owner)
             .await
             .unwrap()["id"]
-            .as_str()
-            .unwrap(),
+            .clone(),
     )
     .unwrap();
 
@@ -514,7 +513,7 @@ async fn global_search_spans_live_and_archived_issues() {
     database.cleanup().await;
 }
 
-async fn run(store: &Store, ws: Uuid, actor: Uuid, cmd: Value) -> Option<Uuid> {
+async fn run(store: &Store, ws: WorkspaceId, actor: Uuid, cmd: Value) -> Option<Uuid> {
     op(store, ws, actor, cmd, BTreeMap::new())
         .await
         .unwrap()
@@ -522,7 +521,7 @@ async fn run(store: &Store, ws: Uuid, actor: Uuid, cmd: Value) -> Option<Uuid> {
         .id
 }
 
-async fn trash(store: &Store, ws: Uuid, actor: Uuid, issue: Uuid, days: i32) {
+async fn trash(store: &Store, ws: WorkspaceId, actor: Uuid, issue: Uuid, days: i32) {
     run(store, ws, actor, json!({"type":"delete_issue","id":issue})).await;
     sqlx::query("UPDATE issues SET deleted_at=now()-make_interval(days=>$2) WHERE id=$1")
         .bind(issue)
@@ -553,10 +552,8 @@ async fn issues_trashed_over_thirty_days_ago_are_purged_with_their_records() {
     let database = support::TestDatabase::new().await;
     let store = Store::connect(&database.url).await.unwrap();
     let owner = account(&store, "owner").await;
-    let ws = Uuid::parse_str(
-        store.create_workspace("Trash".into(), owner).await.unwrap()["id"]
-            .as_str()
-            .unwrap(),
+    let ws: WorkspaceId = serde_json::from_value(
+        store.create_workspace("Trash".into(), owner).await.unwrap()["id"].clone(),
     )
     .unwrap();
     let team = run(
@@ -717,7 +714,7 @@ async fn issues_trashed_over_thirty_days_ago_are_purged_with_their_records() {
     let issues_before = count(
         &store,
         "SELECT count(*) FROM issues WHERE workspace_id=$1",
-        ws,
+        ws.0,
     )
     .await;
 
@@ -727,7 +724,7 @@ async fn issues_trashed_over_thirty_days_ago_are_purged_with_their_records() {
         count(
             &store,
             "SELECT count(*) FROM issues WHERE workspace_id=$1",
-            ws
+            ws.0
         )
         .await,
         issues_before - 1
@@ -790,13 +787,12 @@ async fn purged_issue_numbers_are_not_reused() {
     let database = support::TestDatabase::new().await;
     let store = Store::connect(&database.url).await.unwrap();
     let owner = account(&store, "owner").await;
-    let ws = Uuid::parse_str(
+    let ws: WorkspaceId = serde_json::from_value(
         store
             .create_workspace("Numbers".into(), owner)
             .await
             .unwrap()["id"]
-            .as_str()
-            .unwrap(),
+            .clone(),
     )
     .unwrap();
     let team = run(
@@ -820,10 +816,8 @@ async fn purged_issue_numbers_are_not_reused() {
                 .unwrap()
         }
     };
-    let other_ws = Uuid::parse_str(
-        store.create_workspace("Other".into(), owner).await.unwrap()["id"]
-            .as_str()
-            .unwrap(),
+    let other_ws: WorkspaceId = serde_json::from_value(
+        store.create_workspace("Other".into(), owner).await.unwrap()["id"].clone(),
     )
     .unwrap();
     let other_team = run(

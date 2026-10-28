@@ -927,6 +927,7 @@ async fn sprint_completion_bumps_colliding_issue_version() {
 async fn in_memory_model_rejects_cross_collection_ids() {
     use blackwall::domain::{Command, IssueInput, Priority, Workspace};
     use blackwall::error::Error;
+    use blackwall::ids::{IssueId, TeamId};
 
     let owner = Uuid::new_v4();
     let mut w = Workspace::new("Memory".into(), owner).unwrap();
@@ -952,7 +953,7 @@ async fn in_memory_model_rejects_cross_collection_ids() {
             owner,
             Command::CreateSprint {
                 id: None,
-                team_id: team,
+                team_id: TeamId(team),
                 name: "One".into(),
                 goal: "Ship".into(),
                 starts_at: now,
@@ -965,10 +966,10 @@ async fn in_memory_model_rejects_cross_collection_ids() {
         .unwrap();
 
     let input = |id: Uuid| IssueInput {
-        id: Some(id),
+        id: Some(IssueId(id)),
         title: "Collision".into(),
         description: String::new(),
-        team_id: team,
+        team_id: TeamId(team),
         stage_id: None,
         assignee: None,
         priority: Priority::Normal,

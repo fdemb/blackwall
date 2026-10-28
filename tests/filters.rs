@@ -1,12 +1,12 @@
 mod support;
 
-use blackwall::{auth::Register, domain::Command, store::Store};
+use blackwall::{auth::Register, domain::Command, ids::WorkspaceId, store::Store};
 use chrono::{DateTime, Duration, FixedOffset, Utc};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use uuid::Uuid;
 
-async fn op(store: &Store, ws: Uuid, actor: Uuid, cmd: Value) -> Uuid {
+async fn op(store: &Store, ws: WorkspaceId, actor: Uuid, cmd: Value) -> Uuid {
     store
         .operation(
             ws,
@@ -25,7 +25,7 @@ async fn op(store: &Store, ws: Uuid, actor: Uuid, cmd: Value) -> Uuid {
 
 struct Fixture {
     store: Store,
-    ws: Uuid,
+    ws: WorkspaceId,
     owner: Uuid,
     label: Uuid,
     milestone: Uuid,
@@ -51,13 +51,12 @@ async fn fixture(database: &support::TestDatabase) -> Fixture {
         .unwrap()
         .profile
         .id;
-    let ws = Uuid::parse_str(
+    let ws: WorkspaceId = serde_json::from_value(
         store
             .create_workspace("Filters".into(), owner)
             .await
             .unwrap()["id"]
-            .as_str()
-            .unwrap(),
+            .clone(),
     )
     .unwrap();
     let team = op(

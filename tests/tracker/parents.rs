@@ -727,7 +727,7 @@ async fn exported_parent_links_reimport_as_local() {
     .await;
     drain(&store).await;
     let transfer = store
-        .export_transfer(workspace, owner.profile.id)
+        .export_transfer(WorkspaceId(workspace), owner.profile.id)
         .await
         .unwrap();
     let target = store
@@ -736,7 +736,13 @@ async fn exported_parent_links_reimport_as_local() {
         .unwrap();
     let target = Uuid::parse_str(target["id"].as_str().unwrap()).unwrap();
     store
-        .import_transfer(target, owner.profile.id, transfer, BTreeMap::new(), None)
+        .import_transfer(
+            WorkspaceId(target),
+            owner.profile.id,
+            transfer,
+            BTreeMap::new(),
+            None,
+        )
         .await
         .unwrap();
     let copies = issues(&app, &owner, target).await;
@@ -905,9 +911,11 @@ async fn issues_purged_from_the_trash_are_not_imported_again() {
     let parent = issue_id(&issues(&app, &owner, workspace).await, 8);
     store
         .operation(
-            workspace,
+            WorkspaceId(workspace),
             owner.profile.id,
-            Command::DeleteIssue { id: parent },
+            Command::DeleteIssue {
+                id: IssueId(parent),
+            },
             BTreeMap::new(),
             None,
             None,

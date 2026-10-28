@@ -363,11 +363,12 @@ async fn remember_rejection(
 impl Store {
     pub async fn sync_push(
         &self,
-        workspace_id: Uuid,
+        workspace_id: WorkspaceId,
         actor: Uuid,
         client_id: Uuid,
         mutations: Vec<SyncMutation>,
     ) -> Result<PushOutcome> {
+        let workspace_id = workspace_id.0;
         if mutations.is_empty() || mutations.len() > MAX_MUTATIONS {
             return Err(Error::BadRequest("push 1 to 100 mutations".into()));
         }
@@ -805,11 +806,12 @@ impl Store {
     /// entirely absent from both.
     pub async fn sync_pull(
         &self,
-        workspace_id: Uuid,
+        workspace_id: WorkspaceId,
         actor: Uuid,
         client_id: Uuid,
         cursor: Option<&str>,
     ) -> Result<PullResponse> {
+        let workspace_id = workspace_id.0;
         let (mut tx, last_mutation_id) = self.sync_read(workspace_id, actor, client_id).await?;
         let (snap_text, snapshot, horizon) = pull_snapshot(&mut tx).await?;
 
@@ -915,10 +917,11 @@ impl Store {
     /// event stream connects. Streams hold no database connection afterwards.
     pub async fn sync_events_check(
         &self,
-        workspace_id: Uuid,
+        workspace_id: WorkspaceId,
         actor: Uuid,
         client_id: Uuid,
     ) -> Result<()> {
+        let workspace_id = workspace_id.0;
         let mut conn = self.pool.acquire().await?;
         super::reads::authorize(&mut conn, workspace_id, actor).await?;
 
@@ -1083,10 +1086,11 @@ fn delivered(outcome: SendOutcome, workspace: Uuid, client_id: Uuid, records: u6
 impl Store {
     pub async fn sync_bootstrap(
         &self,
-        workspace: Uuid,
+        workspace: WorkspaceId,
         actor: Uuid,
         client_id: Uuid,
     ) -> Result<tokio::sync::mpsc::Receiver<Result<Vec<u8>>>> {
+        let workspace = workspace.0;
         // The permit comes before the connection and is held until the task
         // ends, so queued bootstraps wait here instead of holding pool
         // connections while unread.
@@ -1183,11 +1187,12 @@ impl Store {
 
     pub async fn sync_scope(
         &self,
-        workspace: Uuid,
+        workspace: WorkspaceId,
         actor: Uuid,
         client_id: Uuid,
         scope: SyncScope,
     ) -> Result<ScopeResponse> {
+        let workspace = workspace.0;
         let (mut tx, _) = self.sync_read(workspace, actor, client_id).await?;
         let (entity, column, id) = match scope {
             SyncScope::Comments(id) => ("comments", "issue_id", id),

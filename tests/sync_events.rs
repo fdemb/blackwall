@@ -1055,14 +1055,14 @@ async fn events_trailing_poke_beats_other_workspace_flood() {
 
     // Arm a trailing poke: this lands inside the coalesce window, so the
     // stream defers it to the window's end instead of sending immediately.
-    store.sync_broadcast_poke(ws);
+    store.sync_broadcast_poke(blackwall::ids::WorkspaceId(ws));
     let start = std::time::Instant::now();
 
     // Flood with notifications for other workspaces while the trailing poke
     // is pending. The timer branch runs before broadcast reception, so the
     // overdue poke fires on time instead of waiting out the flood. One fixed
     // id keeps the producer faster than the consumer without RNG overhead.
-    let other = Uuid::new_v4();
+    let other = blackwall::ids::WorkspaceId::new_v4();
     let flooder_store = store.clone();
     let flooder = tokio::spawn(async move {
         let mut n: u64 = 0;

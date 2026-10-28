@@ -25,7 +25,7 @@ pub struct PullQuery {
 pub(super) async fn pull(
     State(store): State<Store>,
     actor: Actor,
-    Path(id): Path<Uuid>,
+    Path(id): Path<WorkspaceId>,
     Query(query): Query<PullQuery>,
 ) -> Result<Json<PullResponse>> {
     let client_id = client_id(query.client_id.as_deref())?;
@@ -50,7 +50,7 @@ pub(super) async fn pull(
 pub(super) async fn push(
     State(store): State<Store>,
     actor: Actor,
-    Path(id): Path<Uuid>,
+    Path(id): Path<WorkspaceId>,
     Json(input): Json<PushRequest>,
 ) -> Result<Response> {
     let outcome = store
@@ -87,7 +87,7 @@ pub struct BootstrapQuery {
 pub(super) async fn bootstrap(
     State(store): State<Store>,
     actor: Actor,
-    Path(id): Path<Uuid>,
+    Path(id): Path<WorkspaceId>,
     Query(query): Query<BootstrapQuery>,
 ) -> Result<Response> {
     let receiver = store
@@ -116,7 +116,7 @@ pub struct ScopeQuery {
 pub(super) async fn scope(
     State(store): State<Store>,
     actor: Actor,
-    Path(id): Path<Uuid>,
+    Path(id): Path<WorkspaceId>,
     Query(query): Query<ScopeQuery>,
 ) -> Result<Json<ScopeResponse>> {
     let client_id = client_id(query.client_id.as_deref())?;
@@ -165,14 +165,14 @@ fn poke_event() -> Event {
 pub(super) async fn events(
     State(store): State<Store>,
     actor: Actor,
-    Path(id): Path<Uuid>,
+    Path(id): Path<WorkspaceId>,
     Query(query): Query<EventsQuery>,
 ) -> Result<Sse<impl Stream<Item = std::result::Result<Event, std::convert::Infallible>> + Send>> {
     let client_id = client_id(query.client_id.as_deref())?;
     store
         .sync_events_check(id, actor.profile.id, client_id)
         .await?;
-    let workspace = id;
+    let workspace = id.0;
     let subscriber = store.sync_broadcast.subscribe();
     let shutdown = store.sync_shutdown.subscribe();
     let config = store.sync_events.clone();

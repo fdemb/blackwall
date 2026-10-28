@@ -105,10 +105,10 @@ fn parse<T: serde::de::DeserializeOwned>(text: String) -> Result<T> {
 impl Directory {
     pub async fn load(store: &Store, scope: Scope) -> Result<Self> {
         let mut conn = store.pool.acquire().await?;
-        Self::members(&mut conn, scope.workspace)
+        Self::members(&mut conn, scope.workspace.0)
             .await?
             .acting_as(scope.user)?
-            .with_records(&mut conn, scope.workspace)
+            .with_records(&mut conn, scope.workspace.0)
             .await
     }
 
@@ -246,7 +246,7 @@ impl Directory {
 
     /// Only the workspace's members, for records that name nothing else.
     pub async fn people(store: &Store, scope: Scope) -> Result<Self> {
-        Self::members(&mut *store.pool.acquire().await?, scope.workspace)
+        Self::members(&mut *store.pool.acquire().await?, scope.workspace.0)
             .await?
             .acting_as(scope.user)
     }

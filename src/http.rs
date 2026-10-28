@@ -2,6 +2,7 @@ use crate::{
     auth::{self, *},
     domain::*,
     error::{Error, Result},
+    ids::WorkspaceId,
     store::{CollectionQuery, OperationResult, Store},
 };
 use axum::{
@@ -819,7 +820,7 @@ async fn create_workspace(
 async fn workspace(
     State(store): State<Store>,
     actor: Actor,
-    Path(id): Path<Uuid>,
+    Path(id): Path<WorkspaceId>,
 ) -> Result<Json<Value>> {
     Ok(Json(store.workspace_metadata(id, actor.profile.id).await?))
 }
@@ -837,7 +838,7 @@ async fn workspace(
 async fn command(
     State(store): State<Store>,
     actor: Actor,
-    Path(id): Path<Uuid>,
+    Path(id): Path<WorkspaceId>,
     Json(input): Json<CommandRequest>,
 ) -> Result<Json<CommandResponse>> {
     if matches!(
@@ -872,7 +873,7 @@ async fn command(
 async fn issues(
     State(store): State<Store>,
     actor: Actor,
-    Path(id): Path<Uuid>,
+    Path(id): Path<WorkspaceId>,
     Query(filter): Query<IssueFilter>,
     Query(input): Query<PageQuery>,
 ) -> Result<Json<Value>> {
@@ -895,7 +896,7 @@ async fn issues(
 async fn issue_detail(
     State(store): State<Store>,
     actor: Actor,
-    Path((id, issue)): Path<(Uuid, Uuid)>,
+    Path((id, issue)): Path<(WorkspaceId, Uuid)>,
 ) -> Result<Json<Issue>> {
     Ok(Json(store.get_issue(id, actor.profile.id, issue).await?))
 }
@@ -910,7 +911,7 @@ async fn issue_detail(
 async fn collection(
     State(store): State<Store>,
     actor: Actor,
-    Path((id, kind)): Path<(Uuid, String)>,
+    Path((id, kind)): Path<(WorkspaceId, String)>,
     Query(input): Query<PageQuery>,
 ) -> Result<Json<Value>> {
     Ok(Json(
@@ -939,7 +940,7 @@ async fn collection(
 async fn members(
     State(store): State<Store>,
     actor: Actor,
-    Path(id): Path<Uuid>,
+    Path(id): Path<WorkspaceId>,
 ) -> Result<Json<Value>> {
     Ok(Json(
         store.member_profiles(id, actor.profile.id, None).await?,
@@ -958,7 +959,7 @@ async fn members(
 async fn search(
     State(store): State<Store>,
     actor: Actor,
-    Path(id): Path<Uuid>,
+    Path(id): Path<WorkspaceId>,
     Query(input): Query<SearchQuery>,
 ) -> Result<Json<Value>> {
     if input.q.len() > 200 {
@@ -1019,7 +1020,7 @@ async fn search(
 async fn report(
     State(store): State<Store>,
     actor: Actor,
-    Path(id): Path<Uuid>,
+    Path(id): Path<WorkspaceId>,
 ) -> Result<Json<Value>> {
     Ok(Json(store.report_sql(id, actor.profile.id).await?))
 }
@@ -1033,7 +1034,7 @@ async fn report(
 async fn usage(
     State(store): State<Store>,
     actor: Actor,
-    Path(id): Path<Uuid>,
+    Path(id): Path<WorkspaceId>,
 ) -> Result<Json<Vec<crate::limits::Usage>>> {
     Ok(Json(store.usage(id, actor.profile.id).await?))
 }
@@ -1048,7 +1049,7 @@ async fn usage(
 async fn accept_invitation(
     State(store): State<Store>,
     actor: Actor,
-    Path(id): Path<Uuid>,
+    Path(id): Path<WorkspaceId>,
     Json(input): Json<AcceptInvitation>,
 ) -> Result<Json<Value>> {
     store

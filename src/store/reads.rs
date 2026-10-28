@@ -566,7 +566,8 @@ impl Store {
             .collect())
     }
 
-    pub async fn workspace_metadata(&self, workspace: Uuid, actor: Uuid) -> Result<Value> {
+    pub async fn workspace_metadata(&self, workspace: WorkspaceId, actor: Uuid) -> Result<Value> {
+        let workspace = workspace.0;
         let mut conn = self.pool.acquire().await?;
         authorize(&mut conn, workspace, actor).await?;
 
@@ -666,7 +667,8 @@ impl Store {
         Ok(result)
     }
 
-    pub async fn get_issue(&self, workspace: Uuid, actor: Uuid, id: Uuid) -> Result<Issue> {
+    pub async fn get_issue(&self, workspace: WorkspaceId, actor: Uuid, id: Uuid) -> Result<Issue> {
+        let workspace = workspace.0;
         let mut conn = self.pool.acquire().await?;
         authorize(&mut conn, workspace, actor).await?;
         issue_on(&mut conn, workspace, id, false).await
@@ -674,12 +676,13 @@ impl Store {
 
     pub async fn list_issues(
         &self,
-        workspace: Uuid,
+        workspace: WorkspaceId,
         actor: Uuid,
         filter: IssueFilter,
         limit: i64,
         offset: i64,
     ) -> Result<Value> {
+        let workspace = workspace.0;
         bounds(limit, offset)?;
         let cursor = decode_issue_cursor(&filter, workspace, offset)?;
         let search = filter.search.as_deref().filter(|s| !s.trim().is_empty());
@@ -742,10 +745,11 @@ impl Store {
     /// How many issues match a filter, ignoring sort and paging.
     pub async fn count_issues(
         &self,
-        workspace: Uuid,
+        workspace: WorkspaceId,
         actor: Uuid,
         filter: &IssueFilter,
     ) -> Result<i64> {
+        let workspace = workspace.0;
         let search = filter.search.as_deref().filter(|s| !s.trim().is_empty());
         if filter.search.as_ref().is_some_and(|s| s.len() > 200) {
             return Err(Error::BadRequest("search query too long".into()));
@@ -770,11 +774,12 @@ impl Store {
 
     pub async fn collection(
         &self,
-        workspace: Uuid,
+        workspace: WorkspaceId,
         actor: Uuid,
         kind: &str,
         query: CollectionQuery,
     ) -> Result<Value> {
+        let workspace = workspace.0;
         bounds(query.limit, query.offset)?;
 
         let mut conn = self.pool.acquire().await?;
@@ -796,7 +801,8 @@ impl Store {
     }
 
     /// The actor's role in the workspace; non-members are forbidden.
-    pub async fn member_role(&self, workspace: Uuid, actor: Uuid) -> Result<Role> {
+    pub async fn member_role(&self, workspace: WorkspaceId, actor: Uuid) -> Result<Role> {
+        let workspace = workspace.0;
         let mut conn = self.pool.acquire().await?;
         authorize(&mut conn, workspace, actor).await
     }
@@ -804,11 +810,12 @@ impl Store {
     /// One record of a workspace collection in its list shape, under the list's visibility rules.
     pub async fn collection_record(
         &self,
-        workspace: Uuid,
+        workspace: WorkspaceId,
         actor: Uuid,
         kind: &str,
         id: Uuid,
     ) -> Result<Value> {
+        let workspace = workspace.0;
         let mut conn = self.pool.acquire().await?;
         authorize(&mut conn, workspace, actor).await?;
         record_on(&mut conn, workspace, actor, kind, id)
@@ -818,11 +825,12 @@ impl Store {
 
     pub async fn issue_by_key(
         &self,
-        workspace: Uuid,
+        workspace: WorkspaceId,
         actor: Uuid,
         team_key: &str,
         number: u64,
     ) -> Result<Uuid> {
+        let workspace = workspace.0;
         let mut conn = self.pool.acquire().await?;
         authorize(&mut conn, workspace, actor).await?;
         sqlx::query_scalar!("SELECT id AS \"id!\" FROM (SELECT i.id,0 AS former FROM issues i JOIN team_keys t ON t.workspace_id=i.workspace_id AND t.team_id=i.team_id WHERE i.workspace_id=$1 AND t.key=$2 AND i.number=$3 \
@@ -834,7 +842,12 @@ impl Store {
     }
 
     /// Every team's key, for rendering issue keys.
-    pub async fn team_keys(&self, workspace: Uuid, actor: Uuid) -> Result<BTreeMap<Uuid, String>> {
+    pub async fn team_keys(
+        &self,
+        workspace: WorkspaceId,
+        actor: Uuid,
+    ) -> Result<BTreeMap<Uuid, String>> {
+        let workspace = workspace.0;
         let mut conn = self.pool.acquire().await?;
         authorize(&mut conn, workspace, actor).await?;
         Ok(
@@ -849,10 +862,11 @@ impl Store {
 
     pub async fn member_profiles(
         &self,
-        workspace: Uuid,
+        workspace: WorkspaceId,
         actor: Uuid,
         search: Option<&str>,
     ) -> Result<Value> {
+        let workspace = workspace.0;
         if search.is_some_and(|s| s.len() > 200) {
             return Err(Error::BadRequest("search query too long".into()));
         }
@@ -880,7 +894,8 @@ impl Store {
 
 impl Store {
     /// Every limited resource's count and limit, as the capacity check counts them.
-    pub async fn usage(&self, workspace: Uuid, actor: Uuid) -> Result<Vec<Usage>> {
+    pub async fn usage(&self, workspace: WorkspaceId, actor: Uuid) -> Result<Vec<Usage>> {
+        let workspace = workspace.0;
         let mut conn = self.pool.acquire().await?;
         authorize(&mut conn, workspace, actor).await?;
         let counts = Resource::ALL
@@ -901,7 +916,8 @@ impl Store {
             .collect())
     }
 
-    pub async fn report_sql(&self, workspace: Uuid, actor: Uuid) -> Result<Value> {
+    pub async fn report_sql(&self, workspace: WorkspaceId, actor: Uuid) -> Result<Value> {
+        let workspace = workspace.0;
         let mut conn = self.pool.acquire().await?;
         authorize(&mut conn, workspace, actor).await?;
 

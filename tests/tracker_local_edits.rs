@@ -4,6 +4,7 @@ use blackwall::{
     auth::{Register, Session},
     domain::{Command, IssueInput, IssuePatch, Priority, StageKind},
     error::Error,
+    ids::{IssueId, TeamId, WorkspaceId},
     store::Store,
 };
 use serde_json::json;
@@ -15,7 +16,7 @@ struct Fixture {
     db: support::TestDatabase,
     store: Store,
     owner: Session,
-    workspace: Uuid,
+    workspace: WorkspaceId,
     team: Uuid,
     stage: Uuid,
     replacement: Uuid,
@@ -42,7 +43,7 @@ impl Fixture {
             .create_workspace("Tracker".into(), owner.profile.id)
             .await
             .unwrap();
-        let workspace = Uuid::parse_str(workspace["id"].as_str().unwrap()).unwrap();
+        let workspace: WorkspaceId = serde_json::from_value(workspace["id"].clone()).unwrap();
         let team = store
             .operation(
                 workspace,
@@ -147,44 +148,48 @@ async fn local_edits_moves_relations_links_and_attachment_removal_succeed_on_syn
         .bind(attachment).bind(f.workspace).bind(f.imported).bind(f.owner.profile.id).bind(b"local".as_slice()).execute(&f.store.pool).await.unwrap();
     let commands = [
         Command::UpdateIssue {
-            id: f.imported,
+            id: IssueId(f.imported),
             patch: IssuePatch {
                 title: Some("Local edit".into()),
                 ..Default::default()
             },
         },
         Command::MoveIssue {
-            id: f.imported,
+            id: IssueId(f.imported),
             stage_id: f.replacement,
             before_id: None,
         },
-        Command::DeleteIssue { id: f.imported },
-        Command::RestoreIssue { id: f.imported },
+        Command::DeleteIssue {
+            id: IssueId(f.imported),
+        },
+        Command::RestoreIssue {
+            id: IssueId(f.imported),
+        },
         Command::RemoveAttachment {
-            issue_id: f.imported,
+            issue_id: IssueId(f.imported),
             attachment_id: attachment,
         },
         Command::AddSourceLink {
-            issue_id: f.imported,
+            issue_id: IssueId(f.imported),
             url: "https://example.com".into(),
             title: "Local".into(),
         },
         Command::UpdateIssue {
-            id: f.local,
+            id: IssueId(f.local),
             patch: IssuePatch {
-                parent_id: Some(f.imported),
+                parent_id: Some(IssueId(f.imported)),
                 ..Default::default()
             },
         },
         Command::UpdateIssue {
-            id: f.local,
+            id: IssueId(f.local),
             patch: IssuePatch {
-                dependencies: Some(vec![f.imported]),
+                dependencies: Some(vec![IssueId(f.imported)]),
                 ..Default::default()
             },
         },
         Command::BulkIssues {
-            ids: vec![f.local, f.imported],
+            ids: vec![IssueId(f.local), IssueId(f.imported)],
             action: blackwall::domain::BulkAction::Update(Box::new(IssuePatch {
                 priority: Some(Priority::High),
                 ..Default::default()
@@ -192,19 +197,19 @@ async fn local_edits_moves_relations_links_and_attachment_removal_succeed_on_syn
         },
         Command::AddComment {
             id: None,
-            issue_id: f.imported,
+            issue_id: IssueId(f.imported),
             body: "Local discussion".into(),
             mentions: vec![],
             attachments: vec![],
         },
         Command::Follow {
-            issue_id: f.imported,
+            issue_id: IssueId(f.imported),
             following: true,
             user_id: None,
         },
         Command::LogTime {
             id: None,
-            issue_id: f.imported,
+            issue_id: IssueId(f.imported),
             minutes: 30,
             note: "Local work".into(),
             logged_at: chrono::Utc::now(),
@@ -253,7 +258,7 @@ async fn admin_stage_migration_moves_imported_and_local_issues_atomically() {
     let mut stale = before.clone();
     stale.insert(f.local, 0);
     let command = Command::DeleteStage {
-        team_id: f.team,
+        team_id: TeamId(f.team),
         id: f.stage,
         replacement: f.replacement,
     };
@@ -338,14 +343,14 @@ async fn admin_stage_migration_moves_imported_and_local_issues_atomically() {
         );
     }
     f.run(Command::MoveIssue {
-        id: f.imported,
+        id: IssueId(f.imported),
         stage_id: f.replacement,
         before_id: None,
     })
     .await
     .unwrap();
     f.run(Command::UpdateStage {
-        team_id: f.team,
+        team_id: TeamId(f.team),
         id: f.replacement,
         name: "Completed".into(),
         kind: StageKind::Done,

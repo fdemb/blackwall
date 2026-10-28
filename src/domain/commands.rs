@@ -1,10 +1,11 @@
 use super::*;
+use crate::ids::{IssueId, TeamId};
 
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Command {
     CreateTeam {
-        id: Option<Uuid>,
+        id: Option<TeamId>,
         name: String,
         /// Prefixes the team's issue numbers, as in `ENG-42`. Unique in the workspace.
         key: String,
@@ -17,48 +18,48 @@ pub enum Command {
         default_stage_ids: Option<Vec<Uuid>>,
     },
     SetTeamMembers {
-        id: Uuid,
+        id: TeamId,
         members: Vec<Uuid>,
     },
     SetTeamArchive {
-        id: Uuid,
+        id: TeamId,
         /// Days after Done before auto-archive. Null means never.
         #[serde(default = "super::default_archive_days")]
         archive_after_days: Option<u32>,
     },
     SetTeamAppearance {
-        id: Uuid,
+        id: TeamId,
         icon: String,
         color: String,
     },
     /// Renames the team and changes its key. Issue keys under a former key keep
     /// resolving, and no other team can take a key this team has used.
     UpdateTeam {
-        id: Uuid,
+        id: TeamId,
         name: String,
         key: String,
     },
     /// Deletes the team with its stages, sprints and memberships. Refused while
     /// it holds any issue, archived and trashed ones included.
     DeleteTeam {
-        id: Uuid,
+        id: TeamId,
     },
     CreateStage {
         id: Option<Uuid>,
-        team_id: Uuid,
+        team_id: TeamId,
         name: String,
         kind: StageKind,
         position: i64,
     },
     UpdateStage {
-        team_id: Uuid,
+        team_id: TeamId,
         id: Uuid,
         name: String,
         kind: StageKind,
         position: i64,
     },
     DeleteStage {
-        team_id: Uuid,
+        team_id: TeamId,
         id: Uuid,
         replacement: Uuid,
     },
@@ -81,13 +82,13 @@ pub enum Command {
         name: String,
         #[serde(default)]
         description: String,
-        team_ids: Vec<Uuid>,
+        team_ids: Vec<TeamId>,
     },
     UpdateProject {
         id: Uuid,
         name: String,
         description: String,
-        team_ids: Vec<Uuid>,
+        team_ids: Vec<TeamId>,
     },
     /// Sets who leads the project, where it stands and when it runs.
     SetProjectPlan {
@@ -118,7 +119,7 @@ pub enum Command {
     },
     CreateSprint {
         id: Option<Uuid>,
-        team_id: Uuid,
+        team_id: TeamId,
         name: String,
         goal: String,
         starts_at: DateTime<Utc>,
@@ -143,32 +144,32 @@ pub enum Command {
         input: IssueInput,
     },
     UpdateIssue {
-        id: Uuid,
+        id: IssueId,
         patch: IssuePatch,
     },
     MoveIssue {
-        id: Uuid,
+        id: IssueId,
         stage_id: Uuid,
-        before_id: Option<Uuid>,
+        before_id: Option<IssueId>,
     },
     BulkIssues {
-        ids: Vec<Uuid>,
+        ids: Vec<IssueId>,
         action: BulkAction,
     },
     DeleteIssue {
-        id: Uuid,
+        id: IssueId,
     },
     RestoreIssue {
-        id: Uuid,
+        id: IssueId,
     },
     ArchiveIssue {
-        id: Uuid,
+        id: IssueId,
     },
     UnarchiveIssue {
-        id: Uuid,
+        id: IssueId,
     },
     AddAttachment {
-        issue_id: Uuid,
+        issue_id: IssueId,
         attachment: Attachment,
     },
     AttachCommentFile {
@@ -176,12 +177,12 @@ pub enum Command {
         attachment: Attachment,
     },
     RemoveAttachment {
-        issue_id: Uuid,
+        issue_id: IssueId,
         attachment_id: Uuid,
     },
     AddComment {
         id: Option<Uuid>,
-        issue_id: Uuid,
+        issue_id: IssueId,
         body: String,
         #[serde(default)]
         mentions: Vec<Uuid>,
@@ -198,7 +199,7 @@ pub enum Command {
         id: Uuid,
     },
     Follow {
-        issue_id: Uuid,
+        issue_id: IssueId,
         following: bool,
         /// The member whose subscription changes. Absent means the actor.
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -206,7 +207,7 @@ pub enum Command {
     },
     LogTime {
         id: Option<Uuid>,
-        issue_id: Uuid,
+        issue_id: IssueId,
         minutes: u32,
         #[serde(default)]
         note: String,
@@ -325,7 +326,7 @@ pub enum Command {
         id: Uuid,
     },
     AddSourceLink {
-        issue_id: Uuid,
+        issue_id: IssueId,
         url: String,
         title: String,
     },

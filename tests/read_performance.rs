@@ -7,6 +7,7 @@ use blackwall::{
     auth::Register,
     domain::{Command, IssueFilter},
     http,
+    ids::WorkspaceId,
     store::Store,
 };
 use http_body_util::BodyExt;
@@ -19,7 +20,7 @@ async fn setup() -> (
     support::TestDatabase,
     Store,
     blackwall::auth::Session,
-    Uuid,
+    WorkspaceId,
     Uuid,
 ) {
     let db = support::TestDatabase::new().await;
@@ -39,7 +40,7 @@ async fn setup() -> (
         .create_workspace("Read tests".into(), owner.profile.id)
         .await
         .unwrap();
-    let workspace = Uuid::parse_str(workspace["id"].as_str().unwrap()).unwrap();
+    let workspace: WorkspaceId = serde_json::from_value(workspace["id"].clone()).unwrap();
     let team = store
         .operation(
             workspace,
@@ -65,7 +66,7 @@ async fn setup() -> (
 
 async fn create(
     store: &Store,
-    workspace: Uuid,
+    workspace: WorkspaceId,
     actor: Uuid,
     team: Uuid,
     title: &str,
@@ -365,7 +366,7 @@ async fn updated_cursors_handle_ties_and_reject_wrong_scope_or_invalid_modes() {
         .create_workspace("Other".into(), owner.profile.id)
         .await
         .unwrap();
-    let other = Uuid::parse_str(other["id"].as_str().unwrap()).unwrap();
+    let other: WorkspaceId = serde_json::from_value(other["id"].clone()).unwrap();
     assert!(
         store
             .list_issues(

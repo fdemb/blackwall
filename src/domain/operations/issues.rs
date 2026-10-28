@@ -1,6 +1,7 @@
 use super::super::issues::{id_set, stored_instant};
 use super::super::*;
 use super::find_mut;
+use crate::ids::{IssueId, TeamId};
 
 impl Workspace {
     pub(super) fn apply_issue(
@@ -14,43 +15,43 @@ impl Workspace {
             Command::CreateIssue { input } => self.create_issue(input, actor, now)?,
             Command::UpdateIssue { id, patch } => {
                 *fields = self.patch_issue(id, patch, actor, now)?;
-                id
+                id.0
             }
             Command::MoveIssue {
                 id,
                 stage_id,
                 before_id,
             } => {
-                let sprint = self.issue(id)?.sprint_id;
+                let sprint = self.issue(id.0)?.sprint_id;
                 if self.move_issue(id, stage_id, before_id, now)? {
                     fields.push("stage".into());
                 }
-                if self.issue(id)?.sprint_id != sprint {
+                if self.issue(id.0)?.sprint_id != sprint {
                     fields.push("sprint".into());
                 }
-                id
+                id.0
             }
             Command::BulkIssues { ids, action } => {
                 self.bulk_issues(ids, action, actor, now, fields)?;
                 return Ok(None);
             }
             Command::DeleteIssue { id } => {
-                self.issue_mut(id)?.deleted_at = Some(now);
-                id
+                self.issue_mut(id.0)?.deleted_at = Some(now);
+                id.0
             }
             Command::RestoreIssue { id } => {
                 self.restore(id, now)?;
-                id
+                id.0
             }
             Command::ArchiveIssue { id } => {
                 self.archive(id, now)?;
                 fields.push("archived".into());
-                id
+                id.0
             }
             Command::UnarchiveIssue { id } => {
                 self.unarchive(id, now)?;
                 fields.push("archived".into());
-                id
+                id.0
             }
             Command::Follow {
                 issue_id,
@@ -59,13 +60,13 @@ impl Workspace {
             } => {
                 let user = user_id.unwrap_or(actor);
                 self.member(user)?;
-                let issue = self.issue_mut(issue_id)?;
+                let issue = self.issue_mut(issue_id.0)?;
                 if following {
                     issue.follow(user);
                 } else {
                     issue.followers.retain(|u| *u != user);
                 }
-                issue_id
+                issue_id.0
             }
             Command::AddSourceLink {
                 issue_id,
@@ -74,10 +75,10 @@ impl Workspace {
             } => {
                 validate_url(&url)?;
                 text(&title, 500)?;
-                self.issue_mut(issue_id)?
+                self.issue_mut(issue_id.0)?
                     .source_links
                     .push(SourceLink { url, title });
-                issue_id
+                issue_id.0
             }
             Command::ImportIssues { issues } => {
                 if issues.len() > 1000 {
@@ -97,11 +98,12 @@ impl Workspace {
     /// Returns whether the issue changed stage.
     fn move_issue(
         &mut self,
-        id: Uuid,
+        id: IssueId,
         stage_id: Uuid,
-        before_id: Option<Uuid>,
+        before_id: Option<IssueId>,
         now: DateTime<Utc>,
     ) -> Result<bool> {
+        let id = id.0;
         let original = self.issue(id)?.clone();
         let (team_id, original_stage) = (original.team_id, original.stage_id);
         if original.archived_at.is_some() {
@@ -134,7 +136,7 @@ impl Workspace {
         let at = match before_id {
             Some(before) => ids
                 .iter()
-                .position(|(_, other)| *other == before)
+                .position(|(_, other)| *other == before.0)
                 .ok_or(Error::BadRequest("invalid ordering neighbor".into()))?,
             None => ids.len(),
         };
@@ -160,7 +162,7 @@ impl Workspace {
 
     fn bulk_issues(
         &mut self,
-        ids: Vec<Uuid>,
+        ids: Vec<IssueId>,
         action: BulkAction,
         actor: Uuid,
         now: DateTime<Utc>,
@@ -175,7 +177,7 @@ impl Workspace {
                 BulkAction::Update(p) => {
                     fields.extend(self.patch_issue(id, *p.clone(), actor, now)?)
                 }
-                BulkAction::Delete => self.issue_mut(id)?.deleted_at = Some(now),
+                BulkAction::Delete => self.issue_mut(id.0)?.deleted_at = Some(now),
                 BulkAction::Restore => self.restore(id, now)?,
                 BulkAction::Archive => self.archive(id, now)?,
                 BulkAction::Unarchive => self.unarchive(id, now)?,
@@ -185,11 +187,11 @@ impl Workspace {
     }
 
     fn create_issue(&mut self, input: IssueInput, actor: Uuid, now: DateTime<Utc>) -> Result<Uuid> {
-        let id = self.take_client_id(input.id)?;
+        let id = self.take_client_id(input.id.map(|id| id.0))?;
         let stage_id = match input.stage_id {
             Some(id) => id,
             None => {
-                self.team(input.team_id)?
+                self.team(input.team_id.0)?
                     .stages
                     .first()
                     .ok_or(Error::BadRequest("team has no workflow".into()))?
@@ -204,11 +206,11 @@ impl Workspace {
             subtask_completed: 0,
             version: 1,
             id,
-            number: self.next_number(input.team_id),
+            number: self.next_number(input.team_id.0),
             former_keys: vec![],
             title: input.title,
             description: input.description,
-            team_id: input.team_id,
+            team_id: input.team_id.0,
             stage_id,
             assignee: input.assignee,
             created_by: Some(actor),
@@ -219,8 +221,8 @@ impl Workspace {
             project_id: input.project_id,
             milestone_id: input.milestone_id,
             sprint_id: input.sprint_id,
-            parent_id: input.parent_id,
-            dependencies: id_set(input.dependencies),
+            parent_id: input.parent_id.map(|id| id.0),
+            dependencies: id_set(input.dependencies.into_iter().map(|id| id.0).collect()),
             position: 0,
             followers: vec![actor],
             attachments: vec![],
@@ -267,11 +269,12 @@ impl Workspace {
 
     fn patch_issue(
         &mut self,
-        id: Uuid,
+        id: IssueId,
         p: IssuePatch,
         actor: Uuid,
         now: DateTime<Utc>,
     ) -> Result<Vec<String>> {
+        let id = id.0;
         let old = self.issue(id)?.clone();
         if old.archived_at.is_some() {
             return Err(Error::Conflict("issue is archived".into()));
@@ -279,7 +282,7 @@ impl Workspace {
         let mut i = old.clone();
         let (old_assignee, old_stage) = (i.assignee, i.stage_id);
 
-        let team = p.team_id.filter(|team| *team != old.team_id);
+        let team = p.team_id.filter(|team| team.0 != old.team_id);
         i.apply_patch(p);
         if let Some(team) = team {
             self.enter_team(&old, &mut i, team)?;
@@ -355,13 +358,13 @@ impl Workspace {
             + 1
     }
 
-    fn enter_team(&self, old: &Issue, i: &mut Issue, team: Uuid) -> Result<()> {
+    fn enter_team(&self, old: &Issue, i: &mut Issue, team: TeamId) -> Result<()> {
         if old.tracker.is_some() {
             return Err(Error::BadRequest(
                 "synced issues follow their tracker project's team".into(),
             ));
         }
-        i.leave_team(old, team);
+        i.leave_team(old, team.0);
         i.number = self.next_number(i.team_id);
         let team = self.team(i.team_id)?;
         if i.stage_id == old.stage_id {
@@ -446,7 +449,8 @@ impl Workspace {
         Ok(())
     }
 
-    fn restore(&mut self, id: Uuid, now: DateTime<Utc>) -> Result<()> {
+    fn restore(&mut self, id: IssueId, now: DateTime<Utc>) -> Result<()> {
+        let id = id.0;
         let mut issue = self
             .issues
             .iter()
@@ -471,7 +475,8 @@ impl Workspace {
         Ok(())
     }
 
-    fn archive(&mut self, id: Uuid, now: DateTime<Utc>) -> Result<()> {
+    fn archive(&mut self, id: IssueId, now: DateTime<Utc>) -> Result<()> {
+        let id = id.0;
         let mut issue = self
             .issues
             .iter()
@@ -495,7 +500,8 @@ impl Workspace {
         Ok(())
     }
 
-    fn unarchive(&mut self, id: Uuid, now: DateTime<Utc>) -> Result<()> {
+    fn unarchive(&mut self, id: IssueId, now: DateTime<Utc>) -> Result<()> {
+        let id = id.0;
         let mut issue = self
             .issues
             .iter()
