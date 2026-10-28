@@ -1,105 +1,62 @@
+import type { components } from "./api.gen";
 import type { TEAM_COLORS, TEAM_ICONS } from "./teams";
 
+type Schemas = components["schemas"];
+
+/**
+ * A record as serde writes it. utoipa marks `Option` and `#[serde(default)]` fields optional,
+ * but serde writes them every time. `Optional` names the fields that can really be absent.
+ */
+type Written<T, Optional extends keyof T = never> = T extends unknown
+  ? Omit<Required<T>, Optional> & Pick<T, Optional>
+  : never;
+/** `Omit` that fails when a key leaves the schema, so an override can't outlive its field. */
+type Without<T, K extends keyof T> = Omit<T, K>;
+/** The client never sends null for these fields, so reads don't have to handle it. */
+type NoNull<T> = { [K in keyof T]: Exclude<T[K], null> };
+/** Arrays become readonly at every depth, as the replica hands records out frozen. */
+type Frozen<T> = T extends readonly (infer U)[]
+  ? readonly Frozen<U>[]
+  : T extends object
+    ? { [K in keyof T]: Frozen<T[K]> }
+    : T;
+
 export type Id = string;
-export type Role = "owner" | "admin" | "member" | "viewer";
-export type StageKind = "backlog" | "planned" | "active" | "done" | "cancelled";
-export type Priority = "none" | "low" | "normal" | "high" | "urgent";
-export type SprintState = "planned" | "active" | "completed" | "archived";
-export type AlertKind = "assignment" | "reply" | "change" | "mention" | "deadline";
-export type InvitationState = "pending" | "accepted" | "cancelled" | "expired";
-export type IssueSort = "position" | "deadline" | "updated" | "priority";
-export type IssueGroup = "stage" | "priority" | "assignee" | "none";
+export type Role = Schemas["Role"];
+export type StageKind = Schemas["StageKind"];
+export type Priority = Schemas["Priority"];
+export type SprintState = Schemas["SprintState"];
+export type AlertKind = Schemas["AlertKind"];
+export type InvitationState = Schemas["InvitationState"];
+export type IssueSort = Schemas["IssueSort"];
+export type IssueGroup = Schemas["IssueGroup"];
 /** A list's grouping. Milestone grouping is client-only, so saved views and the server lack it. */
 export type ListGroup = IssueGroup | "milestone";
-export type Language = "en" | "pl";
-export type Theme = "light" | "dark" | "system";
+export type Language = Schemas["Language"];
+export type Theme = Schemas["Theme"];
 
 export type TeamIcon = (typeof TEAM_ICONS)[number];
 export type TeamColor = (typeof TEAM_COLORS)[number];
 
-export interface Stage {
-  id: Id;
-  version: number;
-  name: string;
-  kind: StageKind;
-  position: number;
-}
-export interface Team {
-  id: Id;
-  version: number;
-  name: string;
-  /** Prefixes the team's issue numbers, as in `ENG-42`. Unique in the workspace. */
-  key: string;
-  /** Keys the team had before, sorted. Issue keys under them still resolve. */
-  former_keys: string[];
-  members: Id[];
-  stages: Stage[];
-  /** Days after Done before auto-archive. Null means never. */
-  archive_after_days: number | null;
+export type Stage = Written<Schemas["Stage"]>;
+/** The server stores any string as icon and color; the client only draws its own sets. */
+export type Team = Without<Written<Schemas["Team"]>, "icon" | "color"> & {
   icon: TeamIcon;
   color: TeamColor;
-}
-export interface Label {
-  id: Id;
-  version: number;
-  name: string;
-  color: string;
-}
-export type ProjectStatus = "planned" | "in_progress" | "completed" | "cancelled";
-export type ProjectHealth = "on_track" | "at_risk" | "off_track";
+};
+export type Label = Written<Schemas["Label"]>;
+export type ProjectStatus = Schemas["ProjectStatus"];
+export type ProjectHealth = Schemas["ProjectHealth"];
 export type IsoDate = string;
-export interface Project {
-  id: Id;
-  version: number;
-  name: string;
-  description: string;
-  team_ids: Id[];
-  lead_id: Id | null;
-  status: ProjectStatus;
-  health: ProjectHealth | null;
-  start_date: IsoDate | null;
-  target_date: IsoDate | null;
-}
-export interface Milestone {
-  id: Id;
-  version: number;
-  project_id: Id;
-  name: string;
-  deadline: string | null;
-}
-export interface Sprint {
-  id: Id;
-  version: number;
-  team_id: Id;
+export type Project = Written<Schemas["Project"]>;
+export type Milestone = Written<Schemas["Milestone"]>;
+export type Sprint = Without<Written<Schemas["Sprint"]>, "number"> & {
   /** Counts up per team. Null until the server confirms a create. */
   number: number | null;
-  name: string;
-  goal: string;
-  starts_at: string;
-  ends_at: string;
-  state: SprintState;
-  outcome: { total: number; completed: number; effort: number } | null;
-}
-export interface Attachment {
-  id: Id;
-  name: string;
-  content_type: string;
-  size: number;
-}
-export interface SourceLink {
-  url: string;
-  title: string;
-}
-export interface TrackerLink {
-  provider: TrackerProviderKind;
-  connection_id: Id;
-  remote_id: string;
-  project_id: string;
-  parent_remote_id?: string | null;
-  status_name: string;
-  url: string;
-  push_error?: string | null;
-}
+};
+export type Attachment = Schemas["Attachment"];
+export type SourceLink = Schemas["SourceLink"];
+export type TrackerLink = Schemas["TrackerLink"];
 export type TrackerProviderKind = "openproject";
 export type TrackerField =
   | "status"
@@ -170,219 +127,51 @@ export interface TrackerConnectionInput {
   projects?: TrackerMapping[];
   people_mapping?: Record<string, Id>;
 }
-export interface FormerKey {
-  team_id: Id;
-  number: number;
-}
-export interface Issue {
-  tracker?: TrackerLink | null;
-  id: Id;
-  version: number;
-  blocked_count: number;
-  subtask_total: number;
-  subtask_completed: number;
-  /**
-   * Counts up per team. A locally created issue carries the client's
-   * prediction until the pull brings the server's.
-   */
-  number: number;
-  /** Teams and numbers the issue held before it moved. Their keys still name it. */
-  former_keys: readonly FormerKey[];
+export type FormerKey = Schemas["FormerKey"];
+/**
+ * `number` counts up per team. A locally created issue carries the client's prediction until
+ * the pull brings the server's.
+ */
+export type Issue = Frozen<Written<Schemas["Issue"], "tracker">> & {
   /** The team key and number, as in `ENG-42`. Derived on the client. */
   key: string;
   /** What URLs name the issue by: its confirmed key, or its id until the server confirms it. */
   ref: string;
-  title: string;
-  description: string;
-  team_id: Id;
-  stage_id: Id;
-  assignee: Id | null;
-  /** Null for synced issues without a mapped author and issues created before creators were stored. */
-  created_by: Id | null;
-  priority: Priority;
-  labels: readonly Id[];
-  estimate: number | null;
-  deadline: string | null;
-  project_id: Id | null;
-  milestone_id: Id | null;
-  sprint_id: Id | null;
-  parent_id: Id | null;
-  dependencies: readonly Id[];
-  position: number;
-  followers: readonly Id[];
-  attachments: readonly Attachment[];
-  source_links: readonly SourceLink[];
-  deleted_at: string | null;
-  archived_at: string | null;
-  done_at: string | null;
-  created_at: string;
-  updated_at: string;
-}
-export interface Comment {
-  id: Id;
-  version: number;
-  issue_id: Id;
-  author: Id;
-  body: string;
-  mentions: readonly Id[];
-  attachments: readonly Attachment[];
-  created_at: string;
-  edited_at: string | null;
-  /** Set on comments imported from an issue tracker; older servers omit it. */
-  tracker?: CommentTracker | null;
-  /** The API token that wrote the comment for its author, if one did. */
-  via?: Via | null;
-}
-export interface CommentTracker {
-  provider: string;
-  author_name?: string | null;
-}
+};
+/** `tracker` stays optional because comments cached from older servers lack it. */
+export type Comment = Frozen<Written<Schemas["Comment"], "tracker" | "via">>;
+export type CommentTracker = Schemas["CommentTracker"];
 /** The personal access token behind a write: an integration or agent acting for the actor. */
-export interface Via {
-  kind: "api" | "mcp";
-  token_id: Id;
-  name: string;
-}
-export interface TimeEntry {
-  id: Id;
-  version: number;
-  issue_id: Id;
-  user_id: Id;
-  minutes: number;
-  note: string;
-  logged_at: string;
-}
-export interface Invitation {
-  id: Id;
-  version: number;
-  email: string;
-  role: Role;
-  expires_at: string;
-  state: InvitationState;
-}
-export type FilterField =
-  | "assignee"
-  | "created_by"
-  | "team_id"
-  | "stage_id"
-  | "stage_kind"
-  | "priority"
-  | "labels"
-  | "project_id"
-  | "milestone_id"
-  | "sprint_id"
-  | "parent_id"
-  | "dependencies"
-  | "estimate"
-  | "deadline"
-  | "created_at"
-  | "updated_at";
-export type FilterOp = "is" | "is_not" | "lt" | "lte" | "gt" | "gte";
+export type Via = Schemas["Via"];
+export type TimeEntry = Written<Schemas["TimeEntry"]>;
+/** The sync shape adds `token_hash`; see SyncInvitation. */
+export type Invitation = Without<Written<Schemas["Invitation"]>, "token_hash">;
+export type FilterField = Schemas["FilterField"];
+export type FilterOp = Schemas["FilterOp"];
 /** Strings or null; null is an empty field. See docs/filters.md for each field's values. */
 export type FilterValue = string | null;
-export interface FilterClause {
-  field: FilterField;
-  op: FilterOp;
-  values: readonly FilterValue[];
-}
-export interface IssueFilter {
-  /** Clauses ANDed together. */
-  where?: readonly FilterClause[];
-  search?: string;
-  trash?: boolean;
-  archived?: boolean;
-  ids?: string;
-  sort?: IssueSort;
-  group_by?: IssueGroup;
-  /** Paging cursor for ungrouped Updated pages. Stored as given. */
-  after?: string;
-  /** Record shape. The server defaults it to full. */
-  projection?: "full" | "summary";
-}
-export interface SavedView {
-  id: Id;
-  version: number;
-  owner: Id;
-  name: string;
-  shared: boolean;
-  filter: IssueFilter;
-}
-export interface Notification {
-  id: Id;
-  version: number;
-  user_id: Id;
-  issue_id: Id | null;
-  kind: AlertKind;
-  message: string;
-  read_at: string | null;
-  created_at: string;
-  actor_id?: Id | null;
-  fields?: readonly string[];
-}
-export interface AlertPrefsWs {
-  user_id: Id;
-  version: number;
-  assignment: boolean;
-  reply: boolean;
-  change: boolean;
-  mention: boolean;
-  deadline: boolean;
-  email_assignment: boolean;
-  email_reply: boolean;
-  email_change: boolean;
-  email_mention: boolean;
-  email_deadline: boolean;
-}
-export interface Integration {
-  id: Id;
-  version: number;
-  name: string;
-  webhook_url: string;
-  enabled: boolean;
-  include_data: boolean;
-}
-export interface SessionInfo {
-  id: Id;
-  created_at: string;
-  last_seen_at: string | null;
-  user_agent: string | null;
-  current: boolean;
-}
+export type FilterClause = Frozen<Schemas["FilterClause"]>;
+export type IssueFilter = Frozen<NoNull<Schemas["IssueFilter"]>>;
+export type SavedView = Without<Written<Schemas["SavedView"]>, "filter"> & { filter: IssueFilter };
+/** The sync shape adds `dedup_key`; see SyncNotification. Older servers omit `actor_id` and `fields`. */
+export type Notification = Frozen<
+  Without<Written<Schemas["Notification"], "actor_id" | "fields">, "dedup_key">
+>;
+export type AlertPrefsWs = Written<Schemas["AlertPreferences"]>;
+/** The sync shape adds `secret`; see SyncIntegration. */
+export type Integration = Without<Written<Schemas["Integration"]>, "secret" | "events">;
+export type SessionInfo = Written<Schemas["SessionInfo"]>;
 /** A personal access token for /api/v1 and /mcp. The secret is only returned at creation. */
-export interface ApiToken {
-  id: Id;
-  name: string;
-  prefix: string;
-  access: "read" | "comment" | "write";
-  workspace_ids: Id[] | null;
-  created_at: string;
-  expires_at: string | null;
-  last_used_at: string | null;
-}
-type Values<F extends string, T> = { field: F; from: T; to: T };
-
+export type ApiToken = Written<Schemas["ApiToken"]>;
 /** One field an issue update changed. References are ids, so they show the current name. */
-export type FieldChange =
-  | Values<"title", string>
-  | Values<"team" | "stage", Id>
-  | Values<"assignee" | "project" | "milestone" | "sprint" | "parent", Id | null>
-  | Values<"priority", Priority>
-  | Values<"labels", readonly Id[]>
-  | Values<"estimate", number | null>
-  | Values<"deadline", string | null>
-  | { field: "description" | "dependencies" };
+export type FieldChange = Frozen<Written<Schemas["FieldChange"]>>;
 
-export interface Activity {
-  id: Id;
-  actor: Id;
-  action: string;
-  entity_id: Id | null;
-  at: string;
-  fields?: readonly string[];
+export type Activity = Frozen<
+  Without<Written<Schemas["Activity"], "fields" | "via">, "changes">
+> & {
   /** Absent or empty on rows written before values were stored. */
   changes?: readonly FieldChange[];
-  via?: Via | null;
-}
+};
 
 /** Workspace metadata assembled from the current replica view. */
 export interface Workspace {
@@ -390,7 +179,7 @@ export interface Workspace {
   name: string;
   /** Names the workspace in app URLs. */
   slug: string;
-  members: { user_id: Id; role: Role; version: number }[];
+  members: Written<Schemas["Member"]>[];
   teams: Team[];
   labels: Label[];
   projects: Project[];
@@ -401,56 +190,13 @@ export interface Workspace {
   alert_preferences: AlertPrefsWs[];
   integrations: Integration[];
 }
-export interface WorkspaceSummary {
-  id: Id;
-  name: string;
-  /** Names the workspace in app URLs. */
-  slug: string;
-  version: number;
-}
-export interface MemberProfile {
-  id: Id;
-  role: Role;
-  version: number;
-  email: string;
-  display_name: string;
-  avatar_url: string | null;
-  contact: string;
-  team_ids: Id[];
-}
-export interface Profile {
-  id: Id;
-  email: string;
-  display_name: string;
-  avatar_url: string | null;
-  contact: string;
-  language: Language;
-  theme: Theme;
-}
-export type LimitedResource =
-  | "issues"
-  | "comments"
-  | "time_entries"
-  | "teams"
-  | "projects"
-  | "labels"
-  | "milestones"
-  | "sprints"
-  | "saved_views"
-  | "invitations"
-  | "integrations";
+export type WorkspaceSummary = Schemas["WorkspaceSummary"];
+export type MemberProfile = Written<Schemas["MemberProfile"]>;
+export type Profile = Written<Schemas["Profile"]>;
+export type LimitedResource = Schemas["Resource"];
 /** How many of one resource the workspace holds; a null limit is unlimited. */
-export interface Usage {
-  resource: LimitedResource;
-  used: number;
-  limit: number | null;
-}
-export interface ImportSummary {
-  issues: number;
-  comments: number;
-  time_entries: number;
-  identities: { source: Id; target: Id; fallback: boolean }[];
-}
+export type Usage = Written<Schemas["Usage"]>;
+export type ImportSummary = Schemas["ImportSummary"];
 export interface Total {
   id: Id;
   minutes: number;
@@ -478,48 +224,17 @@ export interface Report {
   sprints: { id: Id; total: number; completed: number; effort: number }[];
   delivery: { date: string; completed: number }[];
 }
-export interface IssueInput {
-  id?: Id;
-  title: string;
-  description?: string;
-  team_id: Id;
-  stage_id?: Id | null;
-  assignee?: Id | null;
-  priority?: Priority;
-  labels?: Id[];
-  estimate?: number | null;
-  deadline?: string | null;
-  project_id?: Id | null;
-  milestone_id?: Id | null;
-  sprint_id?: Id | null;
-  parent_id?: Id | null;
-  dependencies?: Id[];
-}
-export interface IssuePatch {
-  title?: string;
-  description?: string;
-  team_id?: Id;
-  stage_id?: Id;
-  assignee?: Id;
-  clear_assignee?: boolean;
-  priority?: Priority;
-  /** A list replaces every label. `{add, remove}` changes only the labels it names. */
-  labels?: Id[] | { add?: Id[]; remove?: Id[] };
-  estimate?: number;
-  clear_estimate?: boolean;
-  deadline?: string;
-  clear_deadline?: boolean;
-  project_id?: Id;
-  clear_project?: boolean;
-  milestone_id?: Id;
-  clear_milestone?: boolean;
-  sprint_id?: Id;
-  clear_sprint?: boolean;
-  parent_id?: Id;
-  clear_parent?: boolean;
-  dependencies?: Id[];
-}
-export type Command =
+/** The client always picks the id of an offline create, or leaves it out. */
+export type IssueInput = Without<Schemas["IssueInput"], "id"> & { id?: Id };
+/** A list in `labels` replaces every label. `{add, remove}` changes only the labels it names. */
+export type IssuePatch = NoNull<Schemas["IssuePatch"]>;
+/** Fails the build when a client command stops matching one the server accepts. */
+type Sendable<T extends Frozen<Schemas["Command"]>> = T;
+/**
+ * Commands the client sends. Hand-written because the mutators read fields that the server
+ * accepts as absent, such as `members` on `create_team`.
+ */
+export type Command = Sendable<
   | {
       type: "create_team";
       id?: Id;
@@ -643,10 +358,11 @@ export type Command =
   | { type: "update_integration"; id: Id; enabled: boolean; include_data?: boolean }
   | { type: "delete_integration"; id: Id }
   | { type: "add_source_link"; issue_id: Id; url: string; title: string }
-  | { type: "import_issues"; issues: IssueInput[] };
+  | { type: "import_issues"; issues: IssueInput[] }
+>;
 
 export type EntityVersions = Record<Id, number>;
-export interface CommandResult {
-  result: { id: Id | null };
-  versions: EntityVersions;
-}
+/** The server's OperationResult. `changes` only matters to the sync engine. */
+export type CommandResult = Without<Schemas["OperationResult"], "result"> & {
+  result: Written<Schemas["CommandResult"], "invitation">;
+};
