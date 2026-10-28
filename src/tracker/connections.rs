@@ -474,6 +474,32 @@ async fn restart_scan(
     drop_unmapped(conn, id, &settings.projects).await
 }
 
+/// Saves settings that don't affect what the scan imports.
+async fn rename(
+    conn: &mut PgConnection,
+    workspace: Uuid,
+    id: Uuid,
+    settings: &Settings,
+) -> Result<()> {
+    sqlx::query!(
+        "UPDATE tracker_connections SET name=$3,options=$4 WHERE workspace_id=$1 AND id=$2",
+        workspace,
+        id,
+        settings.name,
+        json!(settings.options),
+    )
+    .execute(conn)
+    .await?;
+    Ok(())
+}
+
+fn valid_token(token: String) -> Result<String> {
+    if token.is_empty() || token.len() > 4096 || token.chars().any(char::is_control) {
+        return Err(Error::BadRequest("invalid token".into()));
+    }
+    Ok(token)
+}
+
 async fn configure(
     store: Store,
     actor: Actor,
@@ -497,10 +523,7 @@ async fn configure(
     let name = config.name.unwrap_or(previous.name.clone());
     crate::domain::text(&name, 200)?;
     let base_url = updated_url(&mut tx, id, provider, config.base_url, &previous.base_url).await?;
-    let token = config.token.unwrap_or(previous.token.clone());
-    if token.is_empty() || token.len() > 4096 || token.chars().any(char::is_control) {
-        return Err(Error::BadRequest("invalid token".into()));
-    }
+    let token = valid_token(config.token.unwrap_or(previous.token.clone()))?;
     let options = config.options.map_or_else(
         || previous.options.clone(),
         |options| options.merged(&previous.options),
@@ -532,15 +555,7 @@ async fn configure(
         )
         .await?;
     } else if next.name != previous.name || next.options != previous.options {
-        sqlx::query!(
-            "UPDATE tracker_connections SET name=$3,options=$4 WHERE workspace_id=$1 AND id=$2",
-            workspace,
-            id,
-            next.name,
-            json!(next.options),
-        )
-        .execute(&mut *tx)
-        .await?;
+        rename(&mut tx, workspace, id, &next).await?;
     }
     let result = connection(
         sqlx::query(&format!(
