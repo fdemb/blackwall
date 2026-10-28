@@ -23,11 +23,11 @@ export const AT = "2026-10-09T12:00:00.000000Z";
 /** Normalized form of NOW, for whole-record expectations. */
 export const STAMP = "2026-10-08T12:00:00.000000Z";
 
-export const OWNER = "user-owner";
-export const ADMIN = "user-admin";
-export const MEMBER = "user-member";
-export const VIEWER = "user-viewer";
-export const GHOST = "user-ghost";
+export const OWNER = "40000000-0000-4000-8000-000000000000";
+export const ADMIN = "10000000-0000-4000-8000-000000000000";
+export const MEMBER = "30000000-0000-4000-8000-000000000000";
+export const VIEWER = "50000000-0000-4000-8000-000000000000";
+export const GHOST = "20000000-0000-4000-8000-000000000000";
 
 export const TEAM = "team-1";
 export const TEAM_OTHER = "team-2";

@@ -1,5 +1,5 @@
 use super::*;
-use crate::domain::{AlertPreferences, validate_email, validate_url};
+use crate::domain::{AlertPreferences, mentioned_users, validate_email, validate_url};
 use crate::jobs::{Email, Grant, Job};
 use std::collections::BTreeSet;
 
@@ -299,10 +299,7 @@ impl Operation<'_> {
     ) -> Result<Uuid> {
         self.discussion_issue(issue_id).await?;
         crate::domain::text(&body, 100_000)?;
-        let mentions: BTreeSet<_> = mentions.into_iter().collect();
-        for user in &mentions {
-            self.member(*user).await?;
-        }
+        let mentions = self.comment_mentions(&body, mentions).await?;
 
         self.capacity(Resource::Comments, 1).await?;
         let id = self.reserve_client_id(id).await?;
@@ -332,6 +329,32 @@ impl Operation<'_> {
         }
         self.created("comments", id);
         Ok(id)
+    }
+
+    /// Every listed user must be a member. Members the body links to join them, and
+    /// linked non-members drop out, as in issue descriptions.
+    async fn comment_mentions(&mut self, body: &str, listed: Vec<Uuid>) -> Result<BTreeSet<Uuid>> {
+        let mut mentions: BTreeSet<_> = listed.into_iter().collect();
+        for user in &mentions {
+            self.member(*user).await?;
+        }
+        let linked: Vec<Uuid> = mentioned_users(body)
+            .difference(&mentions)
+            .copied()
+            .collect();
+        if linked.is_empty() {
+            return Ok(mentions);
+        }
+        let members: Vec<Uuid> = sqlx::query_scalar(
+            "SELECT user_id FROM workspace_members WHERE workspace_id=$1 AND \
+            user_id=ANY($2) FOR SHARE",
+        )
+        .bind(self.workspace_id)
+        .bind(&linked)
+        .fetch_all(&mut *self.tx)
+        .await?;
+        mentions.extend(members);
+        Ok(mentions)
     }
 
     async fn insert_mentions(&mut self, comment_id: Uuid, mentions: &BTreeSet<Uuid>) -> Result<()> {
@@ -425,10 +448,7 @@ impl Operation<'_> {
 
         let row = self.discussion_record("comments", "author", id).await?;
         self.author_or_admin(row.try_get("author")?)?;
-        let mentions: BTreeSet<_> = mentions.into_iter().collect();
-        for user in &mentions {
-            self.member(*user).await?;
-        }
+        let mentions = self.comment_mentions(&body, mentions).await?;
         self.touch_locked("comments", id, row.try_get("version")?)
             .await?;
 

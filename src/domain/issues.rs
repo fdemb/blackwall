@@ -156,7 +156,8 @@ pub const MARKDOWN_OPTIONS: pulldown_cmark::Options =
 /// Users mentioned in `markdown`, by the id in each mention link.
 pub fn mentioned_users(markdown: &str) -> BTreeSet<Uuid> {
     use pulldown_cmark::{Event, Parser, Tag};
-    if !markdown.contains(MENTION_SCHEME) {
+    // Entities and escapes can spell the colon, so look for the bare word.
+    if !markdown.contains("mention") {
         return BTreeSet::new();
     }
     Parser::new_ext(markdown, MARKDOWN_OPTIONS)
@@ -448,12 +449,24 @@ fn set_or_clear<T>(field: &mut Option<T>, value: Option<T>, clear: bool) {
 mod mention_tests {
     use super::*;
 
+    #[derive(serde::Deserialize)]
+    struct Case {
+        name: String,
+        markdown: String,
+        mentions: BTreeSet<Uuid>,
+    }
+
     #[test]
-    fn mentions_come_from_links_only() {
-        let (ana, bo) = (Uuid::new_v4(), Uuid::new_v4());
-        let text = format!(
-            "Ask [@Ana](mention:{ana}).\n\n`[@Bo](mention:{bo})` \\[@Bo](mention:{bo})\n\n```\n[@Bo](mention:{bo})\n```\n\n    [@Bo](mention:{bo})\n\n| who |\n| --- |\n| [@Ana](mention:{ana}) |\n"
-        );
-        assert_eq!(mentioned_users(&text), BTreeSet::from([ana]));
+    fn mentions_match_the_shared_cases() {
+        let cases: Vec<Case> =
+            serde_json::from_str(include_str!("../../web/app/lib/mention-cases.json")).unwrap();
+        for case in cases {
+            assert_eq!(
+                mentioned_users(&case.markdown),
+                case.mentions,
+                "{}",
+                case.name
+            );
+        }
     }
 }

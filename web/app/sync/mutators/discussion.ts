@@ -14,6 +14,7 @@ import {
   requireClientId,
 } from "./common";
 import { MutationError } from "./errors";
+import { mentionedUsers } from "../../lib/mentions";
 import type { Attachment, Comment } from "../../lib/types";
 import type { SyncIssue } from "../records";
 
@@ -42,6 +43,17 @@ function requireComment(tx: Tx, id: string): DeepReadonly<Comment> {
   const comment = tx.get("comments", id);
   if (comment === undefined) throw new MutationError(404, "not found");
   return comment;
+}
+
+/**
+ * `discussion::comment_mentions`: every listed user must be a member. Members
+ * the body links to join them, and linked non-members drop out.
+ */
+function commentMentions(tx: Tx, body: string, listed: readonly string[]): string[] {
+  const mentions = dedupeSortUuids(listed);
+  for (const user of mentions) requireMember(tx, user);
+  const linked = mentionedUsers(body).filter((user) => tx.get("members", user));
+  return dedupeSortUuids([...mentions, ...linked]);
 }
 
 /**
@@ -77,8 +89,7 @@ export const addComment: Mutator<ArgsOf<"add_comment">> = (tx, args, ctx) => {
   // mentions, then the client id.
   const issue = requireDiscussionIssue(tx, args.issue_id);
   checkText(args.body, 100_000);
-  const mentions = dedupeSortUuids(args.mentions);
-  for (const user of mentions) requireMember(tx, user);
+  const mentions = commentMentions(tx, args.body, args.mentions);
   const id = reserveClientId(tx, args.id, ctx);
   // The server moves the attachments from the issue to the comment, keeping
   // the stored upload metadata ordered by attachment id. An id that is not on
@@ -125,8 +136,7 @@ export const editComment: Mutator<ArgsOf<"edit_comment">> = (tx, args, ctx) => {
   checkText(args.body, 100_000);
   const comment = requireComment(tx, args.id);
   requireAuthorOrAdmin(tx, ctx.actor, comment.author);
-  const mentions = dedupeSortUuids(args.mentions);
-  for (const user of mentions) requireMember(tx, user);
+  const mentions = commentMentions(tx, args.body, args.mentions);
   const added = mentions.filter((user) => !comment.mentions.includes(user));
   const issue = tx.get("issues", comment.issue_id);
   if (issue && added.some((user) => !issue.followers.includes(user)))

@@ -1,0 +1,102 @@
+[
+  {
+    "name": "links only, outside code and escapes",
+    "markdown": "Ask [@Ana](mention:0d9b2c64-6f8e-4b3e-9a51-2f6a8e1c7d40).\n\n`[@Bo](mention:5d004da9-2b6b-42b5-9abc-3459b4bfc99f)` \\[@Bo](mention:5d004da9-2b6b-42b5-9abc-3459b4bfc99f)\n\n```\n[@Bo](mention:5d004da9-2b6b-42b5-9abc-3459b4bfc99f)\n```\n\n    [@Bo](mention:5d004da9-2b6b-42b5-9abc-3459b4bfc99f)\n\n| who |\n| --- |\n| [@Ana](mention:0d9b2c64-6f8e-4b3e-9a51-2f6a8e1c7d40) |\n",
+    "mentions": ["0d9b2c64-6f8e-4b3e-9a51-2f6a8e1c7d40"]
+  },
+  {
+    "name": "two mentions",
+    "markdown": "[@Bo](mention:5d004da9-2b6b-42b5-9abc-3459b4bfc99f) and [@Ana](mention:0d9b2c64-6f8e-4b3e-9a51-2f6a8e1c7d40)",
+    "mentions": ["0d9b2c64-6f8e-4b3e-9a51-2f6a8e1c7d40", "5d004da9-2b6b-42b5-9abc-3459b4bfc99f"]
+  },
+  {
+    "name": "uppercase id",
+    "markdown": "[@Ana](mention:0D9B2C64-6F8E-4B3E-9A51-2F6A8E1C7D40)",
+    "mentions": ["0d9b2c64-6f8e-4b3e-9a51-2f6a8e1c7d40"]
+  },
+  {
+    "name": "decimal entity in the id",
+    "markdown": "[@Ana](mention:&#48;d9b2c64-6f8e-4b3e-9a51-2f6a8e1c7d40)",
+    "mentions": ["0d9b2c64-6f8e-4b3e-9a51-2f6a8e1c7d40"]
+  },
+  {
+    "name": "hex entity in the id",
+    "markdown": "[@Ana](mention:&#x30;d9b2c64-6f8e-4b3e-9a51-2f6a8e1c7d40)",
+    "mentions": ["0d9b2c64-6f8e-4b3e-9a51-2f6a8e1c7d40"]
+  },
+  {
+    "name": "decimal entity for the colon",
+    "markdown": "[@Ana](mention&#58;0d9b2c64-6f8e-4b3e-9a51-2f6a8e1c7d40)",
+    "mentions": ["0d9b2c64-6f8e-4b3e-9a51-2f6a8e1c7d40"]
+  },
+  {
+    "name": "named entity for the colon",
+    "markdown": "[@Ana](mention&colon;0d9b2c64-6f8e-4b3e-9a51-2f6a8e1c7d40)",
+    "mentions": ["0d9b2c64-6f8e-4b3e-9a51-2f6a8e1c7d40"]
+  },
+  {
+    "name": "escaped colon",
+    "markdown": "[@Ana](mention\\:0d9b2c64-6f8e-4b3e-9a51-2f6a8e1c7d40)",
+    "mentions": ["0d9b2c64-6f8e-4b3e-9a51-2f6a8e1c7d40"]
+  },
+  {
+    "name": "autolink",
+    "markdown": "<mention:0d9b2c64-6f8e-4b3e-9a51-2f6a8e1c7d40>",
+    "mentions": ["0d9b2c64-6f8e-4b3e-9a51-2f6a8e1c7d40"]
+  },
+  {
+    "name": "escaped ampersand before an entity",
+    "markdown": "[@Ana](mention:\\&#48;d9b2c64-6f8e-4b3e-9a51-2f6a8e1c7d40)",
+    "mentions": []
+  },
+  {
+    "name": "escaped number sign in an entity",
+    "markdown": "[@Ana](mention:&\\#48;d9b2c64-6f8e-4b3e-9a51-2f6a8e1c7d40)",
+    "mentions": []
+  },
+  {
+    "name": "entity in an autolink",
+    "markdown": "<mention:&#48;d9b2c64-6f8e-4b3e-9a51-2f6a8e1c7d40>",
+    "mentions": []
+  },
+  {
+    "name": "reference labels that differ only by an escape",
+    "markdown": "[@Ana][ref\\&]\n\n[ref\\#]: mention:0d9b2c64-6f8e-4b3e-9a51-2f6a8e1c7d40",
+    "mentions": []
+  },
+  {
+    "name": "entity in a reference definition",
+    "markdown": "[@Ana][ref]\n\n[ref]: mention&#58;0d9b2c64-6f8e-4b3e-9a51-2f6a8e1c7d40",
+    "mentions": ["0d9b2c64-6f8e-4b3e-9a51-2f6a8e1c7d40"]
+  },
+  {
+    "name": "escaped ampersand in a reference definition",
+    "markdown": "[@Ana][ref]\n\n[ref]: mention:\\&#48;d9b2c64-6f8e-4b3e-9a51-2f6a8e1c7d40",
+    "mentions": []
+  },
+  {
+    "name": "decimal entity longer than seven digits",
+    "markdown": "[@Ana](mention:&#00000048;d9b2c64-6f8e-4b3e-9a51-2f6a8e1c7d40)",
+    "mentions": []
+  },
+  {
+    "name": "id that is not a uuid",
+    "markdown": "[@Ana](mention:not-a-uuid)",
+    "mentions": []
+  },
+  {
+    "name": "compact uuid",
+    "markdown": "[@Ana](mention:0d9b2c646f8e4b3e9a512f6a8e1c7d40)",
+    "mentions": []
+  },
+  {
+    "name": "braced uuid",
+    "markdown": "[@Ana](mention:{0d9b2c64-6f8e-4b3e-9a51-2f6a8e1c7d40})",
+    "mentions": []
+  },
+  {
+    "name": "other scheme",
+    "markdown": "[@Ana](https://example.com/0d9b2c64-6f8e-4b3e-9a51-2f6a8e1c7d40)",
+    "mentions": []
+  }
+]

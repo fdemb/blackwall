@@ -22,7 +22,6 @@ import { Button } from "~/components/ui/button";
 import { ConfirmDialog } from "~/components/app/confirm";
 import { useToast } from "~/components/ui/toast";
 import { Markdown } from "~/components/app/markdown";
-import { mentionedUsers } from "~/lib/mentions";
 import { MarkdownEditor } from "~/components/app/editor/rich-editor";
 import { formatMinutes, MAX_UPLOAD, relativeTime } from "~/lib/format";
 import { useI18n, isTranslationKey, type Key } from "~/lib/i18n";
@@ -204,7 +203,7 @@ function CommentItem({ comment: c }: { comment: Comment }) {
         type: "edit_comment",
         id: c.id,
         body: editBody.trim(),
-        mentions: mentionedUsers(editBody),
+        mentions: [],
       },
       { expectedVersions: { [c.id]: retryEdit.current ? c.version : editVersion.current } },
     )
@@ -382,7 +381,7 @@ function Composer({ issue, hasItems }: { issue: Issue; hasItems: boolean }) {
           type: "add_comment",
           issue_id: issue.id,
           body: body.trim(),
-          mentions: mentionedUsers(body),
+          mentions: [],
           attachments: [],
         },
         { quiet: true },
