@@ -1347,11 +1347,13 @@ async fn pull_renders_a_record_updated_many_times_once() {
     mark_all(&mut tx, ws, &others).await;
     mark_repeatedly(&mut tx, ws, hot, 50).await;
     tx.commit().await.unwrap();
-    let rows: i64 = sqlx::query_scalar("SELECT count(*) FROM changes WHERE workspace_id = $1")
-        .bind(ws)
-        .fetch_one(&store.pool)
-        .await
-        .unwrap();
+    let rows: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM changes WHERE workspace_id = $1 AND txid >= $2")
+            .bind(ws)
+            .bind(cursor_xmax(&before))
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
     assert_eq!(rows, 1600, "mark_change writes a row per call");
 
     let pages = pull_pages(&app, &owner.token, ws, client, &before).await;
