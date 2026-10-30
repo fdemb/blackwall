@@ -40,6 +40,7 @@ pub struct WorkerConfig {
     pub drain_timeout: Duration,
     pub retention_days: i32,
     pub failed_retention_days: i32,
+    pub changes_retention_days: i32,
 }
 
 impl Default for WorkerConfig {
@@ -53,6 +54,7 @@ impl Default for WorkerConfig {
             drain_timeout: Duration::from_secs(50),
             retention_days: 30,
             failed_retention_days: 90,
+            changes_retention_days: 30,
         }
     }
 }
@@ -85,6 +87,7 @@ impl WorkerConfig {
             drain_timeout: Duration::from_secs(setting("JOBS_DRAIN_SECONDS", 50, 1, 120)?),
             retention_days: setting("JOBS_RETENTION_DAYS", 30, 1, 3650)? as i32,
             failed_retention_days: setting("JOBS_FAILED_RETENTION_DAYS", 90, 1, 3650)? as i32,
+            changes_retention_days: setting("JOBS_CHANGES_RETENTION_DAYS", 30, 1, 3650)? as i32,
         })
     }
 
@@ -106,6 +109,7 @@ impl WorkerConfig {
             || self.drain_timeout > Duration::from_secs(120)
             || self.retention_days < 1
             || self.failed_retention_days < 1
+            || self.changes_retention_days < 1
         {
             return Err(Error::BadRequest(
                 "invalid worker limits; reserve at least three pool connections beyond database concurrency".into(),
@@ -304,13 +308,7 @@ impl Worker {
         if self.maintenance_at > tokio::time::Instant::now() {
             return;
         }
-        if let Err(error) = maintenance(
-            &self.store,
-            self.config.retention_days,
-            self.config.failed_retention_days,
-        )
-        .await
-        {
+        if let Err(error) = maintenance(&self.store, &self.config).await {
             tracing::warn!(error = %error, "queue maintenance failed");
         }
         self.maintenance_at = tokio::time::Instant::now() + MAINTENANCE_INTERVAL;
@@ -456,13 +454,7 @@ pub async fn tick(store: &Store, mailer: &Mailer) -> Result<()> {
         }
     }
 
-    let defaults = WorkerConfig::default();
-    maintenance(
-        store,
-        defaults.retention_days,
-        defaults.failed_retention_days,
-    )
-    .await
+    maintenance(store, &WorkerConfig::default()).await
 }
 
 async fn execute(store: &Store, mailer: &Mailer, claim: &Claim) -> Result<()> {
@@ -689,7 +681,7 @@ async fn execute_reminder(store: &Store, claim: &Claim, reminder: &Reminder) -> 
     Ok(())
 }
 
-async fn maintenance(store: &Store, retention_days: i32, failed_retention_days: i32) -> Result<()> {
+async fn maintenance(store: &Store, config: &WorkerConfig) -> Result<()> {
     let metrics = sqlx::query!(
         "SELECT \
          count(*) FILTER(WHERE state IN ('pending','running')) AS \"depth!\",\
@@ -722,7 +714,7 @@ async fn maintenance(store: &Store, retention_days: i32, failed_retention_days: 
         return Ok(());
     }
 
-    let outcome = sweep(store, retention_days, failed_retention_days).await;
+    let outcome = sweep(store, config).await;
     let _ = sqlx::query("SELECT pg_advisory_unlock(728192404)")
         .execute(&mut *lock)
         .await;
@@ -732,7 +724,7 @@ async fn maintenance(store: &Store, retention_days: i32, failed_retention_days: 
 
 const MAINTENANCE_BUDGET: Duration = Duration::from_secs(20);
 
-async fn sweep(store: &Store, retention_days: i32, failed_retention_days: i32) -> Result<()> {
+async fn sweep(store: &Store, config: &WorkerConfig) -> Result<()> {
     let deadline = tokio::time::Instant::now() + MAINTENANCE_BUDGET;
 
     for table in [
@@ -778,14 +770,17 @@ async fn sweep(store: &Store, retention_days: i32, failed_retention_days: i32) -
         Ok(progress)
     })
     .await?;
+    let (retention_days, failed_retention_days) =
+        (config.retention_days, config.failed_retention_days);
     drain(deadline, 1000, store.clone(), |s| async move {
         s.outbox
             .cleanup(retention_days, failed_retention_days)
             .await
     })
     .await?;
+    let changes_retention_days = config.changes_retention_days;
     drain(deadline, 10000, store.clone(), |s| async move {
-        s.prune_changes(retention_days).await
+        s.prune_changes(changes_retention_days).await
     })
     .await?;
     // Idle sync clients go after the sessions they belong to; a pruned

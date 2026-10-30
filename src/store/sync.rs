@@ -629,6 +629,24 @@ struct Snapshot {
     xip: Vec<i64>,
 }
 
+/// A transaction delivered only up to one of its change rows. It is in the
+/// cursor snapshot's window, so the snapshot alone would deliver all of it
+/// again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Partial {
+    txid: i64,
+    /// Rows of `txid` with an id at or below this reached the client.
+    row: i64,
+}
+
+/// What a request cursor promises: everything visible in `snapshot`, plus
+/// the rows of `partial`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Cursor {
+    snapshot: Snapshot,
+    partial: Option<Partial>,
+}
+
 fn snapshot_text(snapshot: &Snapshot) -> String {
     let xip = snapshot
         .xip
@@ -639,12 +657,22 @@ fn snapshot_text(snapshot: &Snapshot) -> String {
     format!("{}:{}:{xip}", snapshot.xmin, snapshot.xmax)
 }
 
-/// Strictly parses a request cursor. Anything that is not a snapshot the
+fn cursor_text(cursor: &Cursor) -> String {
+    let snapshot = snapshot_text(&cursor.snapshot);
+    match cursor.partial {
+        Some(partial) => format!("{snapshot}:{}.{}", partial.txid, partial.row),
+        None => snapshot,
+    }
+}
+
+/// Strictly parses a request cursor. Anything that is not a cursor the
 /// server could have produced is 400.
-fn parse_cursor(cursor: &str, snapshot_xmax: i64) -> Result<Snapshot> {
+fn parse_cursor(cursor: &str, snapshot_xmax: i64) -> Result<Cursor> {
     let invalid = || Error::BadRequest("cursor must be a cursor from this server".into());
-    let (xmin_s, xmax_s, xip_s) = match cursor.split(':').collect::<Vec<_>>().as_slice() {
-        [xmin, xmax, xip] => (*xmin, *xmax, *xip),
+    let parts = cursor.split(':').collect::<Vec<_>>();
+    let (xmin_s, xmax_s, xip_s, partial_s) = match parts.as_slice() {
+        [xmin, xmax, xip] => (*xmin, *xmax, *xip, None),
+        [xmin, xmax, xip, partial] => (*xmin, *xmax, *xip, Some(*partial)),
         _ => return Err(invalid()),
     };
     let integer = |value: &str| {
@@ -673,7 +701,23 @@ fn parse_cursor(cursor: &str, snapshot_xmax: i64) -> Result<Snapshot> {
     {
         return Err(invalid());
     }
-    Ok(Snapshot { xmin, xmax, xip })
+    let partial = partial_s
+        .map(|text| {
+            let (txid, row) = text.split_once('.').ok_or_else(invalid)?;
+            let (txid, row) = (integer(txid)?, integer(row)?);
+            // The transaction must be one the snapshot's window holds, and
+            // already committed as far as the pull's own snapshot can tell.
+            let in_window = txid >= xmax || xip.binary_search(&txid).is_ok();
+            if !in_window || txid >= snapshot_xmax || row < 1 {
+                return Err(invalid());
+            }
+            Ok(Partial { txid, row })
+        })
+        .transpose()?;
+    Ok(Cursor {
+        snapshot: Snapshot { xmin, xmax, xip },
+        partial,
+    })
 }
 
 /// The pull's own snapshot, as cursor text and parsed, plus the change
@@ -703,48 +747,68 @@ async fn pull_snapshot(tx: &mut PgConnection) -> Result<(String, Snapshot, i64)>
     Ok((row.text, snapshot, row.horizon))
 }
 
-/// Distinct changed records from whole transactions, and the first
-/// transaction left for the next page, if any.
+/// Where a full page stopped.
+#[derive(Debug, PartialEq, Eq)]
+enum Cut {
+    /// This transaction waits whole for the next page.
+    Before(i64),
+    /// The page ends inside this transaction, after its change row `row`.
+    Inside { txid: i64, row: i64 },
+}
+
+/// Distinct changed records, from whole transactions where they fit, and
+/// where the page stopped, if it did.
 #[derive(Default)]
 struct PullPage {
     pairs: std::collections::BTreeSet<(String, Uuid)>,
     /// Records of the transaction being read; joins `pairs` once it fits.
     group: std::collections::BTreeSet<(String, Uuid)>,
     group_txid: Option<i64>,
+    /// Id of the last row of the current transaction that made the page.
+    group_row: i64,
     included_txids: usize,
     scanned: usize,
-    excluded: Option<i64>,
+    cut: Option<Cut>,
 }
 
 impl PullPage {
-    /// Adds one change row. Returns false once its transaction has to wait
-    /// for the next page.
-    fn add(&mut self, txid: i64, entity: String, entity_id: Uuid) -> bool {
+    /// Adds one change row. Returns false once the page is full. A
+    /// transaction that does not fit waits for the next page, unless it is
+    /// the first one on this page: then no whole transaction fits, and the
+    /// page ends inside it.
+    fn add(&mut self, txid: i64, row: i64, entity: String, entity_id: Uuid) -> bool {
         if self.group_txid != Some(txid) {
             if self.group_txid.is_some() {
                 self.pairs.append(&mut self.group);
                 self.included_txids += 1;
             }
             if self.scanned > PULL_ROWS {
-                self.excluded = Some(txid);
+                self.cut = Some(Cut::Before(txid));
                 return false;
             }
             self.group_txid = Some(txid);
         }
         self.scanned += 1;
-        if entity == "roles" {
-            return true;
+        if entity != "roles" {
+            let pair = (entity, entity_id);
+            let fresh = !self.pairs.contains(&pair) && !self.group.contains(&pair);
+            if fresh && self.pairs.len() + self.group.len() >= PULL_PAIRS {
+                self.cut = Some(if self.included_txids == 0 {
+                    self.pairs.append(&mut self.group);
+                    Cut::Inside {
+                        txid,
+                        row: self.group_row,
+                    }
+                } else {
+                    Cut::Before(txid)
+                });
+                return false;
+            }
+            if fresh {
+                self.group.insert(pair);
+            }
         }
-        let pair = (entity, entity_id);
-        if !self.pairs.contains(&pair) {
-            self.group.insert(pair);
-        }
-        // Exclude the entire transaction as soon as it cannot fit.
-        // Its remaining rows need not be read or retained.
-        if self.pairs.len() + self.group.len() > PULL_PAIRS {
-            self.excluded = Some(txid);
-            return false;
-        }
+        self.group_row = row;
         true
     }
 }
@@ -754,22 +818,23 @@ async fn scan_window(
     tx: &mut PgConnection,
     workspace_id: Uuid,
     actor: Uuid,
-    requested: &Snapshot,
+    requested: &Cursor,
 ) -> Result<PullPage> {
+    let snapshot = &requested.snapshot;
     // Every xip txid is below xmax, so scanning xip first preserves
     // (txid, id) order without merging or sorting the two index ranges.
-    let mut scanning_xip = !requested.xip.is_empty();
+    let mut scanning_xip = !snapshot.xip.is_empty();
     let mut last = (-1i64, -1i64);
     let mut page = PullPage::default();
     loop {
         let query = if scanning_xip {
             sqlx::query_as(PULL_BATCH_XIP_SQL)
                 .bind(workspace_id)
-                .bind(&requested.xip)
+                .bind(&snapshot.xip)
         } else {
             sqlx::query_as(PULL_BATCH_RANGE_SQL)
                 .bind(workspace_id)
-                .bind(requested.xmax)
+                .bind(snapshot.xmax)
         };
         let rows: Vec<(i64, i64, String, Uuid)> = query
             .bind(last.0)
@@ -781,9 +846,20 @@ async fn scan_window(
         let batch_full = rows.len() as i64 == PULL_BATCH;
         for (txid, id, entity, entity_id) in rows {
             last = (txid, id);
-            if !page.add(txid, entity, entity_id) {
+            let delivered = requested
+                .partial
+                .is_some_and(|partial| partial.txid == txid && id <= partial.row);
+            if !delivered && !page.add(txid, id, entity, entity_id) {
                 return Ok(page);
             }
+        }
+        // The delivered rows are one contiguous run in (txid, id) order. A
+        // batch that ends inside it resumes after it instead of reading it again.
+        if let Some(partial) = requested.partial
+            && last.0 == partial.txid
+            && last.1 < partial.row
+        {
+            last.1 = partial.row;
         }
         if !batch_full {
             if scanning_xip {
@@ -797,10 +873,11 @@ async fn scan_window(
     }
 }
 
-/// The cursor after a page that stopped before txid `T`: everything below `T`
+/// The snapshot after a page that stopped at txid `T`: everything below `T`
 /// visible in the pull's snapshot joins what the request cursor promised.
-/// `xmax'` moves at least to `T`, and in-flight txids stay listed, so every
-/// `more: true` page strictly grows the reflected set.
+/// `xmax'` moves at least to `T`, and in-flight txids stay listed, so `T`
+/// stays in the window and every `more: true` page strictly grows the
+/// reflected set.
 fn advance_cursor(current: &Snapshot, snapshot: &Snapshot, excluded: i64) -> Snapshot {
     let xmax = current.xmax.max(excluded);
     let mut xip: Vec<i64> = current
@@ -820,10 +897,30 @@ fn advance_cursor(current: &Snapshot, snapshot: &Snapshot, excluded: i64) -> Sna
     Snapshot { xmin, xmax, xip }
 }
 
+/// The cursor after a page that stopped at `cut`. A transaction the page
+/// leaves whole keeps whatever the request already held of it. The cursor
+/// names at most one partial transaction. When the page cuts a new one while
+/// the request's lies further on, that one is dropped and delivered again,
+/// which costs bandwidth but never correctness.
+fn next_cursor(requested: &Cursor, snapshot: &Snapshot, cut: Cut) -> Cursor {
+    let (txid, partial) = match cut {
+        Cut::Before(txid) => (
+            txid,
+            requested.partial.filter(|partial| partial.txid >= txid),
+        ),
+        Cut::Inside { txid, row } => (txid, Some(Partial { txid, row })),
+    };
+    Cursor {
+        snapshot: advance_cursor(&requested.snapshot, snapshot, txid),
+        partial,
+    }
+}
+
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct PullResponse {
     /// Snapshot in `xmin:xmax:xip` text form. Every txid below its xmax
-    /// except those listed is reflected.
+    /// except those listed is reflected. An unfinished page may append
+    /// `:txid.row`, the one transaction delivered only up to that change row.
     pub cursor: String,
     /// True when more pages remain. `last_mutation_id` is null then.
     pub more: bool,
@@ -873,17 +970,18 @@ impl Store {
             return Ok(PullResponse::restart(snap_text, false));
         };
         let requested = parse_cursor(cursor, snapshot.xmax)?;
-        if requested.xmin < horizon {
+        if requested.snapshot.xmin < horizon {
             tx.commit().await?;
             return Ok(PullResponse::restart(snap_text, true));
         }
 
-        // Check the full window, even when a role change sits beyond this page.
+        // Check the full window, even when a role change sits beyond this
+        // page or inside a transaction the client already holds part of.
         let role_changed: bool = sqlx::query_scalar(PULL_ROLE_CHANGED_SQL)
             .bind(workspace_id)
             .bind(actor)
-            .bind(requested.xmax)
-            .bind(&requested.xip)
+            .bind(requested.snapshot.xmax)
+            .bind(&requested.snapshot.xip)
             .fetch_one(&mut *tx)
             .await?;
         if role_changed {
@@ -892,10 +990,6 @@ impl Store {
         }
 
         let page = scan_window(&mut tx, workspace_id, actor, &requested).await?;
-        if page.excluded.is_some() && page.included_txids == 0 {
-            tx.commit().await?;
-            return Ok(PullResponse::restart(snap_text, true));
-        }
 
         let mut changes: Vec<super::changes::Change> = page
             .pairs
@@ -914,11 +1008,11 @@ impl Store {
             super::changes::RecordShape::Sync,
         )
         .await?;
-        let more = page.excluded.is_some();
-        let next = page
-            .excluded
-            .map(|txid| snapshot_text(&advance_cursor(&requested, &snapshot, txid)))
-            .unwrap_or(snap_text);
+        let more = page.cut.is_some();
+        let next = match page.cut {
+            None => snap_text,
+            Some(cut) => cursor_text(&next_cursor(&requested, &snapshot, cut)),
+        };
         let response = PullResponse {
             cursor: next,
             more,
@@ -1265,7 +1359,11 @@ impl Store {
 
 #[cfg(test)]
 mod tests {
-    use super::{MAX_XIP, Snapshot, advance_cursor, parse_cursor, snapshot_text};
+    use super::{
+        Cursor, Cut, MAX_XIP, PULL_PAIRS, Partial, PullPage, Snapshot, advance_cursor, cursor_text,
+        next_cursor, parse_cursor, snapshot_text,
+    };
+    use uuid::Uuid;
 
     fn snapshot(xmin: i64, xmax: i64, xip: &[i64]) -> Snapshot {
         Snapshot {
@@ -1277,10 +1375,57 @@ mod tests {
 
     #[test]
     fn cursor_round_trip() {
-        for text in ["847:847:", "845:847:845,846", "0:0:"] {
+        for text in [
+            "847:847:",
+            "845:847:845,846",
+            "0:0:",
+            "847:847::847.12",
+            "845:847:845,846:846.3",
+            "845:847:845,846:900.3",
+        ] {
             let parsed = parse_cursor(text, 1000).unwrap();
-            assert_eq!(snapshot_text(&parsed), text);
+            assert_eq!(cursor_text(&parsed), text);
         }
+        let parsed = parse_cursor("845:847:845,846:846.3", 1000).unwrap();
+        assert_eq!(parsed.snapshot, snapshot(845, 847, &[845, 846]));
+        assert_eq!(parsed.partial, Some(Partial { txid: 846, row: 3 }));
+        assert_eq!(snapshot_text(&parsed.snapshot), "845:847:845,846");
+    }
+
+    #[test]
+    fn cursor_rejects_malformed_partials() {
+        for bad in [
+            // Not `txid.row`.
+            "845:847:845:",
+            "845:847:845:846",
+            "845:847:845:846.",
+            "845:847:845:.3",
+            "845:847:845:846.3.4",
+            "845:847:845:846,3",
+            "845:847:845:+846.3",
+            "845:847:845:846.+3",
+            "845:847:845:-846.3",
+            "845:847:845:846.-3",
+            "845:847:845:x.3",
+            "845:847:845:846.x",
+            "845:847:845:846.3:1",
+            // Row ids start at 1.
+            "845:847:845:846.0",
+            // A transaction below xmax that the snapshot does not list
+            // is already reflected, so it has no window to be partial in.
+            "845:847:845:846.3",
+            "847:847::846.3",
+            // At or beyond the pull's own snapshot: from the future.
+            "845:847:845:1000.3",
+            "845:847:845:1001.3",
+            // Past i64.
+            "845:847:845:846.99999999999999999999",
+        ] {
+            assert!(parse_cursor(bad, 1000).is_err(), "{bad:?}");
+        }
+        assert!(parse_cursor("845:847:845:845.1", 1000).is_ok());
+        assert!(parse_cursor("845:847:845:847.1", 1000).is_ok());
+        assert!(parse_cursor("845:847:845:999.1", 1000).is_ok());
     }
 
     #[test]
@@ -1373,5 +1518,91 @@ mod tests {
         let current = snapshot(20, 20, &[]);
         let pulled = snapshot(25, 25, &[]);
         assert_eq!(advance_cursor(&current, &pulled, 23), snapshot(23, 23, &[]));
+    }
+
+    fn feed(page: &mut PullPage, txid: i64, rows: impl IntoIterator<Item = i64>) -> bool {
+        rows.into_iter()
+            .all(|row| page.add(txid, row, "issues".into(), Uuid::from_u128(row as u128)))
+    }
+
+    #[test]
+    fn page_cuts_inside_a_first_transaction_over_the_limit() {
+        let mut page = PullPage::default();
+        assert!(!feed(&mut page, 10, 1..=PULL_PAIRS as i64 + 5));
+        assert_eq!(
+            page.cut,
+            Some(Cut::Inside {
+                txid: 10,
+                row: PULL_PAIRS as i64
+            })
+        );
+        assert_eq!(page.pairs.len(), PULL_PAIRS);
+    }
+
+    #[test]
+    fn page_cuts_before_a_later_transaction_that_does_not_fit() {
+        let mut page = PullPage::default();
+        assert!(feed(&mut page, 10, 1..=600));
+        assert!(!feed(&mut page, 11, 601..=1300));
+        assert_eq!(page.cut, Some(Cut::Before(11)));
+        assert_eq!(page.pairs.len(), 600);
+    }
+
+    #[test]
+    fn page_repeated_records_cost_no_budget() {
+        let mut page = PullPage::default();
+        assert!(feed(&mut page, 10, 1..=PULL_PAIRS as i64));
+        // The same records again in the same transaction.
+        assert!((1..=PULL_PAIRS as i64).all(|row| page.add(
+            10,
+            2000 + row,
+            "issues".into(),
+            Uuid::from_u128(row as u128)
+        )));
+        assert_eq!(page.cut, None);
+    }
+
+    #[test]
+    fn partial_follows_the_cut_and_drops_once_passed() {
+        let current = snapshot(20, 20, &[]);
+        let pulled = snapshot(25, 25, &[]);
+        let held = Partial { txid: 22, row: 7 };
+        let requested = Cursor {
+            snapshot: current,
+            partial: Some(held),
+        };
+        // A later transaction waits: the one the client holds part of stays.
+        let next = next_cursor(&requested, &pulled, Cut::Before(22));
+        assert_eq!(next.partial, Some(held));
+        let next = next_cursor(&requested, &pulled, Cut::Before(21));
+        assert_eq!(next.partial, Some(held));
+        // The page got past it, so the client holds all of it.
+        let next = next_cursor(&requested, &pulled, Cut::Before(23));
+        assert_eq!(next.partial, None);
+        // A new cut replaces it.
+        let next = next_cursor(&requested, &pulled, Cut::Inside { txid: 21, row: 40 });
+        assert_eq!(next.partial, Some(Partial { txid: 21, row: 40 }));
+        assert_eq!(next.snapshot, snapshot(21, 21, &[]));
+    }
+
+    #[test]
+    fn cut_inside_keeps_the_transaction_in_the_window() {
+        // T above the request xmax becomes the new xmax.
+        let requested = Cursor {
+            snapshot: snapshot(20, 20, &[]),
+            partial: None,
+        };
+        let pulled = snapshot(30, 30, &[]);
+        let next = next_cursor(&requested, &pulled, Cut::Inside { txid: 24, row: 5 });
+        assert_eq!(next.snapshot, snapshot(24, 24, &[]));
+        // T listed in the request xip stays listed.
+        let requested = Cursor {
+            snapshot: snapshot(22, 30, &[22, 24]),
+            partial: None,
+        };
+        let next = next_cursor(&requested, &pulled, Cut::Inside { txid: 24, row: 5 });
+        assert_eq!(next.snapshot, snapshot(24, 30, &[24]));
+        assert_eq!(cursor_text(&next), "24:30:24:24.5");
+        assert!(parse_cursor(&cursor_text(&next), 40).is_ok());
     }
 }

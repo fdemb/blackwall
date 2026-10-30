@@ -86,7 +86,7 @@ pub struct Store {
     pub(crate) bootstrap_permit_wait: Duration,
     pub(crate) bootstrap_send_timeout: Duration,
     pub(crate) bootstrap_overall_timeout: Duration,
-    pub(crate) sync_broadcast: tokio::sync::broadcast::Sender<Uuid>,
+    pub(crate) sync_pokes: Arc<crate::sync_events::PokeHub>,
     pub(crate) sync_events: SyncEventsConfig,
     /// Set once the HTTP server begins shutting down; ends `/sync/events`
     /// streams so graceful shutdown does not wait out their lifetime.
@@ -305,10 +305,7 @@ impl Store {
             bootstrap_permit_wait: config.bootstrap_permit_wait,
             bootstrap_send_timeout: config.bootstrap_send_timeout,
             bootstrap_overall_timeout: config.bootstrap_overall_timeout,
-            sync_broadcast: tokio::sync::broadcast::channel(
-                crate::sync_events::SYNC_EVENTS_CHANNEL,
-            )
-            .0,
+            sync_pokes: Arc::default(),
             sync_events: config.sync_events,
             sync_shutdown: Arc::new(tokio::sync::watch::channel(false).0),
             database_url: url.to_owned(),
@@ -319,15 +316,15 @@ impl Store {
         })
     }
 
-    /// Open broadcast receivers held by live `/sync/events` streams.
+    /// Open subscriptions held by live `/sync/events` streams.
     pub fn sync_broadcast_receiver_count(&self) -> usize {
-        self.sync_broadcast.receiver_count()
+        self.sync_pokes.subscriber_count()
     }
 
-    /// Broadcasts a workspace poke to live `/sync/events` streams. Tests use
-    /// it to flood subscribers without touching the database.
+    /// Pokes a workspace's live `/sync/events` streams. Tests use it to
+    /// flood subscribers without touching the database.
     pub fn sync_broadcast_poke(&self, workspace: WorkspaceId) {
-        let _ = self.sync_broadcast.send(workspace.0);
+        self.sync_pokes.poke(workspace.0);
     }
 
     /// Ends open `/sync/events` streams and refuses to hold new ones open.
@@ -350,7 +347,7 @@ impl Store {
         crate::sync_events::spawn_listener(
             self.pool.clone(),
             database_url.to_owned(),
-            self.sync_broadcast.clone(),
+            self.sync_pokes.clone(),
             self.sync_events.reconnect_delay,
         )
     }

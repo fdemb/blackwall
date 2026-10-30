@@ -1096,6 +1096,57 @@ async fn events_trailing_poke_beats_other_workspace_flood() {
     database.cleanup().await;
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn events_flood_in_one_workspace_does_not_poke_another() {
+    let database = support::TestDatabase::new().await;
+    let store = connect_store(
+        &database.url,
+        events_config(
+            Duration::from_millis(100),
+            Duration::from_secs(60),
+            Duration::from_secs(30 * 60),
+            Duration::from_secs(1),
+        ),
+    )
+    .await;
+    let app = router(store.clone());
+    let owner = account(&store, "owner").await;
+    let (busy, _) = setup(&app, &owner).await;
+    let quiet = workspace(&app, &owner, "Quiet").await;
+
+    let mut busy_body = sse_response(
+        &app,
+        Some(&owner.token),
+        busy,
+        &format!("?client_id={}", Uuid::new_v4()),
+    )
+    .await
+    .into_body();
+    let mut quiet_body = sse_response(
+        &app,
+        Some(&owner.token),
+        quiet,
+        &format!("?client_id={}", Uuid::new_v4()),
+    )
+    .await
+    .into_body();
+    drain_poke(&mut busy_body).await;
+    drain_poke(&mut quiet_body).await;
+    settle(&mut busy_body).await;
+    settle(&mut quiet_body).await;
+
+    for _ in 0..10_000 {
+        store.sync_broadcast_poke(blackwall::ids::WorkspaceId(busy));
+    }
+
+    expect_poke(&mut busy_body, Duration::from_secs(2)).await;
+    expect_no_data(&mut quiet_body, Duration::from_millis(700)).await;
+
+    drop(app);
+    store.pool.close().await;
+    database.cleanup().await;
+}
+
 #[tokio::test]
 async fn events_pool_close_ends_listener() {
     let database = support::TestDatabase::new().await;
