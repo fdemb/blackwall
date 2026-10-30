@@ -4739,7 +4739,7 @@
           },
           "cursor": {
             "type": "string",
-            "description": "Snapshot in `xmin:xmax:xip` text form. Every txid below its xmax\nexcept those listed is reflected."
+            "description": "Snapshot in `xmin:xmax:xip` text form. Every txid below its xmax\nexcept those listed is reflected. An unfinished page may append\n`:txid.row`, the one transaction delivered only up to that change row."
           },
           "last_mutation_id": {
             "type": ["integer", "null"],
