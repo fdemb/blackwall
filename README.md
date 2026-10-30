@@ -8,6 +8,8 @@
   A fast, AI-native work tracker for teams.
   <br>
   Self-hosted, as one Rust binary and a PostgreSQL database.
+  <br>
+  For those of us, that in the age of agents, still need to be organized.
 </p>
 
 <p align="center">
