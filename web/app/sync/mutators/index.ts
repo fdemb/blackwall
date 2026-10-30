@@ -172,8 +172,9 @@ export const MUTATORS: { [T in MutatorName]: Mutator<ArgsOf<T>> } = {
 
 /**
  * Commands with no mutator by design: secrets or bulk server work that goes
- * through push only when the outbox is empty, plus attachment uploads, which
- * use the REST upload endpoint. Their effects arrive through the next pull.
+ * through the REST commands endpoint, plus attachment uploads, which use the
+ * REST upload endpoint. The server rejects every one of them if pushed. Their
+ * effects arrive through the next pull.
  */
 export const ONLINE_ONLY = [
   "invite",

@@ -1125,3 +1125,257 @@ async fn push_pruning_removes_idle_clients() {
     store.pool.close().await;
     database.cleanup().await;
 }
+
+async fn label_names(store: &Store, ws: Uuid) -> Vec<String> {
+    sqlx::query_scalar("SELECT name FROM labels WHERE workspace_id = $1 ORDER BY name")
+        .bind(ws)
+        .fetch_all(&store.pool)
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn push_rejects_a_deterministic_server_failure_and_continues() {
+    let database = support::TestDatabase::new().await;
+    let store = Store::connect(&database.url).await.unwrap();
+    let app = router(store.clone());
+    let owner = account(&store, "owner").await;
+    let (ws, _) = setup(&app, &owner).await;
+    let client = Uuid::new_v4();
+
+    // The trigger fires on the activity insert that follows the label insert,
+    // so the failing command has already written a row when it errors. The
+    // error code is P0001, outside every class push treats as a business error.
+    sqlx::query(
+        "CREATE FUNCTION fail_after_boom() RETURNS trigger LANGUAGE plpgsql AS $$ \
+         BEGIN \
+           IF EXISTS (SELECT 1 FROM labels WHERE name = 'boom') THEN \
+             RAISE EXCEPTION 'secret trigger detail'; \
+           END IF; \
+           RETURN NEW; \
+         END $$",
+    )
+    .execute(&store.pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "CREATE TRIGGER fail_after_boom BEFORE INSERT ON activity \
+         FOR EACH ROW EXECUTE FUNCTION fail_after_boom()",
+    )
+    .execute(&store.pool)
+    .await
+    .unwrap();
+
+    let label = |name: &str| json!({"id": Uuid::new_v4(), "name": name, "color": "#000000"});
+    let batch = vec![
+        mutation(1, "create_label", label("before")),
+        mutation(2, "create_label", label("boom")),
+        mutation(3, "create_label", label("after")),
+    ];
+    let (status, first) = push(&app, &owner.token, ws, client, batch.clone()).await;
+    assert_eq!(status, StatusCode::OK, "{first}");
+    assert_eq!(first["last_mutation_id"], 3);
+    assert_eq!(first["results"][0]["status"], "applied");
+    assert_eq!(
+        first["results"][1],
+        json!({
+            "id": 2,
+            "status": "rejected",
+            "error": {"status": 500, "message": "internal server error"}
+        })
+    );
+    assert_eq!(first["results"][2]["status"], "applied");
+    assert_eq!(last_mutation_id(&store, client).await, Some(3));
+    assert_eq!(label_names(&store, ws).await, ["after", "before"]);
+
+    let (status, second) = push(&app, &owner.token, ws, client, batch).await;
+    assert_eq!(status, StatusCode::OK, "{second}");
+    assert_eq!(second["last_mutation_id"], 3);
+    assert_eq!(second["results"][1], first["results"][1]);
+    assert_eq!(
+        second["results"][0],
+        json!({"id": 1, "status": "duplicate"})
+    );
+    assert_eq!(
+        second["results"][2],
+        json!({"id": 3, "status": "duplicate"})
+    );
+    assert_eq!(label_names(&store, ws).await, ["after", "before"]);
+
+    drop(app);
+    store.pool.close().await;
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn push_stops_the_batch_on_a_retryable_database_error() {
+    let database = support::TestDatabase::new().await;
+    let store = Store::connect(&database.url).await.unwrap();
+    let app = router(store.clone());
+    let owner = account(&store, "owner").await;
+    let (ws, _) = setup(&app, &owner).await;
+    let client = Uuid::new_v4();
+
+    sqlx::query(
+        "CREATE FUNCTION fail_serialization() RETURNS trigger LANGUAGE plpgsql AS $$ \
+         BEGIN \
+           IF NEW.name = 'retry' THEN \
+             RAISE EXCEPTION 'conflict' USING ERRCODE = '40001'; \
+           END IF; \
+           RETURN NEW; \
+         END $$",
+    )
+    .execute(&store.pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "CREATE TRIGGER fail_serialization BEFORE INSERT ON labels \
+         FOR EACH ROW EXECUTE FUNCTION fail_serialization()",
+    )
+    .execute(&store.pool)
+    .await
+    .unwrap();
+
+    let label = |name: &str| json!({"id": Uuid::new_v4(), "name": name, "color": "#000000"});
+    let batch = vec![
+        mutation(1, "create_label", label("first")),
+        mutation(2, "create_label", label("retry")),
+        mutation(3, "create_label", label("third")),
+    ];
+    let (status, result) = push(&app, &owner.token, ws, client, batch.clone()).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{result}");
+    assert_eq!(result["last_mutation_id"], 1);
+    assert_eq!(result["results"].as_array().unwrap().len(), 1);
+    assert_eq!(last_mutation_id(&store, client).await, Some(1));
+    let rejections: i64 = sqlx::query_scalar("SELECT count(*) FROM sync_rejections")
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+    assert_eq!(rejections, 0);
+
+    sqlx::query("DROP TRIGGER fail_serialization ON labels")
+        .execute(&store.pool)
+        .await
+        .unwrap();
+    let (status, result) = push(&app, &owner.token, ws, client, batch).await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+    assert_eq!(result["last_mutation_id"], 3);
+    assert_eq!(result["results"][0]["status"], "duplicate");
+    assert_eq!(result["results"][1]["status"], "applied");
+    assert_eq!(result["results"][2]["status"], "applied");
+
+    drop(app);
+    store.pool.close().await;
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn push_refuses_online_only_commands() {
+    let database = support::TestDatabase::new().await;
+    let store = Store::connect(&database.url).await.unwrap();
+    let app = router(store.clone());
+    let owner = account(&store, "owner").await;
+    let member = account(&store, "member").await;
+    let (ws, team) = setup(&app, &owner).await;
+    invite_member(&app, &owner, ws, &member).await;
+    let (status, result) = command(
+        &app,
+        &owner,
+        ws,
+        json!({"type": "invite", "email": "pending@example.com", "role": "member", "token_hash": "ignored"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+    let invitation: Uuid =
+        sqlx::query_scalar("SELECT id FROM invitations WHERE workspace_id = $1 AND email = $2")
+            .bind(ws)
+            .bind("pending@example.com")
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+
+    let snapshot = || async {
+        sqlx::query_scalar::<_, String>(
+            "SELECT concat_ws('|', \
+               (SELECT name || '/' || slug FROM workspaces WHERE id = $1), \
+               (SELECT string_agg(user_id || ':' || role, ',' ORDER BY user_id) \
+                  FROM workspace_members WHERE workspace_id = $1), \
+               (SELECT count(*) FROM teams WHERE workspace_id = $1), \
+               (SELECT count(*) FROM integrations WHERE workspace_id = $1), \
+               (SELECT count(*) FROM invitations WHERE workspace_id = $1), \
+               (SELECT count(*) FROM issues WHERE workspace_id = $1), \
+               (SELECT count(*) FROM changes WHERE workspace_id = $1))",
+        )
+        .bind(ws)
+        .fetch_one(&store.pool)
+        .await
+        .unwrap()
+    };
+    let before = snapshot().await;
+
+    let stage: Uuid = sqlx::query_scalar("SELECT id FROM stages WHERE team_id = $1 LIMIT 1")
+        .bind(team)
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+    let online_only = vec![
+        (
+            "invite",
+            json!({"email": "other@example.com", "role": "member", "token_hash": "ignored"}),
+        ),
+        (
+            "resend_invitation",
+            json!({"id": invitation, "token_hash": "ignored"}),
+        ),
+        (
+            "create_integration",
+            json!({"name": "Hook", "webhook_url": "https://example.com/hook", "secret": "s3cret"}),
+        ),
+        (
+            "update_workspace",
+            json!({"name": "Renamed", "slug": Uuid::new_v4().to_string()}),
+        ),
+        (
+            "set_role",
+            json!({"user_id": member.profile.id, "role": "admin"}),
+        ),
+        ("remove_member", json!({"user_id": member.profile.id})),
+        ("transfer_ownership", json!({"user_id": member.profile.id})),
+        ("delete_team", json!({"id": team})),
+        (
+            "import_issues",
+            json!({"issues": [{"title": "Imported", "team_id": team, "stage_id": stage}]}),
+        ),
+    ];
+    let client = Uuid::new_v4();
+    let mutations: Vec<Value> = online_only
+        .iter()
+        .enumerate()
+        .map(|(index, (name, args))| mutation(index as i64 + 1, name, args.clone()))
+        .collect();
+    let count = mutations.len() as i64;
+    let (status, result) = push(&app, &owner.token, ws, client, mutations.clone()).await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+    assert_eq!(result["last_mutation_id"], count);
+    for (index, (name, _)) in online_only.iter().enumerate() {
+        assert_eq!(
+            result["results"][index],
+            json!({
+                "id": index as i64 + 1,
+                "status": "rejected",
+                "error": {"status": 400, "message": "use the commands endpoint"}
+            }),
+            "{name}"
+        );
+    }
+    assert_eq!(snapshot().await, before);
+    assert_eq!(last_mutation_id(&store, client).await, Some(count));
+
+    let (status, replay) = push(&app, &owner.token, ws, client, mutations).await;
+    assert_eq!(status, StatusCode::OK, "{replay}");
+    assert_eq!(replay["results"], result["results"]);
+
+    drop(app);
+    store.pool.close().await;
+    database.cleanup().await;
+}
