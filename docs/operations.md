@@ -42,10 +42,6 @@ Outgoing integration requests carry a typed event with the changed record (see [
 
 Generic signed webhooks and source links are included. Issue tracker connections keep selected teams in step with OpenProject in both directions: background polling imports work packages and comments, and local edits and comments are sent back in the background. Synced issues stay fully editable, and each field's import and send directions are configurable. See [Issue trackers](trackers.md) for setup, merge rules, and operational limits. Provider-specific OAuth and automatic repository synchronization are not included.
 
-## Migrations that build indexes
-
-Migrations run when any process connects, under one advisory lock. `changes` takes a trigger insert from nearly every write, so its unique index `changes_dedupe` is built by migration 0050 with `CREATE INDEX CONCURRENTLY`, which does not block writes. The build waits for open transactions and takes longer than a plain build. If the process dies mid-build, PostgreSQL leaves an invalid index. The next start drops it under the lock and migrates again. Migration 0049 deletes duplicate rows first and migration 0051 switches `mark_change` to `ON CONFLICT` once the index is valid. Until then the older `mark_change` stays active and cannot write a duplicate of the new key.
-
 ## Workspace limits
 
 Each workspace has a limit per kind of record. Trashed and archived records count. Set a variable to a positive integer or to `unlimited` to change a limit:

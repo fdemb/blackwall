@@ -47,9 +47,7 @@ jobs:
       - run: |
           psql "$TEST_POSTGRES_URL" -c "CREATE DATABASE blackwall_schema"
           for migration in migrations/*.sql; do
-            single=-1
-            if head -n 1 "$migration" | grep -q '^-- no-transaction'; then single=; fi
-            psql "${TEST_POSTGRES_URL%/*}/blackwall_schema" -v ON_ERROR_STOP=1 $single -q -f "$migration"
+            psql "${TEST_POSTGRES_URL%/*}/blackwall_schema" -v ON_ERROR_STOP=1 -1 -q -f "$migration"
           done
           rm -rf .sqlx && mkdir .sqlx
       - run: cargo build --locked

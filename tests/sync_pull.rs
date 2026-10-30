@@ -1168,15 +1168,15 @@ async fn pull_row_cap_finishes_transaction_across_batches() {
     let first = Uuid::new_v4();
     let second = Uuid::new_v4();
 
-    // Role rows do not count toward the page's record limit, and the unique
-    // index only needs their ids to differ, so one transaction can pass the
-    // row cap while staying one record.
+    // Role rows do not count toward the page's record limit, so one
+    // transaction can pass the row cap while staying one record.
     let mut tx = store.pool.begin().await.unwrap();
     sqlx::query(
         "INSERT INTO changes(workspace_id, entity, entity_id) \
-         SELECT $1, 'roles', gen_random_uuid() FROM generate_series(1, 20005)",
+         SELECT $1, 'roles', $2 FROM generate_series(1, 20005)",
     )
     .bind(ws)
+    .bind(Uuid::new_v4())
     .execute(&mut *tx)
     .await
     .unwrap();
@@ -1297,52 +1297,143 @@ async fn pull_role_change_in_a_large_transaction_resets_on_the_first_page() {
     database.cleanup().await;
 }
 
+async fn mark_repeatedly(conn: &mut sqlx::PgConnection, workspace: Uuid, record: Uuid, times: i32) {
+    sqlx::query("SELECT mark_change($1, 'issues', $2) FROM generate_series(1, $3)")
+        .bind(workspace)
+        .bind(record)
+        .bind(times)
+        .execute(&mut *conn)
+        .await
+        .unwrap();
+}
+
+async fn mark_all(conn: &mut sqlx::PgConnection, workspace: Uuid, ids: &[Uuid]) {
+    sqlx::query("SELECT mark_change($1, 'issues', id) FROM unnest($2::uuid[]) AS t(id)")
+        .bind(workspace)
+        .bind(ids)
+        .execute(&mut *conn)
+        .await
+        .unwrap();
+}
+
+fn page_pairs(page: &Value) -> Vec<(String, String)> {
+    page["changes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|change| {
+            (
+                change["entity"].as_str().unwrap().to_owned(),
+                change["id"].as_str().unwrap().to_owned(),
+            )
+        })
+        .collect()
+}
+
 #[tokio::test]
-async fn mark_change_keeps_one_row_per_record_in_a_transaction() {
+async fn pull_renders_a_record_updated_many_times_once() {
+    let database = support::TestDatabase::new().await;
+    let store = Store::connect(&database.url).await.unwrap();
+    let app = router(store.clone());
+    let owner = account(&store, "owner").await;
+    let (ws, _) = setup(&app, &owner).await;
+    let client = Uuid::new_v4();
+    let before = cursor_of(&pull_ok(&app, &owner.token, ws, client, None).await);
+
+    let hot = Uuid::new_v4();
+    let others: Vec<Uuid> = (0..1500).map(|_| Uuid::new_v4()).collect();
+    let mut tx = store.pool.begin().await.unwrap();
+    mark_repeatedly(&mut tx, ws, hot, 50).await;
+    mark_all(&mut tx, ws, &others).await;
+    mark_repeatedly(&mut tx, ws, hot, 50).await;
+    tx.commit().await.unwrap();
+    let rows: i64 = sqlx::query_scalar("SELECT count(*) FROM changes WHERE workspace_id = $1")
+        .bind(ws)
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+    assert_eq!(rows, 1600, "mark_change writes a row per call");
+
+    let pages = pull_pages(&app, &owner.token, ws, client, &before).await;
+    assert_eq!(pages.len(), 2);
+    for (n, page) in pages.iter().enumerate() {
+        let pairs = page_pairs(page);
+        let distinct: std::collections::BTreeSet<_> = pairs.iter().collect();
+        assert_eq!(distinct.len(), pairs.len(), "page {n} repeats a record");
+    }
+    assert_eq!(pages[0]["changes"].as_array().unwrap().len(), 1000);
+    // The cut falls inside the transaction, so the second run of `hot` is
+    // read again on page 2. Rendering it twice is harmless.
+    assert!(record(&pages[0]["changes"], "issues", &hot.to_string()).is_some());
+    assert!(record(&pages[1]["changes"], "issues", &hot.to_string()).is_some());
+    assert_eq!(
+        paged_records(&pages),
+        changed_since(&store, ws, owner.profile.id, cursor_xmax(&before)).await
+    );
+    assert_eq!(paged_records(&pages).len(), 1501);
+
+    drop(app);
+    store.pool.close().await;
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn pull_delivers_exactly_the_changed_set_when_repeats_precede_the_cut() {
+    let database = support::TestDatabase::new().await;
+    let store = Store::connect(&database.url).await.unwrap();
+    let app = router(store.clone());
+    let owner = account(&store, "owner").await;
+    let (ws, _) = setup(&app, &owner).await;
+    let client = Uuid::new_v4();
+    let before = cursor_of(&pull_ok(&app, &owner.token, ws, client, None).await);
+
+    let hot = Uuid::new_v4();
+    let others: Vec<Uuid> = (0..1500).map(|_| Uuid::new_v4()).collect();
+    let mut tx = store.pool.begin().await.unwrap();
+    mark_repeatedly(&mut tx, ws, hot, 50).await;
+    mark_all(&mut tx, ws, &others).await;
+    tx.commit().await.unwrap();
+
+    let pages = pull_pages(&app, &owner.token, ws, client, &before).await;
+    let delivered: usize = pages.iter().map(|page| page_pairs(page).len()).sum();
+    let changed = changed_since(&store, ws, owner.profile.id, cursor_xmax(&before)).await;
+    assert_eq!(changed.len(), 1501);
+    assert_eq!(delivered, changed.len());
+    assert_eq!(paged_records(&pages), changed);
+
+    drop(app);
+    store.pool.close().await;
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn mark_change_keeps_a_private_and_a_shared_mark_of_one_record() {
     let database = support::TestDatabase::new().await;
     let store = Store::connect(&database.url).await.unwrap();
     let ws = Uuid::new_v4();
-    let record = Uuid::new_v4();
+    let view = Uuid::new_v4();
     let owner = Uuid::new_v4();
 
     let mut tx = store.pool.begin().await.unwrap();
-    for _ in 0..3 {
-        sqlx::query("SELECT mark_change($1, 'issues', $2)")
-            .bind(ws)
-            .bind(record)
-            .execute(&mut *tx)
-            .await
-            .unwrap();
-    }
-    let others: Vec<Uuid> = (0..2000).map(|_| Uuid::new_v4()).collect();
-    for _ in 0..2 {
-        sqlx::query("SELECT mark_change($1, 'issues', id) FROM unnest($2::uuid[]) AS t(id)")
-            .bind(ws)
-            .bind(&others)
-            .execute(&mut *tx)
-            .await
-            .unwrap();
-    }
-    // A private mark and a workspace-wide mark of one record are different promises.
-    for user in [Some(owner), None, Some(owner), None] {
+    for user in [Some(owner), None] {
         sqlx::query("SELECT mark_change($1, 'views', $2, $3)")
             .bind(ws)
-            .bind(record)
+            .bind(view)
             .bind(user)
             .execute(&mut *tx)
             .await
             .unwrap();
     }
     sqlx::query("SELECT mark_change(NULL, 'issues', $1), mark_change($2, 'issues', NULL)")
-        .bind(record)
+        .bind(view)
         .bind(ws)
         .execute(&mut *tx)
         .await
         .unwrap();
     tx.commit().await.unwrap();
 
-    let rows: Vec<(String, i64)> = sqlx::query_as(
-        "SELECT entity, count(*) FROM changes WHERE workspace_id = $1 GROUP BY entity ORDER BY entity",
+    let rows: Vec<(String, Option<Uuid>)> = sqlx::query_as(
+        "SELECT entity, user_id FROM changes WHERE workspace_id = $1 ORDER BY user_id NULLS LAST",
     )
     .bind(ws)
     .fetch_all(&store.pool)
@@ -1350,17 +1441,12 @@ async fn mark_change_keeps_one_row_per_record_in_a_transaction() {
     .unwrap();
     assert_eq!(
         rows,
-        vec![("issues".to_owned(), 2001), ("views".to_owned(), 2)]
+        vec![
+            ("views".to_owned(), Some(owner)),
+            ("views".to_owned(), None)
+        ],
+        "the workspace-wide mark survives the private one, and null arguments write nothing"
     );
-    let duplicates: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM (SELECT 1 FROM changes WHERE workspace_id = $1 \
-         GROUP BY txid, entity, entity_id, user_id HAVING count(*) > 1) d",
-    )
-    .bind(ws)
-    .fetch_one(&store.pool)
-    .await
-    .unwrap();
-    assert_eq!(duplicates, 0);
 
     store.pool.close().await;
     database.cleanup().await;
