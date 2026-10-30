@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM email_verifications WHERE token_hash=$1 AND user_id=$2 AND expires_at>$3",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Uuid",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "2d2f3229d37f9e69330e5abb1cf6c31d1a7404eaf5eb09d985daaa43f10ada00"
+}

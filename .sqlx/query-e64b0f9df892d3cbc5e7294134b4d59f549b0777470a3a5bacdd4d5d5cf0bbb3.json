@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT remote_id FROM tracker_deleted_issues WHERE connection_id=$1 AND remote_id=ANY($2)",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "remote_id",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "TextArray"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "e64b0f9df892d3cbc5e7294134b4d59f549b0777470a3a5bacdd4d5d5cf0bbb3"
+}

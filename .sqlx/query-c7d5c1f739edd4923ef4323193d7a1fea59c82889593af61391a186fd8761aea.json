@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM tracker_outbox WHERE id=$1 AND revision=$2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "c7d5c1f739edd4923ef4323193d7a1fea59c82889593af61391a186fd8761aea"
+}

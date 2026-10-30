@@ -41,11 +41,16 @@ There is no converter for old development databases.
 
 Run `./scripts/worktree.sh init` in a linked git worktree. It writes a `.env` with its own database and HTTP port, reuses the main checkout's Compose services and Rust build cache, builds the frontend, and applies migrations. `FIXTURE=rich` loads a fixture into a new database. In the worktree, `pnpm run dev` proxies to that port and `./scripts/database.sh reset` resets only that database. Run `./scripts/worktree.sh drop` before removing the worktree.
 
-Checked SQL compiles offline using the committed `.sqlx` metadata. After changing a checked query, regenerate its metadata against a migrated PostgreSQL database:
+Static SQL uses `sqlx::query!` and its siblings, so a query that no longer matches the schema fails the build. It compiles offline using the committed `.sqlx` metadata. After changing a checked query, regenerate its metadata against a migrated PostgreSQL database:
 
 ```sh
-SQLX_OFFLINE=false SQLX_OFFLINE_DIR=.sqlx DATABASE_URL=postgres://blackwall:blackwall@127.0.0.1:5432/blackwall cargo check --all-targets
+rm -rf .sqlx && mkdir .sqlx
+SQLX_OFFLINE=false SQLX_OFFLINE_DIR=$PWD/.sqlx DATABASE_URL=postgres://blackwall:blackwall@127.0.0.1:5432/blackwall cargo check
 ```
+
+CI does the same against a fresh schema and fails when the committed `.sqlx` differs. The failed run uploads the regenerated files as the `generated` artifact.
+
+The web app's API types come from the internal OpenAPI spec. `cargo run -- openapi > web/app/lib/openapi.json` writes the spec, and `pnpm run gen:api` in `web/` turns it into `web/app/lib/api.gen.ts`, which `web/app/lib/types.ts` builds on. CI checks both files the same way.
 
 ## API
 

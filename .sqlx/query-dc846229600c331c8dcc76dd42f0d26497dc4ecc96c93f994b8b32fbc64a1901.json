@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT tracker->>'remote_id' AS \"remote_id!\" FROM comments WHERE workspace_id=$1 AND tracker->>'connection_id'=$2 AND tracker->>'remote_id'=ANY($3) UNION SELECT remote_id FROM tracker_deleted_comments WHERE connection_id=$2::uuid AND remote_id=ANY($3)",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "remote_id!",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "TextArray"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "dc846229600c331c8dcc76dd42f0d26497dc4ecc96c93f994b8b32fbc64a1901"
+}

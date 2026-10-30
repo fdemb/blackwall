@@ -761,6 +761,7 @@ pub(crate) fn optional_timestamp(value: Option<DateTime<Utc>>) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ids::{IssueId, TeamId};
 
     #[test]
     fn slugs_and_keys_follow_the_url_rules() {
@@ -785,7 +786,7 @@ mod tests {
         }
     }
 
-    fn setup() -> (Workspace, Uuid, Uuid) {
+    fn setup() -> (Workspace, Uuid, TeamId) {
         let owner = Uuid::new_v4();
         let mut w = Workspace::new("Blackwall".into(), owner).unwrap();
 
@@ -805,10 +806,10 @@ mod tests {
             .id
             .unwrap();
 
-        (w, owner, team)
+        (w, owner, TeamId(team))
     }
 
-    fn input(team_id: Uuid) -> IssueInput {
+    fn input(team_id: TeamId) -> IssueInput {
         IssueInput {
             id: None,
             title: "Rotate keys".into(),
@@ -835,7 +836,7 @@ mod tests {
 
         let chosen = Uuid::new_v4();
         let mut named = input(team);
-        named.id = Some(chosen);
+        named.id = Some(IssueId(chosen));
         let created = w
             .apply(owner, Command::CreateIssue { input: named }, now)
             .unwrap()
@@ -844,14 +845,14 @@ mod tests {
         assert_eq!(created, chosen);
 
         let mut again = input(team);
-        again.id = Some(chosen);
+        again.id = Some(IssueId(chosen));
         assert!(matches!(
             w.apply(owner, Command::CreateIssue { input: again }, now),
             Err(Error::Conflict(_))
         ));
 
         let mut nil = input(team);
-        nil.id = Some(Uuid::nil());
+        nil.id = Some(IssueId(Uuid::nil()));
         assert!(matches!(
             w.apply(owner, Command::CreateIssue { input: nil }, now),
             Err(Error::BadRequest(_))
@@ -877,7 +878,7 @@ mod tests {
                 w.apply(
                     owner,
                     Command::CreateTeam {
-                        id: Some(chosen),
+                        id: Some(TeamId(chosen)),
                         name: "Taken".into(),
                         key: "TAK".into(),
                         members: vec![],
@@ -940,7 +941,7 @@ mod tests {
                     w.apply(
                         owner,
                         Command::UpdateIssue {
-                            id: issue,
+                            id: IssueId(issue),
                             patch: IssuePatch {
                                 deadline: Some(deadline),
                                 ..Default::default()
@@ -1073,7 +1074,7 @@ mod tests {
                         owner,
                         Command::LogTime {
                             id: None,
-                            issue_id: issue,
+                            issue_id: IssueId(issue),
                             minutes: 30,
                             note: "Review".into(),
                             logged_at,
@@ -1090,7 +1091,7 @@ mod tests {
                 owner,
                 Command::LogTime {
                     id: None,
-                    issue_id: issue,
+                    issue_id: IssueId(issue),
                     minutes: 30,
                     note: "Review".into(),
                     logged_at: max_valid,
@@ -1154,7 +1155,7 @@ mod tests {
             w.apply(
                 owner,
                 Command::BulkIssues {
-                    ids: vec![id, Uuid::new_v4()],
+                    ids: vec![IssueId(id), IssueId::new_v4()],
                     action: BulkAction::Delete
                 },
                 Utc::now()
@@ -1198,7 +1199,7 @@ mod tests {
         w.apply(
             owner,
             Command::BulkIssues {
-                ids: vec![first, second],
+                ids: vec![IssueId(first), IssueId(second)],
                 action: BulkAction::Update(Box::new(IssuePatch {
                     labels: Some(LabelChange::Edit {
                         add: vec![z],
@@ -1270,8 +1271,8 @@ mod tests {
             .unwrap();
 
         let mut next = input(team);
-        next.dependencies.push(first);
-        next.parent_id = Some(first);
+        next.dependencies.push(IssueId(first));
+        next.parent_id = Some(IssueId(first));
 
         let second = w
             .apply(owner, Command::CreateIssue { input: next }, Utc::now())
@@ -1283,9 +1284,9 @@ mod tests {
             w.apply(
                 owner,
                 Command::UpdateIssue {
-                    id: first,
+                    id: IssueId(first),
                     patch: IssuePatch {
-                        dependencies: Some(vec![second]),
+                        dependencies: Some(vec![IssueId(second)]),
                         ..Default::default()
                     }
                 },
@@ -1297,9 +1298,9 @@ mod tests {
             w.apply(
                 owner,
                 Command::UpdateIssue {
-                    id: first,
+                    id: IssueId(first),
                     patch: IssuePatch {
-                        parent_id: Some(second),
+                        parent_id: Some(IssueId(second)),
                         ..Default::default()
                     }
                 },
@@ -1353,7 +1354,7 @@ mod tests {
             .unwrap()
             .id
             .unwrap();
-        w.apply(owner, Command::DeleteIssue { id: issue }, now)
+        w.apply(owner, Command::DeleteIssue { id: IssueId(issue) }, now)
             .unwrap();
         assert!(matches!(
             w.apply(owner, Command::DeleteTeam { id: team }, now),
@@ -1700,7 +1701,12 @@ mod tests {
             },
         );
         let trashed = id(&mut w, Command::CreateIssue { input: tagged });
-        id(&mut w, Command::DeleteIssue { id: trashed });
+        id(
+            &mut w,
+            Command::DeleteIssue {
+                id: IssueId(trashed),
+            },
+        );
 
         let viewer = Uuid::new_v4();
         w.members.push(Member {
@@ -1781,7 +1787,7 @@ mod tests {
                 .id
         };
         let mut filed = input(infra);
-        filed.stage_id = Some(active(&w, infra));
+        filed.stage_id = Some(active(&w, infra.0));
         filed.project_id = Some(project);
         id(
             &mut w,
@@ -1792,10 +1798,16 @@ mod tests {
         let issue = id(&mut w, Command::CreateIssue { input: filed });
 
         let patch = IssuePatch {
-            team_id: Some(ops),
+            team_id: Some(TeamId(ops)),
             ..Default::default()
         };
-        id(&mut w, Command::UpdateIssue { id: issue, patch });
+        id(
+            &mut w,
+            Command::UpdateIssue {
+                id: IssueId(issue),
+                patch,
+            },
+        );
         let moved = w.issues.iter().find(|i| i.id == issue).unwrap();
         assert_eq!((moved.team_id, moved.number), (ops, 1));
         assert_eq!(moved.stage_id, active(&w, ops), "same kind of stage");
@@ -1803,7 +1815,7 @@ mod tests {
         assert_eq!(
             moved.former_keys,
             [FormerKey {
-                team_id: infra,
+                team_id: infra.0,
                 number: 2
             }]
         );
@@ -1933,7 +1945,7 @@ mod tests {
 
         let mut dependent = input(team);
         dependent.title = "Renew certificates".into();
-        dependent.dependencies = vec![blocker];
+        dependent.dependencies = vec![IssueId(blocker)];
         dependent.assignee = Some(owner);
         dependent.priority = Priority::High;
 
@@ -1948,7 +1960,7 @@ mod tests {
             w.apply(
                 owner,
                 Command::MoveIssue {
-                    id,
+                    id: IssueId(id),
                     stage_id: done,
                     before_id: None
                 },
@@ -1985,7 +1997,7 @@ mod tests {
         w.apply(
             owner,
             Command::MoveIssue {
-                id: blocker,
+                id: IssueId(blocker),
                 stage_id: done,
                 before_id: None,
             },
@@ -1995,7 +2007,7 @@ mod tests {
         w.apply(
             owner,
             Command::MoveIssue {
-                id,
+                id: IssueId(id),
                 stage_id: done,
                 before_id: None,
             },
@@ -2008,7 +2020,7 @@ mod tests {
         w.apply(
             owner,
             Command::UpdateIssue {
-                id,
+                id: IssueId(id),
                 patch: IssuePatch {
                     title: Some("Certificates renewed".into()),
                     ..Default::default()
@@ -2026,7 +2038,7 @@ mod tests {
         w.apply(
             owner,
             Command::MoveIssue {
-                id: blocker,
+                id: IssueId(blocker),
                 stage_id: todo,
                 before_id: None,
             },
@@ -2036,7 +2048,7 @@ mod tests {
         w.apply(
             owner,
             Command::UpdateIssue {
-                id,
+                id: IssueId(id),
                 patch: IssuePatch {
                     title: Some("Renew again".into()),
                     ..Default::default()
@@ -2051,7 +2063,7 @@ mod tests {
             w.apply(
                 owner,
                 Command::MoveIssue {
-                    id,
+                    id: IssueId(id),
                     stage_id: active,
                     before_id: None
                 },

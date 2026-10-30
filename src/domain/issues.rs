@@ -1,6 +1,7 @@
 use super::filter::{Compiled, FilterClause, compile, deserialize_where};
 use super::initial_version;
 use crate::error::Result;
+use crate::ids::{IssueId, TeamId};
 use chrono::{DateTime, SubsecRound, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
@@ -232,8 +233,16 @@ impl Issue {
         }
         set_or_clear(&mut self.milestone_id, p.milestone_id, p.clear_milestone);
         set_or_clear(&mut self.sprint_id, p.sprint_id, p.clear_sprint);
-        set_or_clear(&mut self.parent_id, p.parent_id, p.clear_parent);
-        set(&mut self.dependencies, p.dependencies.map(id_set));
+        set_or_clear(
+            &mut self.parent_id,
+            p.parent_id.map(|id| id.0),
+            p.clear_parent,
+        );
+        set(
+            &mut self.dependencies,
+            p.dependencies
+                .map(|ids| id_set(ids.into_iter().map(|id| id.0).collect())),
+        );
     }
 
     /// Starts a move to `team`: the current key becomes a former key, and a sprint the patch
@@ -382,11 +391,11 @@ impl FieldChange {
 
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
 pub struct IssueInput {
-    pub id: Option<Uuid>,
+    pub id: Option<IssueId>,
     pub title: String,
     #[serde(default)]
     pub description: String,
-    pub team_id: Uuid,
+    pub team_id: TeamId,
     pub stage_id: Option<Uuid>,
     pub assignee: Option<Uuid>,
     #[serde(default)]
@@ -398,9 +407,9 @@ pub struct IssueInput {
     pub project_id: Option<Uuid>,
     pub milestone_id: Option<Uuid>,
     pub sprint_id: Option<Uuid>,
-    pub parent_id: Option<Uuid>,
+    pub parent_id: Option<IssueId>,
     #[serde(default)]
-    pub dependencies: Vec<Uuid>,
+    pub dependencies: Vec<IssueId>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, ToSchema)]
@@ -410,7 +419,7 @@ pub struct IssuePatch {
     /// Moves the issue to another team under that team's next number. Its old key keeps
     /// resolving. Without `stage_id` it lands in the team's first stage of the same kind. It
     /// leaves its sprint, and its project when the project doesn't include the team.
-    pub team_id: Option<Uuid>,
+    pub team_id: Option<TeamId>,
     pub stage_id: Option<Uuid>,
     pub assignee: Option<Uuid>,
     #[serde(default)]
@@ -432,10 +441,10 @@ pub struct IssuePatch {
     pub sprint_id: Option<Uuid>,
     #[serde(default)]
     pub clear_sprint: bool,
-    pub parent_id: Option<Uuid>,
+    pub parent_id: Option<IssueId>,
     #[serde(default)]
     pub clear_parent: bool,
-    pub dependencies: Option<Vec<Uuid>>,
+    pub dependencies: Option<Vec<IssueId>>,
 }
 
 /// A list replaces every label. `{add, remove}` changes only the labels it names, and a

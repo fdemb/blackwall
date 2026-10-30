@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "WITH RECURSIVE reach(id) AS (SELECT $2::uuid UNION SELECT d.dependency_id FROM issue_dependencies d JOIN reach r ON d.issue_id=r.id WHERE d.workspace_id=$1) SELECT EXISTS(SELECT 1 FROM reach WHERE id=$3) AS \"exists!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "exists!",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "5ca10f76fe9495e4adb385ec9aea90b418750bbe4411307c3ad1ef36b48c13b8"
+}

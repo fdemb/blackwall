@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT EXISTS(SELECT 1 FROM email_verifications JOIN users ON users.id=email_verifications.user_id WHERE user_id=$1 AND token_hash=$2 AND expires_at>clock_timestamp() AND users.email_verified_at IS NULL) AS \"exists!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "exists!",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "da8d51c121131e1a8e80c39664f15f6c6a2155e6dcf301874b85f645140c89e3"
+}

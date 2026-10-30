@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE inbound_deliveries SET result=$3 WHERE integration_id=$1 AND delivery_id=$2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Jsonb"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "5a168a280cc1ab55997aaedec1a7f5ada34ce72bad120d4b64e3230f7f2d58a0"
+}

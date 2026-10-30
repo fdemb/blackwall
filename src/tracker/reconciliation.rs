@@ -37,11 +37,11 @@ pub(super) async fn apply_page(
     items: &[RemoteIssue],
 ) -> Result<()> {
     let remote_ids: Vec<&str> = items.iter().map(|item| item.id.as_str()).collect();
-    let purged: BTreeSet<String> = sqlx::query_scalar(
+    let purged: BTreeSet<String> = sqlx::query_scalar!(
         "SELECT remote_id FROM tracker_deleted_issues WHERE connection_id=$1 AND remote_id=ANY($2)",
+        import.connection,
+        &remote_ids as _,
     )
-    .bind(import.connection)
-    .bind(remote_ids)
     .fetch_all(&mut *conn)
     .await?
     .into_iter()
@@ -109,19 +109,19 @@ impl<'a> Lookups<'a> {
         import: PageImport<'a>,
         items: &[RemoteIssue],
     ) -> Result<Self> {
-        let stages = sqlx::query_as::<_, (Uuid, Uuid, String, String, i64)>(
-            "SELECT id,team_id,lower(name),kind,position FROM stages WHERE workspace_id=$1",
+        let stages = sqlx::query!(
+            r#"SELECT id,team_id,lower(name) AS "name!",kind,position FROM stages WHERE workspace_id=$1"#,
+            import.workspace,
         )
-        .bind(import.workspace)
         .fetch_all(&mut *conn)
         .await?
         .into_iter()
-        .map(|(id, team, name, kind, position)| Stage {
-            id,
-            team,
-            name,
-            kind,
-            position,
+        .map(|row| Stage {
+            id: row.id,
+            team: row.team_id,
+            name: row.name,
+            kind: row.kind,
+            position: row.position,
         })
         .collect();
         let metadata = import.metadata;
@@ -146,13 +146,16 @@ impl<'a> Lookups<'a> {
             .map(|item| lookups.status_name(item).to_owned())
             .collect();
         // Match PostgreSQL's case folding on both sides, including non-ASCII names.
-        lookups.folded =
-            sqlx::query_as("SELECT name,lower(name) FROM unnest($1::text[]) AS names(name)")
-                .bind(names.into_iter().collect::<Vec<_>>())
-                .fetch_all(&mut *conn)
-                .await?
-                .into_iter()
-                .collect();
+        let names: Vec<String> = names.into_iter().collect();
+        lookups.folded = sqlx::query!(
+            r#"SELECT name AS "name!",lower(name) AS "folded!" FROM unnest($1::text[]) AS names(name)"#,
+            &names,
+        )
+        .fetch_all(&mut *conn)
+        .await?
+        .into_iter()
+        .map(|row| (row.name, row.folded))
+        .collect();
         // Assignees and authors, of items and comments, map to members by the same rules.
         let emails: BTreeSet<String> = items
             .iter()
@@ -387,9 +390,10 @@ async fn members(
         .iter()
         .filter_map(|email| people_mapping.get(email).copied())
         .collect();
-    let rows: Vec<(Uuid, String)> = sqlx::query_as("SELECT u.id,lower(u.email) FROM users u JOIN workspace_members m ON m.user_id=u.id WHERE m.workspace_id=$1 AND (u.id=ANY($2) OR lower(u.email)=ANY($3))")
-        .bind(workspace).bind(&mapped).bind(emails.iter().collect::<Vec<_>>())
-        .fetch_all(&mut *conn).await?;
+    let lookup: Vec<&String> = emails.iter().collect();
+    let rows: Vec<(Uuid, String)> = sqlx::query!(r#"SELECT u.id,lower(u.email) AS "email!" FROM users u JOIN workspace_members m ON m.user_id=u.id WHERE m.workspace_id=$1 AND (u.id=ANY($2) OR lower(u.email)=ANY($3))"#,
+        workspace, &mapped, &lookup as _)
+        .fetch_all(&mut *conn).await?.into_iter().map(|row| (row.id, row.email)).collect();
     let by_id: BTreeSet<Uuid> = rows.iter().map(|(id, _)| *id).collect();
     let by_email: BTreeMap<String, Uuid> =
         rows.into_iter().map(|(id, email)| (email, id)).collect();
@@ -495,9 +499,10 @@ impl Local {
             .filter(|id| !ids.contains_key(*id))
             .collect();
         if !missing.is_empty() {
-            let known: Vec<(String, Uuid)> = sqlx::query_as("SELECT tracker->>'remote_id',id FROM issues WHERE workspace_id=$1 AND tracker->>'connection_id'=$2 AND tracker->>'remote_id'=ANY($3)")
-                .bind(import.workspace).bind(import.connection.to_string()).bind(missing.into_iter().collect::<Vec<_>>())
-                .fetch_all(&mut *conn).await?;
+            let missing: Vec<&str> = missing.into_iter().collect();
+            let known: Vec<(String, Uuid)> = sqlx::query!(r#"SELECT tracker->>'remote_id' AS "remote_id!",id FROM issues WHERE workspace_id=$1 AND tracker->>'connection_id'=$2 AND tracker->>'remote_id'=ANY($3)"#,
+                import.workspace, import.connection.to_string(), &missing as _)
+                .fetch_all(&mut *conn).await?.into_iter().map(|row| (row.remote_id, row.id)).collect();
             ids.extend(known);
         }
         // Children scanned earlier point at packages arriving on this page. Link them
@@ -607,8 +612,9 @@ impl Parents {
         let roots: BTreeSet<Uuid> = parents.wanted.values().flatten().copied().collect();
         let mut ancestors = BTreeMap::new();
         if !roots.is_empty() {
-            let rows: Vec<(Uuid, Option<Uuid>)> = sqlx::query_as("WITH RECURSIVE ancestors(id,parent_id) AS (SELECT id,parent_id FROM issues WHERE workspace_id=$1 AND id=ANY($2) UNION SELECT i.id,i.parent_id FROM issues i JOIN ancestors a ON i.id=a.parent_id WHERE i.workspace_id=$1) SELECT id,parent_id FROM ancestors")
-                .bind(import.workspace).bind(roots.into_iter().collect::<Vec<_>>()).fetch_all(&mut *conn).await?;
+            let roots: Vec<Uuid> = roots.into_iter().collect();
+            let rows: Vec<(Uuid, Option<Uuid>)> = sqlx::query!(r#"WITH RECURSIVE ancestors(id,parent_id) AS (SELECT id,parent_id FROM issues WHERE workspace_id=$1 AND id=ANY($2) UNION SELECT i.id,i.parent_id FROM issues i JOIN ancestors a ON i.id=a.parent_id WHERE i.workspace_id=$1) SELECT id AS "id!",parent_id AS "parent_id?" FROM ancestors"#,
+                import.workspace, &roots).fetch_all(&mut *conn).await?.into_iter().map(|row| (row.id, row.parent_id)).collect();
             ancestors.extend(rows);
         }
         let dependents: BTreeSet<Uuid> = local.dependents.iter().map(|issue| issue.id).collect();
@@ -897,8 +903,8 @@ impl Writes {
         let workspace = import.workspace;
         if !self.baselines.is_empty() {
             let (ids, values): (Vec<Uuid>, Vec<Value>) = self.baselines.into_iter().unzip();
-            sqlx::query("UPDATE issues i SET tracker=input.tracker FROM unnest($2::uuid[],$3::jsonb[]) AS input(id,tracker) WHERE i.workspace_id=$1 AND i.id=input.id")
-                .bind(workspace).bind(ids).bind(values).execute(&mut *conn).await?;
+            sqlx::query!("UPDATE issues i SET tracker=input.tracker FROM unnest($2::uuid[],$3::jsonb[]) AS input(id,tracker) WHERE i.workspace_id=$1 AND i.id=input.id",
+                workspace, &ids, &values as _).execute(&mut *conn).await?;
         }
         if !self.changes.is_empty() {
             let updated: Vec<Uuid> = self
@@ -909,10 +915,10 @@ impl Writes {
                 .collect();
             let mut followers: BTreeMap<Uuid, Vec<Uuid>> = BTreeMap::new();
             if !updated.is_empty() {
-                let rows: Vec<(Uuid, Uuid)> = sqlx::query_as("SELECT issue_id,user_id FROM issue_followers WHERE workspace_id=$1 AND issue_id=ANY($2) ORDER BY issue_id,user_id")
-                    .bind(workspace).bind(&updated).fetch_all(&mut *conn).await?;
-                for (issue, user) in rows {
-                    followers.entry(issue).or_default().push(user);
+                let rows = sqlx::query!("SELECT issue_id,user_id FROM issue_followers WHERE workspace_id=$1 AND issue_id=ANY($2) ORDER BY issue_id,user_id",
+                    workspace, &updated).fetch_all(&mut *conn).await?;
+                for row in rows {
+                    followers.entry(row.issue_id).or_default().push(row.user_id);
                 }
             }
             let stages = stages
@@ -929,8 +935,8 @@ impl Writes {
         }
         let (ids, urls): (Vec<Uuid>, Vec<String>) = self.links.into_iter().unzip();
         let link_ids: Vec<Uuid> = ids.iter().map(|_| Uuid::new_v4()).collect();
-        sqlx::query("INSERT INTO source_links(id,workspace_id,issue_id,url,title) SELECT input.id,$1,input.issue_id,input.url,$5 FROM unnest($2::uuid[],$3::uuid[],$4::text[]) AS input(id,issue_id,url) WHERE NOT EXISTS(SELECT 1 FROM source_links s WHERE s.workspace_id=$1 AND s.issue_id=input.issue_id AND s.url=input.url AND s.title=$5) ON CONFLICT DO NOTHING")
-            .bind(workspace).bind(link_ids).bind(ids).bind(urls).bind(import.provider.name()).execute(&mut *conn).await?;
+        sqlx::query!("INSERT INTO source_links(id,workspace_id,issue_id,url,title) SELECT input.id,$1,input.issue_id,input.url,$5 FROM unnest($2::uuid[],$3::uuid[],$4::text[]) AS input(id,issue_id,url) WHERE NOT EXISTS(SELECT 1 FROM source_links s WHERE s.workspace_id=$1 AND s.issue_id=input.issue_id AND s.url=input.url AND s.title=$5) ON CONFLICT DO NOTHING",
+            workspace, &link_ids, &ids, &urls, import.provider.name()).execute(&mut *conn).await?;
         Ok(())
     }
 }
@@ -1002,8 +1008,8 @@ impl<'a> CommentProgress<'a> {
             .map(|(id, at, _)| (id, at))
             .unzip();
         if !ids.is_empty() {
-            sqlx::query("UPDATE issues i SET tracker=(i.tracker-'comments_at')||jsonb_strip_nulls(jsonb_build_object('comments_imported',true,'comments_at',input.at)) FROM unnest($2::uuid[],$3::timestamptz[]) AS input(id,at) WHERE i.workspace_id=$1 AND i.id=input.id")
-                .bind(import.workspace).bind(&ids).bind(&times).execute(&mut *conn).await?;
+            sqlx::query!("UPDATE issues i SET tracker=(i.tracker-'comments_at')||jsonb_strip_nulls(jsonb_build_object('comments_imported',true,'comments_at',input.at)) FROM unnest($2::uuid[],$3::timestamptz[]) AS input(id,at) WHERE i.workspace_id=$1 AND i.id=input.id",
+                import.workspace, &ids, &times as _).execute(&mut *conn).await?;
         }
         Ok(())
     }

@@ -103,8 +103,8 @@ async fn current_options(
     store: &Store,
     connection: &Connection<'_>,
 ) -> Result<Option<TrackerOptions>> {
-    let options: Option<Value> = sqlx::query_scalar("SELECT options FROM tracker_connections WHERE id=$1 AND generation=$2 AND enabled AND NOT deleted")
-        .bind(connection.id).bind(connection.generation).fetch_optional(&store.pool).await?;
+    let options: Option<Value> = sqlx::query_scalar!("SELECT options FROM tracker_connections WHERE id=$1 AND generation=$2 AND enabled AND NOT deleted", connection.id, connection.generation)
+        .fetch_optional(&store.pool).await?;
     Ok(options.map(serde_json::from_value).transpose()?)
 }
 
@@ -129,12 +129,12 @@ struct Local {
 }
 
 async fn local(store: &Store, connection: &Connection<'_>, issue: Uuid) -> Result<Option<Local>> {
-    let Some(row) = sqlx::query("SELECT i.title,i.description,i.stage_id,s.name AS stage_name,i.assignee,u.email,i.deadline,i.tracker FROM issues i JOIN stages s ON s.id=i.stage_id LEFT JOIN users u ON u.id=i.assignee WHERE i.workspace_id=$1 AND i.id=$2 AND i.tracker IS NOT NULL")
-        .bind(connection.workspace).bind(issue).fetch_optional(&store.pool).await?
+    let Some(row) = sqlx::query!(r#"SELECT i.title,i.description,i.stage_id,s.name AS stage_name,i.assignee,u.email AS "email?",i.deadline,i.tracker AS "tracker!" FROM issues i JOIN stages s ON s.id=i.stage_id LEFT JOIN users u ON u.id=i.assignee WHERE i.workspace_id=$1 AND i.id=$2 AND i.tracker IS NOT NULL"#, connection.workspace, issue)
+        .fetch_optional(&store.pool).await?
     else {
         return Ok(None);
     };
-    let link: TrackerLink = serde_json::from_value(row.try_get("tracker")?)?;
+    let link: TrackerLink = serde_json::from_value(row.tracker)?;
     // Unmapping a project stops its issues from pushing.
     let mapped = connection
         .mappings
@@ -145,13 +145,13 @@ async fn local(store: &Store, connection: &Connection<'_>, issue: Uuid) -> Resul
     }
     Ok(Some(Local {
         link,
-        title: row.try_get("title")?,
-        description: row.try_get("description")?,
-        stage: row.try_get("stage_id")?,
-        stage_name: row.try_get("stage_name")?,
-        assignee: row.try_get("assignee")?,
-        assignee_email: row.try_get("email")?,
-        deadline: row.try_get("deadline")?,
+        title: row.title,
+        description: row.description,
+        stage: row.stage_id,
+        stage_name: row.stage_name,
+        assignee: row.assignee,
+        assignee_email: row.email,
+        deadline: row.deadline,
     }))
 }
 
@@ -246,11 +246,11 @@ async fn prepare(
     if !metadata.options.get(TrackerField::Comments).export {
         return Ok(None);
     }
-    let body: Option<String> = sqlx::query_scalar(
+    let body: Option<String> = sqlx::query_scalar!(
         "SELECT body FROM comments WHERE workspace_id=$1 AND id=$2 AND tracker IS NULL",
+        connection.workspace,
+        comment,
     )
-    .bind(connection.workspace)
-    .bind(comment)
     .fetch_optional(&store.pool)
     .await?;
     Ok(body.map(|body| Push::Comment { remote_id, body }))
@@ -273,17 +273,14 @@ async fn record_applied(
     applied: Applied,
 ) -> Result<Sent> {
     if let (Some(comment), Some(remote_id)) = (row.comment, applied.comment_id) {
-        sqlx::query("UPDATE comments SET tracker=$3 WHERE workspace_id=$1 AND id=$2")
-            .bind(connection.workspace)
-            .bind(comment)
-            .bind(comments::link(
-                connection.provider,
-                connection.id,
-                &remote_id,
-                None,
-            ))
-            .execute(&store.pool)
-            .await?;
+        sqlx::query!(
+            "UPDATE comments SET tracker=$3 WHERE workspace_id=$1 AND id=$2",
+            connection.workspace,
+            comment,
+            comments::link(connection.provider, connection.id, &remote_id, None),
+        )
+        .execute(&store.pool)
+        .await?;
     }
     reachable(store, connection).await?;
     let fields = match push {
@@ -336,8 +333,8 @@ async fn send_comment(
             Err(refused) => return Ok(refused),
         };
         let listed: Vec<&str> = comments.iter().map(|comment| comment.id.as_str()).collect();
-        let linked: Vec<String> = sqlx::query_scalar("SELECT tracker->>'remote_id' FROM comments WHERE workspace_id=$1 AND issue_id=$2 AND tracker->>'connection_id'=$3 UNION SELECT remote_id FROM tracker_deleted_comments WHERE connection_id=$3::uuid AND remote_id=ANY($4)")
-            .bind(connection.workspace).bind(row.issue).bind(connection.id.to_string()).bind(&listed)
+        let linked: Vec<String> = sqlx::query_scalar!(r#"SELECT tracker->>'remote_id' AS "remote_id!" FROM comments WHERE workspace_id=$1 AND issue_id=$2 AND tracker->>'connection_id'=$3 UNION SELECT remote_id FROM tracker_deleted_comments WHERE connection_id=$3::uuid AND remote_id=ANY($4)"#,
+            connection.workspace, row.issue, connection.id.to_string(), &listed as _)
             .fetch_all(&store.pool).await?;
         let window = (*sent_at - comments::SKEW, Utc::now() + comments::SKEW);
         let sender = sent_account.as_deref().unwrap_or(&account);
@@ -350,21 +347,21 @@ async fn send_comment(
         }
     }
     // An earlier send was ruled out above, so this one replaces its record.
-    sqlx::query(
+    sqlx::query!(
         "UPDATE tracker_outbox SET sent_at=clock_timestamp(),sent_body=$2,sent_account=$3 WHERE id=$1",
+        row.id,
+        body,
+        &account,
     )
-    .bind(row.id)
-    .bind(body)
-    .bind(&account)
     .execute(&store.pool)
     .await?;
     let outcome = connection.provider.push(&connection.endpoint, push).await;
     if let Ok(PushOutcome::Rejected(_) | PushOutcome::Unavailable(_)) = &outcome {
         // Refused, so nothing was posted; an earlier send was ruled out above.
-        sqlx::query(
+        sqlx::query!(
             "UPDATE tracker_outbox SET sent_at=NULL,sent_body=NULL,sent_account=NULL WHERE id=$1",
+            row.id,
         )
-        .bind(row.id)
         .execute(&store.pool)
         .await?;
     }
@@ -376,11 +373,11 @@ async fn account(
     store: &Store,
     connection: &Connection<'_>,
 ) -> Result<std::result::Result<String, PushOutcome>> {
-    let cached: Option<Option<String>> = sqlx::query_scalar(
+    let cached: Option<Option<String>> = sqlx::query_scalar!(
         "SELECT remote_user_id FROM tracker_connections WHERE id=$1 AND generation=$2",
+        connection.id,
+        connection.generation,
     )
-    .bind(connection.id)
-    .bind(connection.generation)
     .fetch_optional(&store.pool)
     .await?;
     if let Some(Some(account)) = cached {
@@ -388,12 +385,12 @@ async fn account(
     }
     let found = connection.provider.account(&connection.endpoint).await?;
     if let Ok(account) = &found {
-        sqlx::query(
+        sqlx::query!(
             "UPDATE tracker_connections SET remote_user_id=$3 WHERE id=$1 AND generation=$2",
+            connection.id,
+            connection.generation,
+            account,
         )
-        .bind(connection.id)
-        .bind(connection.generation)
-        .bind(account)
         .execute(&store.pool)
         .await?;
     }
@@ -425,8 +422,8 @@ fn adoptable<'a>(
 /// Delays a failed row by a doubling backoff (30s up to an hour), unless a newer edit
 /// restarted it meanwhile.
 async fn backoff(store: &Store, row: &Queued, message: &str) -> Result<()> {
-    sqlx::query("UPDATE tracker_outbox SET attempts=attempts+1,last_error=$3,retry_at=clock_timestamp()+make_interval(secs=>least(30*power(2,attempts),3600)) WHERE id=$1 AND revision=$2")
-        .bind(row.id).bind(row.revision).bind(message).execute(&store.pool).await?;
+    sqlx::query!("UPDATE tracker_outbox SET attempts=attempts+1,last_error=$3,retry_at=clock_timestamp()+make_interval(secs=>least(30*power(2,attempts),3600)) WHERE id=$1 AND revision=$2",
+        row.id, row.revision, message).execute(&store.pool).await?;
     Ok(())
 }
 
@@ -439,14 +436,14 @@ async fn unavailable(
     message: &str,
 ) -> Result<Sent> {
     let mut tx = store.pool.begin().await?;
-    sqlx::query("UPDATE tracker_outbox SET last_error=$3,retry_at=clock_timestamp()+interval '5 minutes' WHERE id=$1 AND revision=$2")
-        .bind(row.id).bind(row.revision).bind(message).execute(&mut *tx).await?;
-    sqlx::query(
+    sqlx::query!("UPDATE tracker_outbox SET last_error=$3,retry_at=clock_timestamp()+interval '5 minutes' WHERE id=$1 AND revision=$2",
+        row.id, row.revision, message).execute(&mut *tx).await?;
+    sqlx::query!(
         "UPDATE tracker_connections SET push_error=$3 WHERE id=$1 AND generation=$2 AND NOT deleted",
+        connection.id,
+        connection.generation,
+        message,
     )
-    .bind(connection.id)
-    .bind(connection.generation)
-    .bind(message)
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;
@@ -455,8 +452,8 @@ async fn unavailable(
 
 /// The provider accepted or judged a push, so the connection may push again.
 async fn reachable(store: &Store, connection: &Connection<'_>) -> Result<()> {
-    sqlx::query("UPDATE tracker_connections SET push_error=NULL WHERE id=$1 AND generation=$2 AND push_error IS NOT NULL")
-        .bind(connection.id).bind(connection.generation).execute(&store.pool).await?;
+    sqlx::query!("UPDATE tracker_connections SET push_error=NULL WHERE id=$1 AND generation=$2 AND push_error IS NOT NULL",
+        connection.id, connection.generation).execute(&store.pool).await?;
     Ok(())
 }
 
@@ -468,12 +465,14 @@ async fn discard(store: &Store, row: &Queued) -> Result<Sent> {
 
 /// Whether the row was still at the sent revision.
 async fn delete<'c>(conn: impl sqlx::PgExecutor<'c>, row: &Queued) -> Result<bool> {
-    let deleted = sqlx::query("DELETE FROM tracker_outbox WHERE id=$1 AND revision=$2")
-        .bind(row.id)
-        .bind(row.revision)
-        .execute(conn)
-        .await?
-        .rows_affected();
+    let deleted = sqlx::query!(
+        "DELETE FROM tracker_outbox WHERE id=$1 AND revision=$2",
+        row.id,
+        row.revision,
+    )
+    .execute(conn)
+    .await?
+    .rows_affected();
     Ok(deleted > 0)
 }
 
@@ -490,10 +489,10 @@ async fn finish(
 ) -> Result<Sent> {
     let mut tx = store.pool.begin().await?;
     // Lock the issue before the row, as enqueueing commands do.
-    let link: Option<serde_json::Value> = sqlx::query_scalar(
-        "SELECT tracker FROM issues WHERE id=$1 AND tracker IS NOT NULL FOR UPDATE",
+    let link: Option<serde_json::Value> = sqlx::query_scalar!(
+        r#"SELECT tracker AS "tracker!" FROM issues WHERE id=$1 AND tracker IS NOT NULL FOR UPDATE"#,
+        row.issue,
     )
-    .bind(row.issue)
     .fetch_optional(&mut *tx)
     .await?;
     if !delete(&mut *tx, row).await? && current_only {
@@ -505,11 +504,14 @@ async fn finish(
         update(&mut link);
         link.push_error = error;
         if link != before {
-            sqlx::query("UPDATE issues SET tracker=$2 WHERE id=$1")
-                .bind(row.issue)
-                .bind(serde_json::to_value(&link)?)
-                .execute(&mut *tx)
-                .await?;
+            let tracker = serde_json::to_value(&link)?;
+            sqlx::query!(
+                "UPDATE issues SET tracker=$2 WHERE id=$1",
+                row.issue,
+                tracker,
+            )
+            .execute(&mut *tx)
+            .await?;
         }
     }
     tx.commit().await?;

@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM issue_labels WHERE workspace_id=$1 AND label_id=$2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "0dbf17cc7f07ede39cacaebb5970b0ecf5ce017d6b8c060cb25aa12989a4c820"
+}

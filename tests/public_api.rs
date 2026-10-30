@@ -8,6 +8,7 @@ use blackwall::{
     auth::{Register, Session},
     domain::{Command, ProjectStatus},
     http::router,
+    ids::{IssueId, WorkspaceId},
     store::Store,
 };
 use http_body_util::BodyExt;
@@ -1623,7 +1624,7 @@ async fn keys_recorded_by_command_still_replay() {
     let legacy = keyed
         .store
         .operation(
-            keyed.workspace,
+            WorkspaceId(keyed.workspace),
             keyed.owner.profile.id,
             Command::UpdateLabel {
                 id,
@@ -1692,7 +1693,7 @@ async fn project_plan_steps_recorded_by_command_still_replay() {
         keyed
             .store
             .operation(
-                keyed.workspace,
+                WorkspaceId(keyed.workspace),
                 keyed.owner.profile.id,
                 command,
                 Default::default(),
@@ -2105,11 +2106,11 @@ async fn webhook_deliveries_carry_the_changed_record() {
     let issue_id = Uuid::parse_str(issue["id"].as_str().unwrap()).unwrap();
     let logged = store
         .operation(
-            ws,
+            WorkspaceId(ws),
             owner.profile.id,
             Command::LogTime {
                 id: None,
-                issue_id,
+                issue_id: IssueId(issue_id),
                 minutes: 45,
                 note: "Rotation".into(),
                 logged_at: chrono::Utc::now(),

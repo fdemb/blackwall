@@ -6,6 +6,7 @@ use blackwall::{
     auth::{Register, Session},
     domain::{BulkAction, Command, IssueInput, IssuePatch, Priority, Role},
     http::router_with_web,
+    ids::{IssueId, TeamId},
     jobs::{self, Mailer},
     limits::{Limits, Resource},
     store::{Store, StoreConfig},
@@ -248,7 +249,7 @@ async fn complete_contract_on_postgres() {
             id: None,
             name: "Certificate rotation".into(),
             description: "Renew edge certificates".into(),
-            team_ids: vec![team],
+            team_ids: vec![TeamId(team)],
         },
     )
     .await;
@@ -290,7 +291,7 @@ async fn complete_contract_on_postgres() {
         &id,
         Command::CreateSprint {
             id: None,
-            team_id: team,
+            team_id: TeamId(team),
             name: "Week one".into(),
             goal: "Renew certificates".into(),
             starts_at: Utc::now(),
@@ -316,8 +317,8 @@ async fn complete_contract_on_postgres() {
     let first = uuid(&result["result"]["id"]);
 
     let mut input = issue(team, "Deploy new certificate");
-    input.parent_id = Some(first);
-    input.dependencies = vec![first];
+    input.parent_id = Some(IssueId(first));
+    input.dependencies = vec![IssueId(first)];
     input.sprint_id = Some(sprint);
 
     let result = change(&app, &owner, &id, Command::CreateIssue { input }).await;
@@ -342,7 +343,7 @@ async fn complete_contract_on_postgres() {
         &id,
         Command::AddComment {
             id: None,
-            issue_id: first,
+            issue_id: IssueId(first),
             body: "**Ready** for review".into(),
             mentions: vec![owner.profile.id],
             attachments: vec![],
@@ -370,7 +371,7 @@ async fn complete_contract_on_postgres() {
         &id,
         Command::LogTime {
             id: None,
-            issue_id: first,
+            issue_id: IssueId(first),
             minutes: 45,
             note: "Rotation".into(),
             logged_at: Utc::now(),
@@ -459,7 +460,7 @@ async fn complete_contract_on_postgres() {
         &owner,
         &id,
         Command::BulkIssues {
-            ids: vec![first, child],
+            ids: vec![IssueId(first), IssueId(child)],
             action: BulkAction::Update(Box::new(IssuePatch {
                 priority: Some(Priority::Urgent),
                 ..Default::default()
@@ -468,7 +469,13 @@ async fn complete_contract_on_postgres() {
     )
     .await;
 
-    change(&app, &owner, &id, Command::DeleteIssue { id: child }).await;
+    change(
+        &app,
+        &owner,
+        &id,
+        Command::DeleteIssue { id: IssueId(child) },
+    )
+    .await;
     let (status, trash) = call(
         &app,
         "GET",
@@ -480,7 +487,13 @@ async fn complete_contract_on_postgres() {
 
     assert_eq!(status, StatusCode::OK, "{trash}");
     assert_eq!(trash["items"].as_array().unwrap().len(), 1);
-    change(&app, &owner, &id, Command::RestoreIssue { id: child }).await;
+    change(
+        &app,
+        &owner,
+        &id,
+        Command::RestoreIssue { id: IssueId(child) },
+    )
+    .await;
 
     change(
         &app,
@@ -555,7 +568,7 @@ async fn complete_contract_on_postgres() {
         &owner,
         &id,
         Command::UpdateIssue {
-            id: first,
+            id: IssueId(first),
             patch: IssuePatch {
                 assignee: Some(colleague.profile.id),
                 ..Default::default()
@@ -577,7 +590,7 @@ async fn complete_contract_on_postgres() {
         &id,
         Command::AddComment {
             id: None,
-            issue_id: first,
+            issue_id: IssueId(first),
             body: format!("Review @{}", colleague.profile.id),
             mentions: vec![colleague.profile.id],
             attachments: vec![],
@@ -1464,7 +1477,7 @@ async fn followers_follow_assignments_comments_and_mentions_on_postgres() {
         &owner,
         &workspace,
         Command::UpdateIssue {
-            id,
+            id: IssueId(id),
             patch: IssuePatch {
                 assignee: Some(assignee.profile.id),
                 ..Default::default()
@@ -1485,7 +1498,7 @@ async fn followers_follow_assignments_comments_and_mentions_on_postgres() {
         &workspace,
         Command::AddComment {
             id: None,
-            issue_id: id,
+            issue_id: IssueId(id),
             body: "Rotating now".into(),
             mentions: vec![],
             attachments: vec![],
@@ -1507,7 +1520,7 @@ async fn followers_follow_assignments_comments_and_mentions_on_postgres() {
         &workspace,
         Command::AddComment {
             id: None,
-            issue_id: id,
+            issue_id: IssueId(id),
             body: "Thanks".into(),
             mentions: vec![],
             attachments: vec![],
@@ -1523,7 +1536,7 @@ async fn followers_follow_assignments_comments_and_mentions_on_postgres() {
         &workspace,
         Command::AddComment {
             id: None,
-            issue_id: id,
+            issue_id: IssueId(id),
             body: "One more".into(),
             mentions: vec![],
             attachments: vec![],
@@ -1545,7 +1558,7 @@ async fn followers_follow_assignments_comments_and_mentions_on_postgres() {
         &workspace,
         Command::AddComment {
             id: None,
-            issue_id: id,
+            issue_id: IssueId(id),
             body: "Looping in".into(),
             mentions: vec![mentioned.profile.id],
             attachments: vec![],
@@ -1566,7 +1579,7 @@ async fn followers_follow_assignments_comments_and_mentions_on_postgres() {
         &owner,
         &workspace,
         Command::UpdateIssue {
-            id,
+            id: IssueId(id),
             patch: IssuePatch {
                 title: Some("Rotate signing key today".into()),
                 ..Default::default()
@@ -1588,7 +1601,7 @@ async fn followers_follow_assignments_comments_and_mentions_on_postgres() {
         &owner,
         &workspace,
         Command::UpdateIssue {
-            id,
+            id: IssueId(id),
             patch: IssuePatch {
                 clear_assignee: true,
                 ..Default::default()
@@ -1637,7 +1650,7 @@ async fn members_manage_other_followers_but_viewers_cannot_on_postgres() {
         &owner,
         &workspace,
         Command::Follow {
-            issue_id: id,
+            issue_id: IssueId(id),
             following: false,
             user_id: Some(assignee.profile.id),
         },
@@ -1651,7 +1664,7 @@ async fn members_manage_other_followers_but_viewers_cannot_on_postgres() {
         &owner,
         &workspace,
         Command::Follow {
-            issue_id: id,
+            issue_id: IssueId(id),
             following: true,
             user_id: Some(assignee.profile.id),
         },
@@ -1694,7 +1707,7 @@ async fn members_manage_other_followers_but_viewers_cannot_on_postgres() {
         &owner,
         &workspace,
         Command::Follow {
-            issue_id: id,
+            issue_id: IssueId(id),
             following: false,
             user_id: Some(assignee.profile.id),
         },

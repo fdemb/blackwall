@@ -362,11 +362,11 @@ pub(super) async fn authorize(
     workspace: Uuid,
     actor: Uuid,
 ) -> Result<Role> {
-    let role: Option<String> = sqlx::query_scalar(
+    let role: Option<String> = sqlx::query_scalar!(
         "SELECT role FROM workspace_members WHERE workspace_id=$1 AND user_id=$2",
+        workspace,
+        actor,
     )
-    .bind(workspace)
-    .bind(actor)
     .fetch_optional(conn)
     .await?;
     serde_json::from_value(Value::String(role.ok_or(Error::Forbidden)?)).map_err(Into::into)
@@ -566,7 +566,8 @@ impl Store {
             .collect())
     }
 
-    pub async fn workspace_metadata(&self, workspace: Uuid, actor: Uuid) -> Result<Value> {
+    pub async fn workspace_metadata(&self, workspace: WorkspaceId, actor: Uuid) -> Result<Value> {
+        let workspace = workspace.0;
         let mut conn = self.pool.acquire().await?;
         authorize(&mut conn, workspace, actor).await?;
 
@@ -583,11 +584,12 @@ impl Store {
     /// Creates a workspace under the first free slug derived from its name.
     pub async fn create_workspace(&self, name: String, actor: Uuid) -> Result<Value> {
         let base = crate::domain::workspace_slug(&name);
-        let taken: Vec<String> =
-            sqlx::query_scalar("SELECT slug FROM workspaces WHERE slug=$1 OR slug LIKE $1 || '-%'")
-                .bind(&base)
-                .fetch_all(&self.pool)
-                .await?;
+        let taken: Vec<String> = sqlx::query_scalar!(
+            "SELECT slug FROM workspaces WHERE slug=$1 OR slug LIKE $1 || '-%'",
+            &base
+        )
+        .fetch_all(&self.pool)
+        .await?;
         let slug = std::iter::once(base.clone())
             .chain((2..).map(|n| format!("{base}-{n}")))
             .find(|slug| !taken.contains(slug))
@@ -609,21 +611,14 @@ impl Store {
         let mut tx = self.pool.begin().await?;
         if let Some(key) = &key {
             text(key, 200)?;
-            sqlx::query("INSERT INTO workspace_creation_keys(actor,key,name) VALUES($1,$2,$3) ON CONFLICT DO NOTHING")
-                .bind(actor)
-                .bind(key)
-                .bind(&name)
+            sqlx::query!("INSERT INTO workspace_creation_keys(actor,key,name) VALUES($1,$2,$3) ON CONFLICT DO NOTHING", actor, key, &name)
                 .execute(&mut *tx)
                 .await?;
-            let row = sqlx::query("SELECT name,result FROM workspace_creation_keys WHERE actor=$1 AND key=$2 FOR UPDATE")
-                .bind(actor)
-                .bind(key)
+            let row = sqlx::query!("SELECT name,result FROM workspace_creation_keys WHERE actor=$1 AND key=$2 FOR UPDATE", actor, key)
                 .fetch_one(&mut *tx)
                 .await?;
-            let result = row.try_get::<Option<Value>, _>("result")?;
-            if row.try_get::<String, _>("name")? != name
-                || result.as_ref().is_some_and(|r| r["slug"] != slug.as_str())
-            {
+            let result = row.result;
+            if row.name != name || result.as_ref().is_some_and(|r| r["slug"] != slug.as_str()) {
                 return Err(Error::Conflict(
                     "idempotency key reused for a different workspace".into(),
                 ));
@@ -634,41 +629,46 @@ impl Store {
         }
 
         let id = Uuid::new_v4();
-        sqlx::query("INSERT INTO workspaces(id,name,slug) VALUES($1,$2,$3)")
-            .bind(id)
-            .bind(&name)
-            .bind(&slug)
-            .execute(&mut *tx)
-            .await
-            .map_err(|error| match &error {
-                sqlx::Error::Database(db) if db.constraint() == Some("workspaces_slug") => {
-                    Error::Conflict("workspace slug is taken".into())
-                }
-                _ => Error::Database(error),
-            })?;
-        sqlx::query(
-            "INSERT INTO workspace_members(workspace_id,user_id,role) VALUES($1,$2,'owner')",
+        sqlx::query!(
+            "INSERT INTO workspaces(id,name,slug) VALUES($1,$2,$3)",
+            id,
+            &name,
+            &slug
         )
-        .bind(id)
-        .bind(actor)
+        .execute(&mut *tx)
+        .await
+        .map_err(|error| match &error {
+            sqlx::Error::Database(db) if db.constraint() == Some("workspaces_slug") => {
+                Error::Conflict("workspace slug is taken".into())
+            }
+            _ => Error::Database(error),
+        })?;
+        sqlx::query!(
+            "INSERT INTO workspace_members(workspace_id,user_id,role) VALUES($1,$2,'owner')",
+            id,
+            actor,
+        )
         .execute(&mut *tx)
         .await?;
 
         let result = json!({"id":id,"name":name,"slug":slug,"version":1});
         if let Some(key) = key {
-            sqlx::query("UPDATE workspace_creation_keys SET result=$3 WHERE actor=$1 AND key=$2")
-                .bind(actor)
-                .bind(key)
-                .bind(&result)
-                .execute(&mut *tx)
-                .await?;
+            sqlx::query!(
+                "UPDATE workspace_creation_keys SET result=$3 WHERE actor=$1 AND key=$2",
+                actor,
+                key,
+                &result
+            )
+            .execute(&mut *tx)
+            .await?;
         }
         tx.commit().await?;
 
         Ok(result)
     }
 
-    pub async fn get_issue(&self, workspace: Uuid, actor: Uuid, id: Uuid) -> Result<Issue> {
+    pub async fn get_issue(&self, workspace: WorkspaceId, actor: Uuid, id: Uuid) -> Result<Issue> {
+        let workspace = workspace.0;
         let mut conn = self.pool.acquire().await?;
         authorize(&mut conn, workspace, actor).await?;
         issue_on(&mut conn, workspace, id, false).await
@@ -676,12 +676,13 @@ impl Store {
 
     pub async fn list_issues(
         &self,
-        workspace: Uuid,
+        workspace: WorkspaceId,
         actor: Uuid,
         filter: IssueFilter,
         limit: i64,
         offset: i64,
     ) -> Result<Value> {
+        let workspace = workspace.0;
         bounds(limit, offset)?;
         let cursor = decode_issue_cursor(&filter, workspace, offset)?;
         let search = filter.search.as_deref().filter(|s| !s.trim().is_empty());
@@ -744,10 +745,11 @@ impl Store {
     /// How many issues match a filter, ignoring sort and paging.
     pub async fn count_issues(
         &self,
-        workspace: Uuid,
+        workspace: WorkspaceId,
         actor: Uuid,
         filter: &IssueFilter,
     ) -> Result<i64> {
+        let workspace = workspace.0;
         let search = filter.search.as_deref().filter(|s| !s.trim().is_empty());
         if filter.search.as_ref().is_some_and(|s| s.len() > 200) {
             return Err(Error::BadRequest("search query too long".into()));
@@ -772,11 +774,12 @@ impl Store {
 
     pub async fn collection(
         &self,
-        workspace: Uuid,
+        workspace: WorkspaceId,
         actor: Uuid,
         kind: &str,
         query: CollectionQuery,
     ) -> Result<Value> {
+        let workspace = workspace.0;
         bounds(query.limit, query.offset)?;
 
         let mut conn = self.pool.acquire().await?;
@@ -798,7 +801,8 @@ impl Store {
     }
 
     /// The actor's role in the workspace; non-members are forbidden.
-    pub async fn member_role(&self, workspace: Uuid, actor: Uuid) -> Result<Role> {
+    pub async fn member_role(&self, workspace: WorkspaceId, actor: Uuid) -> Result<Role> {
+        let workspace = workspace.0;
         let mut conn = self.pool.acquire().await?;
         authorize(&mut conn, workspace, actor).await
     }
@@ -806,11 +810,12 @@ impl Store {
     /// One record of a workspace collection in its list shape, under the list's visibility rules.
     pub async fn collection_record(
         &self,
-        workspace: Uuid,
+        workspace: WorkspaceId,
         actor: Uuid,
         kind: &str,
         id: Uuid,
     ) -> Result<Value> {
+        let workspace = workspace.0;
         let mut conn = self.pool.acquire().await?;
         authorize(&mut conn, workspace, actor).await?;
         record_on(&mut conn, workspace, actor, kind, id)
@@ -820,43 +825,48 @@ impl Store {
 
     pub async fn issue_by_key(
         &self,
-        workspace: Uuid,
+        workspace: WorkspaceId,
         actor: Uuid,
         team_key: &str,
         number: u64,
     ) -> Result<Uuid> {
+        let workspace = workspace.0;
         let mut conn = self.pool.acquire().await?;
         authorize(&mut conn, workspace, actor).await?;
-        sqlx::query_scalar("SELECT id FROM (SELECT i.id,0 AS former FROM issues i JOIN team_keys t ON t.workspace_id=i.workspace_id AND t.team_id=i.team_id WHERE i.workspace_id=$1 AND t.key=$2 AND i.number=$3 \
-             UNION ALL SELECT k.issue_id,1 FROM issue_key_aliases k JOIN team_keys t ON t.workspace_id=k.workspace_id AND t.team_id=k.team_id WHERE k.workspace_id=$1 AND t.key=$2 AND k.number=$3) found ORDER BY former LIMIT 1")
-            .bind(workspace)
-            .bind(team_key)
-            .bind(number as i64)
+        sqlx::query_scalar!("SELECT id AS \"id!\" FROM (SELECT i.id,0 AS former FROM issues i JOIN team_keys t ON t.workspace_id=i.workspace_id AND t.team_id=i.team_id WHERE i.workspace_id=$1 AND t.key=$2 AND i.number=$3 \
+             UNION ALL SELECT k.issue_id,1 FROM issue_key_aliases k JOIN team_keys t ON t.workspace_id=k.workspace_id AND t.team_id=k.team_id WHERE k.workspace_id=$1 AND t.key=$2 AND k.number=$3) found ORDER BY former LIMIT 1",
+            workspace, team_key, number as i64)
             .fetch_optional(&mut *conn)
             .await?
             .ok_or(Error::NotFound)
     }
 
     /// Every team's key, for rendering issue keys.
-    pub async fn team_keys(&self, workspace: Uuid, actor: Uuid) -> Result<BTreeMap<Uuid, String>> {
+    pub async fn team_keys(
+        &self,
+        workspace: WorkspaceId,
+        actor: Uuid,
+    ) -> Result<BTreeMap<Uuid, String>> {
+        let workspace = workspace.0;
         let mut conn = self.pool.acquire().await?;
         authorize(&mut conn, workspace, actor).await?;
         Ok(
-            sqlx::query_as::<_, (Uuid, String)>("SELECT id,key FROM teams WHERE workspace_id=$1")
-                .bind(workspace)
+            sqlx::query!("SELECT id,key FROM teams WHERE workspace_id=$1", workspace)
                 .fetch_all(&mut *conn)
                 .await?
                 .into_iter()
+                .map(|row| (row.id, row.key))
                 .collect(),
         )
     }
 
     pub async fn member_profiles(
         &self,
-        workspace: Uuid,
+        workspace: WorkspaceId,
         actor: Uuid,
         search: Option<&str>,
     ) -> Result<Value> {
+        let workspace = workspace.0;
         if search.is_some_and(|s| s.len() > 200) {
             return Err(Error::BadRequest("search query too long".into()));
         }
@@ -884,7 +894,8 @@ impl Store {
 
 impl Store {
     /// Every limited resource's count and limit, as the capacity check counts them.
-    pub async fn usage(&self, workspace: Uuid, actor: Uuid) -> Result<Vec<Usage>> {
+    pub async fn usage(&self, workspace: WorkspaceId, actor: Uuid) -> Result<Vec<Usage>> {
+        let workspace = workspace.0;
         let mut conn = self.pool.acquire().await?;
         authorize(&mut conn, workspace, actor).await?;
         let counts = Resource::ALL
@@ -905,11 +916,13 @@ impl Store {
             .collect())
     }
 
-    pub async fn report_sql(&self, workspace: Uuid, actor: Uuid) -> Result<Value> {
+    pub async fn report_sql(&self, workspace: WorkspaceId, actor: Uuid) -> Result<Value> {
+        let workspace = workspace.0;
         let mut conn = self.pool.acquire().await?;
         authorize(&mut conn, workspace, actor).await?;
 
-        let sql = r#"
+        Ok(sqlx::query_scalar!(
+            r#"
 WITH work AS (
  SELECT i.*,s.kind IN ('done','cancelled') AS done,t.key || '-' || i.number AS key FROM issues i JOIN stages s ON s.id=i.stage_id JOIN teams t ON t.id=i.team_id WHERE i.workspace_id=$1
 ), minutes AS (
@@ -950,13 +963,12 @@ SELECT jsonb_build_object(
  'issue_count',(SELECT count(*) FROM work WHERE deleted_at IS NULL AND archived_at IS NULL),
  'inbox_unread',(SELECT count(*) FROM notifications WHERE workspace_id=$1 AND user_id=$2 AND read_at IS NULL),
  'label_counts',COALESCE((SELECT jsonb_object_agg(id::text,count) FROM label_rows),'{}'::jsonb),
- 'project_stats',COALESCE((SELECT jsonb_agg(to_jsonb(p) ORDER BY p.id) FROM project_rows p),'[]'::jsonb))
-"#;
-
-        Ok(sqlx::query_scalar(sql)
-            .bind(workspace)
-            .bind(actor)
-            .fetch_one(&mut *conn)
-            .await?)
+ 'project_stats',COALESCE((SELECT jsonb_agg(to_jsonb(p) ORDER BY p.id) FROM project_rows p),'[]'::jsonb)) AS "report!"
+"#,
+            workspace,
+            actor,
+        )
+        .fetch_one(&mut *conn)
+        .await?)
     }
 }

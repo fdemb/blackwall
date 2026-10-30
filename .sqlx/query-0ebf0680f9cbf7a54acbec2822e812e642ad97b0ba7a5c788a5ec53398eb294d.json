@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT EXISTS(SELECT 1 FROM invitations WHERE workspace_id=$1 AND id=$2 AND token_hash=$3 AND state='pending' AND expires_at>clock_timestamp()) AS \"exists!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "exists!",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "0ebf0680f9cbf7a54acbec2822e812e642ad97b0ba7a5c788a5ec53398eb294d"
+}

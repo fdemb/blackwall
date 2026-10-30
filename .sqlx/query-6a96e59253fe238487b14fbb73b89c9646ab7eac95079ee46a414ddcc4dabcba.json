@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE user_totp SET enabled_at = now(), last_step = $2, setup_session = NULL, setup_started_at = NULL WHERE user_id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "6a96e59253fe238487b14fbb73b89c9646ab7eac95079ee46a414ddcc4dabcba"
+}

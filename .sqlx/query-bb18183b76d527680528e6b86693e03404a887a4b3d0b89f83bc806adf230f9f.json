@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE tracker_connections SET status='error',last_error=$2,next_run_at=clock_timestamp()+interval '5 minutes' WHERE id=$1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "bb18183b76d527680528e6b86693e03404a887a4b3d0b89f83bc806adf230f9f"
+}

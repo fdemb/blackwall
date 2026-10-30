@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO user_totp (user_id, secret, setup_session, setup_started_at) VALUES ($1, $2, $3, now()) ON CONFLICT (user_id) DO UPDATE SET secret = excluded.secret, setup_session = excluded.setup_session, setup_started_at = now() WHERE user_totp.enabled_at IS NULL AND (user_totp.setup_session = $3 OR user_totp.setup_started_at < now() - make_interval(mins => $4))",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Bytea",
+        "Uuid",
+        "Int4"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "4c5492eb7e0ad2d4b9a2f7c652983308da404b799b0269fa0aefa54e523ae0ad"
+}

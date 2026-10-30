@@ -1,0 +1,21 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO notifications(id,workspace_id,user_id,issue_id,kind,message,created_at,dedup_key,actor_id,fields) SELECT input.id,$1,input.user_id,$2,'change',$3,now(),input.key,$7,$8 FROM unnest($4::uuid[],$5::uuid[],$6::text[]) AS input(id,user_id,key) JOIN workspace_members m ON m.workspace_id=$1 AND m.user_id=input.user_id LEFT JOIN alert_preferences p ON p.workspace_id=$1 AND p.user_id=input.user_id WHERE COALESCE(p.change,true) ON CONFLICT(workspace_id,dedup_key) DO UPDATE SET message=EXCLUDED.message,created_at=EXCLUDED.created_at,actor_id=EXCLUDED.actor_id,fields=COALESCE((SELECT jsonb_agg(DISTINCT f) FROM jsonb_array_elements_text(notifications.fields||EXCLUDED.fields) f),'[]'),version=notifications.version+1 WHERE notifications.read_at IS NULL",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text",
+        "UuidArray",
+        "UuidArray",
+        "TextArray",
+        "Uuid",
+        "Jsonb"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "5e62f6aa437735c75da7eacc4bbc0453bcf24c96c5ce58616f6ae1ae54e9e0e4"
+}

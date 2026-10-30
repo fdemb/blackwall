@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "WITH exhausted AS (SELECT id FROM jobs WHERE state='running' AND lease_expires_at<=clock_timestamp() AND attempts>=max_attempts ORDER BY lease_expires_at,id FOR UPDATE SKIP LOCKED LIMIT 100) UPDATE jobs SET state='failed',claim_token=NULL,lease_expires_at=NULL,finished_at=clock_timestamp(),updated_at=clock_timestamp(),payload=CASE WHEN kind='webhook' THEN (payload-'token') #- '{event,data}' #- '{event,truncated}' ELSE payload-'token' END,last_error='lease expired at maximum attempts' FROM exhausted WHERE jobs.id=exhausted.id",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "301d5e4324bae3f5b52f47bc31c6e21bdfe8aba4ef2842f9825c5e8666d97e98"
+}

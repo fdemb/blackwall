@@ -1,0 +1,38 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT count(*) FILTER(WHERE state IN ('pending','running')) AS \"depth!\",count(*) FILTER(WHERE state='failed') AS \"failures!\",COALESCE(EXTRACT(EPOCH FROM clock_timestamp()-min(run_at) FILTER(WHERE state='pending' AND run_at<clock_timestamp())),0)::bigint AS \"overdue_seconds!\",(SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock') AS \"lock_waiters!\" FROM jobs",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "depth!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "failures!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "overdue_seconds!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "lock_waiters!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "0dde1bd9ff7bae25752454a55b8518645ed0417043e81efba0b3923fe73feb8d"
+}

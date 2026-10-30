@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE jobs SET state='pending',attempts=0,finished_at=NULL,run_at=clock_timestamp(),updated_at=clock_timestamp() WHERE id=$1 AND state='failed' AND (kind<>'email' OR COALESCE(payload->>'token','')<>'')",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "f4db30a7bc374845b3a4c7b02d65de72145f8619703c01e370b97cc72e199bfc"
+}

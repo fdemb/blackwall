@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "react-router dev",
     "build": "react-router build",
-    "typecheck": "react-router typegen && tsc"
+    "typecheck": "react-router typegen && tsc",
+    "gen:api": "openapi-typescript app/lib/openapi.json -o app/lib/api.gen.ts && vp fmt app/lib/openapi.json app/lib/api.gen.ts"
   },
   "dependencies": {
     "@floating-ui/dom": "^1.8.0",
@@ -50,6 +51,7 @@
   "devDependencies": {
     "@tanstack/react-query-devtools": "^5.104.1",
     "fake-indexeddb": "^6.2.5",
+    "openapi-typescript": "^7.13.0",
     "vite-plus": "catalog:"
   },
   "packageManager": "pnpm@12.8.1"

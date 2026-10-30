@@ -68,7 +68,7 @@ async fn schedule_connection(
         // A push queued meanwhile holds the connection's job slot; scan next tick.
         return Ok(());
     }
-    sqlx::query("UPDATE tracker_connections SET checkpoint=$2,next_run_at=clock_timestamp()+interval '5 minutes' WHERE id=$1").bind(id).bind(checkpoint).execute(&mut *savepoint).await?;
+    sqlx::query!("UPDATE tracker_connections SET checkpoint=$2,next_run_at=clock_timestamp()+interval '5 minutes' WHERE id=$1", id, checkpoint).execute(&mut *savepoint).await?;
     savepoint.commit().await?;
     Ok(())
 }
@@ -100,7 +100,7 @@ async fn mark_schedule_failure(tx: &mut PgConnection, id: Uuid, error: &Error) {
     }
     let marked: Result<()> = async {
         let mut savepoint = tx.begin().await?;
-        sqlx::query("UPDATE tracker_connections SET status='error',last_error=$2,next_run_at=clock_timestamp()+interval '5 minutes' WHERE id=$1").bind(id).bind("Tracker state is invalid; use Sync now to restart").execute(&mut *savepoint).await?;
+        sqlx::query!("UPDATE tracker_connections SET status='error',last_error=$2,next_run_at=clock_timestamp()+interval '5 minutes' WHERE id=$1", id, "Tracker state is invalid; use Sync now to restart").execute(&mut *savepoint).await?;
         savepoint.commit().await?;
         Ok(())
     }
@@ -133,18 +133,18 @@ fn tracker_job(connection_id: Uuid, generation: i64, push_only: bool) -> NewJob 
     fields(connection_id = %job.connection_id, generation = job.generation, job_id = %claim.id))]
 pub async fn execute(store: &Store, claim: &Claim, job: &TrackerJob) -> Result<()> {
     let started = Instant::now();
-    let row = sqlx::query("SELECT provider,base_url,token,workspace_id,projects,checkpoint FROM tracker_connections WHERE id=$1 AND generation=$2 AND enabled AND NOT deleted")
-        .bind(job.connection_id).bind(job.generation).fetch_optional(&store.pool).await?;
+    let row = sqlx::query!("SELECT provider,base_url,token,workspace_id,projects,checkpoint FROM tracker_connections WHERE id=$1 AND generation=$2 AND enabled AND NOT deleted",
+        job.connection_id, job.generation).fetch_optional(&store.pool).await?;
     let Some(row) = row else {
         tracing::debug!("Tracker job skipped: connection disabled, deleted or superseded");
         store.outbox.complete(claim).await?;
         return Ok(());
     };
-    let provider = ProviderKind::parse(row.try_get("provider")?)?;
-    let base_url: String = row.try_get("base_url")?;
-    let token: String = row.try_get("token")?;
-    let workspace: Uuid = row.try_get("workspace_id")?;
-    let mappings: Vec<Mapping> = serde_json::from_value(row.try_get("projects")?)?;
+    let provider = ProviderKind::parse(&row.provider)?;
+    let base_url: String = row.base_url;
+    let token: String = row.token;
+    let workspace: Uuid = row.workspace_id;
+    let mappings: Vec<Mapping> = serde_json::from_value(row.projects)?;
     let endpoint = Endpoint {
         client: &store.tracker_client,
         base_url: &base_url,
@@ -171,7 +171,7 @@ pub async fn execute(store: &Store, claim: &Claim, job: &TrackerJob) -> Result<(
         endpoint,
         mappings: &mappings,
     };
-    let page = match provider.step(&context, row.try_get("checkpoint")?).await? {
+    let page = match provider.step(&context, row.checkpoint).await? {
         Step::Page(page) => page,
         Step::FullRescan(checkpoint) => {
             return restart_unfiltered(store, claim, job, checkpoint).await;
@@ -225,21 +225,25 @@ pub async fn execute(store: &Store, claim: &Claim, job: &TrackerJob) -> Result<(
         // reference the connection (outbox rows, stage deletion), so take the graph lock
         // before the connection row.
         let lock_started = Instant::now();
-        sqlx::query("SELECT pg_advisory_xact_lock_shared(hashtextextended($1,74103))")
-            .bind(workspace.to_string())
-            .execute(&mut *tx)
-            .await?;
-        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,41827))")
-            .bind(workspace.to_string())
-            .execute(&mut *tx)
-            .await?;
+        sqlx::query!(
+            "SELECT pg_advisory_xact_lock_shared(hashtextextended($1,74103))",
+            workspace.to_string(),
+        )
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query!(
+            "SELECT pg_advisory_xact_lock(hashtextextended($1,41827))",
+            workspace.to_string(),
+        )
+        .execute(&mut *tx)
+        .await?;
         lock_ms = lock_started.elapsed().as_millis();
     }
     let connection_lock_started = Instant::now();
     // NO KEY UPDATE: commands inserting outbox rows hold the graph lock and only need the
     // foreign key's KEY SHARE on this row, which this lock does not block.
-    let current: Option<Uuid> = sqlx::query_scalar("SELECT id FROM tracker_connections WHERE id=$1 AND generation=$2 AND enabled AND NOT deleted AND EXISTS(SELECT 1 FROM jobs WHERE id=$3 AND claim_token=$4 AND state='running' AND lease_expires_at>clock_timestamp()) FOR NO KEY UPDATE")
-        .bind(job.connection_id).bind(job.generation).bind(claim.id).bind(claim.token)
+    let current: Option<Uuid> = sqlx::query_scalar!("SELECT id FROM tracker_connections WHERE id=$1 AND generation=$2 AND enabled AND NOT deleted AND EXISTS(SELECT 1 FROM jobs WHERE id=$3 AND claim_token=$4 AND state='running' AND lease_expires_at>clock_timestamp()) FOR NO KEY UPDATE",
+        job.connection_id, job.generation, claim.id, claim.token)
         .fetch_optional(&mut *tx).await?;
     let connection_lock_ms = connection_lock_started.elapsed().as_millis();
     if current.is_none() {
@@ -292,11 +296,11 @@ pub async fn execute(store: &Store, claim: &Claim, job: &TrackerJob) -> Result<(
         .next
         .clone()
         .unwrap_or_else(|| provider.checkpoint(false));
-    sqlx::query("UPDATE tracker_connections SET checkpoint=$3,next_run_at=CASE WHEN NOT $4 THEN clock_timestamp() WHEN $5 THEN clock_timestamp()+interval '30 minutes' ELSE GREATEST(clock_timestamp()+interval '30 seconds',$6::timestamptz+interval '5 minutes') END,status=$7,last_error='',last_checked_at=CASE WHEN $8 THEN clock_timestamp() ELSE last_checked_at END,last_synced_at=CASE WHEN $4 AND NOT $9 THEN clock_timestamp() ELSE last_synced_at END,poll_watermark=CASE WHEN $4 AND NOT $9 THEN $6 WHEN $4 AND $9 THEN NULL ELSE poll_watermark END,last_discovered_at=CASE WHEN $10 THEN clock_timestamp() ELSE last_discovered_at END WHERE id=$1 AND generation=$2")
-        .bind(job.connection_id).bind(job.generation).bind(next)
-        .bind(finished).bind(mappings.is_empty()).bind(page.started_at)
-        .bind(if finished {"idle"} else {"syncing"}).bind(page.checked).bind(page.refresh_only)
-        .bind(discovered).execute(&mut *tx).await?;
+    sqlx::query!("UPDATE tracker_connections SET checkpoint=$3,next_run_at=CASE WHEN NOT $4 THEN clock_timestamp() WHEN $5 THEN clock_timestamp()+interval '30 minutes' ELSE GREATEST(clock_timestamp()+interval '30 seconds',$6::timestamptz+interval '5 minutes') END,status=$7,last_error='',last_checked_at=CASE WHEN $8 THEN clock_timestamp() ELSE last_checked_at END,last_synced_at=CASE WHEN $4 AND NOT $9 THEN clock_timestamp() ELSE last_synced_at END,poll_watermark=CASE WHEN $4 AND NOT $9 THEN $6 WHEN $4 AND $9 THEN NULL ELSE poll_watermark END,last_discovered_at=CASE WHEN $10 THEN clock_timestamp() ELSE last_discovered_at END WHERE id=$1 AND generation=$2",
+        job.connection_id, job.generation, next,
+        finished, mappings.is_empty(), page.started_at,
+        if finished {"idle"} else {"syncing"}, page.checked, page.refresh_only,
+        discovered).execute(&mut *tx).await?;
     if Outbox::complete_in(&mut tx, claim).await? {
         tx.commit().await?;
         tracing::debug!(
@@ -325,8 +329,8 @@ async fn restart_unfiltered(
     checkpoint: Value,
 ) -> Result<()> {
     let mut tx = store.pool.begin().await?;
-    let changed = sqlx::query("UPDATE tracker_connections SET incremental_supported=false,checkpoint=$3,status='syncing',next_run_at=clock_timestamp() WHERE id=$1 AND generation=$2 AND enabled AND NOT deleted AND EXISTS(SELECT 1 FROM jobs WHERE id=$4 AND claim_token=$5 AND state='running' AND lease_expires_at>clock_timestamp())")
-        .bind(job.connection_id).bind(job.generation).bind(checkpoint).bind(claim.id).bind(claim.token)
+    let changed = sqlx::query!("UPDATE tracker_connections SET incremental_supported=false,checkpoint=$3,status='syncing',next_run_at=clock_timestamp() WHERE id=$1 AND generation=$2 AND enabled AND NOT deleted AND EXISTS(SELECT 1 FROM jobs WHERE id=$4 AND claim_token=$5 AND state='running' AND lease_expires_at>clock_timestamp())",
+        job.connection_id, job.generation, checkpoint, claim.id, claim.token)
         .execute(&mut *tx).await?.rows_affected() == 1;
     if Outbox::complete_in(&mut tx, claim).await? {
         tx.commit().await?;
@@ -356,20 +360,20 @@ pub async fn record_failure(
     message: &str,
 ) -> Result<()> {
     let mut tx = store.pool.begin().await?;
-    let current: Option<Uuid> = sqlx::query_scalar(
+    let current: Option<Uuid> = sqlx::query_scalar!(
         "SELECT id FROM tracker_connections WHERE id=$1 AND generation=$2 AND NOT deleted FOR NO KEY UPDATE",
+        job.connection_id,
+        job.generation,
     )
-    .bind(job.connection_id)
-    .bind(job.generation)
     .fetch_optional(&mut *tx)
     .await?;
     let mut recorded = false;
     if current.is_some() {
-        let owned: Option<i32> = sqlx::query_scalar("SELECT 1 FROM jobs WHERE id=$1 AND claim_token=$2 AND state='running' AND lease_expires_at>clock_timestamp() FOR SHARE")
-            .bind(claim.id).bind(claim.token).fetch_optional(&mut *tx).await?;
+        let owned: Option<i32> = sqlx::query_scalar!(r#"SELECT 1 AS "one!" FROM jobs WHERE id=$1 AND claim_token=$2 AND state='running' AND lease_expires_at>clock_timestamp() FOR SHARE"#,
+            claim.id, claim.token).fetch_optional(&mut *tx).await?;
         if owned.is_some() {
-            recorded = sqlx::query("UPDATE tracker_connections SET status='error',last_error=$3,next_run_at=LEAST(next_run_at,clock_timestamp()+interval '5 minutes') WHERE id=$1 AND generation=$2 AND NOT deleted")
-                .bind(job.connection_id).bind(job.generation).bind(message).execute(&mut *tx).await?.rows_affected() > 0;
+            recorded = sqlx::query!("UPDATE tracker_connections SET status='error',last_error=$3,next_run_at=LEAST(next_run_at,clock_timestamp()+interval '5 minutes') WHERE id=$1 AND generation=$2 AND NOT deleted",
+                job.connection_id, job.generation, message).execute(&mut *tx).await?.rows_affected() > 0;
         }
     }
     tx.commit().await?;

@@ -43,9 +43,34 @@ jobs:
           -c "ALTER SYSTEM SET synchronous_commit = off"
           -c "ALTER SYSTEM SET full_page_writes = off"
           -c "SELECT pg_reload_conf()"
+      # Checked queries compile against a migrated schema and rewrite .sqlx, so stale metadata shows up as a diff.
+      - run: |
+          psql "$TEST_POSTGRES_URL" -c "CREATE DATABASE blackwall_schema"
+          for migration in migrations/*.sql; do
+            psql "${TEST_POSTGRES_URL%/*}/blackwall_schema" -v ON_ERROR_STOP=1 -1 -q -f "$migration"
+          done
+          rm -rf .sqlx && mkdir .sqlx
       - run: cargo build --locked
+        env:
+          SQLX_OFFLINE: "false"
+          SQLX_OFFLINE_DIR: ${{ github.workspace }}/.sqlx
+          DATABASE_URL: postgres://blackwall:blackwall@127.0.0.1:5432/blackwall_schema
       - run: ./scripts/check.sh
       - run: python3 scripts/smoke.py
+      - name: generated files are committed
+        run: |
+          git add -N .sqlx
+          git diff --exit-code --stat -- .sqlx web/app/lib/openapi.json web/app/lib/api.gen.ts
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: generated
+          include-hidden-files: true
+          path: |
+            .sqlx
+            web/app/lib/openapi.json
+            web/app/lib/api.gen.ts
+          retention-days: 3
   build:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest

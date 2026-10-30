@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE tracker_connections SET projects=$3,generation=generation+1,next_run_at=clock_timestamp(),status='pending',last_error='',push_error=NULL WHERE workspace_id=$1 AND id=$2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Jsonb"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "303ebdfb7628b43f9bb956791ba827e9668e6cc65114699406884b8512cd2690"
+}

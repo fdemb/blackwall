@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "WITH old AS (SELECT id FROM jobs WHERE ((state IN ('succeeded','cancelled') AND finished_at<clock_timestamp()-make_interval(days=>$1)) OR (state='failed' AND finished_at<clock_timestamp()-make_interval(days=>$2))) ORDER BY finished_at,id FOR UPDATE SKIP LOCKED LIMIT 1000) DELETE FROM jobs USING old WHERE jobs.id=old.id",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int4",
+        "Int4"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "c02638edd2f20693bd54bf27b5b7e24aefab961b45d18887aa5840d2cc517ce5"
+}

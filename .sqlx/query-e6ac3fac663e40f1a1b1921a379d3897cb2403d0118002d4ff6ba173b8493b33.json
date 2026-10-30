@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE issues SET sprint_id=NULL,updated_at=now() WHERE workspace_id=$1 AND id=ANY($2)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "UuidArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "e6ac3fac663e40f1a1b1921a379d3897cb2403d0118002d4ff6ba173b8493b33"
+}

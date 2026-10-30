@@ -12,6 +12,7 @@ use crate::{
     },
     domain::{Command, Project, SprintState},
     error::{Error, Result},
+    ids::{IssueId, WorkspaceId},
     store::Store,
 };
 use axum::{
@@ -689,11 +690,12 @@ async fn write_tool(
         }
         "delete_issue" | "restore_issue" | "archive_issue" | "unarchive_issue" => {
             let id = issue_arg(store, scope, &mut args).await?;
+            let issue = IssueId(id);
             let command = match name {
-                "delete_issue" => Command::DeleteIssue { id },
-                "restore_issue" => Command::RestoreIssue { id },
-                "archive_issue" => Command::ArchiveIssue { id },
-                _ => Command::UnarchiveIssue { id },
+                "delete_issue" => Command::DeleteIssue { id: issue },
+                "restore_issue" => Command::RestoreIssue { id: issue },
+                "archive_issue" => Command::ArchiveIssue { id: issue },
+                _ => Command::UnarchiveIssue { id: issue },
             };
             // A trashed issue cannot be read back, so take its key before deleting it.
             let deleted = if name == "delete_issue" {
@@ -743,16 +745,16 @@ fn from_args<T: serde::de::DeserializeOwned>(args: Map<String, Value>) -> Result
 }
 
 /// The named workspace, or the only one the token reaches.
-async fn workspace(store: &Store, actor: &ApiActor, named: Option<Value>) -> Result<Uuid> {
+async fn workspace(store: &Store, actor: &ApiActor, named: Option<Value>) -> Result<WorkspaceId> {
     if let Some(named) = named.filter(|v| !v.is_null()) {
         return named
             .as_str()
-            .and_then(|s| Uuid::parse_str(s).ok())
+            .and_then(|s| s.parse().ok())
             .ok_or_else(|| Error::BadRequest("workspace_id must be a UUID".into()));
     }
     let mut reachable = resources::workspace_list(store, actor).await?;
     match (reachable.pop(), reachable.is_empty()) {
-        (Some(only), true) => Ok(only.id),
+        (Some(only), true) => Ok(WorkspaceId(only.id)),
         (None, _) => Err(Error::BadRequest("this token reaches no workspaces".into())),
         _ => Err(Error::BadRequest(
             "workspace_id is required; call list_workspaces".into(),
@@ -817,16 +819,16 @@ async fn overview(store: &Store, scope: Scope) -> Result<Value> {
             .map(|m| (m.id, m.role))
             .collect();
     let team_keys = |ids: &[Uuid]| ids.iter().map(|id| dir.team(*id).key).collect::<Vec<_>>();
-    let project_teams: std::collections::BTreeMap<Uuid, Vec<Uuid>> =
-        sqlx::query_as::<_, (Uuid, Vec<Uuid>)>(
-            "SELECT project_id,array_agg(team_id ORDER BY team_id) FROM project_teams \
-         WHERE workspace_id=$1 GROUP BY project_id",
-        )
-        .bind(scope.workspace)
-        .fetch_all(&store.pool)
-        .await?
-        .into_iter()
-        .collect();
+    let project_teams: std::collections::BTreeMap<Uuid, Vec<Uuid>> = sqlx::query!(
+        "SELECT project_id AS \"project_id!\",array_agg(team_id ORDER BY team_id) AS \"team_ids!\" \
+             FROM project_teams WHERE workspace_id=$1 GROUP BY project_id",
+        scope.workspace.0,
+    )
+    .fetch_all(&store.pool)
+    .await?
+    .into_iter()
+    .map(|row| (row.project_id, row.team_ids))
+    .collect();
 
     Ok(json!({
         "me": { "id": me.id, "display_name": me.display_name, "email": me.email },

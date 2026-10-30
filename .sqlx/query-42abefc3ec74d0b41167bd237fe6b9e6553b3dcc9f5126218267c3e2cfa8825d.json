@@ -1,0 +1,40 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT options,cached_statuses,cached_people,people_mapping FROM tracker_connections WHERE id=$1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "options",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 1,
+        "name": "cached_statuses",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 2,
+        "name": "cached_people",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 3,
+        "name": "people_mapping",
+        "type_info": "Jsonb"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "42abefc3ec74d0b41167bd237fe6b9e6553b3dcc9f5126218267c3e2cfa8825d"
+}

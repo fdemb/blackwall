@@ -1,0 +1,44 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT pg_current_snapshot()::text AS \"text!\", pg_snapshot_xmin(pg_current_snapshot())::text::bigint AS \"xmin!\", pg_snapshot_xmax(pg_current_snapshot())::text::bigint AS \"xmax!\", COALESCE((SELECT array_agg(x::text::bigint) FROM pg_snapshot_xip(pg_current_snapshot()) AS t(x)), '{}'::bigint[]) AS \"xip!\", (SELECT txid FROM change_horizon) AS \"horizon!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "text!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "xmin!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "xmax!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "xip!",
+        "type_info": "Int8Array"
+      },
+      {
+        "ordinal": 4,
+        "name": "horizon!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      null,
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "b7bb123b25a83027637dc319be434aff2c1c65b52f849b09041c98dd5e6facf2"
+}

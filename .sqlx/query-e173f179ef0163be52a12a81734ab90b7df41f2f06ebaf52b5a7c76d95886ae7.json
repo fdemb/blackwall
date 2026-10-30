@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO notification_emails(notification_id,created_at) SELECT * FROM unnest($1::uuid[],$2::timestamptz[]) ON CONFLICT(notification_id) DO UPDATE SET created_at=EXCLUDED.created_at",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "UuidArray",
+        "TimestamptzArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "e173f179ef0163be52a12a81734ab90b7df41f2f06ebaf52b5a7c76d95886ae7"
+}

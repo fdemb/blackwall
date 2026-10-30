@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT secret, last_step FROM user_totp WHERE user_id = $1 AND enabled_at IS NOT NULL FOR UPDATE",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "secret",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 1,
+        "name": "last_step",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      true
+    ]
+  },
+  "hash": "e5da1432bc09e5c0eb69afeb80052b084ddc5925def3ab181ded9da72aaf1d29"
+}

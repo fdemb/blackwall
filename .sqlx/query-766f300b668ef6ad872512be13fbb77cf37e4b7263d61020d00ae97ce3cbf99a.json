@@ -1,0 +1,30 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE issues SET assignee=CASE WHEN assignee=$2 THEN NULL ELSE assignee END,version=version+1,updated_at=$3 WHERE workspace_id=$1 AND (assignee=$2 OR EXISTS(SELECT 1 FROM issue_followers f WHERE f.workspace_id=$1 AND f.issue_id=issues.id AND f.user_id=$2)) RETURNING id,version",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "version",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "766f300b668ef6ad872512be13fbb77cf37e4b7263d61020d00ae97ce3cbf99a"
+}

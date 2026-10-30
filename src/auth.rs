@@ -10,7 +10,7 @@ use argon2::{
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use sqlx::{PgConnection, Row, types::Json};
+use sqlx::{PgConnection, types::Json};
 use uuid::Uuid;
 
 mod totp;
@@ -294,14 +294,14 @@ impl Store {
         let mut tx = self.pool.begin().await?;
         let invited = match &input.invitation {
             // The share lock holds off cancellation until the account commits.
-            Some(proof) => sqlx::query(
-                "SELECT 1 FROM invitations WHERE workspace_id=$1 AND token_hash=$2 AND \
+            Some(proof) => sqlx::query_scalar!(
+                "SELECT 1 AS one FROM invitations WHERE workspace_id=$1 AND token_hash=$2 AND \
                  lower(email)=lower($3) AND state='pending' AND expires_at>clock_timestamp() \
                  FOR SHARE",
+                proof.workspace_id,
+                hash(&proof.token),
+                &email,
             )
-            .bind(proof.workspace_id)
-            .bind(hash(&proof.token))
-            .bind(&email)
             .fetch_optional(&mut *tx)
             .await?
             .is_some(),
@@ -314,12 +314,15 @@ impl Store {
             }
             Some(_) => false,
             None if self.registration == RegistrationMode::Invite => {
-                sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended('first-account',0))")
-                    .execute(&mut *tx)
-                    .await?;
-                let installed: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM users)")
-                    .fetch_one(&mut *tx)
-                    .await?;
+                sqlx::query_scalar!(
+                    "SELECT pg_advisory_xact_lock(hashtextextended('first-account',0))"
+                )
+                .fetch_one(&mut *tx)
+                .await?;
+                let installed: bool =
+                    sqlx::query_scalar!(r#"SELECT EXISTS(SELECT 1 FROM users) AS "exists!""#)
+                        .fetch_one(&mut *tx)
+                        .await?;
                 if installed {
                     return Err(Error::Denied(
                         "Registration is by invitation only. Ask a workspace admin for an \
@@ -332,15 +335,15 @@ impl Store {
             None => false,
         };
 
-        let insert = sqlx::query(
+        let insert = sqlx::query!(
             "INSERT INTO users (id, email, password_hash, profile, email_verified_at) \
              VALUES ($1, $2, $3, $4, CASE WHEN $5 THEN now() END)",
+            profile.id,
+            &email,
+            encoded,
+            Json(&profile) as _,
+            verified,
         )
-        .bind(profile.id)
-        .bind(&email)
-        .bind(encoded)
-        .bind(Json(&profile))
-        .bind(verified)
         .execute(&mut *tx)
         .await;
 
@@ -370,11 +373,11 @@ impl Store {
             return Err(Error::Unauthorized);
         }
 
-        let row = sqlx::query(
-            "SELECT id, email, password_hash, email_verified_at IS NOT NULL AS verified \
+        let row = sqlx::query!(
+            "SELECT id, email, password_hash, email_verified_at IS NOT NULL AS \"verified!\" \
              FROM users WHERE email = $1",
+            input.email.trim().to_lowercase(),
         )
-        .bind(input.email.trim().to_lowercase())
         .fetch_optional(&self.pool)
         .await?;
 
@@ -384,39 +387,39 @@ impl Store {
             return Err(Error::Unauthorized);
         };
 
-        let encoded: String = row.try_get("password_hash")?;
+        let encoded = row.password_hash;
         if !verify(input.password, encoded.clone()).await? {
             return Err(Error::Unauthorized);
         }
 
-        if self.mail_enabled && !row.try_get::<bool, _>("verified")? {
-            let email: String = row.try_get("email")?;
-            self.remind_verification(row.try_get("id")?, email.clone())
-                .await?;
+        if self.mail_enabled && !row.verified {
+            let email = row.email;
+            self.remind_verification(row.id, email.clone()).await?;
             return Err(Error::Denied(format!(
                 "Verify your email address first. We sent a link to {email}."
             )));
         }
 
-        let user: Uuid = row.try_get("id")?;
+        let user = row.id;
         let mut tx = self.pool.begin().await?;
         if lock_user(&mut tx, user).await? != encoded {
             return Err(Error::Unauthorized);
         }
-        let needs_code: bool = sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM user_totp WHERE user_id = $1 AND enabled_at IS NOT NULL)",
+        let needs_code: bool = sqlx::query_scalar!(
+            r#"SELECT EXISTS(SELECT 1 FROM user_totp WHERE user_id = $1 AND enabled_at IS NOT NULL) AS "exists!""#,
+            user,
         )
-        .bind(user)
         .fetch_one(&mut *tx)
         .await?;
         let sign_in = if needs_code {
             SignIn::TotpRequired(totp::pending_login(&mut tx, user, &encoded).await?)
         } else {
-            let profile: Json<Profile> =
-                sqlx::query_scalar("SELECT profile FROM users WHERE id = $1")
-                    .bind(user)
-                    .fetch_one(&mut *tx)
-                    .await?;
+            let profile: Json<Profile> = sqlx::query_scalar!(
+                r#"SELECT profile AS "profile: Json<Profile>" FROM users WHERE id = $1"#,
+                user,
+            )
+            .fetch_one(&mut *tx)
+            .await?;
             SignIn::Session(create_session(&mut tx, profile.0).await?)
         };
         tx.commit().await?;
@@ -427,16 +430,15 @@ impl Store {
     async fn remind_verification(&self, user: Uuid, email: String) -> Result<()> {
         let mut tx = self.pool.begin().await?;
         // A separate statement after the lock sees tokens that concurrent logins committed.
-        sqlx::query("SELECT 1 FROM users WHERE id=$1 FOR UPDATE")
-            .bind(user)
-            .execute(&mut *tx)
+        sqlx::query_scalar!("SELECT 1 AS one FROM users WHERE id=$1 FOR UPDATE", user)
+            .fetch_optional(&mut *tx)
             .await?;
-        let due: bool = sqlx::query_scalar(
+        let due: bool = sqlx::query_scalar!(
             "SELECT email_verified_at IS NULL AND NOT EXISTS(SELECT 1 FROM email_verifications \
-             WHERE user_id=$1 AND created_at>now()-interval '5 minutes') \
+             WHERE user_id=$1 AND created_at>now()-interval '5 minutes') AS \"due!\" \
              FROM users WHERE id=$1",
+            user,
         )
-        .bind(user)
         .fetch_one(&mut *tx)
         .await?;
         if due {
@@ -451,22 +453,22 @@ impl Store {
         let token_hash = hash(&input.token);
         let invalid = || Error::BadRequest("verification link invalid or expired".into());
         let mut tx = self.pool.begin().await?;
-        let user: Uuid = sqlx::query_scalar(
+        let user: Uuid = sqlx::query_scalar!(
             "SELECT user_id FROM email_verifications WHERE token_hash=$1 AND expires_at>$2",
+            &token_hash,
+            Utc::now(),
         )
-        .bind(&token_hash)
-        .bind(Utc::now())
         .fetch_optional(&mut *tx)
         .await?
         .ok_or_else(invalid)?;
 
         lock_user(&mut tx, user).await?;
-        let consumed = sqlx::query(
+        let consumed = sqlx::query!(
             "DELETE FROM email_verifications WHERE token_hash=$1 AND user_id=$2 AND expires_at>$3",
+            token_hash,
+            user,
+            Utc::now(),
         )
-        .bind(token_hash)
-        .bind(user)
-        .bind(Utc::now())
         .execute(&mut *tx)
         .await?;
         if consumed.rows_affected() != 1 {
@@ -493,36 +495,36 @@ impl Store {
             }
             &agent[..end]
         });
-        let row = sqlx::query(
+        let row = sqlx::query!(
             "WITH touch AS (\
                UPDATE sessions SET last_seen_at = $2, user_agent = coalesce($3, user_agent) \
                WHERE token_hash = $1 AND expires_at > $2 \
                  AND (last_seen_at IS NULL OR last_seen_at < $2 - interval '1 minute')) \
-             SELECT users.profile, sessions.public_id FROM sessions \
+             SELECT users.profile AS \"profile!: Json<Profile>\", \
+              sessions.public_id AS \"public_id!\" FROM sessions \
               JOIN users ON users.id = sessions.user_id \
               WHERE token_hash = $1 AND expires_at > $2",
+            hash(token),
+            Utc::now(),
+            user_agent,
         )
-        .bind(hash(token))
-        .bind(Utc::now())
-        .bind(user_agent)
         .fetch_optional(&self.pool)
         .await?
         .ok_or(Error::Unauthorized)?;
 
-        Ok((
-            row.try_get::<Json<Profile>, _>("profile")?.0,
-            row.try_get("public_id")?,
-        ))
+        Ok((row.profile.0, row.public_id))
     }
 
     pub async fn profile(&self, id: Uuid) -> Result<Profile> {
-        let row = sqlx::query("SELECT profile FROM users WHERE id = $1")
-            .bind(id)
-            .fetch_optional(&self.pool)
-            .await?
-            .ok_or(Error::NotFound)?;
+        let profile = sqlx::query_scalar!(
+            r#"SELECT profile AS "profile: Json<Profile>" FROM users WHERE id = $1"#,
+            id,
+        )
+        .fetch_optional(&self.pool)
+        .await?
+        .ok_or(Error::NotFound)?;
 
-        Ok(row.try_get::<Json<Profile>, _>("profile")?.0)
+        Ok(profile.0)
     }
 
     pub async fn edit_profile(&self, mut profile: Profile, edit: ProfileEdit) -> Result<Profile> {
@@ -547,18 +549,19 @@ impl Store {
         profile.language = edit.language;
         profile.theme = edit.theme;
 
-        sqlx::query("UPDATE users SET profile = $1 WHERE id = $2")
-            .bind(Json(&profile))
-            .bind(profile.id)
-            .execute(&self.pool)
-            .await?;
+        sqlx::query!(
+            "UPDATE users SET profile = $1 WHERE id = $2",
+            Json(&profile) as _,
+            profile.id,
+        )
+        .execute(&self.pool)
+        .await?;
 
         Ok(profile)
     }
 
     pub async fn logout(&self, token: &str) -> Result<()> {
-        sqlx::query("DELETE FROM sessions WHERE token_hash = $1")
-            .bind(hash(token))
+        sqlx::query!("DELETE FROM sessions WHERE token_hash = $1", hash(token))
             .execute(&self.pool)
             .await?;
 
@@ -566,34 +569,33 @@ impl Store {
     }
 
     pub async fn sessions(&self, user: Uuid, current: Uuid) -> Result<Vec<SessionInfo>> {
-        sqlx::query(
+        Ok(sqlx::query!(
             "SELECT public_id, created_at, last_seen_at, user_agent FROM sessions \
              WHERE user_id = $1 AND expires_at > now() \
              ORDER BY coalesce(last_seen_at, created_at) DESC, public_id",
+            user,
         )
-        .bind(user)
         .fetch_all(&self.pool)
         .await?
-        .iter()
-        .map(|row| {
-            let id: Uuid = row.try_get("public_id")?;
-            Ok(SessionInfo {
-                id,
-                created_at: row.try_get("created_at")?,
-                last_seen_at: row.try_get("last_seen_at")?,
-                user_agent: row.try_get("user_agent")?,
-                current: id == current,
-            })
+        .into_iter()
+        .map(|row| SessionInfo {
+            id: row.public_id,
+            created_at: row.created_at,
+            last_seen_at: row.last_seen_at,
+            user_agent: row.user_agent,
+            current: row.public_id == current,
         })
-        .collect()
+        .collect())
     }
 
     pub async fn revoke_session(&self, user: Uuid, id: Uuid) -> Result<()> {
-        let deleted = sqlx::query("DELETE FROM sessions WHERE user_id = $1 AND public_id = $2")
-            .bind(user)
-            .bind(id)
-            .execute(&self.pool)
-            .await?;
+        let deleted = sqlx::query!(
+            "DELETE FROM sessions WHERE user_id = $1 AND public_id = $2",
+            user,
+            id,
+        )
+        .execute(&self.pool)
+        .await?;
         if deleted.rows_affected() == 0 {
             return Err(Error::NotFound);
         }
@@ -606,16 +608,17 @@ impl Store {
     pub async fn revoke_other_sessions(&self, user: Uuid, current: Uuid) -> Result<u64> {
         let mut tx = self.pool.begin().await?;
         lock_user(&mut tx, user).await?;
-        sqlx::query("DELETE FROM pending_logins WHERE user_id = $1")
-            .bind(user)
+        sqlx::query!("DELETE FROM pending_logins WHERE user_id = $1", user)
             .execute(&mut *tx)
             .await?;
-        let revoked = sqlx::query("DELETE FROM sessions WHERE user_id = $1 AND public_id <> $2")
-            .bind(user)
-            .bind(current)
-            .execute(&mut *tx)
-            .await?
-            .rows_affected();
+        let revoked = sqlx::query!(
+            "DELETE FROM sessions WHERE user_id = $1 AND public_id <> $2",
+            user,
+            current,
+        )
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
         tx.commit().await?;
 
         Ok(revoked)
@@ -629,12 +632,9 @@ impl Store {
         current_session: Uuid,
         input: PasswordChange,
     ) -> Result<()> {
-        let row = sqlx::query("SELECT password_hash FROM users WHERE id = $1")
-            .bind(user)
+        let previous = sqlx::query_scalar!("SELECT password_hash FROM users WHERE id = $1", user)
             .fetch_one(&self.pool)
             .await?;
-
-        let previous: String = row.try_get("password_hash")?;
 
         if !verify(input.current_password, previous.clone()).await? {
             return Err(Error::Unauthorized);
@@ -645,24 +645,26 @@ impl Store {
         if lock_user(&mut tx, user).await? != previous {
             return Err(Error::Conflict("password changed concurrently".into()));
         }
-        sqlx::query("UPDATE users SET password_hash = $1 WHERE id = $2")
-            .bind(encoded)
-            .bind(user)
-            .execute(&mut *tx)
-            .await?;
+        sqlx::query!(
+            "UPDATE users SET password_hash = $1 WHERE id = $2",
+            encoded,
+            user,
+        )
+        .execute(&mut *tx)
+        .await?;
 
-        sqlx::query("DELETE FROM pending_logins WHERE user_id = $1")
-            .bind(user)
+        sqlx::query!("DELETE FROM pending_logins WHERE user_id = $1", user)
             .execute(&mut *tx)
             .await?;
-        sqlx::query("DELETE FROM sessions WHERE user_id = $1 AND public_id <> $2")
-            .bind(user)
-            .bind(current_session)
-            .execute(&mut *tx)
-            .await?;
+        sqlx::query!(
+            "DELETE FROM sessions WHERE user_id = $1 AND public_id <> $2",
+            user,
+            current_session,
+        )
+        .execute(&mut *tx)
+        .await?;
 
-        sqlx::query("DELETE FROM password_resets WHERE user_id = $1")
-            .bind(user)
+        sqlx::query!("DELETE FROM password_resets WHERE user_id = $1", user)
             .execute(&mut *tx)
             .await?;
 
@@ -681,23 +683,25 @@ impl Store {
         }
 
         let mut tx = self.pool.begin().await?;
-        let row = sqlx::query("SELECT id,email FROM users WHERE email = $1 FOR UPDATE")
-            .bind(input.email.trim().to_lowercase())
-            .fetch_optional(&mut *tx)
-            .await?;
+        let row = sqlx::query!(
+            "SELECT id,email FROM users WHERE email = $1 FOR UPDATE",
+            input.email.trim().to_lowercase(),
+        )
+        .fetch_optional(&mut *tx)
+        .await?;
 
         if let Some(row) = row {
-            let user: Uuid = row.try_get("id")?;
-            let email: String = row.try_get("email")?;
+            let user = row.id;
+            let email = row.email;
 
             let token = token();
             let now = Utc::now();
-            sqlx::query(
+            sqlx::query!(
                 "INSERT INTO password_resets (token_hash, user_id, expires_at) VALUES ($1, $2, $3)",
+                hash(&token),
+                user,
+                now + Duration::hours(1),
             )
-            .bind(hash(&token))
-            .bind(user)
-            .bind(now + Duration::hours(1))
             .execute(&mut *tx)
             .await?;
 
@@ -723,23 +727,23 @@ impl Store {
 
         let mut tx = self.pool.begin().await?;
         let token_hash = hash(&input.token);
-        let user: Uuid = sqlx::query_scalar(
+        let user: Uuid = sqlx::query_scalar!(
             "SELECT users.id FROM users JOIN password_resets ON password_resets.user_id=users.id \
              WHERE password_resets.token_hash=$1 AND password_resets.expires_at>$2 \
              FOR UPDATE OF users",
+            &token_hash,
+            Utc::now(),
         )
-        .bind(&token_hash)
-        .bind(Utc::now())
         .fetch_optional(&mut *tx)
         .await?
         .ok_or(Error::BadRequest("reset token invalid or expired".into()))?;
 
-        let consumed = sqlx::query(
+        let consumed = sqlx::query!(
             "DELETE FROM password_resets WHERE token_hash=$1 AND user_id=$2 AND expires_at>$3",
+            token_hash,
+            user,
+            Utc::now(),
         )
-        .bind(token_hash)
-        .bind(user)
-        .bind(Utc::now())
         .execute(&mut *tx)
         .await?;
 
@@ -747,27 +751,25 @@ impl Store {
             return Err(Error::BadRequest("reset token invalid or expired".into()));
         }
 
-        sqlx::query("UPDATE users SET password_hash = $1 WHERE id = $2")
-            .bind(encoded)
-            .bind(user)
-            .execute(&mut *tx)
-            .await?;
+        sqlx::query!(
+            "UPDATE users SET password_hash = $1 WHERE id = $2",
+            encoded,
+            user,
+        )
+        .execute(&mut *tx)
+        .await?;
 
-        sqlx::query("DELETE FROM pending_logins WHERE user_id = $1")
-            .bind(user)
+        sqlx::query!("DELETE FROM pending_logins WHERE user_id = $1", user)
             .execute(&mut *tx)
             .await?;
-        sqlx::query("DELETE FROM sessions WHERE user_id = $1")
-            .bind(user)
+        sqlx::query!("DELETE FROM sessions WHERE user_id = $1", user)
             .execute(&mut *tx)
             .await?;
         // Recovery assumes the account may be compromised, so its API tokens go too.
-        sqlx::query("DELETE FROM api_tokens WHERE user_id = $1")
-            .bind(user)
+        sqlx::query!("DELETE FROM api_tokens WHERE user_id = $1", user)
             .execute(&mut *tx)
             .await?;
-        sqlx::query("DELETE FROM password_resets WHERE user_id = $1")
-            .bind(user)
+        sqlx::query!("DELETE FROM password_resets WHERE user_id = $1", user)
             .execute(&mut *tx)
             .await?;
         mark_verified(&mut tx, user).await?;
@@ -793,24 +795,24 @@ impl Store {
 /// setup's insert can wait on the user row for its foreign key check, but
 /// only another setup for the same user can wait on its uncommitted row.
 async fn lock_user(tx: &mut PgConnection, user: Uuid) -> Result<String> {
-    Ok(
-        sqlx::query_scalar("SELECT password_hash FROM users WHERE id = $1 FOR NO KEY UPDATE")
-            .bind(user)
-            .fetch_one(&mut *tx)
-            .await?,
+    Ok(sqlx::query_scalar!(
+        "SELECT password_hash FROM users WHERE id = $1 FOR NO KEY UPDATE",
+        user,
     )
+    .fetch_one(&mut *tx)
+    .await?)
 }
 
 async fn create_session(conn: &mut PgConnection, profile: Profile) -> Result<Session> {
     let token = token();
     let session_id = Uuid::new_v4();
-    sqlx::query(
+    sqlx::query!(
         "INSERT INTO sessions (token_hash, user_id, public_id, expires_at) VALUES ($1, $2, $3, $4)",
+        hash(&token),
+        profile.id,
+        session_id,
+        Utc::now() + Duration::days(SESSION_LIFETIME_DAYS),
     )
-    .bind(hash(&token))
-    .bind(profile.id)
-    .bind(session_id)
-    .bind(Utc::now() + Duration::days(SESSION_LIFETIME_DAYS))
     .execute(conn)
     .await?;
 
@@ -825,12 +827,12 @@ async fn create_session(conn: &mut PgConnection, profile: Profile) -> Result<Ses
 async fn queue_verification(tx: &mut PgConnection, user: Uuid, email: String) -> Result<()> {
     let token = token();
     let token_hash = hash(&token);
-    sqlx::query(
+    sqlx::query!(
         "INSERT INTO email_verifications (token_hash, user_id, expires_at) VALUES ($1, $2, $3)",
+        &token_hash,
+        user,
+        Utc::now() + Duration::hours(24),
     )
-    .bind(&token_hash)
-    .bind(user)
-    .bind(Utc::now() + Duration::hours(24))
     .execute(&mut *tx)
     .await?;
 
@@ -853,14 +855,13 @@ async fn queue_verification(tx: &mut PgConnection, user: Uuid, email: String) ->
 }
 
 async fn mark_verified(tx: &mut PgConnection, user: Uuid) -> Result<()> {
-    sqlx::query(
+    sqlx::query!(
         "UPDATE users SET email_verified_at = coalesce(email_verified_at, now()) WHERE id = $1",
+        user,
     )
-    .bind(user)
     .execute(&mut *tx)
     .await?;
-    sqlx::query("DELETE FROM email_verifications WHERE user_id = $1")
-        .bind(user)
+    sqlx::query!("DELETE FROM email_verifications WHERE user_id = $1", user)
         .execute(&mut *tx)
         .await?;
 

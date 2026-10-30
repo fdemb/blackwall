@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO users (id, email, password_hash, profile, email_verified_at) VALUES ($1, $2, $3, $4, CASE WHEN $5 THEN now() END)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Text",
+        "Jsonb",
+        "Bool"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "c439337031edb5f407530d2a0db45a0affee50ab343cdacebe56128fe2c34203"
+}

@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO tracker_deleted_comments(connection_id,remote_id) SELECT t.id,c.tracker->>'remote_id' FROM comments c JOIN tracker_connections t ON t.id::text=c.tracker->>'connection_id' WHERE c.workspace_id=$1 AND c.id=$2 AND c.tracker IS NOT NULL ON CONFLICT DO NOTHING",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "997aa82b0b8b7260dd7cfbf6e6331960708402fd314face2d46d5546150bc29e"
+}

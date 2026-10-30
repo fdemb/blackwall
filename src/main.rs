@@ -1,10 +1,9 @@
 use blackwall::{http, jobs, store::Store};
-use sqlx::Row;
 use uuid::Uuid;
 
 type MainResult = Result<(), Box<dyn std::error::Error>>;
 
-const USAGE: &str = "blackwall [serve|worker|migrate|fixtures empty|fixtures rich|queue status|queue failed [limit]|queue retry <uuid>|queue cancel <uuid>|totp disable <email>]\nQueue administration requires shell access and DATABASE_URL credentials. Payloads are never displayed.\n`totp disable` turns off two-factor sign-in for one account that lost its authenticator and recovery codes.";
+const USAGE: &str = "blackwall [serve|worker|migrate|openapi|fixtures empty|fixtures rich|queue status|queue failed [limit]|queue retry <uuid>|queue cancel <uuid>|totp disable <email>]\nQueue administration requires shell access and DATABASE_URL credentials. Payloads are never displayed.\n`totp disable` turns off two-factor sign-in for one account that lost its authenticator and recovery codes.";
 
 #[tokio::main]
 async fn main() -> MainResult {
@@ -22,6 +21,13 @@ async fn main() -> MainResult {
         .is_some_and(|arg| arg == "--help" || arg == "help")
     {
         println!("{USAGE}");
+        return Ok(());
+    }
+    if args == ["openapi"] {
+        println!(
+            "{}",
+            <http::ApiDoc as utoipa::OpenApi>::openapi().to_pretty_json()?
+        );
         return Ok(());
     }
 
@@ -120,11 +126,11 @@ async fn disable_totp(store: &Store, email: &str) -> MainResult {
 }
 
 async fn print_queue_status(store: &Store) -> MainResult {
-    let rows = sqlx::query(
-        "SELECT queue,state,count(*) AS count,\
+    let rows = sqlx::query!(
+        "SELECT queue AS \"queue!\",state AS \"state!\",count(*) AS \"count!\",\
          COALESCE(EXTRACT(EPOCH FROM clock_timestamp()-min(run_at) \
          FILTER (WHERE state='pending' AND run_at<clock_timestamp())),0)::bigint \
-         AS oldest_overdue_seconds \
+         AS \"oldest_overdue_seconds!\" \
          FROM jobs GROUP BY queue,state ORDER BY queue,state",
     )
     .fetch_all(&store.pool)
@@ -134,10 +140,10 @@ async fn print_queue_status(store: &Store) -> MainResult {
         println!(
             "{}",
             serde_json::json!({
-                "queue": row.try_get::<String, _>("queue")?,
-                "state": row.try_get::<String, _>("state")?,
-                "count": row.try_get::<i64, _>("count")?,
-                "oldest_overdue_seconds": row.try_get::<i64, _>("oldest_overdue_seconds")?,
+                "queue": row.queue,
+                "state": row.state,
+                "count": row.count,
+                "oldest_overdue_seconds": row.oldest_overdue_seconds,
             })
         );
     }
@@ -153,11 +159,11 @@ async fn print_failed_jobs(store: &Store, limit: Option<&String>) -> MainResult 
         return Err("inspection limit must be between 1 and 100".into());
     }
 
-    let rows = sqlx::query(
+    let rows = sqlx::query!(
         "SELECT id,kind,attempts,max_attempts,last_error FROM jobs \
          WHERE state='failed' ORDER BY finished_at DESC,id LIMIT $1",
+        limit,
     )
-    .bind(limit)
     .fetch_all(&store.pool)
     .await?;
 
@@ -165,11 +171,11 @@ async fn print_failed_jobs(store: &Store, limit: Option<&String>) -> MainResult 
         println!(
             "{}",
             serde_json::json!({
-                "id": row.try_get::<Uuid, _>("id")?,
-                "kind": row.try_get::<String, _>("kind")?,
-                "attempts": row.try_get::<i32, _>("attempts")?,
-                "max_attempts": row.try_get::<i32, _>("max_attempts")?,
-                "last_error": row.try_get::<String, _>("last_error")?,
+                "id": row.id,
+                "kind": row.kind,
+                "attempts": row.attempts,
+                "max_attempts": row.max_attempts,
+                "last_error": row.last_error,
             })
         );
     }
@@ -182,8 +188,7 @@ async fn change_job(store: &Store, action: &str, id: Uuid) -> MainResult {
         store.outbox.retry_failed(id).await?
     } else {
         let token: Option<Option<Uuid>> =
-            sqlx::query_scalar("SELECT claim_token FROM jobs WHERE id=$1")
-                .bind(id)
+            sqlx::query_scalar!("SELECT claim_token FROM jobs WHERE id=$1", id)
                 .fetch_optional(&store.pool)
                 .await?;
         match token {

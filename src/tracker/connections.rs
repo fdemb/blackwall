@@ -107,11 +107,11 @@ pub fn router() -> Router<Store> {
 }
 
 async fn admin(conn: &mut PgConnection, workspace: Uuid, actor: Uuid) -> Result<()> {
-    let role: Option<String> = sqlx::query_scalar(
+    let role: Option<String> = sqlx::query_scalar!(
         "SELECT role FROM workspace_members WHERE workspace_id=$1 AND user_id=$2 FOR SHARE",
+        workspace,
+        actor,
     )
-    .bind(workspace)
-    .bind(actor)
     .fetch_optional(conn)
     .await?;
     if !matches!(role.as_deref(), Some("owner" | "admin")) {
@@ -125,10 +125,12 @@ async fn admin(conn: &mut PgConnection, workspace: Uuid, actor: Uuid) -> Result<
 /// being deleted under a mapping saved in this transaction.
 async fn admin_holding_graph(conn: &mut PgConnection, workspace: Uuid, actor: Uuid) -> Result<()> {
     admin(conn, workspace, actor).await?;
-    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,41827))")
-        .bind(workspace.to_string())
-        .execute(conn)
-        .await?;
+    sqlx::query!(
+        "SELECT pg_advisory_xact_lock(hashtextextended($1,41827))",
+        workspace.to_string(),
+    )
+    .execute(conn)
+    .await?;
     Ok(())
 }
 
@@ -183,10 +185,12 @@ fn validate_url(value: &str) -> Result<String> {
 
 /// Creates the row with its required fields; `configure` validates and applies the rest.
 async fn insert(conn: &mut PgConnection, workspace: Uuid, config: &Config) -> Result<Uuid> {
-    sqlx::query("SELECT id FROM workspaces WHERE id=$1 FOR NO KEY UPDATE")
-        .bind(workspace)
-        .execute(&mut *conn)
-        .await?;
+    sqlx::query_scalar!(
+        "SELECT id FROM workspaces WHERE id=$1 FOR NO KEY UPDATE",
+        workspace,
+    )
+    .fetch_optional(&mut *conn)
+    .await?;
     let provider = config
         .provider
         .ok_or_else(|| Error::BadRequest("provider is required".into()))?;
@@ -204,19 +208,19 @@ async fn insert(conn: &mut PgConnection, workspace: Uuid, config: &Config) -> Re
         .token
         .as_deref()
         .ok_or_else(|| Error::BadRequest("token is required".into()))?;
-    let count: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM tracker_connections WHERE workspace_id=$1 AND NOT deleted",
+    let count: i64 = sqlx::query_scalar!(
+        r#"SELECT count(*) AS "count!" FROM tracker_connections WHERE workspace_id=$1 AND NOT deleted"#,
+        workspace,
     )
-    .bind(workspace)
     .fetch_one(&mut *conn)
     .await?;
     if count >= 20 {
         return Err(Error::BadRequest("connection limit reached".into()));
     }
     let id = Uuid::new_v4();
-    sqlx::query("INSERT INTO tracker_connections(id,workspace_id,provider,name,base_url,token,options) VALUES($1,$2,$3,$4,$5,$6,$7)")
-        .bind(id).bind(workspace).bind(provider.key()).bind(name).bind(url).bind(token)
-        .bind(json!(provider.descriptor().defaults)).execute(&mut *conn).await?;
+    sqlx::query!("INSERT INTO tracker_connections(id,workspace_id,provider,name,base_url,token,options) VALUES($1,$2,$3,$4,$5,$6,$7)",
+        id, workspace, provider.key(), name, url, token,
+        json!(provider.descriptor().defaults)).execute(&mut *conn).await?;
     Ok(id)
 }
 
@@ -226,8 +230,8 @@ async fn drop_unmapped(
     id: Uuid,
     projects: &[Mapping],
 ) -> Result<()> {
-    sqlx::query("DELETE FROM tracker_outbox o USING issues i WHERE o.connection_id=$1 AND i.id=o.issue_id AND NOT $2::jsonb @> jsonb_build_array(jsonb_build_object('project_id',i.tracker->>'project_id'))")
-        .bind(id).bind(json!(projects)).execute(conn).await?;
+    sqlx::query!("DELETE FROM tracker_outbox o USING issues i WHERE o.connection_id=$1 AND i.id=o.issue_id AND NOT $2::jsonb @> jsonb_build_array(jsonb_build_object('project_id',i.tracker->>'project_id'))",
+        id, json!(projects)).execute(conn).await?;
     Ok(())
 }
 
@@ -263,23 +267,25 @@ async fn validate_projects(
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect();
-    let existing_teams: BTreeSet<Uuid> = sqlx::query_scalar(
+    let existing_teams: BTreeSet<Uuid> = sqlx::query_scalar!(
         "SELECT DISTINCT team_id FROM stages WHERE workspace_id=$1 AND team_id=ANY($2)",
+        workspace,
+        &teams,
     )
-    .bind(workspace)
-    .bind(&teams)
     .fetch_all(&mut *conn)
     .await?
     .into_iter()
     .collect();
-    let existing_stages: BTreeSet<(Uuid, Uuid)> =
-        sqlx::query_as("SELECT team_id,id FROM stages WHERE workspace_id=$1 AND id=ANY($2)")
-            .bind(workspace)
-            .bind(&stages)
-            .fetch_all(&mut *conn)
-            .await?
-            .into_iter()
-            .collect();
+    let existing_stages: BTreeSet<(Uuid, Uuid)> = sqlx::query!(
+        "SELECT team_id,id FROM stages WHERE workspace_id=$1 AND id=ANY($2)",
+        workspace,
+        &stages,
+    )
+    .fetch_all(&mut *conn)
+    .await?
+    .into_iter()
+    .map(|row| (row.team_id, row.id))
+    .collect();
     for mapping in projects {
         if !existing_teams.contains(&mapping.team_id) {
             return Err(Error::BadRequest(
@@ -337,11 +343,11 @@ async fn validate_people(
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect();
-    let members: BTreeSet<Uuid> = sqlx::query_scalar(
+    let members: BTreeSet<Uuid> = sqlx::query_scalar!(
         "SELECT user_id FROM workspace_members WHERE workspace_id=$1 AND user_id=ANY($2)",
+        workspace,
+        &users,
     )
-    .bind(workspace)
-    .bind(&users)
     .fetch_all(conn)
     .await?
     .into_iter()
@@ -366,10 +372,10 @@ async fn updated_url(
     if url == previous {
         return Ok(url);
     }
-    let imported: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM issues WHERE tracker->>'connection_id'=$1)",
+    let imported: bool = sqlx::query_scalar!(
+        r#"SELECT EXISTS(SELECT 1 FROM issues WHERE tracker->>'connection_id'=$1) AS "exists!""#,
+        id.to_string(),
     )
-    .bind(id.to_string())
     .fetch_one(&mut *conn)
     .await?;
     if imported {
@@ -405,6 +411,95 @@ fn next_generation(generation: i64) -> Result<i64> {
     })
 }
 
+/// A connection's settings as stored, or as they will be after an edit.
+struct Settings {
+    name: String,
+    base_url: String,
+    token: String,
+    enabled: bool,
+    options: TrackerOptions,
+    projects: Vec<Mapping>,
+    people: BTreeMap<String, Uuid>,
+}
+
+impl Settings {
+    fn scan_changed(&self, previous: &Settings) -> bool {
+        self.base_url != previous.base_url
+            || self.token != previous.token
+            || self.enabled != previous.enabled
+            || self.projects != previous.projects
+            || self.people != previous.people
+            || self.options.imports_changed(&previous.options)
+    }
+}
+
+/// Locks the connection and returns its provider, settings and scan generation.
+async fn stored(
+    conn: &mut PgConnection,
+    workspace: Uuid,
+    id: Uuid,
+) -> Result<(ProviderKind, Settings, i64)> {
+    let row = sqlx::query!("SELECT provider,name,base_url,token,enabled,options,projects,people_mapping,generation FROM tracker_connections WHERE workspace_id=$1 AND id=$2 AND NOT deleted FOR UPDATE",
+        workspace, id).fetch_optional(&mut *conn).await?.ok_or(Error::NotFound)?;
+    let settings = Settings {
+        name: row.name,
+        base_url: row.base_url,
+        token: row.token,
+        enabled: row.enabled,
+        options: serde_json::from_value(row.options)?,
+        projects: serde_json::from_value(row.projects)?,
+        people: serde_json::from_value(row.people_mapping)?,
+    };
+    Ok((
+        ProviderKind::parse(&row.provider)?,
+        settings,
+        row.generation,
+    ))
+}
+
+/// Saves new settings and restarts the scan from scratch under a new generation.
+async fn restart_scan(
+    conn: &mut PgConnection,
+    workspace: Uuid,
+    id: Uuid,
+    provider: ProviderKind,
+    settings: &Settings,
+    generation: i64,
+) -> Result<()> {
+    sqlx::query!("UPDATE tracker_connections SET name=$3,base_url=$4,token=$5,enabled=$6,projects=$7,people_mapping=$9,generation=$10,options=$11,checkpoint=$8,next_run_at=clock_timestamp(),status='pending',last_error='',push_error=NULL,remote_user_id=CASE WHEN base_url=$4 AND token=$5 THEN remote_user_id END,incremental_supported=true WHERE workspace_id=$1 AND id=$2",
+        workspace, id, settings.name, settings.base_url, settings.token, settings.enabled, json!(settings.projects),
+        provider.checkpoint(false), json!(settings.people), generation, json!(settings.options))
+        .execute(&mut *conn).await?;
+    cancel_pending(conn, id).await?;
+    drop_unmapped(conn, id, &settings.projects).await
+}
+
+/// Saves settings that don't affect what the scan imports.
+async fn rename(
+    conn: &mut PgConnection,
+    workspace: Uuid,
+    id: Uuid,
+    settings: &Settings,
+) -> Result<()> {
+    sqlx::query!(
+        "UPDATE tracker_connections SET name=$3,options=$4 WHERE workspace_id=$1 AND id=$2",
+        workspace,
+        id,
+        settings.name,
+        json!(settings.options),
+    )
+    .execute(conn)
+    .await?;
+    Ok(())
+}
+
+fn valid_token(token: String) -> Result<String> {
+    if token.is_empty() || token.len() > 4096 || token.chars().any(char::is_control) {
+        return Err(Error::BadRequest("invalid token".into()));
+    }
+    Ok(token)
+}
+
 async fn configure(
     store: Store,
     actor: Actor,
@@ -419,68 +514,48 @@ async fn configure(
         Some(id) => id,
         None => insert(&mut tx, workspace, &config).await?,
     };
-    let row = sqlx::query("SELECT provider,name,base_url,token,enabled,options,projects,people_mapping,generation FROM tracker_connections WHERE workspace_id=$1 AND id=$2 AND NOT deleted FOR UPDATE")
-        .bind(workspace).bind(id).fetch_optional(&mut *tx).await?.ok_or(Error::NotFound)?;
-    let provider = ProviderKind::parse(row.try_get("provider")?)?;
+    let (provider, previous, generation) = stored(&mut tx, workspace, id).await?;
     if config.provider.is_some_and(|kind| kind != provider) {
         return Err(Error::BadRequest(
             "provider cannot change; create a new connection".into(),
         ));
     }
-    let previous_name: String = row.try_get("name")?;
-    let name = config.name.unwrap_or(previous_name.clone());
+    let name = config.name.unwrap_or(previous.name.clone());
     crate::domain::text(&name, 200)?;
-    let previous_url: String = row.try_get("base_url")?;
-    let url = updated_url(&mut tx, id, provider, config.base_url, &previous_url).await?;
-    let previous_token: String = row.try_get("token")?;
-    let token = config.token.unwrap_or(previous_token.clone());
-    if token.is_empty() || token.len() > 4096 || token.chars().any(char::is_control) {
-        return Err(Error::BadRequest("invalid token".into()));
-    }
-    let previous_options: TrackerOptions = serde_json::from_value(row.try_get("options")?)?;
+    let base_url = updated_url(&mut tx, id, provider, config.base_url, &previous.base_url).await?;
+    let token = valid_token(config.token.unwrap_or(previous.token.clone()))?;
     let options = config.options.map_or_else(
-        || previous_options.clone(),
-        |options| options.merged(&previous_options),
+        || previous.options.clone(),
+        |options| options.merged(&previous.options),
     );
     options.validate(&provider.descriptor().fields)?;
-    let previous_projects: Vec<Mapping> = serde_json::from_value(row.try_get("projects")?)?;
-    let projects = config.projects.unwrap_or_else(|| previous_projects.clone());
-    let projects_changed = projects != previous_projects;
-    if projects_changed {
+    let projects = config.projects.unwrap_or_else(|| previous.projects.clone());
+    if projects != previous.projects {
         validate_projects(&mut tx, workspace, provider, &projects).await?;
     }
-    let previous_people: BTreeMap<String, Uuid> =
-        serde_json::from_value(row.try_get("people_mapping")?)?;
     let people =
-        updated_people(&mut tx, workspace, config.people_mapping, &previous_people).await?;
-    let people_changed = people != previous_people;
-    let previous_enabled: bool = row.try_get("enabled")?;
-    let enabled = config.enabled.unwrap_or(previous_enabled);
-    let scan_changed = created
-        || url != previous_url
-        || token != previous_token
-        || enabled != previous_enabled
-        || projects_changed
-        || people_changed
-        || options.imports_changed(&previous_options);
-    if scan_changed {
-        let generation = next_generation(row.try_get("generation")?)?;
-        sqlx::query("UPDATE tracker_connections SET name=$3,base_url=$4,token=$5,enabled=$6,projects=$7,people_mapping=$9,generation=$10,options=$11,checkpoint=$8,next_run_at=clock_timestamp(),status='pending',last_error='',push_error=NULL,remote_user_id=CASE WHEN base_url=$4 AND token=$5 THEN remote_user_id END,incremental_supported=true WHERE workspace_id=$1 AND id=$2")
-            .bind(workspace).bind(id).bind(name).bind(url).bind(token).bind(enabled).bind(json!(projects))
-            .bind(provider.checkpoint(false)).bind(json!(people)).bind(generation).bind(json!(options))
-            .execute(&mut *tx).await?;
-        cancel_pending(&mut tx, id).await?;
-        drop_unmapped(&mut tx, id, &projects).await?;
-    } else if name != previous_name || options != previous_options {
-        sqlx::query(
-            "UPDATE tracker_connections SET name=$3,options=$4 WHERE workspace_id=$1 AND id=$2",
+        updated_people(&mut tx, workspace, config.people_mapping, &previous.people).await?;
+    let next = Settings {
+        name,
+        base_url,
+        token,
+        enabled: config.enabled.unwrap_or(previous.enabled),
+        options,
+        projects,
+        people,
+    };
+    if created || next.scan_changed(&previous) {
+        restart_scan(
+            &mut tx,
+            workspace,
+            id,
+            provider,
+            &next,
+            next_generation(generation)?,
         )
-        .bind(workspace)
-        .bind(id)
-        .bind(name)
-        .bind(json!(options))
-        .execute(&mut *tx)
         .await?;
+    } else if next.name != previous.name || next.options != previous.options {
+        rename(&mut tx, workspace, id, &next).await?;
     }
     let result = connection(
         sqlx::query(&format!(
@@ -492,7 +567,7 @@ async fn configure(
     )?;
     tx.commit().await?;
     tracing::debug!(connection_id = %id, workspace_id = %workspace, provider = provider.key(),
-        generation = result.generation, enabled, project_count = result.projects.len(),
+        generation = result.generation, enabled = next.enabled, project_count = result.projects.len(),
         people_override_count = result.people_mapping.len(), "Tracker configuration saved");
     Ok(result)
 }
@@ -527,10 +602,9 @@ async fn delete(
 ) -> Result<StatusCode> {
     let mut tx = store.pool.begin().await?;
     admin(&mut tx, workspace, actor.profile.id).await?;
-    if sqlx::query("UPDATE tracker_connections SET deleted=true,enabled=false,token='',generation=generation+1 WHERE workspace_id=$1 AND id=$2 AND NOT deleted").bind(workspace).bind(id).execute(&mut *tx).await?.rows_affected() == 0 { return Err(Error::NotFound); }
+    if sqlx::query!("UPDATE tracker_connections SET deleted=true,enabled=false,token='',generation=generation+1 WHERE workspace_id=$1 AND id=$2 AND NOT deleted", workspace, id).execute(&mut *tx).await?.rows_affected() == 0 { return Err(Error::NotFound); }
     cancel_pending(&mut tx, id).await?;
-    sqlx::query("DELETE FROM tracker_outbox WHERE connection_id=$1")
-        .bind(id)
+    sqlx::query!("DELETE FROM tracker_outbox WHERE connection_id=$1", id)
         .execute(&mut *tx)
         .await?;
     tx.commit().await?;
@@ -547,13 +621,13 @@ async fn request(
 ) -> Result<(StatusCode, Json<Value>)> {
     let mut tx = store.pool.begin().await?;
     admin(&mut tx, workspace, actor.profile.id).await?;
-    let provider: Option<String> = sqlx::query_scalar("SELECT provider FROM tracker_connections WHERE workspace_id=$1 AND id=$2 AND NOT deleted AND enabled FOR UPDATE")
-        .bind(workspace).bind(id).fetch_optional(&mut *tx).await?;
+    let provider: Option<String> = sqlx::query_scalar!("SELECT provider FROM tracker_connections WHERE workspace_id=$1 AND id=$2 AND NOT deleted AND enabled FOR UPDATE",
+        workspace, id).fetch_optional(&mut *tx).await?;
     let provider = ProviderKind::parse(
         &provider.ok_or_else(|| Error::BadRequest("connection missing or disabled".into()))?,
     )?;
-    sqlx::query("UPDATE tracker_connections SET generation=generation+1,checkpoint=$3,next_run_at=clock_timestamp(),status='pending',last_error='',push_error=NULL,incremental_supported=CASE WHEN $4 THEN incremental_supported ELSE true END WHERE workspace_id=$1 AND id=$2")
-        .bind(workspace).bind(id).bind(provider.checkpoint(refresh_only)).bind(refresh_only).execute(&mut *tx).await?;
+    sqlx::query!("UPDATE tracker_connections SET generation=generation+1,checkpoint=$3,next_run_at=clock_timestamp(),status='pending',last_error='',push_error=NULL,incremental_supported=CASE WHEN $4 THEN incremental_supported ELSE true END WHERE workspace_id=$1 AND id=$2",
+        workspace, id, provider.checkpoint(refresh_only), refresh_only).execute(&mut *tx).await?;
     cancel_pending(&mut tx, id).await?;
     tx.commit().await?;
     tracing::debug!(connection_id = %id, workspace_id = %workspace, refresh_only, "Tracker scan requested");

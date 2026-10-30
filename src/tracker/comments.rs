@@ -65,12 +65,12 @@ pub(super) async fn fetch(
 /// The comment import progress of the items' links.
 async fn progress(store: &Store, connection: Uuid, items: &[RemoteIssue]) -> Result<Progress> {
     let ids: Vec<&str> = items.iter().map(|item| item.id.as_str()).collect();
-    let rows: Vec<(serde_json::Value, bool)> = sqlx::query_as("SELECT tracker,deleted_at IS NOT NULL FROM issues WHERE tracker->>'connection_id'=$1 AND tracker->>'remote_id'=ANY($2)")
-        .bind(connection.to_string()).bind(&ids).fetch_all(&store.pool).await?;
+    let rows = sqlx::query!(r#"SELECT tracker AS "tracker!",deleted_at IS NOT NULL AS "trashed!" FROM issues WHERE tracker->>'connection_id'=$1 AND tracker->>'remote_id'=ANY($2)"#, connection.to_string(), &ids as _)
+        .fetch_all(&store.pool).await?;
     let mut links = BTreeMap::new();
-    for (link, trashed) in rows {
-        let link: TrackerLink = serde_json::from_value(link)?;
-        let progress = (!trashed).then_some(Listing {
+    for row in rows {
+        let link: TrackerLink = serde_json::from_value(row.tracker)?;
+        let progress = (!row.trashed).then_some(Listing {
             imported: link.comments_imported,
             at: link.comments_at,
             tried: link.comments_tried_at,
@@ -218,13 +218,13 @@ async fn unlinked<'a>(
         .map(|item| item.comment.id.as_str())
         .collect();
     // Linked comments, and linked comments deleted here.
-    let known: BTreeSet<String> = sqlx::query_scalar("SELECT tracker->>'remote_id' FROM comments WHERE workspace_id=$1 AND tracker->>'connection_id'=$2 AND tracker->>'remote_id'=ANY($3) UNION SELECT remote_id FROM tracker_deleted_comments WHERE connection_id=$2::uuid AND remote_id=ANY($3)")
-        .bind(workspace).bind(connection.to_string()).bind(&remote_ids)
+    let known: BTreeSet<String> = sqlx::query_scalar!(r#"SELECT tracker->>'remote_id' AS "remote_id!" FROM comments WHERE workspace_id=$1 AND tracker->>'connection_id'=$2 AND tracker->>'remote_id'=ANY($3) UNION SELECT remote_id FROM tracker_deleted_comments WHERE connection_id=$2::uuid AND remote_id=ANY($3)"#,
+        workspace, connection.to_string(), &remote_ids as _)
         .fetch_all(&mut *conn).await?.into_iter().collect();
     let issues: Vec<Uuid> = incoming.iter().map(|item| item.issue).collect();
     // The account that sent each uncertain push; when unknown, every comment on the issue waits.
-    let uncertain: Vec<(Uuid, Option<String>)> = sqlx::query_as("SELECT issue_id,sent_account FROM tracker_outbox WHERE connection_id=$1 AND kind='comment' AND sent_at IS NOT NULL AND issue_id=ANY($2)")
-        .bind(connection).bind(&issues).fetch_all(&mut *conn).await?;
+    let uncertain: Vec<(Uuid, Option<String>)> = sqlx::query!("SELECT issue_id,sent_account FROM tracker_outbox WHERE connection_id=$1 AND kind='comment' AND sent_at IS NOT NULL AND issue_id=ANY($2)", connection, &issues)
+        .fetch_all(&mut *conn).await?.into_iter().map(|row| (row.issue_id, row.sent_account)).collect();
     let (held, incoming): (Vec<_>, Vec<_>) = incoming
         .into_iter()
         .filter(|item| !known.contains(&item.comment.id))
@@ -277,8 +277,8 @@ async fn insert(
             )
         })
         .collect();
-    Ok(sqlx::query_scalar("INSERT INTO comments(id,workspace_id,issue_id,author,body,created_at,tracker) SELECT input.id,$1,input.issue_id,input.author,input.body,input.created_at,input.tracker FROM unnest($2::uuid[],$3::uuid[],$4::uuid[],$5::text[],$6::timestamptz[],$7::jsonb[]) AS input(id,issue_id,author,body,created_at,tracker) ON CONFLICT((tracker->>'connection_id'),(tracker->>'remote_id')) WHERE tracker IS NOT NULL DO NOTHING RETURNING id")
-        .bind(workspace).bind(ids).bind(&issues).bind(&authors).bind(&bodies).bind(&created).bind(&trackers)
+    Ok(sqlx::query_scalar!("INSERT INTO comments(id,workspace_id,issue_id,author,body,created_at,tracker) SELECT input.id,$1,input.issue_id,input.author,input.body,input.created_at,input.tracker FROM unnest($2::uuid[],$3::uuid[],$4::uuid[],$5::text[],$6::timestamptz[],$7::jsonb[]) AS input(id,issue_id,author,body,created_at,tracker) ON CONFLICT((tracker->>'connection_id'),(tracker->>'remote_id')) WHERE tracker IS NOT NULL DO NOTHING RETURNING id",
+        workspace, ids, &issues, &authors, &bodies as _, &created, &trackers as _)
         .fetch_all(&mut *conn).await?.into_iter().collect())
 }
 
@@ -303,8 +303,8 @@ async fn notify_followers(
         return Ok(());
     }
     let issues: Vec<Uuid> = comments.iter().map(|(_, item)| item.issue).collect();
-    let rows: Vec<(Uuid, Uuid)> = sqlx::query_as("SELECT issue_id,user_id FROM issue_followers WHERE workspace_id=$1 AND issue_id=ANY($2) ORDER BY issue_id,user_id")
-        .bind(workspace).bind(&issues).fetch_all(&mut *conn).await?;
+    let rows: Vec<(Uuid, Uuid)> = sqlx::query!("SELECT issue_id,user_id FROM issue_followers WHERE workspace_id=$1 AND issue_id=ANY($2) ORDER BY issue_id,user_id", workspace, &issues)
+        .fetch_all(&mut *conn).await?.into_iter().map(|row| (row.issue_id, row.user_id)).collect();
     for (id, item) in comments {
         let author = item.author.unwrap_or(actor);
         for (_, user) in rows

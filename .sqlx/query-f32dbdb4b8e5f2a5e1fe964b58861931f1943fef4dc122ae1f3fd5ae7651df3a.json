@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE pending_logins SET failed_attempts = failed_attempts + 1 WHERE token_hash = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "f32dbdb4b8e5f2a5e1fe964b58861931f1943fef4dc122ae1f3fd5ae7651df3a"
+}

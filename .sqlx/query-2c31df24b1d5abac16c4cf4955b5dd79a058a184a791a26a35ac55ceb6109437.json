@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE jobs SET state=CASE WHEN $3 THEN 'failed' ELSE 'pending' END,run_at=clock_timestamp()+make_interval(secs=>$4::double precision),claim_token=NULL,lease_expires_at=NULL,last_error=$5,payload=CASE WHEN $3 THEN CASE WHEN kind='webhook' THEN (payload-'token') #- '{event,data}' #- '{event,truncated}' ELSE payload-'token' END ELSE payload END,finished_at=CASE WHEN $3 THEN clock_timestamp() ELSE NULL END,updated_at=clock_timestamp() WHERE id=$1 AND state='running' AND claim_token=$2 AND lease_expires_at>clock_timestamp()",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Bool",
+        "Float8",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "2c31df24b1d5abac16c4cf4955b5dd79a058a184a791a26a35ac55ceb6109437"
+}

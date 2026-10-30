@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE teams SET archive_after_days=$3::bigint WHERE workspace_id=$1 AND id=$2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "785cb4eb3b8c326c3ef15168aa94b4f4f2d0e7c501c3cd62ed8ad73c66a68e58"
+}

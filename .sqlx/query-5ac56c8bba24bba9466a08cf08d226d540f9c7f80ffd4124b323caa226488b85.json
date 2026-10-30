@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE jobs SET state='succeeded',payload=CASE WHEN kind='webhook' THEN (payload-'token') #- '{event,data}' #- '{event,truncated}' ELSE payload-'token' END,claim_token=NULL,lease_expires_at=NULL,last_error='',finished_at=clock_timestamp(),updated_at=clock_timestamp() WHERE id=$1 AND state='running' AND claim_token=$2 AND lease_expires_at>clock_timestamp()",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "5ac56c8bba24bba9466a08cf08d226d540f9c7f80ffd4124b323caa226488b85"
+}

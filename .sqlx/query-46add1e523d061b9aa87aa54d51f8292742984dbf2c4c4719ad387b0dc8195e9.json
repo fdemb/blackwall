@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM tracker_outbox o USING issues i WHERE o.connection_id=$1 AND i.id=o.issue_id AND NOT $2::jsonb @> jsonb_build_array(jsonb_build_object('project_id',i.tracker->>'project_id'))",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Jsonb"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "46add1e523d061b9aa87aa54d51f8292742984dbf2c4c4719ad387b0dc8195e9"
+}

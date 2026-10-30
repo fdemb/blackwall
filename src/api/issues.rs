@@ -8,6 +8,7 @@ use crate::domain::{
     IssueInput, IssuePatch, IssueSort, LabelChange, Priority, SourceLink, TrackerLink, Via,
     deserialize_where,
 };
+use crate::ids::{IssueId, TeamId};
 use crate::store::CollectionQuery;
 use axum::extract::{Path, Query};
 use chrono::{DateTime, Utc};
@@ -109,7 +110,7 @@ pub async fn render(store: &Store, scope: Scope, issues: Vec<Issue>) -> Result<V
     render_on(
         &mut *store.pool.acquire().await?,
         &mut dir,
-        scope.workspace,
+        scope.workspace.0,
         issues,
     )
     .await
@@ -143,17 +144,17 @@ pub(super) async fn render_on(
         )
         .await?;
     let ids: Vec<Uuid> = issues.iter().map(|i| i.id).collect();
-    let created_via: BTreeMap<Uuid, Via> = sqlx::query_as::<_, (Uuid, serde_json::Value)>(
-        "SELECT DISTINCT ON (entity_id) entity_id,via FROM activity \
+    let created_via: BTreeMap<Uuid, Via> = sqlx::query!(
+        "SELECT DISTINCT ON (entity_id) entity_id AS \"entity_id!\",via AS \"via!\" FROM activity \
          WHERE workspace_id=$1 AND entity_id=ANY($2) AND action='create_issue' AND via IS NOT NULL \
          ORDER BY entity_id,at",
+        workspace,
+        &ids,
     )
-    .bind(workspace)
-    .bind(&ids)
     .fetch_all(&mut *conn)
     .await?
     .into_iter()
-    .filter_map(|(id, via)| Some((id, serde_json::from_value(via).ok()?)))
+    .filter_map(|row| Some((row.entity_id, serde_json::from_value(row.via).ok()?)))
     .collect();
 
     Ok(issues
@@ -347,7 +348,7 @@ pub async fn search(store: &Store, scope: Scope, query: IssueQuery) -> Result<Pa
 pub async fn list(
     State(store): State<Store>,
     actor: ApiActor,
-    Path(workspace): Path<Uuid>,
+    Path(workspace): Path<WorkspaceId>,
     Query(query): Query<IssueQuery>,
 ) -> Result<Json<Page<ApiIssue>>> {
     Ok(Json(search(&store, actor.read(workspace)?, query).await?))
@@ -363,7 +364,7 @@ pub async fn list(
 pub async fn get(
     State(store): State<Store>,
     actor: ApiActor,
-    Path((workspace, issue)): Path<(Uuid, String)>,
+    Path((workspace, issue)): Path<(WorkspaceId, String)>,
 ) -> Result<Response> {
     let scope = actor.read(workspace)?;
     let id = resolve(&store, scope, &issue).await?;
@@ -404,10 +405,10 @@ pub struct CreateIssue {
     pub dependencies: Vec<String>,
 }
 
-async fn issue_ids(store: &Store, scope: Scope, references: &[String]) -> Result<Vec<Uuid>> {
+async fn issue_ids(store: &Store, scope: Scope, references: &[String]) -> Result<Vec<IssueId>> {
     let mut ids = Vec::with_capacity(references.len());
     for reference in references {
-        ids.push(resolve(store, scope, reference).await?);
+        ids.push(IssueId(resolve(store, scope, reference).await?));
     }
     Ok(ids)
 }
@@ -422,14 +423,14 @@ impl CreateIssue {
         let team_id = dir.find_team(&self.team)?;
         let project_id = self.project.map(|p| dir.find_project(&p)).transpose()?;
         let parent_id = match self.parent {
-            Some(parent) => Some(resolve(store, scope, &parent).await?),
+            Some(parent) => Some(IssueId(resolve(store, scope, &parent).await?)),
             None => None,
         };
         Ok(IssueInput {
             id: None,
             title: self.title,
             description: self.description,
-            team_id,
+            team_id: TeamId(team_id),
             stage_id: self
                 .stage
                 .map(|s| dir.find_stage(team_id, &s))
@@ -486,7 +487,7 @@ pub async fn create_issue(
 pub async fn create(
     State(store): State<Store>,
     actor: ApiActor,
-    Path(workspace): Path<Uuid>,
+    Path(workspace): Path<WorkspaceId>,
     options: WriteOptions,
     Json(input): Json<CreateIssue>,
 ) -> Result<Response> {
@@ -594,7 +595,7 @@ impl UpdateIssue {
         let sprint = resolve_with(self.sprint, &|r| dir.find_sprint(team, r))?;
         let assignee = resolve_with(self.assignee, &|r| dir.find_person(r))?;
         let parent = match self.parent {
-            Some(Some(parent)) => Some(Some(resolve(store, scope, &parent).await?)),
+            Some(Some(parent)) => Some(Some(IssueId(resolve(store, scope, &parent).await?))),
             Some(None) => Some(None),
             None => None,
         };
@@ -613,7 +614,7 @@ impl UpdateIssue {
         Ok(IssuePatch {
             title: self.title,
             description: self.description,
-            team_id,
+            team_id: team_id.map(TeamId),
             stage_id: self.stage.map(|s| dir.find_stage(team, &s)).transpose()?,
             assignee,
             clear_assignee,
@@ -649,7 +650,10 @@ pub async fn update_issue(
         async {
             let current = store.get_issue(scope.workspace, scope.user, id).await?;
             let patch = update.into_patch(store, scope, &current).await?;
-            Ok(Command::UpdateIssue { id, patch })
+            Ok(Command::UpdateIssue {
+                id: IssueId(id),
+                patch,
+            })
         },
         Some(id),
         options,
@@ -670,7 +674,7 @@ pub async fn update_issue(
 pub async fn update(
     State(store): State<Store>,
     actor: ApiActor,
-    Path((workspace, issue)): Path<(Uuid, String)>,
+    Path((workspace, issue)): Path<(WorkspaceId, String)>,
     options: WriteOptions,
     Json(update): Json<UpdateIssue>,
 ) -> Result<Response> {
@@ -703,19 +707,26 @@ pub async fn transition_issue(
 pub async fn delete(
     State(store): State<Store>,
     actor: ApiActor,
-    Path((workspace, issue)): Path<(Uuid, String)>,
+    Path((workspace, issue)): Path<(WorkspaceId, String)>,
     options: WriteOptions,
 ) -> Result<StatusCode> {
     let scope = actor.write(workspace)?;
     let id = resolve(&store, scope, &issue).await?;
-    transition_issue(&store, scope, id, Command::DeleteIssue { id }, options).await?;
+    transition_issue(
+        &store,
+        scope,
+        id,
+        Command::DeleteIssue { id: IssueId(id) },
+        options,
+    )
+    .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
 async fn transition(
     store: &Store,
     actor: &ApiActor,
-    workspace: Uuid,
+    workspace: WorkspaceId,
     issue: &str,
     options: WriteOptions,
     command: fn(Uuid) -> Command,
@@ -736,11 +747,11 @@ async fn transition(
 pub async fn restore(
     State(store): State<Store>,
     actor: ApiActor,
-    Path((workspace, issue)): Path<(Uuid, String)>,
+    Path((workspace, issue)): Path<(WorkspaceId, String)>,
     options: WriteOptions,
 ) -> Result<Response> {
     transition(&store, &actor, workspace, &issue, options, |id| {
-        Command::RestoreIssue { id }
+        Command::RestoreIssue { id: IssueId(id) }
     })
     .await
 }
@@ -756,11 +767,11 @@ pub async fn restore(
 pub async fn archive(
     State(store): State<Store>,
     actor: ApiActor,
-    Path((workspace, issue)): Path<(Uuid, String)>,
+    Path((workspace, issue)): Path<(WorkspaceId, String)>,
     options: WriteOptions,
 ) -> Result<Response> {
     transition(&store, &actor, workspace, &issue, options, |id| {
-        Command::ArchiveIssue { id }
+        Command::ArchiveIssue { id: IssueId(id) }
     })
     .await
 }
@@ -775,11 +786,11 @@ pub async fn archive(
 pub async fn unarchive(
     State(store): State<Store>,
     actor: ApiActor,
-    Path((workspace, issue)): Path<(Uuid, String)>,
+    Path((workspace, issue)): Path<(WorkspaceId, String)>,
     options: WriteOptions,
 ) -> Result<Response> {
     transition(&store, &actor, workspace, &issue, options, |id| {
-        Command::UnarchiveIssue { id }
+        Command::UnarchiveIssue { id: IssueId(id) }
     })
     .await
 }
@@ -886,7 +897,7 @@ pub async fn issue_comments(
 pub async fn comments(
     State(store): State<Store>,
     actor: ApiActor,
-    Path((workspace, issue)): Path<(Uuid, String)>,
+    Path((workspace, issue)): Path<(WorkspaceId, String)>,
     Query(params): Query<PageParams>,
 ) -> Result<Json<Page<ApiComment>>> {
     let scope = actor.read(workspace)?;
@@ -904,7 +915,7 @@ pub async fn comments(
 pub async fn comment(
     State(store): State<Store>,
     actor: ApiActor,
-    Path((workspace, comment)): Path<(Uuid, Uuid)>,
+    Path((workspace, comment)): Path<(WorkspaceId, Uuid)>,
 ) -> Result<Response> {
     let comment = fetch_comment(&store, actor.read(workspace)?, comment).await?;
     Ok(one(StatusCode::OK, comment))
@@ -941,7 +952,7 @@ pub async fn add_comment(
         async {
             Ok(Command::AddComment {
                 id: None,
-                issue_id: issue,
+                issue_id: IssueId(issue),
                 mentions: mention_ids(store, scope, &body.mentions).await?,
                 body: body.body,
                 attachments: vec![],
@@ -965,7 +976,7 @@ pub async fn add_comment(
 pub async fn create_comment(
     State(store): State<Store>,
     actor: ApiActor,
-    Path((workspace, issue)): Path<(Uuid, String)>,
+    Path((workspace, issue)): Path<(WorkspaceId, String)>,
     options: WriteOptions,
     Json(body): Json<CreateComment>,
 ) -> Result<Response> {
@@ -1027,7 +1038,7 @@ pub async fn edit_comment(
 pub async fn update_comment(
     State(store): State<Store>,
     actor: ApiActor,
-    Path((workspace, comment)): Path<(Uuid, Uuid)>,
+    Path((workspace, comment)): Path<(WorkspaceId, Uuid)>,
     options: WriteOptions,
     Json(body): Json<UpdateComment>,
 ) -> Result<Response> {
@@ -1062,7 +1073,7 @@ pub async fn remove_comment(
 pub async fn delete_comment(
     State(store): State<Store>,
     actor: ApiActor,
-    Path((workspace, comment)): Path<(Uuid, Uuid)>,
+    Path((workspace, comment)): Path<(WorkspaceId, Uuid)>,
     options: WriteOptions,
 ) -> Result<StatusCode> {
     remove_comment(&store, actor.comment(workspace)?, comment, options).await?;
@@ -1144,7 +1155,7 @@ pub async fn issue_activity(
 pub async fn activity(
     State(store): State<Store>,
     actor: ApiActor,
-    Path((workspace, issue)): Path<(Uuid, String)>,
+    Path((workspace, issue)): Path<(WorkspaceId, String)>,
     Query(params): Query<PageParams>,
 ) -> Result<Json<Page<ApiActivity>>> {
     let scope = actor.read(workspace)?;
@@ -1162,7 +1173,7 @@ pub async fn activity(
 pub async fn attachment(
     State(store): State<Store>,
     actor: ApiActor,
-    Path((workspace, attachment)): Path<(Uuid, Uuid)>,
+    Path((workspace, attachment)): Path<(WorkspaceId, Uuid)>,
 ) -> Result<Response> {
     let scope = actor.read(workspace)?;
     crate::http::attachment_response(&store, scope.workspace, scope.user, attachment).await

@@ -665,13 +665,13 @@ async fn run_with_renewal<'a, T>(
 async fn execute_reminder(store: &Store, claim: &Claim, reminder: &Reminder) -> Result<()> {
     let mut tx = store.pool.begin().await?;
 
-    let owned = sqlx::query(
+    let owned = sqlx::query_scalar!(
         "SELECT id FROM jobs \
          WHERE id=$1 AND state='running' AND claim_token=$2 \
          AND lease_expires_at>clock_timestamp() FOR UPDATE",
+        claim.id,
+        claim.token,
     )
-    .bind(claim.id)
-    .bind(claim.token)
     .fetch_optional(&mut *tx)
     .await?
     .is_some();
@@ -690,14 +690,12 @@ async fn execute_reminder(store: &Store, claim: &Claim, reminder: &Reminder) -> 
 }
 
 async fn maintenance(store: &Store, retention_days: i32, failed_retention_days: i32) -> Result<()> {
-    use sqlx::Row;
-
-    let metrics = sqlx::query(
+    let metrics = sqlx::query!(
         "SELECT \
-         count(*) FILTER(WHERE state IN ('pending','running')) AS depth,\
-         count(*) FILTER(WHERE state='failed') AS failures,\
-         COALESCE(EXTRACT(EPOCH FROM clock_timestamp()-min(run_at) FILTER(WHERE state='pending' AND run_at<clock_timestamp())),0)::bigint AS overdue_seconds,\
-         (SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock') AS lock_waiters \
+         count(*) FILTER(WHERE state IN ('pending','running')) AS \"depth!\",\
+         count(*) FILTER(WHERE state='failed') AS \"failures!\",\
+         COALESCE(EXTRACT(EPOCH FROM clock_timestamp()-min(run_at) FILTER(WHERE state='pending' AND run_at<clock_timestamp())),0)::bigint AS \"overdue_seconds!\",\
+         (SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock') AS \"lock_waiters!\" \
          FROM jobs",
     )
     .fetch_one(&store.pool)
@@ -706,17 +704,17 @@ async fn maintenance(store: &Store, retention_days: i32, failed_retention_days: 
     tracing::info!(
         pool_size = store.pool.size(),
         pool_idle = store.pool.num_idle(),
-        queue_depth = metrics.try_get::<i64, _>("depth")?,
-        failed_jobs = metrics.try_get::<i64, _>("failures")?,
-        oldest_overdue_seconds = metrics.try_get::<i64, _>("overdue_seconds")?,
-        lock_waiters = metrics.try_get::<i64, _>("lock_waiters")?,
+        queue_depth = metrics.depth,
+        failed_jobs = metrics.failures,
+        oldest_overdue_seconds = metrics.overdue_seconds,
+        lock_waiters = metrics.lock_waiters,
         "database and queue pressure"
     );
 
     let mut lock = store.pool.acquire().await?;
     lock.close_on_drop();
 
-    let locked: bool = sqlx::query_scalar("SELECT pg_try_advisory_lock(728192404)")
+    let locked: bool = sqlx::query_scalar!("SELECT pg_try_advisory_lock(728192404) AS \"locked!\"")
         .fetch_one(&mut *lock)
         .await?;
 
@@ -757,7 +755,7 @@ async fn sweep(store: &Store, retention_days: i32, failed_retention_days: i32) -
     }
 
     drain(deadline, 1000, store.clone(), |s| async move {
-        Ok(sqlx::query(
+        Ok(sqlx::query!(
             "WITH expired AS (\
              SELECT id FROM invitations WHERE state='pending' AND expires_at<=clock_timestamp() \
              ORDER BY expires_at,id FOR UPDATE SKIP LOCKED LIMIT 1000) \
@@ -864,10 +862,10 @@ impl Store {
         sqlx::query("SET LOCAL lock_timeout='5s'")
             .execute(&mut *tx)
             .await?;
-        let Some(workspace): Option<Uuid> = sqlx::query_scalar(
+        let Some(workspace): Option<Uuid> = sqlx::query_scalar!(
             "SELECT workspace_id FROM issues WHERE deleted_at<=$1 ORDER BY deleted_at,id LIMIT 1",
+            cutoff,
         )
-        .bind(cutoff)
         .fetch_optional(&mut *tx)
         .await?
         else {
@@ -877,14 +875,14 @@ impl Store {
             .bind(workspace.to_string())
             .execute(&mut *tx)
             .await?;
-        let ids: Vec<Uuid> = sqlx::query_scalar(
+        let ids: Vec<Uuid> = sqlx::query_scalar!(
             "SELECT id FROM issues \
              WHERE workspace_id=$1 AND deleted_at<=$2 \
              ORDER BY deleted_at,id LIMIT $3 FOR UPDATE SKIP LOCKED",
+            workspace,
+            cutoff,
+            PURGE_BATCH as i64,
         )
-        .bind(workspace)
-        .bind(cutoff)
-        .bind(PURGE_BATCH as i64)
         .fetch_all(&mut *tx)
         .await?;
         for sql in PURGE {
@@ -911,7 +909,7 @@ impl Store {
     }
 
     async fn archive_batch(tx: &mut Transaction<'_, Postgres>) -> Result<(u64, u64)> {
-        let cleared = sqlx::query(
+        let cleared = sqlx::query!(
             "UPDATE issues SET done_at=NULL,updated_at=now() WHERE id IN (\
              SELECT i.id FROM issues i JOIN stages s ON s.id=i.stage_id \
              WHERE s.kind<>'done' AND i.done_at IS NOT NULL AND i.archived_at IS NULL \
@@ -921,7 +919,7 @@ impl Store {
         .await?
         .rows_affected();
 
-        let backfilled = sqlx::query(
+        let backfilled = sqlx::query!(
             "UPDATE issues SET done_at=updated_at,updated_at=now() WHERE id IN (\
              SELECT i.id FROM issues i JOIN stages s ON s.id=i.stage_id \
              WHERE s.kind='done' AND i.done_at IS NULL AND i.deleted_at IS NULL \
@@ -931,7 +929,7 @@ impl Store {
         .await?
         .rows_affected();
 
-        let archived = sqlx::query(
+        let archived = sqlx::query!(
             "UPDATE issues SET archived_at=now(),updated_at=now(),version=version+1 WHERE id IN (\
              SELECT i.id FROM issues i \
              JOIN stages s ON s.id=i.stage_id AND s.kind='done' \

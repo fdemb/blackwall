@@ -12,7 +12,7 @@ use hmac::{Hmac, Mac};
 use qrcode::{QrCode, render::svg};
 use serde::{Deserialize, Serialize};
 use sha1::Sha1;
-use sqlx::{PgConnection, Postgres, Row, Transaction, types::Json};
+use sqlx::{PgConnection, Postgres, Transaction, types::Json};
 use uuid::Uuid;
 
 const STEP_SECONDS: i64 = 30;
@@ -150,15 +150,14 @@ fn recovery_code() -> String {
 async fn replace_recovery_codes(tx: &mut PgConnection, user: Uuid) -> Result<RecoveryCodes> {
     let codes: Vec<String> = (0..RECOVERY_CODES).map(|_| recovery_code()).collect();
     let hashes: Vec<String> = codes.iter().map(|code| recovery_hash(user, code)).collect();
-    sqlx::query("DELETE FROM totp_recovery_codes WHERE user_id = $1")
-        .bind(user)
+    sqlx::query!("DELETE FROM totp_recovery_codes WHERE user_id = $1", user)
         .execute(&mut *tx)
         .await?;
-    sqlx::query(
+    sqlx::query!(
         "INSERT INTO totp_recovery_codes (user_id, code_hash) SELECT $1, unnest($2::text[])",
+        user,
+        &hashes,
     )
-    .bind(user)
-    .bind(hashes)
     .execute(&mut *tx)
     .await?;
 
@@ -169,34 +168,37 @@ async fn replace_recovery_codes(tx: &mut PgConnection, user: Uuid) -> Result<Rec
 /// TOTP row lock until the transaction ends, so concurrent requests can't both
 /// accept the same code.
 async fn second_factor(tx: &mut PgConnection, user: Uuid, input: &str) -> Result<bool> {
-    let row = sqlx::query(
+    let row = sqlx::query!(
         "SELECT secret, last_step FROM user_totp \
          WHERE user_id = $1 AND enabled_at IS NOT NULL FOR UPDATE",
+        user,
     )
-    .bind(user)
     .fetch_optional(&mut *tx)
     .await?
     .ok_or_else(|| Error::Conflict("two-factor sign-in is off".into()))?;
 
     if let Some(code) = totp_code(input) {
-        let secret: Vec<u8> = row.try_get("secret")?;
         let now = Utc::now().timestamp();
-        let Some(step) = matching_step(&secret, code, now, row.try_get("last_step")?) else {
+        let Some(step) = matching_step(&row.secret, code, now, row.last_step) else {
             return Ok(false);
         };
-        sqlx::query("UPDATE user_totp SET last_step = $2 WHERE user_id = $1")
-            .bind(user)
-            .bind(step)
-            .execute(&mut *tx)
-            .await?;
+        sqlx::query!(
+            "UPDATE user_totp SET last_step = $2 WHERE user_id = $1",
+            user,
+            step,
+        )
+        .execute(&mut *tx)
+        .await?;
         return Ok(true);
     }
 
-    let used = sqlx::query("DELETE FROM totp_recovery_codes WHERE user_id = $1 AND code_hash = $2")
-        .bind(user)
-        .bind(recovery_hash(user, input))
-        .execute(&mut *tx)
-        .await?;
+    let used = sqlx::query!(
+        "DELETE FROM totp_recovery_codes WHERE user_id = $1 AND code_hash = $2",
+        user,
+        recovery_hash(user, input),
+    )
+    .execute(&mut *tx)
+    .await?;
     Ok(used.rows_affected() == 1)
 }
 
@@ -232,14 +234,14 @@ pub(super) async fn pending_login(
     password_hash: &str,
 ) -> Result<PendingLogin> {
     let token = token();
-    sqlx::query(
+    sqlx::query!(
         "INSERT INTO pending_logins (token_hash, user_id, credential, expires_at) \
          VALUES ($1, $2, $3, $4)",
+        hash(&token),
+        user,
+        hash(password_hash),
+        Utc::now() + Duration::minutes(PENDING_LOGIN_MINUTES),
     )
-    .bind(hash(&token))
-    .bind(user)
-    .bind(hash(password_hash))
-    .bind(Utc::now() + Duration::minutes(PENDING_LOGIN_MINUTES))
     .execute(&mut *tx)
     .await?;
 
@@ -268,11 +270,11 @@ impl Store {
         let token_hash = hash(&input.pending_token);
         let expired = || Error::BadRequest("sign-in expired; enter your password again".into());
         let mut tx = self.pool.begin().await?;
-        let user: Uuid = sqlx::query_scalar(
+        let user: Uuid = sqlx::query_scalar!(
             "SELECT user_id FROM pending_logins WHERE token_hash = $1 AND expires_at > $2",
+            &token_hash,
+            Utc::now(),
         )
-        .bind(&token_hash)
-        .bind(Utc::now())
         .fetch_optional(&mut *tx)
         .await?
         .ok_or_else(expired)?;
@@ -280,13 +282,13 @@ impl Store {
         // Only the expiry sweep changes a pending login without the user lock,
         // so after the lock this read stays true unless the sweep deletes the row.
         let credential = hash(&lock_user(&mut tx, user).await?);
-        let valid: bool = sqlx::query_scalar(
+        let valid: bool = sqlx::query_scalar!(
             "SELECT EXISTS(SELECT 1 FROM pending_logins WHERE token_hash = $1 \
-             AND expires_at > $2 AND credential = $3)",
+             AND expires_at > $2 AND credential = $3) AS \"exists!\"",
+            &token_hash,
+            Utc::now(),
+            credential,
         )
-        .bind(&token_hash)
-        .bind(Utc::now())
-        .bind(credential)
         .fetch_one(&mut *tx)
         .await?;
         if !valid {
@@ -294,35 +296,39 @@ impl Store {
         }
 
         if !second_factor(&mut tx, user, &input.code).await? {
-            sqlx::query(
+            sqlx::query!(
                 "UPDATE pending_logins SET failed_attempts = failed_attempts + 1 \
                  WHERE token_hash = $1",
+                &token_hash,
             )
-            .bind(&token_hash)
             .execute(&mut *tx)
             .await?;
-            sqlx::query(
+            sqlx::query!(
                 "DELETE FROM pending_logins WHERE token_hash = $1 AND failed_attempts >= $2",
+                &token_hash,
+                PENDING_LOGIN_ATTEMPTS,
             )
-            .bind(&token_hash)
-            .bind(PENDING_LOGIN_ATTEMPTS)
             .execute(&mut *tx)
             .await?;
             tx.commit().await?;
             return Err(Error::Unauthorized);
         }
 
-        let consumed = sqlx::query("DELETE FROM pending_logins WHERE token_hash = $1")
-            .bind(&token_hash)
-            .execute(&mut *tx)
-            .await?;
+        let consumed = sqlx::query!(
+            "DELETE FROM pending_logins WHERE token_hash = $1",
+            &token_hash
+        )
+        .execute(&mut *tx)
+        .await?;
         if consumed.rows_affected() != 1 {
             return Err(expired());
         }
-        let profile: Json<Profile> = sqlx::query_scalar("SELECT profile FROM users WHERE id = $1")
-            .bind(user)
-            .fetch_one(&mut *tx)
-            .await?;
+        let profile: Json<Profile> = sqlx::query_scalar!(
+            r#"SELECT profile AS "profile: Json<Profile>" FROM users WHERE id = $1"#,
+            user,
+        )
+        .fetch_one(&mut *tx)
+        .await?;
         let session = create_session(&mut tx, profile.0).await?;
         tx.commit().await?;
 
@@ -330,18 +336,19 @@ impl Store {
     }
 
     pub async fn totp_status(&self, user: Uuid) -> Result<TotpStatus> {
-        let row = sqlx::query(
+        let row = sqlx::query!(
             "SELECT EXISTS(SELECT 1 FROM user_totp WHERE user_id = $1 AND enabled_at IS NOT NULL) \
-               AS enabled, \
-             (SELECT count(*) FROM totp_recovery_codes WHERE user_id = $1) AS recovery_codes_left",
+               AS \"enabled!\", \
+             (SELECT count(*) FROM totp_recovery_codes WHERE user_id = $1) \
+               AS \"recovery_codes_left!\"",
+            user,
         )
-        .bind(user)
         .fetch_one(&self.pool)
         .await?;
 
         Ok(TotpStatus {
-            enabled: row.try_get("enabled")?,
-            recovery_codes_left: row.try_get("recovery_codes_left")?,
+            enabled: row.enabled,
+            recovery_codes_left: row.recovery_codes_left,
         })
     }
 
@@ -350,25 +357,25 @@ impl Store {
     /// can't replace the secret until the setup is `SETUP_MINUTES` old.
     pub async fn setup_totp(&self, profile: &Profile, session: Uuid) -> Result<TotpSetup> {
         let secret = random::<20>();
-        let started = sqlx::query(
+        let started = sqlx::query!(
             "INSERT INTO user_totp (user_id, secret, setup_session, setup_started_at) \
              VALUES ($1, $2, $3, now()) \
              ON CONFLICT (user_id) DO UPDATE SET secret = excluded.secret, \
                setup_session = excluded.setup_session, setup_started_at = now() \
              WHERE user_totp.enabled_at IS NULL AND (user_totp.setup_session = $3 \
                OR user_totp.setup_started_at < now() - make_interval(mins => $4))",
+            profile.id,
+            &secret[..],
+            session,
+            SETUP_MINUTES,
         )
-        .bind(profile.id)
-        .bind(&secret[..])
-        .bind(session)
-        .bind(SETUP_MINUTES)
         .execute(&self.pool)
         .await?;
         if started.rows_affected() == 0 {
-            let enabled: bool = sqlx::query_scalar(
-                "SELECT enabled_at IS NOT NULL FROM user_totp WHERE user_id = $1",
+            let enabled: bool = sqlx::query_scalar!(
+                r#"SELECT enabled_at IS NOT NULL AS "enabled!" FROM user_totp WHERE user_id = $1"#,
+                profile.id,
             )
-            .bind(profile.id)
             .fetch_one(&self.pool)
             .await?;
             return Err(Error::Conflict(if enabled {
@@ -401,12 +408,12 @@ impl Store {
         input: TotpEnable,
     ) -> Result<RecoveryCodes> {
         let mut tx = self.begin_with_password(user, input.password).await?;
-        let secret: Vec<u8> = sqlx::query_scalar(
+        let secret: Vec<u8> = sqlx::query_scalar!(
             "SELECT secret FROM user_totp \
              WHERE user_id = $1 AND enabled_at IS NULL AND setup_session = $2 FOR UPDATE",
+            user,
+            current_session,
         )
-        .bind(user)
-        .bind(current_session)
         .fetch_optional(&mut *tx)
         .await?
         .ok_or_else(|| Error::Conflict("two-factor setup is not in progress".into()))?;
@@ -416,20 +423,22 @@ impl Store {
             .and_then(|code| matching_step(&secret, code, now, None))
             .ok_or_else(wrong_credentials)?;
 
-        sqlx::query(
+        sqlx::query!(
             "UPDATE user_totp SET enabled_at = now(), last_step = $2, setup_session = NULL, \
              setup_started_at = NULL WHERE user_id = $1",
+            user,
+            step,
         )
-        .bind(user)
-        .bind(step)
         .execute(&mut *tx)
         .await?;
         let codes = replace_recovery_codes(&mut tx, user).await?;
-        sqlx::query("DELETE FROM sessions WHERE user_id = $1 AND public_id <> $2")
-            .bind(user)
-            .bind(current_session)
-            .execute(&mut *tx)
-            .await?;
+        sqlx::query!(
+            "DELETE FROM sessions WHERE user_id = $1 AND public_id <> $2",
+            user,
+            current_session,
+        )
+        .execute(&mut *tx)
+        .await?;
         tx.commit().await?;
 
         Ok(codes)
@@ -443,23 +452,22 @@ impl Store {
         input: TotpConfirm,
     ) -> Result<()> {
         let mut tx = self.confirm_totp(user, input).await?;
-        sqlx::query("DELETE FROM user_totp WHERE user_id = $1")
-            .bind(user)
+        sqlx::query!("DELETE FROM user_totp WHERE user_id = $1", user)
             .execute(&mut *tx)
             .await?;
-        sqlx::query("DELETE FROM totp_recovery_codes WHERE user_id = $1")
-            .bind(user)
+        sqlx::query!("DELETE FROM totp_recovery_codes WHERE user_id = $1", user)
             .execute(&mut *tx)
             .await?;
-        sqlx::query("DELETE FROM pending_logins WHERE user_id = $1")
-            .bind(user)
+        sqlx::query!("DELETE FROM pending_logins WHERE user_id = $1", user)
             .execute(&mut *tx)
             .await?;
-        sqlx::query("DELETE FROM sessions WHERE user_id = $1 AND public_id <> $2")
-            .bind(user)
-            .bind(current_session)
-            .execute(&mut *tx)
-            .await?;
+        sqlx::query!(
+            "DELETE FROM sessions WHERE user_id = $1 AND public_id <> $2",
+            user,
+            current_session,
+        )
+        .execute(&mut *tx)
+        .await?;
         tx.commit().await?;
 
         Ok(())
@@ -500,10 +508,10 @@ impl Store {
         user: Uuid,
         password: String,
     ) -> Result<Transaction<'static, Postgres>> {
-        let encoded: String = sqlx::query_scalar("SELECT password_hash FROM users WHERE id = $1")
-            .bind(user)
-            .fetch_one(&self.pool)
-            .await?;
+        let encoded: String =
+            sqlx::query_scalar!("SELECT password_hash FROM users WHERE id = $1", user)
+                .fetch_one(&self.pool)
+                .await?;
         if password.len() > 256 || !verify(password, encoded.clone()).await? {
             return Err(wrong_credentials());
         }
@@ -521,25 +529,26 @@ impl Store {
     /// was on.
     pub async fn reset_totp(&self, email: &str) -> Result<bool> {
         let mut tx = self.pool.begin().await?;
-        let Some(user): Option<Uuid> = sqlx::query_scalar("SELECT id FROM users WHERE email = $1")
-            .bind(email.trim().to_lowercase())
-            .fetch_optional(&mut *tx)
-            .await?
+        let Some(user): Option<Uuid> = sqlx::query_scalar!(
+            "SELECT id FROM users WHERE email = $1",
+            email.trim().to_lowercase(),
+        )
+        .fetch_optional(&mut *tx)
+        .await?
         else {
             return Ok(false);
         };
         lock_user(&mut tx, user).await?;
-        let reset =
-            sqlx::query("DELETE FROM user_totp WHERE user_id = $1 AND enabled_at IS NOT NULL")
-                .bind(user)
-                .execute(&mut *tx)
-                .await?;
-        sqlx::query("DELETE FROM totp_recovery_codes WHERE user_id = $1")
-            .bind(user)
+        let reset = sqlx::query!(
+            "DELETE FROM user_totp WHERE user_id = $1 AND enabled_at IS NOT NULL",
+            user,
+        )
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query!("DELETE FROM totp_recovery_codes WHERE user_id = $1", user)
             .execute(&mut *tx)
             .await?;
-        sqlx::query("DELETE FROM pending_logins WHERE user_id = $1")
-            .bind(user)
+        sqlx::query!("DELETE FROM pending_logins WHERE user_id = $1", user)
             .execute(&mut *tx)
             .await?;
         tx.commit().await?;

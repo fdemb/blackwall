@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT id FROM stages WHERE workspace_id=$1 AND team_id=$2 AND kind IN ('planned','active') ORDER BY kind='active',position,id LIMIT 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "1c21af8490a273c5a302e637ff8e385f32a6149b6012d30dff26889ae93be47a"
+}

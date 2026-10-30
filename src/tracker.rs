@@ -4,7 +4,6 @@
 use crate::error::{Error, Result};
 use provider::{RemotePerson, RemoteStatus};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use std::{collections::BTreeMap, time::Duration};
 use uuid::Uuid;
 
@@ -57,16 +56,16 @@ impl Metadata {
     /// Loads the connection in whatever state it is; callers check its generation and
     /// whether it is enabled.
     async fn load(pool: &sqlx::PgPool, connection: Uuid) -> Result<Option<Self>> {
-        let row: Option<(Value, Value, Value, Value)> = sqlx::query_as("SELECT options,cached_statuses,cached_people,people_mapping FROM tracker_connections WHERE id=$1")
-            .bind(connection).fetch_optional(pool).await?;
-        let Some((options, statuses, people, people_mapping)) = row else {
+        let row = sqlx::query!("SELECT options,cached_statuses,cached_people,people_mapping FROM tracker_connections WHERE id=$1", connection)
+            .fetch_optional(pool).await?;
+        let Some(row) = row else {
             return Ok(None);
         };
         Ok(Some(Self {
-            options: serde_json::from_value(options)?,
-            statuses: serde_json::from_value(statuses)?,
-            people: serde_json::from_value(people)?,
-            people_mapping: serde_json::from_value(people_mapping)?,
+            options: serde_json::from_value(row.options)?,
+            statuses: serde_json::from_value(row.cached_statuses)?,
+            people: serde_json::from_value(row.cached_people)?,
+            people_mapping: serde_json::from_value(row.people_mapping)?,
         }))
     }
 }
@@ -84,7 +83,7 @@ pub(crate) fn http_client() -> Result<reqwest::Client> {
 
 /// Cancels queued work for a connection whose configuration was superseded.
 async fn cancel_pending(conn: &mut sqlx::PgConnection, id: Uuid) -> Result<()> {
-    sqlx::query("UPDATE jobs SET state='cancelled',finished_at=clock_timestamp(),updated_at=clock_timestamp() WHERE queue='tracker' AND state='pending' AND payload->>'connection_id'=$1")
-        .bind(id.to_string()).execute(conn).await?;
+    sqlx::query!("UPDATE jobs SET state='cancelled',finished_at=clock_timestamp(),updated_at=clock_timestamp() WHERE queue='tracker' AND state='pending' AND payload->>'connection_id'=$1", id.to_string())
+        .execute(conn).await?;
     Ok(())
 }

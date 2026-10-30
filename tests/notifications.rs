@@ -6,6 +6,7 @@ use blackwall::{
         BulkAction, Command, IssueInput, IssuePatch, LabelChange, Priority, SeenNotification,
     },
     error::Error,
+    ids::{IssueId, WorkspaceId},
     jobs::{self, Mailer},
     store::{CollectionQuery, OperationResult, Store},
 };
@@ -19,7 +20,7 @@ struct Fixture {
     store: Store,
     owner: Session,
     follower: Session,
-    workspace: Uuid,
+    workspace: WorkspaceId,
     team: Uuid,
     stages: Vec<Uuid>,
 }
@@ -34,7 +35,7 @@ impl Fixture {
             .create_workspace("Notifications".into(), owner.profile.id)
             .await
             .unwrap();
-        let workspace = Uuid::parse_str(workspace["id"].as_str().unwrap()).unwrap();
+        let workspace: WorkspaceId = serde_json::from_value(workspace["id"].clone()).unwrap();
         sqlx::query(
             "INSERT INTO workspace_members(workspace_id,user_id,role) VALUES($1,$2,'member')",
         )
@@ -104,7 +105,7 @@ impl Fixture {
         self.run(
             user,
             Command::Follow {
-                issue_id: issue,
+                issue_id: IssueId(issue),
                 user_id: None,
                 following: true,
             },
@@ -203,7 +204,7 @@ async fn account(store: &Store, name: &str) -> Session {
 
 fn description_update(id: Uuid, text: &str) -> Command {
     Command::UpdateIssue {
-        id,
+        id: IssueId(id),
         patch: IssuePatch {
             description: Some(text.into()),
             ..Default::default()
@@ -242,7 +243,7 @@ async fn moving_between_stages_notifies_followers_but_reordering_does_not() {
     f.run(
         owner,
         Command::MoveIssue {
-            id: moved,
+            id: IssueId(moved),
             stage_id: f.stages[1],
             before_id: None,
         },
@@ -258,9 +259,9 @@ async fn moving_between_stages_notifies_followers_but_reordering_does_not() {
     f.run(
         owner,
         Command::MoveIssue {
-            id: moved,
+            id: IssueId(moved),
             stage_id: f.stages[1],
-            before_id: Some(neighbor),
+            before_id: Some(IssueId(neighbor)),
         },
     )
     .await;
@@ -350,7 +351,7 @@ async fn updates_and_moves_record_old_and_new_values() {
     f.run(
         owner,
         Command::UpdateIssue {
-            id: issue,
+            id: IssueId(issue),
             patch: IssuePatch {
                 stage_id: Some(f.stages[1]),
                 assignee: Some(follower),
@@ -364,7 +365,7 @@ async fn updates_and_moves_record_old_and_new_values() {
     f.run(
         owner,
         Command::MoveIssue {
-            id: issue,
+            id: IssueId(issue),
             stage_id: f.stages[2],
             before_id: None,
         },
@@ -425,7 +426,7 @@ async fn reading_a_notification_before_a_newer_change_keeps_that_change_unread()
     f.run(
         owner,
         Command::MoveIssue {
-            id: issue,
+            id: IssueId(issue),
             stage_id: f.stages[2],
             before_id: None,
         },
@@ -466,7 +467,7 @@ async fn marking_all_read_covers_only_what_the_reader_saw() {
     f.run(
         owner,
         Command::MoveIssue {
-            id: bumped,
+            id: IssueId(bumped),
             stage_id: f.stages[2],
             before_id: None,
         },
@@ -666,7 +667,7 @@ async fn editing_a_comment_alerts_only_people_it_newly_mentions() {
             owner,
             Command::AddComment {
                 id: None,
-                issue_id: issue,
+                issue_id: IssueId(issue),
                 body: "First draft".into(),
                 mentions: vec![],
                 attachments: vec![],
@@ -714,7 +715,7 @@ impl Fixture {
     async fn comment(&self, issue: Uuid, body: String, mentions: Vec<Uuid>) -> Uuid {
         let command = Command::AddComment {
             id: None,
-            issue_id: issue,
+            issue_id: IssueId(issue),
             body,
             mentions,
             attachments: vec![],
@@ -823,7 +824,7 @@ async fn change_notifications_name_the_latest_actor_and_every_field_since_the_la
     f.run(
         editor,
         Command::MoveIssue {
-            id: issue,
+            id: IssueId(issue),
             stage_id: f.stages[1],
             before_id: None,
         },
@@ -838,7 +839,7 @@ async fn change_notifications_name_the_latest_actor_and_every_field_since_the_la
     f.run(
         owner,
         Command::UpdateIssue {
-            id: issue,
+            id: IssueId(issue),
             patch: IssuePatch {
                 assignee: Some(follower),
                 ..Default::default()
@@ -917,7 +918,7 @@ async fn a_patch_that_changes_nothing_leaves_no_trace() {
     f.run(
         owner,
         Command::UpdateIssue {
-            id: issue,
+            id: IssueId(issue),
             patch: IssuePatch {
                 description: Some("Expires Friday".into()),
                 labels: Some(LabelChange::Set(labels.clone())),
@@ -945,11 +946,11 @@ async fn a_patch_that_changes_nothing_leaves_no_trace() {
     };
     let commands = [
         Command::UpdateIssue {
-            id: issue,
+            id: IssueId(issue),
             patch: same.clone(),
         },
         Command::BulkIssues {
-            ids: vec![issue],
+            ids: vec![IssueId(issue)],
             action: BulkAction::Update(Box::new(same.clone())),
         },
     ];
@@ -969,7 +970,7 @@ async fn a_patch_that_changes_nothing_leaves_no_trace() {
             f.workspace,
             owner,
             Command::UpdateIssue {
-                id: issue,
+                id: IssueId(issue),
                 patch: same,
             },
             BTreeMap::from([(issue, before.version - 1)]),
@@ -994,7 +995,7 @@ async fn workspace_preferences_gate_the_inbox_and_profile_alerts_do_not() {
     .await
     .unwrap();
     let assign = |issue| Command::UpdateIssue {
-        id: issue,
+        id: IssueId(issue),
         patch: IssuePatch {
             assignee: Some(follower),
             ..Default::default()

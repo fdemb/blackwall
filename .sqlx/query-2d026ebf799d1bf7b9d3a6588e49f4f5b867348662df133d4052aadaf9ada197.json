@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT tracker AS \"tracker!\",deleted_at IS NOT NULL AS \"trashed!\" FROM issues WHERE tracker->>'connection_id'=$1 AND tracker->>'remote_id'=ANY($2)",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "tracker!",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 1,
+        "name": "trashed!",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "TextArray"
+      ]
+    },
+    "nullable": [
+      true,
+      null
+    ]
+  },
+  "hash": "2d026ebf799d1bf7b9d3a6588e49f4f5b867348662df133d4052aadaf9ada197"
+}

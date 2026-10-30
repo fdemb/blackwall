@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT EXISTS(SELECT 1 FROM jobs WHERE id=$1 AND state='failed' AND kind='email' AND COALESCE(payload->>'token','')='') AS \"exists!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "exists!",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "07d0447ef143fc0c7dfce5bf94ef115884d6edab7a5c8cc058da9603a5698b70"
+}

@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT set_config('blackwall.via', jsonb_build_object('kind',$1::text,'token_id',id,'name',name)::text, true) FROM api_tokens WHERE id=$2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "set_config",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "65c2d0749b098bc4c041d47bbadfbacc30dda806af8bae69e6b42044337dfe65"
+}

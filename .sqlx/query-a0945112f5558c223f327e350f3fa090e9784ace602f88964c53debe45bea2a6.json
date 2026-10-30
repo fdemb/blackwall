@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT EXISTS(SELECT 1 FROM tracker_connections c, jsonb_array_elements(c.projects) mapping WHERE c.workspace_id=$1 AND NOT c.deleted AND mapping->>'team_id'=$2) AS \"exists!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "exists!",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "a0945112f5558c223f327e350f3fa090e9784ace602f88964c53debe45bea2a6"
+}

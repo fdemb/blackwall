@@ -36,7 +36,7 @@ The PostgreSQL queue uses due times, claim tokens, bounded attempts, and leases.
 
 External delivery is at least once. Webhooks carry stable idempotency keys, and email keeps the same Message-ID across attempts. SMTP does not promise to suppress duplicates. Database-only reminder effects and job completion commit together.
 
-SQLx migrations in `migrations/` define the clean schema. The application requires a PostgreSQL URL and applies migrations when it connects. Runtime queries bind native database types. Workspace metadata queries use checked SQLx macros and committed `.sqlx` metadata, with offline compilation enabled in `.cargo/config.toml`. PostgreSQL integration tests validate dynamic feature queries.
+SQLx migrations in `migrations/` define the clean schema. The application requires a PostgreSQL URL and applies migrations when it connects. Runtime queries bind native database types. Static queries use checked SQLx macros and committed `.sqlx` metadata, with offline compilation enabled in `.cargo/config.toml`. Queries built at runtime (`QueryBuilder`, `format!`) stay unchecked; PostgreSQL integration tests cover them.
 
 Maintenance logs pool size and idle connections, lock waiters, queue depth, oldest overdue age, and failed-job counts. Job attempts log execution duration without payloads or credentials. Tracker page logs split HTTP, normalization, pool acquisition, connection/workspace locking, and reconciliation time. See [backend performance](performance.md) for read contracts, benchmarks, and deployment considerations.
 

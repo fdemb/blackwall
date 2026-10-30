@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT users.id FROM users JOIN password_resets ON password_resets.user_id=users.id WHERE password_resets.token_hash=$1 AND password_resets.expires_at>$2 FOR UPDATE OF users",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "3ce7cf6aebb8456991e2779837a90d88d71b7af8dd515aa699b4500a9633b446"
+}

@@ -3,13 +3,14 @@ mod support;
 use blackwall::{
     auth::Register,
     domain::{Command, FilterClause, FilterField, FilterOp, IssueFilter},
+    ids::WorkspaceId,
     store::Store,
 };
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use uuid::Uuid;
 
-async fn op(store: &Store, ws: Uuid, actor: Uuid, cmd: Value) -> Uuid {
+async fn op(store: &Store, ws: WorkspaceId, actor: Uuid, cmd: Value) -> Uuid {
     store
         .operation(
             ws,
@@ -43,13 +44,12 @@ async fn issues_remember_their_creator() {
         .unwrap()
         .profile
         .id;
-    let ws = Uuid::parse_str(
+    let ws: WorkspaceId = serde_json::from_value(
         store
             .create_workspace("Creators".into(), owner)
             .await
             .unwrap()["id"]
-            .as_str()
-            .unwrap(),
+            .clone(),
     )
     .unwrap();
     let team = op(

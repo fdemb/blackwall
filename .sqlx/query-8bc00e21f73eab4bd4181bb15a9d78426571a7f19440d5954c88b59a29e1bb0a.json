@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM password_resets WHERE token_hash=$1 AND user_id=$2 AND expires_at>$3",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Uuid",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "8bc00e21f73eab4bd4181bb15a9d78426571a7f19440d5954c88b59a29e1bb0a"
+}

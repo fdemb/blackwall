@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM attachments WHERE workspace_id=$1 AND issue_id=$2 AND id=$3 AND comment_id IS NULL",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "d22d296180c784c0ea6d31935493ae6d91288620c867cf965c698e2e8539ff36"
+}

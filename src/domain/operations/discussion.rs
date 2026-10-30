@@ -1,5 +1,6 @@
 use super::super::*;
 use super::find_mut;
+use crate::ids::IssueId;
 
 impl Workspace {
     pub(super) fn apply_discussion(
@@ -14,8 +15,8 @@ impl Workspace {
                 attachment,
             } => {
                 validate_attachment(&attachment)?;
-                self.issue_mut(issue_id)?.attachments.push(attachment);
-                issue_id
+                self.issue_mut(issue_id.0)?.attachments.push(attachment);
+                issue_id.0
             }
             Command::AttachCommentFile {
                 comment_id,
@@ -34,12 +35,12 @@ impl Workspace {
                 issue_id,
                 attachment_id,
             } => {
-                let issue = self.issue_mut(issue_id)?;
+                let issue = self.issue_mut(issue_id.0)?;
                 if !issue.attachments.iter().any(|a| a.id == attachment_id) {
                     return Err(Error::NotFound);
                 }
                 issue.attachments.retain(|a| a.id != attachment_id);
-                issue_id
+                issue_id.0
             }
             Command::AddComment {
                 id,
@@ -98,14 +99,14 @@ impl Workspace {
                 note,
                 logged_at,
             } => {
-                self.issue(issue_id)?;
+                self.issue(issue_id.0)?;
                 validate_time(minutes, &note)?;
                 timestamp(logged_at)?;
                 let id = self.take_client_id(id)?;
                 self.time_entries.push(TimeEntry {
                     version: 1,
                     id,
-                    issue_id,
+                    issue_id: issue_id.0,
                     user_id: actor,
                     minutes,
                     note,
@@ -389,12 +390,13 @@ impl Workspace {
         &mut self,
         actor: Uuid,
         id: Option<Uuid>,
-        issue_id: Uuid,
+        issue_id: IssueId,
         body: String,
         mentions: Vec<Uuid>,
         attachments: Vec<Attachment>,
         now: DateTime<Utc>,
     ) -> Result<Uuid> {
+        let issue_id = issue_id.0;
         self.issue(issue_id)?;
         text(&body, 100_000)?;
         for user in &mentions {

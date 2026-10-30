@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO sync_clients (client_id, workspace_id, user_id) VALUES ($1, $2, $3) ON CONFLICT (client_id) DO NOTHING",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "a3f00e1718e2ac430e65e7700433f346dcd0ad151ada6a6cb9832e38bf397fb0"
+}

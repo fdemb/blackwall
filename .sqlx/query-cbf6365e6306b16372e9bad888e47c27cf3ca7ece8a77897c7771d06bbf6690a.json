@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO tracker_outbox(id,workspace_id,connection_id,issue_id,kind,comment_id) VALUES($1,$2,$3,$4,'comment',$5)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "cbf6365e6306b16372e9bad888e47c27cf3ca7ece8a77897c7771d06bbf6690a"
+}

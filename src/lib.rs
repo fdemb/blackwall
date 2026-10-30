@@ -5,6 +5,7 @@ pub mod error;
 pub mod exchange;
 pub mod fixtures;
 pub mod http;
+pub mod ids;
 pub mod jobs;
 pub mod limits;
 pub mod mcp;

@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE tracker_outbox SET sent_at=clock_timestamp(),sent_body=$2,sent_account=$3 WHERE id=$1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "610124f514938669f2d15b1a38e6c88cc88ef20038bb82a5de74c3336f3a3868"
+}

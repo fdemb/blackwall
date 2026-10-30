@@ -18,25 +18,26 @@ async fn records<T: DeserializeOwned>(
 }
 
 impl Store {
-    pub async fn export_transfer(&self, workspace: Uuid, actor: Uuid) -> Result<Transfer> {
+    pub async fn export_transfer(&self, workspace: WorkspaceId, actor: Uuid) -> Result<Transfer> {
+        let workspace = workspace.0;
         let mut tx = self.pool.begin().await?;
         sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
             .execute(&mut *tx)
             .await?;
 
         authorize(&mut tx, workspace, actor).await?;
-        let members = sqlx::query("SELECT u.id,u.email FROM users u JOIN workspace_members m ON m.user_id=u.id WHERE m.workspace_id=$1 ORDER BY u.id")
-            .bind(workspace)
-            .fetch_all(&mut *tx)
-            .await?
-            .into_iter()
-            .map(|row| {
-                Ok(TransferMember {
-                    id: row.try_get("id")?,
-                    email: row.try_get("email")?,
-                })
-            })
-            .collect::<Result<Vec<_>>>()?;
+        let members = sqlx::query!(
+            "SELECT u.id,u.email FROM users u JOIN workspace_members m ON m.user_id=u.id WHERE m.workspace_id=$1 ORDER BY u.id",
+            workspace,
+        )
+        .fetch_all(&mut *tx)
+        .await?
+        .into_iter()
+        .map(|row| TransferMember {
+            id: row.id,
+            email: row.email,
+        })
+        .collect();
 
         let sql =
             format!("SELECT {ISSUE_JSON} FROM issues i WHERE i.workspace_id=$1 ORDER BY i.number");
@@ -83,12 +84,13 @@ impl Store {
 
     pub async fn import_transfer(
         &self,
-        workspace: Uuid,
+        workspace: WorkspaceId,
         actor: Uuid,
         mut transfer: Transfer,
         expected: BTreeMap<Uuid, i64>,
         key: Option<String>,
     ) -> Result<(ImportSummary, BTreeMap<Uuid, i64>)> {
+        let workspace = workspace.0;
         if transfer.issues.iter().any(|issue| issue.tracker.is_some()) {
             return Err(Error::BadRequest(
                 "tracker links cannot be imported through transfers".into(),
@@ -118,13 +120,14 @@ impl Store {
             .filter_map(|m| by_email.get(&m.email.to_lowercase()).map(|id| (m.id, *id)))
             .collect();
 
-        let mut taken: std::collections::BTreeSet<String> =
-            sqlx::query_scalar("SELECT key FROM team_keys WHERE workspace_id=$1")
-                .bind(op.workspace_id)
-                .fetch_all(&mut *op.tx)
-                .await?
-                .into_iter()
-                .collect();
+        let mut taken: std::collections::BTreeSet<String> = sqlx::query_scalar!(
+            "SELECT key FROM team_keys WHERE workspace_id=$1",
+            op.workspace_id,
+        )
+        .fetch_all(&mut *op.tx)
+        .await?
+        .into_iter()
+        .collect();
         transfer.claim_team_keys(&mut taken)?;
         let summary = transfer.import(&mut candidate, actor, &mapping, Utc::now())?;
         check_import_capacity(&mut op, &candidate).await?;
@@ -144,22 +147,23 @@ impl Store {
 /// An empty workspace holding only the current members, which the transfer
 /// is imported into and validated against, plus member ids by lowercase email.
 async fn member_candidate(op: &mut Operation<'_>) -> Result<(Workspace, BTreeMap<String, Uuid>)> {
-    let rows = sqlx::query("SELECT m.user_id,m.role,m.version,u.email FROM workspace_members m JOIN users u ON u.id=m.user_id WHERE m.workspace_id=$1 ORDER BY m.user_id FOR SHARE OF m")
-        .bind(op.workspace_id)
-        .fetch_all(&mut *op.tx)
-        .await?;
+    let rows = sqlx::query!(
+        "SELECT m.user_id,m.role,m.version,u.email FROM workspace_members m JOIN users u ON u.id=m.user_id WHERE m.workspace_id=$1 ORDER BY m.user_id FOR SHARE OF m",
+        op.workspace_id,
+    )
+    .fetch_all(&mut *op.tx)
+    .await?;
 
     let mut candidate = Workspace::new("Import".into(), op.actor)?;
     candidate.id = op.workspace_id;
     candidate.members.clear();
     let mut by_email = BTreeMap::new();
     for row in rows {
-        let user_id = row.try_get("user_id")?;
-        by_email.insert(row.try_get::<String, _>("email")?.to_lowercase(), user_id);
+        by_email.insert(row.email.to_lowercase(), row.user_id);
         candidate.members.push(Member {
-            user_id,
-            role: serde_json::from_value(Value::String(row.try_get("role")?))?,
-            version: row.try_get("version")?,
+            user_id: row.user_id,
+            role: serde_json::from_value(Value::String(row.role))?,
+            version: row.version,
         });
     }
     Ok((candidate, by_email))
@@ -200,155 +204,187 @@ async fn insert_import(op: &mut Operation<'_>, w: &Workspace) -> Result<()> {
 
 async fn insert_planning(op: &mut Operation<'_>, w: &Workspace) -> Result<()> {
     for team in &w.teams {
-        sqlx::query(
-            "INSERT INTO teams(id,workspace_id,name,key,archive_after_days,icon,color) VALUES($1,$2,$3,$4,$5,$6,$7)",
+        insert_team(op, w.id, team).await?;
+        insert_stages(op, w.id, team).await?;
+    }
+    for label in &w.labels {
+        sqlx::query!(
+            "INSERT INTO labels(id,workspace_id,name,color) VALUES($1,$2,$3,$4)",
+            label.id,
+            w.id,
+            &label.name,
+            &label.color,
         )
-        .bind(team.id)
-        .bind(w.id)
-        .bind(&team.name)
-        .bind(&team.key)
-        .bind(team.archive_after_days.map(i64::from))
-        .bind(&team.icon)
-        .bind(&team.color)
         .execute(&mut *op.tx)
         .await?;
-        op.created("teams", team.id);
-        for key in &team.former_keys {
-            sqlx::query("INSERT INTO team_keys(workspace_id,key,team_id) VALUES($1,$2,$3)")
-                .bind(w.id)
-                .bind(key)
-                .bind(team.id)
-                .execute(&mut *op.tx)
-                .await?;
-        }
-        for user in &team.members {
-            sqlx::query("INSERT INTO team_members(workspace_id,team_id,user_id) VALUES($1,$2,$3)")
-                .bind(w.id)
-                .bind(team.id)
-                .bind(user)
-                .execute(&mut *op.tx)
-                .await?;
-        }
-
-        for stage in &team.stages {
-            sqlx::query("INSERT INTO stages(id,workspace_id,team_id,name,kind,position) VALUES($1,$2,$3,$4,$5,$6)")
-                .bind(stage.id)
-                .bind(w.id)
-                .bind(team.id)
-                .bind(&stage.name)
-                .bind(enum_text(&stage.kind))
-                .bind(stage.position)
-                .execute(&mut *op.tx)
-                .await?;
-            op.created("stages", stage.id);
-        }
-    }
-
-    for label in &w.labels {
-        sqlx::query("INSERT INTO labels(id,workspace_id,name,color) VALUES($1,$2,$3,$4)")
-            .bind(label.id)
-            .bind(w.id)
-            .bind(&label.name)
-            .bind(&label.color)
-            .execute(&mut *op.tx)
-            .await?;
         op.created("labels", label.id);
     }
-
     for project in &w.projects {
-        sqlx::query("INSERT INTO projects(id,workspace_id,name,description,lead_id,status,health,start_date,target_date) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)")
-            .bind(project.id)
-            .bind(w.id)
-            .bind(&project.name)
-            .bind(&project.description)
-            .bind(project.lead_id)
-            .bind(enum_text(&project.status))
-            .bind(project.health.as_ref().map(enum_text))
-            .bind(project.start_date)
-            .bind(project.target_date)
-            .execute(&mut *op.tx)
-            .await?;
-        op.created("projects", project.id);
-        for team in &project.team_ids {
-            sqlx::query(
-                "INSERT INTO project_teams(workspace_id,project_id,team_id) VALUES($1,$2,$3)",
-            )
-            .bind(w.id)
-            .bind(project.id)
-            .bind(team)
-            .execute(&mut *op.tx)
-            .await?;
-        }
+        insert_project(op, w.id, project).await?;
     }
-
     for milestone in &w.milestones {
-        sqlx::query("INSERT INTO milestones(id,workspace_id,project_id,name,deadline) VALUES($1,$2,$3,$4,$5)")
-            .bind(milestone.id)
-            .bind(w.id)
-            .bind(milestone.project_id)
-            .bind(&milestone.name)
-            .bind(milestone.deadline)
-            .execute(&mut *op.tx)
-            .await?;
+        sqlx::query!(
+            "INSERT INTO milestones(id,workspace_id,project_id,name,deadline) VALUES($1,$2,$3,$4,$5)",
+            milestone.id,
+            w.id,
+            milestone.project_id,
+            &milestone.name,
+            milestone.deadline,
+        )
+        .execute(&mut *op.tx)
+        .await?;
         op.created("milestones", milestone.id);
     }
-
     for sprint in &w.sprints {
-        sqlx::query("INSERT INTO sprints(id,workspace_id,team_id,number,name,goal,starts_at,ends_at,state) VALUES($1,$2,$3,(SELECT COALESCE(max(number),0)+1 FROM sprints WHERE workspace_id=$2 AND team_id=$3),$4,$5,$6,$7,$8)")
-            .bind(sprint.id)
-            .bind(w.id)
-            .bind(sprint.team_id)
-            .bind(&sprint.name)
-            .bind(&sprint.goal)
-            .bind(sprint.starts_at)
-            .bind(sprint.ends_at)
-            .bind(enum_text(&sprint.state))
-            .execute(&mut *op.tx)
-            .await?;
-        op.created("sprints", sprint.id);
-        if let Some(outcome) = &sprint.outcome {
-            sqlx::query("INSERT INTO sprint_outcomes(workspace_id,sprint_id,total,completed,effort) VALUES($1,$2,$3,$4,$5)")
-                .bind(w.id)
-                .bind(sprint.id)
-                .bind(outcome.total as i64)
-                .bind(outcome.completed as i64)
-                .bind(outcome.effort as i64)
-                .execute(&mut *op.tx)
-                .await?;
-        }
+        insert_sprint(op, w.id, sprint).await?;
     }
+    Ok(())
+}
 
+async fn insert_team(op: &mut Operation<'_>, workspace: Uuid, team: &Team) -> Result<()> {
+    sqlx::query!(
+        "INSERT INTO teams(id,workspace_id,name,key,archive_after_days,icon,color) VALUES($1,$2,$3,$4,$5::bigint,$6,$7)",
+        team.id,
+        workspace,
+        &team.name,
+        &team.key,
+        team.archive_after_days.map(i64::from),
+        &team.icon,
+        &team.color,
+    )
+    .execute(&mut *op.tx)
+    .await?;
+    op.created("teams", team.id);
+    for key in &team.former_keys {
+        sqlx::query!(
+            "INSERT INTO team_keys(workspace_id,key,team_id) VALUES($1,$2,$3)",
+            workspace,
+            key,
+            team.id,
+        )
+        .execute(&mut *op.tx)
+        .await?;
+    }
+    for user in &team.members {
+        sqlx::query!(
+            "INSERT INTO team_members(workspace_id,team_id,user_id) VALUES($1,$2,$3)",
+            workspace,
+            team.id,
+            *user,
+        )
+        .execute(&mut *op.tx)
+        .await?;
+    }
+    Ok(())
+}
+
+async fn insert_stages(op: &mut Operation<'_>, workspace: Uuid, team: &Team) -> Result<()> {
+    for stage in &team.stages {
+        sqlx::query!(
+            "INSERT INTO stages(id,workspace_id,team_id,name,kind,position) VALUES($1,$2,$3,$4,$5,$6)",
+            stage.id,
+            workspace,
+            team.id,
+            &stage.name,
+            enum_text(&stage.kind),
+            stage.position,
+        )
+        .execute(&mut *op.tx)
+        .await?;
+        op.created("stages", stage.id);
+    }
+    Ok(())
+}
+
+async fn insert_project(op: &mut Operation<'_>, workspace: Uuid, project: &Project) -> Result<()> {
+    sqlx::query!(
+        "INSERT INTO projects(id,workspace_id,name,description,lead_id,status,health,start_date,target_date) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)",
+        project.id,
+        workspace,
+        &project.name,
+        &project.description,
+        project.lead_id,
+        enum_text(&project.status),
+        project.health.as_ref().map(enum_text),
+        project.start_date,
+        project.target_date,
+    )
+    .execute(&mut *op.tx)
+    .await?;
+    op.created("projects", project.id);
+    for team in &project.team_ids {
+        sqlx::query!(
+            "INSERT INTO project_teams(workspace_id,project_id,team_id) VALUES($1,$2,$3)",
+            workspace,
+            project.id,
+            *team,
+        )
+        .execute(&mut *op.tx)
+        .await?;
+    }
+    Ok(())
+}
+
+async fn insert_sprint(op: &mut Operation<'_>, workspace: Uuid, sprint: &Sprint) -> Result<()> {
+    sqlx::query!(
+        "INSERT INTO sprints(id,workspace_id,team_id,number,name,goal,starts_at,ends_at,state) VALUES($1,$2,$3,(SELECT COALESCE(max(number),0)+1 FROM sprints WHERE workspace_id=$2 AND team_id=$3),$4,$5,$6,$7,$8)",
+        sprint.id,
+        workspace,
+        sprint.team_id,
+        &sprint.name,
+        &sprint.goal,
+        sprint.starts_at,
+        sprint.ends_at,
+        enum_text(&sprint.state),
+    )
+    .execute(&mut *op.tx)
+    .await?;
+    op.created("sprints", sprint.id);
+    if let Some(outcome) = &sprint.outcome {
+        sqlx::query!(
+            "INSERT INTO sprint_outcomes(workspace_id,sprint_id,total,completed,effort) VALUES($1,$2,$3,$4,$5)",
+            workspace,
+            sprint.id,
+            outcome.total as i64,
+            outcome.completed as i64,
+            outcome.effort as i64,
+        )
+        .execute(&mut *op.tx)
+        .await?;
+    }
     Ok(())
 }
 
 async fn insert_issues(op: &mut Operation<'_>, w: &Workspace) -> Result<()> {
     for issue in &w.issues {
-        sqlx::query("INSERT INTO issues(id,workspace_id,number,title,description,team_id,stage_id,assignee,priority,estimate,deadline,project_id,milestone_id,sprint_id,parent_id,position,deleted_at,archived_at,done_at,created_at,updated_at,created_by) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,(SELECT id FROM users WHERE id=$22))")
-            .bind(issue.id)
-            .bind(w.id)
-            .bind(issue.number as i64)
-            .bind(&issue.title)
-            .bind(&issue.description)
-            .bind(issue.team_id)
-            .bind(issue.stage_id)
-            .bind(issue.assignee)
-            .bind(enum_text(&issue.priority))
-            .bind(issue.estimate.map(i64::from))
-            .bind(issue.deadline)
-            .bind(issue.project_id)
-            .bind(issue.milestone_id)
-            .bind(issue.sprint_id)
-            .bind(issue.parent_id)
-            .bind(issue.position)
-            .bind(issue.deleted_at)
-            .bind(issue.archived_at)
-            .bind(issue.done_at)
-            .bind(issue.created_at)
-            .bind(issue.updated_at)
+        sqlx::query!(
+            "INSERT INTO issues(id,workspace_id,number,title,description,team_id,stage_id,assignee,priority,estimate,deadline,project_id,milestone_id,sprint_id,parent_id,position,deleted_at,archived_at,done_at,created_at,updated_at,created_by) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,(SELECT id FROM users WHERE id=$22))",
+            issue.id,
+            w.id,
+            issue.number as i64,
+            &issue.title,
+            &issue.description,
+            issue.team_id,
+            issue.stage_id,
+            issue.assignee,
+            enum_text(&issue.priority),
+            issue.estimate.map(i64::from),
+            issue.deadline,
+            issue.project_id,
+            issue.milestone_id,
+            issue.sprint_id,
+            issue.parent_id,
+            issue.position,
+            issue.deleted_at,
+            issue.archived_at,
+            issue.done_at,
+            issue.created_at,
+            issue.updated_at,
             // The creator may have no account on this server.
-            .bind(issue.created_by)
-            .execute(&mut *op.tx)
-            .await?;
+            issue.created_by,
+        )
+        .execute(&mut *op.tx)
+        .await?;
         op.created("issues", issue.id);
     }
 
@@ -361,43 +397,47 @@ async fn insert_issue_relations(
     issue: &Issue,
 ) -> Result<()> {
     for label in &issue.labels {
-        sqlx::query("INSERT INTO issue_labels(workspace_id,issue_id,label_id) VALUES($1,$2,$3)")
-            .bind(workspace)
-            .bind(issue.id)
-            .bind(label)
-            .execute(&mut *op.tx)
-            .await?;
+        sqlx::query!(
+            "INSERT INTO issue_labels(workspace_id,issue_id,label_id) VALUES($1,$2,$3)",
+            workspace,
+            issue.id,
+            *label,
+        )
+        .execute(&mut *op.tx)
+        .await?;
     }
 
     for dependency in &issue.dependencies {
-        sqlx::query(
+        sqlx::query!(
             "INSERT INTO issue_dependencies(workspace_id,issue_id,dependency_id) VALUES($1,$2,$3)",
+            workspace,
+            issue.id,
+            *dependency,
         )
-        .bind(workspace)
-        .bind(issue.id)
-        .bind(dependency)
         .execute(&mut *op.tx)
         .await?;
     }
 
     for user in &issue.followers {
-        sqlx::query("INSERT INTO issue_followers(workspace_id,issue_id,user_id) VALUES($1,$2,$3)")
-            .bind(workspace)
-            .bind(issue.id)
-            .bind(user)
-            .execute(&mut *op.tx)
-            .await?;
+        sqlx::query!(
+            "INSERT INTO issue_followers(workspace_id,issue_id,user_id) VALUES($1,$2,$3)",
+            workspace,
+            issue.id,
+            *user,
+        )
+        .execute(&mut *op.tx)
+        .await?;
     }
 
     for link in &issue.source_links {
-        sqlx::query(
+        sqlx::query!(
             "INSERT INTO source_links(id,workspace_id,issue_id,url,title) VALUES($1,$2,$3,$4,$5)",
+            Uuid::new_v4(),
+            workspace,
+            issue.id,
+            &link.url,
+            &link.title,
         )
-        .bind(Uuid::new_v4())
-        .bind(workspace)
-        .bind(issue.id)
-        .bind(&link.url)
-        .bind(&link.title)
         .execute(&mut *op.tx)
         .await?;
     }
@@ -445,81 +485,102 @@ async fn schedule_imported_reminder(
 /// Comments, time entries, views and activity, minus the trailing import event.
 async fn insert_records(op: &mut Operation<'_>, w: &Workspace) -> Result<()> {
     for comment in &w.comments {
-        sqlx::query("INSERT INTO comments(id,workspace_id,issue_id,author,body,created_at,edited_at) VALUES($1,$2,$3,$4,$5,$6,$7)")
-            .bind(comment.id)
-            .bind(w.id)
-            .bind(comment.issue_id)
-            .bind(comment.author)
-            .bind(&comment.body)
-            .bind(comment.created_at)
-            .bind(comment.edited_at)
-            .execute(&mut *op.tx)
-            .await?;
-        op.created("comments", comment.id);
-        for user in &comment.mentions {
-            sqlx::query(
-                "INSERT INTO comment_mentions(workspace_id,comment_id,user_id) VALUES($1,$2,$3)",
-            )
-            .bind(w.id)
-            .bind(comment.id)
-            .bind(user)
-            .execute(&mut *op.tx)
-            .await?;
-        }
+        insert_comment(op, w.id, comment).await?;
     }
-
     for entry in &w.time_entries {
-        sqlx::query("INSERT INTO time_entries(id,workspace_id,issue_id,user_id,minutes,note,logged_at) VALUES($1,$2,$3,$4,$5,$6,$7)")
-            .bind(entry.id)
-            .bind(w.id)
-            .bind(entry.issue_id)
-            .bind(entry.user_id)
-            .bind(i64::from(entry.minutes))
-            .bind(&entry.note)
-            .bind(entry.logged_at)
-            .execute(&mut *op.tx)
-            .await?;
+        sqlx::query!(
+            "INSERT INTO time_entries(id,workspace_id,issue_id,user_id,minutes,note,logged_at) VALUES($1,$2,$3,$4,$5,$6,$7)",
+            entry.id,
+            w.id,
+            entry.issue_id,
+            entry.user_id,
+            i64::from(entry.minutes),
+            &entry.note,
+            entry.logged_at,
+        )
+        .execute(&mut *op.tx)
+        .await?;
         op.created("time_entries", entry.id);
     }
-
     for view in &w.views {
-        sqlx::query("INSERT INTO saved_views(id,workspace_id,owner,name,shared,filter) VALUES($1,$2,$3,$4,$5,$6)")
-            .bind(view.id)
-            .bind(w.id)
-            .bind(view.owner)
-            .bind(&view.name)
-            .bind(view.shared)
-            .bind(serde_json::to_value(&view.filter)?)
-            .execute(&mut *op.tx)
-            .await?;
-        op.created("saved_views", view.id);
+        insert_view(op, w.id, view).await?;
     }
-
     for event in w.activity.iter().take(w.activity.len().saturating_sub(1)) {
-        sqlx::query("INSERT INTO activity(id,workspace_id,actor,action,entity_id,at,fields) VALUES($1,$2,$3,$4,$5,$6,$7)")
-            .bind(event.id)
-            .bind(w.id)
-            .bind(event.actor)
-            .bind(&event.action)
-            .bind(event.entity_id)
-            .bind(event.at)
-            .bind(serde_json::to_value(&event.fields)?)
-            .execute(&mut *op.tx)
-            .await?;
+        insert_activity(op, w.id, event).await?;
     }
+    Ok(())
+}
 
+async fn insert_comment(op: &mut Operation<'_>, workspace: Uuid, comment: &Comment) -> Result<()> {
+    sqlx::query!(
+        "INSERT INTO comments(id,workspace_id,issue_id,author,body,created_at,edited_at) VALUES($1,$2,$3,$4,$5,$6,$7)",
+        comment.id,
+        workspace,
+        comment.issue_id,
+        comment.author,
+        &comment.body,
+        comment.created_at,
+        comment.edited_at,
+    )
+    .execute(&mut *op.tx)
+    .await?;
+    op.created("comments", comment.id);
+    for user in &comment.mentions {
+        sqlx::query!(
+            "INSERT INTO comment_mentions(workspace_id,comment_id,user_id) VALUES($1,$2,$3)",
+            workspace,
+            comment.id,
+            *user,
+        )
+        .execute(&mut *op.tx)
+        .await?;
+    }
+    Ok(())
+}
+
+async fn insert_view(op: &mut Operation<'_>, workspace: Uuid, view: &SavedView) -> Result<()> {
+    let filter = serde_json::to_value(&view.filter)?;
+    sqlx::query!(
+        "INSERT INTO saved_views(id,workspace_id,owner,name,shared,filter) VALUES($1,$2,$3,$4,$5,$6)",
+        view.id,
+        workspace,
+        view.owner,
+        &view.name,
+        view.shared,
+        filter,
+    )
+    .execute(&mut *op.tx)
+    .await?;
+    op.created("saved_views", view.id);
+    Ok(())
+}
+
+async fn insert_activity(op: &mut Operation<'_>, workspace: Uuid, event: &Activity) -> Result<()> {
+    let fields = serde_json::to_value(&event.fields)?;
+    sqlx::query!(
+        "INSERT INTO activity(id,workspace_id,actor,action,entity_id,at,fields) VALUES($1,$2,$3,$4,$5,$6,$7)",
+        event.id,
+        workspace,
+        event.actor,
+        &event.action,
+        event.entity_id,
+        event.at,
+        fields,
+    )
+    .execute(&mut *op.tx)
+    .await?;
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use crate::test_support as support;
-    use crate::{auth::Register, domain::Command, store::Store};
+    use crate::{auth::Register, domain::Command, ids::WorkspaceId, store::Store};
     use serde_json::{Value, json};
     use std::collections::BTreeMap;
     use uuid::Uuid;
 
-    async fn create(store: &Store, ws: Uuid, user: Uuid, cmd: Value) -> Uuid {
+    async fn create(store: &Store, ws: WorkspaceId, user: Uuid, cmd: Value) -> Uuid {
         store
             .operation(
                 ws,
@@ -554,17 +615,13 @@ mod tests {
             .profile
             .id;
 
-        let source = Uuid::parse_str(
-            store.create_workspace("Source".into(), user).await.unwrap()["id"]
-                .as_str()
-                .unwrap(),
+        let source: WorkspaceId = serde_json::from_value(
+            store.create_workspace("Source".into(), user).await.unwrap()["id"].clone(),
         )
         .unwrap();
 
-        let target = Uuid::parse_str(
-            store.create_workspace("Target".into(), user).await.unwrap()["id"]
-                .as_str()
-                .unwrap(),
+        let target: WorkspaceId = serde_json::from_value(
+            store.create_workspace("Target".into(), user).await.unwrap()["id"].clone(),
         )
         .unwrap();
 

@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM tracker_discovery_pages WHERE connection_id=$1 AND resource=$2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "d297fbc7c479b13b05fcf4430f90ab76a93ba52d27bd29733b3ed75f8bbc2d51"
+}

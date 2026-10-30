@@ -1,4 +1,5 @@
 use super::*;
+use crate::ids::IssueId;
 use crate::store::NewAttachment;
 use axum::{body::Bytes, extract::Multipart, http::HeaderMap};
 
@@ -12,7 +13,7 @@ use axum::{body::Bytes, extract::Multipart, http::HeaderMap};
 pub(super) async fn upload(
     State(store): State<Store>,
     actor: Actor,
-    Path((id, issue)): Path<(Uuid, Uuid)>,
+    Path((id, issue)): Path<(WorkspaceId, Uuid)>,
     mut multipart: Multipart,
 ) -> Result<Json<CommandResponse>> {
     let mut uploaded = None;
@@ -65,7 +66,7 @@ pub(super) async fn upload(
         }
     } else {
         Command::AddAttachment {
-            issue_id: issue,
+            issue_id: IssueId(issue),
             attachment: metadata,
         }
     };
@@ -126,7 +127,7 @@ async fn read_file(
 pub(super) async fn download(
     State(store): State<Store>,
     actor: Actor,
-    Path((id, attachment)): Path<(Uuid, Uuid)>,
+    Path((id, attachment)): Path<(WorkspaceId, Uuid)>,
 ) -> Result<Response> {
     attachment_response(&store, id, actor.profile.id, attachment).await
 }
@@ -134,26 +135,26 @@ pub(super) async fn download(
 /// The attachment's bytes, if `user` belongs to the workspace and its issue is not trashed.
 pub(crate) async fn attachment_response(
     store: &Store,
-    id: Uuid,
+    id: WorkspaceId,
     user: Uuid,
     attachment: Uuid,
 ) -> Result<Response> {
-    let row = sqlx::query(
+    let row = sqlx::query!(
         "SELECT a.filename, a.bytes FROM attachments a \
          JOIN issues i ON i.id = a.issue_id \
          JOIN workspace_members m ON m.workspace_id = a.workspace_id \
          WHERE a.workspace_id = $1 AND a.id = $2 AND m.user_id = $3 \
          AND i.deleted_at IS NULL",
+        id.0,
+        attachment,
+        user,
     )
-    .bind(id)
-    .bind(attachment)
-    .bind(user)
     .fetch_optional(&store.pool)
     .await?
     .ok_or(Error::NotFound)?;
 
-    let name: String = row.try_get("filename")?;
-    let bytes: Vec<u8> = row.try_get("bytes")?;
+    let name: String = row.filename;
+    let bytes: Vec<u8> = row.bytes;
 
     let mut response = bytes.into_response();
     response.headers_mut().insert(
@@ -183,7 +184,7 @@ pub(crate) async fn attachment_response(
 pub(super) async fn export(
     State(store): State<Store>,
     actor: Actor,
-    Path(id): Path<Uuid>,
+    Path(id): Path<WorkspaceId>,
 ) -> Result<Json<crate::exchange::Transfer>> {
     Ok(Json(store.export_transfer(id, actor.profile.id).await?))
 }
@@ -198,7 +199,7 @@ pub(super) async fn export(
 pub(super) async fn import(
     State(store): State<Store>,
     actor: Actor,
-    Path(id): Path<Uuid>,
+    Path(id): Path<WorkspaceId>,
     Json(input): Json<ImportRequest>,
 ) -> Result<Json<ImportResponse>> {
     match (input.issues, input.transfer) {
@@ -249,19 +250,20 @@ pub(super) async fn import(
 )]
 pub(super) async fn incoming(
     State(store): State<Store>,
-    Path((id, integration_id)): Path<(Uuid, Uuid)>,
+    Path((id, integration_id)): Path<(WorkspaceId, Uuid)>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Json<CommandResponse>> {
     use hmac::{Hmac, Mac};
     use sha2::{Digest, Sha256};
 
-    let owner: Uuid = sqlx::query_scalar(
+    let id = id.0;
+    let owner: Uuid = sqlx::query_scalar!(
         "SELECT user_id FROM workspace_members \
          WHERE workspace_id = $1 AND role = 'owner' \
          ORDER BY user_id LIMIT 1",
+        id,
     )
-    .bind(id)
     .fetch_optional(&store.pool)
     .await?
     .ok_or(Error::NotFound)?;
@@ -269,15 +271,14 @@ pub(super) async fn incoming(
     let mut op = store
         .begin_operation(id, owner, BTreeMap::new(), false)
         .await?;
-    let row = sqlx::query(
+    let secret: String = sqlx::query_scalar!(
         "SELECT secret FROM integrations WHERE workspace_id=$1 AND id=$2 AND enabled FOR SHARE",
+        id,
+        integration_id,
     )
-    .bind(id)
-    .bind(integration_id)
     .fetch_optional(&mut *op.tx)
     .await?
     .ok_or(Error::NotFound)?;
-    let secret: String = row.try_get("secret")?;
 
     let signature = headers
         .get("x-blackwall-signature")
@@ -295,47 +296,48 @@ pub(super) async fn incoming(
         serde_json::from_slice(&body).map_err(|e| Error::BadRequest(e.to_string()))?;
     let hash = hex::encode(Sha256::digest(&body));
 
-    sqlx::query(
+    sqlx::query!(
         "INSERT INTO inbound_deliveries(workspace_id, integration_id, delivery_id, request_hash) \
          VALUES($1, $2, $3, $4) ON CONFLICT DO NOTHING",
+        id,
+        integration_id,
+        input.delivery_id,
+        &hash,
     )
-    .bind(id)
-    .bind(integration_id)
-    .bind(input.delivery_id)
-    .bind(&hash)
     .execute(&mut *op.tx)
     .await?;
 
-    let row = sqlx::query(
+    let row = sqlx::query!(
         "SELECT request_hash, result FROM inbound_deliveries \
          WHERE integration_id = $1 AND delivery_id = $2 FOR UPDATE",
+        integration_id,
+        input.delivery_id,
     )
-    .bind(integration_id)
-    .bind(input.delivery_id)
     .fetch_one(&mut *op.tx)
     .await?;
 
-    if row.try_get::<String, _>("request_hash")? != hash {
+    if row.request_hash != hash {
         return Err(Error::Conflict(
             "delivery ID reused for a different request".into(),
         ));
     }
-    if let Some(result) = row.try_get::<Option<Value>, _>("result")? {
+    if let Some(result) = row.result {
         return Ok(Json(serde_json::from_value(result)?));
     }
 
     let command = Command::AddSourceLink {
-        issue_id: input.issue_id,
+        issue_id: IssueId(input.issue_id),
         url: input.url,
         title: input.title,
     };
-    let version: i64 =
-        sqlx::query_scalar("SELECT version FROM issues WHERE workspace_id=$1 AND id=$2 FOR UPDATE")
-            .bind(id)
-            .bind(input.issue_id)
-            .fetch_optional(&mut *op.tx)
-            .await?
-            .ok_or(Error::NotFound)?;
+    let version: i64 = sqlx::query_scalar!(
+        "SELECT version FROM issues WHERE workspace_id=$1 AND id=$2 FOR UPDATE",
+        id,
+        input.issue_id,
+    )
+    .fetch_optional(&mut *op.tx)
+    .await?
+    .ok_or(Error::NotFound)?;
 
     op.expected.insert(input.issue_id, version);
 
@@ -351,12 +353,13 @@ pub(super) async fn incoming(
         versions: op.response_versions(),
         changes: Vec::new(),
     };
-    sqlx::query(
+    let stored = serde_json::to_value(&result)?;
+    sqlx::query!(
         "UPDATE inbound_deliveries SET result=$3 WHERE integration_id=$1 AND delivery_id=$2",
+        integration_id,
+        input.delivery_id,
+        stored,
     )
-    .bind(integration_id)
-    .bind(input.delivery_id)
-    .bind(serde_json::to_value(&result)?)
     .execute(&mut *op.tx)
     .await?;
 

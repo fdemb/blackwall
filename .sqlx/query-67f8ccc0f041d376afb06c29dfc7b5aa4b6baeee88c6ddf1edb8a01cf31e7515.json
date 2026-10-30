@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT email_verified_at IS NULL AND NOT EXISTS(SELECT 1 FROM email_verifications WHERE user_id=$1 AND created_at>now()-interval '5 minutes') AS \"due!\" FROM users WHERE id=$1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "due!",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "67f8ccc0f041d376afb06c29dfc7b5aa4b6baeee88c6ddf1edb8a01cf31e7515"
+}

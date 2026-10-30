@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE tracker_outbox SET sent_at=NULL,sent_body=NULL,sent_account=NULL WHERE id=$1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "1d7c3ce25287a6c2917eb7eb318ad980b738c261c1afff11b12518b315ecd1e5"
+}

@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE issues SET updated_at=now() WHERE workspace_id=$1 AND id=ANY($2)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "UuidArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "9a0faa3773e21a1508524409151da93a8e77ba1c2bc2860ccc37ebef61456e45"
+}

@@ -27,6 +27,7 @@ use blackwall::{
     auth::{Register, Session},
     domain::Command,
     http,
+    ids::{IssueId, TeamId, WorkspaceId},
     jobs::{self, Job, Mailer, WorkerConfig},
     limits::{Limits, Resource},
     store::{Store, StoreConfig},
@@ -482,7 +483,7 @@ async fn setup(store: &Store, owner: &Session) -> (Uuid, Uuid, Uuid) {
     for name in ["Team A", "Team B"] {
         let result = store
             .operation(
-                workspace,
+                WorkspaceId(workspace),
                 owner.profile.id,
                 Command::CreateTeam {
                     id: None,
@@ -665,7 +666,12 @@ async fn paginated_sync_is_idempotent_and_reconciles_project_and_team_moves() {
     let number = |issue: &Value| issue["number"].as_u64().unwrap();
     assert_eq!(
         store
-            .issue_by_key(workspace, owner.profile.id, &key_b, number(moved))
+            .issue_by_key(
+                WorkspaceId(workspace),
+                owner.profile.id,
+                &key_b,
+                number(moved)
+            )
             .await
             .unwrap()
             .to_string(),
@@ -673,7 +679,12 @@ async fn paginated_sync_is_idempotent_and_reconciles_project_and_team_moves() {
     );
     assert_eq!(
         store
-            .issue_by_key(workspace, owner.profile.id, &key_a, number(first))
+            .issue_by_key(
+                WorkspaceId(workspace),
+                owner.profile.id,
+                &key_a,
+                number(first)
+            )
             .await
             .unwrap()
             .to_string(),
@@ -729,7 +740,7 @@ async fn paginated_sync_is_idempotent_and_reconciles_project_and_team_moves() {
     );
 
     let transfer = store
-        .export_transfer(workspace, owner.profile.id)
+        .export_transfer(WorkspaceId(workspace), owner.profile.id)
         .await
         .unwrap();
     assert!(
@@ -742,7 +753,13 @@ async fn paginated_sync_is_idempotent_and_reconciles_project_and_team_moves() {
         .unwrap();
     let target = Uuid::parse_str(target["id"].as_str().unwrap()).unwrap();
     store
-        .import_transfer(target, owner.profile.id, transfer, BTreeMap::new(), None)
+        .import_transfer(
+            WorkspaceId(target),
+            owner.profile.id,
+            transfer,
+            BTreeMap::new(),
+            None,
+        )
         .await
         .unwrap();
     let copies = issues(&app, &owner, target).await;
@@ -1219,7 +1236,7 @@ async fn local_cards_can_rebalance_between_read_only_imported_cards() {
     assert_eq!(second["stage_id"], first["stage_id"]);
     let local = store
         .operation(
-            workspace,
+            WorkspaceId(workspace),
             owner.profile.id,
             Command::CreateIssue {
                 input: serde_json::from_value(
@@ -1247,12 +1264,12 @@ async fn local_cards_can_rebalance_between_read_only_imported_cards() {
     tx.commit().await.unwrap();
     store
         .operation(
-            workspace,
+            WorkspaceId(workspace),
             owner.profile.id,
             Command::MoveIssue {
-                id: local,
+                id: IssueId(local),
                 stage_id: stage,
-                before_id: Some(second_id),
+                before_id: Some(IssueId(second_id)),
             },
             BTreeMap::from([(local, 1)]),
             None,
@@ -1336,11 +1353,11 @@ async fn people_match_by_email_and_overrides_and_migrated_statuses_reconcile() {
     // The settings migration uses the existing stage command, then saves its ID in the mapping.
     let migrated = store
         .operation(
-            workspace,
+            WorkspaceId(workspace),
             owner.profile.id,
             Command::CreateStage {
                 id: None,
-                team_id: team,
+                team_id: TeamId(team),
                 name: "Closed".into(),
                 kind: blackwall::domain::StageKind::Done,
                 position: 5,
@@ -1489,10 +1506,10 @@ async fn mirrored_done_issues_archive_and_reopening_unarchives() {
         .unwrap();
     store
         .operation(
-            workspace,
+            WorkspaceId(workspace),
             owner.profile.id,
             Command::SetTeamArchive {
-                id: a,
+                id: TeamId(a),
                 archive_after_days: Some(1),
             },
             BTreeMap::from([(a, team_version)]),

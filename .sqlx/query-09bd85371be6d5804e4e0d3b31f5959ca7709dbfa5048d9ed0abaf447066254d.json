@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT EXISTS(SELECT 1 FROM issues WHERE id = ANY($1)) OR EXISTS(SELECT 1 FROM teams WHERE id = ANY($1)) OR EXISTS(SELECT 1 FROM stages WHERE id = ANY($1)) OR EXISTS(SELECT 1 FROM labels WHERE id = ANY($1)) OR EXISTS(SELECT 1 FROM projects WHERE id = ANY($1)) OR EXISTS(SELECT 1 FROM milestones WHERE id = ANY($1)) OR EXISTS(SELECT 1 FROM sprints WHERE id = ANY($1)) OR EXISTS(SELECT 1 FROM comments WHERE id = ANY($1)) OR EXISTS(SELECT 1 FROM time_entries WHERE id = ANY($1)) OR EXISTS(SELECT 1 FROM saved_views WHERE id = ANY($1)) OR EXISTS(SELECT 1 FROM invitations WHERE id = ANY($1)) OR EXISTS(SELECT 1 FROM integrations WHERE id = ANY($1)) OR EXISTS(SELECT 1 FROM notifications WHERE id = ANY($1)) OR EXISTS(SELECT 1 FROM attachments WHERE id = ANY($1)) OR EXISTS(SELECT 1 FROM users WHERE id = ANY($1)) OR EXISTS(SELECT 1 FROM workspaces WHERE id = ANY($1)) OR EXISTS(SELECT 1 FROM activity WHERE id = ANY($1)) OR EXISTS(SELECT 1 FROM source_links WHERE id = ANY($1)) OR EXISTS(SELECT 1 FROM tracker_connections WHERE id = ANY($1)) AS \"taken!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "taken!",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "UuidArray"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "09bd85371be6d5804e4e0d3b31f5959ca7709dbfa5048d9ed0abaf447066254d"
+}
