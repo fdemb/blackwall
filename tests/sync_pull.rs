@@ -1072,6 +1072,151 @@ async fn pull_resumes_a_partial_transaction_listed_in_the_cursor_xip() {
     database.cleanup().await;
 }
 
+async fn mark_issues(conn: &mut sqlx::PgConnection, workspace: Uuid, ids: &[Uuid]) -> i64 {
+    sqlx::query(
+        "INSERT INTO changes(workspace_id, entity, entity_id) \
+         SELECT $1, 'issues', id FROM unnest($2::uuid[]) AS t(id)",
+    )
+    .bind(workspace)
+    .bind(ids)
+    .execute(&mut *conn)
+    .await
+    .unwrap();
+    sqlx::query_scalar("SELECT pg_current_xact_id()::text::bigint")
+        .fetch_one(&mut *conn)
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn pull_redelivers_a_displaced_partial_when_a_lower_transaction_commits() {
+    let database = support::TestDatabase::new().await;
+    let store = Store::connect(&database.url).await.unwrap();
+    let app = router(store.clone());
+    let owner = account(&store, "owner").await;
+    let (ws, _) = setup(&app, &owner).await;
+    let client = Uuid::new_v4();
+    let a_ids: Vec<Uuid> = (0..1500).map(|_| Uuid::new_v4()).collect();
+    let b_ids: Vec<Uuid> = (0..1500).map(|_| Uuid::new_v4()).collect();
+
+    let before = cursor_of(&pull_ok(&app, &owner.token, ws, client, None).await);
+
+    let mut a = store.pool.begin().await.unwrap();
+    let a_txid = mark_issues(&mut a, ws, &a_ids).await;
+    let mut b = store.pool.begin().await.unwrap();
+    let b_txid = mark_issues(&mut b, ws, &b_ids).await;
+    b.commit().await.unwrap();
+    assert!(a_txid < b_txid);
+
+    let first = pull_ok(&app, &owner.token, ws, client, Some(&before)).await;
+    assert_eq!(first["reset"], false);
+    assert_eq!(first["more"], true);
+    assert_eq!(first["last_mutation_id"], Value::Null);
+    let first_cursor = cursor_of(&first);
+    let parts: Vec<&str> = first_cursor.split(':').collect();
+    assert!(parts[2].split(',').any(|x| x == a_txid.to_string()));
+    assert!(
+        parts[3].starts_with(&format!("{b_txid}.")),
+        "the first page ends inside B: {first_cursor}"
+    );
+    let a_set: std::collections::BTreeSet<_> = a_ids
+        .iter()
+        .map(|id| ("issues".to_owned(), id.to_string()))
+        .collect();
+    assert!(paged_records(std::slice::from_ref(&first)).is_disjoint(&a_set));
+
+    a.commit().await.unwrap();
+
+    let pages = pull_pages(&app, &owner.token, ws, client, &first_cursor).await;
+    assert!(
+        cursor_of(&pages[0])
+            .split(':')
+            .nth(3)
+            .is_some_and(|partial| partial.starts_with(&format!("{a_txid}."))),
+        "A's partial displaces B's: {}",
+        cursor_of(&pages[0])
+    );
+    let mut all = vec![first];
+    all.extend(pages);
+    let delivered = paged_records(&all);
+    assert_eq!(
+        delivered,
+        changed_since(&store, ws, owner.profile.id, cursor_xmax(&before)).await
+    );
+    assert_eq!(delivered.len(), 3000);
+    let sent: usize = all
+        .iter()
+        .map(|page| page["changes"].as_array().unwrap().len())
+        .sum();
+    assert!(sent > delivered.len(), "B's displaced rows arrive again");
+    assert_eq!(all.last().unwrap()["last_mutation_id"], 0);
+
+    drop(app);
+    store.pool.close().await;
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn pull_row_cap_finishes_transaction_across_batches() {
+    let database = support::TestDatabase::new().await;
+    let store = Store::connect(&database.url).await.unwrap();
+    let app = router(store.clone());
+    let owner = account(&store, "owner").await;
+    let (ws, _) = setup(&app, &owner).await;
+    let client = Uuid::new_v4();
+    let before = cursor_of(&pull_ok(&app, &owner.token, ws, client, None).await);
+    let first = Uuid::new_v4();
+    let second = Uuid::new_v4();
+
+    // Role rows do not count toward the page's record limit, and the unique
+    // index only needs their ids to differ, so one transaction can pass the
+    // row cap while staying one record.
+    let mut tx = store.pool.begin().await.unwrap();
+    sqlx::query(
+        "INSERT INTO changes(workspace_id, entity, entity_id) \
+         SELECT $1, 'roles', gen_random_uuid() FROM generate_series(1, 20005)",
+    )
+    .bind(ws)
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+    mark_issues(&mut tx, ws, &[first]).await;
+    tx.commit().await.unwrap();
+    let mut conn = store.pool.acquire().await.unwrap();
+    mark_issues(&mut conn, ws, &[second]).await;
+    drop(conn);
+
+    let pages = pull_pages(&app, &owner.token, ws, client, &before).await;
+    assert_eq!(pages.len(), 2);
+    assert_eq!(
+        record(&pages[0]["changes"], "issues", &first.to_string()),
+        Some(&Value::Null)
+    );
+    assert!(record(&pages[0]["changes"], "issues", &second.to_string()).is_none());
+    let delivered: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM changes WHERE workspace_id = $1 AND txid >= $2 AND txid < $3",
+    )
+    .bind(ws)
+    .bind(cursor_xmax(&before))
+    .bind(cursor_xmax(&cursor_of(&pages[0])))
+    .fetch_one(&store.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        delivered, 20_006,
+        "the first page holds the whole transaction"
+    );
+    assert_eq!(
+        paged_records(&pages),
+        changed_since(&store, ws, owner.profile.id, cursor_xmax(&before)).await
+    );
+    assert_eq!(paged_records(&pages).len(), 2);
+
+    drop(app);
+    store.pool.close().await;
+    database.cleanup().await;
+}
+
 #[tokio::test]
 async fn pull_partial_transaction_that_was_pruned_resets() {
     let database = support::TestDatabase::new().await;

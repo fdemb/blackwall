@@ -5,7 +5,9 @@ use crate::{
     limits::{Limits, Resource, Usage},
 };
 use chrono::{DateTime, Utc};
-use sqlx::{PgConnection, PgPool, Postgres, Row, Transaction, postgres::PgPoolOptions};
+use sqlx::{
+    PgConnection, PgPool, Postgres, Row, Transaction, migrate::Migrate, postgres::PgPoolOptions,
+};
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
 use tokio::sync::Semaphore;
 use uuid::Uuid;
@@ -271,6 +273,24 @@ pub(crate) fn membership_exclusive(command: &Command) -> bool {
     )
 }
 
+/// A killed `CREATE INDEX CONCURRENTLY` leaves an invalid index. Migration
+/// 0050 would then skip it under `IF NOT EXISTS`, and `ON CONFLICT` ignores
+/// invalid indexes. A valid index is never touched.
+async fn drop_invalid_dedupe_index(conn: &mut PgConnection) -> Result<()> {
+    let invalid: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM pg_index \
+         WHERE indexrelid = to_regclass('changes_dedupe') AND NOT indisvalid)",
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+    if invalid {
+        sqlx::query("DROP INDEX CONCURRENTLY IF EXISTS changes_dedupe")
+            .execute(&mut *conn)
+            .await?;
+    }
+    Ok(())
+}
+
 impl Store {
     pub async fn connect(url: &str) -> Result<Self> {
         Self::connect_with_config(url, StoreConfig::from_env()?).await
@@ -291,10 +311,21 @@ impl Store {
         // the release it rolled back from, so tolerate versions it doesn't embed.
         let mut migrator = sqlx::migrate!();
         migrator.set_ignore_missing(true);
-        migrator
-            .run(&pool)
+        let mut conn = pool.acquire().await?;
+        // Taken here as well so no other instance's index build starts between
+        // the repair and the migrations. The lock is reentrant per session.
+        conn.lock()
             .await
             .map_err(|e| Error::Internal(e.to_string()))?;
+        drop_invalid_dedupe_index(&mut conn).await?;
+        migrator
+            .run_direct(&mut *conn)
+            .await
+            .map_err(|e| Error::Internal(e.to_string()))?;
+        conn.unlock()
+            .await
+            .map_err(|e| Error::Internal(e.to_string()))?;
+        drop(conn);
 
         Ok(Self {
             outbox: Outbox::new(pool.clone()),

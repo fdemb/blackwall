@@ -113,7 +113,7 @@ The fourth part names one transaction in that window that the client holds only 
 - Delivering a record twice is harmless, because a pull renders each record as of its own snapshot. A cursor may always promise less than what the client holds, and never more.
 - A partial transaction that retention pruned is caught by the horizon check. The cursor's `xmin` is at or below `txid`, and pruning raises the horizon past the newest txid it deleted.
 
-Keep the `changes` table, its triggers and `change_horizon`. They are correct and the pull endpoint reads them. `mark_change` writes one row per `(workspace_id, txid, entity, entity_id, user_id)`, enforced by the unique index `changes_dedupe` with `ON CONFLICT DO NOTHING`. A record marked both privately and workspace-wide in one transaction, such as a view created private and then shared, keeps both rows. A transaction's rows are therefore at most about twice its distinct records. Change rows older than `JOBS_CHANGES_RETENTION_DAYS` (default 30, the session lifetime) are pruned.
+Keep the `changes` table, its triggers and `change_horizon`. They are correct and the pull endpoint reads them. `mark_change` writes one row per `(workspace_id, txid, entity, entity_id, user_id)`, enforced by the unique index `changes_dedupe` with `ON CONFLICT DO NOTHING`. The index is built concurrently by migration 0050, so the deploy does not block writes. A record marked both privately and workspace-wide in one transaction, such as a view created private and then shared, keeps both rows. A transaction's rows are therefore at most about twice its distinct records. Change rows older than `JOBS_CHANGES_RETENTION_DAYS` (default 30, the session lifetime) are pruned.
 
 ### Bootstrap
 
