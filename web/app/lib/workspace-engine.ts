@@ -9,7 +9,7 @@ import {
   replicaStorage,
   retireWorkspaceEngine,
   setWorkspaceEngine,
-  clearSession,
+  expireSession,
   discardWorkspaceEngine,
 } from "./session-replicas";
 import { currentProfile, clearLastWs } from "./auth-guard";
@@ -135,7 +135,7 @@ export function openWorkspaceEngine(
     setWorkspaceEngine({ workspaceId, sessionId: profile.session_id, engine });
     engine.subscribe((event) => {
       if (event.type === "unauthorized") {
-        void clearSession().then(() => {
+        void expireSession().then(() => {
           queryClient.clear();
           window.location.assign("/login");
         });

@@ -1,6 +1,7 @@
 import { IndexedDBReplicaStorage } from "../sync/persistence/idb";
 import { SCHEMA } from "../sync/engine";
 import type { SyncEngine } from "../sync/engine";
+import { hasWork, pruneReplicas, readSaved } from "../sync/persistence/retention";
 import type { SessionProfile } from "../sync/transport";
 import type { WorkspaceSummary } from "./types";
 import { safeGet, safeRemove, safeSet } from "./storage";
@@ -31,7 +32,14 @@ export function currentSession() {
 }
 export async function acceptSession(profile: SessionProfile) {
   if (session?.session_id !== profile.session_id) await closeAllWorkspaceEngines();
-  await replicaStorage().deleteAllExcept(profile.session_id);
+  // The same user's edits from an ended session wait for their workspace to open and send them.
+  // Anyone else's replica goes, so one user never sees or pushes another's edits.
+  await pruneReplicas(
+    replicaStorage(),
+    SCHEMA,
+    (identity) => identity.sessionId !== profile.session_id,
+    (saved) => saved.userId === profile.id && hasWork(saved.work),
+  );
   session = profile;
   safeSet("local", SESSION_KEY, JSON.stringify(profile));
   return profile;
@@ -91,18 +99,19 @@ export async function discardWorkspaceEngine(engine: SyncEngine) {
   if (entry) active.delete(entry.workspaceId);
   await engine.close();
 }
+/** Pending edits or kept rejections, in an open workspace or on disk, that logout would delete. */
 export async function sessionHasPending(): Promise<boolean> {
-  const sessionId = session?.session_id;
-  if (!sessionId) return false;
-  for (const entry of active.values()) if (entry.engine.store.pending().length) return true;
+  const current = session;
+  if (!current) return false;
+  for (const entry of active.values()) {
+    const { unresolved } = entry.engine.status.get();
+    if (entry.engine.store.pending().length || unresolved.length) return true;
+  }
   for (const identity of await replicaStorage().list()) {
-    if (identity.sessionId !== sessionId || active.has(identity.workspaceId)) continue;
-    const replica = await replicaStorage().open({ ...identity, schema: SCHEMA });
-    try {
-      if ((await replica.load()).outbox.length) return true;
-    } finally {
-      replica.close();
-    }
+    if (identity.sessionId === current.session_id && active.has(identity.workspaceId)) continue;
+    const saved = await readSaved(replicaStorage(), identity, SCHEMA);
+    const ours = identity.sessionId === current.session_id || saved.userId === current.id;
+    if (ours && hasWork(saved.work)) return true;
   }
   return false;
 }
@@ -116,15 +125,28 @@ export async function closeAllWorkspaceEngines() {
   leaving.clear();
   await Promise.all(engines.map((entry) => entry.engine.close()));
 }
-export async function clearSession() {
+/**
+ * The server ended the session. Edits and kept rejections stay on disk, and the same user's next
+ * login sends them. Replicas with nothing to keep go.
+ */
+export async function expireSession() {
   const sessionId = session?.session_id;
   await closeAllWorkspaceEngines();
-  if (sessionId) {
-    for (const identity of await replicaStorage().list()) {
-      if (identity.sessionId === sessionId) await replicaStorage().delete(identity);
-    }
-  }
-  if (!sessionId) await replicaStorage().deleteAllExcept(null);
+  await pruneReplicas(
+    replicaStorage(),
+    SCHEMA,
+    (identity) => sessionId === undefined || identity.sessionId === sessionId,
+    (saved) => hasWork(saved.work),
+  );
+  forgetSession();
+}
+/** Logout, which the user confirmed: every replica on this browser goes, pending edits included. */
+export async function clearSession() {
+  await closeAllWorkspaceEngines();
+  await replicaStorage().deleteAllExcept(null);
+  forgetSession();
+}
+function forgetSession() {
   session = null;
   safeRemove("local", SESSION_KEY);
   safeRemove("local", WORKSPACES_KEY);

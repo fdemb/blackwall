@@ -7,8 +7,8 @@ export interface TabError {
   status?: number;
 }
 
-/** A push result: applied, or the server's rejection without its command. */
-export type TabOutcome = "applied" | { id: number; status: number; message: string };
+/** A push result: applied, unknown, or the server's rejection without its command. */
+export type TabOutcome = "applied" | "unknown" | { id: number; status: number; message: string };
 
 /** Messages between engines that share one replica. Each one names its sender. */
 export type TabBody =

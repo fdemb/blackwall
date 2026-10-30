@@ -334,10 +334,20 @@ function retryAfter(response: Response): number | string | null {
   return null;
 }
 
-function httpError(response: Response, message: string, workspace: boolean): TransportError {
+/**
+ * A workspace 404 means lost access only when it is the server's own JSON error. A proxy or CDN
+ * 404 says nothing about the workspace, so it is a protocol error and deletes nothing.
+ */
+function httpError(
+  response: Response,
+  message: string,
+  workspace: boolean,
+  serverError = false,
+): TransportError {
   const status = response.status;
   if (status === 401) return new UnauthorizedError(message, status);
-  if (status === 403 || (status === 404 && workspace)) return new AccessError(message, status);
+  if (status === 403 || (status === 404 && workspace && serverError))
+    return new AccessError(message, status);
   if (status >= 500) {
     return new UnavailableError(message, status, retryAfter(response));
   }
@@ -353,13 +363,18 @@ async function fail(response: Response, workspace: boolean): Promise<never> {
     throw failure;
   }
   let message = text || fallback;
+  let serverError = false;
   try {
     const value: unknown = JSON.parse(text);
+    serverError =
+      object(value) &&
+      typeof value.error === "string" &&
+      response.headers.get("Content-Type")?.startsWith("application/json") === true;
     message = object(value) && typeof value.error === "string" ? value.error : fallback;
   } catch {
     // Axum's JSON extractor returns plain text for 400, 415 and 422.
   }
-  throw httpError(response, message, workspace);
+  throw httpError(response, message, workspace, serverError);
 }
 async function contentType(response: Response, expected: string): Promise<void> {
   if (response.headers.get("Content-Type")?.split(";", 1)[0].trim().toLowerCase() !== expected) {

@@ -47,6 +47,8 @@ export interface FakeServerOptions {
   onPush?: (input: { clientId: string; mutations: readonly Mutation[]; previous: number }) => void;
   onResult?: (clientId: string, result: MutationResult) => void;
   onFault?: (route: string, fault: Fault) => void;
+  /** A push body larger than this many bytes answers 413, as the server's body limit does. */
+  maxPushBytes?: number;
   /** Workspace limits the server enforces, as its `WORKSPACE_LIMIT_*` settings. Unset is unlimited. */
   limits?: Partial<Record<Entity, number>>;
 }
@@ -143,6 +145,7 @@ export class FakeServer {
     }
   >();
   private readonly faults: Fault[] = [];
+  private readonly poisoned = new Map<number, "partial" | "error">();
   private readonly streams = new Map<EventConnection, string>();
   private readonly pageSize: number;
   private readonly timing: EventTiming;
@@ -380,6 +383,17 @@ export class FakeServer {
   clientState(clientId: string): { last_mutation_id: number } {
     return { last_mutation_id: this.clients.get(clientId)?.last_mutation_id ?? 0 };
   }
+  /**
+   * Makes every push that reaches this mutation id fail until `healMutation`, unlike one-shot
+   * faults. "partial" commits the mutations before it and answers 503 with their results, like the
+   * server's transient failure. "error" answers 500 and processes nothing.
+   */
+  poisonMutation(id: number, mode: "partial" | "error" = "partial"): void {
+    this.poisoned.set(id, mode);
+  }
+  healMutation(id: number): void {
+    this.poisoned.delete(id);
+  }
   inject(fault: Fault): void {
     this.faults.push(structuredClone(fault));
   }
@@ -514,6 +528,12 @@ export class FakeServer {
             ? json({ error: "service unavailable" }, 503, { "retry-after": "5" })
             : json(this.command(workspace, session.user, await request.json()));
         } else {
+          if (
+            route === "push" &&
+            this.options.maxPushBytes !== undefined &&
+            (await request.clone().arrayBuffer()).byteLength > this.options.maxPushBytes
+          )
+            return new Response("length limit exceeded", { status: 413 });
           const payload: unknown = route === "push" ? await extractPushJson(request) : null;
           const clientId = uuid(
             route === "push" && object(payload)
@@ -526,8 +546,11 @@ export class FakeServer {
           this.checkClient(clientId, workspace, session.user);
           const unavailable = faults.find((fault) => fault.kind === "unavailable");
           if (route === "push") {
+            const poison = this.poisonIn(clientId, mutations);
+            if (poison?.mode === "error" && unavailable === undefined)
+              return json({ error: "internal server error" }, 500);
             const after =
-              unavailable?.kind === "unavailable" ? (unavailable.after ?? 0) : undefined;
+              unavailable?.kind === "unavailable" ? (unavailable.after ?? 0) : poison?.index;
             const pushed = this.push(workspace, session.user, clientId, mutations, after);
             if (faults.some((fault) => fault.kind === "duplicate_push") && pushed.status === 200)
               this.push(workspace, session.user, clientId, mutations);
@@ -601,6 +624,17 @@ export class FakeServer {
     if (client && (client.workspace !== workspace || client.user !== actor))
       throw new MutationError(400, "client_id belongs to another user or workspace");
     // Rust read-only endpoints check ownership without registering a new row.
+  }
+  private poisonIn(
+    clientId: string,
+    mutations: readonly Mutation[],
+  ): { index: number; mode: "partial" | "error" } | null {
+    const processed = this.clients.get(clientId)?.last_mutation_id ?? 0;
+    const index = mutations.findIndex(
+      (mutation) => mutation.id > processed && this.poisoned.has(mutation.id),
+    );
+    const mode = index < 0 ? undefined : this.poisoned.get(mutations[index].id);
+    return mode === undefined ? null : { index, mode };
   }
   private takeFaults(route: string): Fault[] {
     const taken: Fault[] = [];

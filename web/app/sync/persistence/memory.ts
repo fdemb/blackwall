@@ -11,6 +11,7 @@ import {
   scopeKey,
 } from "./shared";
 import type {
+  Adoption,
   LoadedReplica,
   Replica,
   ReplicaCloseReason,
@@ -18,6 +19,7 @@ import type {
   ReplicaMeta,
   ReplicaOpenInput,
   ReplicaStorage,
+  SavedWork,
   Scope,
 } from "./types";
 
@@ -186,6 +188,43 @@ class MemoryReplica implements Replica {
       for (const id of ids) if (state.outbox.has(id)) state.confirmed.add(id);
       for (const rejection of rejected) state.rejected.set(rejection.id, rejection);
       dropConfirmed(state);
+    });
+  }
+
+  async adopt(saved: SavedWork): Promise<Adoption> {
+    return this.transaction((state) => {
+      if (state.meta.clientId === saved.clientId) return "already";
+      if (state.meta.nextMutationId !== 1) return "occupied";
+      state.meta.clientId = saved.clientId;
+      state.meta.lastMutationId = saved.lastMutationId;
+      state.meta.nextMutationId = saved.nextMutationId;
+      for (const mutation of saved.outbox) state.outbox.set(mutation.id, structuredClone(mutation));
+      for (const rejection of saved.rejected)
+        state.rejected.set(rejection.id, structuredClone(rejection));
+      return "adopted";
+    });
+  }
+
+  async discard(rejections: readonly Rejection[]): Promise<void> {
+    this.transaction((state) => {
+      for (const rejection of rejections) {
+        state.rejected.set(rejection.id, structuredClone(rejection));
+        state.outbox.delete(rejection.id);
+        state.confirmed.delete(rejection.id);
+      }
+    });
+  }
+
+  async revoke(rejections: readonly Rejection[]): Promise<void> {
+    this.transaction((state) => {
+      for (const table of state.records.values()) table.clear();
+      state.scopes.clear();
+      state.outbox.clear();
+      state.confirmed.clear();
+      for (const rejection of rejections)
+        state.rejected.set(rejection.id, structuredClone(rejection));
+      state.meta.serverSchema = 0;
+      state.meta.cursor = null;
     });
   }
 

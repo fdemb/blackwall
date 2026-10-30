@@ -47,7 +47,13 @@ describe("review regressions", () => {
     );
     await expect(responseTransport(response).pull(id(50), CLIENT, null)).rejects.toMatchObject({
       name:
-        status === 401 ? "UnauthorizedError" : status === 503 ? "UnavailableError" : "AccessError",
+        status === 401
+          ? "UnauthorizedError"
+          : status === 503
+            ? "UnavailableError"
+            : status === 404
+              ? "ProtocolError"
+              : "AccessError",
       status,
       ...(status === 503 ? { retryAfter: 5 } : {}),
     });
@@ -668,6 +674,23 @@ describe("event streams", () => {
 });
 
 describe("HTTP and network errors", () => {
+  it.each(["text/html", "text/plain"])(
+    "treats a %s 404 from a proxy as a protocol error, not lost access",
+    async (type) => {
+      const proxy = new Response("<h1>404</h1>", {
+        status: 404,
+        headers: { "Content-Type": type },
+      });
+      await expect(responseTransport(proxy).pull(id(50), CLIENT, null)).rejects.toBeInstanceOf(
+        ProtocolError,
+      );
+      const jsonWithoutError = Response.json({ message: "nope" }, { status: 404 });
+      await expect(
+        responseTransport(jsonWithoutError).push(id(50), CLIENT, [label(1)]),
+      ).rejects.toBeInstanceOf(ProtocolError);
+    },
+  );
+
   it.each(methods)(
     "maps authentication, access, protocol and unavailable errors for %s",
     async (method) => {

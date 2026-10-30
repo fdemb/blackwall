@@ -81,9 +81,15 @@ export type EngineEvent =
   | { type: "outdated" }
   | { type: "closed" };
 
+/**
+ * The server's verdict on a mutation. `unknown` means it processed the mutation but no longer
+ * remembers whether it applied: it keeps only a client's last 1,000 rejections.
+ */
+export type MutationOutcome = "applied" | "unknown" | Rejection;
+
 export interface MutationReceipt {
   /** Created record id, or null for an edit. */
   id: string | null;
   mutationId: number;
-  settled: Promise<"applied" | Rejection>;
+  settled: Promise<MutationOutcome>;
 }

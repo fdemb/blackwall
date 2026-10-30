@@ -43,6 +43,26 @@ async function seed(sessionId: string, workspaceId: string, pending = false) {
     }));
   replica.close();
 }
+async function seedOwned(
+  sessionId: string,
+  workspaceId: string,
+  userId: string,
+  work: "pending" | "rejected" | "none",
+) {
+  const replica = await replicaStorage().open({ sessionId, workspaceId, schema: SCHEMA, userId });
+  if (work === "pending")
+    await replica.appendMutation(() => ({
+      name: "mark_all_notifications_read",
+      args: {},
+      at: "2026-10-09T12:00:00Z",
+    }));
+  if (work === "rejected")
+    await replica.confirm(
+      [],
+      [{ id: 1, status: 400, message: "refused", command: { name: "update_issue", args: {} } }],
+    );
+  replica.close();
+}
 async function fixture() {
   const server = createFakeServer();
   servers.push(server);
@@ -103,6 +123,40 @@ describe("session replica lifetime", () => {
       { sessionId: profile.session_id, workspaceId: id(92) },
     ]);
     expect(currentSession()?.session_id).toBe(profile.session_id);
+  });
+  it("login keeps the same user's saved edits and deletes everyone else's replicas", async () => {
+    const { profile } = await fixture();
+    await seedOwned(id(90), id(91), profile.id, "pending");
+    await seedOwned(id(92), id(93), id(777), "pending");
+    await seedOwned(id(94), id(95), profile.id, "none");
+    await currentProfile();
+    expect(await replicaStorage().list()).toEqual([{ sessionId: id(90), workspaceId: id(91) }]);
+  });
+  it("logout asks first when only kept rejections or an older session's edits would be lost", async () => {
+    const { profile } = await fixture();
+    expect(await sessionHasPending()).toBe(false);
+    await seedOwned(profile.session_id, id(91), profile.id, "rejected");
+    expect(await sessionHasPending()).toBe(true);
+    await replicaStorage().delete({ sessionId: profile.session_id, workspaceId: id(91) });
+    expect(await sessionHasPending()).toBe(false);
+    await seedOwned(id(90), id(92), profile.id, "pending");
+    expect(await sessionHasPending()).toBe(true);
+    await seedOwned(id(91), id(93), id(777), "pending");
+    await replicaStorage().delete({ sessionId: id(90), workspaceId: id(92) });
+    expect(await sessionHasPending()).toBe(false);
+  });
+  it("unauthorized sync keeps the replicas that hold edits and deletes the rest", async () => {
+    const { server, token, workspace, profile } = await fixture();
+    const engine = await openWorkspaceEngine(workspace.id);
+    await seedOwned(profile.session_id, id(91), profile.id, "pending");
+    await seedOwned(profile.session_id, id(92), profile.id, "none");
+    server.logout(token);
+    await engine.pull();
+    await until(() => assign.mock.calls.length > 0);
+    expect(assign).toHaveBeenCalledWith("/login");
+    expect(await replicaStorage().list()).toEqual([
+      { sessionId: profile.session_id, workspaceId: id(91) },
+    ]);
   });
   it("an older /internal-api/me reply that lands last neither changes the session nor deletes the newer replica", async () => {
     const { profile } = await fixture();

@@ -6,6 +6,7 @@ import { createEngine, OutdatedError, SCHEMA } from "./engine";
 import type { EngineEvent, EngineSignal, SyncEngine } from "./engine";
 import { IDB_VERSION, IndexedDBReplicaStorage } from "./persistence/idb";
 import { MemoryReplicaStorage } from "./persistence/memory";
+import { readSaved } from "./persistence/retention";
 import type { ReplicaStorage, Scope } from "./persistence/types";
 import { BOOTSTRAP_ENTITIES, normalize } from "./records";
 import { createFakeServer } from "./testing/fake-server";
@@ -1408,7 +1409,7 @@ describe("cookie sessions and pending callers", () => {
     expect(responses).toContainEqual({ route: "push", status: 403 });
     expect(responses).toContainEqual({ route: "me", status: 200 });
     expect(responses).toContainEqual({ route: "pull", status: 403 });
-    expect(await f.storage.list()).toEqual([]);
+    expect(await f.storage.list()).toEqual([{ sessionId: SESSION, workspaceId: f.workspace.id }]);
     expect(f.engine.store.all("issues")).toHaveLength(0);
     expect(f.engine.status.get().pending).toBe(0);
   });
@@ -1978,5 +1979,320 @@ describe("offline sync review fixes", () => {
     expect(f.engine.status.get()).toMatchObject({ blocked: false, lastError: null });
     await until(() => f.engine.status.get().pending === 0);
     expect(f.authoritativeIssue(ISSUE).title).toBe("Blocked");
+  });
+});
+
+type Fixture = ReturnType<typeof fixture>;
+
+/** Advances the fake clock in steps, letting the engine's async work run in between. */
+async function elapse(f: Fixture, done: () => boolean, step = 1000, limit = 600) {
+  for (let steps = 0; steps < limit && !done(); steps += 1) {
+    f.server.advance(step);
+    for (let tick = 0; tick < 20; tick += 1) await flush();
+  }
+  expect(done(), "scenario did not finish within the simulated time").toBe(true);
+}
+
+const batchIds = (f: Fixture) => f.pushes().map((batch) => batch.map((mutation) => mutation.id));
+
+let signIns = 0;
+/** Another login of `user`: a new session id over the same storage, transport and server. */
+function signIn(f: Fixture, userId: string, sessionId: string): SyncEngine {
+  const token = f.server.login(userId);
+  setCsrf(f.server.csrfToken(token));
+  const engine = createEngine({
+    storage: f.storage,
+    transport: createTransport({
+      fetch: f.fetch,
+      headers: () => ({ cookie: `blackwall_session=${token}` }),
+    }),
+    actor: userId,
+    sessionId,
+    workspaceId: f.workspace.id,
+    schema: SCHEMA,
+    clock: { now: f.server.now, schedule: f.server.schedule },
+    randomId: () => id(5000 + signIns++),
+    signals: f.signals,
+  });
+  engines.push(engine);
+  return engine;
+}
+
+describe("pending edits are never frozen or lost", () => {
+  it("sets a poison head mutation aside after bounded retries and keeps syncing", async () => {
+    const f = fixture();
+    await f.ready();
+    f.server.poisonMutation(1);
+    const events: EngineEvent[] = [];
+    f.engine.subscribe((event) => events.push(event));
+    const started = Date.parse(f.server.now());
+    const poison = await f.engine.mutate("update_issue", {
+      id: ISSUE,
+      patch: { description: "Text the user typed" },
+    });
+    const later = await f.engine.mutate("update_issue", { id: ISSUE, patch: { title: "Later" } });
+    await elapse(f, () => f.engine.status.get().pending === 0);
+
+    expect(await poison.settled).toMatchObject({
+      id: 1,
+      status: 500,
+      message: "The server could not save this edit.",
+      command: { name: "update_issue", args: { patch: { description: "Text the user typed" } } },
+    });
+    expect(await later.settled).toBe("applied");
+    expect(Date.parse(f.server.now()) - started).toBeLessThan(60_000);
+    expect(f.engine.status.get().blocked).toBe(false);
+    expect(events.filter((event) => event.type === "rejected")).toHaveLength(1);
+    expect(f.engine.status.get().unresolved).toMatchObject([{ id: 1, status: 500 }]);
+    const ids = batchIds(f);
+    expect(ids.filter((batch) => batch.includes(1)).length).toBeLessThanOrEqual(8);
+    expect(ids.at(-1)).toEqual([2]);
+    expect(f.engine.store.get("issues", ISSUE)).toEqual(f.authoritativeIssue(ISSUE));
+    expect(f.engine.store.get("issues", ISSUE)).toMatchObject({ title: "Later", description: "" });
+
+    const reloaded = f.build();
+    await reloaded.open();
+    expect(reloaded.store.pending()).toEqual([]);
+    expect(reloaded.status.get().unresolved).toMatchObject([
+      { id: 1, command: { args: { patch: { description: "Text the user typed" } } } },
+    ]);
+  });
+
+  it("narrows a failing batch to the failing mutation, then sets only that one aside", async () => {
+    const f = fixture();
+    await f.ready();
+    f.signals.send("offline");
+    const receipts = [
+      await f.engine.mutate("update_issue", { id: ISSUE, patch: { title: "One" } }),
+      await f.engine.mutate("update_issue", { id: ISSUE, patch: { description: "Two" } }),
+      await f.engine.mutate("update_issue", { id: ISSUE, patch: { title: "Three" } }),
+    ];
+    f.server.poisonMutation(2, "error");
+    f.signals.send("online");
+    await elapse(f, () => f.engine.status.get().pending === 0);
+
+    expect(await Promise.all(receipts.map((receipt) => receipt.settled))).toMatchObject([
+      "applied",
+      { id: 2, status: 500 },
+      "applied",
+    ]);
+    const ids = batchIds(f);
+    expect(ids[0]).toEqual([1, 2, 3]);
+    expect(ids).toContainEqual([2]);
+    expect(ids.at(-1)).toEqual([3]);
+    expect(f.engine.status.get().blocked).toBe(false);
+    expect(f.authoritativeIssue(ISSUE)).toMatchObject({ title: "Three", description: "" });
+    expect(f.engine.store.get("issues", ISSUE)).toEqual(f.authoritativeIssue(ISSUE));
+  });
+
+  it.each(["network", "outage"] as const)(
+    "never counts a %s failure toward setting a mutation aside",
+    async (kind) => {
+      const f = fixture();
+      await f.ready();
+      const original = f.server.fetch;
+      let down = true;
+      let attempts = 0;
+      f.fetch.mockImplementation(async (...args) => {
+        const url = String(args[0]);
+        if (!down || !url.includes("/sync/")) return original(...args);
+        if (url.includes("/push?")) attempts += 1;
+        if (kind === "network") throw new TypeError("Failed to fetch");
+        return Response.json({ error: "down" }, { status: 503 });
+      });
+      const receipt = await f.engine.mutate("update_issue", {
+        id: ISSUE,
+        patch: { title: "Kept through the outage" },
+      });
+      await elapse(f, () => attempts >= 12);
+      expect(f.engine.status.get().unresolved).toEqual([]);
+      down = false;
+      await elapse(f, () => f.engine.status.get().pending === 0);
+      expect(await receipt.settled).toBe("applied");
+      expect(f.engine.status.get()).toMatchObject({ rejected: [], unresolved: [] });
+      expect(f.authoritativeIssue(ISSUE).title).toBe("Kept through the outage");
+    },
+  );
+
+  it("sets a single mutation the server refuses as too large aside, without blocking", async () => {
+    const f = fixture(new MemoryReplicaStorage(), { maxPushBytes: 1500 });
+    await f.ready();
+    f.signals.send("offline");
+    const receipts = [
+      await f.engine.mutate("update_issue", { id: ISSUE, patch: { title: "Small" } }),
+      await f.engine.mutate("update_issue", {
+        id: ISSUE,
+        patch: { description: "x".repeat(4000) },
+      }),
+      await f.engine.mutate("update_issue", { id: ISSUE, patch: { title: "Also small" } }),
+    ];
+    f.signals.send("online");
+    await elapse(f, () => f.engine.status.get().pending === 0);
+
+    expect(await Promise.all(receipts.map((receipt) => receipt.settled))).toMatchObject([
+      "applied",
+      { id: 2, status: 413, message: "This edit is too large to save." },
+      "applied",
+    ]);
+    expect(f.engine.status.get().blocked).toBe(false);
+    expect(f.engine.status.get().unresolved).toMatchObject([
+      { id: 2, command: { args: { patch: { description: "x".repeat(4000) } } } },
+    ]);
+    expect(batchIds(f).at(-1)).toEqual([3]);
+    expect(f.engine.store.get("issues", ISSUE)).toEqual(f.authoritativeIssue(ISSUE));
+  });
+
+  it("treats a proxy 404 on push as a protocol error and keeps the replica", async () => {
+    const f = fixture();
+    await f.ready();
+    const original = f.server.fetch;
+    f.fetch.mockImplementation(async (...args) =>
+      String(args[0]).includes("/push?")
+        ? new Response("<html>Not Found</html>", {
+            status: 404,
+            headers: { "Content-Type": "text/html" },
+          })
+        : original(...args),
+    );
+    const events: EngineEvent[] = [];
+    f.engine.subscribe((event) => events.push(event));
+    await f.engine.mutate("update_issue", { id: ISSUE, patch: { title: "Edit" } });
+    await until(() => f.engine.status.get().blocked);
+    expect(events.some((event) => event.type === "accessLost")).toBe(false);
+    expect(await f.storage.list()).toHaveLength(1);
+    expect(f.engine.status.get().pending).toBe(1);
+  });
+
+  it("keeps the edits of an expired session and sends them once, under the old client id, after the same user signs in", async () => {
+    const f = fixture();
+    await f.ready();
+    const clientId = (await f.disk()).meta.clientId;
+    const events: EngineEvent[] = [];
+    f.engine.subscribe((event) => events.push(event));
+    f.server.inject({ kind: "drop_response", route: "push" });
+    const created = await f.engine.mutate("create_issue", {
+      input: { title: "Written before the session ended", team_id: TEAM },
+    });
+    await until(() => f.pushes().length === 1);
+    f.server.logout(f.token);
+    await f.advance(1000);
+    await until(() => events.some((event) => event.type === "unauthorized"));
+    expect(await f.storage.list()).toEqual([{ sessionId: SESSION, workspaceId: f.workspace.id }]);
+
+    const second = signIn(f, f.owner.id, id(5));
+    await second.start();
+    await until(() => second.status.get().phase === "ready" && second.status.get().pending === 0);
+    const written = (titles: readonly { title: string }[]) =>
+      titles.filter((issue) => issue.title === "Written before the session ended");
+    expect(written(f.server.records("issues"))).toHaveLength(1);
+    expect(written(second.store.all("issues"))).toHaveLength(1);
+    expect(f.server.clientState(clientId).last_mutation_id).toBe(created.mutationId);
+    expect(second.status.get()).toMatchObject({ rejected: [], unresolved: [] });
+    expect(await f.storage.list()).toEqual([{ sessionId: id(5), workspaceId: f.workspace.id }]);
+    const saved = await readSaved(
+      f.storage,
+      { sessionId: id(5), workspaceId: f.workspace.id },
+      SCHEMA,
+    );
+    expect(saved.work.clientId).toBe(clientId);
+  });
+
+  it("never gives one user's saved edits to another user who signs in", async () => {
+    const f = fixture();
+    await f.ready();
+    const events: EngineEvent[] = [];
+    f.engine.subscribe((event) => events.push(event));
+    f.signals.send("offline");
+    await f.engine.mutate("update_issue", { id: ISSUE, patch: { title: "Owner's private edit" } });
+    f.server.logout(f.token);
+    f.signals.send("online");
+    await until(() => events.some((event) => event.type === "unauthorized"));
+
+    const other = signIn(f, f.peer.id, id(6));
+    await other.start();
+    await until(() => other.status.get().phase === "ready");
+    expect(other.status.get().pending).toBe(0);
+    expect(other.status.get().unresolved).toEqual([]);
+    expect(f.server.record("issues", ISSUE)?.title).toBe("Original");
+    const saved = await readSaved(
+      f.storage,
+      { sessionId: SESSION, workspaceId: f.workspace.id },
+      SCHEMA,
+    );
+    expect(saved.work.outbox).toHaveLength(1);
+    expect(saved.userId).toBe(f.owner.id);
+  });
+
+  it("keeps pending edits as rejected items when access is lost, and never pushes them", async () => {
+    const f = fixture();
+    await f.ready();
+    const events: EngineEvent[] = [];
+    f.engine.subscribe((event) => events.push(event));
+    f.signals.send("offline");
+    await f.engine.mutate("update_issue", {
+      id: ISSUE,
+      patch: { description: "Typed before access ended" },
+    });
+    f.server.removeMember(f.workspace.id, f.owner.id);
+    f.signals.send("online");
+    await until(() => events.some((event) => event.type === "accessLost"));
+
+    const disk = await f.disk();
+    expect(disk.outbox).toEqual([]);
+    expect(disk.rejected).toMatchObject([
+      {
+        id: 1,
+        status: 403,
+        message: "You no longer have access to this workspace.",
+        command: {
+          name: "update_issue",
+          args: { patch: { description: "Typed before access ended" } },
+        },
+      },
+    ]);
+    for (const entity of BOOTSTRAP_ENTITIES) expect(disk.records[entity] ?? []).toEqual([]);
+
+    f.server.addMember(f.workspace.id, f.owner, "owner");
+    f.fetch.mockClear();
+    const returned = f.build();
+    await returned.start();
+    await until(() => returned.status.get().phase === "ready");
+    expect(returned.status.get().unresolved).toMatchObject([{ id: 1, status: 403 }]);
+    expect(returned.status.get().pending).toBe(0);
+    expect(f.pushes()).toEqual([]);
+    expect(f.server.record("issues", ISSUE)?.description).toBe("");
+  });
+
+  it("reports an outcome as unknown when the server no longer remembers a rejection", async () => {
+    const f = fixture();
+    await f.ready();
+    f.engine.stop();
+    const receipt = await f.engine.mutate("update_issue", {
+      id: ISSUE,
+      patch: { dependencies: [OTHER_ISSUE] },
+    });
+    f.server.run(f.peer, {
+      type: "update_issue",
+      id: OTHER_ISSUE,
+      patch: { dependencies: [ISSUE] },
+    });
+    const { meta, outbox } = await f.disk();
+    expect((await f.transport.push(f.workspace.id, meta.clientId, outbox)).results[0].status).toBe(
+      "rejected",
+    );
+    for (let batch = 0; batch < 10; batch += 1)
+      await f.transport.push(
+        f.workspace.id,
+        meta.clientId,
+        Array.from({ length: 100 }, (_, index) => ({
+          id: 2 + batch * 100 + index,
+          name: "update_issue",
+          args: { id: id(500), patch: { title: "Gone" } },
+          at: "2026-10-09T12:00:00Z",
+        })),
+      );
+    await f.engine.start();
+    expect(await receipt.settled).toBe("unknown");
+    expect(f.engine.status.get().rejected).toEqual([]);
   });
 });

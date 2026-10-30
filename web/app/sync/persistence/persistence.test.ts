@@ -59,6 +59,7 @@ for (const backend of ["memory", "idb"]) {
       const loaded = await replica.load();
       expect(loaded.meta).toEqual({
         ...INPUT,
+        userId: "",
         serverSchema: 0,
         clientId: expect.any(String),
         cursor: null,
@@ -123,6 +124,102 @@ for (const backend of ["memory", "idb"]) {
       await replica.writeBootstrap(bootstrap());
       expect((await replica.load()).meta.lastMutationId).toBe(1);
       expect((await replica.load()).outbox).toHaveLength(2);
+    });
+
+    it("records the owner when it creates a replica and keeps it on reopen", async () => {
+      const owned = await open({ ...INPUT, workspaceId: "owned", userId: "user-1" });
+      expect((await owned.load()).meta.userId).toBe("user-1");
+      owned.close();
+      expect((await (await open({ ...INPUT, workspaceId: "owned" })).load()).meta.userId).toBe(
+        "user-1",
+      );
+    });
+
+    describe("saved work", () => {
+      const rejection = (id: number) => ({
+        id,
+        status: 400,
+        message: "refused",
+        command: { name: "update_issue", args: { id: "issue-1" } },
+      });
+      async function saved(older: Replica) {
+        await older.appendMutation(mutation);
+        await older.appendMutation(mutation);
+        await older.confirm([], [rejection(9)]);
+        const { meta, outbox, unconfirmed, rejected } = await older.load();
+        return {
+          clientId: meta.clientId,
+          lastMutationId: 1,
+          nextMutationId: meta.nextMutationId,
+          outbox: [...unconfirmed, ...outbox],
+          rejected,
+        };
+      }
+
+      it("is adopted once, with the old client id, mutation ids, outbox and rejections", async () => {
+        const work = await saved(replica);
+        const fresh = await open({ ...INPUT, sessionId: "session-2" });
+        const before = (await fresh.load()).meta;
+        expect(await fresh.adopt(work)).toBe("adopted");
+        const loaded = await fresh.load();
+        expect(loaded.meta).toEqual({
+          ...before,
+          clientId: work.clientId,
+          lastMutationId: 1,
+          nextMutationId: 3,
+        });
+        expect([...loaded.unconfirmed, ...loaded.outbox].map((m) => m.id)).toEqual([1, 2]);
+        expect(loaded.rejected).toEqual([rejection(9)]);
+        expect((await fresh.appendMutation(mutation)).id).toBe(3);
+        expect(await fresh.adopt(work)).toBe("already");
+        expect((await fresh.load()).outbox.map((m) => m.id)).toEqual([2, 3]);
+      });
+
+      it("is refused by a replica that already issued its own mutations", async () => {
+        const work = await saved(replica);
+        const busy = await open({ ...INPUT, sessionId: "session-2" });
+        await busy.appendMutation(mutation);
+        expect(await busy.adopt(work)).toBe("occupied");
+        const loaded = await busy.load();
+        expect(loaded.meta.clientId).not.toBe(work.clientId);
+        expect(loaded.outbox.map((m) => m.id)).toEqual([1]);
+      });
+    });
+
+    it("discard keeps the rejection and removes its mutation from the outbox for good", async () => {
+      await replica.appendMutation(mutation);
+      await replica.appendMutation(mutation);
+      const rejection = {
+        id: 1,
+        status: 500,
+        message: "kept",
+        command: { name: "update_issue", args: { id: "issue-1" } },
+      };
+      await replica.discard([rejection]);
+      const loaded = await replica.load();
+      expect(loaded.outbox.map((m) => m.id)).toEqual([2]);
+      expect(loaded.rejected).toEqual([rejection]);
+      expect(loaded.meta.nextMutationId).toBe(3);
+    });
+
+    it("revoke empties the workspace and outbox but keeps rejections and ids", async () => {
+      await replica.writeBootstrap(bootstrap({ issues: [{ id: "issue-1" }] }));
+      await replica.writeScope({ scope: COMMENT_SCOPE, records: [COMMENT] });
+      await replica.appendMutation(mutation);
+      const rejection = {
+        id: 1,
+        status: 403,
+        message: "no access",
+        command: { name: "update_issue", args: { id: "issue-1" } },
+      };
+      const before = (await replica.load()).meta;
+      await replica.revoke([rejection]);
+      const loaded = await replica.load();
+      for (const entity of ENTITIES) expect(loaded.records[entity]).toEqual([]);
+      expect(loaded.scopes).toEqual([]);
+      expect(loaded.outbox).toEqual([]);
+      expect(loaded.rejected).toEqual([rejection]);
+      expect(loaded.meta).toEqual({ ...before, cursor: null, serverSchema: 0 });
     });
 
     it("bootstrap replaces listed entities, empties omitted ones and clears scopes", async () => {

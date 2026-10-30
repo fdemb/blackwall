@@ -11,6 +11,7 @@ import {
   scopeKey,
 } from "./shared";
 import type {
+  Adoption,
   LoadedReplica,
   Replica,
   ReplicaCloseListener,
@@ -18,6 +19,7 @@ import type {
   ReplicaMeta,
   ReplicaOpenInput,
   ReplicaStorage,
+  SavedWork,
   Scope,
 } from "./types";
 
@@ -340,6 +342,58 @@ class IndexedDBReplica implements Replica {
             if (row !== undefined) outbox.put({ ...row, confirmed: true });
           });
         }
+        done(undefined);
+      });
+    });
+  }
+
+  adopt(saved: SavedWork): Promise<Adoption> {
+    return this.transaction<Adoption>(
+      ["meta", "outbox", "rejected"],
+      "readwrite",
+      (tx, done, guard) => {
+        read<ReplicaMeta>(tx.objectStore("meta").get(META_KEY), guard, (meta) => {
+          if (meta.clientId === saved.clientId) return done("already");
+          if (meta.nextMutationId !== 1) return done("occupied");
+          tx.objectStore("meta").put(
+            {
+              ...meta,
+              clientId: saved.clientId,
+              lastMutationId: saved.lastMutationId,
+              nextMutationId: saved.nextMutationId,
+            },
+            META_KEY,
+          );
+          for (const mutation of saved.outbox)
+            tx.objectStore("outbox").put(structuredClone(mutation));
+          for (const rejection of saved.rejected)
+            tx.objectStore("rejected").put(structuredClone(rejection));
+          done("adopted");
+        });
+      },
+    );
+  }
+
+  discard(rejections: readonly Rejection[]): Promise<void> {
+    return this.transaction(["outbox", "rejected"], "readwrite", (tx, done) => {
+      for (const rejection of rejections) {
+        tx.objectStore("rejected").put(structuredClone(rejection));
+        tx.objectStore("outbox").delete(rejection.id);
+      }
+      done(undefined);
+    });
+  }
+
+  revoke(rejections: readonly Rejection[]): Promise<void> {
+    const stores = ["meta", ...ENTITIES, "scopes", "outbox", "rejected"];
+    return this.transaction(stores, "readwrite", (tx, done, guard) => {
+      for (const entity of ENTITIES) tx.objectStore(entity).clear();
+      tx.objectStore("scopes").clear();
+      tx.objectStore("outbox").clear();
+      for (const rejection of rejections)
+        tx.objectStore("rejected").put(structuredClone(rejection));
+      read<ReplicaMeta>(tx.objectStore("meta").get(META_KEY), guard, (meta) => {
+        tx.objectStore("meta").put({ ...meta, serverSchema: 0, cursor: null }, META_KEY);
         done(undefined);
       });
     });

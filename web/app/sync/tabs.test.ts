@@ -259,6 +259,39 @@ describe("tab coordination", () => {
       expect(tab.engine.store.get("labels", receipt.id ?? "")?.name).toBe("Authoritative");
   });
 
+  it("sets a follower's poison mutation aside in every tab and keeps the rest syncing", async () => {
+    const f = fixture(2);
+    await f.start();
+    const { leader, follower } = f.roles();
+    f.server.poisonMutation(1);
+    const poison = await follower.engine.mutate("update_issue", {
+      id: ISSUE,
+      patch: { description: "Typed in the follower" },
+    });
+    const later = await follower.engine.mutate("update_issue", {
+      id: ISSUE,
+      patch: { title: "Later" },
+    });
+    const pending = () => f.tabs.some((tab) => tab.engine.status.get().pending > 0);
+    for (let step = 0; step < 120 && pending(); step += 1) {
+      f.server.advance(1000);
+      for (let tick = 0; tick < 20; tick += 1) await flush();
+    }
+    expect(await poison.settled).toMatchObject({ id: 1, status: 500 });
+    expect(await later.settled).toBe("applied");
+    for (const tab of f.tabs) {
+      expect(tab.engine.status.get().pending).toBe(0);
+      expect(tab.engine.status.get().unresolved).toMatchObject([{ id: 1, status: 500 }]);
+      expect(tab.engine.store.get("issues", ISSUE)).toMatchObject({
+        title: "Later",
+        description: "",
+      });
+    }
+    expect(leader.events.filter((event) => event.type === "rejected")).toHaveLength(1);
+    f.converged(leader);
+    f.converged(follower);
+  });
+
   it("lets a follower take over with mutations in the closed leader's outbox", async () => {
     const f = fixture(2);
     await f.start();

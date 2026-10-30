@@ -3,7 +3,7 @@ import { ApiError, auth, workspaces } from "./api";
 import { safeGet, safeRemove, safeSet } from "./storage";
 import {
   acceptSession,
-  clearSession,
+  expireSession,
   rememberWorkspaces,
   rememberedWorkspaces,
   restoreSession,
@@ -30,7 +30,7 @@ async function readProfile(sequence: number): Promise<SessionProfile | null> {
   } catch (e) {
     if (sequence !== meRequests) return newestMe;
     if (e instanceof ApiError && e.status === 401) {
-      await clearSession();
+      await expireSession();
       return null;
     }
     const restored = unavailable(e) ? restoreSession() : null;

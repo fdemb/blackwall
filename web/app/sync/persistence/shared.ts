@@ -14,8 +14,11 @@ export function replicaIdentity(name: string): ReplicaIdentity | null {
   return { sessionId: parts[0], workspaceId: parts[1] };
 }
 
-export function initialMeta(input: ReplicaIdentity & { schema: number }): ReplicaMeta {
+export function initialMeta(
+  input: ReplicaIdentity & { schema: number; userId?: string },
+): ReplicaMeta {
   return {
+    userId: input.userId ?? "",
     sessionId: input.sessionId,
     workspaceId: input.workspaceId,
     schema: input.schema,

@@ -9,6 +9,7 @@ import { withCounts } from "../derived";
 import { MutationError } from "../mutators";
 import { IndexedDBReplicaStorage } from "../persistence/idb";
 import { MemoryReplicaStorage } from "../persistence/memory";
+import { hasWork, readSaved } from "../persistence/retention";
 import type { LoadedReplica, ReplicaStorage, Scope } from "../persistence/types";
 import { recordKey, scopeKey } from "../persistence/shared";
 import { BOOTSTRAP_ENTITIES, ENTITIES, normalize } from "../records";
@@ -336,6 +337,9 @@ export async function runConvergence(
         loadScope: (scope) => replica.loadScope(scope),
         appendMutation: (value) => write(() => replica.appendMutation(value)),
         confirm: (ids, rejected) => write(() => replica.confirm(ids, rejected)),
+        adopt: (saved) => write(() => replica.adopt(saved)),
+        discard: (rejections) => write(() => replica.discard(rejections)),
+        revoke: (rejections) => write(() => replica.revoke(rejections)),
         resolveRejection: (id) => write(() => replica.resolveRejection(id)),
       };
     },
@@ -472,7 +476,7 @@ export async function runConvergence(
           void receipt.settled.then(
             (value) => {
               item.outcome =
-                value === "applied"
+                value === "applied" || value === "unknown"
                   ? { kind: "applied" }
                   : { kind: "rejected", status: value.status, message: value.message };
             },
@@ -1023,7 +1027,19 @@ export async function runConvergence(
       check(authClient.blocked, "CSRF refresh refusal did not complete callers");
       check((await authClient.storage.list()).length === 1, "CSRF refusal removed persistence");
     } else {
-      equal(await authClient.storage.list(), [], "wiped client retained persistence");
+      for (const identity of await authClient.storage.list()) {
+        const saved = await readSaved(authClient.storage, identity, SCHEMA);
+        check(hasWork(saved.work), "wiped client kept a replica with nothing to keep");
+        if (authStatus === 403) {
+          const replica = await authClient.storage.open({ ...identity, schema: SCHEMA });
+          const { records } = await replica.load();
+          replica.close();
+          check(
+            Object.values(records).every((rows) => rows.length === 0),
+            "lost access left workspace records on disk",
+          );
+        }
+      }
       equal(authClient.engine.store.all("issues"), [], "wiped client retained its view");
       check(
         server.record("members", authClient.actor, owner.id) === null,

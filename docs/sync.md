@@ -204,7 +204,7 @@ The transaction opens with one query that checks membership, reads the client's 
 The server handles the mutations in order. For each one, it runs one transaction that:
 
 1. Opens the operation the same way the REST command path does, and locks the `sync_clients` row (inserting it on first use).
-2. Skips applying the mutation when `id <= last_mutation_id`, because it was already processed. If `sync_rejections` holds its outcome, returns `rejected` with the original `{status, message}`. Otherwise returns `duplicate`, meaning applied. Ids must increase but may have gaps.
+2. Skips applying the mutation when `id <= last_mutation_id`, because it was already processed. If `sync_rejections` holds its outcome, returns `rejected` with the original `{status, message}`. Otherwise returns `duplicate`, which means applied unless the rejection was pruned (see the client policy below). Ids must increase but may have gaps.
 3. Runs the command through the same store code the REST command endpoint uses, without version preconditions and without an idempotency key, inside a savepoint. `add_attachment` and `attach_comment_file` are rejected; uploads go through the REST upload endpoint. So are the online-only commands listed under "Online-only operations", with 400 and "use the commands endpoint".
 4. On a rejectable error, rolls back the command's writes to the savepoint, which also makes the transaction usable again, and records `rejected` with the `{status, message}` the REST endpoint returns for that error. Inserts that outcome into `sync_rejections` and deletes all but the client's 1,000 most recent rejections in the same transaction.
 5. Sets `last_mutation_id = id` and commits, so rejected mutations still advance the id.
@@ -227,6 +227,25 @@ The server treats `last_mutation_id` as a high-water mark, so a client must neve
 ```
 
 Per-mutation `status` is `applied`, `duplicate` or `rejected`. The 503 response uses the same shape for the mutations handled before the failure.
+
+#### Push failures on the client
+
+The client never lets one mutation freeze the outbox or silently drop a user's edit. One table decides what each failed push attempt does.
+
+| Failure | Counts toward the limit | Next step |
+|---|---|---|
+| Fetch failure, offline, timeout | No | Retry the same batch with backoff, without limit. |
+| 5xx, or a 503 with no new results, while a pull still answers | Yes | Retry. After 4 failures, push the first unsettled mutation alone. After 6, set it aside. |
+| 5xx while pulls fail too | No | The server is down. Retry without counting. |
+| 413 on a batch of several mutations | No | Halve the batch. |
+| 413 on a single mutation | No | Set it aside as "too large to save". |
+| 401, 403, any other 4xx | No | Handled as before (session end, access check, protocol block). |
+
+Retries on counted failures back off up to 8 seconds, so a mutation the server can't process surfaces after about 20 seconds. The counter lives in memory on the batch and restarts with each new batch, so a reload only gives the mutation more attempts. After 4 failures the client sends one pull. A failing pull means an outage, and the counter holds at 3 until pulls work again.
+
+Setting a mutation aside builds a local rejection from it, writes that rejection and removes the outbox row in one transaction, and removes its effect from the view. It reaches the same kept-rejections list as a server rejection, with its text, status 500 or 413, and the receipt resolves with it. The client never pushes it again. Later mutations still push. The server's `last_mutation_id` then passes the skipped id without ever applying it, which is the intended outcome. Other tabs reload from the database when the leader sets one aside.
+
+A `duplicate` result is applied only when the server's `last_mutation_id` is less than 1,000 ahead of that id, because the server keeps a client's 1,000 newest rejections and a pruned rejection also reads back as `duplicate`. A confirmation push for an older id settles its receipt as `"unknown"`, not `"applied"`.
 
 The client never writes push results into base. It pulls after every push.
 
@@ -305,7 +324,7 @@ A mutation acknowledged by a pull without a known push result is pushed once mor
 
 IndexedDB database `blackwall:{session_id}:{workspace_id}` with object stores:
 
-- `meta`: `schema`, `client_id`, `cursor`, `last_mutation_id`, `next_mutation_id`.
+- `meta`: `schema`, `user_id`, `client_id`, `cursor`, `last_mutation_id`, `next_mutation_id`. `user_id` is the signed-in user who created the replica.
 - One store per entity, keyed like the table above.
 - `outbox`, keyed by mutation id.
 - `scopes`, the loaded comment and activity scopes.
@@ -320,10 +339,11 @@ A bootstrap also drops loaded comment and activity scopes; the engine reloads th
 
 ### Session lifetime
 
-- After `GET /internal-api/me`, delete every `blackwall:*` database whose `session_id` isn't the current one.
-- Logout deletes the current session's databases before calling the server. If the outbox isn't empty, the existing confirm dialog asks first, because pending edits will be lost.
-- A 401 on any sync request deletes the session's databases and returns to login.
-- A 403 or 404 on a workspace deletes that replica and leaves the workspace.
+- After `GET /internal-api/me`, delete every `blackwall:*` database whose `session_id` isn't the current one, except a replica of the same user that still holds an outbox or kept rejections. That replica waits for its workspace to open. Another user's replica is always deleted.
+- Logout deletes every replica before calling the server. If any replica of this user holds an outbox or kept rejections, the existing confirm dialog asks first, because they will be lost.
+- A 401 on any sync request ends the session and returns to login. It deletes the session's replicas that hold nothing to keep. A replica with an outbox, unconfirmed mutations or kept rejections stays on disk, base included, until the same user signs in again.
+- When the same user opens that workspace under a new session, the new replica adopts the old one in one transaction. It takes the old `client_id`, `last_mutation_id`, `next_mutation_id`, outbox rows and kept rejections, and starts with an empty base. Its push lane sends the old mutations with their old ids, and the server answers anything it already processed with `duplicate` or `rejected`. Mutations are never re-sent under a new client id or new ids, which would apply some twice. The old replica is deleted once the adoption commits. A replica that already issued its own mutations refuses to adopt.
+- A 403 on a read, or a JSON `{"error"}` 404 on a workspace request, means access to the workspace is gone. The replica's records, scopes and outbox are deleted, and each pending mutation becomes a kept rejection with status 403. Nothing is pushed. If the user gets access back, the kept rejections appear in that workspace. A replica with nothing to keep is deleted. Any other 404, such as a proxy's, is a protocol error and deletes nothing.
 - Invitation tokens and integration secrets never reach IndexedDB.
 
 ### Tabs
