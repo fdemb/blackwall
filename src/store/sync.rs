@@ -183,7 +183,9 @@ fn database_disposition(error: &sqlx::Error) -> Disposition {
     match error {
         sqlx::Error::Database(db) => match db.code().as_deref() {
             Some(code) if code.starts_with("22") || code.starts_with("23") => Disposition::Business,
-            Some("40001" | "40P01" | "57P01" | "57P02" | "57P03") => Disposition::Retry,
+            Some("40001" | "40P01" | "55P03" | "57014" | "57P01" | "57P02" | "57P03") => {
+                Disposition::Retry
+            }
             Some(code) if code.starts_with("08") || code.starts_with("53") => Disposition::Retry,
             _ => Disposition::Defect,
         },

@@ -1228,55 +1228,68 @@ async fn push_stops_the_batch_on_a_retryable_database_error() {
     let app = router(store.clone());
     let owner = account(&store, "owner").await;
     let (ws, _) = setup(&app, &owner).await;
-    let client = Uuid::new_v4();
 
-    sqlx::query(
-        "CREATE FUNCTION fail_serialization() RETURNS trigger LANGUAGE plpgsql AS $$ \
-         BEGIN \
-           IF NEW.name = 'retry' THEN \
-             RAISE EXCEPTION 'conflict' USING ERRCODE = '40001'; \
-           END IF; \
-           RETURN NEW; \
-         END $$",
-    )
-    .execute(&store.pool)
-    .await
-    .unwrap();
-    sqlx::query(
-        "CREATE TRIGGER fail_serialization BEFORE INSERT ON labels \
-         FOR EACH ROW EXECUTE FUNCTION fail_serialization()",
-    )
-    .execute(&store.pool)
-    .await
-    .unwrap();
-
-    let label = |name: &str| json!({"id": Uuid::new_v4(), "name": name, "color": "#000000"});
-    let batch = vec![
-        mutation(1, "create_label", label("first")),
-        mutation(2, "create_label", label("retry")),
-        mutation(3, "create_label", label("third")),
-    ];
-    let (status, result) = push(&app, &owner.token, ws, client, batch.clone()).await;
-    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{result}");
-    assert_eq!(result["last_mutation_id"], 1);
-    assert_eq!(result["results"].as_array().unwrap().len(), 1);
-    assert_eq!(last_mutation_id(&store, client).await, Some(1));
-    let rejections: i64 = sqlx::query_scalar("SELECT count(*) FROM sync_rejections")
-        .fetch_one(&store.pool)
-        .await
-        .unwrap();
-    assert_eq!(rejections, 0);
-
-    sqlx::query("DROP TRIGGER fail_serialization ON labels")
+    for code in ["40001", "55P03", "57014"] {
+        let client = Uuid::new_v4();
+        let retry = format!("retry-{code}");
+        sqlx::query(&format!(
+            "CREATE FUNCTION fail_retryable() RETURNS trigger LANGUAGE plpgsql AS $$ \
+             BEGIN \
+               IF NEW.name = '{retry}' THEN \
+                 RAISE EXCEPTION 'transient' USING ERRCODE = '{code}'; \
+               END IF; \
+               RETURN NEW; \
+             END $$"
+        ))
         .execute(&store.pool)
         .await
         .unwrap();
-    let (status, result) = push(&app, &owner.token, ws, client, batch).await;
-    assert_eq!(status, StatusCode::OK, "{result}");
-    assert_eq!(result["last_mutation_id"], 3);
-    assert_eq!(result["results"][0]["status"], "duplicate");
-    assert_eq!(result["results"][1]["status"], "applied");
-    assert_eq!(result["results"][2]["status"], "applied");
+        sqlx::query(
+            "CREATE TRIGGER fail_retryable AFTER INSERT ON labels \
+             FOR EACH ROW EXECUTE FUNCTION fail_retryable()",
+        )
+        .execute(&store.pool)
+        .await
+        .unwrap();
+
+        let label = |name: String| json!({"id": Uuid::new_v4(), "name": name, "color": "#000000"});
+        let batch = vec![
+            mutation(1, "create_label", label(format!("first-{code}"))),
+            mutation(2, "create_label", label(retry.clone())),
+            mutation(3, "create_label", label(format!("third-{code}"))),
+        ];
+        let (status, result) = push(&app, &owner.token, ws, client, batch.clone()).await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{code}: {result}");
+        assert_eq!(result["last_mutation_id"], 1, "{code}");
+        assert_eq!(result["results"].as_array().unwrap().len(), 1, "{code}");
+        assert_eq!(last_mutation_id(&store, client).await, Some(1), "{code}");
+        let rejections: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM sync_rejections WHERE client_id = $1")
+                .bind(client)
+                .fetch_one(&store.pool)
+                .await
+                .unwrap();
+        assert_eq!(rejections, 0, "{code}");
+        let written: i64 = sqlx::query_scalar("SELECT count(*) FROM labels WHERE name = $1")
+            .bind(&retry)
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+        assert_eq!(written, 0, "{code}: the failed label must not survive");
+
+        for statement in [
+            "DROP TRIGGER fail_retryable ON labels",
+            "DROP FUNCTION fail_retryable()",
+        ] {
+            sqlx::query(statement).execute(&store.pool).await.unwrap();
+        }
+        let (status, result) = push(&app, &owner.token, ws, client, batch).await;
+        assert_eq!(status, StatusCode::OK, "{code}: {result}");
+        assert_eq!(result["last_mutation_id"], 3, "{code}");
+        assert_eq!(result["results"][0]["status"], "duplicate", "{code}");
+        assert_eq!(result["results"][1]["status"], "applied", "{code}");
+        assert_eq!(result["results"][2]["status"], "applied", "{code}");
+    }
 
     drop(app);
     store.pool.close().await;
