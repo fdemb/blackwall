@@ -8,7 +8,13 @@ import type { PendingMutation } from "../store";
 import { IDB_VERSION, IndexedDBReplicaStorage } from "./idb";
 import { MemoryReplicaStorage } from "./memory";
 import { replicaName } from "./shared";
-import type { Replica, ReplicaCloseListener, ReplicaStorage, Scope } from "./types";
+import type {
+  Replica,
+  ReplicaCloseListener,
+  ReplicaOpenInput,
+  ReplicaStorage,
+  Scope,
+} from "./types";
 
 const INPUT = { sessionId: "session-1", workspaceId: "workspace-1", schema: 7 };
 const COMMENT_SCOPE = { entity: "comments", issueId: "issue-1" } satisfies Scope;
@@ -38,7 +44,7 @@ for (const backend of ["memory", "idb"]) {
     let storage: ReplicaStorage;
     let replica: Replica;
     let handles: Replica[];
-    async function open(input = INPUT): Promise<Replica> {
+    async function open(input: ReplicaOpenInput = INPUT): Promise<Replica> {
       const handle = await storage.open(input);
       handles.push(handle);
       return handle;
