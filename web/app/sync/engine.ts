@@ -1982,14 +1982,12 @@ export class SyncEngine {
     let keep = true;
     try {
       const { outbox, rejected } = await replica.load();
-      const rejections = outbox.map(
-        (mutation): Rejection => ({
-          id: mutation.id,
-          status: 403,
-          message: ACCESS_LOST,
-          command: { name: mutation.name, args: immutableCopy(mutation.args) },
-        }),
-      );
+      const rejections = outbox.map((mutation): Rejection => ({
+        id: mutation.id,
+        status: 403,
+        message: ACCESS_LOST,
+        command: { name: mutation.name, args: immutableCopy(mutation.args) },
+      }));
       keep = rejections.length > 0 || rejected.length > 0;
       if (keep) await replica.revoke(rejections);
     } catch {
