@@ -485,12 +485,9 @@ async fn push_rejected_mutation_advances_id_and_rolls_back() {
     let (ws, team) = setup(&app, &owner).await;
     invite_member(&app, &owner, ws, &member).await;
     let client = Uuid::new_v4();
-    // The valid issue sorts first in request order, so its writes must roll
-    // back when the second issue fails validation. Assignee and deadline
-    // force notification and reminder-job writes, proving side effects roll
-    // back too.
+    // Assignee and deadline force notification and reminder-job writes, so
+    // the rejection must roll back side effects as well as the issue.
     let kept = Uuid::new_v4();
-    let missing_team = Uuid::new_v4();
 
     let issues_before: i64 =
         sqlx::query_scalar("SELECT count(*) FROM issues WHERE workspace_id = $1")
@@ -521,6 +518,24 @@ async fn push_rejected_mutation_advances_id_and_rolls_back() {
             .await
             .unwrap();
 
+    // The activity insert closes every command, so the trigger fails it after
+    // the issue, notification and reminder-job writes. Class 23 is a business
+    // rejection.
+    sqlx::query(
+        "CREATE FUNCTION reject_activity() RETURNS trigger LANGUAGE plpgsql AS $$ \
+         BEGIN RAISE EXCEPTION 'invalid' USING ERRCODE = '23514'; END $$",
+    )
+    .execute(&store.pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "CREATE TRIGGER reject_activity BEFORE INSERT ON activity \
+         FOR EACH ROW EXECUTE FUNCTION reject_activity()",
+    )
+    .execute(&store.pool)
+    .await
+    .unwrap();
+
     let (status, result) = push(
         &app,
         &owner.token,
@@ -528,12 +543,11 @@ async fn push_rejected_mutation_advances_id_and_rolls_back() {
         client,
         vec![mutation(
             1,
-            "import_issues",
-            json!({"issues": [
-                {"id": kept, "team_id": team, "title": "Kept",
-                 "assignee": member.profile.id, "deadline": "2026-11-08T12:00:00Z"},
-                {"id": Uuid::new_v4(), "team_id": missing_team, "title": "Missing team"},
-            ]}),
+            "create_issue",
+            json!({"input": {
+                "id": kept, "team_id": team, "title": "Kept",
+                "assignee": member.profile.id, "deadline": "2026-11-08T12:00:00Z"
+            }}),
         )],
     )
     .await;
@@ -541,7 +555,7 @@ async fn push_rejected_mutation_advances_id_and_rolls_back() {
     assert_eq!(result["last_mutation_id"], 1);
     assert_eq!(result["results"][0]["id"], 1);
     assert_eq!(result["results"][0]["status"], "rejected");
-    assert_eq!(result["results"][0]["error"]["status"], 404);
+    assert_eq!(result["results"][0]["error"]["status"], 500);
     assert_eq!(last_mutation_id(&store, client).await, Some(1));
 
     // Nothing from the first issue survived the rejection.
