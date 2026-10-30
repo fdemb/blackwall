@@ -58,7 +58,6 @@ async function fixture() {
       fetch,
       headers: () => ({ cookie: `blackwall_session=${token}` }),
     }),
-    sessionId: id(3),
     workspaceId: workspace.id,
     actor: owner.id,
     schema: SCHEMA,
@@ -370,7 +369,6 @@ describe("offline and rejected commands", () => {
     const offline = createEngine({
       storage: new MemoryReplicaStorage(),
       transport: createTransport({ fetch: sent, headers: () => ({}) }),
-      sessionId: id(3),
       workspaceId: workspace.id,
       actor: owner.id,
       schema: SCHEMA,

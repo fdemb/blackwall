@@ -857,6 +857,8 @@ export const en = {
   "error.offlineRetry": "Retry now",
   "error.syncBlocked":
     "The server refused some changes, so they can't be sent. Retry, or reload if it keeps happening.",
+  "error.syncStalled":
+    "The server isn't saving your changes yet. They're kept on this device, and we keep trying.",
   "error.syncFailed": "Sync stopped: {{message}}",
 
   "error.network": "Couldn't reach the server. Check your connection and try again.",

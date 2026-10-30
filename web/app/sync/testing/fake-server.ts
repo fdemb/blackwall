@@ -23,6 +23,12 @@ export type Fault =
       milliseconds: number | readonly [number, number];
     }
   | { kind: "drop_response"; route?: Route }
+  /** The route runs and commits, then a proxy answers with this status, like a 502 after the work. */
+  | {
+      kind: "fail_response";
+      route: "pull" | "bootstrap" | "scope" | "push" | "commands";
+      status: number;
+    }
   | { kind: "duplicate_push" }
   | {
       kind: "unavailable";
@@ -595,6 +601,11 @@ export class FakeServer {
       if (!(error instanceof MutationError)) throw error;
       response = json({ error: error.message }, error.status);
     }
+    const failed = faults.find((fault) => fault.kind === "fail_response");
+    if (failed?.kind === "fail_response") {
+      await response.body?.cancel();
+      return json({ error: "bad gateway" }, failed.status);
+    }
     if (faults.some((fault) => fault.kind === "drop_response")) {
       await response.body?.cancel();
       throw new TypeError("Failed to fetch: injected lost response");
@@ -652,6 +663,7 @@ export class FakeServer {
         fault.kind === "delay" ||
         fault.kind === "response_delay" ||
         fault.kind === "drop_response" ||
+        fault.kind === "fail_response" ||
         fault.kind === "unavailable"
           ? fault.route
           : fault.kind === "truncate_bootstrap" || fault.kind === "cut_bootstrap"

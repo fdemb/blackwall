@@ -8,7 +8,6 @@ import {
 } from "./mutators";
 import { DEFAULT_STAGES } from "./mutators/planning";
 import { acceptsChange, recordKey, recordScope, scopeKey } from "./persistence/shared";
-import { hasWork, pruneReplicas, readSaved } from "./persistence/retention";
 import type { Replica, ReplicaCloseReason, Scope } from "./persistence/types";
 import { BOOTSTRAP_ENTITIES, BOOTSTRAP_REPLACED_ENTITIES } from "./records";
 import type { Change, Entity } from "./records";
@@ -79,44 +78,24 @@ type RequestKind = "bootstrap" | "pull" | "scope" | "push" | "events";
 /** The server keeps a client's 1,000 newest rejections, so older ones read back as duplicates. */
 const REJECTIONS_KEPT = 1000;
 /**
- * Server failures (5xx while its reads still answer) on a batch's first unsettled mutation. After
- * NARROW_AFTER the mutation is pushed alone, after SET_ASIDE_AFTER it is set aside as a local
- * rejection. Retry delays on these failures stop growing at 8 seconds, so a mutation the server
- * can't process surfaces after about 20 seconds, and later edits sync after that.
+ * Server failures in a row on one batch before the engine reports a stall. Nothing is dropped for
+ * them: a 5xx or a timeout says nothing about the mutation, so the push retries with capped backoff.
  */
-const NARROW_AFTER = 4;
-const SET_ASIDE_AFTER = 6;
-const SERVER_FAILURE_BACKOFF_STEPS = 3;
+const STALLED_AFTER = 3;
 const TOO_LARGE = "This edit is too large to save.";
-const SERVER_FAILED = "The server could not save this edit.";
-const ACCESS_LOST = "You no longer have access to this workspace.";
 type PushBatch = {
-  /** Narrowed to its first unsettled mutation after repeated failures, or halved after a 413. */
+  /** Halved after a 413, so a body the server refuses never blocks the outbox. */
   mutations: readonly Mutation[];
   processed: boolean;
   attempt: number;
   retryAt: number;
   csrfRefreshes: number;
-  /** Server failures on the first unsettled mutation. Network failures never count. */
+  /** Server failures in a row on this batch. Network failures never count. */
   failures: number;
   /** Leading mutations a partial response already processed. */
   settled: number;
 };
 type PushFailure = "unreachable" | "server" | "too-large";
-type PushStep = "retry" | "halve" | "narrow" | "set-aside";
-
-/**
- * What a failed push does next, from the failure, the server failures so far, and how many
- * unsettled mutations the batch holds. A mutation can only be set aside alone and never for a
- * network failure, because the server treats the outbox's ids as a high-water mark.
- */
-function pushStep(failure: PushFailure, failures: number, unsettled: number): PushStep {
-  if (failure === "unreachable") return "retry";
-  if (failure === "too-large") return unsettled > 1 ? "halve" : "set-aside";
-  if (failures < NARROW_AFTER) return "retry";
-  if (unsettled > 1) return "narrow";
-  return failures < SET_ASIDE_AFTER ? "retry" : "set-aside";
-}
 
 /** Null for errors that end the session, lose access or block pushing instead of retrying. */
 function pushFailure(error: unknown): PushFailure | null {
@@ -181,6 +160,7 @@ export class SyncEngine {
   private readonly channel: TabChannel | null;
   private readonly tabId: string;
   private readonly lockName: string;
+  private readonly owner: string;
   private role: EngineRole;
   private lockPending = false;
   private lockHeld = false;
@@ -251,8 +231,9 @@ export class SyncEngine {
 
   constructor(private readonly deps: EngineDependencies) {
     this.store = new SyncStore(createReplay(deps.actor));
-    this.delay = backoff(`${deps.sessionId}:${deps.workspaceId}`, deps.clock);
-    this.lockName = `blackwall-sync:${deps.sessionId}:${deps.workspaceId}`;
+    this.owner = deps.replicaOwner ?? deps.actor;
+    this.delay = backoff(`${this.owner}:${deps.workspaceId}`, deps.clock);
+    this.lockName = `blackwall-sync:${this.owner}:${deps.workspaceId}`;
     this.role = deps.locks ? "follower" : "leader";
     this.tabId = deps.channel ? deps.randomId() : "";
     this.channel = deps.channel?.(this.lockName) ?? null;
@@ -264,6 +245,7 @@ export class SyncEngine {
       connected: false,
       pending: 0,
       blocked: false,
+      stalled: false,
       lastError: null,
       rejected: Object.freeze([]),
       unresolved: Object.freeze([]),
@@ -309,14 +291,12 @@ export class SyncEngine {
       return Promise.reject(this.outdated ?? new Error("Engine is closed"));
     this.opening ??= this.commits.run(async () => {
       const replica = await this.deps.storage.open({
-        sessionId: this.deps.sessionId,
+        userId: this.owner,
         workspaceId: this.deps.workspaceId,
-        userId: this.deps.actor,
         schema: this.deps.schema,
         onClose: (reason, newVersion) => this.replicaClosed(reason, newVersion),
       });
       this.replica = replica;
-      await this.adoptSavedWork(replica);
       let loaded = await replica.load();
       if (loaded.meta.schema !== this.deps.schema) {
         await replica.resetBase();
@@ -346,24 +326,6 @@ export class SyncEngine {
       for (const message of this.inbox.splice(0)) this.receive(message);
     });
     return this.opening;
-  }
-
-  /**
-   * Takes over the edits a same-user replica of an ended session left behind, under its client id
-   * and mutation ids. The push lane then sends them in order, and the server answers anything it
-   * already processed with duplicate or rejected. Another user's replica is never touched. The
-   * old replica goes once the new one holds its work, so a crash between the two repeats safely.
-   */
-  private async adoptSavedWork(replica: Replica): Promise<void> {
-    const { storage, sessionId, workspaceId, actor, schema } = this.deps;
-    for (const identity of await storage.list()) {
-      if (identity.workspaceId !== workspaceId || identity.sessionId === sessionId) continue;
-      const saved = await readSaved(storage, identity, schema);
-      if (saved.userId !== actor) continue;
-      const adoption = hasWork(saved.work) ? await replica.adopt(saved.work) : "adopted";
-      // A delete that stays blocked is retried by the next open, which sees "already".
-      if (adoption !== "occupied") await storage.delete(identity).catch(() => undefined);
-    }
   }
 
   /** Replaces the in-memory replica with what the database holds. */
@@ -495,6 +457,7 @@ export class SyncEngine {
       role,
       online: this.deps.signals.getOnline() && (role === "leader" || this.leaderOnline),
       blocked: role === "leader" ? this.outboxBlocked() : this.leaderBlocked,
+      stalled: false,
     });
   }
 
@@ -775,7 +738,7 @@ export class SyncEngine {
     this.blocked.clear();
     this.scopeFailures.clear();
     this.batch = null;
-    this.update({ blocked: false, lastError: null });
+    this.update({ blocked: false, stalled: false, lastError: null });
     this.post(this.statusMessage());
     this.notifyScopes();
     this.cancelNetwork();
@@ -794,6 +757,7 @@ export class SyncEngine {
       connected: this.snapshot.connected,
       online: this.snapshot.online,
       blocked: this.outboxBlocked(),
+      stalled: this.snapshot.stalled,
       error:
         error === null || error instanceof OutdatedError
           ? null
@@ -811,7 +775,7 @@ export class SyncEngine {
     for (const listener of this.statusListeners) listener();
     if (
       this.role === "leader" &&
-      ("connected" in patch || "online" in patch || "lastError" in patch)
+      ("connected" in patch || "online" in patch || "stalled" in patch || "lastError" in patch)
     )
       this.post(this.statusMessage());
   }
@@ -906,6 +870,7 @@ export class SyncEngine {
       connected: message.connected,
       online: this.leaderOnline && this.deps.signals.getOnline(),
       blocked: message.blocked,
+      stalled: message.stalled,
       lastError: this.leaderError(message.error),
     });
     this.notifyChange();
@@ -1675,9 +1640,11 @@ export class SyncEngine {
         if (response.results.length > batch.settled) {
           batch.settled = response.results.length;
           batch.failures = 0;
+          this.update({ stalled: false });
         }
-        return this.failPush("server", response.retryAfter, batch, controller);
+        return this.failPush("server", response.retryAfter, batch);
       }
+      this.update({ stalled: false });
       batch.processed = true;
       return "sent";
     } catch (error) {
@@ -1695,85 +1662,57 @@ export class SyncEngine {
       return this.pushForbidden(error, batch, controller);
     const failure = pushFailure(error);
     if (failure !== "too-large" && (await this.handleError(error, "push"))) return "stop";
-    return this.failPush(
-      failure ?? "unreachable",
-      error instanceof UnavailableError ? error.retryAfter : null,
-      batch,
-      controller,
-    );
-  }
-
-  /** Applies `pushStep` to one failed attempt. */
-  private async failPush(
-    failure: PushFailure,
-    retryAfter: number | string | null | undefined,
-    batch: PushBatch,
-    controller: AbortController,
-  ): Promise<"again" | "stop"> {
-    if (failure === "server") {
-      batch.failures += 1;
-      if (batch.failures >= NARROW_AFTER) {
-        const reads = await this.serverAnswers(controller);
-        if (reads === "ended") return "stop";
-        // While reads fail too, the server is down, which says nothing about this mutation.
-        if (reads === "down") batch.failures = NARROW_AFTER - 1;
-      }
+    const retryAfter = error instanceof UnavailableError ? error.retryAfter : null;
+    if (failure !== "too-large") return this.failPush(failure ?? "unreachable", retryAfter, batch);
+    if (batch.mutations.length > 1) {
+      batch.mutations = batch.mutations.slice(0, Math.ceil(batch.mutations.length / 2));
+      return "again";
     }
-    const unsettled = batch.mutations.slice(batch.settled);
-    switch (pushStep(failure, batch.failures, unsettled.length)) {
-      case "retry":
-        this.scheduleRetry(batch, retryAfter, failure);
-        return "again";
-      case "halve":
-        batch.mutations = batch.mutations.slice(0, Math.ceil(batch.mutations.length / 2));
-        return "again";
-      case "narrow":
-        batch.mutations = unsettled.slice(0, 1);
-        batch.settled = 0;
-        return "again";
-      case "set-aside":
-        await this.setAside(unsettled[0], failure === "too-large" ? 413 : 500);
-        return "again";
-    }
-  }
-
-  /** Whether the server still answers a read, which tells a failing mutation from an outage. */
-  private async serverAnswers(controller: AbortController): Promise<"up" | "down" | "ended"> {
-    try {
-      await this.withDeadline(controller, READ_DEADLINE_MS, (signal) =>
-        this.deps.transport.pull(this.deps.workspaceId, this.clientId, this.cursor, { signal }),
-      );
-      return "up";
-    } catch (error) {
-      this.check(controller);
-      if (error instanceof NetworkError || error instanceof UnavailableError) return "down";
-      if (error instanceof UnauthorizedError || error instanceof AccessError) {
-        await this.handleError(error, "push");
-        return "ended";
-      }
-      return "up";
-    }
+    return this.setAsideTooLarge(batch.mutations[0], controller);
   }
 
   /**
-   * Keeps a mutation the server can't take as a local rejection, so it reaches the kept-rejections
-   * list with its text. It leaves the outbox and the view and is never pushed again. Later ids
-   * still push, and the server's high-water mark passes this one without ever applying it.
+   * Retries a failed attempt after a capped backoff. A server failure or a timeout never discards
+   * an edit, because it can't say whether the command ran or what it would have done.
    */
-  private async setAside(mutation: Mutation | undefined, status: 413 | 500): Promise<void> {
+  private failPush(
+    failure: "unreachable" | "server",
+    retryAfter: number | string | null | undefined,
+    batch: PushBatch,
+  ): "again" {
+    if (failure === "server") {
+      batch.failures += 1;
+      if (batch.failures >= STALLED_AFTER) this.update({ stalled: true });
+    } else this.update({ stalled: false });
+    batch.retryAt = Date.parse(this.deps.clock.now()) + this.delay(batch.attempt++, retryAfter);
+    return "again";
+  }
+
+  /**
+   * A 413 means the request never reached a command, so a single mutation the server refuses by
+   * size can never be sent. A read first, because an earlier push of it may have succeeded with
+   * its response lost: then the server holds its outcome, and only the confirmation is too large.
+   */
+  private async setAsideTooLarge(
+    mutation: Mutation | undefined,
+    controller: AbortController,
+  ): Promise<"again" | "stop"> {
     this.batch = null;
-    if (mutation === undefined) return;
+    if (mutation === undefined) return "again";
+    const read = await this.retry("pull", controller, () =>
+      this.reads.run(() => this.readPull(controller)),
+    );
+    if (read.reset || read.more) void this.pull();
     const { id } = mutation;
     if (id <= this.acknowledged) {
-      // The server already processed it. Only the confirmation of its outcome keeps failing.
       this.settle(id, "unknown", false);
       this.unconfirmed.delete(id);
       this.confirm([id], []);
       this.appendedIds.delete(id);
       this.post({ type: "result", mutationId: id, outcome: "unknown" });
-      return;
+      return "again";
     }
-    const outcome = { id, status, message: status === 413 ? TOO_LARGE : SERVER_FAILED };
+    const outcome = { id, status: 413, message: TOO_LARGE };
     const rejection = this.settle(id, outcome, true) ?? {
       ...outcome,
       command: { name: mutation.name, args: immutableCopy(mutation.args) },
@@ -1786,6 +1725,7 @@ export class SyncEngine {
       this.post({ type: "result", mutationId: id, outcome });
       this.post({ type: "reset" });
     });
+    return "again";
   }
 
   /**
@@ -1808,17 +1748,6 @@ export class SyncEngine {
       "push",
     );
     return "stop";
-  }
-
-  private scheduleRetry(
-    batch: PushBatch,
-    retryAfter: number | string | null | undefined,
-    failure: PushFailure,
-  ): void {
-    const step =
-      failure === "server" ? Math.min(batch.attempt, SERVER_FAILURE_BACKOFF_STEPS) : batch.attempt;
-    batch.attempt += 1;
-    batch.retryAt = Date.parse(this.deps.clock.now()) + this.delay(step, retryAfter);
   }
 
   /** A forbidden /api/me means the refresh itself failed, which no retry fixes. */
@@ -1938,21 +1867,13 @@ export class SyncEngine {
     this.emit({ type: "error", error: failure });
     if (failure instanceof UnauthorizedError || failure instanceof AccessError) {
       const ending = failure instanceof UnauthorizedError ? "unauthorized" : "accessLost";
-      // Followers hear first, so they stop before the replica they read is deleted.
       this.post({ type: ending });
       this.endSession(failure);
+      // The replica stays on disk with its outbox. The same user's next sign-in, or access
+      // returning, continues from it, and the server's answers decide what happens to each edit.
       await this.commits.run(async () => {
-        if (failure instanceof UnauthorizedError) {
-          this.replica?.close();
-          this.replica = null;
-          // Edits and kept rejections outlive the session. The same user's next login adopts them.
-          await pruneReplicas(
-            this.deps.storage,
-            this.deps.schema,
-            (identity) => identity.sessionId === this.deps.sessionId,
-            (saved) => hasWork(saved.work),
-          );
-        } else await this.revokeAccess();
+        this.replica?.close();
+        this.replica = null;
         this.clearView();
         this.update({ phase: "loading" });
         this.emit({ type: ending });
@@ -1967,39 +1888,6 @@ export class SyncEngine {
       return true;
     }
     return false;
-  }
-
-  /**
-   * The user lost the workspace, so its records go, and its pending edits become kept rejections
-   * instead of being pushed. They show again if the user regains access. A replica with nothing
-   * to keep is deleted. A failed write keeps the replica as it is, since losing the edits is worse
-   * than keeping a stale copy for a moment.
-   */
-  private async revokeAccess(): Promise<void> {
-    const replica = this.replica;
-    this.replica = null;
-    if (!replica) return;
-    let keep = true;
-    try {
-      const { outbox, rejected } = await replica.load();
-      const rejections = outbox.map((mutation): Rejection => ({
-        id: mutation.id,
-        status: 403,
-        message: ACCESS_LOST,
-        command: { name: mutation.name, args: immutableCopy(mutation.args) },
-      }));
-      keep = rejections.length > 0 || rejected.length > 0;
-      if (keep) await replica.revoke(rejections);
-    } catch {
-      keep = true;
-    } finally {
-      replica.close();
-    }
-    if (!keep)
-      await this.deps.storage.delete({
-        sessionId: this.deps.sessionId,
-        workspaceId: this.deps.workspaceId,
-      });
   }
 
   /**

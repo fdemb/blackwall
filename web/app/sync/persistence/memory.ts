@@ -11,7 +11,6 @@ import {
   scopeKey,
 } from "./shared";
 import type {
-  Adoption,
   LoadedReplica,
   Replica,
   ReplicaCloseReason,
@@ -19,7 +18,6 @@ import type {
   ReplicaMeta,
   ReplicaOpenInput,
   ReplicaStorage,
-  SavedWork,
   Scope,
 } from "./types";
 
@@ -191,20 +189,6 @@ class MemoryReplica implements Replica {
     });
   }
 
-  async adopt(saved: SavedWork): Promise<Adoption> {
-    return this.transaction((state) => {
-      if (state.meta.clientId === saved.clientId) return "already";
-      if (state.meta.nextMutationId !== 1) return "occupied";
-      state.meta.clientId = saved.clientId;
-      state.meta.lastMutationId = saved.lastMutationId;
-      state.meta.nextMutationId = saved.nextMutationId;
-      for (const mutation of saved.outbox) state.outbox.set(mutation.id, structuredClone(mutation));
-      for (const rejection of saved.rejected)
-        state.rejected.set(rejection.id, structuredClone(rejection));
-      return "adopted";
-    });
-  }
-
   async discard(rejections: readonly Rejection[]): Promise<void> {
     this.transaction((state) => {
       for (const rejection of rejections) {
@@ -212,19 +196,6 @@ class MemoryReplica implements Replica {
         state.outbox.delete(rejection.id);
         state.confirmed.delete(rejection.id);
       }
-    });
-  }
-
-  async revoke(rejections: readonly Rejection[]): Promise<void> {
-    this.transaction((state) => {
-      for (const table of state.records.values()) table.clear();
-      state.scopes.clear();
-      state.outbox.clear();
-      state.confirmed.clear();
-      for (const rejection of rejections)
-        state.rejected.set(rejection.id, structuredClone(rejection));
-      state.meta.serverSchema = 0;
-      state.meta.cursor = null;
     });
   }
 
@@ -271,7 +242,7 @@ export class MemoryReplicaStorage implements ReplicaStorage {
 
   async list(): Promise<readonly ReplicaIdentity[]> {
     return [...this.replicas.values()].map(({ state: { meta } }) => ({
-      sessionId: meta.sessionId,
+      userId: meta.userId,
       workspaceId: meta.workspaceId,
     }));
   }
@@ -282,11 +253,5 @@ export class MemoryReplicaStorage implements ReplicaStorage {
     if (entry === undefined) return;
     for (const handle of entry.handles) handle.closeExternally();
     this.replicas.delete(name);
-  }
-
-  async deleteAllExcept(sessionId: string | null): Promise<void> {
-    for (const identity of await this.list()) {
-      if (identity.sessionId !== sessionId) await this.delete(identity);
-    }
   }
 }

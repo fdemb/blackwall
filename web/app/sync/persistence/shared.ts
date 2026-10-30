@@ -4,22 +4,19 @@ import type { ReplicaIdentity, ReplicaMeta, Scope } from "./types";
 export const REPLICA_PREFIX = "blackwall:";
 
 export function replicaName(input: ReplicaIdentity): string {
-  return `${REPLICA_PREFIX}${input.sessionId}:${input.workspaceId}`;
+  return `${REPLICA_PREFIX}${input.userId}:${input.workspaceId}`;
 }
 
 export function replicaIdentity(name: string): ReplicaIdentity | null {
   if (!name.startsWith(REPLICA_PREFIX)) return null;
   const parts = name.slice(REPLICA_PREFIX.length).split(":");
   if (parts.length !== 2 || !parts[0] || !parts[1]) return null;
-  return { sessionId: parts[0], workspaceId: parts[1] };
+  return { userId: parts[0], workspaceId: parts[1] };
 }
 
-export function initialMeta(
-  input: ReplicaIdentity & { schema: number; userId?: string },
-): ReplicaMeta {
+export function initialMeta(input: ReplicaIdentity & { schema: number }): ReplicaMeta {
   return {
-    userId: input.userId ?? "",
-    sessionId: input.sessionId,
+    userId: input.userId,
     workspaceId: input.workspaceId,
     schema: input.schema,
     serverSchema: 0,

@@ -73,7 +73,7 @@ async function fixture({
   role?: Role;
 } = {}) {
   const replica = await storage.open({
-    sessionId: "session",
+    userId: profile.id,
     workspaceId: "workspace",
     schema: SCHEMA,
   });
@@ -182,7 +182,6 @@ async function fixture({
         throw new Error("Replica rendering must not fetch");
       },
     }),
-    sessionId: "session",
     workspaceId: "workspace",
     actor: profile.id,
     schema: SCHEMA,
@@ -673,7 +672,7 @@ describe("outdated workspace", () => {
         indexedDB: database,
         version: IDB_VERSION + 1,
       }).open({
-        sessionId: "session",
+        userId: profile.id,
         workspaceId: "workspace",
         schema: SCHEMA,
       });

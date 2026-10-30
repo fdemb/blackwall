@@ -314,7 +314,7 @@ class ConvergenceRun {
 
   private async verifyDisk(index: number, c: Client) {
     const replica = await c.storage.open({
-      sessionId: c.user.sessionId,
+      userId: c.user.id,
       workspaceId: this.ws,
       schema: SCHEMA,
     });

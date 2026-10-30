@@ -1,6 +1,6 @@
 import "fake-indexeddb/auto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
-import { OutdatedError, SCHEMA } from "../sync/engine";
+import { OutdatedError, SCHEMA, type SyncEngine } from "../sync/engine";
 import { IndexedDBReplicaStorage, IDB_VERSION } from "../sync/persistence/idb";
 import { createTabHub } from "../sync/testing/tabs";
 import { createFakeServer } from "../sync/testing/fake-server";
@@ -33,23 +33,9 @@ async function until(check: () => boolean) {
   }
   expect(check()).toBe(true);
 }
-async function seed(sessionId: string, workspaceId: string, pending = false) {
-  const replica = await replicaStorage().open({ sessionId, workspaceId, schema: SCHEMA });
-  if (pending)
-    await replica.appendMutation(() => ({
-      name: "mark_all_notifications_read",
-      args: {},
-      at: "2026-10-09T12:00:00Z",
-    }));
-  replica.close();
-}
-async function seedOwned(
-  sessionId: string,
-  workspaceId: string,
-  userId: string,
-  work: "pending" | "rejected" | "none",
-) {
-  const replica = await replicaStorage().open({ sessionId, workspaceId, schema: SCHEMA, userId });
+type Work = "pending" | "rejected" | "none";
+async function seed(userId: string, workspaceId: string, work: Work = "none") {
+  const replica = await replicaStorage().open({ userId, workspaceId, schema: SCHEMA });
   if (work === "pending")
     await replica.appendMutation(() => ({
       name: "mark_all_notifications_read",
@@ -62,6 +48,34 @@ async function seedOwned(
       [{ id: 1, status: 400, message: "refused", command: { name: "update_issue", args: {} } }],
     );
   replica.close();
+}
+/** What replicas looked like before they were named by user: the meta has a session, no user. */
+async function makeLegacy(identity: { userId: string; workspaceId: string }) {
+  const db = await new Promise<IDBDatabase>((resolve, reject) => {
+    const request = indexedDB.open(`blackwall:${identity.userId}:${identity.workspaceId}`);
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction("meta", "readwrite");
+    const get = tx.objectStore("meta").get("replica");
+    get.onsuccess = () => {
+      const { userId, ...meta } = get.result;
+      tx.objectStore("meta").put({ ...meta, sessionId: userId }, "replica");
+    };
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+  db.close();
+}
+/** A replica a newer version of the app wrote, so this version can't open it. */
+async function seedUnreadable(userId: string, workspaceId: string) {
+  const db = await new Promise<IDBDatabase>((resolve, reject) => {
+    const request = indexedDB.open(`blackwall:${userId}:${workspaceId}`, IDB_VERSION + 1);
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+  db.close();
 }
 async function fixture() {
   const server = createFakeServer();
@@ -81,7 +95,7 @@ async function fixture() {
     type: "create_issue",
     input: { id: id(2), title: "On disk", team_id: id(1) },
   });
-  const token = server.login(owner);
+  let token = server.login(owner);
   setCsrf(server.csrfToken(token));
   const fetch = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
     const headers = new Headers(init?.headers);
@@ -91,7 +105,23 @@ async function fixture() {
   vi.stubGlobal("fetch", fetch);
   const profile = await currentProfile();
   if (!profile) throw new Error("fixture login failed");
-  return { server, owner, workspace, token, profile, fetch };
+  /** Starts a new session for `user`, like a sign-in in this browser. */
+  const signIn = (user: string) => {
+    token = server.login(user);
+    setCsrf(server.csrfToken(token));
+    return token;
+  };
+  return { server, owner, workspace, token, profile, fetch, signIn };
+}
+const pushed = (fetch: { mock: { calls: unknown[][] } }) =>
+  fetch.mock.calls.some(([url]) => String(url).includes("/sync/"));
+async function replicaClientId(userId: string, workspaceId: string) {
+  const replica = await replicaStorage().open({ userId, workspaceId, schema: SCHEMA });
+  try {
+    return (await replica.load()).meta.clientId;
+  } finally {
+    replica.close();
+  }
 }
 beforeEach(() => {
   assign.mockClear();
@@ -108,58 +138,90 @@ beforeEach(() => {
 afterEach(async () => {
   vi.restoreAllMocks();
   await clearSession();
-  await replicaStorage().deleteAllExcept(null);
   for (const server of servers.splice(0)) server.close();
   vi.unstubAllGlobals();
 });
 
-describe("session replica lifetime", () => {
-  it("GET /internal-api/me deletes other sessions' replicas and preserves this session", async () => {
+describe("user replica lifetime", () => {
+  it("signing in keeps the user's replicas and deletes everyone else's", async () => {
     const { profile } = await fixture();
-    await seed(id(90), id(91), true);
-    await seed(profile.session_id, id(92));
+    await seed(profile.id, id(91), "pending");
+    await seed(profile.id, id(92));
+    await seed(id(777), id(93), "pending");
+    await seed(id(778), id(94));
     await currentProfile();
-    expect(await replicaStorage().list()).toEqual([
-      { sessionId: profile.session_id, workspaceId: id(92) },
-    ]);
+    expect((await replicaStorage().list()).map((replica) => replica.workspaceId).sort()).toEqual(
+      [id(91), id(92)].sort(),
+    );
     expect(currentSession()?.session_id).toBe(profile.session_id);
   });
-  it("login keeps the same user's saved edits and deletes everyone else's replicas", async () => {
+  it("another user signing in deletes the first user's replicas without opening or pushing them", async () => {
+    const { server, profile, fetch, signIn } = await fixture();
+    await seed(profile.id, id(91), "pending");
+    const other = server.addUser();
+    signIn(other.id);
+    fetch.mockClear();
+    const next = await currentProfile();
+    expect(next?.id).toBe(other.id);
+    expect(await replicaStorage().list()).toEqual([]);
+    expect(pushed(fetch)).toBe(false);
+  });
+  it("another user's unreadable replica goes too, and the user's own stays", async () => {
     const { profile } = await fixture();
-    await seedOwned(id(90), id(91), profile.id, "pending");
-    await seedOwned(id(92), id(93), id(777), "pending");
-    await seedOwned(id(94), id(95), profile.id, "none");
+    await seedUnreadable(id(777), id(91));
+    await seedUnreadable(profile.id, id(92));
+    vi.spyOn(console, "error").mockImplementation(() => {});
     await currentProfile();
-    expect(await replicaStorage().list()).toEqual([{ sessionId: id(90), workspaceId: id(91) }]);
+    expect(await replicaStorage().list()).toEqual([{ userId: profile.id, workspaceId: id(92) }]);
   });
-  it("logout asks first when only kept rejections or an older session's edits would be lost", async () => {
-    const { profile } = await fixture();
-    expect(await sessionHasPending()).toBe(false);
-    await seedOwned(profile.session_id, id(91), profile.id, "rejected");
-    expect(await sessionHasPending()).toBe(true);
-    await replicaStorage().delete({ sessionId: profile.session_id, workspaceId: id(91) });
-    expect(await sessionHasPending()).toBe(false);
-    await seedOwned(id(90), id(92), profile.id, "pending");
-    expect(await sessionHasPending()).toBe(true);
-    await seedOwned(id(91), id(93), id(777), "pending");
-    await replicaStorage().delete({ sessionId: id(90), workspaceId: id(92) });
-    expect(await sessionHasPending()).toBe(false);
-  });
-  it("unauthorized sync keeps the replicas that hold edits and deletes the rest", async () => {
-    const { server, token, workspace, profile } = await fixture();
+  it("never deletes the user's unreadable replica on sign-in, in the logout check or when the session expires", async () => {
+    const { profile, server, token, workspace } = await fixture();
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    await seedUnreadable(profile.id, id(91));
+    await currentProfile();
     const engine = await openWorkspaceEngine(workspace.id);
-    await seedOwned(profile.session_id, id(91), profile.id, "pending");
-    await seedOwned(profile.session_id, id(92), profile.id, "none");
+    expect(await sessionHasPending()).toBe(false);
+    expect(logged).toHaveBeenCalled();
     server.logout(token);
     await engine.pull();
     await until(() => assign.mock.calls.length > 0);
-    expect(assign).toHaveBeenCalledWith("/login");
-    expect(await replicaStorage().list()).toEqual([
-      { sessionId: profile.session_id, workspaceId: id(91) },
-    ]);
+    const kept = (await replicaStorage().list()).map((replica) => replica.workspaceId).sort();
+    expect(kept).toEqual([workspace.id, id(91)].sort());
   });
-  it("an older /internal-api/me reply that lands last neither changes the session nor deletes the newer replica", async () => {
+  it("logs a replica it can't delete and still deletes the rest at logout", async () => {
     const { profile } = await fixture();
+    await seed(profile.id, id(91));
+    await seed(profile.id, id(92));
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    const original = replicaStorage().delete.bind(replicaStorage());
+    vi.spyOn(replicaStorage(), "delete").mockImplementation((identity) =>
+      identity.workspaceId === id(91) ? Promise.reject(new Error("blocked")) : original(identity),
+    );
+    await clearSession();
+    expect(logged).toHaveBeenCalled();
+    expect(await replicaStorage().list()).toEqual([{ userId: profile.id, workspaceId: id(91) }]);
+  });
+  it("logout asks first when only kept rejections would be lost, and counts every replica on disk", async () => {
+    const { profile } = await fixture();
+    expect(await sessionHasPending()).toBe(false);
+    await seed(profile.id, id(91), "rejected");
+    expect(await sessionHasPending()).toBe(true);
+    await replicaStorage().delete({ userId: profile.id, workspaceId: id(91) });
+    expect(await sessionHasPending()).toBe(false);
+    await seed(profile.id, id(92), "pending");
+    expect(await sessionHasPending()).toBe(true);
+  });
+  it("logout counts unsent edits in an open workspace", async () => {
+    const { workspace } = await fixture();
+    const engine = await openWorkspaceEngine(workspace.id);
+    window.dispatchEvent(new Event("offline"));
+    await engine.mutate("update_issue", { id: id(2), patch: { title: "Unsent" } });
+    expect(await sessionHasPending()).toBe(true);
+  });
+  it("an older /internal-api/me reply that lands last neither changes the session nor deletes the newer user's replica", async () => {
+    const { profile, server } = await fixture();
+    const other = server.addUser();
+    const otherProfile = { ...profile, id: other.id, session_id: id(99) };
     let resolveOlder: (value: typeof profile) => void = () => {};
     let resolveNewer: (value: typeof profile) => void = () => {};
     vi.spyOn(auth, "me")
@@ -167,30 +229,17 @@ describe("session replica lifetime", () => {
       .mockImplementationOnce(() => new Promise((resolve) => (resolveNewer = resolve)));
     const older = currentProfile();
     const newer = currentProfile();
-    const newerProfile = { ...profile, session_id: id(99) };
-    resolveNewer(newerProfile);
-    await expect(newer).resolves.toEqual(newerProfile);
-    const replica = await replicaStorage().open({
-      sessionId: newerProfile.session_id,
-      workspaceId: id(90),
-      schema: SCHEMA,
-    });
-    await replica.appendMutation(() => ({
-      name: "mark_all_notifications_read",
-      args: {},
-      at: "2026-10-09T12:00:00Z",
-    }));
-    replica.close();
+    resolveNewer(otherProfile);
+    await expect(newer).resolves.toEqual(otherProfile);
+    await seed(other.id, id(90), "pending");
     resolveOlder(profile);
-    await expect(older).resolves.toEqual(newerProfile);
-    expect(currentSession()?.session_id).toBe(newerProfile.session_id);
-    expect(await replicaStorage().list()).toEqual([
-      { sessionId: newerProfile.session_id, workspaceId: id(90) },
-    ]);
+    await expect(older).resolves.toEqual(otherProfile);
+    expect(currentSession()?.id).toBe(other.id);
+    expect(await replicaStorage().list()).toEqual([{ userId: other.id, workspaceId: id(90) }]);
   });
   it("detects pending edits in an unopened workspace and deletes replicas before the logout request", async () => {
     const { profile, fetch } = await fixture();
-    await seed(profile.session_id, id(91), true);
+    await seed(profile.id, id(91), "pending");
     expect(await sessionHasPending()).toBe(true);
     fetch.mockImplementationOnce(async () => {
       expect(await replicaStorage().list()).toEqual([]);
@@ -201,29 +250,50 @@ describe("session replica lifetime", () => {
     expect(currentSession()).toBeNull();
     expect(assign).toHaveBeenCalledWith("/login");
   });
-  it("changing session closes the previous engine and removes its replicas", async () => {
+  it("a new session of the same user closes the previous engine and keeps its replica", async () => {
     const { profile, workspace } = await fixture();
     const engine = await openWorkspaceEngine(workspace.id);
     await acceptSession({ ...profile, session_id: id(99) });
-    expect(await replicaStorage().list()).toEqual([]);
+    expect(await replicaStorage().list()).toEqual([
+      { userId: profile.id, workspaceId: workspace.id },
+    ]);
     expect(activeWorkspaceEngine(workspace.id)).toBeNull();
     await expect(
       engine.mutate("mark_all_notifications_read", { notifications: [] }),
     ).rejects.toThrow("closed");
   });
-  it("unauthorized sync clears the current session and returns to login after deleting its replicas", async () => {
-    const { server, token, workspace, profile } = await fixture();
+  it("another user's session deletes the previous user's replica", async () => {
+    const { profile, workspace } = await fixture();
+    await openWorkspaceEngine(workspace.id);
+    await acceptSession({ ...profile, id: id(555), session_id: id(99) });
+    expect(await replicaStorage().list()).toEqual([]);
+    expect(activeWorkspaceEngine(workspace.id)).toBeNull();
+  });
+  it("a 401 keeps every replica, and the user's next sign-in continues the same replica and sends its edits", async () => {
+    const { server, token, workspace, profile, signIn } = await fixture();
     const engine = await openWorkspaceEngine(workspace.id);
-    await seed(id(90), id(91));
+    await seed(profile.id, id(91), "pending");
+    const clientId = await replicaClientId(profile.id, workspace.id);
+    window.dispatchEvent(new Event("offline"));
+    await engine.mutate("update_issue", { id: id(2), patch: { title: "Typed offline" } });
     server.logout(token);
-    await engine.pull();
+    window.dispatchEvent(new Event("online"));
     await until(() => assign.mock.calls.length > 0);
     expect(assign).toHaveBeenCalledWith("/login");
     expect(currentSession()).toBeNull();
-    expect(
-      (await replicaStorage().list()).some((replica) => replica.sessionId === profile.session_id),
-    ).toBe(false);
-    expect(await replicaStorage().list()).toEqual([{ sessionId: id(90), workspaceId: id(91) }]);
+    const kept = (await replicaStorage().list()).map((replica) => replica.workspaceId).sort();
+    expect(kept).toEqual([workspace.id, id(91)].sort());
+    expect(server.record("issues", id(2))?.title).toBe("On disk");
+
+    signIn(profile.id);
+    const again = await currentProfile();
+    expect(again?.session_id).not.toBe(profile.session_id);
+    await openWorkspaceEngine(workspace.id);
+    await until(() => server.record("issues", id(2))?.title === "Typed offline");
+    expect(await replicaClientId(profile.id, workspace.id)).toBe(clientId);
+    expect((await replicaStorage().list()).map((replica) => replica.workspaceId).sort()).toEqual(
+      kept,
+    );
   });
   it("an upgraded replica asks for reload and preserves the workspace and session", async () => {
     const { profile, workspace } = await fixture();
@@ -231,7 +301,7 @@ describe("session replica lifetime", () => {
     const notify = vi.fn();
     const unsubscribe = watchOutdated(engine, notify);
     const upgraded = await new IndexedDBReplicaStorage({ version: IDB_VERSION + 1 }).open({
-      sessionId: profile.session_id,
+      userId: profile.id,
       workspaceId: workspace.id,
       schema: SCHEMA,
     });
@@ -252,7 +322,7 @@ describe("session replica lifetime", () => {
       watchOutdated(engine, lateNotify)();
       expect(lateNotify).toHaveBeenCalledOnce();
       expect(await replicaStorage().list()).toEqual([
-        { sessionId: profile.session_id, workspaceId: workspace.id },
+        { userId: profile.id, workspaceId: workspace.id },
       ]);
     } finally {
       unsubscribe();
@@ -264,25 +334,86 @@ describe("session replica lifetime", () => {
     const engine = await openWorkspaceEngine(workspace.id);
     const notify = vi.fn();
     const unsubscribe = watchOutdated(engine, notify);
-    await replicaStorage().delete({ sessionId: profile.session_id, workspaceId: workspace.id });
+    await replicaStorage().delete({ userId: profile.id, workspaceId: workspace.id });
     await until(() => assign.mock.calls.length > 0);
     expect(assign).toHaveBeenCalledWith("/");
     expect(notify).not.toHaveBeenCalled();
     expect(engine.isClosed()).toBe(true);
     unsubscribe();
   });
-  it("access loss deletes only the workspace replica and leaves for home", async () => {
+  it("access loss keeps every replica, the workspace's included, and leaves for home", async () => {
     const { server, owner, workspace, profile } = await fixture();
     const engine = await openWorkspaceEngine(workspace.id);
-    await seed(profile.session_id, id(91));
+    await seed(profile.id, id(91));
     server.removeMember(workspace.id, owner.id);
     await engine.pull();
     await until(() => assign.mock.calls.length > 0);
     expect(assign).toHaveBeenCalledWith("/");
     expect(currentSession()?.session_id).toBe(profile.session_id);
+    expect((await replicaStorage().list()).map((replica) => replica.workspaceId).sort()).toEqual(
+      [workspace.id, id(91)].sort(),
+    );
+  });
+});
+
+describe("replicas from before they were named by user", () => {
+  async function legacyWithEdit(sessionName: string, workspaceId: string) {
+    const replica = await replicaStorage().open({
+      userId: sessionName,
+      workspaceId,
+      schema: SCHEMA,
+    });
+    await replica.appendMutation(() => ({
+      name: "update_issue",
+      args: { id: id(2), patch: { title: "Typed before the upgrade" } },
+      at: "2026-10-09T12:00:00Z",
+    }));
+    replica.close();
+    await makeLegacy({ userId: sessionName, workspaceId });
+  }
+  async function drained(engine: SyncEngine, userId: string, workspaceId: string) {
+    await until(() => engine.status.get().pending === 0);
+    for (let step = 0; step < 300; step += 1) {
+      const replica = await replicaStorage().open({ userId, workspaceId, schema: SCHEMA });
+      const { outbox, unconfirmed, rejected } = await replica.load();
+      replica.close();
+      if (outbox.length + unconfirmed.length + rejected.length === 0) return;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+    throw new Error("the replica never emptied its outbox");
+  }
+
+  it("keeps opening this session's replica under its old name until its edits are sent, then moves to the user's", async () => {
+    const { server, workspace, profile } = await fixture();
+    await legacyWithEdit(profile.session_id, workspace.id);
+    await currentProfile();
+    const engine = await openWorkspaceEngine(workspace.id);
+    await drained(engine, profile.session_id, workspace.id);
+    await until(() => server.record("issues", id(2))?.title === "Typed before the upgrade");
     expect(await replicaStorage().list()).toEqual([
-      { sessionId: profile.session_id, workspaceId: id(91) },
+      { userId: profile.session_id, workspaceId: workspace.id },
     ]);
+    await closeAllWorkspaceEngines();
+    const next = await openWorkspaceEngine(workspace.id);
+    expect(next.store.get("issues", id(2))?.title).toBe("Typed before the upgrade");
+    expect((await replicaStorage().list()).map((replica) => replica.userId).sort()).toEqual(
+      [profile.id, profile.session_id].sort(),
+    );
+    await acceptSession({ ...profile, session_id: id(99) });
+    expect(await replicaStorage().list()).toEqual([
+      { userId: profile.id, workspaceId: workspace.id },
+    ]);
+  });
+  it("deletes an old session's replica with nothing in it and keeps one that still holds edits", async () => {
+    await fixture();
+    await seed(id(80), id(81));
+    await makeLegacy({ userId: id(80), workspaceId: id(81) });
+    await legacyWithEdit(id(82), id(83));
+    const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
+    await currentProfile();
+    expect(await replicaStorage().list()).toEqual([{ userId: id(82), workspaceId: id(83) }]);
+    expect(warned).toHaveBeenCalled();
+    expect(await sessionHasPending()).toBe(true);
   });
 });
 
@@ -588,7 +719,9 @@ describe("app tab coordination", () => {
         await until(() => f.first.isClosed() && f.second.isClosed());
         expect(assign).toHaveBeenCalledWith(ending === "unauthorized" ? "/login" : "/");
         expect(f.secondSession.activeWorkspaceEngine(f.workspace.id)).toBeNull();
-        expect(await replicaStorage().list()).toEqual([]);
+        expect(await replicaStorage().list()).toEqual([
+          { userId: f.profile.id, workspaceId: f.workspace.id },
+        ]);
         if (ending === "unauthorized") {
           await until(() => f.secondSession.currentSession() === null);
           expect(currentSession()).toBeNull();
@@ -616,13 +749,15 @@ describe("app tab coordination", () => {
     }
   });
 
-  it("accepting another session deletes the old replica and closes its follower", async () => {
+  it("accepting another session of the user closes both tabs and keeps the replica", async () => {
     const f = await twoTabs();
     try {
       await acceptSession({ ...f.profile, session_id: id(99) });
       await until(() => f.second.isClosed());
       expect(f.first.isClosed()).toBe(true);
-      expect(await replicaStorage().list()).toEqual([]);
+      expect(await replicaStorage().list()).toEqual([
+        { userId: f.profile.id, workspaceId: f.workspace.id },
+      ]);
     } finally {
       await f.secondSession.closeAllWorkspaceEngines();
     }
@@ -630,13 +765,14 @@ describe("app tab coordination", () => {
 
   it("marks a follower offline when its browser or its leader is offline", async () => {
     const f = await twoTabs();
-    const sender = f.hub.channel(`blackwall-sync:${f.profile.session_id}:${f.workspace.id}`);
+    const sender = f.hub.channel(`blackwall-sync:${f.profile.id}:${f.workspace.id}`);
     const status = (connected: boolean, online: boolean) =>
       sender.postMessage({
         type: "status",
         connected,
         online,
         blocked: false,
+        stalled: false,
         error: null,
         from: "leader",
       });

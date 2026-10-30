@@ -50,12 +50,12 @@ describe("offline startup", () => {
     const { guard, replicas } = await reload(offline);
     const other = await replicas
       .replicaStorage()
-      .open({ sessionId: "other", workspaceId: list[0].id, schema: SCHEMA });
+      .open({ userId: "other", workspaceId: list[0].id, schema: SCHEMA });
     other.close();
     await expect(guard.landing()).resolves.toEqual({ profile, list });
     expect(replicas.currentSession()).toEqual(profile);
     expect(await replicas.replicaStorage().list()).toContainEqual({
-      sessionId: "other",
+      userId: "other",
       workspaceId: list[0].id,
     });
   });

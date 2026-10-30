@@ -902,6 +902,8 @@ export const pl = {
   "error.offlineRetry": "Spróbuj teraz",
   "error.syncBlocked":
     "Serwer odrzucił część zmian, więc nie można ich wysłać. Spróbuj ponownie lub odśwież stronę, jeśli problem się powtarza.",
+  "error.syncStalled":
+    "Serwer jeszcze nie zapisuje Twoich zmian. Są przechowywane na tym urządzeniu, a my próbujemy dalej.",
   "error.syncFailed": "Synchronizacja zatrzymana: {{message}}",
 
   "error.network": "Nie udało się połączyć z serwerem. Sprawdź połączenie i spróbuj ponownie.",

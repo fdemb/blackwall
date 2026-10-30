@@ -6,9 +6,9 @@ Blackwall's frontend keeps a local replica of each open workspace and syncs it w
 
 The sync layer is rewritten. The engine, the server protocol and the UI port are done, and the frontend typechecks. The previous frontend data layer was deleted on purpose. Don't reconstruct it, and don't look for it in history. Its idea of "optimistic updates" was a per-command patch rolled back on failure, and it read server records through a query cache. This design replaces both.
 
-All five phases are done. Session cleanup, online-only gating, and schema recovery are wired into the engine and the UI. `web/app/lib/workspace-engine.ts` supplies browser locks and channels when both APIs exist. One leader per session/workspace replica owns sync network work, and followers receive its changes and connection status. Each tab sends its own online-only REST commands. Without either browser API, each tab runs as a lone leader.
+All five phases are done. Session cleanup, online-only gating, and schema recovery are wired into the engine and the UI. `web/app/lib/workspace-engine.ts` supplies browser locks and channels when both APIs exist. One leader per user/workspace replica owns sync network work, and followers receive its changes and connection status. Each tab sends its own online-only REST commands. Without either browser API, each tab runs as a lone leader.
 
-Leaving a workspace retires its engine until the shared outbox drains, then closes it and releases leadership. Returning before close reclaims the engine. Logout and session replacement close engines and delete the affected replicas. A newer IndexedDB layout stops older tabs and asks them to reload while preserving their readable view. Database deletion still ends workspace access.
+Leaving a workspace retires its engine until the shared outbox drains, then closes it and releases leadership. Returning before close reclaims the engine. Logout and a different user's sign-in delete replicas. A session end only stops the engines. A newer IndexedDB layout stops older tabs and asks them to reload while preserving their readable view. Database deletion still ends workspace access.
 
 Tests cover app lifecycle across tabs, shared-database engine coordination, schema upgrades and deletion, real-server prediction contracts, and convergence in both independent-replica and tab modes. No implementation work remains from these phases.
 
@@ -18,14 +18,14 @@ These were decided before the rewrite. Don't revisit them while implementing.
 
 1. The server is the authority. Each client holds a replica plus an outbox of pending mutations, and rebases the outbox on top of every server update.
 2. Concurrent edits resolve last-writer-wins per field. Sync mutations carry no version preconditions.
-3. A replica lives for one login session. Logout, an expired session, or a session from a different login deletes it.
+3. A replica lives for one user on one browser. Logout, or a different user's login, deletes it. An expired session does not: the same user's next sign-in continues from the same replica.
 4. The UI doesn't change. Markup, styling, copy and interaction stay as they are. Code that fetches or reads data changes to call the engine.
 5. No off-the-shelf sync or local-database libraries. That rules out TanStack DB, Replicache, Zero, ElectricSQL, PowerSync, RxDB, Dexie and similar. Raw IndexedDB is fine, and so is a thin promise wrapper such as `idb`. TanStack Query stays for server reads outside the replica, such as reports and issue tracker settings.
 6. The app isn't deployed. Change server contracts freely, without compatibility shims.
 
 ## Vocabulary
 
-- **Replica.** One workspace's local data for one login session. It has its own IndexedDB database.
+- **Replica.** One workspace's local data for one user on one browser. It has its own IndexedDB database.
 - **Base.** Server state as of the replica's cursor. Only bootstrap, pull and scope loads write to it.
 - **Outbox.** Mutations the server hasn't processed yet, in order.
 - **View.** What the UI reads: base with the outbox replayed on top.
@@ -99,7 +99,7 @@ All endpoints live under `/internal-api/workspaces/{id}/sync/` and use the exist
 
 New table `sync_clients(client_id uuid primary key, workspace_id, user_id, last_mutation_id bigint, updated_at)`. The client creates its `client_id` when it creates a replica. The server inserts the row on first use. A `client_id` registered to another user or workspace is rejected with 400.
 
-Prune rows untouched for longer than the session lifetime, currently 30 days. A pruned client can't still have a live replica, because its session expired first.
+Prune rows untouched for longer than the session lifetime, currently 30 days. A replica outlives its session, so a user who signs in again after more than 30 days has a replica whose client the server forgot. The server registers it anew on the next push. That is safe for mutations the server never saw. A mutation it processed whose result the client never learned would apply a second time. The client doesn't detect this case yet.
 
 ### Cursor
 
@@ -230,20 +230,21 @@ Per-mutation `status` is `applied`, `duplicate` or `rejected`. The 503 response 
 
 #### Push failures on the client
 
-The client never lets one mutation freeze the outbox or silently drop a user's edit. One table decides what each failed push attempt does.
+The client never lets one mutation freeze the outbox or silently drop a user's edit. A mutation leaves the outbox only on a definitive answer: the server's `applied`, `duplicate` or `rejected`, or a 413 on that mutation alone.
 
-| Failure | Counts toward the limit | Next step |
-|---|---|---|
-| Fetch failure, offline, timeout | No | Retry the same batch with backoff, without limit. |
-| 5xx, or a 503 with no new results, while a pull still answers | Yes | Retry. After 4 failures, push the first unsettled mutation alone. After 6, set it aside. |
-| 5xx while pulls fail too | No | The server is down. Retry without counting. |
-| 413 on a batch of several mutations | No | Halve the batch. |
-| 413 on a single mutation | No | Set it aside as "too large to save". |
-| 401, 403, any other 4xx | No | Handled as before (session end, access check, protocol block). |
+| Failure | Next step |
+|---|---|
+| Fetch failure, offline, timeout | Retry the same batch with backoff, without limit. |
+| 5xx, or a 503 with partial results | Retry the same batch with backoff, without limit. After 3 failures in a row the engine reports `stalled`. Results in a partial response settle their mutations, which resets the count. |
+| 413 on a batch of several mutations | Halve the batch. |
+| 413 on a single mutation | Read once and apply any acknowledgement. If the server already processed the id, settle it as `"unknown"`. Otherwise set it aside as "too large to save". |
+| 403 | Refresh CSRF and check access with a read. If access is gone, stop the engine and keep the replica (see Session lifetime). Otherwise retry once, then block. |
+| 401 | Stop the engine and keep the replica. |
+| Any other 4xx | Block pushing until the user retries or reloads. |
 
-Retries on counted failures back off up to 8 seconds, so a mutation the server can't process surfaces after about 20 seconds. The counter lives in memory on the batch and restarts with each new batch, so a reload only gives the mutation more attempts. After 4 failures the client sends one pull. A failing pull means an outage, and the counter holds at 3 until pulls work again.
+A 5xx says nothing about the mutation: the server answers 503 only for a transient failure and records deterministic failures as `rejected` with status 500. So no number of 5xx answers or timeouts discards an edit. Retry delays grow to 30 seconds, and a `Retry-After` header lengthens them. `stalled` in the engine status turns the offline banner into "The server isn't saving your changes yet" and the save status into "Can't send". It clears on the next push that gets an answer.
 
-Setting a mutation aside builds a local rejection from it, writes that rejection and removes the outbox row in one transaction, and removes its effect from the view. It reaches the same kept-rejections list as a server rejection, with its text, status 500 or 413, and the receipt resolves with it. The client never pushes it again. Later mutations still push. The server's `last_mutation_id` then passes the skipped id without ever applying it, which is the intended outcome. Other tabs reload from the database when the leader sets one aside.
+Setting a mutation aside after a lone 413 builds a local rejection from it, writes that rejection and removes the outbox row in one transaction, and removes its effect from the view. It reaches the same kept-rejections list as a server rejection, with its text and status 413, and the receipt resolves with it. The request never reached a command, so no retry can change the answer. The client never pushes it again. Later mutations still push, and the server's `last_mutation_id` then passes the skipped id without ever applying it. Other tabs reload from the database when the leader sets one aside.
 
 A `duplicate` result is applied only when the server's `last_mutation_id` is less than 1,000 ahead of that id, because the server keeps a client's 1,000 newest rejections and a pruned rejection also reads back as `duplicate`. A confirmation push for an older id settles its receipt as `"unknown"`, not `"applied"`.
 
@@ -290,7 +291,7 @@ The leader runs bootstrap, pull and scope requests one at a time through one que
 3. **Field-level writes.** An `update_issue` patch writes only the fields it names. Two clients editing different fields of the same issue both win. Bulk edits follow the same rule.
 4. **Issue numbers** count up per team. The server gives a new issue its team's highest number plus one, locking the team row so concurrent creates serialize. Numbers of issues purged from the trash count too, so a purged key is never reused. The client predicts the same rule from its replica, which holds every issue including trash and archive, so a locally created issue has a key such as `ENG-42` right away. When another client took that number first, or the number belonged to a purged issue, the pull brings the server's number and the replay renumbers the remaining pending issues. A predicted key is only shown, never put in a URL: links name an unconfirmed issue by its id, and keys in URLs resolve only among confirmed numbers. Once the server confirms an issue, its page replaces the id URL with the key.
 5. **Endpoints.** Add bootstrap, pull, push, scope and events as specified above. Remove `GET /changes`.
-6. **Sessions.** Add a random, non-secret `public_id` to sessions and return it from `GET /internal-api/me` as `session_id`. It names the replica. It must never authenticate anything.
+6. **Sessions.** Add a random, non-secret `public_id` to sessions and return it from `GET /internal-api/me` as `session_id`. It must never authenticate anything. The client uses it only to recognise replicas created before replicas were named by user.
 7. **Docs.** Update the API section of `README.md` and `docs/architecture.md` as endpoints change.
 
 ## Client architecture
@@ -322,9 +323,9 @@ A mutation acknowledged by a pull without a known push result is pushed once mor
 
 ### Persistence
 
-IndexedDB database `blackwall:{session_id}:{workspace_id}` with object stores:
+IndexedDB database `blackwall:{user_id}:{workspace_id}` with object stores:
 
-- `meta`: `schema`, `user_id`, `client_id`, `cursor`, `last_mutation_id`, `next_mutation_id`. `user_id` is the signed-in user who created the replica.
+- `meta`: `schema`, `user_id`, `client_id`, `cursor`, `last_mutation_id`, `next_mutation_id`.
 - One store per entity, keyed like the table above.
 - `outbox`, keyed by mutation id.
 - `scopes`, the loaded comment and activity scopes.
@@ -339,18 +340,20 @@ A bootstrap also drops loaded comment and activity scopes; the engine reloads th
 
 ### Session lifetime
 
-- After `GET /internal-api/me`, delete every `blackwall:*` database whose `session_id` isn't the current one, except a replica of the same user that still holds an outbox or kept rejections. That replica waits for its workspace to open. Another user's replica is always deleted.
-- Logout deletes every replica before calling the server. If any replica of this user holds an outbox or kept rejections, the existing confirm dialog asks first, because they will be lost.
-- A 401 on any sync request ends the session and returns to login. It deletes the session's replicas that hold nothing to keep. A replica with an outbox, unconfirmed mutations or kept rejections stays on disk, base included, until the same user signs in again.
-- When the same user opens that workspace under a new session, the new replica adopts the old one in one transaction. It takes the old `client_id`, `last_mutation_id`, `next_mutation_id`, outbox rows and kept rejections, and starts with an empty base. Its push lane sends the old mutations with their old ids, and the server answers anything it already processed with `duplicate` or `rejected`. Mutations are never re-sent under a new client id or new ids, which would apply some twice. The old replica is deleted once the adoption commits. A replica that already issued its own mutations refuses to adopt.
-- A 403 on a read, or a JSON `{"error"}` 404 on a workspace request, means access to the workspace is gone. The replica's records, scopes and outbox are deleted, and each pending mutation becomes a kept rejection with status 403. Nothing is pushed. If the user gets access back, the kept rejections appear in that workspace. A replica with nothing to keep is deleted. Any other 404, such as a proxy's, is a protocol error and deletes nothing.
+- A replica belongs to one user on one browser. Its name carries the user's id from `GET /internal-api/me`, so the same user's next session opens the same replica with the same `client_id`, outbox and mutation ids. Nothing is copied between replicas.
+- After `GET /internal-api/me`, delete every `blackwall:*` database that another user's id names, whatever it holds. Privacy wins over keeping their edits. The user's own replicas stay.
+- A 401 on any sync request stops the engine, closes its handle and returns to login. Every replica stays on disk, base and outbox included. When the same user signs in again, the engine opens the same replica and its push lane sends the outbox with the old ids. The server answers anything it already processed with `duplicate` or `rejected`, so nothing applies twice.
+- A 403 on a read, or a JSON `{"error"}` 404 on a workspace request, means access to the workspace is gone. The engine stops, closes its handle and leaves the workspace in the UI as it is. The replica stays as it is, outbox included, and nothing is converted or cleared. If access returns, the outbox pushes as usual and the server's answers decide each edit. If it never returns, the data stays until logout or another user's sign-in. Any other 404, such as a proxy's, is a protocol error and deletes nothing.
+- Logout deletes every replica on the browser before calling the server. If any replica holds an outbox, unconfirmed mutations or kept rejections, the existing confirm dialog asks first, because they will be lost.
+- Automatic cleanup never deletes a replica it can't read, for instance one a newer version of the app wrote. It logs the failure to the console and leaves the replica. Only another user's sign-in or an explicit logout deletes it. A delete that fails is logged too.
+- Before replicas were named by user, a name carried the session id and the meta had no user. A sign-in deletes such a replica when it holds nothing. If it holds edits and belongs to the current session, the engine keeps opening it under that name until its outbox drains. The user-named replica takes over after that, and the next sign-in deletes the empty one. If it belongs to an older session, its owner can't be known, so it stays on disk unopened until logout or a sign-in deletes it once empty. Logout asks first, and the sign-in logs a warning.
 - Invitation tokens and integration secrets never reach IndexedDB.
 
 ### Tabs
 
 - Each tab keeps its own in-memory store, loaded from the shared database.
 - The app injects an adapter for `navigator.locks.request` and a `BroadcastChannel` factory when both browser APIs exist. If either is unavailable, each tab runs as a lone leader.
-- `navigator.locks.request("blackwall-sync:{session_id}:{workspace_id}")` elects the leader. Only the leader holds the event stream, pulls, loads scopes and pushes. When the leader stops or closes, the lock passes to another tab.
+- `navigator.locks.request("blackwall-sync:{user_id}:{workspace_id}")` elects the leader. Only the leader holds the event stream, pulls, loads scopes and pushes. When the leader stops or closes, the lock passes to another tab.
 - Unmounting a workspace retires its engine. It keeps syncing until the shared outbox drains, then closes. Returning before close reclaims it. A retired follower does not hold the leader's lock.
 - Followers mirror the leader's connection status. They report offline when their browser is offline or the leader reports offline. A leader reconnecting its event stream is still online. The existing offline banner and online-only controls read that status.
 - A tab allocates mutation ids inside an IndexedDB read-write transaction on `meta.next_mutation_id`. IndexedDB serializes those transactions, so two tabs never reuse an id.

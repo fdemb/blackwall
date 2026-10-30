@@ -34,7 +34,6 @@ export interface User {
   id: string;
   email: string;
   token: string;
-  sessionId: string;
   csrf: string;
 }
 function session(value: unknown): User {
@@ -43,7 +42,6 @@ function session(value: unknown): User {
     id: textField(profile, "id"),
     email: textField(profile, "email"),
     token: textField(value, "token"),
-    sessionId: textField(value, "session_id"),
     csrf: textField(value, "csrf_token"),
   };
 }
@@ -179,7 +177,6 @@ export function client(
   const connection = options.connection ?? new Connection(user, options.cookies);
   const engine = createEngine({
     actor: user.id,
-    sessionId: user.sessionId,
     workspaceId: ws,
     schema: SCHEMA,
     storage,
@@ -229,7 +226,7 @@ export async function hold(c: Client, scope: Scope): Promise<() => void> {
   const release = c.engine.useScope(scope);
   await waitFor(async () => {
     const disk = await c.storage.open({
-      sessionId: c.user.sessionId,
+      userId: c.user.id,
       workspaceId: c.ws,
       schema: SCHEMA,
     });

@@ -1,7 +1,7 @@
 import { IndexedDBReplicaStorage } from "../sync/persistence/idb";
 import { SCHEMA } from "../sync/engine";
 import type { SyncEngine } from "../sync/engine";
-import { hasWork, pruneReplicas, readSaved } from "../sync/persistence/retention";
+import type { ReplicaIdentity } from "../sync/persistence/types";
 import type { SessionProfile } from "../sync/transport";
 import type { WorkspaceSummary } from "./types";
 import { safeGet, safeRemove, safeSet } from "./storage";
@@ -32,14 +32,7 @@ export function currentSession() {
 }
 export async function acceptSession(profile: SessionProfile) {
   if (session?.session_id !== profile.session_id) await closeAllWorkspaceEngines();
-  // The same user's edits from an ended session wait for their workspace to open and send them.
-  // Anyone else's replica goes, so one user never sees or pushes another's edits.
-  await pruneReplicas(
-    replicaStorage(),
-    SCHEMA,
-    (identity) => identity.sessionId !== profile.session_id,
-    (saved) => saved.userId === profile.id && hasWork(saved.work),
-  );
+  await deleteOtherUsersReplicas(profile);
   session = profile;
   safeSet("local", SESSION_KEY, JSON.stringify(profile));
   return profile;
@@ -101,18 +94,13 @@ export async function discardWorkspaceEngine(engine: SyncEngine) {
 }
 /** Pending edits or kept rejections, in an open workspace or on disk, that logout would delete. */
 export async function sessionHasPending(): Promise<boolean> {
-  const current = session;
-  if (!current) return false;
+  if (!session) return false;
   for (const entry of active.values()) {
     const { unresolved } = entry.engine.status.get();
     if (entry.engine.store.pending().length || unresolved.length) return true;
   }
-  for (const identity of await replicaStorage().list()) {
-    if (identity.sessionId === current.session_id && active.has(identity.workspaceId)) continue;
-    const saved = await readSaved(replicaStorage(), identity, SCHEMA);
-    const ours = identity.sessionId === current.session_id || saved.userId === current.id;
-    if (ours && hasWork(saved.work)) return true;
-  }
+  for (const identity of await replicaStorage().list())
+    if ((await inspect(identity))?.work) return true;
   return false;
 }
 /**
@@ -126,28 +114,88 @@ export async function closeAllWorkspaceEngines() {
   await Promise.all(engines.map((entry) => entry.engine.close()));
 }
 /**
- * The server ended the session. Edits and kept rejections stay on disk, and the same user's next
- * login sends them. Replicas with nothing to keep go.
+ * The server ended the session. Sync stops and every replica stays as it is: the same user's next
+ * sign-in continues from it, and only a logout or another user's sign-in deletes it.
  */
 export async function expireSession() {
-  const sessionId = session?.session_id;
   await closeAllWorkspaceEngines();
-  await pruneReplicas(
-    replicaStorage(),
-    SCHEMA,
-    (identity) => sessionId === undefined || identity.sessionId === sessionId,
-    (saved) => hasWork(saved.work),
-  );
   forgetSession();
 }
 /** Logout, which the user confirmed: every replica on this browser goes, pending edits included. */
 export async function clearSession() {
   await closeAllWorkspaceEngines();
-  await replicaStorage().deleteAllExcept(null);
+  await deleteReplicas(await replicaStorage().list());
   forgetSession();
 }
 function forgetSession() {
   session = null;
   safeRemove("local", SESSION_KEY);
   safeRemove("local", WORKSPACES_KEY);
+}
+
+/**
+ * What a replica holds, or null when it can't be read, for instance when a newer version of the
+ * app wrote it. `legacy` marks a replica from before replicas were named by user, whose meta has
+ * no user and whose name holds a session id.
+ */
+async function inspect(
+  identity: ReplicaIdentity,
+): Promise<{ work: boolean; legacy: boolean } | null> {
+  try {
+    const replica = await replicaStorage().open({ ...identity, schema: SCHEMA });
+    try {
+      const { meta, outbox, unconfirmed, rejected } = await replica.load();
+      return {
+        work: outbox.length + unconfirmed.length + rejected.length > 0,
+        legacy: Reflect.get(meta, "userId") === undefined,
+      };
+    } finally {
+      replica.close();
+    }
+  } catch (error) {
+    console.error(`Replica ${identity.workspaceId} can't be read, so it is kept as it is`, error);
+    return null;
+  }
+}
+
+async function deleteReplicas(identities: readonly ReplicaIdentity[]) {
+  for (const identity of identities) {
+    try {
+      await replicaStorage().delete(identity);
+    } catch (error) {
+      console.error(`Replica ${identity.workspaceId} couldn't be deleted`, error);
+    }
+  }
+}
+
+/**
+ * Signing in as someone else deletes the replicas the previous user left, whatever they hold:
+ * privacy wins over keeping their edits. A replica from before replicas were named by user can't
+ * be attributed, since its name holds a session id, so one that still holds edits stays on disk
+ * unopened, unless it belongs to this session, which opens it until its outbox drains.
+ */
+async function deleteOtherUsersReplicas(profile: SessionProfile) {
+  const doomed: ReplicaIdentity[] = [];
+  for (const identity of await replicaStorage().list()) {
+    if (identity.userId === profile.id || identity.userId === profile.session_id) continue;
+    const found = await inspect(identity);
+    if (found?.legacy && found.work)
+      console.warn(`Replica ${identity.workspaceId} has edits of unknown ownership, kept`);
+    else doomed.push(identity);
+  }
+  await deleteReplicas(doomed);
+}
+
+/**
+ * The name a workspace's replica carries for this session: the user's id, or this session's id
+ * while a replica from before replicas were named by user still holds edits, so they keep their
+ * client id and mutation ids. Once it drains the user-named replica takes over, and the old one
+ * goes at the next sign-in.
+ */
+export async function replicaOwner(profile: SessionProfile, workspaceId: string): Promise<string> {
+  const legacy = { userId: profile.session_id, workspaceId };
+  const named = (await replicaStorage().list()).some(
+    (identity) => identity.userId === legacy.userId && identity.workspaceId === workspaceId,
+  );
+  return named && (await inspect(legacy))?.work ? legacy.userId : profile.id;
 }

@@ -9,7 +9,6 @@ import { withCounts } from "../derived";
 import { MutationError } from "../mutators";
 import { IndexedDBReplicaStorage } from "../persistence/idb";
 import { MemoryReplicaStorage } from "../persistence/memory";
-import { hasWork, readSaved } from "../persistence/retention";
 import type { LoadedReplica, ReplicaStorage, Scope } from "../persistence/types";
 import { recordKey, scopeKey } from "../persistence/shared";
 import { BOOTSTRAP_ENTITIES, ENTITIES, normalize } from "../records";
@@ -59,7 +58,6 @@ interface Accepted {
 interface Client {
   index: number;
   actor: string;
-  sessionId: string;
   token: string;
   csrf: string;
   signals: Signals;
@@ -305,7 +303,6 @@ export async function runConvergence(
     ...storage,
     list: () => storage.list(),
     delete: (identity) => storage.delete(identity),
-    deleteAllExcept: (session) => storage.deleteAllExcept(session),
     async open(input) {
       const replica = await storage.open(input);
       async function write<T>(work: () => Promise<T>): Promise<T> {
@@ -337,9 +334,7 @@ export async function runConvergence(
         loadScope: (scope) => replica.loadScope(scope),
         appendMutation: (value) => write(() => replica.appendMutation(value)),
         confirm: (ids, rejected) => write(() => replica.confirm(ids, rejected)),
-        adopt: (saved) => write(() => replica.adopt(saved)),
         discard: (rejections) => write(() => replica.discard(rejections)),
-        revoke: (rejections) => write(() => replica.revoke(rejections)),
         resolveRejection: (id) => write(() => replica.resolveRejection(id)),
       };
     },
@@ -400,7 +395,6 @@ export async function runConvergence(
       storage: client.storage,
       transport,
       actor: client.actor,
-      sessionId: client.sessionId,
       workspaceId: workspace.id,
       schema: SCHEMA,
       signals: client.signals,
@@ -425,7 +419,7 @@ export async function runConvergence(
 
   async function disk(client: Client): Promise<LoadedReplica> {
     const replica = await client.storage.open({
-      sessionId: client.sessionId,
+      userId: client.actor,
       workspaceId: workspace.id,
       schema: SCHEMA,
     });
@@ -595,7 +589,6 @@ export async function runConvergence(
         actor: actor.id,
         token,
         csrf: server.csrfToken(token),
-        sessionId: simulationId(tabs ? 20 : 20 + index),
         signals: new Signals(),
         storage,
         generation: 0,
@@ -1027,19 +1020,7 @@ export async function runConvergence(
       check(authClient.blocked, "CSRF refresh refusal did not complete callers");
       check((await authClient.storage.list()).length === 1, "CSRF refusal removed persistence");
     } else {
-      for (const identity of await authClient.storage.list()) {
-        const saved = await readSaved(authClient.storage, identity, SCHEMA);
-        check(hasWork(saved.work), "wiped client kept a replica with nothing to keep");
-        if (authStatus === 403) {
-          const replica = await authClient.storage.open({ ...identity, schema: SCHEMA });
-          const { records } = await replica.load();
-          replica.close();
-          check(
-            Object.values(records).every((rows) => rows.length === 0),
-            "lost access left workspace records on disk",
-          );
-        }
-      }
+      check((await authClient.storage.list()).length === 1, "ended session deleted its replica");
       equal(authClient.engine.store.all("issues"), [], "wiped client retained its view");
       check(
         server.record("members", authClient.actor, owner.id) === null,

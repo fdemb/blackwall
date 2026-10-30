@@ -31,16 +31,21 @@ export interface TabChannel {
 export interface EngineDependencies {
   storage: ReplicaStorage;
   transport: Transport;
-  sessionId: string;
   workspaceId: string;
+  /** The signed-in user. Names the replica unless `replicaOwner` says otherwise. */
   actor: string;
+  /**
+   * Whose name the replica, its lock and its channel carry. Only a replica from before replicas
+   * were named by user needs this: its name holds the session id that created it.
+   */
+  replicaOwner?: string;
   clock: EngineClock;
   randomId(): string;
   schema: number;
   signals: EngineSignals;
   /** Elects one leader per replica. Without it, the engine is always the leader. */
   locks?: TabLocks;
-  /** Coordinates engines sharing one replica. Named by the session and workspace. */
+  /** Coordinates engines sharing one replica. Named by the owner and workspace. */
   channel?: (name: string) => TabChannel;
 }
 
@@ -66,6 +71,8 @@ export interface EngineStatus {
   pending: number;
   /** A protocol error stopped pushing or pulling, so the outbox can't drain until unblock(). */
   blocked: boolean;
+  /** The server keeps failing the outbox's pushes. Nothing is dropped, and the push retries. */
+  stalled: boolean;
   lastError: Error | null;
   /** Rejections reported during this engine's life. */
   rejected: readonly Rejection[];
