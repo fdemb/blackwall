@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "DELETE FROM comment_mentions WHERE workspace_id=$1 AND comment_id=$2 RETURNING user_id",
+  "query": "SELECT user_id FROM comment_mentions WHERE workspace_id=$1 AND comment_id=$2",
   "describe": {
     "columns": [
       {
@@ -19,5 +19,5 @@
       false
     ]
   },
-  "hash": "07fe7fddcb7b69e3abbaf7e1cafdac652c1f096b1fe6a8a87870c70b87ab195a"
+  "hash": "533eca14700fb43bb1ff0f5e3827ccc40c069fbeed5c99a513610372cf180562"
 }
