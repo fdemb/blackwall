@@ -48,7 +48,8 @@ async function keepAssets(urls) {
   for (const href of urls) {
     const url = new URL(href, location.origin);
     if (url.origin !== location.origin || !url.pathname.startsWith("/assets/")) continue;
-    if (!(await cache.match(url.pathname))) await cache.add(url.pathname).catch(() => {});
+    const asset = url.pathname + url.search;
+    if (!(await cache.match(asset))) await cache.add(asset).catch(() => {});
   }
 }
 

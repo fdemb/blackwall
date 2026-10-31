@@ -21,8 +21,10 @@ const get = (path: string, mode: string) => ({ url: `${ORIGIN}${path}`, method: 
 function worker(network: Record<string, () => Response>) {
   const handlers = new Map<string, Handler>();
   const store = new Map<string, Response>();
-  const key = (request: { url: string } | string) =>
-    new URL(typeof request === "string" ? request : request.url, ORIGIN).pathname;
+  const key = (request: { url: string } | string) => {
+    const url = new URL(typeof request === "string" ? request : request.url, ORIGIN);
+    return url.pathname + url.search;
+  };
   const fetched: string[] = [];
   let online = true;
   const fetch = async (request: { url: string } | string) => {
@@ -181,6 +183,16 @@ describe("service worker", () => {
 
     expect(sw.fetched).not.toContain("/api/me");
     expect(sw.store.has("/api/me")).toBe(false);
+  });
+
+  it("caches a reported asset under its full URL, query included", async () => {
+    const sw = worker({ "/": html(SHELL), "/assets/route-1.js?v=2": () => new Response("v2") });
+    await sw.install();
+
+    await sw.message({ type: "loaded-assets", urls: ["/assets/route-1.js?v=2"] });
+    sw.offline();
+
+    expect(await (await sw.get("/assets/route-1.js?v=2"))?.text()).toBe("v2");
   });
 });
 
