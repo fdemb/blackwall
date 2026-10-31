@@ -615,7 +615,16 @@ describe("event streams", () => {
     expect(cancel).toHaveBeenCalledTimes(1);
   });
 
-  it.each(["not JSON", "[]", "null", '{"unexpected":true}'])(
+  it("accepts a poke that names the committing txid", async () => {
+    const transport = responseTransport(
+      byteResponse('event: poke\ndata: {"txid":812}\n\n', "text/event-stream"),
+    );
+    expect(await collect(await transport.events(id(50), CLIENT))).toEqual([
+      { event: "poke", data: { txid: 812 } },
+    ]);
+  });
+
+  it.each(["not JSON", "[]", "null", '{"unexpected":true}', '{"txid":-1}'])(
     "rejects malformed poke data: %s",
     async (data) => {
       const transport = responseTransport(

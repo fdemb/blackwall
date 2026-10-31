@@ -623,7 +623,11 @@ async function* pokes(response: Response | null, signal?: AbortSignal): AsyncGen
     if (line === "") {
       if (event === "poke" && data.length > 0) {
         const value = parseJson(data.join("\n"), response.status);
-        if (!object(value) || Object.keys(value).length !== 0)
+        if (
+          !object(value) ||
+          Object.keys(value).some((key) => key !== "txid") ||
+          ("txid" in value && !integer(value.txid))
+        )
           throw new ProtocolError("Invalid poke data", response.status);
         yield { event: "poke", data: value };
       }
