@@ -7,6 +7,7 @@
 use axum::{
     Router,
     http::{HeaderValue, StatusCode, Uri, header},
+    middleware::map_response,
     response::{IntoResponse, Response},
 };
 use base64::{Engine, engine::general_purpose::STANDARD};
@@ -68,7 +69,7 @@ pub fn default_dir() -> PathBuf {
     PathBuf::from(std::env::var("WEB_DIR").unwrap_or_else(|_| "web/build/client".into()))
 }
 
-pub fn service(dir: PathBuf) -> ServeDir<Router> {
+pub fn service(dir: PathBuf) -> Router {
     let shell = load_shell(&dir).map(Arc::new);
 
     if shell.is_none() {
@@ -80,9 +81,25 @@ pub fn service(dir: PathBuf) -> ServeDir<Router> {
         async move { shell_response(shell, uri) }
     });
 
-    ServeDir::new(dir)
-        .append_index_html_on_directories(false)
-        .fallback(fallback)
+    Router::new()
+        .nest_service("/assets", ServeDir::new(dir.join("assets")))
+        .layer(map_response(cache_forever))
+        .fallback_service(
+            ServeDir::new(dir)
+                .append_index_html_on_directories(false)
+                .fallback(fallback),
+        )
+}
+
+/// Build assets carry a content hash in their names, so a browser never needs to revalidate one.
+async fn cache_forever(mut response: Response) -> Response {
+    if response.status().is_success() || response.status() == StatusCode::NOT_MODIFIED {
+        response.headers_mut().insert(
+            header::CACHE_CONTROL,
+            HeaderValue::from_static("public, max-age=31536000, immutable"),
+        );
+    }
+    response
 }
 
 fn shell_response(shell: Option<Arc<Shell>>, uri: Uri) -> Response {
@@ -104,6 +121,8 @@ fn shell_response(shell: Option<Arc<Shell>>, uri: Uri) -> Response {
                     HeaderValue::from_static("text/html; charset=utf-8"),
                 ),
                 (header::CONTENT_SECURITY_POLICY, shell.csp.clone()),
+                // A deploy replaces the asset names the shell points at.
+                (header::CACHE_CONTROL, HeaderValue::from_static("no-cache")),
             ],
             shell.html.clone(),
         )
@@ -118,12 +137,55 @@ fn shell_response(shell: Option<Arc<Shell>>, uri: Uri) -> Response {
 
 #[cfg(test)]
 mod tests {
-    use super::inline_script_hashes;
+    use super::{inline_script_hashes, service};
+    use axum::{body::Body, http::Request};
+    use tower::ServiceExt;
 
     #[test]
     fn hashes_only_inline_scripts() {
         let html = r#"<script src="/a.js"></script><script>let a=1</script><script type="module" async>import "/x.js"</script>"#;
 
         assert_eq!(inline_script_hashes(html).len(), 2);
+    }
+
+    #[tokio::test]
+    async fn hashed_assets_are_cached_forever_and_the_shell_revalidates() {
+        let dir = std::env::temp_dir().join(format!("blackwall-web-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(dir.join("assets")).unwrap();
+        std::fs::write(dir.join("index.html"), "<!DOCTYPE html>").unwrap();
+        std::fs::write(dir.join("theme.js"), "").unwrap();
+        std::fs::write(dir.join("assets/issue-B1x9.js"), "export {}").unwrap();
+        let app = service(dir.clone());
+
+        let mut seen = Vec::new();
+        for path in [
+            "/assets/issue-B1x9.js",
+            "/assets/missing-C2y8.js",
+            "/team/ENG",
+            "/theme.js",
+        ] {
+            let request = Request::builder().uri(path).body(Body::empty()).unwrap();
+            let response = app.clone().oneshot(request).await.unwrap();
+            let cache = response
+                .headers()
+                .get("cache-control")
+                .map(|value| value.to_str().unwrap().to_owned());
+            seen.push((path, response.status().as_u16(), cache));
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+
+        assert_eq!(
+            seen,
+            [
+                (
+                    "/assets/issue-B1x9.js",
+                    200,
+                    Some("public, max-age=31536000, immutable".to_owned())
+                ),
+                ("/assets/missing-C2y8.js", 404, None),
+                ("/team/ENG", 200, Some("no-cache".to_owned())),
+                ("/theme.js", 200, None),
+            ]
+        );
     }
 }
