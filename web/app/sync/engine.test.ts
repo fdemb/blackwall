@@ -3481,5 +3481,4 @@ describe("a full disk", () => {
     expect(engine.status.get().pending).toBe(0);
     expect(f.pushes()).toHaveLength(1);
   });
-  });
 });
