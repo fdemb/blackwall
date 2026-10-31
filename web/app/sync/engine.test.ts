@@ -2153,8 +2153,10 @@ describe("pending edits are never frozen or lost", () => {
       const replica = await open(input);
       const load = replica.loadOutbox.bind(replica);
       replica.loadOutbox = async () => {
+        // Only the online command's outbox check; the push lane reads the outbox too.
+        const fromCommand = new Error().stack?.includes("drainOutbox") ?? false;
         const outbox = await load();
-        if (holdLoad) {
+        if (holdLoad && fromCommand) {
           holdLoad = false;
           await new Promise<void>((resolve) => {
             releaseLoad = resolve;
@@ -2192,8 +2194,10 @@ describe("pending edits are never frozen or lost", () => {
       const replica = await open(input);
       const load = replica.loadOutbox.bind(replica);
       replica.loadOutbox = async () => {
+        // Only the online command's outbox check; the push lane reads the outbox too.
+        const fromCommand = new Error().stack?.includes("drainOutbox") ?? false;
         const outbox = await load();
-        if (holdLoad) {
+        if (holdLoad && fromCommand) {
           holdLoad = false;
           await new Promise<void>((resolve) => {
             releaseLoad = resolve;
