@@ -336,6 +336,7 @@ export async function runConvergence(
         confirm: (ids, rejected) => write(() => replica.confirm(ids, rejected)),
         discard: (rejections) => write(() => replica.discard(rejections)),
         resolveRejection: (id) => write(() => replica.resolveRejection(id)),
+        setAccessLost: (lost) => replica.setAccessLost(lost),
       };
     },
   });
