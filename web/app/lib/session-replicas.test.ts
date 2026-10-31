@@ -749,12 +749,13 @@ describe("app tab coordination", () => {
     }
   });
 
-  it("accepting another session of the user closes both tabs and keeps the replica", async () => {
+  it("accepting another session of the user closes this tab's engine and keeps the replica for the other tab", async () => {
     const f = await twoTabs();
     try {
       await acceptSession({ ...f.profile, session_id: id(99) });
-      await until(() => f.second.isClosed());
       expect(f.first.isClosed()).toBe(true);
+      await until(() => f.second.status.get().role === "leader");
+      expect(f.second.isClosed()).toBe(false);
       expect(await replicaStorage().list()).toEqual([
         { userId: f.profile.id, workspaceId: f.workspace.id },
       ]);

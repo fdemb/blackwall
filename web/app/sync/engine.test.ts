@@ -2118,8 +2118,10 @@ describe("pending edits are never frozen or lost", () => {
     const receipt = await f.engine.mutate("create_issue", {
       input: { title: "Committed before the 502", team_id: TEAM },
     });
-    await elapse(f, () => f.engine.status.get().pending === 0);
-    expect(await receipt.settled).toBe("applied");
+    let outcome: unknown;
+    void receipt.settled.then((value) => (outcome = value));
+    await elapse(f, () => outcome !== undefined && f.engine.status.get().pending === 0);
+    expect(outcome).toBe("applied");
     expect(titled(f.server.records("issues"), "Committed before the 502")).toHaveLength(1);
     expect(f.engine.status.get()).toMatchObject({ rejected: [], unresolved: [], stalled: false });
     expect(f.engine.store.all("issues")).toHaveLength(3);
