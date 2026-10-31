@@ -1,5 +1,6 @@
 import type { Rejection } from "../engine-types";
 import { ENTITIES } from "../records";
+import type { Entity } from "../records";
 import type { PendingMutation } from "../store";
 import {
   acceptsChange,
@@ -11,8 +12,10 @@ import {
   scopeKey,
   storageFailure,
   withSkipped,
+  writeStaged,
 } from "./shared";
 import type {
+  BootstrapStage,
   LoadedReplica,
   Replica,
   ReplicaCloseListener,
@@ -24,9 +27,32 @@ import type {
 } from "./types";
 
 /** Store layout version, independent of the client record/index schema in meta. */
-export const IDB_VERSION = 3;
+export const IDB_VERSION = 4;
 const META_KEY = "replica";
-const STORES = ["meta", ...ENTITIES, "outbox", "scopes", "rejected"];
+/** Which of the two sets of swapped stores holds the live base. Absent means the first. */
+const GENERATION_KEY = "generation";
+/** The token of the bootstrap stage allowed to write, in the `stage` store. */
+const STAGE_KEY = "token";
+/**
+ * Entities a bootstrap replaces. Each has two stores: a bootstrap fills the idle one in chunks
+ * and swaps it in with the generation in meta, so a reload mid-bootstrap sees the old base whole.
+ */
+const SWAPPED: readonly Entity[] = ENTITIES.filter(
+  (entity) => entity !== "comments" && entity !== "activity",
+);
+type Generation = 0 | 1;
+
+function idle(live: Generation): Generation {
+  return live === 0 ? 1 : 0;
+}
+
+function storeOf(entity: Entity, generation: Generation): string {
+  return generation === 1 && SWAPPED.includes(entity) ? `${entity}:1` : entity;
+}
+
+const SWAPPED_STORES = SWAPPED.flatMap((entity) => [storeOf(entity, 0), storeOf(entity, 1)]);
+const ENTITY_STORES = [...ENTITIES, ...SWAPPED.map((entity) => storeOf(entity, 1))];
+const STORES = ["meta", ...ENTITY_STORES, "outbox", "scopes", "rejected", "stage"];
 /** Stores that hold the user's own work, kept across layout upgrades. */
 const KEPT_STORES = ["meta", "outbox", "rejected"];
 /** The index on each scoped entity, named after the field that holds its scope id. */
@@ -57,6 +83,20 @@ function dropConfirmed(tx: IDBTransaction, lastMutationId: number, guard: Guard)
 }
 
 type Guard = (fn: () => void) => void;
+
+function readGeneration(tx: IDBTransaction, guard: Guard, receive: (live: Generation) => void) {
+  read<Generation | undefined>(tx.objectStore("meta").get(GENERATION_KEY), guard, (value) =>
+    receive(value ?? 0),
+  );
+}
+
+/** Fails the transaction unless `token` still names the current stage. */
+function checkStage(tx: IDBTransaction, guard: Guard, token: string, then: () => void): void {
+  read<string | undefined>(tx.objectStore("stage").get(STAGE_KEY), guard, (current) => {
+    if (current !== token) throw new Error("bootstrap stage was replaced");
+    then();
+  });
+}
 
 /** Values come only from this module's writes, under the current store layout. */
 function read<T>(request: IDBRequest, guard: Guard, receive: (value: T) => void): void {
@@ -130,17 +170,22 @@ class IndexedDBReplica implements Replica {
 
   load(): Promise<LoadedReplica> {
     return this.transaction(STORES, "readonly", (tx, done, guard) => {
-      const records: LoadedReplica["records"] = {};
+      // Every store is read up front, both copies included, and the live copy picked at the end:
+      // a request issued after a callback can run after an upgrade has replaced the stores.
+      const contents = new Map<string, object[]>();
+      let live: Generation = 0;
       let meta: ReplicaMeta;
       let stored: StoredMutation[] = [];
       let scopes: Scope[] = [];
       let rejected: Rejection[] = [];
-      let remaining = ENTITIES.length + 4;
+      let remaining = ENTITY_STORES.length + 5;
       const received = () => {
         remaining -= 1;
         if (remaining > 0) return;
         const acknowledged = (mutation: PendingMutation) => mutation.id <= meta.lastMutationId;
         const rows = stored.map(pendingOf);
+        const records: LoadedReplica["records"] = {};
+        for (const entity of ENTITIES) records[entity] = contents.get(storeOf(entity, live)) ?? [];
         done({
           meta,
           records,
@@ -155,12 +200,15 @@ class IndexedDBReplica implements Replica {
         meta = value;
         received();
       });
-      for (const entity of ENTITIES) {
-        read<object[]>(tx.objectStore(entity).getAll(), guard, (value) => {
-          records[entity] = value;
+      readGeneration(tx, guard, (generation) => {
+        live = generation;
+        received();
+      });
+      for (const store of ENTITY_STORES)
+        read<object[]>(tx.objectStore(store).getAll(), guard, (value) => {
+          contents.set(store, value);
           received();
         });
-      }
       read<StoredMutation[]>(tx.objectStore("outbox").getAll(), guard, (value) => {
         stored = value;
         received();
@@ -192,9 +240,11 @@ class IndexedDBReplica implements Replica {
   }
 
   resetBase(): Promise<void> {
-    return this.transaction(["meta", ...ENTITIES, "scopes"], "readwrite", (tx, done, guard) => {
-      for (const entity of ENTITIES) tx.objectStore(entity).clear();
+    const stores = ["meta", ...ENTITY_STORES, "scopes", "stage"];
+    return this.transaction(stores, "readwrite", (tx, done, guard) => {
+      for (const store of ENTITY_STORES) tx.objectStore(store).clear();
       tx.objectStore("scopes").clear();
+      tx.objectStore("stage").clear();
       read<ReplicaMeta>(tx.objectStore("meta").get(META_KEY), guard, (meta) => {
         tx.objectStore("meta").put(
           { ...meta, schema: this.schema, serverSchema: 0, cursor: null },
@@ -206,72 +256,126 @@ class IndexedDBReplica implements Replica {
   }
 
   writeBootstrap(input: Parameters<Replica["writeBootstrap"]>[0]): Promise<void> {
-    const stores = ["meta", "outbox", "scopes", "comments", "activity", ...input.entities];
-    return this.transaction(stores, "readwrite", (tx, done, guard) => {
-      for (const entity of input.entities) {
-        const store = tx.objectStore(entity);
-        store.clear();
-        for (const record of input.records[entity] ?? []) {
-          recordKey(entity, record);
-          store.put(record);
-        }
-      }
-      tx.objectStore("comments").clear();
-      tx.objectStore("activity").clear();
-      tx.objectStore("scopes").clear();
-      read<ReplicaMeta>(tx.objectStore("meta").get(META_KEY), guard, (meta) => {
-        const lastMutationId = Math.max(meta.lastMutationId, input.lastMutationId);
-        tx.objectStore("meta").put(
-          withSkipped(
-            {
-              ...meta,
-              cursor: input.cursor,
-              lastMutationId,
-              serverSchema: input.serverSchema,
-            },
-            input.skipped ?? [],
-            input.resync === true,
-          ),
-          META_KEY,
-        );
-        dropConfirmed(tx, lastMutationId, guard);
-        done(undefined);
-      });
-    });
+    return writeStaged(this, input);
+  }
+
+  async stageBootstrap(): Promise<BootstrapStage> {
+    const token = crypto.randomUUID();
+    const live = await this.transaction<Generation>(
+      ["meta", "stage", ...SWAPPED_STORES],
+      "readwrite",
+      (tx, done, guard) => {
+        readGeneration(tx, guard, (current) => {
+          for (const entity of SWAPPED) tx.objectStore(storeOf(entity, idle(current))).clear();
+          tx.objectStore("stage").put(token, STAGE_KEY);
+          done(current);
+        });
+      },
+    );
+    const target = idle(live);
+    return {
+      write: (records) => {
+        const entities = Object.keys(records) as Entity[];
+        const stores = ["stage", ...entities.map((entity) => storeOf(entity, target))];
+        return this.transaction(stores, "readwrite", (tx, done, guard) => {
+          checkStage(tx, guard, token, () => {
+            for (const entity of entities) {
+              if (!SWAPPED.includes(entity)) throw new Error(`${entity} is not bootstrapped`);
+              const store = tx.objectStore(storeOf(entity, target));
+              for (const record of records[entity] ?? []) {
+                recordKey(entity, record);
+                store.put(record);
+              }
+            }
+            done(undefined);
+          });
+        });
+      },
+      commit: (input) => {
+        const stores = ["meta", "outbox", "scopes", "stage", "comments", "activity"];
+        stores.push(...SWAPPED_STORES);
+        return this.transaction(stores, "readwrite", (tx, done, guard) => {
+          checkStage(tx, guard, token, () =>
+            readGeneration(tx, guard, (current) => {
+              if (current !== live) throw new Error("bootstrap stage was replaced");
+              // An entity the bootstrap doesn't list keeps its records.
+              for (const entity of SWAPPED) {
+                const old = tx.objectStore(storeOf(entity, live));
+                if (input.entities.includes(entity)) {
+                  old.clear();
+                  continue;
+                }
+                read<object[]>(old.getAll(), guard, (kept) => {
+                  const store = tx.objectStore(storeOf(entity, target));
+                  for (const record of kept) store.put(record);
+                  old.clear();
+                });
+              }
+              tx.objectStore("comments").clear();
+              tx.objectStore("activity").clear();
+              tx.objectStore("scopes").clear();
+              tx.objectStore("stage").delete(STAGE_KEY);
+              tx.objectStore("meta").put(target, GENERATION_KEY);
+              read<ReplicaMeta>(tx.objectStore("meta").get(META_KEY), guard, (meta) => {
+                const lastMutationId = Math.max(meta.lastMutationId, input.lastMutationId);
+                tx.objectStore("meta").put(
+                  withSkipped(
+                    {
+                      ...meta,
+                      cursor: input.cursor,
+                      lastMutationId,
+                      serverSchema: input.serverSchema,
+                    },
+                    input.skipped ?? [],
+                    input.resync === true,
+                  ),
+                  META_KEY,
+                );
+                dropConfirmed(tx, lastMutationId, guard);
+                done(undefined);
+              });
+            }),
+          );
+        });
+      },
+    };
   }
 
   applyPull(input: Parameters<Replica["applyPull"]>[0]): Promise<void> {
-    const stores = ["meta", "scopes", ...input.changes.map((change) => change.entity)];
+    const stores = ["meta", "scopes"];
+    for (const { entity } of input.changes) stores.push(storeOf(entity, 0), storeOf(entity, 1));
     if (input.acknowledgedUpTo !== null) stores.push("outbox");
     return this.transaction(stores, "readwrite", (tx, done, guard) => {
       read<Scope[]>(tx.objectStore("scopes").getAll(), guard, (loaded) => {
         const scopes = new Map(loaded.map((scope) => [scopeKey(scope), scope]));
-        // A scoped tombstone needs the stored row; resume after its point read.
-        const apply = (start: number): void => {
-          for (let index = start; index < input.changes.length; index += 1) {
-            const change = input.changes[index];
-            const store = tx.objectStore(change.entity);
-            if (
-              change.record === null &&
-              (change.entity === "comments" || change.entity === "activity")
-            ) {
-              read<object | undefined>(store.get(change.id), guard, (previous) => {
-                if (acceptsChange(change.entity, previous, scopes)) store.delete(change.id);
-                apply(index + 1);
-              });
-              return;
-            }
-            if (!acceptsChange(change.entity, change.record ?? undefined, scopes)) continue;
-            if (change.record === null) store.delete(change.id);
-            else {
-              if (recordKey(change.entity, change.record) !== change.id) {
-                throw new Error("change id does not match record key");
+        readGeneration(tx, guard, (live) => {
+          // A scoped tombstone needs the stored row; resume after its point read.
+          const apply = (start: number): void => {
+            for (let index = start; index < input.changes.length; index += 1) {
+              const change = input.changes[index];
+              const store = tx.objectStore(storeOf(change.entity, live));
+              if (
+                change.record === null &&
+                (change.entity === "comments" || change.entity === "activity")
+              ) {
+                read<object | undefined>(store.get(change.id), guard, (previous) => {
+                  if (acceptsChange(change.entity, previous, scopes)) store.delete(change.id);
+                  apply(index + 1);
+                });
+                return;
               }
-              store.put(change.record);
+              if (!acceptsChange(change.entity, change.record ?? undefined, scopes)) continue;
+              if (change.record === null) store.delete(change.id);
+              else {
+                if (recordKey(change.entity, change.record) !== change.id) {
+                  throw new Error("change id does not match record key");
+                }
+                store.put(change.record);
+              }
             }
-          }
-        };
-        apply(0);
+          };
+          apply(0);
+        });
       });
       read<ReplicaMeta>(tx.objectStore("meta").get(META_KEY), guard, (meta) => {
         const lastMutationId = Math.max(
@@ -447,17 +551,21 @@ export class IndexedDBReplicaStorage implements ReplicaStorage {
               META_KEY,
             );
           });
+          tx.objectStore("meta").delete(GENERATION_KEY);
         } else db.createObjectStore("meta").put(initialMeta(input), META_KEY);
         for (const entity of ENTITIES) {
           const store = db.createObjectStore(entity, { keyPath: keyPath(entity) });
           if (entity === "comments" || entity === "activity")
             store.createIndex(SCOPE_INDEX[entity], SCOPE_INDEX[entity]);
         }
+        for (const entity of SWAPPED)
+          db.createObjectStore(storeOf(entity, 1), { keyPath: keyPath(entity) });
         if (!db.objectStoreNames.contains("outbox"))
           db.createObjectStore("outbox", { keyPath: "id" });
         if (!db.objectStoreNames.contains("rejected"))
           db.createObjectStore("rejected", { keyPath: "id" });
         db.createObjectStore("scopes");
+        db.createObjectStore("stage");
       };
       request.onsuccess = () => {
         if (failed) request.result.close();

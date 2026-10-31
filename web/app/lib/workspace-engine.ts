@@ -13,6 +13,7 @@ import {
   discardWorkspaceEngine,
 } from "./session-replicas";
 import { currentProfile, clearLastWs } from "./auth-guard";
+import { firstLoad } from "./first-load";
 import { queryClient } from "./query-client";
 
 export function browserTabDependencies(browser: {
@@ -60,6 +61,7 @@ const signals: EngineSignals = {
 export function waitUntilReady(engine: SyncEngine, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
     const finish = (error?: Error) => {
+      firstLoad.set(null);
       unsubscribeStatus();
       unsubscribeEvents();
       signal?.removeEventListener("abort", aborted);
@@ -68,6 +70,7 @@ export function waitUntilReady(engine: SyncEngine, signal?: AbortSignal): Promis
     };
     const check = () => {
       const status = engine.status.get();
+      firstLoad.set(status.progress);
       if (status.phase === "ready") finish();
       // The engine retries a protocol error by itself, so only a blocked one ends the wait.
       else if (
@@ -140,6 +143,7 @@ export function openWorkspaceEngine(
       randomId: () => crypto.randomUUID(),
       signals,
       requestPersistence,
+      pokeJitterMs: 200,
       clock: {
         now: () => new Date().toISOString(),
         monotonic: () => performance.now(),

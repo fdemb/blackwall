@@ -1,3 +1,5 @@
+import { mergePokes } from "../cursor";
+import type { PokeData } from "../cursor";
 import { FakeClock } from "./clock";
 
 export interface EventTiming {
@@ -7,7 +9,10 @@ export interface EventTiming {
 }
 
 const encoder = new TextEncoder();
-const POKE = encoder.encode("event: poke\ndata: {}\n\n");
+
+function pokeChunk(data: object): Uint8Array {
+  return encoder.encode(`event: poke\ndata: ${JSON.stringify(data)}\n\n`);
+}
 
 /** A capacity-one poke queue, including the trailing edge of a commit burst. */
 export class EventConnection {
@@ -17,6 +22,10 @@ export class EventConnection {
   private lastSend: number;
   private pending = false;
   private pokeQueued = true;
+  /** The newest txid of the coalescing window, null once a wildcard joined it, or none yet. */
+  private window?: number | null;
+  /** Pokes the reader had no room for, merged and sent when it reads, so no txid is lost. */
+  private missed: PokeData | null = null;
   private cancelTrailing?: () => void;
   private cancelKeepalive?: () => void;
   private readonly cancelLifetime: () => void;
@@ -27,15 +36,21 @@ export class EventConnection {
     private readonly timing: EventTiming,
     private readonly signal: AbortSignal,
     private readonly onClose: () => void,
+    /** Stamps pokes with their txid and this epoch, as the Rust server does. */
+    private readonly epoch?: string,
   ) {
     this.lastSend = clock.milliseconds();
     const body = new ReadableStream<Uint8Array>({
       start: (controller) => {
         this.controller = controller;
-        controller.enqueue(POKE);
+        controller.enqueue(pokeChunk({}));
       },
-      pull: () => {
+      pull: (controller) => {
         this.pokeQueued = false;
+        if (this.missed === null) return;
+        controller.enqueue(pokeChunk(this.missed));
+        this.missed = null;
+        this.pokeQueued = (controller.desiredSize ?? 0) <= 0;
       },
       cancel: () => this.close(),
     });
@@ -53,8 +68,10 @@ export class EventConnection {
     if (signal.aborted) this.close();
   }
 
-  poke(): void {
+  poke(txid?: number): void {
     if (this.closed) return;
+    this.window =
+      this.window === null || txid === undefined ? null : Math.max(this.window ?? txid, txid);
     const wait = this.lastSend + this.timing.coalesceMs - this.clock.milliseconds();
     if (wait <= 0) this.send();
     else if (!this.pending) {
@@ -84,10 +101,14 @@ export class EventConnection {
 
   private send(): void {
     if (this.closed) return;
+    const txid = this.window;
+    this.window = undefined;
+    const stamped = this.epoch !== undefined && typeof txid === "number";
+    const poke: PokeData = stamped ? { txid, epoch: this.epoch } : {};
     if (!this.pokeQueued) {
-      this.controller?.enqueue(POKE);
+      this.controller?.enqueue(pokeChunk(poke));
       this.pokeQueued = (this.controller?.desiredSize ?? 0) <= 0;
-    }
+    } else if (this.epoch !== undefined) this.missed = mergePokes(this.missed, poke);
     this.lastSend = this.clock.milliseconds();
   }
 

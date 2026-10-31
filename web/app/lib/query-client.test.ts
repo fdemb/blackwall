@@ -25,7 +25,7 @@ describe("report invalidation", () => {
     await vi.advanceTimersByTimeAsync(300);
     expect(queryClient.getQueryState(keys.report("ws"))?.isInvalidated).toBe(false);
     store.applyBase([{ entity: "issues", id: "a", record: makeIssue("a") }]);
-    await vi.advanceTimersByTimeAsync(200);
+    await vi.advanceTimersByTimeAsync(800);
     store.applyBase([
       {
         entity: "time_entries",
@@ -41,9 +41,9 @@ describe("report invalidation", () => {
         },
       },
     ]);
-    await vi.advanceTimersByTimeAsync(200);
+    await vi.advanceTimersByTimeAsync(900);
     expect(queryClient.getQueryState(keys.report("ws"))?.isInvalidated).toBe(false);
-    await vi.advanceTimersByTimeAsync(50);
+    await vi.advanceTimersByTimeAsync(100);
     expect(queryClient.getQueryState(keys.report("ws"))?.isInvalidated).toBe(true);
     expect(queryClient.getQueryData(keys.report("ws"))).toBe(cached);
     unsubscribe();
@@ -68,7 +68,7 @@ describe("report invalidation", () => {
       ]);
       store.setPending([]);
     });
-    await vi.advanceTimersByTimeAsync(300);
+    await vi.advanceTimersByTimeAsync(1_000);
     expect(queryClient.getQueryState(keys.report("ws"))?.isInvalidated).toBe(true);
     unsubscribe();
   });

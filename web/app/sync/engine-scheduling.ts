@@ -52,6 +52,16 @@ export async function pause(clock: EngineClock, milliseconds: number, signal: Ab
   }
 }
 
+/** A seeded generator of numbers in [0, 1), so jitter never consumes ids or user actions. */
+export function seededRandom(seed: string): () => number {
+  let state = 2166136261;
+  for (const char of seed) state = Math.imul(state ^ char.charCodeAt(0), 16777619) >>> 0;
+  return () => {
+    state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
+    return state / 0x1_0000_0000;
+  };
+}
+
 /** The longest wait a Retry-After can ask for. A wrong wall clock turns an HTTP date into hours. */
 const MAX_RETRY_AFTER_MS = 5 * 60_000;
 

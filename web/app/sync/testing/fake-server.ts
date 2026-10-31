@@ -59,6 +59,11 @@ export interface FakeServerOptions {
   maxPushBytes?: number;
   /** Workspace limits the server enforces, as its `WORKSPACE_LIMIT_*` settings. Unset is unlimited. */
   limits?: Partial<Record<Entity, number>>;
+  /**
+   * Prefixes cursors with this epoch and stamps pokes with their txid and the epoch, like the Rust
+   * server. Without it, cursors are bare snapshots and every poke is `{}`.
+   */
+  epoch?: string;
 }
 
 const LIMITED: Partial<Record<string, [Entity, string, string]>> = {
@@ -631,8 +636,12 @@ export class FakeServer {
               throw new MutationError(400, "scope rejected");
             response = json(this.scope(workspace, session.user, url.searchParams));
           } else {
-            const stream = new EventConnection(this.clock, this.timing, request.signal, () =>
-              this.streams.delete(stream),
+            const stream = new EventConnection(
+              this.clock,
+              this.timing,
+              request.signal,
+              () => this.streams.delete(stream),
+              this.options.epoch,
             );
             this.streams.set(stream, workspace);
             const early = faults.find((fault) => fault.kind === "close_events");
@@ -812,7 +821,7 @@ export class FakeServer {
     state.tables = tables;
     this.history.push(transaction);
     if (rows.length > 0)
-      for (const [stream, ws] of this.streams) if (ws === workspace) stream.poke();
+      for (const [stream, ws] of this.streams) if (ws === workspace) stream.poke(transaction.id);
     return transaction;
   }
 
@@ -1196,6 +1205,10 @@ export class FakeServer {
     return { status: 200, body };
   }
 
+  private stamp(snapshot: string): string {
+    return this.options.epoch === undefined ? snapshot : `${this.options.epoch}@${snapshot}`;
+  }
+
   private pull(
     workspace: string,
     actor: string,
@@ -1204,14 +1217,14 @@ export class FakeServer {
     forced: boolean,
   ): PullResponse {
     const result: PullResponse = {
-      cursor: `${this.txid}:${this.txid}:`,
+      cursor: this.stamp(`${this.txid}:${this.txid}:`),
       more: false,
       reset: false,
       last_mutation_id: null,
       changes: [],
     };
     if (cursor === null) return forced ? { ...result, reset: true } : result;
-    const requested = parseCursor(cursor, this.txid);
+    const requested = parseCursor(cursor.replace(/^[0-9a-f]{32}@/, ""), this.txid);
     const window = this.history.filter(
       (tx) =>
         tx.workspace === workspace && (tx.id >= requested.xmax || requested.xip.includes(tx.id)),
@@ -1230,7 +1243,7 @@ export class FakeServer {
         if (included === 0) return { ...result, reset: true };
         const xmax = Math.max(requested.xmax, tx.id);
         const xip = requested.xip.filter((id) => id >= tx.id);
-        result.cursor = `${xip[0] ?? xmax}:${xmax}:${xip.join(",")}`;
+        result.cursor = this.stamp(`${xip[0] ?? xmax}:${xmax}:${xip.join(",")}`);
         result.more = true;
         break;
       }
@@ -1259,7 +1272,7 @@ export class FakeServer {
   ): Response {
     const lines: object[] = [
       {
-        cursor: `${this.txid}:${this.txid}:`,
+        cursor: this.stamp(`${this.txid}:${this.txid}:`),
         last_mutation_id: this.clientState(clientId).last_mutation_id,
         schema: 1,
       },

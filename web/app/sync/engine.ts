@@ -10,11 +10,12 @@ import { DEFAULT_STAGES } from "./mutators/planning";
 import {
   acceptsChange,
   recordKey,
+  BOOTSTRAP_CHUNK,
   recordScope,
   scopeKey,
   StorageFullError,
 } from "./persistence/shared";
-import type { Replica, ReplicaCloseReason, Scope } from "./persistence/types";
+import type { BootstrapStage, Replica, ReplicaCloseReason, Scope } from "./persistence/types";
 import { BOOTSTRAP_ENTITIES, BOOTSTRAP_REPLACED_ENTITIES } from "./records";
 import type { Change, Entity } from "./records";
 import { immutableCopy, ingest, SyncStore } from "./store";
@@ -28,7 +29,17 @@ import {
   UnavailableError,
 } from "./transport";
 import type { IssuedInvitation, Mutation, MutationResult, PullResponse } from "./transport";
-import { backoff, Cancelled, cancellable, pause, Resync, SerialQueue } from "./engine-scheduling";
+import {
+  backoff,
+  Cancelled,
+  cancellable,
+  pause,
+  Resync,
+  seededRandom,
+  SerialQueue,
+} from "./engine-scheduling";
+import { mergePokes, pokeCovered } from "./cursor";
+import type { PokeData } from "./cursor";
 import type {
   EngineDependencies,
   EngineEvent,
@@ -98,6 +109,8 @@ const STORAGE_FULL_EDIT =
 const PUSH_MUTATIONS = 100;
 const PUSH_BYTES = 4 * 1024 * 1024;
 const encoder = new TextEncoder();
+/** Records between bootstrap progress reports, so the status doesn't change on every line. */
+const PROGRESS_STEP = 500;
 type RequestKind = "bootstrap" | "pull" | "scope" | "push" | "events";
 /** The server keeps a client's 1,000 newest rejections, so older ones read back as duplicates. */
 const REJECTIONS_KEPT = 1000;
@@ -109,6 +122,10 @@ const STALLED_AFTER = 3;
 /** 401s in a row, each with the session checked and found valid, before retries stop. */
 const UNAUTHORIZED_RETRIES = 3;
 const TOO_LARGE = "This edit is too large to save.";
+/** Ids of edits shown before their outbox write finishes, above any id an outbox allocates. */
+const PROVISIONAL_IDS = 2 ** 52;
+/** An edit in the view whose outbox write hasn't finished. `saved` is the id that write chose. */
+type Unsaved = { id: number; body: Omit<PendingMutation, "id">; saved: number | null };
 type PushBatch = {
   /** Halved after a 413, so a body the server refuses never blocks the outbox. */
   mutations: readonly Mutation[];
@@ -235,6 +252,12 @@ export class SyncEngine {
   private readonly eventListeners = new Set<(event: EngineEvent) => void>();
   private readonly reads = new SerialQueue();
   private readonly commits = new SerialQueue();
+  /** Outbox writes of new edits, in admission order, kept apart from base writes. */
+  private readonly appends = new SerialQueue();
+  private readonly unsaved: Unsaved[] = [];
+  private nextProvisional = PROVISIONAL_IDS;
+  /** The latest queued reload of the replica into memory, which a new edit is admitted after. */
+  private reloading: Promise<void> = Promise.resolve();
   private readonly onlineRequests = new SerialQueue();
   private readonly loadedScopes = new Map<string, Scope>();
   private readonly heldScopes = new Map<string, { scope: Scope; holders: number }>();
@@ -285,6 +308,12 @@ export class SyncEngine {
   private accessUnverified = false;
   private pullAgain = false;
   private pulling: Promise<void> | null = null;
+  /** Pokes since the last pull, merged. Checked against the cursor once no pull is running. */
+  private poked: PokeData | null = null;
+  private cancelPoke: (() => void) | null = null;
+  /** A push request is out. Its own poke may arrive first, and the pull after it covers that. */
+  private sending = false;
+  private readonly jitter: () => number;
   private pushing: Promise<void> | null = null;
   private batch: PushBatch | null = null;
   /**
@@ -315,6 +344,7 @@ export class SyncEngine {
   constructor(private readonly deps: EngineDependencies) {
     this.store = new SyncStore(createReplay(deps.actor));
     this.delay = backoff(`${deps.actor}:${deps.workspaceId}`, deps.clock);
+    this.jitter = seededRandom(`poke:${deps.actor}:${deps.workspaceId}`);
     this.lockName = `blackwall-sync:${deps.actor}:${deps.workspaceId}`;
     this.role = deps.locks ? "follower" : "leader";
     this.tabId = deps.channel ? deps.randomId() : "";
@@ -333,6 +363,7 @@ export class SyncEngine {
       unresolved: Object.freeze([]),
       skipped: Object.freeze([]),
       storage: "ok",
+      progress: null,
     });
     this.status = {
       get: () => this.snapshot,
@@ -445,7 +476,7 @@ export class SyncEngine {
     for (const scope of loaded.scopes) this.loadedScopes.set(scopeKey(scope), scope);
     this.store.batch(() => {
       this.store.replaceBase(loaded.records, BOOTSTRAP_REPLACED_ENTITIES);
-      this.store.setPending(loaded.outbox);
+      this.store.setPending(this.withUnsaved(loaded.outbox));
     });
     this.update({ unresolved: Object.freeze(loaded.rejected) });
   }
@@ -536,6 +567,7 @@ export class SyncEngine {
     this.stopStorageRetry();
     this.notifyChange();
     await this.commits.drain();
+    await this.appends.drain();
     this.replica?.close();
     this.replica = null;
     this.rejectCallers(new Error("Engine is closed"));
@@ -579,9 +611,7 @@ export class SyncEngine {
    */
   private async takeLeadership(): Promise<void> {
     this.setRole("leader");
-    await this.commits.run(async () => {
-      this.applyLoaded(await this.requireReplica().load());
-    });
+    await this.reload();
     // The view now matches the database, so only an unsaved 413 rejection keeps the disk full.
     this.setStorage(this.setAside.size === 0 ? "ok" : "full");
     for (const [requestId, remote] of [...this.remote]) {
@@ -640,48 +670,103 @@ export class SyncEngine {
     for (const wake of waiting) wake();
   }
 
+  /**
+   * The view shows the edit at once, under a provisional id. Its outbox write, which allocates the
+   * real id, queues behind earlier edits only, never behind base writes. Nothing pushes the edit
+   * and no other tab hears of it until that write has finished.
+   */
   async mutate(name: string, args: unknown): Promise<MutationReceipt> {
     await this.open();
+    // A view the database is about to replace could refuse an edit the replica would accept.
+    await this.reloading;
     const lifecycle = this.lifecycle;
-    return this.commits.run(async () => {
-      if (this.sealed) throw new Error("Engine is retiring");
-      const replica = this.requireReplica();
-      if (ONLINE_ONLY.some((command) => command === name))
-        throw new MutationError(400, "Use runOnline for this command");
-      const prepared = this.prepare(name, args);
-      const at = this.deps.clock.now();
-      const admitted = admit(this.store, this.deps.actor, { name, args: prepared.args, at });
-      const mutation = await replica
-        .appendMutation(() => ({
-          name,
-          args: admitted.args,
-          at,
-          ...(admitted.local === undefined ? {} : { local: admitted.local }),
-        }))
-        .catch((error: unknown) => {
-          // The edit is refused whole and the caller shows this, so none is lost without a word.
-          throw error instanceof StorageFullError
-            ? new MutationError(507, STORAGE_FULL_EDIT)
-            : error;
-        });
-      if (this.snapshot.storage === "full" && this.role === "leader") void this.retryStorage();
-      const settled = new Promise<MutationOutcome>((resolve, reject) =>
-        this.outcomes.set(mutation.id, { mutation, resolve, reject }),
-      );
-      void settled.catch(() => undefined);
-      if (this.closed || this.terminal || lifecycle !== this.lifecycle) {
-        this.outcomes
-          .get(mutation.id)
-          ?.reject(
-            new Error(this.closed || this.terminal ? "Engine is closed" : "Engine is stopped"),
-          );
-        this.outcomes.delete(mutation.id);
-      }
-      this.store.setPending([...this.store.pending(), mutation].sort((a, b) => a.id - b.id));
-      this.post({ type: "appended", mutation });
-      this.requestPush();
-      return { id: prepared.id, mutationId: mutation.id, settled };
+    if (this.sealed) throw new Error("Engine is retiring");
+    const replica = this.requireReplica();
+    if (ONLINE_ONLY.some((command) => command === name))
+      throw new MutationError(400, "Use runOnline for this command");
+    const prepared = this.prepare(name, args);
+    const at = this.deps.clock.now();
+    const admitted = admit(this.store, this.deps.actor, { name, args: prepared.args, at });
+    const entry = this.showUnsaved({
+      name,
+      args: admitted.args,
+      at,
+      ...(admitted.local === undefined ? {} : { local: admitted.local }),
     });
+    const settled = this.expectOutcome({ ...entry.body, id: entry.id });
+    let mutation: PendingMutation;
+    try {
+      mutation = await this.appends.run(() =>
+        replica.appendMutation((id) => {
+          entry.saved = id;
+          this.moveOutcome(entry.id, id);
+          return entry.body;
+        }),
+      );
+    } catch (error) {
+      this.outcomes.delete(entry.id);
+      if (entry.saved !== null) this.outcomes.delete(entry.saved);
+      // The edit leaves the view and the caller shows why, so none is lost without a word.
+      this.dropUnsaved(entry);
+      throw error instanceof StorageFullError ? new MutationError(507, STORAGE_FULL_EDIT) : error;
+    }
+    this.saveUnsaved(entry, mutation.id);
+    if (this.snapshot.storage === "full" && this.role === "leader") void this.retryStorage();
+    if (this.closed || this.terminal || lifecycle !== this.lifecycle) {
+      const ended = this.closed || this.terminal ? "Engine is closed" : "Engine is stopped";
+      this.outcomes.get(mutation.id)?.reject(new Error(ended));
+      this.outcomes.delete(mutation.id);
+    }
+    this.post({ type: "appended", mutation });
+    this.requestPush();
+    return { id: prepared.id, mutationId: mutation.id, settled };
+  }
+
+  private expectOutcome(mutation: Mutation): Promise<MutationOutcome> {
+    const settled = new Promise<MutationOutcome>((resolve, reject) =>
+      this.outcomes.set(mutation.id, { mutation, resolve, reject }),
+    );
+    void settled.catch(() => undefined);
+    return settled;
+  }
+
+  /** Keys a waiting receipt by the id its outbox write chose. */
+  private moveOutcome(from: number, to: number): void {
+    const outcome = this.outcomes.get(from);
+    if (!outcome) return;
+    this.outcomes.delete(from);
+    this.outcomes.set(to, { ...outcome, mutation: { ...outcome.mutation, id: to } });
+  }
+
+  private showUnsaved(body: Omit<PendingMutation, "id">): Unsaved {
+    const entry: Unsaved = { id: this.nextProvisional++, body, saved: null };
+    this.unsaved.push(entry);
+    this.store.setPending([...this.store.pending(), { ...body, id: entry.id }]);
+    return entry;
+  }
+
+  /** The written edit keeps its place in the view under its real id. */
+  private saveUnsaved(entry: Unsaved, id: number): void {
+    this.unsaved.splice(this.unsaved.indexOf(entry), 1);
+    this.store.renamePending(entry.id, id);
+  }
+
+  private dropUnsaved(entry: Unsaved): void {
+    this.unsaved.splice(this.unsaved.indexOf(entry), 1);
+    this.store.setPending(this.store.pending().filter((mutation) => mutation.id !== entry.id));
+  }
+
+  /**
+   * A pending list read from the outbox, with the edits still being written after it. One whose
+   * write finished in the meantime is already in `saved`, under its real id.
+   */
+  private withUnsaved(saved: readonly PendingMutation[]): PendingMutation[] {
+    const current = new Map(this.store.pending().map((mutation) => [mutation.id, mutation]));
+    const stored = new Set(saved.map((mutation) => mutation.id));
+    const shown = this.unsaved
+      .filter((entry) => entry.saved === null || !stored.has(entry.saved))
+      .map((entry) => current.get(entry.id) ?? { ...entry.body, id: entry.id });
+    return [...saved, ...shown];
   }
 
   async runOnline(name: string, args: unknown): Promise<OnlineResult> {
@@ -788,7 +873,8 @@ export class SyncEngine {
       if (this.started && this.snapshot.online && this.unauthorized === null) {
         const stored = await this.requireReplica().loadOutbox();
         // A full disk can leave acknowledged mutations stored after memory settled them.
-        if (stored.every((mutation) => mutation.id <= this.acknowledged)) {
+        const drained = stored.every((mutation) => mutation.id <= this.acknowledged);
+        if (drained && this.unsaved.length === 0) {
           // A 401 or close can land while the outbox loads; check again with no await before
           // the caller registers its attempt.
           signal.throwIfAborted();
@@ -909,7 +995,7 @@ export class SyncEngine {
     this.pullAgain = true;
     if (this.pulling) return this.pulling;
     const work = (async () => {
-      while (this.pullAgain && this.active(controller)) {
+      while (this.active(controller) && (this.pullAgain || this.pokeNeedsPull())) {
         this.pullAgain = false;
         if (await this.pullPages(controller)) this.pullAgain = true;
       }
@@ -919,9 +1005,41 @@ export class SyncEngine {
       if (this.pulling !== work) return;
       this.pulling = null;
       if (this.pullAgain && this.controller) void this.pull();
+      else this.settlePoke();
       this.requestPush();
     });
     return work;
+  }
+
+  /**
+   * A poke asks for a pull after a short random wait, unless the cursor already covers the commit
+   * it names. Pokes that arrive while a pull runs are judged against the cursor that pull leaves,
+   * so the pull after this client's own push makes the poke for that push redundant.
+   */
+  private poke(data: PokeData): void {
+    this.poked = mergePokes(this.poked, data);
+    if (this.cancelPoke) return;
+    const wait = Math.floor(this.jitter() * (this.deps.pokeJitterMs ?? 0));
+    if (wait === 0) {
+      this.settlePoke();
+      return;
+    }
+    this.cancelPoke = this.deps.clock.schedule(wait, () => {
+      this.cancelPoke = null;
+      this.settlePoke();
+    });
+  }
+
+  private settlePoke(): void {
+    if (!this.pulling && !this.sending && this.pokeNeedsPull()) void this.pull();
+  }
+
+  /** Takes the waiting poke, once its jitter has passed, and says whether the cursor misses it. */
+  private pokeNeedsPull(): boolean {
+    if (this.cancelPoke || this.poked === null) return false;
+    const poked = this.poked;
+    this.poked = null;
+    return !pokeCovered(this.cursor, poked);
   }
 
   /**
@@ -1213,11 +1331,17 @@ export class SyncEngine {
     });
   }
 
+  /** Replaces the view with the database's, through the commit queue. */
+  private reload(): Promise<void> {
+    const work = this.commits.run(async () => {
+      this.applyLoaded(await this.requireReplica().load());
+    });
+    this.reloading = work.catch(() => undefined);
+    return work;
+  }
+
   private receiveReset(): void {
-    this.commits
-      .run(async () => {
-        this.applyLoaded(await this.requireReplica().load());
-      })
+    this.reload()
       .then(() => {
         this.update({ phase: this.openPhase() });
         this.notifyScopes();
@@ -1504,6 +1628,9 @@ export class SyncEngine {
     this.controller?.abort();
     this.controller = null;
     this.pullAgain = false;
+    this.poked = null;
+    this.cancelPoke?.();
+    this.cancelPoke = null;
     this.cancelResync?.();
     this.cancelResync = null;
     for (const repair of this.scopeRepairs.values()) {
@@ -1541,22 +1668,43 @@ export class SyncEngine {
   }
 
   private async bootstrap(controller: AbortController): Promise<void> {
-    this.update({ phase: "bootstrapping" });
+    try {
+      await this.downloadBootstrap(controller);
+    } finally {
+      this.update({ progress: null });
+    }
+  }
+
+  /**
+   * Streams the bootstrap into a staged base while it downloads, one chunk write in flight, so the
+   * trailer only has to swap it in. A bootstrap without a trailer is never committed, and a reload
+   * before the commit finds the previous base. A full disk stops the staging and keeps the
+   * download in memory only.
+   */
+  private async downloadBootstrap(controller: AbortController): Promise<void> {
+    this.update({ phase: "bootstrapping", progress: 0 });
     this.check(controller);
     // Every record is parsed again below, so the ones still unparseable are reported again.
     const previous = new Map(this.skipped);
     this.setSkipped(new Map());
+    const staging = this.stageBootstrap(controller);
     const response = await cancellable(
       (async () => {
         const response = await this.deps.transport.bootstrap(this.deps.workspaceId, this.clientId, {
           signal: controller.signal,
         });
         const records: Partial<Record<Entity, object[]>> = {};
+        let received = 0;
         for await (const { entity, record } of response.records) {
+          received += 1;
+          if (received % PROGRESS_STEP === 0) this.update({ progress: received });
           const prepared = this.prepareRecord(entity, record);
-          if (prepared !== null) (records[entity] ??= []).push(prepared);
+          if (prepared === null) continue;
+          (records[entity] ??= []).push(prepared);
+          await staging.add(entity, prepared);
         }
-        return { header: response.header, records };
+        this.update({ progress: received });
+        return { header: response.header, records, stage: await staging.finish() };
       })(),
       controller.signal,
     )
@@ -1570,20 +1718,22 @@ export class SyncEngine {
       });
     await this.commits.run(async () => {
       this.check(controller);
+      const { stage } = response;
       // A full disk keeps the downloaded workspace in memory instead of downloading it again.
-      const persisted = await this.persist(
-        () =>
-          this.requireReplica().writeBootstrap({
-            cursor: response.header.cursor,
-            lastMutationId: response.header.last_mutation_id,
-            serverSchema: response.header.schema,
-            records: response.records,
-            entities: BOOTSTRAP_ENTITIES,
-            skipped: [...this.skipped.values()],
-            resync: false,
-          }),
-        "snapshot",
-      );
+      const persisted =
+        stage !== null &&
+        (await this.persist(
+          () =>
+            stage.commit({
+              cursor: response.header.cursor,
+              lastMutationId: response.header.last_mutation_id,
+              serverSchema: response.header.schema,
+              entities: BOOTSTRAP_ENTITIES,
+              skipped: [...this.skipped.values()],
+              resync: false,
+            }),
+          "snapshot",
+        ));
       if (persisted) await this.verified();
       this.cursor = response.header.cursor;
       this.serverSchema = response.header.schema;
@@ -1601,6 +1751,62 @@ export class SyncEngine {
     this.update({ phase: "ready" });
     for (const { scope } of this.heldScopes.values()) this.requestScope(scope);
     this.requestPush();
+  }
+
+  /**
+   * Writes bootstrap records into a staged base in chunks through the commit queue. `add` waits
+   * only while an earlier chunk is still being written. `finish` returns the stage, or null once
+   * the disk refused a write, and rethrows any other failure.
+   */
+  private stageBootstrap(controller: AbortController) {
+    let stage: BootstrapStage | null = null;
+    let full = false;
+    let failure: unknown = null;
+    let chunk: Partial<Record<Entity, object[]>> = {};
+    let size = 0;
+    let writing: Promise<void> = Promise.resolve();
+    const run = (work: () => Promise<void>) => {
+      writing = writing
+        .then(() =>
+          this.commits.run(async () => {
+            this.check(controller);
+            if (!full) await work();
+          }),
+        )
+        .catch((error: unknown) => {
+          if (!(error instanceof StorageFullError)) failure ??= error;
+          else {
+            full = true;
+            this.setStorage("full");
+          }
+        });
+    };
+    const flush = async () => {
+      await writing;
+      if (failure !== null) throw failure;
+      const records = chunk;
+      chunk = {};
+      size = 0;
+      run(async () => {
+        await stage?.write(records);
+      });
+    };
+    run(async () => {
+      stage = await this.requireReplica().stageBootstrap();
+    });
+    return {
+      add: async (entity: Entity, record: object) => {
+        (chunk[entity] ??= []).push(record);
+        size += 1;
+        if (size >= BOOTSTRAP_CHUNK) await flush();
+      },
+      finish: async (): Promise<BootstrapStage | null> => {
+        if (size > 0) await flush();
+        await writing;
+        if (failure !== null) throw failure;
+        return full ? null : stage;
+      },
+    };
   }
 
   /**
@@ -1895,9 +2101,11 @@ export class SyncEngine {
     const stored = await this.requireReplica().loadOutbox();
     // A full disk can leave acknowledged mutations in the database that memory already settled.
     this.store.setPending(
-      stored
-        .filter((mutation) => mutation.id > this.acknowledged)
-        .map((mutation) => current.get(mutation.id) ?? mutation),
+      this.withUnsaved(
+        stored
+          .filter((mutation) => mutation.id > this.acknowledged)
+          .map((mutation) => current.get(mutation.id) ?? mutation),
+      ),
     );
   }
 
@@ -1906,7 +2114,8 @@ export class SyncEngine {
     const confirmations = new Map<number, Mutation>(this.unconfirmed);
     for (const { mutation } of this.outcomes.values())
       if (mutation.id <= this.acknowledged) confirmations.set(mutation.id, mutation);
-    return [...confirmations.values(), ...this.store.pending()].sort((a, b) => a.id - b.id);
+    const saved = this.store.pending().filter((mutation) => mutation.id < PROVISIONAL_IDS);
+    return [...confirmations.values(), ...saved].sort((a, b) => a.id - b.id);
   }
 
   private requestScope(scope: Scope): void {
@@ -2067,20 +2276,24 @@ export class SyncEngine {
       if (wait > 0) await pause(this.deps.clock, wait, controller.signal);
       // A block can arrive while the batch was chosen or the retry delay ran.
       if (this.blocked.has("push")) return;
+      // A sent batch already asked for the pull that acknowledges it.
       if (!batch.processed) {
         const step = await this.sendBatch(batch, controller);
         if (step === "stop") return;
         if (step === "again") continue;
-      }
+      } else if (this.unacknowledged(batch)) void this.pull();
       this.check(controller);
       if (this.blocked.has("pull") || this.blocked.has("bootstrap")) return;
-      void this.pull();
-      if (batch.mutations.some((mutation) => mutation.id > this.acknowledged)) {
+      if (this.unacknowledged(batch)) {
         await this.waitForAcknowledgement(batch, controller);
         continue;
       }
       this.batch = null;
     }
+  }
+
+  private unacknowledged(batch: PushBatch): boolean {
+    return batch.mutations.some((mutation) => mutation.id > this.acknowledged);
   }
 
   private nextBatch(controller: AbortController): Promise<PushBatch | null> {
@@ -2106,6 +2319,7 @@ export class SyncEngine {
     batch: PushBatch,
     controller: AbortController,
   ): Promise<"sent" | "again" | "stop"> {
+    this.sending = true;
     try {
       const response = await this.withDeadline(controller, WRITE_DEADLINE_MS, (signal) =>
         this.deps.transport.push(this.deps.workspaceId, this.clientId, batch.mutations, {
@@ -2113,6 +2327,7 @@ export class SyncEngine {
           acknowledged: this.acknowledged,
         }),
       );
+      this.sending = false;
       this.check(controller);
       const rejected = response.results.flatMap(
         (result) => this.recordResult(result, response.lastMutationId) ?? [],
@@ -2137,6 +2352,8 @@ export class SyncEngine {
       batch.processed = true;
       return "sent";
     } catch (error) {
+      this.sending = false;
+      this.settlePoke();
       this.check(controller);
       return this.pushFailed(error, batch, controller);
     }
@@ -2378,7 +2595,7 @@ export class SyncEngine {
       if (signal.aborted) return;
       this.check(controller);
       alive();
-      if (message.event === "poke") void this.pull();
+      if (message.event === "poke") this.poke(message.data);
     }
   }
 

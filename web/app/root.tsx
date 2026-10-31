@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useState, useSyncExternalStore } from "react";
 import {
   Links,
   Meta,
@@ -14,6 +14,7 @@ import { RouterProvider } from "react-aria-components";
 import { QueryClientProvider } from "@tanstack/react-query";
 import "./app.css";
 import { ToastProvider } from "~/components/ui/toast";
+import { firstLoad } from "~/lib/first-load";
 import { I18nProvider, initialLanguage, createI18n } from "~/lib/i18n";
 import { queryClient } from "~/lib/query-client";
 import { registerServiceWorker } from "~/lib/service-worker";
@@ -56,9 +57,17 @@ export function meta() {
 }
 
 export function HydrateFallback() {
+  const received = useSyncExternalStore(firstLoad.subscribe, firstLoad.get, () => null);
   return (
     <div role="status" className="grid h-dvh place-items-center">
-      <div className="size-8 animate-pulse rounded-lg bg-primary" />
+      <div className="flex flex-col items-center gap-3">
+        <div className="size-8 animate-pulse rounded-lg bg-primary" />
+        {received ? (
+          <span className="text-xs text-muted-foreground tabular-nums">
+            {received.toLocaleString()}
+          </span>
+        ) : null}
+      </div>
     </div>
   );
 }

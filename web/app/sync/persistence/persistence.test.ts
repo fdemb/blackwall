@@ -73,6 +73,32 @@ for (const backend of ["memory", "idb"]) {
       expect((await other.load()).meta.clientId).not.toBe(loaded.meta.clientId);
     });
 
+    it("a staged bootstrap shows nothing until it commits, from any handle", async () => {
+      await replica.writeBootstrap(bootstrap({ issues: [{ id: "old" }], teams: [{ id: "t" }] }));
+      const stage = await replica.stageBootstrap();
+      await stage.write({ issues: [{ id: "new" }] });
+      const reloaded = await (await open()).load();
+      expect(reloaded.records.issues).toEqual([{ id: "old" }]);
+      expect(reloaded.records.teams).toEqual([{ id: "t" }]);
+      expect(reloaded.meta.cursor).toBe("bootstrap");
+
+      const next = await replica.stageBootstrap();
+      await expect(stage.write({ issues: [{ id: "stale" }] })).rejects.toThrow(
+        "bootstrap stage was replaced",
+      );
+      await next.write({ issues: [{ id: "a" }] });
+      await next.write({ issues: [{ id: "b" }], teams: [{ id: "t2" }] });
+      await next.commit({ ...bootstrap(), cursor: "staged" });
+      const loaded = await (await open()).load();
+      expect(loaded.records.issues).toEqual([{ id: "a" }, { id: "b" }]);
+      expect(loaded.records.teams).toEqual([{ id: "t2" }]);
+      expect(loaded.meta.cursor).toBe("staged");
+      await expect(stage.commit({ ...bootstrap(), cursor: "late" })).rejects.toThrow(
+        "bootstrap stage was replaced",
+      );
+      expect((await replica.load()).meta.cursor).toBe("staged");
+    });
+
     it("reopens the same raw records, metadata, outbox and scopes", async () => {
       const issue = { id: "issue-1", created_at: "2026-10-08T14:00:00+02:00" };
       await replica.writeBootstrap(bootstrap({ issues: [issue] }));
@@ -576,6 +602,11 @@ for (const backend of ["memory", "idb"]) {
   });
 }
 
+/** The second store of each entity a bootstrap replaces, which layout 4 added. */
+const IDLE_COPIES: string[] = [];
+for (const entity of ENTITIES)
+  if (entity !== "comments" && entity !== "activity") IDLE_COPIES.push(`${entity}:1`);
+
 function rawOpen(factory: IDBFactory, name: string, version?: number): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     const request = factory.open(name, version);
@@ -603,7 +634,7 @@ describe("IndexedDB lifecycle", () => {
     try {
       const db = await rawOpen(factory, replicaName(INPUT));
       expect([...db.objectStoreNames].sort()).toEqual(
-        ["meta", ...ENTITIES, "outbox", "scopes", "rejected"].sort(),
+        ["meta", ...ENTITIES, ...IDLE_COPIES, "outbox", "scopes", "rejected", "stage"].sort(),
       );
       db.close();
       expect((await replica.load()).meta.cursor).toBeNull();
@@ -661,7 +692,7 @@ describe("IndexedDB lifecycle", () => {
       for (const entity of ENTITIES) expect(loaded.records[entity]).toEqual([]);
       const db = await rawOpen(factory, replicaName(INPUT));
       expect([...db.objectStoreNames].sort()).toEqual(
-        ["meta", ...ENTITIES, "outbox", "scopes", "rejected"].sort(),
+        ["meta", ...ENTITIES, ...IDLE_COPIES, "outbox", "scopes", "rejected", "stage"].sort(),
       );
       db.close();
       expect((await upgraded.appendMutation(mutation)).id).toBe(before.meta.nextMutationId);

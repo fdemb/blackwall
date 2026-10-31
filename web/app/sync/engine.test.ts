@@ -3,7 +3,7 @@ import { forceCloseDatabase, IDBFactory } from "fake-indexeddb";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { getCsrf, setCsrf } from "../lib/api";
 import { createEngine, OutdatedError, PROTOCOL_BLOCK_AFTER, SCHEMA } from "./engine";
-import type { EngineEvent, EngineSignal, SyncEngine } from "./engine";
+import type { EngineEvent, EngineSignal, MutationReceipt, SyncEngine } from "./engine";
 import type { EngineDependencies } from "./engine-types";
 import { IDB_VERSION, IndexedDBReplicaStorage } from "./persistence/idb";
 import { MemoryReplicaStorage } from "./persistence/memory";
@@ -22,7 +22,8 @@ import {
   UnavailableError,
 } from "./transport";
 import { withCounts, issueRef } from "./derived";
-import type { Mutation } from "./transport";
+import type { Mutation, Poke } from "./transport";
+import type { PokeData } from "./cursor";
 
 const id = (n: number) => `11111111-1111-4111-8111-${n.toString(16).padStart(12, "0")}`;
 const TEAM = id(1);
@@ -3480,5 +3481,233 @@ describe("a full disk", () => {
     expect(saved.rejected).toMatchObject([{ id: receipt.mutationId, status: 413 }]);
     expect(engine.status.get().pending).toBe(0);
     expect(f.pushes()).toHaveLength(1);
+  });
+});
+
+const EPOCH = "6f1c0b8e2d9a4c7fa3e51b2d8c04a9f7";
+
+/** An event stream the test feeds by hand. */
+function scriptedPokes() {
+  const queue: Poke[] = [];
+  let wake = () => {};
+  async function* stream(): AsyncGenerator<Poke> {
+    for (;;) {
+      const next = queue.shift();
+      if (next) yield next;
+      else
+        await new Promise<void>((resolve) => {
+          wake = resolve;
+        });
+    }
+  }
+  return {
+    events: async () => stream(),
+    send(data: PokeData) {
+      queue.push({ event: "poke", data });
+      wake();
+    },
+  };
+}
+
+describe("pokes", () => {
+  async function scripted(extra: Partial<EngineDependencies> = {}) {
+    const f = fixture(new MemoryReplicaStorage(), { epoch: EPOCH });
+    const pokes = scriptedPokes();
+    const engine = f.build(SCHEMA, {
+      transport: { ...f.transport, events: pokes.events },
+      ...extra,
+    });
+    await engine.start();
+    await until(() => engine.status.get().phase === "ready" && engine.status.get().connected);
+    await engine.pull();
+    for (let tick = 0; tick < 10; tick += 1) await flush();
+    return { f, engine, pokes };
+  }
+
+  async function settled() {
+    for (let tick = 0; tick < 20; tick += 1) await flush();
+  }
+
+  it("skips a poke for a commit the cursor already holds", async () => {
+    const { f, pokes } = await scripted();
+    const pulls = f.requests("pull");
+    pokes.send({ txid: 1, epoch: EPOCH });
+    await settled();
+    expect(f.requests("pull")).toBe(pulls);
+  });
+
+  it("pulls for a newer commit, another epoch, and a wildcard", async () => {
+    const { f, engine, pokes } = await scripted();
+    let pulls = f.requests("pull");
+    f.server.run(f.peer, { type: "update_issue", id: ISSUE, patch: { title: "Peer" } });
+    pokes.send({ txid: 1_000_000, epoch: EPOCH });
+    await until(() => engine.store.get("issues", ISSUE)?.title === "Peer");
+    expect(f.requests("pull")).toBe(pulls + 1);
+    for (const data of [{ txid: 1, epoch: "0123456789abcdef0123456789abcdef" }, {}]) {
+      pulls = f.requests("pull");
+      pokes.send(data);
+      await until(() => f.requests("pull") === pulls + 1);
+      await settled();
+      expect(f.requests("pull")).toBe(pulls + 1);
+    }
+  });
+
+  it("waits a random moment of at most the jitter before a poke's pull", async () => {
+    const { f, pokes } = await scripted({ pokeJitterMs: 200 });
+    const pulls = f.requests("pull");
+    pokes.send({});
+    pokes.send({});
+    await settled();
+    expect(f.requests("pull")).toBe(pulls);
+    await f.advance(200);
+    await until(() => f.requests("pull") === pulls + 1);
+    await settled();
+    expect(f.requests("pull")).toBe(pulls + 1);
+  });
+
+  it("pulls once after its own push, and skips the poke that push caused", async () => {
+    const f = fixture(new MemoryReplicaStorage(), { epoch: EPOCH });
+    await f.ready();
+    await f.advance(300);
+    await settled();
+    const pulls = f.requests("pull");
+    const receipt = await f.engine.mutate("update_issue", {
+      id: ISSUE,
+      patch: { title: "Mine" },
+    });
+    expect(await receipt.settled).toBe("applied");
+    await until(() => f.engine.status.get().pending === 0);
+    await f.advance(300);
+    await settled();
+    expect(f.pushes()).toHaveLength(1);
+    expect(f.requests("pull")).toBe(pulls + 1);
+  });
+});
+
+describe("local edits", () => {
+  function gate() {
+    let open = () => {};
+    const closed = new Promise<void>((resolve) => {
+      open = resolve;
+    });
+    return { closed, open };
+  }
+
+  it("shows edits before their outbox write commits and pushes only written ones", async () => {
+    const disk = limited();
+    const f = fixture(disk.storage);
+    await f.ready();
+    const held = gate();
+    disk.appendGate = held.closed;
+    const edits: Promise<MutationReceipt>[] = [];
+    for (const title of ["T", "Ty", "Typed"])
+      edits.push(f.engine.mutate("update_issue", { id: ISSUE, patch: { title } }));
+    await until(() => f.engine.store.get("issues", ISSUE)?.title === "Typed");
+    expect(f.engine.status.get().pending).toBe(3);
+    await f.engine.pull();
+    f.signals.send("focus");
+    await f.advance(60_000);
+    for (let tick = 0; tick < 20; tick += 1) await flush();
+    expect(f.pushes()).toEqual([]);
+    expect((await f.disk()).outbox).toEqual([]);
+
+    disk.appendGate = null;
+    held.open();
+    const receipts = await Promise.all(edits);
+    const ids = receipts.map((receipt) => receipt.mutationId);
+    expect(ids).toEqual([...ids].sort((a, b) => a - b));
+    expect(new Set(ids).size).toBe(3);
+    for (const receipt of receipts) expect(await receipt.settled).toBe("applied");
+    const pushed = f.pushes().flat();
+    expect(pushed.map((mutation) => mutation.id)).toEqual(ids);
+    expect(f.server.record("issues", ISSUE)).toMatchObject({ title: "Typed" });
+    expect(f.engine.store.get("issues", ISSUE)?.title).toBe("Typed");
+  });
+
+  it("takes a shown edit back when the disk refuses its outbox write", async () => {
+    const disk = limited();
+    const f = fixture(disk.storage);
+    await f.ready();
+    const held = gate();
+    disk.appendGate = held.closed;
+    const edit = f.engine.mutate("update_issue", { id: ISSUE, patch: { title: "No room" } });
+    void edit.catch(() => undefined);
+    await until(() => f.engine.store.get("issues", ISSUE)?.title === "No room");
+    disk.full = true;
+    disk.appendGate = null;
+    held.open();
+    await expect(edit).rejects.toMatchObject({ status: 507 });
+    expect(f.engine.store.get("issues", ISSUE)?.title).toBe("Original");
+    expect(f.engine.status.get().pending).toBe(0);
+    expect(f.pushes()).toEqual([]);
+  });
+
+  it("tells other tabs about an edit only once it is written", async () => {
+    const disk = limited();
+    const f = fixture(disk.storage);
+    const hub = createTabHub();
+    const leader = f.build(SCHEMA, { locks: hub.locks, channel: hub.channel });
+    const follower = f.build(SCHEMA, { locks: hub.locks, channel: hub.channel });
+    await leader.start();
+    await until(() => leader.status.get().role === "leader");
+    await until(() => leader.status.get().phase === "ready");
+    await follower.start();
+    await until(() => follower.status.get().phase === "ready");
+    const held = gate();
+    disk.appendGate = held.closed;
+    const edit = leader.mutate("update_issue", { id: ISSUE, patch: { title: "Leader typed" } });
+    await until(() => leader.store.get("issues", ISSUE)?.title === "Leader typed");
+    for (let tick = 0; tick < 20; tick += 1) await flush();
+    expect(follower.store.get("issues", ISSUE)?.title).toBe("Original");
+    disk.appendGate = null;
+    held.open();
+    await edit;
+    await until(() => follower.store.get("issues", ISSUE)?.title === "Leader typed");
+  });
+});
+
+describe("first load", () => {
+  it("streams a large bootstrap with rising progress and keeps no part of a cut one", async () => {
+    const f = fixture(new IndexedDBReplicaStorage({ indexedDB: new IDBFactory() }));
+    f.server.seed(
+      "labels",
+      Array.from({ length: 2600 }, (_, n) => ({
+        id: id(1000 + n),
+        version: 1,
+        name: `Label ${n}`,
+        color: "red",
+      })),
+    );
+    const progress: number[] = [];
+    f.engine.status.subscribe(() => {
+      const received = f.engine.status.get().progress;
+      if (received !== null && received !== progress.at(-1)) progress.push(received);
+    });
+    f.server.inject({ kind: "truncate_bootstrap", afterRecords: 2400 });
+    await f.engine.start();
+    await until(() => f.engine.status.get().lastError instanceof TruncatedError);
+    f.engine.stop();
+    expect(progress).toEqual([0, 500, 1000, 1500, 2000]);
+    expect(f.engine.status.get().progress).toBeNull();
+    const cut = await f.disk();
+    expect(cut.meta.cursor).toBeNull();
+    expect(cut.records.labels).toEqual([]);
+
+    progress.length = 0;
+    await f.engine.start();
+    // Fake IndexedDB answers each of the thousands of puts on its own turn.
+    for (let tick = 0; tick < 50_000 && f.engine.status.get().phase !== "ready"; tick += 1)
+      await flush();
+    expect(f.engine.status.get().phase).toBe("ready");
+    expect(progress.length).toBeGreaterThan(5);
+    expect(progress).toEqual([...progress].sort((a, b) => a - b));
+    expect(progress.at(-1)).toBeGreaterThan(2600);
+    expect(f.engine.status.get().progress).toBeNull();
+    const saved = await f.disk();
+    expect(saved.meta.cursor).not.toBeNull();
+    const bulk = (records: readonly object[] = []) =>
+      records.filter((record) => String(Reflect.get(record, "name")).startsWith("Label "));
+    expect(bulk(saved.records.labels)).toHaveLength(2600);
+    expect(bulk(f.engine.store.all("labels"))).toHaveLength(2600);
   });
 });

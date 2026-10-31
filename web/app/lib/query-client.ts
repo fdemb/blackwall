@@ -29,8 +29,9 @@ export const usageQuery = (ws: Id) =>
   queryOptions({ queryKey: keys.usage(ws), queryFn: () => workspaces.usage(ws) });
 
 /**
- * Marks the report stale after server-side issue or time changes. A local edit grows the outbox and
- * the server totals don't move until it is confirmed, which shrinks the outbox again.
+ * Marks the report stale after server-side issue or time changes, so the open reports page
+ * refetches it. A local edit grows the outbox and the server totals don't move until it is
+ * confirmed, which shrinks the outbox again. The wait lets a run of pull pages refetch once.
  */
 export function watchReportChanges(store: SyncStore, workspaceId: Id): () => void {
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -43,7 +44,7 @@ export function watchReportChanges(store: SyncStore, workspaceId: Id): () => voi
     clearTimeout(timer);
     timer = setTimeout(() => {
       void queryClient.invalidateQueries({ queryKey: keys.report(workspaceId) });
-    }, 250);
+    }, 1_000);
   });
   return () => {
     clearTimeout(timer);

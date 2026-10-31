@@ -48,6 +48,11 @@ export interface EngineDependencies {
   locks?: TabLocks;
   /** Coordinates engines sharing one replica. Named by the owner and workspace. */
   channel?: (name: string) => TabChannel;
+  /**
+   * The longest random wait before a poke's pull, so a commit doesn't pull every client at once.
+   * Zero, the default, pulls at once.
+   */
+  pokeJitterMs?: number;
 }
 
 /** Only the leader does network work. Followers keep their store current from messages. */
@@ -99,6 +104,8 @@ export interface EngineStatus {
    * with a message, and the engine writes a snapshot again every few minutes and on focus.
    */
   storage: StorageState;
+  /** Records the running bootstrap has received so far, or null when none runs. */
+  progress: number | null;
 }
 
 export type EngineEvent =

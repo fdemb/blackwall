@@ -319,6 +319,48 @@ function inBuckets(def: IndexDef, record: AnyRecord | undefined, read: Set<strin
   return record !== undefined && def.values(record).some((value) => read.has(bucketOf(value)));
 }
 
+/** Record keys by index bucket. */
+type Indexes = Map<IndexDef, Map<string, Set<string>>>;
+
+function visible(value: OverlayValue | undefined): AnyRecord | undefined {
+  return value === TOMBSTONE ? undefined : value;
+}
+
+function maintainIndex(
+  indexes: Indexes,
+  entity: Entity,
+  key: string,
+  before: AnyRecord | undefined,
+  after: AnyRecord | undefined,
+): void {
+  for (const def of defsFor(entity)) {
+    const from = new Set((before === undefined ? [] : def.values(before)).map(bucketOf));
+    const to = new Set((after === undefined ? [] : def.values(after)).map(bucketOf));
+    let buckets = indexes.get(def);
+    if (buckets === undefined) {
+      buckets = new Map();
+      indexes.set(def, buckets);
+    }
+    for (const bucket of from) {
+      if (to.has(bucket)) continue;
+      const entry = buckets.get(bucket);
+      if (entry !== undefined) {
+        entry.delete(key);
+        if (entry.size === 0) buckets.delete(bucket);
+      }
+    }
+    for (const bucket of to) {
+      if (from.has(bucket)) continue;
+      let entry = buckets.get(bucket);
+      if (entry === undefined) {
+        entry = new Set();
+        buckets.set(bucket, entry);
+      }
+      entry.add(key);
+    }
+  }
+}
+
 interface ViewBucket {
   keys: Set<string>;
   rows: readonly AnyRecord[];
@@ -378,8 +420,10 @@ function replayErrorEqual(a: ReplayError, b: ReplayError): boolean {
 export class SyncStore {
   private readonly replay: ReplayFn;
   private readonly base = emptyTables<AnyRecord>();
-  private readonly baseIndexes = new Map<IndexDef, Map<string, Set<string>>>();
+  private readonly baseIndexes: Indexes = new Map();
   private overlay = emptyTables<OverlayValue>();
+  /** Overlay keys by index bucket, minus tombstones, so replay reads never walk the overlay. */
+  private readonly overlayIndexes: Indexes = new Map();
   private readonly dirtyBase = new Map<Entity, Map<string, AnyRecord | undefined>>();
   private pendingList: readonly DeepReadonly<PendingMutation>[] = Object.freeze([]);
   /** The pending list the overlay reflects. */
@@ -403,8 +447,11 @@ export class SyncStore {
   /** Set while replaying, so admission dry runs don't record reads. */
   private recording: ReplayReads | null = null;
 
-  /** Test-only counters: lazy rebuilds, base rows visited by table scans, and replayed mutations. Never reset by the store. */
-  readonly debug = { allRebuilds: 0, indexRebuilds: 0, baseScans: 0, replays: 0 };
+  /**
+   * Test-only counters: lazy rebuilds, base rows visited by table scans, replayed mutations, and
+   * overlay rows visited by replay index reads. Never reset by the store.
+   */
+  readonly debug = { allRebuilds: 0, indexRebuilds: 0, baseScans: 0, replays: 0, overlayReads: 0 };
 
   constructor(replay: ReplayFn) {
     this.replay = replay;
@@ -422,14 +469,14 @@ export class SyncStore {
         const clean = ingest(entity, record);
         if (current !== undefined && deepEqual(current, clean)) return;
         this.journalTouch(entity, key);
-        this.overlay[entity].set(key, clean as unknown as OverlayValue);
+        this.setOverlay(entity, key, clean);
       },
       delete: (entity: Entity, key: string): void => {
         this.assertEntity(entity);
         this.recording?.key(entity, key);
         if (this.viewOf(entity, key) === undefined) return;
         this.journalTouch(entity, key);
-        this.overlay[entity].set(key, TOMBSTONE);
+        this.setOverlay(entity, key, TOMBSTONE);
       },
       byIndex: <E extends Entity>(
         entity: E,
@@ -448,10 +495,9 @@ export class SyncStore {
             if (record !== undefined) out.push(record);
           }
         }
-        for (const [key, overlaid] of this.overlay[entity]) {
-          void key;
-          if (overlaid === TOMBSTONE) continue;
-          if (def.values(overlaid).some((item) => item === value)) out.push(overlaid);
+        for (const key of this.overlayIndexes.get(def)?.get(bucket) ?? []) {
+          this.debug.overlayReads += 1;
+          out.push(this.overlay[entity].get(key) as AnyRecord);
         }
         return Object.freeze(out) as unknown as readonly DeepReadonly<RecordOf[E]>[];
       },
@@ -490,14 +536,14 @@ export class SyncStore {
       if (current !== undefined && deepEqual(current, clean)) continue;
       this.stashBase(entity, key);
       baseTable.set(key, clean);
-      this.maintainBaseIndex(entity, key, current, clean);
+      maintainIndex(this.baseIndexes, entity, key, current, clean);
     }
     const doomed = [...this.scanBase(entity)].map(([key]) => key).filter((key) => !table.has(key));
     for (const key of doomed) {
       this.stashBase(entity, key);
       const before = baseTable.get(key);
       baseTable.delete(key);
-      this.maintainBaseIndex(entity, key, before, undefined);
+      maintainIndex(this.baseIndexes, entity, key, before, undefined);
     }
   }
 
@@ -516,7 +562,7 @@ export class SyncStore {
           this.stashBase(change.entity, change.id);
           const before = table.get(change.id);
           table.delete(change.id);
-          this.maintainBaseIndex(change.entity, change.id, before, undefined);
+          maintainIndex(this.baseIndexes, change.entity, change.id, before, undefined);
         }
         continue;
       }
@@ -524,7 +570,7 @@ export class SyncStore {
       if (current !== undefined && deepEqual(current, clean)) continue;
       this.stashBase(change.entity, change.id);
       table.set(change.id, clean);
-      this.maintainBaseIndex(change.entity, change.id, current, clean);
+      maintainIndex(this.baseIndexes, change.entity, change.id, current, clean);
     }
     this.scheduleRebase();
   }
@@ -537,6 +583,39 @@ export class SyncStore {
     );
     if (clean.length === this.pendingList.length && startsWith(clean, this.pendingList)) return;
     this.pendingList = Object.freeze(clean);
+    this.scheduleRebase();
+  }
+
+  /**
+   * Gives a pending mutation a new id, such as the one its outbox write allocated. Replays never
+   * read ids, so the overlay stays as it is unless the new id moves the mutation in the list.
+   */
+  renamePending(from: number, to: number): void {
+    const previous = this.pendingList.find((mutation) => mutation.id === from);
+    if (previous === undefined) return;
+    const index = this.pendingList.indexOf(previous);
+    const renamed = Object.freeze({ ...previous, id: to });
+    const list = this.pendingList.slice();
+    list[index] = renamed;
+    const before = list[index - 1]?.id ?? Number.NEGATIVE_INFINITY;
+    const after = list[index + 1]?.id ?? Number.POSITIVE_INFINITY;
+    if (before >= to || to >= after) {
+      this.setPending(list.sort((a, b) => a.id - b.id));
+      return;
+    }
+    this.pendingList = Object.freeze(list);
+    const replayedAt = this.replayed.indexOf(previous);
+    if (replayedAt >= 0) {
+      const replayed = this.replayed.slice();
+      replayed[replayedAt] = renamed;
+      this.replayed = Object.freeze(replayed);
+    }
+    const error = this.errors.get(from);
+    if (error !== undefined) {
+      this.errors = new Map(this.errors);
+      this.errors.delete(from);
+      this.errors.set(to, error);
+    }
     this.scheduleRebase();
   }
 
@@ -704,11 +783,17 @@ export class SyncStore {
 
   private rollback(journal: Journal): void {
     for (const [entity, table] of journal) {
-      for (const [key, previous] of table) {
-        if (previous === undefined) this.overlay[entity].delete(key);
-        else this.overlay[entity].set(key, previous);
-      }
+      for (const [key, previous] of table) this.setOverlay(entity, key, previous);
     }
+  }
+
+  /** The one way to write the overlay, so its index stays in step. `undefined` removes the key. */
+  private setOverlay(entity: Entity, key: string, value: OverlayValue | undefined): void {
+    const table = this.overlay[entity];
+    const before = table.get(key);
+    if (value === undefined) table.delete(key);
+    else table.set(key, value);
+    maintainIndex(this.overlayIndexes, entity, key, visible(before), visible(value));
   }
 
   private journalTouch(entity: Entity, key: string): void {
@@ -729,40 +814,6 @@ export class SyncStore {
       this.dirtyBase.set(entity, table);
     }
     if (!table.has(key)) table.set(key, this.base[entity].get(key));
-  }
-
-  private maintainBaseIndex(
-    entity: Entity,
-    key: string,
-    before: AnyRecord | undefined,
-    after: AnyRecord | undefined,
-  ): void {
-    for (const def of defsFor(entity)) {
-      const from = new Set((before === undefined ? [] : def.values(before)).map(bucketOf));
-      const to = new Set((after === undefined ? [] : def.values(after)).map(bucketOf));
-      let buckets = this.baseIndexes.get(def);
-      if (buckets === undefined) {
-        buckets = new Map();
-        this.baseIndexes.set(def, buckets);
-      }
-      for (const bucket of from) {
-        if (to.has(bucket)) continue;
-        const entry = buckets.get(bucket);
-        if (entry !== undefined) {
-          entry.delete(key);
-          if (entry.size === 0) buckets.delete(bucket);
-        }
-      }
-      for (const bucket of to) {
-        if (from.has(bucket)) continue;
-        let entry = buckets.get(bucket);
-        if (entry === undefined) {
-          entry = new Set();
-          buckets.set(bucket, entry);
-        }
-        entry.add(key);
-      }
-    }
   }
 
   private scheduleRebase(): void {
@@ -875,6 +926,7 @@ export class SyncStore {
       prior.set(entity, table);
     }
     this.overlay = emptyTables<OverlayValue>();
+    this.overlayIndexes.clear();
     this.errors = new Map();
     this.reads.clear();
     mergeJournal(prior, this.replayFrom(0));
@@ -928,7 +980,7 @@ export class SyncStore {
             if (fresh.has(key)) fresh.set(key, old);
             else this.base[entity].set(key, old);
           } else if (next === undefined && !this.base[entity].has(key)) {
-            fresh.delete(key);
+            this.setOverlay(entity, key, undefined);
           }
           continue;
         }
