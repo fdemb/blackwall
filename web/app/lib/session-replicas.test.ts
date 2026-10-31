@@ -230,99 +230,131 @@ describe("user replica lifetime", () => {
     await engine.mutate("update_issue", { id: id(2), patch: { title: "Unsent" } });
     expect(await sessionHasPending()).toBe(true);
   });
-  it("an older /internal-api/me reply that lands last neither changes the session nor deletes the newer user's replica", async () => {
-    const { profile, server } = await fixture();
-    const other = server.addUser();
-    const otherProfile = { ...profile, id: other.id, session_id: id(99) };
-    let resolveOlder: (value: typeof profile) => void = () => {};
-    let resolveNewer: (value: typeof profile) => void = () => {};
-    vi.spyOn(auth, "me")
-      .mockImplementationOnce(() => new Promise((resolve) => (resolveOlder = resolve)))
-      .mockImplementationOnce(() => new Promise((resolve) => (resolveNewer = resolve)));
-    const older = currentProfile();
-    const newer = currentProfile();
-    resolveNewer(otherProfile);
-    await expect(newer).resolves.toEqual(otherProfile);
-    await seed(other.id, id(90), "pending");
-    resolveOlder(profile);
-    await expect(older).resolves.toEqual(otherProfile);
-    expect(currentSession()?.id).toBe(other.id);
-    expect(await replicaStorage().list()).toEqual([{ userId: other.id, workspaceId: id(90) }]);
-  });
   describe("session transitions run one at a time", () => {
-    /** Holds the next replica scan open, as a slow disk would, so a transition stays inside the lock. */
-    function pauseNextScan() {
+    /** Holds the next /me answer until released, while the caller keeps whatever lock it holds. */
+    function holdNextMe() {
       let release: () => void = () => {};
       let entered: () => void = () => {};
       const gate = new Promise<void>((resolve) => (release = resolve));
       const inside = new Promise<void>((resolve) => (entered = resolve));
-      const original = replicaStorage().list.bind(replicaStorage());
-      vi.spyOn(replicaStorage(), "list").mockImplementationOnce(async () => {
+      const real = auth.me.bind(auth);
+      vi.spyOn(auth, "me").mockImplementationOnce(async () => {
         entered();
         await gate;
-        return original();
+        return real();
       });
       return { inside, release };
     }
-
-    it("an obsolete acceptance paused inside the transition neither deletes the newer user's replica nor publishes itself", async () => {
-      const { profile, server } = await fixture();
-      const other = server.addUser();
-      const older = { ...profile, session_id: id(98) };
-      const newer = { ...profile, id: other.id, session_id: id(99) };
-      await seed(profile.id, id(91), "pending");
-      await seed(other.id, id(90), "pending");
-      let resolveOlder: (value: typeof profile) => void = () => {};
-      let resolveNewer: (value: typeof profile) => void = () => {};
-      vi.spyOn(auth, "me")
-        .mockImplementationOnce(() => new Promise((resolve) => (resolveOlder = resolve)))
-        .mockImplementationOnce(() => new Promise((resolve) => (resolveNewer = resolve)));
-      const setItem = vi.spyOn(window.localStorage, "setItem");
-      const paused = pauseNextScan();
-
-      const first = currentProfile();
-      resolveOlder(older);
-      await paused.inside;
-      const second = currentProfile();
-      resolveNewer(newer);
-      for (let tick = 0; tick < 10; tick += 1) await new Promise<void>((r) => setImmediate(r));
-      expect(await replicaStorage().list()).toContainEqual({
-        userId: other.id,
-        workspaceId: id(90),
-      });
-      paused.release();
-
-      await expect(second).resolves.toEqual(newer);
-      await expect(first).resolves.toEqual(newer);
-      expect(currentSession()?.id).toBe(other.id);
-      expect(await replicaStorage().list()).toEqual([{ userId: other.id, workspaceId: id(90) }]);
-      const published = setItem.mock.calls
-        .filter(([key]) => key === "bw-session:v1" || key === "bw-last-user:v1")
-        .map(([key, value]) => [key, key === "bw-last-user:v1" ? value : JSON.parse(value).id]);
-      expect(published).toEqual([
-        ["bw-last-user:v1", other.id],
-        ["bw-session:v1", other.id],
-      ]);
+    const published = () => ({
+      session: JSON.parse(window.localStorage.getItem("bw-session:v1") ?? "null")?.id ?? null,
+      lastUser: window.localStorage.getItem("bw-last-user:v1"),
     });
 
-    it("a sign-in accepted before a logout does not publish its session after it", async () => {
+    it("an acceptance that runs after another tab's sign-in acts on the newer user, whose replica survives", async () => {
+      const hub = createTabHub();
+      setSessionLocks(hub.locks);
+      const { profile, server, signIn } = await fixture();
+      const other = server.addUser();
+      await seed(profile.id, id(91), "pending");
+      await seed(other.id, id(90), "pending");
+      vi.resetModules();
+      const tabB = await import("./session-replicas");
+      tabB.setSessionLocks(hub.locks);
+      try {
+        signIn(other.id);
+        const held = holdNextMe();
+        const accepting = acceptSession();
+        await held.inside;
+        const acceptingB = tabB.acceptSession();
+        held.release();
+
+        const [first, second] = await Promise.all([accepting, acceptingB]);
+        expect(first?.id).toBe(other.id);
+        expect(second?.id).toBe(other.id);
+        expect(await replicaStorage().list()).toEqual([{ userId: other.id, workspaceId: id(90) }]);
+        expect(published()).toEqual({ session: other.id, lastUser: other.id });
+        expect(currentSession()?.id).toBe(other.id);
+        expect(tabB.currentSession()?.id).toBe(other.id);
+      } finally {
+        await tabB.clearSession();
+        setSessionLocks(undefined);
+      }
+    });
+
+    it("an acceptance queued behind a logout finds no session and restores neither the session nor the last user", async () => {
+      const hub = createTabHub();
+      setSessionLocks(hub.locks);
+      const { profile, server, token } = await fixture();
+      await seed(profile.id, id(91), "pending");
+      let release: () => void = () => {};
+      let entered: () => void = () => {};
+      const gate = new Promise<void>((resolve) => (release = resolve));
+      const inside = new Promise<void>((resolve) => (entered = resolve));
+      vi.spyOn(auth, "logout").mockImplementation(async () => {
+        entered();
+        await gate;
+        server.logout(token);
+        return null;
+      });
+      try {
+        const leaving = logoutSession();
+        await inside;
+        const accepting = acceptSession();
+        release();
+        await expect(accepting).resolves.toBeNull();
+        await leaving;
+        expect(currentSession()).toBeNull();
+        expect(published()).toEqual({ session: null, lastUser: null });
+        expect(await replicaStorage().list()).toEqual([]);
+      } finally {
+        setSessionLocks(undefined);
+      }
+    });
+
+    it("a logout queued behind an acceptance in flight leaves nothing published", async () => {
+      const hub = createTabHub();
+      setSessionLocks(hub.locks);
+      const { profile, server, token } = await fixture();
+      await seed(profile.id, id(91), "pending");
+      vi.spyOn(auth, "logout").mockImplementation(async () => {
+        server.logout(token);
+        return null;
+      });
+      try {
+        const held = holdNextMe();
+        const accepting = acceptSession();
+        await held.inside;
+        const leaving = logoutSession();
+        held.release();
+        await accepting;
+        await leaving;
+        expect(currentSession()).toBeNull();
+        expect(published()).toEqual({ session: null, lastUser: null });
+        expect(await replicaStorage().list()).toEqual([]);
+      } finally {
+        setSessionLocks(undefined);
+      }
+    });
+
+    it("a failed /me changes nothing", async () => {
       const { profile } = await fixture();
-      const paused = pauseNextScan();
-      const accepting = acceptSession({ ...profile, session_id: id(98) });
-      await paused.inside;
-      const leaving = clearSession();
-      paused.release();
-      await expect(accepting).resolves.toBeNull();
-      await leaving;
-      expect(currentSession()).toBeNull();
+      await seed(profile.id, id(91), "pending");
+      vi.spyOn(auth, "me").mockRejectedValueOnce(new TypeError("Failed to fetch"));
+      await expect(acceptSession()).rejects.toThrow(TypeError);
+      expect(currentSession()?.id).toBe(profile.id);
+      expect(published()).toEqual({ session: profile.id, lastUser: profile.id });
+      expect(await replicaStorage().list()).toContainEqual({
+        userId: profile.id,
+        workspaceId: id(91),
+      });
     });
 
     it("takes the lock through the injected adapter", async () => {
-      const { profile } = await fixture();
+      await fixture();
       const request = vi.fn((_name: string, callback: () => Promise<void>) => callback());
       setSessionLocks({ request });
       try {
-        await acceptSession({ ...profile, session_id: id(98) });
+        await acceptSession();
         await clearSession();
       } finally {
         setSessionLocks(undefined);
@@ -347,9 +379,10 @@ describe("user replica lifetime", () => {
     expect(assign).toHaveBeenCalledWith("/login");
   });
   it("a new session of the same user closes the previous engine and keeps its replica", async () => {
-    const { profile, workspace } = await fixture();
+    const { profile, workspace, signIn } = await fixture();
     const engine = await openWorkspaceEngine(workspace.id);
-    await acceptSession({ ...profile, session_id: id(99) });
+    signIn(profile.id);
+    await acceptSession();
     expect(await replicaStorage().list()).toEqual([
       { userId: profile.id, workspaceId: workspace.id },
     ]);
@@ -359,9 +392,10 @@ describe("user replica lifetime", () => {
     ).rejects.toThrow("closed");
   });
   it("another user's session deletes the previous user's replica", async () => {
-    const { profile, workspace } = await fixture();
+    const { server, workspace, signIn } = await fixture();
     await openWorkspaceEngine(workspace.id);
-    await acceptSession({ ...profile, id: id(555), session_id: id(99) });
+    signIn(server.addUser().id);
+    await acceptSession();
     expect(await replicaStorage().list()).toEqual([]);
     expect(activeWorkspaceEngine(workspace.id)).toBeNull();
   });
@@ -758,7 +792,7 @@ describe("app tab coordination", () => {
     vi.resetModules();
     const secondSession = await import("./session-replicas");
     const secondApp = await import("./workspace-engine");
-    await secondSession.acceptSession(f.profile);
+    await secondSession.acceptSession();
     const second = await secondApp.openWorkspaceEngine(f.workspace.id);
     await until(() => first.status.get().connected && second.status.get().connected);
     return { ...f, hub, first, second, secondSession, secondApp };
@@ -848,7 +882,8 @@ describe("app tab coordination", () => {
   it("accepting another session of the user closes this tab's engine and keeps the replica for the other tab", async () => {
     const f = await twoTabs();
     try {
-      await acceptSession({ ...f.profile, session_id: id(99) });
+      f.signIn(f.profile.id);
+      await acceptSession();
       expect(f.first.isClosed()).toBe(true);
       await until(() => f.second.status.get().role === "leader");
       expect(f.second.isClosed()).toBe(false);

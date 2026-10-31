@@ -17,12 +17,11 @@ import { applyTheme } from "./theme";
 import type { Profile } from "./types";
 
 export async function logoutSession() {
-  await clearSession();
-  queryClient.clear();
-  clearLastWs();
   try {
-    await auth.logout();
+    await clearSession(() => auth.logout());
   } finally {
+    queryClient.clear();
+    clearLastWs();
     sessionStorage.clear();
     window.location.assign("/login");
   }
