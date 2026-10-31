@@ -85,7 +85,7 @@ export function Timeline({ issue }: { issue: Issue }) {
   // Comments and events interleave by time, so the list waits for both instead of reordering when
   // the second lands. It stops waiting for a scope that can't land soon, and for a comment the user
   // just posted. Once shown it stays, even while a bootstrap reloads the scopes. Until then a
-  // skeleton the size of the creation event holds its space and stays invisible through a short load.
+  // skeleton the size of the creation event holds its space, invisible through a short load.
   const [waited, setWaited] = useState(false);
   const show =
     !(comments.loading || activity.loading) ||
@@ -105,7 +105,9 @@ export function Timeline({ issue }: { issue: Issue }) {
     <Section title={t("activity.title")}>
       {!ready && (
         <>
-          <p role="status" className="sr-only">{t("action.loading")}</p>
+          <p role="status" className="sr-only">
+            {t("action.loading")}
+          </p>
           <div
             aria-hidden="true"
             className="animate-in fade-in fill-mode-both delay-300 flex min-h-7 items-center gap-3"
