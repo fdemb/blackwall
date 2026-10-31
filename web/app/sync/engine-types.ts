@@ -48,6 +48,11 @@ export interface EngineDependencies {
   locks?: TabLocks;
   /** Coordinates engines sharing one replica. Named by the owner and workspace. */
   channel?: (name: string) => TabChannel;
+  /**
+   * The longest random wait before a poke's pull, so a commit doesn't pull every client at once.
+   * Zero, the default, pulls at once.
+   */
+  pokeJitterMs?: number;
 }
 
 /** Only the leader does network work. Followers keep their store current from messages. */

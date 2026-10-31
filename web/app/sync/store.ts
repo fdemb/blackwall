@@ -422,7 +422,7 @@ export class SyncStore {
   private readonly base = emptyTables<AnyRecord>();
   private readonly baseIndexes: Indexes = new Map();
   private overlay = emptyTables<OverlayValue>();
-  /** Overlay keys by index bucket, tombstones left out, so replay index reads never walk the overlay. */
+  /** Overlay keys by index bucket, minus tombstones, so replay reads never walk the overlay. */
   private readonly overlayIndexes: Indexes = new Map();
   private readonly dirtyBase = new Map<Entity, Map<string, AnyRecord | undefined>>();
   private pendingList: readonly DeepReadonly<PendingMutation>[] = Object.freeze([]);

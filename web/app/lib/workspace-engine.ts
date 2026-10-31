@@ -140,6 +140,7 @@ export function openWorkspaceEngine(
       randomId: () => crypto.randomUUID(),
       signals,
       requestPersistence,
+      pokeJitterMs: 200,
       clock: {
         now: () => new Date().toISOString(),
         monotonic: () => performance.now(),

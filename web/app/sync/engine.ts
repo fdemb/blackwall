@@ -28,7 +28,17 @@ import {
   UnavailableError,
 } from "./transport";
 import type { IssuedInvitation, Mutation, MutationResult, PullResponse } from "./transport";
-import { backoff, Cancelled, cancellable, pause, Resync, SerialQueue } from "./engine-scheduling";
+import {
+  backoff,
+  Cancelled,
+  cancellable,
+  pause,
+  Resync,
+  seededRandom,
+  SerialQueue,
+} from "./engine-scheduling";
+import { mergePokes, pokeCovered } from "./cursor";
+import type { PokeData } from "./cursor";
 import type {
   EngineDependencies,
   EngineEvent,
@@ -285,6 +295,12 @@ export class SyncEngine {
   private accessUnverified = false;
   private pullAgain = false;
   private pulling: Promise<void> | null = null;
+  /** Pokes since the last pull, merged. Checked against the cursor once no pull is running. */
+  private poked: PokeData | null = null;
+  private cancelPoke: (() => void) | null = null;
+  /** A push request is out. Its own poke may arrive first, and the pull after it covers that. */
+  private sending = false;
+  private readonly jitter: () => number;
   private pushing: Promise<void> | null = null;
   private batch: PushBatch | null = null;
   /**
@@ -315,6 +331,7 @@ export class SyncEngine {
   constructor(private readonly deps: EngineDependencies) {
     this.store = new SyncStore(createReplay(deps.actor));
     this.delay = backoff(`${deps.actor}:${deps.workspaceId}`, deps.clock);
+    this.jitter = seededRandom(`poke:${deps.actor}:${deps.workspaceId}`);
     this.lockName = `blackwall-sync:${deps.actor}:${deps.workspaceId}`;
     this.role = deps.locks ? "follower" : "leader";
     this.tabId = deps.channel ? deps.randomId() : "";
@@ -909,7 +926,7 @@ export class SyncEngine {
     this.pullAgain = true;
     if (this.pulling) return this.pulling;
     const work = (async () => {
-      while (this.pullAgain && this.active(controller)) {
+      while (this.active(controller) && (this.pullAgain || this.pokeNeedsPull())) {
         this.pullAgain = false;
         if (await this.pullPages(controller)) this.pullAgain = true;
       }
@@ -919,9 +936,41 @@ export class SyncEngine {
       if (this.pulling !== work) return;
       this.pulling = null;
       if (this.pullAgain && this.controller) void this.pull();
+      else this.settlePoke();
       this.requestPush();
     });
     return work;
+  }
+
+  /**
+   * A poke asks for a pull after a short random wait, unless the cursor already covers the commit
+   * it names. Pokes that arrive while a pull runs are judged against the cursor that pull leaves,
+   * so the pull after this client's own push makes the poke for that push redundant.
+   */
+  private poke(data: PokeData): void {
+    this.poked = mergePokes(this.poked, data);
+    if (this.cancelPoke) return;
+    const wait = Math.floor(this.jitter() * (this.deps.pokeJitterMs ?? 0));
+    if (wait === 0) {
+      this.settlePoke();
+      return;
+    }
+    this.cancelPoke = this.deps.clock.schedule(wait, () => {
+      this.cancelPoke = null;
+      this.settlePoke();
+    });
+  }
+
+  private settlePoke(): void {
+    if (!this.pulling && !this.sending && this.pokeNeedsPull()) void this.pull();
+  }
+
+  /** Takes the waiting poke, once its jitter has passed, and says whether the cursor misses it. */
+  private pokeNeedsPull(): boolean {
+    if (this.cancelPoke || this.poked === null) return false;
+    const poked = this.poked;
+    this.poked = null;
+    return !pokeCovered(this.cursor, poked);
   }
 
   /**
@@ -1504,6 +1553,9 @@ export class SyncEngine {
     this.controller?.abort();
     this.controller = null;
     this.pullAgain = false;
+    this.poked = null;
+    this.cancelPoke?.();
+    this.cancelPoke = null;
     this.cancelResync?.();
     this.cancelResync = null;
     for (const repair of this.scopeRepairs.values()) {
@@ -2067,20 +2119,24 @@ export class SyncEngine {
       if (wait > 0) await pause(this.deps.clock, wait, controller.signal);
       // A block can arrive while the batch was chosen or the retry delay ran.
       if (this.blocked.has("push")) return;
+      // A sent batch already asked for the pull that acknowledges it.
       if (!batch.processed) {
         const step = await this.sendBatch(batch, controller);
         if (step === "stop") return;
         if (step === "again") continue;
-      }
+      } else if (this.unacknowledged(batch)) void this.pull();
       this.check(controller);
       if (this.blocked.has("pull") || this.blocked.has("bootstrap")) return;
-      void this.pull();
-      if (batch.mutations.some((mutation) => mutation.id > this.acknowledged)) {
+      if (this.unacknowledged(batch)) {
         await this.waitForAcknowledgement(batch, controller);
         continue;
       }
       this.batch = null;
     }
+  }
+
+  private unacknowledged(batch: PushBatch): boolean {
+    return batch.mutations.some((mutation) => mutation.id > this.acknowledged);
   }
 
   private nextBatch(controller: AbortController): Promise<PushBatch | null> {
@@ -2106,6 +2162,7 @@ export class SyncEngine {
     batch: PushBatch,
     controller: AbortController,
   ): Promise<"sent" | "again" | "stop"> {
+    this.sending = true;
     try {
       const response = await this.withDeadline(controller, WRITE_DEADLINE_MS, (signal) =>
         this.deps.transport.push(this.deps.workspaceId, this.clientId, batch.mutations, {
@@ -2113,6 +2170,7 @@ export class SyncEngine {
           acknowledged: this.acknowledged,
         }),
       );
+      this.sending = false;
       this.check(controller);
       const rejected = response.results.flatMap(
         (result) => this.recordResult(result, response.lastMutationId) ?? [],
@@ -2137,6 +2195,8 @@ export class SyncEngine {
       batch.processed = true;
       return "sent";
     } catch (error) {
+      this.sending = false;
+      this.settlePoke();
       this.check(controller);
       return this.pushFailed(error, batch, controller);
     }
@@ -2378,7 +2438,7 @@ export class SyncEngine {
       if (signal.aborted) return;
       this.check(controller);
       alive();
-      if (message.event === "poke") void this.pull();
+      if (message.event === "poke") this.poke(message.data);
     }
   }
 

@@ -1,5 +1,6 @@
 import { getCsrf, setCsrf } from "../lib/api";
 import type { Profile } from "../lib/types";
+import type { PokeData } from "./cursor";
 import type { Scope } from "./persistence/types";
 import { ENTITIES } from "./records";
 import type { Change, Entity } from "./records";
@@ -86,7 +87,7 @@ export interface ScopeResponse {
 }
 
 /** A poke asks for a pull. A keep-alive only shows the stream is still open. */
-export type Poke = { event: "poke"; data: object } | { event: "keepalive" };
+export type Poke = { event: "poke"; data: PokeData } | { event: "keepalive" };
 
 export type SessionProfile = Profile & { session_id: string };
 
@@ -683,7 +684,7 @@ async function* pokes(response: Response | null, signal?: AbortSignal): AsyncGen
           ("epoch" in value && !(typeof value.epoch === "string" && EPOCH.test(value.epoch)))
         )
           throw new ProtocolError("Invalid poke data", response.status);
-        yield { event: "poke", data: value };
+        yield { event: "poke", data: value as PokeData };
       }
       event = "";
       data = [];

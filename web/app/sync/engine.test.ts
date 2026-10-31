@@ -22,7 +22,8 @@ import {
   UnavailableError,
 } from "./transport";
 import { withCounts, issueRef } from "./derived";
-import type { Mutation } from "./transport";
+import type { Mutation, Poke } from "./transport";
+import type { PokeData } from "./cursor";
 
 const id = (n: number) => `11111111-1111-4111-8111-${n.toString(16).padStart(12, "0")}`;
 const TEAM = id(1);
@@ -3480,5 +3481,102 @@ describe("a full disk", () => {
     expect(saved.rejected).toMatchObject([{ id: receipt.mutationId, status: 413 }]);
     expect(engine.status.get().pending).toBe(0);
     expect(f.pushes()).toHaveLength(1);
+  });
+});
+
+const EPOCH = "6f1c0b8e2d9a4c7fa3e51b2d8c04a9f7";
+
+/** An event stream the test feeds by hand. */
+function scriptedPokes() {
+  const queue: Poke[] = [];
+  let wake = () => {};
+  async function* stream(): AsyncGenerator<Poke> {
+    for (;;) {
+      const next = queue.shift();
+      if (next) yield next;
+      else await new Promise<void>((resolve) => (wake = resolve));
+    }
+  }
+  return {
+    events: async () => stream(),
+    send(data: PokeData) {
+      queue.push({ event: "poke", data });
+      wake();
+    },
+  };
+}
+
+describe("pokes", () => {
+  async function scripted(extra: Partial<EngineDependencies> = {}) {
+    const f = fixture(new MemoryReplicaStorage(), { epoch: EPOCH });
+    const pokes = scriptedPokes();
+    const engine = f.build(SCHEMA, {
+      transport: { ...f.transport, events: pokes.events },
+      ...extra,
+    });
+    await engine.start();
+    await until(() => engine.status.get().phase === "ready" && engine.status.get().connected);
+    await engine.pull();
+    for (let tick = 0; tick < 10; tick += 1) await flush();
+    return { f, engine, pokes };
+  }
+
+  async function settled() {
+    for (let tick = 0; tick < 20; tick += 1) await flush();
+  }
+
+  it("skips a poke for a commit the cursor already holds", async () => {
+    const { f, pokes } = await scripted();
+    const pulls = f.requests("pull");
+    pokes.send({ txid: 1, epoch: EPOCH });
+    await settled();
+    expect(f.requests("pull")).toBe(pulls);
+  });
+
+  it("pulls for a newer commit, another epoch, and a wildcard", async () => {
+    const { f, engine, pokes } = await scripted();
+    let pulls = f.requests("pull");
+    f.server.run(f.peer, { type: "update_issue", id: ISSUE, patch: { title: "Peer" } });
+    pokes.send({ txid: 1_000_000, epoch: EPOCH });
+    await until(() => engine.store.get("issues", ISSUE)?.title === "Peer");
+    expect(f.requests("pull")).toBe(pulls + 1);
+    for (const data of [{ txid: 1, epoch: "0123456789abcdef0123456789abcdef" }, {}]) {
+      pulls = f.requests("pull");
+      pokes.send(data);
+      await until(() => f.requests("pull") === pulls + 1);
+      await settled();
+      expect(f.requests("pull")).toBe(pulls + 1);
+    }
+  });
+
+  it("waits a random moment of at most the jitter before a poke's pull", async () => {
+    const { f, pokes } = await scripted({ pokeJitterMs: 200 });
+    const pulls = f.requests("pull");
+    pokes.send({});
+    pokes.send({});
+    await settled();
+    expect(f.requests("pull")).toBe(pulls);
+    await f.advance(200);
+    await until(() => f.requests("pull") === pulls + 1);
+    await settled();
+    expect(f.requests("pull")).toBe(pulls + 1);
+  });
+
+  it("pulls once after its own push, and skips the poke that push caused", async () => {
+    const f = fixture(new MemoryReplicaStorage(), { epoch: EPOCH });
+    await f.ready();
+    await f.advance(300);
+    await settled();
+    const pulls = f.requests("pull");
+    const receipt = await f.engine.mutate("update_issue", {
+      id: ISSUE,
+      patch: { title: "Mine" },
+    });
+    expect(await receipt.settled).toBe("applied");
+    await until(() => f.engine.status.get().pending === 0);
+    await f.advance(300);
+    await settled();
+    expect(f.pushes()).toHaveLength(1);
+    expect(f.requests("pull")).toBe(pulls + 1);
   });
 });
