@@ -222,13 +222,14 @@ describe("sync engine", () => {
       const replica = await open(input);
       const apply = replica.applyPull.bind(replica);
       replica.applyPull = async (page) => {
-        await apply(page);
+        const revision = await apply(page);
         if (holdCommit) {
           holdCommit = false;
           await new Promise<void>((resolve) => {
             releaseCommit = resolve;
           });
         }
+        return revision;
       };
       return replica;
     };
