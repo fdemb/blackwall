@@ -434,7 +434,7 @@ describe("sync transport requests", () => {
       userId: id(999),
     });
     await expect(transport.pull(f.workspace.id, CLIENT, null)).rejects.toMatchObject({
-      name: "UnauthorizedError",
+      name: "AccountChangedError",
       message: "account changed",
       status: 401,
     });

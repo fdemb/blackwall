@@ -15,6 +15,7 @@ import { immutableCopy, ingest, SyncStore } from "./store";
 import type { PendingMutation } from "./store";
 import {
   AccessError,
+  AccountChangedError,
   NetworkError,
   ProtocolError,
   UnauthorizedError,
@@ -82,6 +83,8 @@ const REJECTIONS_KEPT = 1000;
  * them: a 5xx or a timeout says nothing about the mutation, so the push retries with capped backoff.
  */
 const STALLED_AFTER = 3;
+/** 401s in a row, each with the session checked and found valid, before retries stop. */
+const UNAUTHORIZED_RETRIES = 3;
 const TOO_LARGE = "This edit is too large to save.";
 type PushBatch = {
   /** Halved after a 413, so a body the server refuses never blocks the outbox. */
@@ -97,7 +100,7 @@ type PushBatch = {
 };
 type PushFailure = "unreachable" | "server" | "too-large";
 
-/** Null for errors that end the session, lose access or block pushing instead of retrying. */
+/** Null for errors that stop network work, lose access or block pushing instead of retrying. */
 function pushFailure(error: unknown): PushFailure | null {
   if (error instanceof ProtocolError && error.status === 413) return "too-large";
   if (error instanceof UnavailableError) return "server";
@@ -213,6 +216,14 @@ export class SyncEngine {
   private opening: Promise<void> | null = null;
   private closed = false;
   private terminal = false;
+  /**
+   * A 401 stopped network work: "checking" until the app has checked the session, "refused" once
+   * 401s kept coming with a valid session, until the user retries.
+   */
+  private unauthorized: "checking" | "refused" | null = null;
+  /** 401s since the server last answered a pull or a push. */
+  private unauthorizedStreak = 0;
+  private cancelResume: (() => void) | null = null;
   private outdated: OutdatedError | null = null;
   private started = false;
   private lifecycle = 0;
@@ -374,6 +385,33 @@ export class SyncEngine {
     this.rejectCallers(new Error(this.closed ? "Engine is closed" : "Engine is stopped"));
   }
 
+  /**
+   * The app checked the session after a 401 and it is still valid, so the 401 came from something
+   * in between. Network work restarts after a backoff. When 401s keep coming, the engine reports
+   * itself blocked instead, until the user retries.
+   */
+  resume(): void {
+    if (this.closed || this.unauthorized !== "checking") return;
+    if (this.terminal) {
+      this.unauthorized = null;
+      return;
+    }
+    if (this.unauthorizedStreak >= UNAUTHORIZED_RETRIES) {
+      this.unauthorized = "refused";
+      this.update({ blocked: true });
+      this.post(this.statusMessage());
+      return;
+    }
+    const wait = this.unauthorizedStreak === 0 ? 0 : this.delay(this.unauthorizedStreak - 1);
+    this.cancelResume?.();
+    this.cancelResume = this.deps.clock.schedule(wait, () => {
+      this.cancelResume = null;
+      if (this.closed || this.unauthorized !== "checking") return;
+      this.unauthorized = null;
+      this.beginNetwork();
+    });
+  }
+
   private rejectCallers(error: Error): void {
     for (const outcome of this.outcomes.values()) outcome.reject(error);
     this.outcomes.clear();
@@ -400,6 +438,8 @@ export class SyncEngine {
     this.channel?.close();
     this.unsubscribeSignals?.();
     this.unsubscribeSignals = null;
+    this.cancelResume?.();
+    this.cancelResume = null;
     this.notifyChange();
     await this.commits.drain();
     this.replica?.close();
@@ -745,6 +785,8 @@ export class SyncEngine {
     this.blocked.clear();
     this.scopeFailures.clear();
     this.batch = null;
+    this.unauthorized = null;
+    this.unauthorizedStreak = 0;
     this.update({ blocked: false, stalled: false, lastError: null });
     this.post(this.statusMessage());
     this.notifyScopes();
@@ -754,7 +796,12 @@ export class SyncEngine {
 
   /** Only unblock() or a new engine clears these blocks; until then the outbox can't drain. */
   private outboxBlocked(): boolean {
-    return this.blocked.has("push") || this.blocked.has("pull") || this.blocked.has("bootstrap");
+    return (
+      this.unauthorized === "refused" ||
+      this.blocked.has("push") ||
+      this.blocked.has("pull") ||
+      this.blocked.has("bootstrap")
+    );
   }
 
   private statusMessage(): TabBody {
@@ -932,13 +979,24 @@ export class SyncEngine {
     if (message.scope) this.notifyScopes();
   }
 
-  /** Another tab's session ended. This tab stops, closes its handle and clears its view. */
+  /**
+   * Another tab got 401 or lost access. A 401 stops this tab's network work until its own session
+   * check. Lost access stops this tab for good, closes its handle and clears its view.
+   */
   private receiveSessionEnd(ending: "unauthorized" | "accessLost"): void {
-    const failure =
-      ending === "unauthorized"
-        ? new UnauthorizedError("Session ended in another tab", 401)
-        : new AccessError("Workspace access ended in another tab", 403);
-    this.endLocal(ending, failure);
+    if (ending === "unauthorized") this.suspend();
+    else this.endLocal(ending, new AccessError("Workspace access ended in another tab", 403));
+  }
+
+  /**
+   * A 401 stops network work and keeps the replica, the view and every receipt. A proxy can answer
+   * 401 too, so the app checks the session, then calls `resume` or closes the engine.
+   */
+  private suspend(): void {
+    if (this.closed || this.unauthorized !== null || (this.terminal && !this.outdated)) return;
+    this.unauthorized = "checking";
+    this.cancelNetwork();
+    this.emit({ type: "unauthorized" });
   }
 
   /** An upgrade keeps the readable view; deleting the database still ends workspace access. */
@@ -1248,7 +1306,14 @@ export class SyncEngine {
   }
 
   private beginNetwork(): void {
-    if (!this.started || !this.snapshot.online || this.controller || this.role !== "leader") return;
+    if (
+      !this.started ||
+      !this.snapshot.online ||
+      this.controller ||
+      this.role !== "leader" ||
+      this.unauthorized !== null
+    )
+      return;
     const controller = new AbortController();
     this.controller = controller;
     void this.pull();
@@ -1880,7 +1945,7 @@ export class SyncEngine {
     if (signal.aborted) return;
     this.check(controller);
     this.update({ connected: true });
-    this.recovered();
+    this.recovered("stream");
     for await (const message of stream) {
       if (signal.aborted) return;
       this.check(controller);
@@ -1901,8 +1966,18 @@ export class SyncEngine {
     this.writeFailing = kind === "push";
     this.update({ lastError: failure });
     this.emit({ type: "error", error: failure });
-    if (failure instanceof UnauthorizedError || failure instanceof AccessError) {
-      const ending = failure instanceof UnauthorizedError ? "unauthorized" : "accessLost";
+    if (failure instanceof UnauthorizedError && !(failure instanceof AccountChangedError)) {
+      if (this.unauthorized === null) {
+        this.unauthorizedStreak += 1;
+        // Every tab stops its network work, and each checks the session for itself.
+        this.post({ type: "unauthorized" });
+        this.suspend();
+      }
+      return true;
+    }
+    // A changed account means the replica isn't the signed-in user's, so this engine ends.
+    if (failure instanceof AccountChangedError || failure instanceof AccessError) {
+      const ending = failure instanceof AccessError ? "accessLost" : "unauthorized";
       this.post({ type: ending });
       this.endSession(failure);
       // The replica stays on disk with its outbox. The same user's next sign-in, or access
@@ -1934,7 +2009,9 @@ export class SyncEngine {
    * A request succeeded, so an earlier error no longer describes the connection. Blocks stay. A
    * failing push stays reported until a push succeeds, since reads can't drain the outbox.
    */
-  private recovered(kind: "read" | "push" = "read"): void {
+  private recovered(kind: "read" | "push" | "stream" = "read"): void {
+    // An open stream doesn't prove that pulls and pushes get past whatever answered 401.
+    if (kind !== "stream") this.unauthorizedStreak = 0;
     if (this.writeFailing && kind !== "push") return;
     this.writeFailing = false;
     const error = this.snapshot.lastError;

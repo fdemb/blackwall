@@ -92,8 +92,7 @@ export function whenConfirmed(engine: SyncEngine, ids: Iterable<string>): Promis
     const unsubscribeEvents = engine.subscribe((event) => {
       if (event.type === "closed") finish(new Error("Workspace engine closed"));
       else if (event.type === "outdated") finish(new OutdatedError());
-      else if (event.type === "unauthorized" || event.type === "accessLost")
-        finish(new ApiError("Workspace access lost", 403));
+      else if (event.type === "accessLost") finish(new ApiError("Workspace access lost", 403));
     });
     check();
   });

@@ -10,7 +10,13 @@ import type { ReplicaStorage, Scope } from "./persistence/types";
 import { BOOTSTRAP_ENTITIES, normalize } from "./records";
 import { createFakeServer } from "./testing/fake-server";
 import type { FakeServerOptions } from "./testing/fake-server";
-import { createTransport, ProtocolError, TruncatedError, UnavailableError } from "./transport";
+import {
+  createTransport,
+  ProtocolError,
+  TruncatedError,
+  UnauthorizedError,
+  UnavailableError,
+} from "./transport";
 import type { Mutation } from "./transport";
 
 const id = (n: number) => `11111111-1111-4111-8111-${n.toString(16).padStart(12, "0")}`;
@@ -595,7 +601,8 @@ describe("sync engine", () => {
       f.engine.runOnline("set_role", { user_id: f.peer.id, role: "viewer" }),
     ).rejects.toMatchObject({ status: kind === "session" ? 401 : 403 });
     expect(await f.storage.list()).toEqual([{ userId: f.owner.id, workspaceId: f.workspace.id }]);
-    expect(f.engine.store.all("issues")).toEqual([]);
+    // A 401 waits for the app's session check with the view intact. Lost access clears it.
+    expect(f.engine.store.all("issues").length > 0).toBe(kind === "session");
   });
 
   it("continues core syncing when a scope protocol error blocks only scope loads", async () => {
@@ -1017,7 +1024,7 @@ describe("sync engine", () => {
   });
 
   it.each(["memory", "indexeddb"])(
-    "stops on 401 and leaves every replica as it is with %s",
+    "stops network work on 401, keeps its view and leaves every replica as it is with %s",
     async (backend) => {
       const f = fixture(
         backend === "memory"
@@ -1032,8 +1039,11 @@ describe("sync engine", () => {
       await f.engine.pull();
       await until(() => events.some((event) => event.type === "unauthorized"));
       expect(await workspacesOnDisk(f)).toEqual([f.workspace.id, id(60)].sort());
-      expect(f.engine.status.get().phase).toBe("loading");
-      expect(f.engine.store.all("issues")).toHaveLength(0);
+      expect(f.engine.status.get().phase).toBe("ready");
+      expect(f.engine.store.get("issues", ISSUE)?.title).toBe("Original");
+      const requests = f.fetch.mock.calls.length;
+      await f.advance(60_000);
+      expect(f.fetch.mock.calls.length).toBe(requests);
     },
   );
 
@@ -2038,6 +2048,8 @@ describe("pending edits are never frozen or lost", () => {
     f.signals.send("online");
     await until(() => events.some((event) => event.type === "unauthorized"));
     expect(await f.storage.list()).toEqual([{ userId: f.owner.id, workspaceId: f.workspace.id }]);
+    // The app's session check found the session ended.
+    await f.engine.close();
 
     const second = signIn(f, f.owner.id);
     await second.start();
@@ -2050,6 +2062,58 @@ describe("pending edits are never frozen or lost", () => {
     expect(events.some((event) => event.type === "rejected")).toBe(false);
     expect(await f.storage.list()).toEqual([{ userId: f.owner.id, workspaceId: f.workspace.id }]);
     expect((await f.disk()).meta.clientId).toBe(clientId);
+  });
+
+  it("waits through a 401 with its view intact, resumes when the session is valid, and sends the edit typed meanwhile", async () => {
+    const f = fixture();
+    await f.ready();
+    const events: EngineEvent[] = [];
+    f.engine.subscribe((event) => events.push(event));
+    f.server.inject({ kind: "fail_response", route: "pull", status: 401 });
+    await f.engine.pull();
+    await until(() => events.some((event) => event.type === "unauthorized"));
+    const receipt = await f.engine.mutate("update_issue", {
+      id: ISSUE,
+      patch: { title: "Typed during the session check" },
+    });
+    await f.advance(60_000);
+    expect(f.pushes()).toEqual([]);
+    expect(f.engine.store.get("issues", OTHER_ISSUE)?.title).toBe("Other");
+    expect(f.engine.status.get().phase).toBe("ready");
+
+    f.engine.resume();
+    await elapse(f, () => f.engine.status.get().pending === 0);
+    expect(await receipt.settled).toBe("applied");
+    expect(f.authoritativeIssue(ISSUE).title).toBe("Typed during the session check");
+    expect(f.engine.status.get()).toMatchObject({ blocked: false, lastError: null });
+  });
+
+  it("stops retrying and reports blocked when 401s keep coming while the session is valid", async () => {
+    const f = fixture();
+    await f.ready();
+    const events: EngineEvent[] = [];
+    f.engine.subscribe((event) => {
+      events.push(event);
+      if (event.type === "unauthorized") f.engine.resume();
+    });
+    for (let attempt = 0; attempt < 10; attempt += 1)
+      f.server.inject({ kind: "fail_response", route: "pull", status: 401 });
+    await f.engine.pull();
+    await elapse(f, () => f.engine.status.get().blocked);
+    expect(events.filter((event) => event.type === "unauthorized")).toHaveLength(3);
+    expect(f.engine.status.get().lastError).toBeInstanceOf(UnauthorizedError);
+    const receipt = await f.engine.mutate("update_issue", {
+      id: ISSUE,
+      patch: { title: "Typed while blocked" },
+    });
+    const requests = f.fetch.mock.calls.length;
+    await f.advance(120_000);
+    expect(f.fetch.mock.calls.length).toBe(requests);
+
+    f.server.clearFaults();
+    f.engine.unblock();
+    expect(await receipt.settled).toBe("applied");
+    expect(f.authoritativeIssue(ISSUE).title).toBe("Typed while blocked");
   });
 
   it("keeps an edit through a 5xx streak while reads work, reports a stall, and applies it on recovery", async () => {

@@ -103,6 +103,8 @@ class TransportError extends Error {
 export class NetworkError extends TransportError {}
 export class TruncatedError extends TransportError {}
 export class UnauthorizedError extends TransportError {}
+/** The server's fence: the cookie's user isn't the user the replica belongs to. */
+export class AccountChangedError extends UnauthorizedError {}
 export class AccessError extends TransportError {}
 export class ProtocolError extends TransportError {}
 export class UnavailableError extends TransportError {
@@ -361,7 +363,10 @@ function httpError(
   serverError = false,
 ): TransportError {
   const status = response.status;
-  if (status === 401) return new UnauthorizedError(message, status);
+  if (status === 401)
+    return serverError && message === "account changed"
+      ? new AccountChangedError(message, status)
+      : new UnauthorizedError(message, status);
   if (status === 403 || (status === 404 && workspace && serverError))
     return new AccessError(message, status);
   if (status >= 500) {

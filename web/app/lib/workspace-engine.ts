@@ -66,11 +66,15 @@ export function waitUntilReady(engine: SyncEngine, signal?: AbortSignal): Promis
         status.lastError instanceof OutdatedError
       )
         finish(status.lastError);
+      // 401s kept coming while the session is valid, so signing in again wouldn't help.
+      else if (status.blocked && status.lastError instanceof UnauthorizedError)
+        finish(new ProtocolError(status.lastError.message, 401));
     };
     const aborted = () => finish(new Error("Workspace navigation cancelled"));
     const unsubscribeStatus = engine.status.subscribe(check);
     const unsubscribeEvents = engine.subscribe((event) => {
-      if (event.type === "unauthorized") finish(new UnauthorizedError("Session expired", 401));
+      // An ended session closes the engine. A 401 alone may come from a proxy and is checked first.
+      if (event.type === "closed") finish(new UnauthorizedError("Session ended", 401));
       if (event.type === "accessLost") finish(new AccessError("Workspace access lost", 403));
       if (event.type === "outdated") finish(new OutdatedError());
     });
@@ -138,7 +142,10 @@ export function openWorkspaceEngine(
     engine.subscribe((event) => {
       if (event.type === "unauthorized") {
         void expireSession().then((ended) => {
-          if (!ended) return;
+          if (!ended) {
+            engine.resume();
+            return;
+          }
           queryClient.clear();
           window.location.assign("/login");
         });

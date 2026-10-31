@@ -5,7 +5,7 @@ import { IndexedDBReplicaStorage, IDB_VERSION } from "../sync/persistence/idb";
 import { createTabHub } from "../sync/testing/tabs";
 import { createFakeServer } from "../sync/testing/fake-server";
 import { currentProfile } from "./auth-guard";
-import { auth, setCsrf } from "./api";
+import { auth, getCsrf, setCsrf } from "./api";
 import {
   activeWorkspaceEngine,
   acceptSession,
@@ -488,6 +488,53 @@ describe("user replica lifetime", () => {
       await expect(page.currentProfile()).rejects.toThrow(TypeError);
     });
 
+    it("signing in as another user drops this tab's session from memory when another tab already stored the new one", async () => {
+      const hub = createTabHub();
+      setSessionLocks(hub.locks);
+      const { server, signIn, fetch } = await fixture();
+      const other = server.addUser();
+      vi.resetModules();
+      const tabB = await import("./session-replicas");
+      tabB.setSessionLocks(hub.locks);
+      try {
+        signIn(other.id);
+        await tabB.acceptSession();
+        await signedInAs(other.id);
+        expect(published().session).toBe(other.id);
+        fetch.mockRejectedValueOnce(new TypeError("Failed to fetch"));
+        await expect(currentProfile()).resolves.toMatchObject({ id: other.id });
+      } finally {
+        await tabB.clearSession();
+        setSessionLocks(undefined);
+      }
+    });
+
+    it("a timed-out /me whose fetch ignored the abort leaves the newer sign-in's CSRF token", async () => {
+      const { server, fetch, signIn } = await fixture();
+      let release: () => void = () => {};
+      const gate = new Promise<void>((resolve) => (release = resolve));
+      const real = fetch.getMockImplementation();
+      if (!real) throw new Error("fixture fetch has no implementation");
+      fetch.mockImplementationOnce(async (input, init) => {
+        const answer = await real(input, { ...init, signal: null });
+        await gate;
+        return answer;
+      });
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      try {
+        const accepting = acceptSession().catch((error: unknown) => error);
+        await vi.advanceTimersByTimeAsync(15_000);
+        expect(await accepting).toMatchObject({ name: "TimeoutError" });
+      } finally {
+        vi.useRealTimers();
+      }
+      const newer = signIn(server.addUser().id);
+      expect(getCsrf()).toBe(server.csrfToken(newer));
+      release();
+      await settle();
+      expect(getCsrf()).toBe(server.csrfToken(newer));
+    });
+
     it("the same user's sign-in keeps the remembered session for an offline reload", async () => {
       const { profile, signIn, fetch } = await fixture();
       signIn(profile.id);
@@ -586,6 +633,45 @@ describe("user replica lifetime", () => {
     expect((await replicaStorage().list()).map((replica) => replica.workspaceId).sort()).toEqual(
       kept,
     );
+  });
+  it("a 401 from something in front of the server resumes syncing once the session checks out, and the edit is sent", async () => {
+    const { server, workspace, profile } = await fixture();
+    const engine = await openWorkspaceEngine(workspace.id);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      server.inject({ kind: "fail_response", route: "pull", status: 401 });
+      await engine.pull();
+      await engine.mutate("update_issue", { id: id(2), patch: { title: "Typed around a 401" } });
+      await elapse(() => server.record("issues", id(2))?.title === "Typed around a 401");
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(assign).not.toHaveBeenCalled();
+    expect(currentSession()?.session_id).toBe(profile.session_id);
+    expect(activeWorkspaceEngine(workspace.id)?.engine).toBe(engine);
+    expect(engine.status.get()).toMatchObject({ pending: 0, blocked: false });
+  });
+  it("401s that keep coming while the session is valid stop the retries and report the workspace blocked", async () => {
+    const { server, workspace, fetch } = await fixture();
+    const engine = await openWorkspaceEngine(workspace.id);
+    const pulls = () =>
+      fetch.mock.calls.filter(([url]) => String(url).includes("/sync/pull")).length;
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      for (let attempt = 0; attempt < 10; attempt += 1)
+        server.inject({ kind: "fail_response", route: "pull", status: 401 });
+      await engine.pull();
+      await elapse(() => engine.status.get().blocked);
+      const before = pulls();
+      await vi.advanceTimersByTimeAsync(120_000);
+      await settle();
+      expect(pulls()).toBe(before);
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(assign).not.toHaveBeenCalled();
+    expect(engine.isClosed()).toBe(false);
+    expect(activeWorkspaceEngine(workspace.id)?.engine).toBe(engine);
   });
   it("an upgraded replica asks for reload and preserves the workspace and session", async () => {
     const { profile, workspace } = await fixture();
@@ -712,6 +798,14 @@ describe("replicas from before they were named by user", () => {
 async function settle() {
   for (let step = 0; step < 50; step += 1)
     await new Promise<void>((resolve) => setImmediate(resolve));
+}
+/** Advances faked timers in steps while real I/O callbacks run, until `done`. */
+async function elapse(done: () => boolean) {
+  for (let step = 0; step < 100 && !done(); step += 1) {
+    await vi.advanceTimersByTimeAsync(100);
+    await settle();
+  }
+  expect(done()).toBe(true);
 }
 describe("workspace loader lifecycle", () => {
   it("opens a disk replica while its pull is delayed and reuses the current engine", async () => {

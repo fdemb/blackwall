@@ -590,20 +590,30 @@ describe("tab coordination", () => {
     release();
   });
 
-  it("ends the session in every tab when the leader gets 401", async () => {
-    const f = fixture(2, { sessionLifetimeMs: 1000 });
+  it("a 401 stops network work in every tab, and each resumes after its session check", async () => {
+    const f = fixture(2);
     await f.start();
     const { leader, follower } = f.roles();
-    await f.advance(2000);
+    f.server.inject({ kind: "fail_response", route: "pull", status: 401 });
     void leader.engine.pull();
     await until(() => leader.events.some((event) => event.type === "unauthorized"));
     await until(() => follower.events.some((event) => event.type === "unauthorized"));
-    expect(leader.engine.status.get().phase).toBe("loading");
-    expect(follower.engine.status.get().phase).toBe("loading");
-    expect(follower.engine.store.all("issues")).toEqual([]);
+    expect(follower.engine.store.get("issues", ISSUE)?.title).toBe("Original");
+    const receipt = await follower.engine.mutate("update_issue", {
+      id: ISSUE,
+      patch: { title: "Typed in the other tab" },
+    });
     const requests = f.requests(leader);
     await f.advance(60_000);
     expect(f.requests(leader)).toBe(requests);
+    expect(f.server.record("issues", ISSUE)?.title).toBe("Original");
+
+    leader.engine.resume();
+    follower.engine.resume();
+    await f.advance(1000);
+    await until(() => f.server.record("issues", ISSUE)?.title === "Typed in the other tab");
+    expect(await receipt.settled).toBe("applied");
+    expect(follower.engine.isClosed()).toBe(false);
   });
 
   it("ends the session in every tab when the leader gets 403", async () => {
@@ -653,7 +663,7 @@ describe("tab coordination", () => {
       await until(() =>
         f.tabs.every((tab) => tab.events.some((event) => event.type === "unauthorized")),
       );
-      expect(f.tabs.every((tab) => tab.engine.store.all("issues").length === 0)).toBe(true);
+      expect(f.tabs.map((tab) => tab.engine.store.all("issues"))).toEqual(views);
       channel.close();
     } finally {
       upgraded.close();
