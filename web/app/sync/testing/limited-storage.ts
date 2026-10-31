@@ -2,7 +2,10 @@ import { MemoryReplicaStorage } from "../persistence/memory";
 import { StorageFullError } from "../persistence/shared";
 import type { ReplicaStorage } from "../persistence/types";
 
-/** A store whose writes fail like a full disk while `full` is set. `allow` exempts method names. */
+/**
+ * A store whose writes fail like a full disk while `full` is set. `allow` exempts method names.
+ * While `appendGate` is set, outbox appends wait for it, and check the disk once it opens.
+ */
 export function limited(inner: ReplicaStorage = new MemoryReplicaStorage()) {
   const writes = new Set([
     "writeBootstrap",
@@ -15,6 +18,7 @@ export function limited(inner: ReplicaStorage = new MemoryReplicaStorage()) {
   const disk = {
     full: false,
     allow: new Set<string>(),
+    appendGate: null as Promise<void> | null,
     attempts: new Map<string, number>(),
     storage: {
       open: async (input) => {
@@ -25,9 +29,10 @@ export function limited(inner: ReplicaStorage = new MemoryReplicaStorage()) {
             if (typeof value !== "function") return value;
             if (typeof key !== "string" || !writes.has(key))
               return (...args: unknown[]) => value.apply(target, args);
-            return (...args: unknown[]) => {
+            return async (...args: unknown[]) => {
               disk.attempts.set(key, (disk.attempts.get(key) ?? 0) + 1);
-              if (disk.full && !disk.allow.has(key)) return Promise.reject(new StorageFullError());
+              if (key === "appendMutation" && disk.appendGate) await disk.appendGate;
+              if (disk.full && !disk.allow.has(key)) throw new StorageFullError();
               return value.apply(target, args);
             };
           },

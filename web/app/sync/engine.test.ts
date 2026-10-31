@@ -3583,3 +3583,84 @@ describe("pokes", () => {
     expect(f.requests("pull")).toBe(pulls + 1);
   });
 });
+
+describe("local edits", () => {
+  function gate() {
+    let open = () => {};
+    const closed = new Promise<void>((resolve) => {
+      open = resolve;
+    });
+    return { closed, open };
+  }
+
+  it("shows edits before their outbox write commits and pushes only written ones", async () => {
+    const disk = limited();
+    const f = fixture(disk.storage);
+    await f.ready();
+    const held = gate();
+    disk.appendGate = held.closed;
+    const edits = ["T", "Ty", "Typed"].map((title) =>
+      f.engine.mutate("update_issue", { id: ISSUE, patch: { title } }),
+    );
+    await until(() => f.engine.store.get("issues", ISSUE)?.title === "Typed");
+    expect(f.engine.status.get().pending).toBe(3);
+    await f.engine.pull();
+    f.signals.send("focus");
+    await f.advance(60_000);
+    for (let tick = 0; tick < 20; tick += 1) await flush();
+    expect(f.pushes()).toEqual([]);
+    expect((await f.disk()).outbox).toEqual([]);
+
+    disk.appendGate = null;
+    held.open();
+    const receipts = await Promise.all(edits);
+    const ids = receipts.map((receipt) => receipt.mutationId);
+    expect(ids).toEqual([...ids].sort((a, b) => a - b));
+    expect(new Set(ids).size).toBe(3);
+    for (const receipt of receipts) expect(await receipt.settled).toBe("applied");
+    expect(f.pushes().flat().map((mutation) => mutation.id)).toEqual(ids);
+    expect(f.server.record("issues", ISSUE)).toMatchObject({ title: "Typed" });
+    expect(f.engine.store.get("issues", ISSUE)?.title).toBe("Typed");
+  });
+
+  it("takes a shown edit back when the disk refuses its outbox write", async () => {
+    const disk = limited();
+    const f = fixture(disk.storage);
+    await f.ready();
+    const held = gate();
+    disk.appendGate = held.closed;
+    const edit = f.engine.mutate("update_issue", { id: ISSUE, patch: { title: "No room" } });
+    void edit.catch(() => undefined);
+    await until(() => f.engine.store.get("issues", ISSUE)?.title === "No room");
+    disk.full = true;
+    disk.appendGate = null;
+    held.open();
+    await expect(edit).rejects.toMatchObject({ status: 507 });
+    expect(f.engine.store.get("issues", ISSUE)?.title).toBe("Original");
+    expect(f.engine.status.get().pending).toBe(0);
+    expect(f.pushes()).toEqual([]);
+  });
+
+  it("tells other tabs about an edit only once it is written", async () => {
+    const disk = limited();
+    const f = fixture(disk.storage);
+    const hub = createTabHub();
+    const leader = f.build(SCHEMA, { locks: hub.locks, channel: hub.channel });
+    const follower = f.build(SCHEMA, { locks: hub.locks, channel: hub.channel });
+    await leader.start();
+    await until(() => leader.status.get().role === "leader");
+    await until(() => leader.status.get().phase === "ready");
+    await follower.start();
+    await until(() => follower.status.get().phase === "ready");
+    const held = gate();
+    disk.appendGate = held.closed;
+    const edit = leader.mutate("update_issue", { id: ISSUE, patch: { title: "Leader typed" } });
+    await until(() => leader.store.get("issues", ISSUE)?.title === "Leader typed");
+    for (let tick = 0; tick < 20; tick += 1) await flush();
+    expect(follower.store.get("issues", ISSUE)?.title).toBe("Original");
+    disk.appendGate = null;
+    held.open();
+    await edit;
+    await until(() => follower.store.get("issues", ISSUE)?.title === "Leader typed");
+  });
+});

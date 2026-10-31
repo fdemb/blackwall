@@ -586,6 +586,39 @@ export class SyncStore {
     this.scheduleRebase();
   }
 
+  /**
+   * Gives a pending mutation a new id, such as the one its outbox write allocated. Replays never
+   * read ids, so the overlay stays as it is unless the new id moves the mutation in the list.
+   */
+  renamePending(from: number, to: number): void {
+    const previous = this.pendingList.find((mutation) => mutation.id === from);
+    if (previous === undefined) return;
+    const index = this.pendingList.indexOf(previous);
+    const renamed = Object.freeze({ ...previous, id: to });
+    const list = this.pendingList.slice();
+    list[index] = renamed;
+    const before = list[index - 1]?.id ?? Number.NEGATIVE_INFINITY;
+    const after = list[index + 1]?.id ?? Number.POSITIVE_INFINITY;
+    if (before >= to || to >= after) {
+      this.setPending(list.sort((a, b) => a.id - b.id));
+      return;
+    }
+    this.pendingList = Object.freeze(list);
+    const replayedAt = this.replayed.indexOf(previous);
+    if (replayedAt >= 0) {
+      const replayed = this.replayed.slice();
+      replayed[replayedAt] = renamed;
+      this.replayed = Object.freeze(replayed);
+    }
+    const error = this.errors.get(from);
+    if (error !== undefined) {
+      this.errors = new Map(this.errors);
+      this.errors.delete(from);
+      this.errors.set(to, error);
+    }
+    this.scheduleRebase();
+  }
+
   /** Coalesce several writes into one rebase and one notification. */
   batch(fn: () => void): void {
     this.batchDepth += 1;

@@ -119,6 +119,10 @@ const STALLED_AFTER = 3;
 /** 401s in a row, each with the session checked and found valid, before retries stop. */
 const UNAUTHORIZED_RETRIES = 3;
 const TOO_LARGE = "This edit is too large to save.";
+/** Ids of edits shown before their outbox write finishes, above any id an outbox allocates. */
+const PROVISIONAL_IDS = 2 ** 52;
+/** An edit in the view whose outbox write hasn't finished. `saved` is the id that write chose. */
+type Unsaved = { id: number; body: Omit<PendingMutation, "id">; saved: number | null };
 type PushBatch = {
   /** Halved after a 413, so a body the server refuses never blocks the outbox. */
   mutations: readonly Mutation[];
@@ -245,6 +249,10 @@ export class SyncEngine {
   private readonly eventListeners = new Set<(event: EngineEvent) => void>();
   private readonly reads = new SerialQueue();
   private readonly commits = new SerialQueue();
+  /** Outbox writes of new edits, in admission order, kept apart from base writes. */
+  private readonly appends = new SerialQueue();
+  private readonly unsaved: Unsaved[] = [];
+  private nextProvisional = PROVISIONAL_IDS;
   private readonly onlineRequests = new SerialQueue();
   private readonly loadedScopes = new Map<string, Scope>();
   private readonly heldScopes = new Map<string, { scope: Scope; holders: number }>();
@@ -462,7 +470,7 @@ export class SyncEngine {
     for (const scope of loaded.scopes) this.loadedScopes.set(scopeKey(scope), scope);
     this.store.batch(() => {
       this.store.replaceBase(loaded.records, BOOTSTRAP_REPLACED_ENTITIES);
-      this.store.setPending(loaded.outbox);
+      this.store.setPending(this.withUnsaved(loaded.outbox));
     });
     this.update({ unresolved: Object.freeze(loaded.rejected) });
   }
@@ -553,6 +561,7 @@ export class SyncEngine {
     this.stopStorageRetry();
     this.notifyChange();
     await this.commits.drain();
+    await this.appends.drain();
     this.replica?.close();
     this.replica = null;
     this.rejectCallers(new Error("Engine is closed"));
@@ -657,48 +666,101 @@ export class SyncEngine {
     for (const wake of waiting) wake();
   }
 
+  /**
+   * The view shows the edit at once, under a provisional id. Its outbox write, which allocates the
+   * real id, queues behind earlier edits only, never behind base writes. Nothing pushes the edit
+   * and no other tab hears of it until that write has finished.
+   */
   async mutate(name: string, args: unknown): Promise<MutationReceipt> {
     await this.open();
     const lifecycle = this.lifecycle;
-    return this.commits.run(async () => {
-      if (this.sealed) throw new Error("Engine is retiring");
-      const replica = this.requireReplica();
-      if (ONLINE_ONLY.some((command) => command === name))
-        throw new MutationError(400, "Use runOnline for this command");
-      const prepared = this.prepare(name, args);
-      const at = this.deps.clock.now();
-      const admitted = admit(this.store, this.deps.actor, { name, args: prepared.args, at });
-      const mutation = await replica
-        .appendMutation(() => ({
-          name,
-          args: admitted.args,
-          at,
-          ...(admitted.local === undefined ? {} : { local: admitted.local }),
-        }))
-        .catch((error: unknown) => {
-          // The edit is refused whole and the caller shows this, so none is lost without a word.
-          throw error instanceof StorageFullError
-            ? new MutationError(507, STORAGE_FULL_EDIT)
-            : error;
-        });
-      if (this.snapshot.storage === "full" && this.role === "leader") void this.retryStorage();
-      const settled = new Promise<MutationOutcome>((resolve, reject) =>
-        this.outcomes.set(mutation.id, { mutation, resolve, reject }),
-      );
-      void settled.catch(() => undefined);
-      if (this.closed || this.terminal || lifecycle !== this.lifecycle) {
-        this.outcomes
-          .get(mutation.id)
-          ?.reject(
-            new Error(this.closed || this.terminal ? "Engine is closed" : "Engine is stopped"),
-          );
-        this.outcomes.delete(mutation.id);
-      }
-      this.store.setPending([...this.store.pending(), mutation].sort((a, b) => a.id - b.id));
-      this.post({ type: "appended", mutation });
-      this.requestPush();
-      return { id: prepared.id, mutationId: mutation.id, settled };
+    if (this.sealed) throw new Error("Engine is retiring");
+    const replica = this.requireReplica();
+    if (ONLINE_ONLY.some((command) => command === name))
+      throw new MutationError(400, "Use runOnline for this command");
+    const prepared = this.prepare(name, args);
+    const at = this.deps.clock.now();
+    const admitted = admit(this.store, this.deps.actor, { name, args: prepared.args, at });
+    const entry = this.showUnsaved({
+      name,
+      args: admitted.args,
+      at,
+      ...(admitted.local === undefined ? {} : { local: admitted.local }),
     });
+    const settled = this.expectOutcome({ ...entry.body, id: entry.id });
+    let mutation: PendingMutation;
+    try {
+      mutation = await this.appends.run(() =>
+        replica.appendMutation((id) => {
+          entry.saved = id;
+          this.moveOutcome(entry.id, id);
+          return entry.body;
+        }),
+      );
+    } catch (error) {
+      this.outcomes.delete(entry.id);
+      if (entry.saved !== null) this.outcomes.delete(entry.saved);
+      // The edit leaves the view and the caller shows why, so none is lost without a word.
+      this.dropUnsaved(entry);
+      throw error instanceof StorageFullError ? new MutationError(507, STORAGE_FULL_EDIT) : error;
+    }
+    this.saveUnsaved(entry, mutation.id);
+    if (this.snapshot.storage === "full" && this.role === "leader") void this.retryStorage();
+    if (this.closed || this.terminal || lifecycle !== this.lifecycle) {
+      const ended = this.closed || this.terminal ? "Engine is closed" : "Engine is stopped";
+      this.outcomes.get(mutation.id)?.reject(new Error(ended));
+      this.outcomes.delete(mutation.id);
+    }
+    this.post({ type: "appended", mutation });
+    this.requestPush();
+    return { id: prepared.id, mutationId: mutation.id, settled };
+  }
+
+  private expectOutcome(mutation: Mutation): Promise<MutationOutcome> {
+    const settled = new Promise<MutationOutcome>((resolve, reject) =>
+      this.outcomes.set(mutation.id, { mutation, resolve, reject }),
+    );
+    void settled.catch(() => undefined);
+    return settled;
+  }
+
+  /** Keys a waiting receipt by the id its outbox write chose. */
+  private moveOutcome(from: number, to: number): void {
+    const outcome = this.outcomes.get(from);
+    if (!outcome) return;
+    this.outcomes.delete(from);
+    this.outcomes.set(to, { ...outcome, mutation: { ...outcome.mutation, id: to } });
+  }
+
+  private showUnsaved(body: Omit<PendingMutation, "id">): Unsaved {
+    const entry: Unsaved = { id: this.nextProvisional++, body, saved: null };
+    this.unsaved.push(entry);
+    this.store.setPending([...this.store.pending(), { ...body, id: entry.id }]);
+    return entry;
+  }
+
+  /** The written edit keeps its place in the view under its real id. */
+  private saveUnsaved(entry: Unsaved, id: number): void {
+    this.unsaved.splice(this.unsaved.indexOf(entry), 1);
+    this.store.renamePending(entry.id, id);
+  }
+
+  private dropUnsaved(entry: Unsaved): void {
+    this.unsaved.splice(this.unsaved.indexOf(entry), 1);
+    this.store.setPending(this.store.pending().filter((mutation) => mutation.id !== entry.id));
+  }
+
+  /**
+   * A pending list read from the outbox, with the edits still being written after it. One whose
+   * write finished in the meantime is already in `saved`, under its real id.
+   */
+  private withUnsaved(saved: readonly PendingMutation[]): PendingMutation[] {
+    const current = new Map(this.store.pending().map((mutation) => [mutation.id, mutation]));
+    const stored = new Set(saved.map((mutation) => mutation.id));
+    const shown = this.unsaved
+      .filter((entry) => entry.saved === null || !stored.has(entry.saved))
+      .map((entry) => current.get(entry.id) ?? { ...entry.body, id: entry.id });
+    return [...saved, ...shown];
   }
 
   async runOnline(name: string, args: unknown): Promise<OnlineResult> {
@@ -805,7 +867,8 @@ export class SyncEngine {
       if (this.started && this.snapshot.online && this.unauthorized === null) {
         const stored = await this.requireReplica().loadOutbox();
         // A full disk can leave acknowledged mutations stored after memory settled them.
-        if (stored.every((mutation) => mutation.id <= this.acknowledged)) {
+        const drained = stored.every((mutation) => mutation.id <= this.acknowledged);
+        if (drained && this.unsaved.length === 0) {
           // A 401 or close can land while the outbox loads; check again with no await before
           // the caller registers its attempt.
           signal.throwIfAborted();
@@ -1947,9 +2010,11 @@ export class SyncEngine {
     const stored = await this.requireReplica().loadOutbox();
     // A full disk can leave acknowledged mutations in the database that memory already settled.
     this.store.setPending(
-      stored
-        .filter((mutation) => mutation.id > this.acknowledged)
-        .map((mutation) => current.get(mutation.id) ?? mutation),
+      this.withUnsaved(
+        stored
+          .filter((mutation) => mutation.id > this.acknowledged)
+          .map((mutation) => current.get(mutation.id) ?? mutation),
+      ),
     );
   }
 
@@ -1958,7 +2023,8 @@ export class SyncEngine {
     const confirmations = new Map<number, Mutation>(this.unconfirmed);
     for (const { mutation } of this.outcomes.values())
       if (mutation.id <= this.acknowledged) confirmations.set(mutation.id, mutation);
-    return [...confirmations.values(), ...this.store.pending()].sort((a, b) => a.id - b.id);
+    const saved = this.store.pending().filter((mutation) => mutation.id < PROVISIONAL_IDS);
+    return [...confirmations.values(), ...saved].sort((a, b) => a.id - b.id);
   }
 
   private requestScope(scope: Scope): void {
