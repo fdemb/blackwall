@@ -77,7 +77,6 @@ interface ClientState {
   workspace: string;
   user: string;
   last_mutation_id: number;
-  updatedAt: number;
   rejections: Map<number, { status: number; message: string }>;
 }
 interface Session {
@@ -413,10 +412,6 @@ export class FakeServer {
     const retained = this.history.filter((tx) => tx.id >= txid);
     this.history.splice(0, this.history.length, ...retained);
   }
-  pruneClients(): void {
-    for (const [id, client] of this.clients)
-      if (this.clock.milliseconds() - client.updatedAt > SESSION_LIFETIME) this.clients.delete(id);
-  }
   close(): void {
     for (const stream of this.streams.keys()) stream.close();
   }
@@ -527,6 +522,14 @@ export class FakeServer {
           "X-CSRF-Token": session.csrf,
         });
       else {
+        if (route !== "commands") {
+          // Like the server: before the workspace or the client row is looked at.
+          const replicaUser = url.searchParams.get("user_id");
+          if (replicaUser === null && bearer === undefined)
+            throw new MutationError(400, "user_id is required");
+          if (replicaUser !== null && replicaUser !== session.user)
+            throw new MutationError(401, "account changed");
+        }
         const workspace = uuid(matched?.[1], "workspace_id");
         this.authorize(workspace, session.user);
         if (route === "commands") {
@@ -1109,7 +1112,6 @@ export class FakeServer {
           workspace,
           user: actor,
           last_mutation_id: 0,
-          updatedAt: this.clock.milliseconds(),
           rejections: new Map(),
         };
         this.clients.set(clientId, client);
@@ -1141,7 +1143,6 @@ export class FakeServer {
         }
         client.last_mutation_id = mutation.id;
       }
-      client.updatedAt = this.clock.milliseconds();
       body.last_mutation_id = client.last_mutation_id;
       this.options.onResult?.(clientId, structuredClone(body.results[body.results.length - 1]));
     }

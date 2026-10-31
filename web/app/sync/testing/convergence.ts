@@ -342,6 +342,7 @@ export async function runConvergence(
 
   const build = (client: Client): SyncEngine => {
     const transport = createTransport({
+      userId: client.actor,
       headers: () => ({ cookie: `blackwall_session=${client.token}` }),
       async fetch(input, init) {
         const url = new URL(String(input), "http://fake.test");

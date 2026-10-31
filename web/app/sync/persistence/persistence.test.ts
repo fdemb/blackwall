@@ -141,6 +141,18 @@ for (const backend of ["memory", "idb"]) {
       expect(loaded.meta.nextMutationId).toBe(3);
     });
 
+    it("keeps the access-lost marker across writes and handles until it is cleared", async () => {
+      expect((await replica.load()).meta.accessLost).toBeUndefined();
+      await replica.setAccessLost(true);
+      await replica.appendMutation(mutation);
+      await replica.writeBootstrap(bootstrap());
+      replica.close();
+      replica = await open();
+      expect((await replica.load()).meta.accessLost).toBe(true);
+      await replica.setAccessLost(false);
+      expect((await replica.load()).meta.accessLost).toBe(false);
+    });
+
     it("bootstrap replaces listed entities, empties omitted ones and clears scopes", async () => {
       await replica.writeBootstrap(
         bootstrap({

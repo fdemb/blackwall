@@ -199,6 +199,12 @@ class MemoryReplica implements Replica {
     });
   }
 
+  async setAccessLost(lost: boolean): Promise<void> {
+    this.transaction((state) => {
+      state.meta.accessLost = lost;
+    });
+  }
+
   async resolveRejection(id: number): Promise<void> {
     this.transaction((state) => state.rejected.delete(id));
   }

@@ -183,6 +183,7 @@ export function client(
     transport: createTransport({
       baseUrl: inject("syncContract").baseUrl,
       fetch: connection.fetch,
+      userId: user.id,
     }),
     randomId: options.randomId ?? randomUUID,
     clock: {

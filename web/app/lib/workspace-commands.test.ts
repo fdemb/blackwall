@@ -57,6 +57,7 @@ async function fixture() {
     transport: createTransport({
       fetch,
       headers: () => ({ cookie: `blackwall_session=${token}` }),
+      userId: owner.id,
     }),
     workspaceId: workspace.id,
     actor: owner.id,

@@ -32,13 +32,8 @@ export interface EngineDependencies {
   storage: ReplicaStorage;
   transport: Transport;
   workspaceId: string;
-  /** The signed-in user. Names the replica unless `replicaOwner` says otherwise. */
+  /** The user the replica belongs to. It names the replica, its lock and its channel. */
   actor: string;
-  /**
-   * Whose name the replica, its lock and its channel carry. Only a replica from before replicas
-   * were named by user needs this: its name holds the session id that created it.
-   */
-  replicaOwner?: string;
   clock: EngineClock;
   randomId(): string;
   schema: number;

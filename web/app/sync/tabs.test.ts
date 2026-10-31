@@ -94,6 +94,7 @@ function fixture(count = 2, options: FakeServerOptions = {}) {
     const transport = createTransport({
       fetch,
       headers: () => ({ cookie: `blackwall_session=${token}` }),
+      userId: owner.id,
     });
     const signals = new Signals();
     const events: EngineEvent[] = [];

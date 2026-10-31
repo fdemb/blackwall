@@ -11,6 +11,11 @@ export interface ReplicaMeta {
   cursor: string | null;
   lastMutationId: number;
   nextMutationId: number;
+  /**
+   * The server denied this user the workspace, and nothing has answered since. The cached base
+   * may predate a removal, so it isn't shown as ready until a read succeeds.
+   */
+  accessLost?: boolean;
 }
 
 export type Scope =
@@ -60,6 +65,8 @@ export interface Replica {
   confirm(ids: readonly number[], rejected?: readonly Rejection[]): Promise<void>;
   /** Keeps these rejections and drops their mutations from the outbox, so they are never pushed. */
   discard(rejections: readonly Rejection[]): Promise<void>;
+  /** Sets or clears the access-lost marker in the meta. */
+  setAccessLost(lost: boolean): Promise<void>;
   /** Forgets a kept rejection once the user restored, retried or dismissed it. */
   resolveRejection(id: number): Promise<void>;
   close(): void;

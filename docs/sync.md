@@ -95,11 +95,13 @@ Some visibility changes don't produce a change row for every record they affect.
 
 All endpoints live under `/internal-api/workspaces/{id}/sync/` and use the existing authentication and CSRF rules. Each request names its `client_id`. The server rejects a `client_id` that belongs to another user or workspace.
 
+Each request also names the user its replica belongs to, as the `user_id` query parameter, on push too. The server compares it with the authenticated user before it reads or writes any sync row and answers 401 `{"error": "account changed"}` when they differ. A browser replica outlives the cookie, so another account may sign in while an engine of the first one still runs, and this stops that engine from sending the first user's queued edits as the second user, or receiving the second user's data. A request authenticated by the session cookie must send `user_id` (400 without it). A bearer-token request has no replica and may omit it. A malformed `user_id` is 400.
+
 ### Clients
 
 New table `sync_clients(client_id uuid primary key, workspace_id, user_id, last_mutation_id bigint, updated_at)`. The client creates its `client_id` when it creates a replica. The server inserts the row on first use. A `client_id` registered to another user or workspace is rejected with 400.
 
-Prune rows untouched for longer than the session lifetime, currently 30 days. A replica outlives its session, so a user who signs in again after more than 30 days has a replica whose client the server forgot. The server registers it anew on the next push. That is safe for mutations the server never saw. A mutation it processed whose result the client never learned would apply a second time. The client doesn't detect this case yet.
+Rows are never pruned. A replica outlives its session, so a client that comes back after any number of days still needs its `last_mutation_id`: without the row, the server would run a mutation it already processed a second time. A row is a few dozen bytes. Deleting the workspace or the user deletes the row and its rejections (`ON DELETE CASCADE`). The server's number only grows, so a client that reads a lower acknowledged id than its replica holds stops pushing and reports a protocol error.
 
 ### Cursor
 
@@ -155,7 +157,7 @@ The trailer counts only record lines. A failure ends the body without a trailer.
 
 A user runs at most one bootstrap at a time, across all their replicas and workspaces. A second one is refused at once with 503, `Retry-After: 5` and a JSON error. Concurrent bootstraps are also capped at a quarter of the pool's connections, at least one. A bootstrap takes its permit before its connection and holds both until its stream ends. When no permit is free within 5 seconds the server answers 503 the same way, before streaming starts. Each send waits at most 10 seconds for the reader, so a stalled reader can hold a permit and its `REPEATABLE READ` snapshot for 10 seconds, not minutes; the whole bootstrap waits at most 5 minutes. Either deadline drops the transaction and ends the body without a trailer. The client treats a 503 like any transient failure and retries with backoff.
 
-Request errors: a non-member receives 403. A missing or malformed `client_id`, or one registered to another user or workspace, receives 400.
+Request errors: a non-member receives 403. A missing or malformed `client_id`, or one registered to another user or workspace, receives 400. A `user_id` of another account is 401.
 
 ### Pull
 
@@ -237,16 +239,16 @@ The client never lets one mutation freeze the outbox or silently drop a user's e
 | Fetch failure, offline, timeout | Retry the same batch with backoff, without limit. |
 | 5xx, or a 503 with partial results | Retry the same batch with backoff, without limit. After 3 failures in a row the engine reports `stalled`. Results in a partial response settle their mutations, which resets the count. |
 | 413 on a batch of several mutations | Halve the batch. |
-| 413 on a single mutation | Read once and apply any acknowledgement. If the server already processed the id, settle it as `"unknown"`. Otherwise set it aside as "too large to save". |
+| 413 on a single mutation | Read through the normal read lane to a final page (`more: false`), or until a reset's bootstrap completes, then check the acknowledgement. If the server already processed the id, settle it as `"unknown"` and drop it from the outbox. Otherwise set it aside as "too large to save". |
 | 403 | Refresh CSRF and check access with a read. If access is gone, stop the engine and keep the replica (see Session lifetime). Otherwise retry once, then block. |
-| 401 | Stop the engine and keep the replica. |
+| 401, including `account changed` | Stop the engine and keep the replica. Nothing retries. |
 | Any other 4xx | Block pushing until the user retries or reloads. |
 
 A 5xx says nothing about the mutation: the server answers 503 only for a transient failure and records deterministic failures as `rejected` with status 500. So no number of 5xx answers or timeouts discards an edit. Retry delays grow to 30 seconds, and a `Retry-After` header lengthens them. `stalled` in the engine status turns the offline banner into "The server isn't saving your changes yet" and the save status into "Can't send". It clears on the next push that gets an answer.
 
 Setting a mutation aside after a lone 413 builds a local rejection from it, writes that rejection and removes the outbox row in one transaction, and removes its effect from the view. It reaches the same kept-rejections list as a server rejection, with its text and status 413, and the receipt resolves with it. The request never reached a command, so no retry can change the answer. The client never pushes it again. Later mutations still push, and the server's `last_mutation_id` then passes the skipped id without ever applying it. Other tabs reload from the database when the leader sets one aside.
 
-A `duplicate` result is applied only when the server's `last_mutation_id` is less than 1,000 ahead of that id, because the server keeps a client's 1,000 newest rejections and a pruned rejection also reads back as `duplicate`. A confirmation push for an older id settles its receipt as `"unknown"`, not `"applied"`.
+A `duplicate` result is applied only when the server's `last_mutation_id` is less than 1,000 ahead of that id, because the server keeps a client's 1,000 newest rejections and a pruned rejection also reads back as `duplicate`. Rejections are never pruned by age, so this is the only way one is lost. A confirmation push for an older id settles its receipt as `"unknown"`, not `"applied"`.
 
 The client never writes push results into base. It pulls after every push.
 
@@ -325,7 +327,7 @@ A mutation acknowledged by a pull without a known push result is pushed once mor
 
 IndexedDB database `blackwall:{user_id}:{workspace_id}` with object stores:
 
-- `meta`: `schema`, `user_id`, `client_id`, `cursor`, `last_mutation_id`, `next_mutation_id`.
+- `meta`: `schema`, `user_id`, `client_id`, `cursor`, `last_mutation_id`, `next_mutation_id`, and `access_lost` once the server denied access.
 - One store per entity, keyed like the table above.
 - `outbox`, keyed by mutation id.
 - `scopes`, the loaded comment and activity scopes.
@@ -343,10 +345,12 @@ A bootstrap also drops loaded comment and activity scopes; the engine reloads th
 - A replica belongs to one user on one browser. Its name carries the user's id from `GET /internal-api/me`, so the same user's next session opens the same replica with the same `client_id`, outbox and mutation ids. Nothing is copied between replicas.
 - After `GET /internal-api/me`, delete every `blackwall:*` database that another user's id names, whatever it holds. Privacy wins over keeping their edits. The user's own replicas stay.
 - A 401 on any sync request stops the engine, closes its handle and returns to login. Every replica stays on disk, base and outbox included. When the same user signs in again, the engine opens the same replica and its push lane sends the outbox with the old ids. The server answers anything it already processed with `duplicate` or `rejected`, so nothing applies twice.
-- A 403 on a read, or a JSON `{"error"}` 404 on a workspace request, means access to the workspace is gone. The engine stops, closes its handle and leaves the workspace in the UI as it is. The replica stays as it is, outbox included, and nothing is converted or cleared. If access returns, the outbox pushes as usual and the server's answers decide each edit. If it never returns, the data stays until logout or another user's sign-in. Any other 404, such as a proxy's, is a protocol error and deletes nothing.
+- A 403 on a read, or a JSON `{"error"}` 404 on a workspace request, means access to the workspace is gone. The engine stops, closes its handle and leaves the workspace in the UI as it is. The replica stays as it is, outbox included, and nothing is converted or cleared, except that the meta records `access_lost`. If access returns, the outbox pushes as usual and the server's answers decide each edit. If it never returns, the data stays until logout or another user's sign-in. Any other 404, such as a proxy's, is a protocol error and deletes nothing.
+- A replica with `access_lost` set doesn't show its cached base as ready when it is opened again: the phase stays `loading` until a pull, bootstrap or scope read succeeds, and that success clears the marker. Another 403 ends the engine the same way as before.
+- Every sync request names the replica's user, so a cookie that changed accounts since the replica opened gets 401 `account changed`. The engine treats it like any 401, so a still-running engine of the previous user neither pushes its edits as the new user nor receives the new user's data. The new user's sign-in then deletes the previous user's replicas.
 - Logout deletes every replica on the browser before calling the server. If any replica holds an outbox, unconfirmed mutations or kept rejections, the existing confirm dialog asks first, because they will be lost.
 - Automatic cleanup never deletes a replica it can't read, for instance one a newer version of the app wrote. It logs the failure to the console and leaves the replica. Only another user's sign-in or an explicit logout deletes it. A delete that fails is logged too.
-- Before replicas were named by user, a name carried the session id and the meta had no user. A sign-in deletes such a replica when it holds nothing. If it holds edits and belongs to the current session, the engine keeps opening it under that name until its outbox drains. The user-named replica takes over after that, and the next sign-in deletes the empty one. If it belongs to an older session, its owner can't be known, so it stays on disk unopened until logout or a sign-in deletes it once empty. Logout asks first, and the sign-in logs a warning.
+- Before replicas were named by user, a name carried the session id and the meta had no user. The engine never opens such a replica. A sign-in deletes one that is readable and holds no outbox, unconfirmed mutations or kept rejections. One that holds any of them stays on disk untouched, its edits unsent, and the sign-in logs a warning. Logout (which asks first, counting it) and the sign-in of a different user than the browser's last one delete it. The browser remembers that last user across an expired session, until logout. An unreadable replica of unknown ownership goes only with a different user's sign-in.
 - Invitation tokens and integration secrets never reach IndexedDB.
 
 ### Tabs

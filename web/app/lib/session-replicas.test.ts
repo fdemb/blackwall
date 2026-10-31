@@ -1,6 +1,6 @@
 import "fake-indexeddb/auto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
-import { OutdatedError, SCHEMA, type SyncEngine } from "../sync/engine";
+import { OutdatedError, SCHEMA } from "../sync/engine";
 import { IndexedDBReplicaStorage, IDB_VERSION } from "../sync/persistence/idb";
 import { createTabHub } from "../sync/testing/tabs";
 import { createFakeServer } from "../sync/testing/fake-server";
@@ -126,7 +126,13 @@ async function replicaClientId(userId: string, workspaceId: string) {
 beforeEach(() => {
   assign.mockClear();
   vi.stubGlobal("navigator", { onLine: true });
-  vi.stubGlobal("window", Object.assign(new EventTarget(), { location: { assign } }));
+  const local = new Map<string, string>();
+  const localStorage = {
+    getItem: (key: string) => local.get(key) ?? null,
+    setItem: (key: string, value: string) => void local.set(key, value),
+    removeItem: (key: string) => void local.delete(key),
+  };
+  vi.stubGlobal("window", Object.assign(new EventTarget(), { location: { assign }, localStorage }));
   vi.stubGlobal("document", Object.assign(new EventTarget(), { visibilityState: "visible" }));
   vi.stubGlobal("sessionStorage", {
     clear: vi.fn(),
@@ -166,13 +172,18 @@ describe("user replica lifetime", () => {
     expect(await replicaStorage().list()).toEqual([]);
     expect(pushed(fetch)).toBe(false);
   });
-  it("another user's unreadable replica goes too, and the user's own stays", async () => {
-    const { profile } = await fixture();
+  it("an unreadable replica of unknown ownership goes only when another user signs in", async () => {
+    const { profile, server, signIn } = await fixture();
     await seedUnreadable(id(777), id(91));
     await seedUnreadable(profile.id, id(92));
     vi.spyOn(console, "error").mockImplementation(() => {});
     await currentProfile();
-    expect(await replicaStorage().list()).toEqual([{ userId: profile.id, workspaceId: id(92) }]);
+    expect((await replicaStorage().list()).map((replica) => replica.workspaceId).sort()).toEqual(
+      [id(91), id(92)].sort(),
+    );
+    signIn(server.addUser().id);
+    await currentProfile();
+    expect(await replicaStorage().list()).toEqual([]);
   });
   it("never deletes the user's unreadable replica on sign-in, in the logout check or when the session expires", async () => {
     const { profile, server, token, workspace } = await fixture();
@@ -371,49 +382,49 @@ describe("replicas from before they were named by user", () => {
     replica.close();
     await makeLegacy({ userId: sessionName, workspaceId });
   }
-  async function drained(engine: SyncEngine, userId: string, workspaceId: string) {
-    await until(() => engine.status.get().pending === 0);
-    for (let step = 0; step < 300; step += 1) {
-      const replica = await replicaStorage().open({ userId, workspaceId, schema: SCHEMA });
-      const { outbox, unconfirmed, rejected } = await replica.load();
+  async function outbox(userId: string, workspaceId: string) {
+    const replica = await replicaStorage().open({ userId, workspaceId, schema: SCHEMA });
+    try {
+      return (await replica.load()).outbox;
+    } finally {
       replica.close();
-      if (outbox.length + unconfirmed.length + rejected.length === 0) return;
-      await new Promise<void>((resolve) => setImmediate(resolve));
     }
-    throw new Error("the replica never emptied its outbox");
   }
 
-  it("keeps opening this session's replica under its old name until its edits are sent, then moves to the user's", async () => {
+  it("deletes an old replica with nothing in it and leaves one that holds edits alone, unopened", async () => {
     const { server, workspace, profile } = await fixture();
+    await seed(id(80), id(81));
+    await makeLegacy({ userId: id(80), workspaceId: id(81) });
     await legacyWithEdit(profile.session_id, workspace.id);
+    const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
     await currentProfile();
-    const engine = await openWorkspaceEngine(workspace.id);
-    await drained(engine, profile.session_id, workspace.id);
-    await until(() => server.record("issues", id(2))?.title === "Typed before the upgrade");
     expect(await replicaStorage().list()).toEqual([
       { userId: profile.session_id, workspaceId: workspace.id },
     ]);
-    await closeAllWorkspaceEngines();
-    const next = await openWorkspaceEngine(workspace.id);
-    expect(next.store.get("issues", id(2))?.title).toBe("Typed before the upgrade");
+    expect(warned).toHaveBeenCalled();
+
+    const engine = await openWorkspaceEngine(workspace.id);
+    await engine.pull();
+    expect(server.record("issues", id(2))?.title).toBe("On disk");
+    expect(await outbox(profile.session_id, workspace.id)).toHaveLength(1);
     expect((await replicaStorage().list()).map((replica) => replica.userId).sort()).toEqual(
       [profile.id, profile.session_id].sort(),
     );
-    await acceptSession({ ...profile, session_id: id(99) });
-    expect(await replicaStorage().list()).toEqual([
-      { userId: profile.id, workspaceId: workspace.id },
-    ]);
-  });
-  it("deletes an old session's replica with nothing in it and keeps one that still holds edits", async () => {
-    await fixture();
-    await seed(id(80), id(81));
-    await makeLegacy({ userId: id(80), workspaceId: id(81) });
-    await legacyWithEdit(id(82), id(83));
-    const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
-    await currentProfile();
-    expect(await replicaStorage().list()).toEqual([{ userId: id(82), workspaceId: id(83) }]);
-    expect(warned).toHaveBeenCalled();
     expect(await sessionHasPending()).toBe(true);
+  });
+  it("another user's sign-in deletes a legacy replica that holds edits", async () => {
+    const { server, signIn } = await fixture();
+    await legacyWithEdit(id(82), id(83));
+    signIn(server.addUser().id);
+    await currentProfile();
+    expect(await replicaStorage().list()).toEqual([]);
+  });
+  it("logout asks first and then deletes a legacy replica that holds edits", async () => {
+    await fixture();
+    await legacyWithEdit(id(82), id(83));
+    expect(await sessionHasPending()).toBe(true);
+    await clearSession();
+    expect(await replicaStorage().list()).toEqual([]);
   });
 });
 

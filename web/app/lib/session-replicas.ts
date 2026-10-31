@@ -15,6 +15,9 @@ interface WorkspaceEngine {
 // The last session and workspace list the server confirmed, so a reload can open replicas offline.
 const SESSION_KEY = "bw-session:v1";
 const WORKSPACES_KEY = "bw-workspaces:v2";
+// The user who last signed in here. It outlives an expired session, so the next sign-in can tell
+// a returning user from another one when a replica names no user. Only logout clears it.
+const LAST_USER_KEY = "bw-last-user:v1";
 
 let storage: IndexedDBReplicaStorage | undefined;
 let session: SessionProfile | null = null;
@@ -125,6 +128,7 @@ export async function expireSession() {
 export async function clearSession() {
   await closeAllWorkspaceEngines();
   await deleteReplicas(await replicaStorage().list());
+  safeRemove("local", LAST_USER_KEY);
   forgetSession();
 }
 function forgetSession() {
@@ -170,32 +174,22 @@ async function deleteReplicas(identities: readonly ReplicaIdentity[]) {
 
 /**
  * Signing in as someone else deletes the replicas the previous user left, whatever they hold:
- * privacy wins over keeping their edits. A replica from before replicas were named by user can't
- * be attributed, since its name holds a session id, so one that still holds edits stays on disk
- * unopened, unless it belongs to this session, which opens it until its outbox drains.
+ * privacy wins over keeping their edits. A replica from before replicas were named by user has no
+ * user to compare, since its name holds a session id. It is deleted when it is empty or when the
+ * browser's last user is someone else. One that holds edits otherwise stays on disk, never opened
+ * again, until a logout or another user's sign-in deletes it. An unreadable replica is deleted only
+ * when the last user is someone else, because nothing says whose it is.
  */
 async function deleteOtherUsersReplicas(profile: SessionProfile) {
+  const previous = safeGet("local", LAST_USER_KEY);
+  const changed = previous !== null && previous !== profile.id;
   const doomed: ReplicaIdentity[] = [];
   for (const identity of await replicaStorage().list()) {
-    if (identity.userId === profile.id || identity.userId === profile.session_id) continue;
+    if (identity.userId === profile.id) continue;
     const found = await inspect(identity);
-    if (found?.legacy && found.work)
-      console.warn(`Replica ${identity.workspaceId} has edits of unknown ownership, kept`);
-    else doomed.push(identity);
+    if (found === null ? changed : !found.legacy || changed || !found.work) doomed.push(identity);
+    else console.warn(`Replica ${identity.workspaceId} has edits of unknown ownership, kept`);
   }
   await deleteReplicas(doomed);
-}
-
-/**
- * The name a workspace's replica carries for this session: the user's id, or this session's id
- * while a replica from before replicas were named by user still holds edits, so they keep their
- * client id and mutation ids. Once it drains the user-named replica takes over, and the old one
- * goes at the next sign-in.
- */
-export async function replicaOwner(profile: SessionProfile, workspaceId: string): Promise<string> {
-  const legacy = { userId: profile.session_id, workspaceId };
-  const named = (await replicaStorage().list()).some(
-    (identity) => identity.userId === legacy.userId && identity.workspaceId === workspaceId,
-  );
-  return named && (await inspect(legacy))?.work ? legacy.userId : profile.id;
+  safeSet("local", LAST_USER_KEY, profile.id);
 }

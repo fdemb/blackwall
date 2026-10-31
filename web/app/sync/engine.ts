@@ -160,7 +160,6 @@ export class SyncEngine {
   private readonly channel: TabChannel | null;
   private readonly tabId: string;
   private readonly lockName: string;
-  private readonly owner: string;
   private role: EngineRole;
   private lockPending = false;
   private lockHeld = false;
@@ -222,6 +221,8 @@ export class SyncEngine {
   private clientId = "";
   private cursor: string | null = null;
   private acknowledged = 0;
+  /** The replica's marker: access was denied and no read has succeeded since. */
+  private accessUnverified = false;
   private pullAgain = false;
   private pulling: Promise<void> | null = null;
   private pushing: Promise<void> | null = null;
@@ -231,9 +232,8 @@ export class SyncEngine {
 
   constructor(private readonly deps: EngineDependencies) {
     this.store = new SyncStore(createReplay(deps.actor));
-    this.owner = deps.replicaOwner ?? deps.actor;
-    this.delay = backoff(`${this.owner}:${deps.workspaceId}`, deps.clock);
-    this.lockName = `blackwall-sync:${this.owner}:${deps.workspaceId}`;
+    this.delay = backoff(`${deps.actor}:${deps.workspaceId}`, deps.clock);
+    this.lockName = `blackwall-sync:${deps.actor}:${deps.workspaceId}`;
     this.role = deps.locks ? "follower" : "leader";
     this.tabId = deps.channel ? deps.randomId() : "";
     this.channel = deps.channel?.(this.lockName) ?? null;
@@ -291,7 +291,7 @@ export class SyncEngine {
       return Promise.reject(this.outdated ?? new Error("Engine is closed"));
     this.opening ??= this.commits.run(async () => {
       const replica = await this.deps.storage.open({
-        userId: this.owner,
+        userId: this.deps.actor,
         workspaceId: this.deps.workspaceId,
         schema: this.deps.schema,
         onClose: (reason, newVersion) => this.replicaClosed(reason, newVersion),
@@ -303,7 +303,7 @@ export class SyncEngine {
         loaded = await replica.load();
       }
       this.applyLoaded(loaded);
-      this.update({ phase: this.cursor === null ? "bootstrapping" : "ready" });
+      this.update({ phase: this.openPhase() });
       if (!this.closed && !this.terminal) {
         this.unsubscribeSignals = this.deps.signals.subscribe((signal) => {
           if (signal === "offline") {
@@ -328,11 +328,18 @@ export class SyncEngine {
     return this.opening;
   }
 
+  /** A replica whose access was denied shows nothing as ready until a read succeeds. */
+  private openPhase(): EngineStatus["phase"] {
+    if (this.accessUnverified) return "loading";
+    return this.cursor === null ? "bootstrapping" : "ready";
+  }
+
   /** Replaces the in-memory replica with what the database holds. */
   private applyLoaded(loaded: LoadedReplica): void {
     this.clientId = loaded.meta.clientId;
     this.cursor = loaded.meta.cursor;
     this.acknowledged = loaded.meta.lastMutationId;
+    this.accessUnverified = loaded.meta.accessLost === true;
     for (const mutation of loaded.unconfirmed) this.unconfirmed.set(mutation.id, mutation);
     this.loadedScopes.clear();
     for (const scope of loaded.scopes) this.loadedScopes.set(scopeKey(scope), scope);
@@ -904,6 +911,7 @@ export class SyncEngine {
 
   /** The leader persisted this page or scope before sending it, so the follower never runs ahead. */
   private receivePulled(message: Extract<TabBody, { type: "pulled" }>): void {
+    this.accessUnverified = false;
     if (message.scope) {
       this.loadedScopes.set(scopeKey(message.scope), message.scope);
       this.scopeFailures.delete(scopeKey(message.scope));
@@ -920,7 +928,7 @@ export class SyncEngine {
       this.store.applyBase(accepted);
       if (message.acknowledgedUpTo !== null) this.acknowledge(message.acknowledgedUpTo);
     });
-    this.update({ phase: this.cursor === null ? "bootstrapping" : "ready" });
+    this.update({ phase: this.openPhase() });
     if (message.scope) this.notifyScopes();
   }
 
@@ -988,6 +996,7 @@ export class SyncEngine {
         this.applyLoaded(await this.requireReplica().load());
       })
       .then(() => {
+        this.update({ phase: this.openPhase() });
         this.notifyScopes();
         for (const { scope } of this.heldScopes.values()) this.requestScope(scope);
       })
@@ -1295,6 +1304,7 @@ export class SyncEngine {
       })(),
       controller.signal,
     );
+    this.checkAcknowledged(response.header.last_mutation_id);
     await this.commits.run(async () => {
       this.check(controller);
       await this.requireReplica().writeBootstrap({
@@ -1304,6 +1314,7 @@ export class SyncEngine {
         records: response.records,
         entities: BOOTSTRAP_ENTITIES,
       });
+      await this.verified();
       this.cursor = response.header.cursor;
       this.loadedScopes.clear();
       this.store.batch(() => {
@@ -1385,6 +1396,7 @@ export class SyncEngine {
       this.deps.transport.pull(this.deps.workspaceId, this.clientId, cursor, { signal }),
     );
     this.check(controller);
+    this.checkAcknowledged(response.last_mutation_id);
     const changes = response.changes.map((change) => {
       const record =
         change.record === null ? null : this.prepareRecord(change.entity, change.record);
@@ -1400,6 +1412,7 @@ export class SyncEngine {
         cursor: response.cursor,
         acknowledgedUpTo: response.last_mutation_id,
       });
+      await this.verified();
       const accepted = changes.filter((change) =>
         acceptsChange(
           change.entity,
@@ -1421,6 +1434,27 @@ export class SyncEngine {
       });
     });
     return response;
+  }
+
+  /**
+   * The server never forgets a client's high-water mark now, so an answer below what this replica
+   * already holds means a database restore or a bug. Pushing again would run mutations a second
+   * time, so pushing stops until unblock(), and the state is loud instead of silently kept.
+   */
+  private checkAcknowledged(id: number | null): void {
+    if (id === null || id >= this.acknowledged) return;
+    this.blocked.add("push");
+    throw new ProtocolError(
+      `The server acknowledged mutation ${id}, but this replica already holds ${this.acknowledged}`,
+      200,
+    );
+  }
+
+  /** A read succeeded, so the access that was denied is back. */
+  private async verified(): Promise<void> {
+    if (!this.accessUnverified) return;
+    await this.requireReplica().setAccessLost(false);
+    this.accessUnverified = false;
   }
 
   private acknowledge(id: number): void {
@@ -1507,6 +1541,7 @@ export class SyncEngine {
     await this.commits.run(async () => {
       this.check(controller);
       await this.requireReplica().writeScope({ scope, records });
+      await this.verified();
       const changes = this.scopeChanges(scope, records);
       this.loadedScopes.set(scopeKey(scope), scope);
       this.scopeFailures.delete(scopeKey(scope));
@@ -1574,6 +1609,7 @@ export class SyncEngine {
 
   private async push(controller: AbortController): Promise<void> {
     while (this.active(controller)) {
+      if (this.blocked.has("push")) return;
       this.batch ??= await this.nextBatch(controller);
       const batch = this.batch;
       if (!batch) return;
@@ -1690,8 +1726,10 @@ export class SyncEngine {
 
   /**
    * A 413 means the request never reached a command, so a single mutation the server refuses by
-   * size can never be sent. A read first, because an earlier push of it may have succeeded with
-   * its response lost: then the server holds its outcome, and only the confirmation is too large.
+   * size can never be sent. Reads first, to a final page or a finished bootstrap, because an
+   * earlier push of it may have succeeded with its response lost: then the server holds its
+   * outcome, and only the confirmation is too large. An acknowledgement is only final on the last
+   * page, so a probe that returned `more` or `reset` decides nothing.
    */
   private async setAsideTooLarge(
     mutation: Mutation | undefined,
@@ -1699,10 +1737,7 @@ export class SyncEngine {
   ): Promise<"again" | "stop"> {
     this.batch = null;
     if (mutation === undefined) return "again";
-    const read = await this.retry("pull", controller, () =>
-      this.reads.run(() => this.readPull(controller)),
-    );
-    if (read.reset || read.more) void this.pull();
+    for (let more = true; more;) more = await this.pullPages(controller);
     const { id } = mutation;
     if (id <= this.acknowledged) {
       this.settle(id, "unknown", false);
@@ -1872,6 +1907,10 @@ export class SyncEngine {
       // The replica stays on disk with its outbox. The same user's next sign-in, or access
       // returning, continues from it, and the server's answers decide what happens to each edit.
       await this.commits.run(async () => {
+        if (failure instanceof AccessError)
+          // The cached base may predate the removal, so the next open verifies before it shows it.
+          // A replica deleted from outside has nothing left to mark.
+          await this.replica?.setAccessLost(true).catch(() => undefined);
         this.replica?.close();
         this.replica = null;
         this.clearView();

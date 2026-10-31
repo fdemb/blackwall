@@ -367,6 +367,56 @@ describe("sync transport requests", () => {
     expect(new Headers(fetch.mock.calls[1][1]?.headers).get("X-Request")).toBe("second");
   });
 
+  it("names the replica's user on every sync request but not on /me", async () => {
+    const f = fixture();
+    f.createIssue();
+    const fetch = vi.fn(f.server.fetch);
+    const transport = createTransport({
+      fetch,
+      headers: () => ({ authorization: `Bearer ${f.token}`, "X-CSRF-Token": "csrf" }),
+      userId: f.owner.id,
+    });
+    const ws = f.workspace.id;
+    await transport.push(ws, CLIENT, [label(1)]);
+    await transport.pull(ws, CLIENT, null);
+    await collect((await transport.bootstrap(ws, CLIENT)).records);
+    await transport.scope(ws, CLIENT, { entity: "comments", issueId: ISSUE });
+    const stop = new AbortController();
+    await transport.events(ws, CLIENT, { signal: stop.signal });
+    stop.abort();
+    await transport.me();
+    const users = fetch.mock.calls.map(([url]) => [
+      String(url).split("?")[0].split("/").at(-1),
+      new URL(String(url), "http://fake.test").searchParams.get("user_id"),
+    ]);
+    expect(users).toEqual([
+      ["push", f.owner.id],
+      ["pull", f.owner.id],
+      ["bootstrap", f.owner.id],
+      ["scope", f.owner.id],
+      ["events", f.owner.id],
+      ["me", null],
+    ]);
+  });
+
+  it("reads a session of another account as an ended session", async () => {
+    const f = fixture();
+    const transport = createTransport({
+      fetch: f.fetch,
+      headers: () => ({ authorization: `Bearer ${f.token}`, "X-CSRF-Token": "csrf" }),
+      userId: id(999),
+    });
+    await expect(transport.pull(f.workspace.id, CLIENT, null)).rejects.toMatchObject({
+      name: "UnauthorizedError",
+      message: "account changed",
+      status: 401,
+    });
+    await expect(transport.push(f.workspace.id, CLIENT, [label(1)])).rejects.toBeInstanceOf(
+      UnauthorizedError,
+    );
+    expect(f.server.clientState(CLIENT).last_mutation_id).toBe(0);
+  });
+
   it("refreshes the REST client's CSRF token from response headers", async () => {
     const fetch = vi.fn<typeof globalThis.fetch>(async () =>
       Response.json({}, { headers: { "X-CSRF-Token": "rotated" } }),

@@ -86,6 +86,7 @@ function fixture(
   const transport = createTransport({
     fetch,
     headers: () => ({ cookie: `blackwall_session=${token}` }),
+    userId: owner.id,
   });
   const signals = new Signals();
   let sequence = 100;
@@ -1991,8 +1992,11 @@ async function elapse(f: Fixture, done: () => boolean, step = 1000, limit = 600)
 }
 
 let signIns = 0;
-/** Another sign-in of `userId`: a new session over the same storage, transport and server. */
-function signIn(f: Fixture, userId: string): SyncEngine {
+/**
+ * Another sign-in of `userId`: a new session over the same storage, transport and server. The
+ * replica is `replicaUser`'s, which differs when the browser's cookie changed accounts under it.
+ */
+function signIn(f: Fixture, userId: string, replicaUser = userId): SyncEngine {
   const token = f.server.login(userId);
   setCsrf(f.server.csrfToken(token));
   const engine = createEngine({
@@ -2000,8 +2004,9 @@ function signIn(f: Fixture, userId: string): SyncEngine {
     transport: createTransport({
       fetch: f.fetch,
       headers: () => ({ cookie: `blackwall_session=${token}` }),
+      userId: replicaUser,
     }),
-    actor: userId,
+    actor: replicaUser,
     workspaceId: f.workspace.id,
     schema: SCHEMA,
     clock: { now: f.server.now, schedule: f.server.schedule },
@@ -2252,5 +2257,166 @@ describe("pending edits are never frozen or lost", () => {
     await f.engine.start();
     expect(await receipt.settled).toBe("unknown");
     expect(f.engine.status.get().rejected).toEqual([]);
+  });
+
+  it("stops without pushing when the cookie belongs to another user than the replica", async () => {
+    const f = fixture();
+    await f.ready();
+    const { clientId } = (await f.disk()).meta;
+    f.engine.stop();
+    await f.engine.mutate("create_label", { name: "Typed as the first user", color: "#00ff00" });
+    await f.engine.close();
+
+    const stale = signIn(f, f.peer.id, f.owner.id);
+    const events: EngineEvent[] = [];
+    stale.subscribe((event) => events.push(event));
+    await stale.start();
+    await until(() => events.some((event) => event.type === "unauthorized"));
+    expect(stale.status.get().lastError).toMatchObject({ message: "account changed", status: 401 });
+    const requests = f.fetch.mock.calls.length;
+    await f.advance(120_000);
+    expect(f.fetch.mock.calls.length).toBe(requests);
+
+    expect(f.server.clientState(clientId).last_mutation_id).toBe(0);
+    expect(f.server.records("labels")).toHaveLength(0);
+    expect((await f.disk()).outbox).toMatchObject([{ id: 1, name: "create_label" }]);
+    expect(await f.storage.list()).toEqual([{ userId: f.owner.id, workspaceId: f.workspace.id }]);
+  });
+
+  it.each(["pull", "bootstrap"] as const)(
+    "stops pushing and reports a blocked state when a %s acknowledges fewer mutations than the replica holds",
+    async (route) => {
+      const f = fixture();
+      await f.ready();
+      await f.engine.mutate("create_label", { name: "Acknowledged", color: "#00ff00" });
+      await until(() => f.engine.status.get().pending === 0);
+      expect((await f.disk()).meta.lastMutationId).toBe(1);
+
+      const original = f.server.fetch;
+      f.fetch.mockImplementation(async (...args) => {
+        const response = await original(...args);
+        const url = String(args[0]);
+        if (route === "pull" && url.includes("/pull?")) {
+          const body = await response.json();
+          return Response.json({ ...body, last_mutation_id: body.last_mutation_id && 0 });
+        }
+        if (route === "bootstrap" && url.includes("/bootstrap?")) {
+          const [header, ...rest] = (await response.text()).split("\n");
+          const forgotten = JSON.stringify({ ...JSON.parse(header), last_mutation_id: 0 });
+          return new Response([forgotten, ...rest].join("\n"), { headers: response.headers });
+        }
+        return response;
+      });
+      if (route === "bootstrap") f.server.inject({ kind: "reset_pull" });
+      f.server.run(f.owner, { type: "create_label", name: "Elsewhere", color: "#0000ff" });
+      const pushes = f.pushes().length;
+      await f.engine.pull();
+      await until(() => f.engine.status.get().blocked);
+      expect(f.engine.status.get().lastError).toBeInstanceOf(ProtocolError);
+      expect(f.engine.status.get().lastError?.message).toContain("already holds 1");
+
+      await f.engine.mutate("create_label", { name: "Must wait", color: "#ff0000" });
+      await f.advance(120_000);
+      expect(f.pushes()).toHaveLength(pushes);
+      expect(f.engine.status.get().pending).toBe(1);
+      expect((await f.disk()).meta.lastMutationId).toBe(1);
+    },
+  );
+
+  describe("a single too-large mutation waits for a final acknowledgement", () => {
+    async function oversized(options: { processed: boolean; reset: boolean }) {
+      const f = fixture(new MemoryReplicaStorage(), { maxPushBytes: 1500, pageSize: 1 });
+      await f.ready();
+      f.engine.stop();
+      const receipt = await f.engine.mutate("update_issue", {
+        id: ISSUE,
+        patch: { description: "x".repeat(4000) },
+      });
+      const { meta, outbox } = await f.disk();
+      if (options.processed) {
+        const small = { id: 1, name: "update_issue", args: { id: ISSUE, patch: { title: "A" } } };
+        await f.transport.push(f.workspace.id, meta.clientId, [{ ...small, at: outbox[0].at }]);
+      }
+      for (const [index, name] of ["One", "Two", "Three"].entries())
+        f.server.run(f.owner, {
+          type: "create_label",
+          id: id(700 + index),
+          name,
+          color: "#0000ff",
+        });
+      if (options.reset) {
+        const original = f.server.fetch;
+        let refused = false;
+        f.fetch.mockImplementation(async (...args) => {
+          const url = String(args[0]);
+          if (refused && url.includes("/pull?")) {
+            refused = false;
+            f.server.inject({ kind: "reset_pull" });
+          }
+          const response = await original(...args);
+          if (url.includes("/push?") && response.status === 413) refused = true;
+          return response;
+        });
+      }
+      await f.engine.start();
+      return { f, receipt };
+    }
+
+    it.each([false, true])(
+      "settles unknown when the server processed it, reset %s",
+      async (reset) => {
+        const { f, receipt } = await oversized({ processed: true, reset });
+        expect(await receipt.settled).toBe("unknown");
+        expect(f.engine.status.get()).toMatchObject({
+          rejected: [],
+          unresolved: [],
+          blocked: false,
+        });
+        await until(() => f.engine.status.get().pending === 0);
+        expect((await f.disk()).rejected).toEqual([]);
+      },
+    );
+
+    it.each([false, true])(
+      "sets it aside as a 413 when it was not processed, reset %s",
+      async (reset) => {
+        const { f, receipt } = await oversized({ processed: false, reset });
+        expect(await receipt.settled).toMatchObject({ id: 1, status: 413 });
+        expect(f.engine.status.get().unresolved).toMatchObject([{ id: 1 }]);
+        expect((await f.disk()).outbox).toEqual([]);
+        expect(f.authoritativeIssue(ISSUE).description).toBe("");
+      },
+    );
+  });
+
+  it("does not show a cached workspace as ready after access was lost until a read succeeds", async () => {
+    const f = fixture();
+    await f.ready();
+    const lost: EngineEvent[] = [];
+    f.engine.subscribe((event) => lost.push(event));
+    f.server.removeMember(f.workspace.id, f.owner.id);
+    await f.engine.pull();
+    await until(() => lost.some((event) => event.type === "accessLost"));
+    expect((await f.disk()).meta.accessLost).toBe(true);
+
+    const denied = f.build();
+    const phases: string[] = [];
+    denied.status.subscribe(() => phases.push(denied.status.get().phase));
+    const events: EngineEvent[] = [];
+    denied.subscribe((event) => events.push(event));
+    await denied.open();
+    expect(denied.status.get().phase).toBe("loading");
+    await denied.start();
+    await until(() => events.some((event) => event.type === "accessLost"));
+    expect(phases).not.toContain("ready");
+    expect((await f.disk()).meta.accessLost).toBe(true);
+
+    f.server.addMember(f.workspace.id, f.owner, "owner");
+    const returned = f.build();
+    await returned.open();
+    expect(returned.status.get().phase).toBe("loading");
+    await returned.start();
+    await until(() => returned.status.get().phase === "ready");
+    expect((await f.disk()).meta.accessLost).toBe(false);
   });
 });

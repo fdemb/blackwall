@@ -355,6 +355,15 @@ class IndexedDBReplica implements Replica {
     });
   }
 
+  setAccessLost(lost: boolean): Promise<void> {
+    return this.transaction(["meta"], "readwrite", (tx, done, guard) => {
+      read<ReplicaMeta>(tx.objectStore("meta").get(META_KEY), guard, (meta) => {
+        tx.objectStore("meta").put({ ...meta, accessLost: lost }, META_KEY);
+        done(undefined);
+      });
+    });
+  }
+
   resolveRejection(id: number): Promise<void> {
     return this.transaction(["rejected"], "readwrite", (tx, done) => {
       tx.objectStore("rejected").delete(id);

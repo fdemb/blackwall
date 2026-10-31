@@ -11,6 +11,11 @@ export interface TransportOptions {
   baseUrl?: string;
   headers?: () => HeadersInit;
   signal?: AbortSignal;
+  /**
+   * The user the replica belongs to. Every sync request names it, and the server answers 401
+   * "account changed" when the session belongs to someone else. A browser must set it.
+   */
+  userId?: string;
 }
 
 export interface StreamOptions {
@@ -113,7 +118,9 @@ export function createTransport(options: TransportOptions) {
       : (signal ?? options.signal);
   }
   function path(ws: string, route: string, clientId: string, query: Record<string, string> = {}) {
-    return `/internal-api/workspaces/${encodeURIComponent(ws)}/sync/${route}?${new URLSearchParams({ client_id: clientId, ...query })}`;
+    const params = new URLSearchParams({ client_id: clientId, ...query });
+    if (options.userId !== undefined) params.set("user_id", options.userId);
+    return `/internal-api/workspaces/${encodeURIComponent(ws)}/sync/${route}?${params}`;
   }
   async function request(path: string, init: RequestInit = {}): Promise<Response> {
     const headers = new Headers(options.headers?.());
