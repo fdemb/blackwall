@@ -204,4 +204,40 @@ describe("issue intent", () => {
     await settle();
     expect(scopeRequests).toHaveLength(2);
   });
+
+  it("loads an issue's scopes once when focus rests on its row", async () => {
+    const { engine, scopeRequests } = fixture();
+    await engine.start();
+    await until(() => engine.status.get().phase === "ready");
+    let intent: Intent | undefined;
+    renderToStaticMarkup(
+      <EngineProvider engine={engine}>
+        <IntentProbe onRender={(value) => (intent = value)} />
+      </EngineProvider>,
+    );
+    const row = new EventTarget();
+    intent!.ref(row);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      row.dispatchEvent(new Event("focus"));
+      row.dispatchEvent(new Event("blur"));
+      vi.advanceTimersByTime(1000);
+      await settle();
+      expect(scopeRequests).toEqual([]);
+
+      row.dispatchEvent(new Event("focus"));
+      vi.advanceTimersByTime(100);
+    } finally {
+      vi.useRealTimers();
+    }
+    await until(
+      () => engine.scopeStatus(COMMENTS) === "loaded" && engine.scopeStatus(ACTIVITY) === "loaded",
+    );
+    expect(scopeRequests).toHaveLength(2);
+
+    row.dispatchEvent(new Event("focus"));
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    await settle();
+    expect(scopeRequests).toHaveLength(2);
+  });
 });

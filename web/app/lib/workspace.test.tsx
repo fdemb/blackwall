@@ -719,23 +719,60 @@ describe("issue timeline", () => {
       </MemoryRouter>,
     );
 
+  const loadingStatus = '<p role="status" class="sr-only">Loading…</p>';
+  const composer = '<div class="mt-6 space-y-2">';
+
   it("shows cached comments on the first render without a loading state", async () => {
     const html = timeline(await fixture({ role: "viewer" }));
     expect(html).toContain("Replica comment");
-    expect(html).not.toContain("aria-busy");
+    expect(html).not.toContain("animate-pulse");
     expect(html).not.toContain('role="status"');
   });
 
-  it("holds the list's space with a skeleton that stays hidden through a short load", async () => {
-    const html = timeline(await fixture({ role: "viewer", scopes: [] }));
-    expect(html).toContain('aria-busy="true" class="animate-in fade-in fill-mode-both delay-300');
-    expect(html).not.toContain('role="status"');
+  it("announces the load and holds one event row behind a delayed skeleton", async () => {
+    const html = timeline(await fixture({ role: "viewer", online: true, scopes: [] }));
+    expect(html).toContain(loadingStatus);
+    expect(html).toContain(
+      '<div aria-hidden="true" class="animate-in fade-in fill-mode-both delay-300 flex min-h-7 items-center gap-3">',
+    );
   });
 
   it("waits for activity before showing loaded comments, so the list never reorders", async () => {
-    const html = timeline(await fixture({ role: "viewer", scopes: ["comments"] }));
+    const html = timeline(await fixture({ role: "viewer", online: true, scopes: ["comments"] }));
     expect(html).not.toContain("Replica comment");
-    expect(html).toContain("aria-busy");
+    expect(html).toContain(loadingStatus);
+  });
+
+  it("shows what it has when the other scope can't load offline", async () => {
+    const html = timeline(await fixture({ role: "viewer", scopes: ["comments"] }));
+    expect(html).toContain("Replica comment");
     expect(html).not.toContain('role="status"');
+  });
+
+  it("shows a comment the user posts while the scopes load", async () => {
+    const engine = await fixture({ online: true, scopes: [] });
+    await engine.mutate("add_comment", {
+      issue_id: "issue",
+      body: "Fresh comment",
+      mentions: [],
+      attachments: [],
+    });
+    const html = timeline(engine);
+    expect(html).toContain("Fresh comment");
+    expect(html).not.toContain('role="status"');
+  });
+
+  it("keeps the composer's margin while loading, empty, and loaded", async () => {
+    const loading = timeline(await fixture({ online: true, scopes: [] }));
+    const empty = timeline(await fixture({ scopes: [] }));
+    const loaded = timeline(await fixture());
+    expect(loading).toContain(loadingStatus);
+    expect(empty).not.toContain('role="status"');
+    expect(empty).not.toContain("<ol");
+    expect(loaded).toContain("Replica comment");
+    for (const html of [loading, empty, loaded]) {
+      expect(html.split(composer)).toHaveLength(2);
+      expect(html).toContain(">Comment</button>");
+    }
   });
 });

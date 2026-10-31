@@ -125,7 +125,16 @@ export function useComments(issueId: string) {
     ["comments"],
     [issueId],
   );
-  return scopeState(useListState(items), scope);
+  // A comment only the outbox holds, such as one the user just posted.
+  const unconfirmed = useView(
+    (store) =>
+      store
+        .byIndex("comments", "issue_id", issueId)
+        .some((comment) => !store.baseGet("comments", comment.id)),
+    ["comments"],
+    [issueId],
+  );
+  return { ...scopeState(useListState(items), scope), unconfirmed };
 }
 
 export function useTimeEntries(issueId?: string) {
@@ -152,7 +161,8 @@ export function useActivity(entityId: string) {
   return scopeState(useListState(items), scope);
 }
 
-// Long enough that sweeping the pointer across a list doesn't queue a scope load per row.
+// Long enough that sweeping the pointer, or arrowing focus, across a list doesn't queue a scope load
+// per row.
 const INTENT_MS = 100;
 
 /** Row props that start loading an issue's comments and activity once the user moves to open it. */
@@ -165,13 +175,25 @@ export function useIssueIntent(issueId: string) {
     engine.useScope({ entity: "comments", issueId })();
     engine.useScope({ entity: "activity", entityId: issueId })();
   };
+  const schedule = () => {
+    clearTimeout(timer.current);
+    timer.current = setTimeout(load, INTENT_MS);
+  };
+  const cancel = () => clearTimeout(timer.current);
   return {
-    onHoverStart: () => {
-      clearTimeout(timer.current);
-      timer.current = setTimeout(load, INTENT_MS);
-    },
-    onHoverEnd: () => clearTimeout(timer.current),
+    onHoverStart: schedule,
+    onHoverEnd: cancel,
     onPressStart: load,
+    // Grid rows take no focus handlers, so keyboard focus is read off the row element.
+    ref: (row: EventTarget | null) => {
+      if (!row) return;
+      row.addEventListener("focus", schedule);
+      row.addEventListener("blur", cancel);
+      return () => {
+        row.removeEventListener("focus", schedule);
+        row.removeEventListener("blur", cancel);
+      };
+    },
   };
 }
 

@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { FileTrigger } from "react-aria-components";
 import { Link } from "react-router";
 import {
@@ -55,6 +55,8 @@ const EVENTS: Partial<Record<string, { label: Key; icon: LucideIcon }>> = {
   update_time: { label: "timeline.update_time", icon: Clock },
 };
 const PAGE = 30;
+// How long the list waits for a scope that hasn't landed before it shows what it has.
+const GATE_MS = 1500;
 
 type TimelineItem =
   | { kind: "comment"; at: string; comment: Comment }
@@ -79,24 +81,41 @@ export function Timeline({ issue }: { issue: Issue }) {
       .map((a): TimelineItem => ({ kind: "event", at: a.at, event: a })),
   ].sort((a, b) => +new Date(a.at) - +new Date(b.at));
   const hidden = Math.max(0, items.length - limit);
-  const loading = comments.loading || activity.loading;
+  const { offline } = useWorkspace();
   // Comments and events interleave by time, so the list waits for both instead of reordering when
-  // the second lands. Once shown it stays, even while a bootstrap reloads the scopes. Until then a
-  // skeleton holds its space and stays invisible through a short load.
-  const [ready, setReady] = useState(!loading);
-  if (!loading && !ready) setReady(true);
+  // the second lands. It stops waiting for a scope that can't land soon, and for a comment the user
+  // just posted. Once shown it stays, even while a bootstrap reloads the scopes. Until then a
+  // skeleton the size of the creation event holds its space and stays invisible through a short load.
+  const [waited, setWaited] = useState(false);
+  const show =
+    !(comments.loading || activity.loading) ||
+    Boolean(comments.error || activity.error) ||
+    offline ||
+    waited ||
+    comments.unconfirmed;
+  const [ready, setReady] = useState(show);
+  if (show && !ready) setReady(true);
+  useEffect(() => {
+    if (ready) return;
+    const timer = setTimeout(() => setWaited(true), GATE_MS);
+    return () => clearTimeout(timer);
+  }, [ready]);
   const listed = ready && items.length > 0;
   return (
     <Section title={t("activity.title")}>
       {!ready && (
-        <div aria-busy="true" className="animate-in fade-in fill-mode-both delay-300 space-y-3">
-          {[0, 1].map((i) => (
-            <div key={i} className="flex items-center gap-3">
-              <span className="size-7 shrink-0 animate-pulse rounded-full bg-muted" />
-              <span className="h-12 flex-1 animate-pulse rounded-lg bg-muted" />
-            </div>
-          ))}
-        </div>
+        <>
+          <p role="status" className="sr-only">{t("action.loading")}</p>
+          <div
+            aria-hidden="true"
+            className="animate-in fade-in fill-mode-both delay-300 flex min-h-7 items-center gap-3"
+          >
+            <span className="grid size-7 shrink-0 place-items-center">
+              <span className="size-5 animate-pulse rounded-full bg-muted" />
+            </span>
+            <span className="h-4 w-48 animate-pulse rounded bg-muted" />
+          </div>
+        </>
       )}
       {listed && (
         // The line sits behind the list. Event dots ride on it and comment cards cover it.
@@ -129,7 +148,7 @@ export function Timeline({ issue }: { issue: Issue }) {
       )}
       {comments.error && <QueryStatus query={comments} />}
       {activity.error && <QueryStatus query={activity} />}
-      <Composer issue={issue} hasItems={!ready || items.length > 0} />
+      <Composer issue={issue} />
     </Section>
   );
 }
@@ -376,7 +395,7 @@ function CommentItem({ comment: c }: { comment: Comment }) {
   );
 }
 
-function Composer({ issue, hasItems }: { issue: Issue; hasItems: boolean }) {
+function Composer({ issue }: { issue: Issue }) {
   const { t } = useI18n();
   const { run, upload, canWrite, offline } = useWorkspace();
   const toast = useToast();
@@ -437,7 +456,7 @@ function Composer({ issue, hasItems }: { issue: Issue; hasItems: boolean }) {
     });
 
   return (
-    <div ref={box} className={cn("space-y-2", hasItems && "mt-6")}>
+    <div ref={box} className="mt-6 space-y-2">
       <MarkdownEditor
         label={t("comment.new")}
         value={body}
