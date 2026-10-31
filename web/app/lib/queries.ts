@@ -1,3 +1,4 @@
+import { useEffect, useRef } from "react";
 import { useEngine, useScope, useSyncStatus, useView } from "../sync/react";
 import { withCounts, type CountedIssue } from "../sync/derived";
 import { teamNumber, type SyncStore } from "../sync/store";
@@ -149,6 +150,29 @@ export function useActivity(entityId: string) {
     [entityId],
   );
   return scopeState(useListState(items), scope);
+}
+
+// Long enough that sweeping the pointer across a list doesn't queue a scope load per row.
+const INTENT_MS = 100;
+
+/** Row props that start loading an issue's comments and activity once the user moves to open it. */
+export function useIssueIntent(issueId: string) {
+  const engine = useEngine();
+  const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  useEffect(() => () => clearTimeout(timer.current), []);
+  const load = () => {
+    clearTimeout(timer.current);
+    engine.useScope({ entity: "comments", issueId })();
+    engine.useScope({ entity: "activity", entityId: issueId })();
+  };
+  return {
+    onHoverStart: () => {
+      clearTimeout(timer.current);
+      timer.current = setTimeout(load, INTENT_MS);
+    },
+    onHoverEnd: () => clearTimeout(timer.current),
+    onPressStart: load,
+  };
 }
 
 export interface IssueDetail extends Omit<PaginationState, "hasMore" | "loadMore"> {
