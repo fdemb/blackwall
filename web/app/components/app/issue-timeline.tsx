@@ -85,6 +85,7 @@ export function Timeline({ issue }: { issue: Issue }) {
   // skeleton holds its space and stays invisible through a short load.
   const [ready, setReady] = useState(!loading);
   if (!loading && !ready) setReady(true);
+  const listed = ready && items.length > 0;
   return (
     <Section title={t("activity.title")}>
       {!ready && (
@@ -97,7 +98,7 @@ export function Timeline({ issue }: { issue: Issue }) {
           ))}
         </div>
       )}
-      {ready && items.length > 0 && (
+      {listed && (
         // The line sits behind the list. Event dots ride on it and comment cards cover it.
         <ol className="relative space-y-2 before:absolute before:inset-y-3 before:left-3.5 before:w-px before:-translate-x-1/2 before:bg-border">
           {hidden > 0 && (
