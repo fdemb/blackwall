@@ -137,7 +137,8 @@ export function openWorkspaceEngine(
     setWorkspaceEngine({ workspaceId, sessionId: profile.session_id, engine });
     engine.subscribe((event) => {
       if (event.type === "unauthorized") {
-        void expireSession().then(() => {
+        void expireSession().then((ended) => {
+          if (!ended) return;
           queryClient.clear();
           window.location.assign("/login");
         });

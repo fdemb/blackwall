@@ -8,6 +8,7 @@ import { auth, setCsrf, type AuthOptions } from "~/lib/api";
 import { sameOriginPathOrHome } from "~/lib/auth-guard";
 import { useI18n } from "~/lib/i18n";
 import { invitationFromNext } from "~/lib/invitation";
+import { signedInAs } from "~/lib/session-replicas";
 import { useDocumentTitle } from "~/lib/title";
 import { formText } from "~/lib/utils";
 import type { Route } from "./+types/register";
@@ -74,6 +75,7 @@ export default function Register({ loaderData }: Route.ComponentProps) {
               return;
             }
             setCsrf(s.csrf_token);
+            await signedInAs(s.profile.id);
             // New accounts start in English. Keep the language the form was shown in.
             if (s.profile.language !== lang) {
               const { id: _id, email: _email, ...profile } = s.profile;

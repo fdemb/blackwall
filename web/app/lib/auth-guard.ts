@@ -21,9 +21,13 @@ export async function currentProfile(): Promise<SessionProfile | null> {
   }
 }
 
-/** The server could not be reached or failed, as opposed to answering about the session. */
+/** The server was unreachable, failed or timed out, as opposed to answering about the session. */
 function unavailable(e: unknown) {
-  return e instanceof TypeError || (e instanceof ApiError && e.status >= 500);
+  return (
+    e instanceof TypeError ||
+    (e instanceof DOMException && e.name === "TimeoutError") ||
+    (e instanceof ApiError && e.status >= 500)
+  );
 }
 
 export function signInFor(url: string): string {

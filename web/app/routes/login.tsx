@@ -4,8 +4,9 @@ import { Link, useNavigate, useSearchParams } from "react-router";
 import { Eye, EyeOff, Loader2 } from "lucide-react";
 import { Button } from "~/components/ui/button";
 import { FieldError, FormError, Input, Label, TextField } from "~/components/ui/field";
-import { ApiError, auth, setCsrf } from "~/lib/api";
+import { ApiError, auth, setCsrf, type SignedIn } from "~/lib/api";
 import { sameOriginPathOrHome } from "~/lib/auth-guard";
+import { signedInAs } from "~/lib/session-replicas";
 import { useI18n } from "~/lib/i18n";
 import { useDocumentTitle } from "~/lib/title";
 import { formText } from "~/lib/utils";
@@ -19,8 +20,9 @@ export default function Login() {
   const [showPassword, setShowPassword] = useState(false);
   const [pendingToken, setPendingToken] = useState<string | null>(null);
   useDocumentTitle(t("auth.login"));
-  const signedIn = async (csrfToken: string) => {
-    setCsrf(csrfToken);
+  const signedIn = async ({ csrf_token, profile }: SignedIn) => {
+    setCsrf(csrf_token);
+    await signedInAs(profile.id);
     await nav(sameOriginPathOrHome(params.get("next")), { replace: true });
   };
   if (pendingToken !== null) {
@@ -53,7 +55,7 @@ export default function Login() {
           try {
             const s = await auth.login(formText(f, "email"), formText(f, "password"));
             if ("pending_token" in s) setPendingToken(s.pending_token);
-            else await signedIn(s.csrf_token);
+            else await signedIn(s);
           } catch (err) {
             setError((err as Error).message);
             setBusy(false);
@@ -124,7 +126,7 @@ function TotpStep({
   onBack,
 }: {
   pendingToken: string;
-  onSignedIn: (csrfToken: string) => Promise<void>;
+  onSignedIn: (signedIn: SignedIn) => Promise<void>;
   onBack: (message: string) => void;
 }) {
   const { t } = useI18n();
@@ -143,7 +145,7 @@ function TotpStep({
           setBusy(true);
           setError("");
           try {
-            await onSignedIn((await auth.loginTotp(pendingToken, code)).csrf_token);
+            await onSignedIn(await auth.loginTotp(pendingToken, code));
           } catch (err) {
             setBusy(false);
             const status = err instanceof ApiError ? err.status : 0;

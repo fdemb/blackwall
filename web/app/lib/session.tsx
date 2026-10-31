@@ -18,7 +18,7 @@ import type { Profile } from "./types";
 
 export async function logoutSession() {
   try {
-    await clearSession(() => auth.logout());
+    await clearSession((signal) => auth.logout(signal));
   } finally {
     queryClient.clear();
     clearLastWs();

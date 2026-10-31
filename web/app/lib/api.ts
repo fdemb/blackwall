@@ -32,7 +32,7 @@ export function setCsrf(token: string) {
 
 export async function api<T>(
   path: string,
-  init: { method?: string; body?: unknown } = {},
+  init: { method?: string; body?: unknown; signal?: AbortSignal } = {},
 ): Promise<T> {
   const method = init.method ?? "GET";
   const headers: Record<string, string> = {};
@@ -45,6 +45,7 @@ export async function api<T>(
     credentials: "same-origin",
     headers,
     body: init.body === undefined ? undefined : isForm ? form : JSON.stringify(init.body),
+    signal: init.signal,
   });
   const token = response.headers.get("X-CSRF-Token");
   if (token) setCsrf(token);
@@ -74,10 +75,11 @@ export type AuthOptions = {
 /** A pending invitation to the registering address. */
 export type Invitation = { workspace_id: string; token: string };
 
-type SignedIn = { csrf_token: string; profile: Profile };
+export type SignedIn = { csrf_token: string; profile: Profile };
 
 export const auth = {
-  me: () => api<Profile & { session_id: string }>("/internal-api/me"),
+  me: (signal?: AbortSignal) =>
+    api<Profile & { session_id: string }>("/internal-api/me", { signal }),
   /** Accounts with two-factor sign-in get a pending token for `loginTotp` instead of a session. */
   login: (email: string, password: string) =>
     api<SignedIn | { pending_token: string }>("/internal-api/auth/login", {
@@ -98,7 +100,8 @@ export const auth = {
     ),
   verify: (token: string) =>
     api<null>("/internal-api/auth/verify", { method: "POST", body: { token } }),
-  logout: () => api<null>("/internal-api/auth/logout", { method: "POST" }),
+  logout: (signal?: AbortSignal) =>
+    api<null>("/internal-api/auth/logout", { method: "POST", signal }),
   requestReset: (email: string) =>
     api<null>("/internal-api/auth/reset-request", { method: "POST", body: { email } }),
   reset: (token: string, password: string) =>

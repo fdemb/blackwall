@@ -23,6 +23,8 @@ const LAST_USER_KEY = "bw-last-user:v1";
 
 // One lock for every step that deletes replicas or publishes the session, across tabs.
 const TRANSITION_LOCK = "blackwall-session";
+// Every tab waits for the lock, so a request made while holding it must end, body included.
+const LOCKED_REQUEST_MS = 15_000;
 
 let storage: IndexedDBReplicaStorage | undefined;
 let session: SessionProfile | null = null;
@@ -70,16 +72,33 @@ function transition<T>(run: () => Promise<T>): Promise<T> {
   });
 }
 /**
+ * Runs a request made inside the lock with a signal that aborts it after `LOCKED_REQUEST_MS`. The
+ * wait ends then even if the request ignores the signal, and its late answer goes nowhere.
+ */
+function bounded<T>(request: (signal: AbortSignal) => Promise<T>): Promise<T> {
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const expired = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      const reason = new DOMException("The request timed out", "TimeoutError");
+      controller.abort(reason);
+      reject(reason);
+    }, LOCKED_REQUEST_MS);
+  });
+  return Promise.race([request(controller.signal), expired]).finally(() => clearTimeout(timer));
+}
+/**
  * Asks the server who the cookie belongs to and makes that user's session the current one. The
  * question is asked inside the lock, so the answer can't be older than a transition that ran before
  * this one: another tab's sign-in or logout has already changed the cookie. A 401 forgets the session
- * and returns null, and deletes no replica. Any other failure throws and changes nothing.
+ * and returns null, and deletes no replica. Any other failure, a timeout included, throws and
+ * changes nothing.
  */
 export function acceptSession(): Promise<SessionProfile | null> {
   return transition(async () => {
     let profile: SessionProfile;
     try {
-      profile = await auth.me();
+      profile = await bounded((signal) => auth.me(signal));
     } catch (error) {
       if (!(error instanceof ApiError && error.status === 401)) throw error;
       await closeAllWorkspaceEngines();
@@ -91,6 +110,15 @@ export function acceptSession(): Promise<SessionProfile | null> {
     session = profile;
     safeSet("local", SESSION_KEY, JSON.stringify(profile));
     return profile;
+  });
+}
+/**
+ * A sign-in in this tab just succeeded. A remembered session of another user must not stand in for
+ * the new one when the next `/me` fails, so it is forgotten. The same user's is kept.
+ */
+export function signedInAs(userId: string): Promise<void> {
+  return transition(async () => {
+    if (read<SessionProfile>(SESSION_KEY)?.id !== userId) forgetSession();
   });
 }
 /** Resumes the last confirmed session without asking the server. Other replicas stay. */
@@ -170,27 +198,38 @@ export async function closeAllWorkspaceEngines() {
   await Promise.all(engines.map((entry) => entry.engine.close()));
 }
 /**
- * The server ended the session. Sync stops and every replica stays as it is: the same user's next
- * sign-in continues from it, and only a logout or another user's sign-in deletes it.
+ * An engine got 401. Its answer may be older than another tab's sign-in, so the server is asked
+ * again inside the lock. When the cookie still belongs to this tab's session nothing ends and this
+ * returns false. When it belongs to another session, this tab's engines close and the remembered
+ * session, which that session's tab published, stays. Otherwise the session ends here too. Every
+ * replica stays: the same user's next sign-in continues from it, and only a logout or another
+ * user's sign-in deletes it.
  */
-export function expireSession(): Promise<void> {
+export function expireSession(): Promise<boolean> {
   return transition(async () => {
+    const profile = await bounded((signal) => auth.me(signal)).catch(() => null);
+    if (profile && profile.session_id === session?.session_id) return false;
     await closeAllWorkspaceEngines();
-    forgetSession();
+    if (profile) session = null;
+    else forgetSession();
+    return true;
   });
 }
 /**
  * Logout, which the user confirmed: every replica on this browser goes, pending edits included.
  * `revoke` ends the session on the server. It runs inside the lock, so no other tab can read the
- * cookie as still signed in between the local cleanup and the server forgetting it.
+ * cookie as still signed in between the local cleanup and the server forgetting it. It runs last
+ * and is bounded, so a stalled server can't keep the lock and the local cleanup is already done.
  */
-export function clearSession(revoke: () => Promise<unknown> = async () => {}): Promise<void> {
+export function clearSession(
+  revoke: (signal: AbortSignal) => Promise<unknown> = async () => {},
+): Promise<void> {
   return transition(async () => {
     await closeAllWorkspaceEngines();
     await deleteReplicas(await replicaStorage().list());
     safeRemove("local", LAST_USER_KEY);
     forgetSession();
-    await revoke();
+    await bounded(revoke);
   });
 }
 function forgetSession() {
