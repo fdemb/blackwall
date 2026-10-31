@@ -2959,7 +2959,10 @@ export interface operations {
   };
   command: {
     parameters: {
-      query?: never;
+      query?: {
+        /** @description User the sending replica belongs to. A different account is 401 `account changed`. */
+        user_id?: string;
+      };
       header?: never;
       path: {
         id: string;
