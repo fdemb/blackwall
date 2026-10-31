@@ -1491,17 +1491,32 @@ async fn bootstrap_failing_into_a_full_channel_releases_admission() {
     .unwrap();
     let app = router(store.clone());
     let (owner, ws, team) = setup(&store, &app).await;
-    bulk_issues_n(&store, ws, team, 60).await;
 
-    let full = lines(&bootstrap(&app, &owner, ws, Uuid::new_v4(), None).await.1);
-    let expected: Vec<&Value> = full[1..full.len() - 1].iter().collect();
-    // The task blocks on the record after the 16 queued ones. Its entity's
-    // rows are already buffered, so the stream fails right after the last of
-    // them is sent.
-    let entity = expected[16]["entity"].clone();
-    let last = expected
-        .iter()
-        .rposition(|line| line["entity"] == entity)
+    // Without issues, every record belongs to an entity that streams before
+    // them. Labels pad that prefix to exactly the channel capacity, so the
+    // issues query is the first thing to run once the channel is full.
+    let prefix = lines(&bootstrap(&app, &owner, ws, Uuid::new_v4(), None).await.1).len() - 2;
+    assert!(prefix <= 16, "{prefix} records already precede the issues");
+    sqlx::query("INSERT INTO labels(id,workspace_id,name,color) SELECT gen_random_uuid(),$1,'Label '||n,'red' FROM generate_series(1,$2) n")
+        .bind(ws)
+        .bind((16 - prefix) as i64)
+        .execute(&store.pool)
+        .await
+        .unwrap();
+    // The record query subtracts keys from the tracker, which fails on a
+    // scalar. This is the only issue, so the query fails on its first row.
+    let stage: Uuid =
+        sqlx::query_scalar("SELECT id FROM stages WHERE team_id=$1 ORDER BY position LIMIT 1")
+            .bind(team)
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+    sqlx::query("INSERT INTO issues(id,workspace_id,number,title,description,team_id,stage_id,priority,position,created_at,updated_at,tracker) VALUES(gen_random_uuid(),$1,1,'Poison','',$2,$3,'normal',1024,now(),now(),'\"poison\"'::jsonb)")
+        .bind(ws)
+        .bind(team)
+        .bind(stage)
+        .execute(&store.pool)
+        .await
         .unwrap();
 
     let mut filler = store
@@ -1516,15 +1531,9 @@ async fn bootstrap_failing_into_a_full_channel_releases_admission() {
     })
     .await
     .unwrap();
-    sqlx::query("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname=current_database() AND pid<>pg_backend_pid() AND backend_xmin IS NOT NULL")
-        .execute(&store.pool)
-        .await
-        .unwrap();
-    let mut received = Vec::new();
-    for _ in 0..last - 15 {
-        received.extend(lines(&filler.recv().await.unwrap().unwrap()));
-    }
 
+    // The receiver stays idle. The task fails into the full channel and must
+    // give up its user's claim without anyone reading the error.
     tokio::time::timeout(Duration::from_secs(10), async {
         loop {
             match store
@@ -1545,10 +1554,15 @@ async fn bootstrap_failing_into_a_full_channel_releases_admission() {
     .await
     .expect("a failed bootstrap kept its user's claim while its receiver was idle");
 
+    let mut received = 0;
     while let Some(item) = filler.recv().await {
-        received.extend(lines(&item.unwrap()));
+        if let Ok(bytes) = item {
+            let records = lines(&bytes);
+            assert!(records.iter().all(|line| line.get("end").is_none()));
+            received += records.len();
+        }
     }
-    assert_eq!(received.iter().collect::<Vec<_>>(), expected[..=last]);
+    assert_eq!(received, 16);
 
     drop(app);
     store.pool.close().await;

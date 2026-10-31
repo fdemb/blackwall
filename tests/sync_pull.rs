@@ -181,6 +181,17 @@ fn cursor_xmax(cursor: &str) -> i64 {
     cursor.split(':').nth(1).unwrap().parse().unwrap()
 }
 
+fn cursor_xip(cursor: &str) -> Vec<i64> {
+    cursor
+        .split(':')
+        .nth(2)
+        .unwrap()
+        .split(',')
+        .filter(|txid| !txid.is_empty())
+        .map(|txid| txid.parse().unwrap())
+        .collect()
+}
+
 async fn invite_member(app: &axum::Router, owner: &Session, workspace: Uuid, user: &Session) {
     let (status, result) = command(
         app,
@@ -2176,19 +2187,23 @@ async fn pull_adopting_a_history_never_pairs_the_new_epoch_with_an_older_snapsho
             let cursor = cursor.clone();
             async move { pull_ok(&app, &token, ws, client, cursor.as_deref()).await }
         });
-        loop {
-            let parked: i64 = sqlx::query_scalar(
-                "SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() \
-                 AND wait_event_type = 'Lock' AND query LIKE 'UPDATE sync_history%'",
-            )
-            .fetch_one(&store.pool)
-            .await
-            .unwrap();
-            if parked > 0 {
-                break;
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let parked: i64 = sqlx::query_scalar(
+                    "SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() \
+                     AND wait_event_type = 'Lock' AND query LIKE 'UPDATE sync_history%'",
+                )
+                .fetch_one(&store.pool)
+                .await
+                .unwrap();
+                if parked > 0 {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
             }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+        })
+        .await
+        .expect("the pull never parked on the history lock");
 
         let issue = created(
             &app,
@@ -2210,7 +2225,7 @@ async fn pull_adopting_a_history_never_pairs_the_new_epoch_with_an_older_snapsho
                 .unwrap();
         let issued = cursor_of(&page);
         assert!(
-            page["reset"] == true || cursor_xmax(&issued) > written,
+            cursor_xmax(&issued) > written && !cursor_xip(&issued).contains(&written),
             "cursor {issued} does not cover transaction {written}"
         );
         assert_eq!(page["changes"], json!([]));
