@@ -1,3 +1,5 @@
+import { mergePokes } from "../cursor";
+import type { PokeData } from "../cursor";
 import { FakeClock } from "./clock";
 
 export interface EventTiming {
@@ -22,8 +24,8 @@ export class EventConnection {
   private pokeQueued = true;
   /** The newest txid of the coalescing window, null once a wildcard joined it, or none yet. */
   private window?: number | null;
-  /** A stamped poke the reader had no room for, sent when it reads, so no txid is lost. */
-  private missed: Uint8Array | null = null;
+  /** Pokes the reader had no room for, merged and sent when it reads, so no txid is lost. */
+  private missed: PokeData | null = null;
   private cancelTrailing?: () => void;
   private cancelKeepalive?: () => void;
   private readonly cancelLifetime: () => void;
@@ -46,7 +48,7 @@ export class EventConnection {
       pull: (controller) => {
         this.pokeQueued = false;
         if (this.missed === null) return;
-        controller.enqueue(this.missed);
+        controller.enqueue(pokeChunk(this.missed));
         this.missed = null;
         this.pokeQueued = (controller.desiredSize ?? 0) <= 0;
       },
@@ -102,11 +104,11 @@ export class EventConnection {
     const txid = this.window;
     this.window = undefined;
     const stamped = this.epoch !== undefined && typeof txid === "number";
-    const chunk = pokeChunk(stamped ? { txid, epoch: this.epoch } : {});
+    const poke: PokeData = stamped ? { txid, epoch: this.epoch } : {};
     if (!this.pokeQueued) {
-      this.controller?.enqueue(chunk);
+      this.controller?.enqueue(pokeChunk(poke));
       this.pokeQueued = (this.controller?.desiredSize ?? 0) <= 0;
-    } else if (this.epoch !== undefined) this.missed = chunk;
+    } else if (this.epoch !== undefined) this.missed = mergePokes(this.missed, poke);
     this.lastSend = this.clock.milliseconds();
   }
 

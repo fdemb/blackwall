@@ -20,9 +20,12 @@ describe("pokeCovered", () => {
     expect(pokeCovered(`${EPOCH}@805:812:805,810`, { txid: 800, epoch: EPOCH })).toBe(false);
   });
 
-  it("skips below xmax with a partial transaction above it", () => {
-    expect(pokeCovered(`${EPOCH}@812:812::812.7`, { txid: 811, epoch: EPOCH })).toBe(true);
-    expect(pokeCovered(`${EPOCH}@812:812::812.7`, { txid: 812, epoch: EPOCH })).toBe(false);
+  it("pulls for a partial cursor or a malformed snapshot", () => {
+    expect(pokeCovered(`${EPOCH}@812:812::812.7`, { txid: 811, epoch: EPOCH })).toBe(false);
+    expect(pokeCovered(`${EPOCH}@invalid:812:`, { txid: 3, epoch: EPOCH })).toBe(false);
+    expect(pokeCovered(`${EPOCH}@812:x:`, { txid: 3, epoch: EPOCH })).toBe(false);
+    expect(pokeCovered(`${EPOCH}@900:812:`, { txid: 3, epoch: EPOCH })).toBe(false);
+    expect(pokeCovered(`${EPOCH}@812:812`, { txid: 3, epoch: EPOCH })).toBe(false);
   });
 
   it("pulls for another epoch, a wildcard, or a cursor without an epoch", () => {

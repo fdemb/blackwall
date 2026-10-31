@@ -13,8 +13,13 @@ export function pokeCovered(cursor: string | null, poke: PokeData): boolean {
   if (cursor === null || poke.txid === undefined || poke.epoch === undefined) return false;
   const at = cursor.indexOf("@");
   if (at < 0 || cursor.slice(0, at) !== poke.epoch) return false;
-  const [, xmax, xip] = cursor.slice(at + 1).split(":");
-  if (xmax === undefined || xip !== "" || !/^\d+$/.test(xmax)) return false;
+  // Only a complete snapshot with nothing in flight: a partial cursor (`:txid.row`) still owes
+  // part of a transaction, so it never covers a poke.
+  const parts = cursor.slice(at + 1).split(":");
+  if (parts.length !== 3) return false;
+  const [xmin, xmax, xip] = parts;
+  if (xip !== "" || !/^\d+$/.test(xmin) || !/^\d+$/.test(xmax)) return false;
+  if (Number(xmin) > Number(xmax)) return false;
   return poke.txid < Number(xmax);
 }
 
