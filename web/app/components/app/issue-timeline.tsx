@@ -102,14 +102,14 @@ export function Timeline({ issue }: { issue: Issue }) {
   }, [ready]);
   // Screen readers announce a status region's text changes, not a region that mounts already
   // filled, so the region is always there and the text arrives after mount.
-  const [announce, setAnnounce] = useState(false);
-  useEffect(() => setAnnounce(!ready), [ready]);
+  const status = useRef<HTMLParagraphElement>(null);
+  useEffect(() => {
+    if (status.current) status.current.textContent = ready ? "" : t("action.loading");
+  }, [ready, t]);
   const listed = ready && items.length > 0;
   return (
     <Section title={t("activity.title")}>
-      <p role="status" className="sr-only">
-        {announce ? t("action.loading") : ""}
-      </p>
+      <p ref={status} role="status" className="sr-only" />
       {!ready && (
         <div
           aria-hidden="true"
