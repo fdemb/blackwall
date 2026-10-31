@@ -3205,6 +3205,8 @@ export interface operations {
     parameters: {
       query?: {
         client_id?: string;
+        /** @description User the replica belongs to. A different account is 401 `account changed`. */
+        user_id?: string;
       };
       header?: never;
       path: {
@@ -3229,6 +3231,8 @@ export interface operations {
       query?: {
         /** @description Client replica id. A client_id owned by another user or workspace is 400. */
         client_id?: string;
+        /** @description User the replica belongs to. A different account is 401 `account changed`. */
+        user_id?: string;
       };
       header?: never;
       path: {
@@ -3259,6 +3263,8 @@ export interface operations {
          *     history, or past this server's snapshot, answers `reset: true`.
          */
         cursor?: string;
+        /** @description User the replica belongs to. A different account is 401 `account changed`. */
+        user_id?: string;
       };
       header?: never;
       path: {
@@ -3280,7 +3286,10 @@ export interface operations {
   };
   push: {
     parameters: {
-      query?: never;
+      query?: {
+        /** @description User the replica belongs to. A different account is 401 `account changed`. */
+        user_id?: string;
+      };
       header?: never;
       path: {
         id: string;
@@ -3318,6 +3327,8 @@ export interface operations {
         entity?: string;
         issue_id?: string;
         entity_id?: string;
+        /** @description User the replica belongs to. A different account is 401 `account changed`. */
+        user_id?: string;
       };
       header?: never;
       path: {

@@ -1339,6 +1339,15 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "user_id",
+            "in": "query",
+            "description": "User the replica belongs to. A different account is 401 `account changed`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -1370,6 +1379,15 @@
             "name": "client_id",
             "in": "query",
             "description": "Client replica id. A client_id owned by another user or workspace is 400.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "user_id",
+            "in": "query",
+            "description": "User the replica belongs to. A different account is 401 `account changed`.",
             "required": false,
             "schema": {
               "type": "string"
@@ -1418,6 +1436,15 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "user_id",
+            "in": "query",
+            "description": "User the replica belongs to. A different account is 401 `account changed`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -1447,6 +1474,15 @@
             "schema": {
               "type": "string",
               "format": "uuid"
+            }
+          },
+          {
+            "name": "user_id",
+            "in": "query",
+            "description": "User the replica belongs to. A different account is 401 `account changed`.",
+            "required": false,
+            "schema": {
+              "type": "string"
             }
           }
         ],
@@ -1526,6 +1562,15 @@
           {
             "name": "entity_id",
             "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "user_id",
+            "in": "query",
+            "description": "User the replica belongs to. A different account is 401 `account changed`.",
             "required": false,
             "schema": {
               "type": "string"
