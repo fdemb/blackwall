@@ -21,7 +21,7 @@ cd web
 pnpm install --frozen-lockfile
 pnpm run gen:api
 pnpm run typecheck
-pnpm exec vp check
+pnpm exec vp fmt app/sync/engine.test.ts; git --no-pager diff -- app/sync/engine.test.ts; exit 1
 pnpm exec vp lint -A all -W eslint/complexity -f json | node ../scripts/complexity.mjs
 pnpm exec vp test run
 SYNC_CONTRACT=1 pnpm exec vp test run app/sync/contract
