@@ -153,7 +153,7 @@ The server writes each record as the JSON text PostgreSQL produced, without deco
 
 The header, client mutation id and every record come from the same snapshot. `schema` is the server constant `SYNC_SCHEMA`, currently 8; bump it whenever a sync record shape changes. Version 5 renamed the issue's `openproject` link to `tracker` and added `tracker` to comments. Version 7 added `former_keys` to teams. Version 8 cut integrations' `webhook_url` down to scheme and host. Record lines use pull's shapes and visibility rules, including trashed and archived issues. An integration's `webhook_url` is its scheme and host only, such as `https://hooks.slack.com`, and `secret` is empty. Slack and Discord put their secret in the URL path, and the replica lands in IndexedDB. Admins read the full URL from `GET /internal-api/workspaces/{id}/integrations`, which the integrations screen doesn't need, since it only displays the host. Comments and activity are excluded.
 
-The trailer counts only record lines. A failure ends the body without a trailer. The client discards any bootstrap without a trailer, and writes a completed bootstrap into a fresh base with its cursor in one IndexedDB transaction. A page reload in the middle leaves no partial replica.
+The trailer counts only record lines. A failure ends the body without a trailer. The client writes the records into a staged copy of base in chunks of 2,000 while the rest downloads, with one chunk write in flight. Only the trailer commits it: one short IndexedDB transaction swaps the staged copy in with its cursor and acknowledgement. A bootstrap without a trailer is never committed, so a page reload in the middle finds the previous base whole, or none on a first load. The engine status reports the records received so far as `progress`, and the loading screen of a first load shows that count.
 
 A user runs at most one bootstrap at a time, across all their replicas and workspaces. A second one is refused at once with 503, `Retry-After: 5` and a JSON error. Concurrent bootstraps are also capped at a quarter of the pool's connections, at least one. A bootstrap takes its permit before its connection and holds both until its stream ends. When no permit is free within 5 seconds the server answers 503 the same way, before streaming starts. Each send waits at most 10 seconds for the reader, so a stalled reader can hold a permit and its `REPEATABLE READ` snapshot for 10 seconds, not minutes; the whole bootstrap waits at most 5 minutes. Either deadline drops the transaction and ends the body without a trailer. The client treats a 503 like any transient failure and retries with backoff.
 
@@ -255,7 +255,7 @@ Setting a mutation aside after a lone 413 builds a local rejection from it, writ
 
 A `duplicate` result is applied only when the server's `last_mutation_id` is less than 1,000 ahead of that id, because the server keeps a client's 1,000 newest rejections and a pruned rejection also reads back as `duplicate`. Rejections are never pruned by age, so this is the only way one is lost. A confirmation push for an older id settles its receipt as `"unknown"`, not `"applied"`.
 
-The client never writes push results into base. It pulls after every push.
+The client never writes push results into base. It pulls once after every push, and that pull covers the push's own poke (see Poke).
 
 ### Poke
 
@@ -270,7 +270,7 @@ The server knows the epoch without a query per poke. The `PokeHub` holds it, and
 - `mark_change` calls `pg_notify('blackwall_changes', workspace_id::text || ':' || txid::text)` when called with a non-null workspace and id, where `txid` is the transaction's id, the same value the transaction's `changes.txid` rows carry. PostgreSQL collapses identical notifications within a transaction, so one transaction sends one notification per workspace, and drops them on rollback.
 - One `PgListener` per server process listens on `blackwall_changes` and fans notifications out to that workspace's open streams. Each workspace has its own broadcast channel, created when its first stream connects and removed when its last stream leaves, so a burst or a slow reader in one workspace never pokes another workspace's streams. `src/store/queue.rs` already uses `PgListener` for jobs. A channel carries pokes with their txid and epoch, and a stream whose channel lagged treats the gap as a wildcard. The payload is `workspace_id:txid`; a bare workspace id, which an older `mark_change` sends, pokes that workspace as a wildcard. The listener task owns its reconnect loop: it opens a dedicated connection outside the request pool so it never takes a pool slot, checks the database's history and publishes the epoch, sends `LISTEN blackwall_changes`, then pokes every workspace's channel, because notifications may have been lost. A nil or unparsable payload does the same. It does this after every successful `LISTEN`, including the first. It then receives notifications and pokes the named workspace; on any error or disconnect it logs, drops the listener, waits with capped exponential backoff starting at the configured reconnect delay and capped around 30 s, and starts the loop again.
 - Pokes coalesce to at most one per 250 ms per stream, with a trailing poke when notifications arrive inside the window. The trailing poke carries the highest txid of the window and its epoch, or neither when any poke in it had none or the window held two epochs. When the reader still holds an unread poke, the next one merges into the pending trailing poke instead of being dropped, so no txid is lost. Keep-alive comments go every 15 seconds. Each stream ends after 30 minutes; clients reconnect, which re-runs authentication and the membership check. A poke pending when the stream ends is dropped; the client's reconnect gets an initial poke, which covers it.
-- On an event, the leader pulls. Coalesce events that arrive while a pull is running into one follow-up pull.
+- On an event, the leader waits a random 0 to 200 ms, so one commit doesn't pull every client at the same moment, then pulls unless its cursor already covers the poke by the rule above. Events that arrive during that wait, while a pull runs, or while a push request is out merge into one: the newer txid when both name the same epoch, a wildcard otherwise. The merged poke is judged against the cursor the running pull leaves. The pull after a push therefore covers the poke that push caused, and the pushing client pulls once.
 - Polling remains the fallback. Pull every 30 seconds while the stream is down, and also on window focus and on the browser's `online` event.
 
 ### Scopes
@@ -309,6 +309,7 @@ All engine code lives in `web/app/sync/`. The core doesn't import React. React b
 
 - One in-memory table per entity, holding immutable records. A record keeps its object identity until it changes, so React can skip unchanged rows.
 - The view is base plus an overlay of records the outbox replay touched. A replay writes into a fresh overlay, reading through it to base, and then diffs against the previous overlay. Replaying a short outbox never copies a whole table.
+- The overlay keeps its own index buckets, maintained on every overlay write, so an index read during replay costs the size of its bucket, never the size of the overlay. Replaying a long offline outbox after a pull page grows linearly with the outbox.
 - Indexes are maintained on write, not built per query: issues by team, stage, parent, sprint, project, milestone and assignee; reverse dependencies; comments and time entries by issue; activity by entity. Derived issue counts come from these indexes.
 - Writes emit change sets per table and key. Subscribers listen per table or per record.
 
@@ -354,7 +355,8 @@ A mutation acknowledged by a pull without a known push result is pushed once mor
 IndexedDB database `blackwall:{user_id}:{workspace_id}` with object stores:
 
 - `meta`: `schema`, `user_id`, `client_id`, `cursor`, `last_mutation_id`, `next_mutation_id`, `access_lost` once the server denied access, and `skipped` and `resync` while records are skipped (see protocol errors).
-- One store per entity, keyed like the table above.
+- One store per entity, keyed like the table above. Each entity a bootstrap replaces has a second store. A bootstrap fills the idle one and its commit swaps the two by flipping `generation` in `meta`.
+- `stage`, the token of the one bootstrap allowed to write the idle stores. A newer stage replaces the token, so a late write from an abandoned one fails instead of mixing snapshots.
 - `outbox`, keyed by mutation id.
 - `scopes`, the loaded comment and activity scopes.
 
@@ -370,7 +372,7 @@ When the engine opens a replica that was never bootstrapped, it asks the browser
 
 #### A full disk
 
-A write that fails with `QuotaExceededError`, on a request or as a transaction abort, leaves the database as it was and surfaces as a distinct error. The client doesn't download the workspace again for it. It keeps what it downloaded in memory and keeps pulling, and the sync banner says the device is out of space. While the database is behind memory, incremental writes (pull pages and scope loads) are skipped, because applying them would leave the database ahead of what it holds. A new edit is refused with a message that says why, because the outbox lives in the database and an edit that can't be stored can't be sent after a reload. An online command is refused at once with the same message in every tab, because it waits for the outbox to drain, and the outbox can't be seen to drain while the leader holds back pull pages. Edits already stored still push. The leader writes a full snapshot of memory every 5 minutes, after an edit shows space is back, on the user's retry, and on focus at most once a minute. The first snapshot that fits clears the state.
+A write that fails with `QuotaExceededError`, on a request or as a transaction abort, leaves the database as it was and surfaces as a distinct error. The client doesn't download the workspace again for it. It keeps what it downloaded in memory and keeps pulling, and the sync banner says the device is out of space. While the database is behind memory, incremental writes (pull pages and scope loads) are skipped, because applying them would leave the database ahead of what it holds. A new edit is refused with a message that says why, because the outbox lives in the database and an edit that can't be stored can't be sent after a reload. The view already shows the edit by then, so the refusal takes it back out of the view and the toast says why. An online command is refused at once with the same message in every tab, because it waits for the outbox to drain, and the outbox can't be seen to drain while the leader holds back pull pages. Edits already stored still push. The leader writes a full snapshot of memory every 5 minutes, after an edit shows space is back, on the user's retry, and on focus at most once a minute. The first snapshot that fits clears the state.
 
 Other tabs only see what the database holds. While it is behind memory the leader sends them no pull pages or scope loads, so they may be behind and show the same banner. The snapshot carries the cursor, records, scopes and any resync obligation, and once it is written the leader sends `reset`, so they reload from the recovered database. A tab opened while the disk is full shows what was persisted. When the leader closes, the next one treats the database as authoritative and pulls from its persisted cursor.
 
@@ -397,7 +399,8 @@ An unloaded comment or activity scope reports offline, not loading, while the br
 - `navigator.locks.request("blackwall-sync:{user_id}:{workspace_id}")` elects the leader. Only the leader holds the event stream, pulls, loads scopes and pushes. When the leader stops or closes, the lock passes to another tab.
 - Unmounting a workspace retires its engine. It keeps syncing until the shared outbox drains, then closes. Returning before close reclaims it. A retired follower does not hold the leader's lock.
 - Followers mirror the leader's connection status. They report offline when their browser is offline or the leader reports offline. A leader reconnecting its event stream is still online. The existing offline banner and online-only controls read that status.
-- A tab allocates mutation ids inside an IndexedDB read-write transaction on `meta.next_mutation_id`. IndexedDB serializes those transactions, so two tabs never reuse an id.
+- A tab allocates mutation ids inside an IndexedDB read-write transaction on `meta.next_mutation_id`, the same transaction that stores the mutation. IndexedDB serializes those transactions, so two tabs never reuse an id, and no id is handed out that a crash could leave unstored ahead of a higher stored one.
+- An edit shows in the view before that transaction finishes, under a provisional id above any real one. The write goes through its own ordered queue, which never waits behind bootstrap, pull or scope writes in the engine. The edit takes its real id when the write finishes. Only then is it pushed or announced to other tabs, so no tab or server sees an edit a reload could lose.
 - Every write to the shared database is broadcast on a `BroadcastChannel` with the changed records or mutations. Other tabs apply the broadcast instead of re-reading the database.
 
 ### Online-only operations
@@ -412,7 +415,7 @@ Some commands aren't queued offline: `invite`, `resend_invitation`, `create_inte
 
 ### Reads outside the replica
 
-- Reports stay a server read through TanStack Query. Refetch after a pull that touched issues or time entries, debounced. Offline, show the last result.
+- Reports stay a server read through TanStack Query. Refetch after a pull that touched issues or time entries, debounced by one second so a run of pull pages refetches once. Offline, show the last result.
 - `inbox_unread` and issue counts come from the replica.
 - Issue search, people search and the command palette search the replica: title, description, issue number and key for issues. Local search splits text into runs of letters, marks and digits, so it can differ from the server's full-text search on punctuation-heavy text such as URLs and file paths.
 - Issue tracker connection settings stay a TanStack Query read. The wizard waits until stages it created through the outbox are confirmed before saving mappings that name them.
@@ -422,7 +425,7 @@ Some commands aren't queued offline: `invite`, `resend_invitation`, `create_inte
 - `useSyncExternalStore` over the store. A query hook takes a function of the view and the tables it reads, reruns when those tables change, and returns the previous result when the new one is shallowly equal.
 - A record hook subscribes to one key.
 - A status hook exposes pending mutation count, connection state, last error and bootstrap progress. The offline banner and save status read it.
-- Mutation calls return once the mutation is in the outbox. A caller that needs the server's verdict, such as a form showing an error beside its fields, can wait for that mutation's outcome.
+- The view shows an edit as soon as it is admitted. Mutation calls return once the mutation is in the outbox. A caller that needs the server's verdict, such as a form showing an error beside its fields, can wait for that mutation's outcome.
 - UI state that isn't synced data, such as the create-issue dialog, doesn't belong in the engine.
 
 ## Porting the UI
