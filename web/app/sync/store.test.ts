@@ -924,6 +924,33 @@ describe("incremental replay", () => {
     expect(store.get("issues", "a")?.title).toBe("x 1");
   });
 
+  it("keeps replay work linear in a long outbox", () => {
+    // Each mutation creates an issue under a parent shared with one other mutation and reads that
+    // parent's children, so a replay that walked the whole overlay would grow with the outbox.
+    const replay: ReplayFn = (tx, m) => {
+      const { id, parent } = m.args as { id: string; parent: string };
+      const siblings = tx.byIndex("issues", "parent_id", parent).length;
+      tx.put("issues", makeIssue(id, { parent_id: parent, position: siblings }));
+    };
+    const work = (size: number) => {
+      const store = new SyncStore(replay);
+      store.replaceBase({ issues: [makeIssue("root")] }, ["issues"]);
+      const outbox = Array.from({ length: size }, (_, i) =>
+        mutation(i + 1, "create", { id: `n${i}`, parent: `p${Math.floor(i / 2)}` }),
+      );
+      store.setPending(outbox);
+      const before = store.debug.overlayReads + store.debug.replays;
+      // A pull page that changes a record the outbox read replays the whole outbox again.
+      store.applyBase([{ entity: "issues", id: "n0", record: makeIssue("n0", { title: "S" }) }]);
+      return store.debug.overlayReads + store.debug.replays - before;
+    };
+    const small = work(1000);
+    const large = work(2000);
+    expect(small).toBeGreaterThanOrEqual(1000);
+    expect(large / small).toBeLessThan(2.2);
+    expect(large).toBeLessThan(2000 * 2);
+  });
+
   it("matches full rebases over random appends, base changes and acks", { timeout: 60_000 }, () => {
     const steps = 400;
     const replay: ReplayFn = (tx, m) => {
