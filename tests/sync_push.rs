@@ -1406,3 +1406,156 @@ async fn push_refuses_online_only_commands() {
     store.pool.close().await;
     database.cleanup().await;
 }
+
+async fn push_acknowledged(
+    app: &axum::Router,
+    token: &str,
+    workspace: Uuid,
+    client: Uuid,
+    acknowledged: i64,
+    mutations: Vec<Value>,
+) -> (StatusCode, Value) {
+    call(
+        app,
+        "POST",
+        &format!("/internal-api/workspaces/{workspace}/sync/push"),
+        Some(token),
+        Some(json!({"client_id": client, "mutations": mutations, "acknowledged": acknowledged})),
+    )
+    .await
+}
+
+async fn labels_named(store: &Store, workspace: Uuid, name: &str) -> i64 {
+    sqlx::query_scalar("SELECT count(*) FROM labels WHERE workspace_id = $1 AND name = $2")
+        .bind(workspace)
+        .bind(name)
+        .fetch_one(&store.pool)
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn push_acknowledged_above_the_stored_mark_is_refused_and_applies_nothing() {
+    let database = support::TestDatabase::new().await;
+    let store = Store::connect(&database.url).await.unwrap();
+    let app = router(store.clone());
+    let owner = account(&store, "owner").await;
+    let (ws, _) = setup(&app, &owner).await;
+    let client = Uuid::new_v4();
+    let label = |id: i64, name: &str| {
+        mutation(
+            id,
+            "create_label",
+            json!({"name": name, "color": "#000000"}),
+        )
+    };
+
+    let (status, first) = push(
+        &app,
+        &owner.token,
+        ws,
+        client,
+        vec![label(1, "one"), label(2, "two")],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{first}");
+
+    let (status, refused) = push_acknowledged(
+        &app,
+        &owner.token,
+        ws,
+        client,
+        3,
+        vec![label(3, "three"), label(4, "four")],
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{refused}");
+    assert_eq!(refused["error"], "client state lost");
+    assert_eq!(last_mutation_id(&store, client).await, Some(2));
+    assert_eq!(labels_named(&store, ws, "three").await, 0);
+    assert_eq!(labels_named(&store, ws, "four").await, 0);
+
+    drop(app);
+    store.pool.close().await;
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn push_acknowledged_without_a_client_row_is_refused_and_creates_none() {
+    let database = support::TestDatabase::new().await;
+    let store = Store::connect(&database.url).await.unwrap();
+    let app = router(store.clone());
+    let owner = account(&store, "owner").await;
+    let (ws, _) = setup(&app, &owner).await;
+    let client = Uuid::new_v4();
+
+    let (status, refused) = push_acknowledged(
+        &app,
+        &owner.token,
+        ws,
+        client,
+        5,
+        vec![mutation(
+            6,
+            "create_label",
+            json!({"name": "replayed", "color": "#000000"}),
+        )],
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{refused}");
+    assert_eq!(refused["error"], "client state lost");
+    assert_eq!(last_mutation_id(&store, client).await, None);
+    assert_eq!(labels_named(&store, ws, "replayed").await, 0);
+
+    drop(app);
+    store.pool.close().await;
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn push_acknowledged_at_or_below_the_stored_mark_is_accepted() {
+    let database = support::TestDatabase::new().await;
+    let store = Store::connect(&database.url).await.unwrap();
+    let app = router(store.clone());
+    let owner = account(&store, "owner").await;
+    let (ws, _) = setup(&app, &owner).await;
+    let client = Uuid::new_v4();
+    let label = |id: i64, name: &str| {
+        mutation(
+            id,
+            "create_label",
+            json!({"name": name, "color": "#000000"}),
+        )
+    };
+
+    let (status, first) = push_acknowledged(
+        &app,
+        &owner.token,
+        ws,
+        client,
+        0,
+        vec![label(1, "one"), label(2, "two")],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{first}");
+
+    let (status, equal) =
+        push_acknowledged(&app, &owner.token, ws, client, 2, vec![label(3, "three")]).await;
+    assert_eq!(status, StatusCode::OK, "{equal}");
+    assert_eq!(equal["results"][0]["status"], "applied");
+
+    let (status, lower) =
+        push_acknowledged(&app, &owner.token, ws, client, 1, vec![label(4, "four")]).await;
+    assert_eq!(status, StatusCode::OK, "{lower}");
+    assert_eq!(lower["results"][0]["status"], "applied");
+    assert_eq!(last_mutation_id(&store, client).await, Some(4));
+
+    let (status, negative) =
+        push_acknowledged(&app, &owner.token, ws, client, -1, vec![label(5, "five")]).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{negative}");
+    assert_eq!(last_mutation_id(&store, client).await, Some(4));
+
+    drop(app);
+    store.pool.close().await;
+    database.cleanup().await;
+}

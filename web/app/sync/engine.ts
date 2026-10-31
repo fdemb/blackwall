@@ -1659,6 +1659,7 @@ export class SyncEngine {
       const response = await this.withDeadline(controller, WRITE_DEADLINE_MS, (signal) =>
         this.deps.transport.push(this.deps.workspaceId, this.clientId, batch.mutations, {
           signal,
+          acknowledged: this.acknowledged,
         }),
       );
       this.check(controller);

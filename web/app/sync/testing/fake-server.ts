@@ -385,7 +385,11 @@ export class FakeServer {
     return this.render(entity, id, user, workspace);
   }
 
-  clientState(clientId: string): { last_mutation_id: number } {
+  /** Forgets a client's high-water mark and remembered rejections, as a database restore would. */
+  loseClient(clientId: string): void {
+    this.clients.delete(clientId);
+  }
+    clientState(clientId: string): { last_mutation_id: number } {
     return { last_mutation_id: this.clients.get(clientId)?.last_mutation_id ?? 0 };
   }
   /**
@@ -560,7 +564,19 @@ export class FakeServer {
               return json({ error: "internal server error" }, 500);
             const after =
               unavailable?.kind === "unavailable" ? (unavailable.after ?? 0) : poison?.index;
-            const pushed = this.push(workspace, session.user, clientId, mutations, after);
+            const acknowledged =
+              object(payload) && typeof payload.acknowledged === "number"
+                ? payload.acknowledged
+                : 0;
+            if (acknowledged < 0) throw new MutationError(400, "acknowledged must not be negative");
+            const pushed = this.push(
+              workspace,
+              session.user,
+              clientId,
+              mutations,
+              after,
+              acknowledged,
+            );
             if (faults.some((fault) => fault.kind === "duplicate_push") && pushed.status === 200)
               this.push(workspace, session.user, clientId, mutations);
             response = json(pushed.body, pushed.status);
@@ -1093,7 +1109,11 @@ export class FakeServer {
     clientId: string,
     mutations: Mutation[],
     after?: number,
+    acknowledged = 0,
   ): { status: number; body: PushResponse } {
+    // Like the server's push transaction: before anything is applied or a client row created.
+    if ((this.clients.get(clientId)?.last_mutation_id ?? 0) < acknowledged)
+      throw new MutationError(409, "client state lost");
     this.options.onPush?.({
       clientId,
       mutations: structuredClone(mutations),

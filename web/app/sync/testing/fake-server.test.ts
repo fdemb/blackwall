@@ -35,11 +35,11 @@ function fixture(options: FakeServerOptions = {}) {
     server.fetch(url(route, { client_id: auth === memberToken ? id(11) : CLIENT, ...query }), {
       headers: { authorization: `Bearer ${auth}` },
     });
-  const push = (mutations: unknown[], auth = token, client = CLIENT) =>
+  const push = (mutations: unknown[], auth = token, client = CLIENT, acknowledged?: number) =>
     server.fetch(url("push"), {
       method: "POST",
       headers: { authorization: `Bearer ${auth}`, "content-type": "application/json" },
-      body: JSON.stringify({ client_id: client, mutations }),
+      body: JSON.stringify({ client_id: client, mutations, acknowledged }),
     });
   const pull = async (cursor?: string, auth = token): Promise<PullResponse> => {
     const response = await get("pull", cursor === undefined ? {} : { cursor }, auth);
@@ -234,6 +234,26 @@ describe("fake sync push", () => {
       { status: "rejected", error: { status: 409 } },
     ]);
     expect(f.server.record("issues", ISSUE)).toEqual(before);
+  });
+
+  it("refuses a batch whose acknowledged id is above the stored mark and applies nothing", async () => {
+    const f = fixture();
+    await f.push([label(1), label(2)]);
+    const labels = f.server.records("labels").length;
+    const refused = await f.push([label(3)], f.token, CLIENT, 3);
+    expect(refused.status).toBe(409);
+    expect(await refused.json()).toEqual({ error: "client state lost" });
+    expect(f.server.clientState(CLIENT).last_mutation_id).toBe(2);
+    expect(f.server.records("labels")).toHaveLength(labels);
+
+    const lost = await f.push([label(6)], f.token, id(12), 5);
+    expect(lost.status).toBe(409);
+    expect(f.server.clientState(id(12)).last_mutation_id).toBe(0);
+    expect(f.server.records("labels")).toHaveLength(labels);
+
+    expect((await f.push([label(3)], f.token, CLIENT, 2)).status).toBe(200);
+    expect((await f.push([label(4)], f.token, CLIENT, 1)).status).toBe(200);
+    expect((await f.push([label(5)], f.token, CLIENT, -1)).status).toBe(400);
   });
 
   it("isolates client ownership across actors and workspaces", async () => {

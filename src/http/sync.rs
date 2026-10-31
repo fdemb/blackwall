@@ -56,7 +56,7 @@ pub struct PushQuery {
         (status = 200, body = PushResponse),
         (status = 503, body = PushResponse)
     ),
-    description = "Applies one client's ordered mutations through the same store code as the command endpoint. Each mutation runs in its own transaction; business errors reject that mutation while transient failures stop the batch."
+    description = "Applies one client's ordered mutations through the same store code as the command endpoint. Each mutation runs in its own transaction; business errors reject that mutation while transient failures stop the batch. A client row whose high-water mark is below the request's `acknowledged` id means the server lost the client's state: the batch is refused with 409 `client state lost` and nothing is applied."
 )]
 pub(super) async fn push(
     State(store): State<Store>,
@@ -67,7 +67,13 @@ pub(super) async fn push(
 ) -> Result<Response> {
     fence(&actor, query.user_id.as_deref())?;
     let outcome = store
-        .sync_push(id, actor.profile.id, input.client_id, input.mutations)
+        .sync_push(
+            id,
+            actor.profile.id,
+            input.client_id,
+            input.acknowledged,
+            input.mutations,
+        )
         .await?;
 
     let status = if outcome.truncated {

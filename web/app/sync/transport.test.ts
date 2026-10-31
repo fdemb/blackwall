@@ -367,6 +367,29 @@ describe("sync transport requests", () => {
     expect(new Headers(fetch.mock.calls[1][1]?.headers).get("X-Request")).toBe("second");
   });
 
+  it("sends the acknowledged id and reports a lost client state as a protocol error", async () => {
+    const f = fixture();
+    await f.transport.push(f.workspace.id, CLIENT, [label(1)]);
+    const fetch = vi.fn(f.server.fetch);
+    const transport = createTransport({
+      fetch,
+      headers: () => ({ authorization: `Bearer ${f.token}` }),
+    });
+    await transport.push(f.workspace.id, CLIENT, [label(2)], { acknowledged: 1 });
+    expect(JSON.parse(String(fetch.mock.calls[0][1]?.body)).acknowledged).toBe(1);
+    await transport.push(f.workspace.id, CLIENT, [label(3)]);
+    expect(JSON.parse(String(fetch.mock.calls[1][1]?.body)).acknowledged).toBe(0);
+
+    f.server.loseClient(CLIENT);
+    await expect(
+      transport.push(f.workspace.id, CLIENT, [label(4)], { acknowledged: 3 }),
+    ).rejects.toMatchObject({
+      name: "ProtocolError",
+      status: 409,
+      message: "client state lost",
+    });
+  });
+
   it("names the replica's user on every sync request but not on /me", async () => {
     const f = fixture();
     f.createIssue();

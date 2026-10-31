@@ -646,7 +646,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Applies one client's ordered mutations through the same store code as the command endpoint. Each mutation runs in its own transaction; business errors reject that mutation while transient failures stop the batch. */
+    /** @description Applies one client's ordered mutations through the same store code as the command endpoint. Each mutation runs in its own transaction; business errors reject that mutation while transient failures stop the batch. A client row whose high-water mark is below the request's `acknowledged` id means the server lost the client's state: the batch is refused with 409 `client state lost` and nothing is applied. */
     post: operations["push"];
     delete?: never;
     options?: never;
@@ -1884,6 +1884,13 @@ export interface components {
       reset: boolean;
     };
     PushRequest: {
+      /**
+       * Format: int64
+       * @description The highest mutation id the client has seen acknowledged by a pull or bootstrap.
+       *     A stored high-water mark below it means the server lost the client's state, so
+       *     the batch is refused with 409 instead of re-running mutations. Defaults to 0.
+       */
+      acknowledged?: number;
       /** Format: uuid */
       client_id: string;
       mutations: components["schemas"]["SyncMutation"][];

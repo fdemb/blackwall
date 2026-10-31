@@ -2323,8 +2323,40 @@ describe("pending edits are never frozen or lost", () => {
     },
   );
 
+  it("blocks pushing and keeps the outbox when the server refuses a push as lost client state", async () => {
+    const f = fixture();
+    await f.ready();
+    await f.engine.mutate("create_label", { name: "Acknowledged", color: "#00ff00" });
+    await until(() => f.engine.status.get().pending === 0);
+    const { clientId, lastMutationId } = (await f.disk()).meta;
+    expect(lastMutationId).toBe(1);
+
+    const original = f.server.fetch;
+    f.fetch.mockImplementation((...args) =>
+      String(args[0]).includes("/pull?") ? new Promise<Response>(() => {}) : original(...args),
+    );
+    f.server.loseClient(clientId);
+    const pushes = f.pushes().length;
+    await f.engine.mutate("create_label", { name: "Must not run", color: "#ff0000" });
+    await until(() => f.engine.status.get().blocked);
+    expect(f.engine.status.get().lastError).toBeInstanceOf(ProtocolError);
+    expect(f.engine.status.get().lastError).toMatchObject({
+      status: 409,
+      message: "client state lost",
+    });
+    const refused = f.fetch.mock.calls.filter(([url]) => String(url).includes("/push?")).at(-1);
+    expect(JSON.parse(String(refused?.[1]?.body)).acknowledged).toBe(1);
+
+    await f.advance(120_000);
+    expect(f.pushes()).toHaveLength(pushes + 1);
+    expect(f.server.records("labels").map((label) => label.name)).toEqual(["Acknowledged"]);
+    expect(f.server.clientState(clientId).last_mutation_id).toBe(0);
+    expect(f.engine.status.get().pending).toBe(1);
+    expect((await f.disk()).outbox).toMatchObject([{ id: 2, name: "create_label" }]);
+  });
+
   describe("a single too-large mutation waits for a final acknowledgement", () => {
-    async function oversized(options: { processed: boolean; reset: boolean }) {
+    async function oversized(options: { processed: boolean; reset: boolean; held?: boolean }) {
       const f = fixture(new MemoryReplicaStorage(), { maxPushBytes: 1500, pageSize: 1 });
       await f.ready();
       f.engine.stop();
@@ -2344,6 +2376,19 @@ describe("pending edits are never frozen or lost", () => {
           name,
           color: "#0000ff",
         });
+      const held: (() => void)[] = [];
+      const delivered: { final: boolean }[] = [];
+      if (options.held) {
+        const original = f.server.fetch;
+        f.fetch.mockImplementation(async (...args) => {
+          if (!String(args[0]).includes("/pull?")) return original(...args);
+          await new Promise<void>((release) => held.push(release));
+          const response = await original(...args);
+          const page = await response.clone().json();
+          delivered.push({ final: !page.more && !page.reset && page.last_mutation_id !== null });
+          return response;
+        });
+      }
       if (options.reset) {
         const original = f.server.fetch;
         let refused = false;
@@ -2359,8 +2404,36 @@ describe("pending edits are never frozen or lost", () => {
         });
       }
       await f.engine.start();
-      return { f, receipt };
+      return { f, receipt, held, delivered };
     }
+
+    it.each([true, false])(
+      "decides only after the final page, with every pull held, processed %s",
+      async (processed) => {
+        const { f, receipt, held, delivered } = await oversized({
+          processed,
+          reset: false,
+          held: true,
+        });
+        let decided = false;
+        void receipt.settled.then(() => (decided = true));
+        for (let step = 0; step < 100 && !decided; step += 1) {
+          await until(() => held.length > 0 || decided);
+          if (decided) break;
+          held.shift()?.();
+          for (let tick = 0; tick < 5; tick += 1) await flush();
+          if (!delivered.some((page) => page.final)) {
+            expect(decided, "decided before a final acknowledgement").toBe(false);
+            expect((await f.disk()).outbox).toHaveLength(1);
+          }
+        }
+        expect(delivered.filter((page) => !page.final).length).toBeGreaterThan(1);
+        await until(() => decided);
+        expect(await receipt.settled).toEqual(
+          processed ? "unknown" : expect.objectContaining({ status: 413 }),
+        );
+      },
+    );
 
     it.each([false, true])(
       "settles unknown when the server processed it, reset %s",

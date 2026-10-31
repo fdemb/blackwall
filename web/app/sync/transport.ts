@@ -22,6 +22,14 @@ export interface StreamOptions {
   signal?: AbortSignal;
 }
 
+export interface PushOptions extends StreamOptions {
+  /**
+   * The highest mutation id this replica holds as acknowledged. The server refuses the batch with
+   * 409 "client state lost" when its own mark is lower. Defaults to 0.
+   */
+  acknowledged?: number;
+}
+
 export interface BootstrapHeader {
   cursor: string;
   last_mutation_id: number;
@@ -183,7 +191,7 @@ export function createTransport(options: TransportOptions) {
       ws: string,
       clientId: string,
       mutations: readonly Mutation[],
-      requestOptions: StreamOptions = {},
+      requestOptions: PushOptions = {},
     ): Promise<PushResponse> {
       const response = await request(path(ws, "push", clientId), {
         method: "POST",
@@ -192,6 +200,7 @@ export function createTransport(options: TransportOptions) {
         body: JSON.stringify({
           client_id: clientId,
           mutations: mutations.map(({ id, name, args, at }) => ({ id, name, args, at })),
+          acknowledged: requestOptions.acknowledged ?? 0,
         }),
       });
       if (!response.ok && response.status !== 503) await fail(response, true);

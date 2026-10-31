@@ -101,7 +101,7 @@ Each request also names the user its replica belongs to, as the `user_id` query 
 
 New table `sync_clients(client_id uuid primary key, workspace_id, user_id, last_mutation_id bigint, updated_at)`. The client creates its `client_id` when it creates a replica. The server inserts the row on first use. A `client_id` registered to another user or workspace is rejected with 400.
 
-Rows are never pruned. A replica outlives its session, so a client that comes back after any number of days still needs its `last_mutation_id`: without the row, the server would run a mutation it already processed a second time. A row is a few dozen bytes. Deleting the workspace or the user deletes the row and its rejections (`ON DELETE CASCADE`). The server's number only grows, so a client that reads a lower acknowledged id than its replica holds stops pushing and reports a protocol error.
+Rows are never pruned. A replica outlives its session, so a client that comes back after any number of days still needs its `last_mutation_id`: without the row, the server would run a mutation it already processed a second time. A row is a few dozen bytes. Deleting the workspace or the user deletes the row and its rejections (`ON DELETE CASCADE`). The server's number only grows, so a client that reads a lower acknowledged id than its replica holds stops pushing and reports a protocol error. Push enforces the same rule on the server (see Push), so a request can't run before a read has noticed the loss.
 
 ### Cursor
 
@@ -195,21 +195,24 @@ The transaction opens with one query that checks membership, reads the client's 
   "client_id": "…",
   "mutations": [
     { "id": 18, "name": "update_issue", "args": { "id": "…", "patch": { "title": "New" } }, "at": "2026-10-08T12:00:00Z" }
-  ]
+  ],
+  "acknowledged": 17
 }
 ```
 
+- `acknowledged` is the highest mutation id the client has seen acknowledged by a final pull or a bootstrap and persisted. It defaults to 0 and a negative value is 400.
 - `name` plus `args` form a `Command` as `{"type": name, ...args}`. `at` must parse as RFC 3339; the server doesn't otherwise use it.
 - A request holds 1 to 100 mutations. Ids are positive and strictly increasing within the batch; gaps are fine.
-- The whole request fails with nothing processed when the actor isn't a member (403), the `client_id` belongs to another user or workspace (400), or the batch shape is wrong (400).
+- The whole request fails with nothing processed when the actor isn't a member (403), the `client_id` belongs to another user or workspace (400), the batch shape is wrong (400), or the client's state was lost (409 `{"error": "client state lost"}`).
 
 The server handles the mutations in order. For each one, it runs one transaction that:
 
 1. Opens the operation the same way the REST command path does, and locks the `sync_clients` row (inserting it on first use).
-2. Skips applying the mutation when `id <= last_mutation_id`, because it was already processed. If `sync_rejections` holds its outcome, returns `rejected` with the original `{status, message}`. Otherwise returns `duplicate`, which means applied unless the rejection was pruned (see the client policy below). Ids must increase but may have gaps.
-3. Runs the command through the same store code the REST command endpoint uses, without version preconditions and without an idempotency key, inside a savepoint. `add_attachment` and `attach_comment_file` are rejected; uploads go through the REST upload endpoint. So are the online-only commands listed under "Online-only operations", with 400 and "use the commands endpoint".
-4. On a rejectable error, rolls back the command's writes to the savepoint, which also makes the transaction usable again, and records `rejected` with the `{status, message}` the REST endpoint returns for that error. Inserts that outcome into `sync_rejections` and deletes all but the client's 1,000 most recent rejections in the same transaction.
-5. Sets `last_mutation_id = id` and commits, so rejected mutations still advance the id.
+2. Refuses the batch when the locked row's `last_mutation_id` is lower than the request's `acknowledged`, which includes a missing row when `acknowledged > 0`. The transaction rolls back, so a row it just inserted disappears and nothing is applied. The client already holds an acknowledgement the server no longer remembers, for example after a database restore, and running its mutations again would apply them twice. The check sits in the push transaction rather than in a client-side gate because a push can start before any read has run: a reconnect, a leadership change and an unblock all start one.
+3. Skips applying the mutation when `id <= last_mutation_id`, because it was already processed. If `sync_rejections` holds its outcome, returns `rejected` with the original `{status, message}`. Otherwise returns `duplicate`, which means applied unless the rejection was pruned (see the client policy below). Ids must increase but may have gaps.
+4. Runs the command through the same store code the REST command endpoint uses, without version preconditions and without an idempotency key, inside a savepoint. `add_attachment` and `attach_comment_file` are rejected; uploads go through the REST upload endpoint. So are the online-only commands listed under "Online-only operations", with 400 and "use the commands endpoint".
+5. On a rejectable error, rolls back the command's writes to the savepoint, which also makes the transaction usable again, and records `rejected` with the `{status, message}` the REST endpoint returns for that error. Inserts that outcome into `sync_rejections` and deletes all but the client's 1,000 most recent rejections in the same transaction.
+6. Sets `last_mutation_id = id` and commits, so rejected mutations still advance the id.
 
 `sync_rejections(client_id uuid, mutation_id bigint, status smallint, message text)` has a primary key on `(client_id, mutation_id)`. All columns are non-null. Its foreign key to `sync_clients(client_id)` cascades deletes, so pruning a client also removes its rejections.
 
@@ -242,6 +245,7 @@ The client never lets one mutation freeze the outbox or silently drop a user's e
 | 413 on a single mutation | Read through the normal read lane to a final page (`more: false`), or until a reset's bootstrap completes, then check the acknowledgement. If the server already processed the id, settle it as `"unknown"` and drop it from the outbox. Otherwise set it aside as "too large to save". |
 | 403 | Refresh CSRF and check access with a read. If access is gone, stop the engine and keep the replica (see Session lifetime). Otherwise retry once, then block. |
 | 401, including `account changed` | Stop the engine and keep the replica. Nothing retries. |
+| 409 `client state lost` | Block pushing and report a protocol error. The edits stay in the outbox. The server holds a lower acknowledged id than this replica, so pushing would run an applied mutation again. |
 | Any other 4xx | Block pushing until the user retries or reloads. |
 
 A 5xx says nothing about the mutation: the server answers 503 only for a transient failure and records deterministic failures as `rejected` with status 500. So no number of 5xx answers or timeouts discards an edit. Retry delays grow to 30 seconds, and a `Retry-After` header lengthens them. `stalled` in the engine status turns the offline banner into "The server isn't saving your changes yet" and the save status into "Can't send". It clears on the next push that gets an answer.

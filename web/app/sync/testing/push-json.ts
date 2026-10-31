@@ -41,7 +41,7 @@ export async function extractPushJson(request: Request): Promise<unknown> {
   };
   if (!root.fields) reject(root, "", `invalid type: ${actual(root)}, expected struct PushRequest`);
   for (const duplicate of root.duplicates ?? []) {
-    if (["client_id", "mutations"].includes(duplicate.key))
+    if (["client_id", "mutations", "acknowledged"].includes(duplicate.key))
       reject({ ...root, end: duplicate.end }, "", `duplicate field \`${duplicate.key}\``);
   }
   // Check fields in input order, as the streaming Serde deserializer does.
@@ -55,6 +55,9 @@ export async function extractPushJson(request: Request): Promise<unknown> {
       ) {
         reject(node, key, `UUID parsing failed: invalid length: found ${node.value.length}`);
       }
+    } else if (key === "acknowledged") {
+      if (typeof node.value !== "number" || /[.eE]/.test(source.slice(node.start, node.end)))
+        reject(node, key, `invalid type: ${actual(node)}, expected i64`);
     } else if (key === "mutations") {
       if (!node.items) reject(node, key, `invalid type: ${actual(node)}, expected a sequence`);
       for (const [index, mutation] of (node.items ?? []).entries()) {
