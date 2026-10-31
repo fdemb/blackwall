@@ -371,7 +371,7 @@ impl Operation<'_> {
         for user in mentions {
             sqlx::query!(
                 "INSERT INTO comment_mentions(workspace_id,comment_id,user_id) \
-                VALUES($1,$2,$3)",
+                VALUES($1,$2,$3) ON CONFLICT DO NOTHING",
                 self.workspace_id,
                 comment_id,
                 *user,
@@ -472,8 +472,7 @@ impl Operation<'_> {
         .execute(&mut *self.tx)
         .await?;
         let old: BTreeSet<Uuid> = sqlx::query_scalar!(
-            "DELETE FROM comment_mentions WHERE workspace_id=$1 AND comment_id=$2 \
-            RETURNING user_id",
+            "SELECT user_id FROM comment_mentions WHERE workspace_id=$1 AND comment_id=$2",
             self.workspace_id,
             id,
         )
@@ -481,6 +480,15 @@ impl Operation<'_> {
         .await?
         .into_iter()
         .collect();
+        let kept: Vec<Uuid> = mentions.iter().copied().collect();
+        sqlx::query!(
+            "DELETE FROM comment_mentions WHERE workspace_id=$1 AND comment_id=$2 AND user_id<>ALL($3)",
+            self.workspace_id,
+            id,
+            &kept,
+        )
+        .execute(&mut *self.tx)
+        .await?;
         self.insert_mentions(id, &mentions).await?;
 
         let issue_id: Uuid = row.try_get("issue_id")?;

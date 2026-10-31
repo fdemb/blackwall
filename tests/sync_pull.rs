@@ -782,7 +782,7 @@ async fn pull_many_small_transactions_stay_bounded() {
         "Edited"
     );
     // Count reflected rows rather than cluster-wide txid gaps, which other
-    // tests can widen. The cap is crossed after exactly 20,001 window rows.
+    // tests can widen. The page takes exactly 20,000 window rows.
     let delivered: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM changes WHERE workspace_id = $1 AND txid >= $2 AND txid < $3",
     )
@@ -792,7 +792,7 @@ async fn pull_many_small_transactions_stay_bounded() {
     .fetch_one(&store.pool)
     .await
     .unwrap();
-    assert_eq!(delivered, 20_001);
+    assert_eq!(delivered, 20_000);
 
     // Paging from there completes with the single issue delivered.
     let page_two = pull_ok(&app, &owner.token, ws, client, Some(&cursor_of(&page_one))).await;
@@ -1156,8 +1156,24 @@ async fn pull_redelivers_a_displaced_partial_when_a_lower_transaction_commits() 
     database.cleanup().await;
 }
 
+/// The `(txid, row)` a cursor names as its partial transaction.
+fn partial_of(cursor: &str) -> Option<(i64, i64)> {
+    let (txid, row) = cursor.split(':').nth(3)?.split_once('.')?;
+    Some((txid.parse().unwrap(), row.parse().unwrap()))
+}
+
+async fn rows_between(store: &Store, txid: i64, after: i64, upto: i64) -> i64 {
+    sqlx::query_scalar("SELECT count(*) FROM changes WHERE txid = $1 AND id > $2 AND id <= $3")
+        .bind(txid)
+        .bind(after)
+        .bind(upto)
+        .fetch_one(&store.pool)
+        .await
+        .unwrap()
+}
+
 #[tokio::test]
-async fn pull_row_cap_finishes_transaction_across_batches() {
+async fn pull_row_cap_cuts_inside_the_first_transaction_across_batches() {
     let database = support::TestDatabase::new().await;
     let store = Store::connect(&database.url).await.unwrap();
     let app = router(store.clone());
@@ -1180,7 +1196,7 @@ async fn pull_row_cap_finishes_transaction_across_batches() {
     .execute(&mut *tx)
     .await
     .unwrap();
-    mark_issues(&mut tx, ws, &[first]).await;
+    let txid = mark_issues(&mut tx, ws, &[first]).await;
     tx.commit().await.unwrap();
     let mut conn = store.pool.acquire().await.unwrap();
     mark_issues(&mut conn, ws, &[second]).await;
@@ -1188,29 +1204,118 @@ async fn pull_row_cap_finishes_transaction_across_batches() {
 
     let pages = pull_pages(&app, &owner.token, ws, client, &before).await;
     assert_eq!(pages.len(), 2);
+    let (cut_txid, row) = partial_of(&cursor_of(&pages[0])).expect("the first page cuts inside");
+    assert_eq!(cut_txid, txid);
+    assert_eq!(rows_between(&store, txid, 0, row).await, 20_000);
+    assert!(pages[0]["changes"].as_array().unwrap().is_empty());
     assert_eq!(
-        record(&pages[0]["changes"], "issues", &first.to_string()),
+        record(&pages[1]["changes"], "issues", &first.to_string()),
         Some(&Value::Null)
-    );
-    assert!(record(&pages[0]["changes"], "issues", &second.to_string()).is_none());
-    let delivered: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM changes WHERE workspace_id = $1 AND txid >= $2 AND txid < $3",
-    )
-    .bind(ws)
-    .bind(cursor_xmax(&before))
-    .bind(cursor_xmax(&cursor_of(&pages[0])))
-    .fetch_one(&store.pool)
-    .await
-    .unwrap();
-    assert_eq!(
-        delivered, 20_006,
-        "the first page holds the whole transaction"
     );
     assert_eq!(
         paged_records(&pages),
         changed_since(&store, ws, owner.profile.id, cursor_xmax(&before)).await
     );
     assert_eq!(paged_records(&pages).len(), 2);
+
+    drop(app);
+    store.pool.close().await;
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn pull_scans_a_bounded_number_of_rows_in_a_transaction_of_repeats() {
+    let database = support::TestDatabase::new().await;
+    let store = Store::connect(&database.url).await.unwrap();
+    let app = router(store.clone());
+    let owner = account(&store, "owner").await;
+    let (ws, _) = setup(&app, &owner).await;
+    let client = Uuid::new_v4();
+    let before = cursor_of(&pull_ok(&app, &owner.token, ws, client, None).await);
+
+    let hot = Uuid::new_v4();
+    let others: Vec<Uuid> = (0..3).map(|_| Uuid::new_v4()).collect();
+    let mut tx = store.pool.begin().await.unwrap();
+    mark_repeatedly(&mut tx, ws, hot, 45_000).await;
+    mark_all(&mut tx, ws, &others).await;
+    mark_repeatedly(&mut tx, ws, hot, 5).await;
+    let txid: i64 = sqlx::query_scalar("SELECT pg_current_xact_id()::text::bigint")
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    let pages = pull_pages(&app, &owner.token, ws, client, &before).await;
+    assert_eq!(pages.len(), 3);
+    let mut after = 0;
+    for page in &pages[..2] {
+        let (cut_txid, row) = partial_of(&cursor_of(page)).expect("the page cuts inside");
+        assert_eq!(cut_txid, txid);
+        assert!(row > after, "the cursor advances every page");
+        assert_eq!(rows_between(&store, txid, after, row).await, 20_000);
+        assert_eq!(page_pairs(page).len(), 1, "repeats collapse across batches");
+        after = row;
+    }
+    let last = pages.last().unwrap();
+    assert_eq!(page_pairs(last).len(), 4);
+    assert_eq!(last["last_mutation_id"], 0);
+    assert_eq!(cursor_of(last).split(':').count(), 3);
+    let delivered = paged_records(&pages);
+    assert_eq!(
+        delivered,
+        changed_since(&store, ws, owner.profile.id, cursor_xmax(&before)).await
+    );
+    assert_eq!(delivered.len(), 4);
+
+    drop(app);
+    store.pool.close().await;
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn pull_defers_an_oversized_transaction_that_follows_others() {
+    let database = support::TestDatabase::new().await;
+    let store = Store::connect(&database.url).await.unwrap();
+    let app = router(store.clone());
+    let owner = account(&store, "owner").await;
+    let (ws, _) = setup(&app, &owner).await;
+    let client = Uuid::new_v4();
+    let before = cursor_of(&pull_ok(&app, &owner.token, ws, client, None).await);
+
+    let small: Vec<Uuid> = (0..3).map(|_| Uuid::new_v4()).collect();
+    let mut conn = store.pool.acquire().await.unwrap();
+    mark_issues(&mut conn, ws, &small).await;
+    drop(conn);
+    let hot = Uuid::new_v4();
+    let mut tx = store.pool.begin().await.unwrap();
+    mark_repeatedly(&mut tx, ws, hot, 25_000).await;
+    let txid: i64 = sqlx::query_scalar("SELECT pg_current_xact_id()::text::bigint")
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    let pages = pull_pages(&app, &owner.token, ws, client, &before).await;
+    assert_eq!(pages.len(), 3);
+    assert_eq!(
+        page_pairs(&pages[0]).len(),
+        3,
+        "the small transaction goes first"
+    );
+    assert!(
+        partial_of(&cursor_of(&pages[0])).is_none(),
+        "the oversized one waits whole: {}",
+        cursor_of(&pages[0])
+    );
+    let (cut_txid, row) = partial_of(&cursor_of(&pages[1])).expect("then it spans pages");
+    assert_eq!(cut_txid, txid);
+    assert_eq!(rows_between(&store, txid, 0, row).await, 20_000);
+    assert_eq!(page_pairs(&pages[1]), page_pairs(&pages[2]));
+    assert_eq!(pages[2]["last_mutation_id"], 0);
+    assert_eq!(
+        paged_records(&pages),
+        changed_since(&store, ws, owner.profile.id, cursor_xmax(&before)).await
+    );
 
     drop(app);
     store.pool.close().await;
@@ -2604,6 +2709,232 @@ async fn project_plan_syncs_and_survives_update_project() {
     assert_eq!(record["start_date"], "2026-11-01");
     assert_eq!(record["target_date"], "2026-12-15");
     assert_eq!(record["version"], 3);
+
+    drop(app);
+    store.pool.close().await;
+    database.cleanup().await;
+}
+
+async fn max_change_id(store: &Store) -> i64 {
+    sqlx::query_scalar("SELECT COALESCE(max(id), 0) FROM changes")
+        .fetch_one(&store.pool)
+        .await
+        .unwrap()
+}
+
+async fn issue_change_rows(store: &Store, issue: Uuid, after: i64) -> i64 {
+    sqlx::query_scalar("SELECT count(*) FROM changes WHERE entity_id = $1 AND id > $2")
+        .bind(issue)
+        .bind(after)
+        .fetch_one(&store.pool)
+        .await
+        .unwrap()
+}
+
+/// Row versions of the issue's links, so a rewritten link shows as a new xmin.
+async fn link_versions(store: &Store, issue: Uuid) -> Vec<(String, String, String)> {
+    sqlx::query_as(
+        "SELECT 'label', label_id::text, xmin::text FROM issue_labels WHERE issue_id = $1 \
+         UNION ALL \
+         SELECT 'dependency', dependency_id::text, xmin::text FROM issue_dependencies \
+         WHERE issue_id = $1 ORDER BY 1, 2",
+    )
+    .bind(issue)
+    .fetch_all(&store.pool)
+    .await
+    .unwrap()
+}
+
+async fn update_fields(store: &Store, issue: Uuid) -> Vec<String> {
+    let fields: String = sqlx::query_scalar(
+        "SELECT fields::text FROM activity WHERE entity_id = $1 AND action = 'update_issue' \
+         ORDER BY at DESC, id DESC LIMIT 1",
+    )
+    .bind(issue)
+    .fetch_one(&store.pool)
+    .await
+    .unwrap();
+    serde_json::from_str(&fields).unwrap()
+}
+
+#[tokio::test]
+async fn saving_an_issue_writes_only_the_links_that_changed() {
+    let database = support::TestDatabase::new().await;
+    let store = Store::connect(&database.url).await.unwrap();
+    let app = router(store.clone());
+    let owner = account(&store, "owner").await;
+    let (ws, team) = setup(&app, &owner).await;
+    let label = |name: &'static str| {
+        let (app, owner) = (&app, &owner);
+        async move {
+            created(
+                app,
+                owner,
+                ws,
+                json!({"type": "create_label", "name": name, "color": "#000000"}),
+            )
+            .await
+        }
+    };
+    let (red, blue) = (label("red").await, label("blue").await);
+    let issue_titled = |title: &'static str| json!({"team_id": team, "title": title});
+    let first_dep = created(
+        &app,
+        &owner,
+        ws,
+        json!({"type": "create_issue", "input": issue_titled("First dependency")}),
+    )
+    .await;
+    let second_dep = created(
+        &app,
+        &owner,
+        ws,
+        json!({"type": "create_issue", "input": issue_titled("Second dependency")}),
+    )
+    .await;
+    let issue = created(
+        &app,
+        &owner,
+        ws,
+        json!({"type": "create_issue", "input": {
+            "team_id": team, "title": "Linked", "labels": [red], "dependencies": [first_dep]
+        }}),
+    )
+    .await;
+    let update = |patch: Value| {
+        let (app, owner) = (&app, &owner);
+        let store = &store;
+        async move {
+            let after = max_change_id(store).await;
+            let (status, result) = command(
+                app,
+                owner,
+                ws,
+                json!({"type": "update_issue", "id": issue, "patch": patch}),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{result}");
+            issue_change_rows(store, issue, after).await
+        }
+    };
+
+    let baseline = update(json!({"title": "Retitled"})).await;
+    assert_eq!(update_fields(&store, issue).await, ["title"]);
+    let stored = link_versions(&store, issue).await;
+    assert_eq!(stored.len(), 2);
+
+    let unchanged = update(json!({
+        "title": "Retitled again", "labels": [red], "dependencies": [first_dep]
+    }))
+    .await;
+    assert_eq!(unchanged, baseline, "unchanged links write no change rows");
+    assert_eq!(update_fields(&store, issue).await, ["title"]);
+    assert_eq!(link_versions(&store, issue).await, stored);
+
+    let added = update(json!({"labels": {"add": [blue]}})).await;
+    assert_eq!(update_fields(&store, issue).await, ["labels"]);
+    assert_eq!(added, baseline + 1, "one inserted link, one change row");
+    let after_add = link_versions(&store, issue).await;
+    assert_eq!(after_add.len(), 3);
+    assert!(
+        stored.iter().all(|link| after_add.contains(link)),
+        "the existing links were left alone"
+    );
+
+    let removed = update(json!({"labels": {"remove": [blue]}})).await;
+    assert_eq!(removed, baseline + 1, "one deleted link, one change row");
+    assert_eq!(link_versions(&store, issue).await, stored);
+
+    let more_deps = update(json!({"dependencies": [first_dep, second_dep]})).await;
+    assert_eq!(update_fields(&store, issue).await, ["dependencies"]);
+    assert_eq!(more_deps, baseline + 1);
+    let fewer_deps = update(json!({"dependencies": [second_dep]})).await;
+    assert_eq!(fewer_deps, baseline + 1);
+    let swapped = link_versions(&store, issue).await;
+    let dependencies: Vec<&str> = swapped
+        .iter()
+        .filter(|link| link.0 == "dependency")
+        .map(|link| link.1.as_str())
+        .collect();
+    assert_eq!(dependencies, [second_dep.to_string()]);
+    let labels: Vec<&str> = swapped
+        .iter()
+        .filter(|link| link.0 == "label")
+        .map(|link| link.1.as_str())
+        .collect();
+    assert_eq!(labels, [red.to_string()]);
+
+    drop(app);
+    store.pool.close().await;
+    database.cleanup().await;
+}
+
+async fn row_versions(store: &Store, sql: &str, parent: Uuid) -> Vec<(String, String)> {
+    sqlx::query_as(sql)
+        .bind(parent)
+        .fetch_all(&store.pool)
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn replacing_team_members_and_mentions_writes_only_the_difference() {
+    let database = support::TestDatabase::new().await;
+    let store = Store::connect(&database.url).await.unwrap();
+    let app = router(store.clone());
+    let owner = account(&store, "owner").await;
+    let member = account(&store, "member").await;
+    let (ws, team) = setup(&app, &owner).await;
+    invite_member(&app, &owner, ws, &member).await;
+    let run = |cmd: Value| {
+        let (app, owner) = (&app, &owner);
+        async move {
+            let (status, result) = command(app, owner, ws, cmd).await;
+            assert_eq!(status, StatusCode::OK, "{result}");
+        }
+    };
+
+    let members_sql =
+        "SELECT user_id::text, xmin::text FROM team_members WHERE team_id = $1 ORDER BY 1";
+    let owner_only = row_versions(&store, members_sql, team).await;
+    assert_eq!(owner_only.len(), 1);
+    let both = json!([owner.profile.id, member.profile.id]);
+    run(json!({"type": "set_team_members", "id": team, "members": both})).await;
+    let with_member = row_versions(&store, members_sql, team).await;
+    assert_eq!(with_member.len(), 2);
+    assert!(
+        with_member.contains(&owner_only[0]),
+        "the owner's row was left alone"
+    );
+    run(json!({"type": "set_team_members", "id": team, "members": both})).await;
+    assert_eq!(row_versions(&store, members_sql, team).await, with_member);
+    run(json!({"type": "set_team_members", "id": team, "members": [owner.profile.id]})).await;
+    assert_eq!(row_versions(&store, members_sql, team).await, owner_only);
+
+    let issue = created(
+        &app,
+        &owner,
+        ws,
+        json!({"type": "create_issue", "input": {"team_id": team, "title": "Discussed"}}),
+    )
+    .await;
+    let comment = created(
+        &app,
+        &owner,
+        ws,
+        json!({"type": "add_comment", "issue_id": issue, "body": "Hello", "mentions": [member.profile.id]}),
+    )
+    .await;
+    let mentions_sql =
+        "SELECT user_id::text, xmin::text FROM comment_mentions WHERE comment_id = $1 ORDER BY 1";
+    let mentioned = row_versions(&store, mentions_sql, comment).await;
+    assert_eq!(mentioned.len(), 1);
+    run(json!({"type": "edit_comment", "id": comment, "body": "Hello again", "mentions": [member.profile.id]})).await;
+    assert_eq!(row_versions(&store, mentions_sql, comment).await, mentioned);
+    run(json!({"type": "edit_comment", "id": comment, "body": "Nobody", "mentions": []})).await;
+    assert!(row_versions(&store, mentions_sql, comment).await.is_empty());
+    run(json!({"type": "edit_comment", "id": comment, "body": "Again", "mentions": [member.profile.id]})).await;
+    assert_eq!(row_versions(&store, mentions_sql, comment).await.len(), 1);
 
     drop(app);
     store.pool.close().await;
