@@ -1354,7 +1354,7 @@
     "/internal-api/workspaces/{id}/sync/events": {
       "get": {
         "tags": ["sync"],
-        "description": "Server-sent pokes for workspace commits. Sends one poke on connect and one per commit, coalesced to one per 250 ms with keep-alive comments every 15 seconds. Each stream ends after 30 minutes; clients reconnect.",
+        "description": "Server-sent pokes for workspace commits. Sends one poke on connect and one per commit, coalesced to one per 250 ms with keep-alive comments every 15 seconds. A poke's data is {\"txid\": n, \"epoch\": \"...\"}, the highest committing transaction it stands for and the epoch of the history that transaction belongs to, or {} when the client cannot tell what changed and must pull. A client may skip the pull only when the epoch equals its cursor's epoch, its cursor's xip is empty and txid is below its cursor's xmax. Each stream ends after 30 minutes; clients reconnect.",
         "operationId": "events",
         "parameters": [
           {

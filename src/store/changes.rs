@@ -50,30 +50,71 @@ pub(super) enum RecordShape {
     Sync,
 }
 
+/// How the record column leaves the query: as `jsonb` for the driver to
+/// decode, or as the JSON text itself for a caller that forwards the bytes.
+#[derive(Clone, Copy)]
+pub(super) enum Column {
+    Json,
+    Text,
+}
+
+impl Column {
+    fn wrap(self, expression: &str) -> String {
+        let cast = match self {
+            Column::Json => "jsonb",
+            Column::Text => "text",
+        };
+        format!("({expression})::{cast}")
+    }
+}
+
 /// The same selection and visibility rules serve command responses and sync reads.
 pub(super) fn select(
     workspace: Uuid,
     actor: Uuid,
     kind: &str,
     shape: RecordShape,
+    column: Column,
 ) -> Result<QueryBuilder<'static, Postgres>> {
-    let mut q = match kind {
-        "workspace" => QueryBuilder::<Postgres>::new(
-            "SELECT w.id,jsonb_build_object('id',w.id,'name',w.name,'slug',w.slug,'version',w.version) \
-             FROM workspaces w WHERE w.id=",
-        ),
-        "members" => QueryBuilder::new(format!(
-            "SELECT u.id,{MEMBER_JSON} FROM workspace_members m JOIN users u ON u.id=m.user_id \
-             WHERE m.workspace_id="
-        )),
+    let mut q = QueryBuilder::<Postgres>::new("");
+    push_select(&mut q, workspace, actor, kind, shape, column)?;
+    Ok(q)
+}
+
+/// Appends `SELECT <id>, <record> FROM ... WHERE <workspace and visibility>`.
+fn push_select(
+    q: &mut QueryBuilder<'static, Postgres>,
+    workspace: Uuid,
+    actor: Uuid,
+    kind: &str,
+    shape: RecordShape,
+    column: Column,
+) -> Result<()> {
+    match kind {
+        "workspace" => {
+            q.push(format!(
+                "SELECT w.id,{} FROM workspaces w WHERE w.id=",
+                column.wrap(
+                    "jsonb_build_object('id',w.id,'name',w.name,'slug',w.slug,'version',w.version)"
+                )
+            ));
+        }
+        "members" => {
+            q.push(format!(
+                "SELECT u.id,{} FROM workspace_members m JOIN users u ON u.id=m.user_id \
+                 WHERE m.workspace_id=",
+                column.wrap(MEMBER_JSON)
+            ));
+        }
         "issues" => {
             let expression = match shape {
                 RecordShape::Rest => ISSUE_JSON,
                 RecordShape::Sync => SYNC_ISSUE_JSON,
             };
-            QueryBuilder::new(format!(
-                "SELECT i.id,{expression} FROM issues i WHERE i.workspace_id="
-            ))
+            q.push(format!(
+                "SELECT i.id,{} FROM issues i WHERE i.workspace_id=",
+                column.wrap(expression)
+            ));
         }
         kind => {
             let (table, expression, _) = collection_select(kind)?;
@@ -81,20 +122,22 @@ pub(super) fn select(
                 ("integrations", RecordShape::Sync) => SYNC_INTEGRATION_JSON,
                 _ => expression,
             };
-            QueryBuilder::new(format!(
-                "SELECT t.{},{expression} FROM {table} WHERE t.workspace_id=",
-                key_column(kind)
-            ))
+            q.push(format!(
+                "SELECT t.{},{} FROM {table} WHERE t.workspace_id=",
+                key_column(kind),
+                column.wrap(expression)
+            ));
         }
-    };
+    }
     q.push_bind(workspace);
     if !matches!(kind, "workspace" | "members" | "issues") {
-        push_visibility(&mut q, kind, actor);
+        push_visibility(q, kind, actor);
     }
-    Ok(q)
+    Ok(())
 }
 
 /// Fills each change with the record's current state as the actor sees it.
+/// All entity kinds read in one round trip.
 pub(super) async fn render(
     conn: &mut PgConnection,
     workspace: Uuid,
@@ -109,26 +152,36 @@ pub(super) async fn render(
             .or_default()
             .push(change.id);
     }
+    if kinds.is_empty() {
+        return Ok(());
+    }
 
-    let mut records: BTreeMap<(String, Uuid), Value> = BTreeMap::new();
-    for (kind, ids) in kinds {
-        let mut q = select(workspace, actor, &kind, shape)?;
-
+    let mut q = QueryBuilder::<Postgres>::new("");
+    for (position, (kind, ids)) in kinds.into_iter().enumerate() {
+        if position > 0 {
+            q.push(" UNION ALL ");
+        }
+        // Each branch is a complete SELECT; the kind rides along as a column.
+        q.push("SELECT ")
+            .push_bind(kind.clone())
+            .push(" AS kind,r.* FROM (");
+        push_select(&mut q, workspace, actor, &kind, shape, Column::Json)?;
         match kind.as_str() {
             "workspace" => q.push(" AND w.id=ANY("),
             "members" => q.push(" AND u.id=ANY("),
             "issues" => q.push(" AND i.id=ANY("),
             kind => q.push(format!(" AND t.{}=ANY(", key_column(kind))),
         };
-        q.push_bind(ids).push(")");
+        q.push_bind(ids).push(")) AS r(id,record)");
+    }
 
-        for (id, record) in q
-            .build_query_as::<(Uuid, Value)>()
-            .fetch_all(&mut *conn)
-            .await?
-        {
-            records.insert((kind.clone(), id), record);
-        }
+    let mut records: BTreeMap<(String, Uuid), Value> = BTreeMap::new();
+    for (kind, id, record) in q
+        .build_query_as::<(String, Uuid, Value)>()
+        .fetch_all(&mut *conn)
+        .await?
+    {
+        records.insert((kind, id), record);
     }
 
     for change in changes {

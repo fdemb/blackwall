@@ -330,7 +330,7 @@ impl Store {
     /// Pokes a workspace's live `/sync/events` streams. Tests use it to
     /// flood subscribers without touching the database.
     pub fn sync_broadcast_poke(&self, workspace: WorkspaceId) {
-        self.sync_pokes.poke(workspace.0);
+        self.sync_pokes.poke(workspace.0, Default::default());
     }
 
     /// Ends open `/sync/events` streams and refuses to hold new ones open.
@@ -351,9 +351,8 @@ impl Store {
     /// proxy to fail connects without touching database roles.
     pub fn spawn_sync_events_with_url(&self, database_url: &str) -> tokio::task::JoinHandle<()> {
         crate::sync_events::spawn_listener(
-            self.pool.clone(),
+            self.clone(),
             database_url.to_owned(),
-            self.sync_pokes.clone(),
             self.sync_events.reconnect_delay,
         )
     }

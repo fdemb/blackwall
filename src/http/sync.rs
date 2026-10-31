@@ -1,5 +1,6 @@
 use super::*;
 use crate::store::{PullResponse, PushRequest, PushResponse, ScopeResponse, SyncScope};
+use crate::sync_events::Poke;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use tokio_stream::Stream;
 use tokio_stream::wrappers::ReceiverStream;
@@ -151,8 +152,14 @@ pub struct EventsQuery {
     pub client_id: Option<String>,
 }
 
-fn poke_event() -> Event {
-    Event::default().event("poke").data("{}")
+fn poke_event(poke: Poke) -> Event {
+    let data = match poke {
+        Poke::Commit { epoch, txid } => {
+            format!("{{\"txid\":{txid},\"epoch\":\"{}\"}}", epoch.simple())
+        }
+        Poke::Wildcard => "{}".to_owned(),
+    };
+    Event::default().event("poke").data(data)
 }
 
 #[utoipa::path(
@@ -160,7 +167,7 @@ fn poke_event() -> Event {
     path = "/internal-api/workspaces/{id}/sync/events",
     params(("id" = Uuid, Path), EventsQuery),
     responses((status = 200, content_type = "text/event-stream")),
-    description = "Server-sent pokes for workspace commits. Sends one poke on connect and one per commit, coalesced to one per 250 ms with keep-alive comments every 15 seconds. Each stream ends after 30 minutes; clients reconnect."
+    description = "Server-sent pokes for workspace commits. Sends one poke on connect and one per commit, coalesced to one per 250 ms with keep-alive comments every 15 seconds. A poke's data is {\"txid\": n, \"epoch\": \"...\"}, the highest committing transaction it stands for and the epoch of the history that transaction belongs to, or {} when the client cannot tell what changed and must pull. A client may skip the pull only when the epoch equals its cursor's epoch, its cursor's xip is empty and txid is below its cursor's xmax. Each stream ends after 30 minutes; clients reconnect."
 )]
 pub(super) async fn events(
     State(store): State<Store>,
@@ -188,7 +195,7 @@ pub(super) async fn events(
 
 type PokeSender = tokio::sync::mpsc::Sender<std::result::Result<Event, std::convert::Infallible>>;
 
-/// Sends one poke at once, then one per commit to the subscriber's
+/// Sends one wildcard poke at once, then one per commit to the subscriber's
 /// workspace, at most one per coalesce window, until the stream's lifetime
 /// ends, the client leaves, or the server shuts down.
 async fn forward_pokes(
@@ -197,11 +204,11 @@ async fn forward_pokes(
     mut shutdown: tokio::sync::watch::Receiver<bool>,
     config: crate::store::SyncEventsConfig,
 ) {
-    if sender.try_send(Ok(poke_event())).is_err() {
+    if sender.try_send(Ok(poke_event(Poke::Wildcard))).is_err() {
         return;
     }
     let mut last_send = tokio::time::Instant::now();
-    let mut pending = false;
+    let mut pending: Option<Poke> = None;
     let deadline = tokio::time::Instant::now() + config.lifetime;
     loop {
         let window_end = last_send + config.coalesce;
@@ -210,38 +217,42 @@ async fn forward_pokes(
             _ = tokio::time::sleep_until(deadline) => break,
             _ = sender.closed() => break,
             _ = shutdown.wait_for(|stop| *stop) => break,
-            _ = tokio::time::sleep_until(window_end), if pending => {
-                // A full channel already holds a poke that covers the burst.
-                if !try_poke(&sender) {
+            _ = tokio::time::sleep_until(window_end), if pending.is_some() => {
+                if let Some(poke) = pending.take()
+                    && !offer(&sender, poke, &mut pending, &mut last_send)
+                {
                     break;
                 }
-                last_send = tokio::time::Instant::now();
-                pending = false;
             },
             received = subscriber.recv() => {
-                // A gap means something was missed: pull.
-                if matches!(received, Err(tokio::sync::broadcast::error::RecvError::Closed)) {
-                    break;
-                }
-                if pending || last_send.elapsed() < config.coalesce {
-                    pending = true;
+                let Some(poke) = received else { break };
+                let poke = pending.take().map_or(poke, |held| held.merge(poke));
+                if last_send.elapsed() < config.coalesce {
+                    pending = Some(poke);
                     continue;
                 }
-                match sender.try_send(Ok(poke_event())) {
-                    Ok(()) => last_send = tokio::time::Instant::now(),
-                    // A poke is already queued for delivery.
-                    Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {}
-                    Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => break,
+                if !offer(&sender, poke, &mut pending, &mut last_send) {
+                    break;
                 }
             },
         }
     }
 }
 
-/// Queues a poke unless one is already waiting. False once the client is gone.
-fn try_poke(sender: &PokeSender) -> bool {
-    !matches!(
-        sender.try_send(Ok(poke_event())),
-        Err(tokio::sync::mpsc::error::TrySendError::Closed(_))
-    )
+/// Queues a poke. While the reader still holds an earlier one the channel is
+/// full, so the poke goes back to `pending` to merge with later ones and
+/// retry after another window. False once the client is gone.
+fn offer(
+    sender: &PokeSender,
+    poke: Poke,
+    pending: &mut Option<Poke>,
+    last_send: &mut tokio::time::Instant,
+) -> bool {
+    match sender.try_send(Ok(poke_event(poke))) {
+        Ok(()) => {}
+        Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => *pending = Some(poke),
+        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => return false,
+    }
+    *last_send = tokio::time::Instant::now();
+    true
 }

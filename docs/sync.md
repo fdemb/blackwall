@@ -147,6 +147,8 @@ Keep the `changes` table, its triggers and `change_horizon`. They are correct an
 {"end":true,"records":42}
 ```
 
+The server writes each record as the JSON text PostgreSQL produced, without decoding it, so key order and spacing follow PostgreSQL's `jsonb` output. Clients parse the lines and never depend on either.
+
 The header, client mutation id and every record come from the same snapshot. `schema` is the server constant `SYNC_SCHEMA`, currently 8; bump it whenever a sync record shape changes. Version 5 renamed the issue's `openproject` link to `tracker` and added `tracker` to comments. Version 7 added `former_keys` to teams. Version 8 cut integrations' `webhook_url` down to scheme and host. Record lines use pull's shapes and visibility rules, including trashed and archived issues. An integration's `webhook_url` is its scheme and host only, such as `https://hooks.slack.com`, and `secret` is empty. Slack and Discord put their secret in the URL path, and the replica lands in IndexedDB. Admins read the full URL from `GET /internal-api/workspaces/{id}/integrations`, which the integrations screen doesn't need, since it only displays the host. Comments and activity are excluded.
 
 The trailer counts only record lines. A failure ends the body without a trailer. The client discards any bootstrap without a trailer, and writes a completed bootstrap into a fresh base with its cursor in one IndexedDB transaction. A page reload in the middle leaves no partial replica.
@@ -157,7 +159,9 @@ Request errors: a non-member receives 403. A missing or malformed `client_id`, o
 
 ### Pull
 
-`GET sync/pull?client_id=&cursor=` runs in one `REPEATABLE READ READ ONLY` transaction.
+`GET sync/pull?client_id=&cursor=` runs in one `REPEATABLE READ READ ONLY` transaction. The response is compressed with gzip when the request's `Accept-Encoding` accepts it, and plain otherwise. A response under 32 bytes is never compressed.
+
+The transaction opens with one query that checks membership, reads the client's row, takes the snapshot and reads the epoch and whether the stored cluster still matches `sync_identity()`, so the epoch is always the one in force in that snapshot. Bootstrap opens the same way. The page then costs one query for the role check, one that renders every entity kind in the page, and the scan. `scan_window` reads batches of 2,000 rows. It runs one query per batch, first over the cursor's in-flight txids when it lists any, then over the range above `xmax`, until the page holds 20,000 rows or a batch comes back short.
 
 ```json
 {
@@ -228,11 +232,17 @@ The client never writes push results into base. It pulls after every push.
 
 ### Poke
 
-`GET sync/events?client_id=<uuid>` is a server-sent event stream. Each poke is `event: poke` with `data: {}`. The server sends one poke immediately on connect, so the client pulls whatever it missed while disconnected, and one poke whenever a transaction touching the workspace commits.
+`GET sync/events?client_id=<uuid>` is a server-sent event stream. Each poke is `event: poke`. The server sends one poke immediately on connect, so the client pulls whatever it missed while disconnected, and one poke whenever a transaction touching the workspace commits.
 
-- `mark_change` calls `pg_notify('blackwall_changes', workspace_id::text)` when called with a non-null workspace and id. PostgreSQL collapses identical notifications within a transaction and drops them on rollback.
-- One `PgListener` per server process listens on `blackwall_changes` and fans notifications out to that workspace's open streams. Each workspace has its own broadcast channel, created when its first stream connects and removed when its last stream leaves, so a burst or a slow reader in one workspace never pokes another workspace's streams. `src/store/queue.rs` already uses `PgListener` for jobs. A poke carries no data, and a stream whose channel lagged treats the gap as a poke. The listener task owns its reconnect loop: it opens a dedicated connection outside the request pool so it never takes a pool slot, sends `LISTEN blackwall_changes`, then pokes every workspace's channel, because notifications may have been lost. A nil or unparsable payload does the same. It does this after every successful `LISTEN`, including the first. It then receives notifications and pokes the named workspace; on any error or disconnect it logs, drops the listener, waits with capped exponential backoff starting at the configured reconnect delay and capped around 30 s, and starts the loop again.
-- Pokes coalesce to at most one per 250 ms per stream, with a trailing poke when notifications arrive inside the window. Keep-alive comments go every 15 seconds. Each stream ends after 30 minutes; clients reconnect, which re-runs authentication and the membership check. A poke pending when the stream ends is dropped; the client's reconnect gets an initial poke, which covers it.
+A poke's data is `{"txid": 812, "epoch": "6f1c0b8e2d9a4c7fa3e51b2d8c04a9f7"}` when it stands for commits, or `{}` when it does not. `txid` is the transaction that committed, or the highest of several whose pokes coalesced. `epoch` is the epoch of the history that transaction belongs to, in the 32 hex digit form cursors start with. `{}` is a wildcard: the connect poke, the poke after a listener reconnect, a stream that lagged, any window that coalesced a wildcard with other pokes, and any window that coalesced commits from two epochs. A client that ignores the data pulls on every poke, which is always correct.
+
+A client may skip the pull when the poke names a transaction that its cursor already covers. A txid only means something inside the history that issued it, so the poke's epoch has to equal the cursor's epoch. Because `txid` is only the highest of a coalesced window, a lower transaction in the same window may still sit in the cursor's `xip` list. So skip only when the epoch matches, the cursor's `xip` is empty and `txid < xmax`. In every other case, a poke without an epoch included, and for `{}`, pull.
+
+The server knows the epoch without a query per poke. The `PokeHub` holds it, and only the listener task sets it. Each time the listener connects, it runs `adopt_sync_history`, reads the epoch on its own connection, where the stored cluster must equal `sync_identity()`, and publishes it before it sends `LISTEN`. The epoch is withdrawn whenever the connection drops, and while it is withdrawn, commit pokes are wildcards. A rotation elsewhere in the process, from pull, bootstrap or pruning, withdraws it before the change rows go and does not publish the new one. Pokes stay wildcards until the listener reconnects, so a slow adoption can never put back an epoch a rotation replaced. A failover or restore replaces the database under the connection, which drops it, so the new history's txids are never stamped with the old epoch. Each notification is stamped when the listener relays it, under the lock a withdrawal takes.
+
+- `mark_change` calls `pg_notify('blackwall_changes', workspace_id::text || ':' || txid::text)` when called with a non-null workspace and id, where `txid` is the transaction's id, the same value the transaction's `changes.txid` rows carry. PostgreSQL collapses identical notifications within a transaction, so one transaction sends one notification per workspace, and drops them on rollback.
+- One `PgListener` per server process listens on `blackwall_changes` and fans notifications out to that workspace's open streams. Each workspace has its own broadcast channel, created when its first stream connects and removed when its last stream leaves, so a burst or a slow reader in one workspace never pokes another workspace's streams. `src/store/queue.rs` already uses `PgListener` for jobs. A channel carries pokes with their txid and epoch, and a stream whose channel lagged treats the gap as a wildcard. The payload is `workspace_id:txid`; a bare workspace id, which an older `mark_change` sends, pokes that workspace as a wildcard. The listener task owns its reconnect loop: it opens a dedicated connection outside the request pool so it never takes a pool slot, checks the database's history and publishes the epoch, sends `LISTEN blackwall_changes`, then pokes every workspace's channel, because notifications may have been lost. A nil or unparsable payload does the same. It does this after every successful `LISTEN`, including the first. It then receives notifications and pokes the named workspace; on any error or disconnect it logs, drops the listener, waits with capped exponential backoff starting at the configured reconnect delay and capped around 30 s, and starts the loop again.
+- Pokes coalesce to at most one per 250 ms per stream, with a trailing poke when notifications arrive inside the window. The trailing poke carries the highest txid of the window and its epoch, or neither when any poke in it had none or the window held two epochs. When the reader still holds an unread poke, the next one merges into the pending trailing poke instead of being dropped, so no txid is lost. Keep-alive comments go every 15 seconds. Each stream ends after 30 minutes; clients reconnect, which re-runs authentication and the membership check. A poke pending when the stream ends is dropped; the client's reconnect gets an initial poke, which covers it.
 - On an event, the leader pulls. Coalesce events that arrive while a pull is running into one follow-up pull.
 - Polling remains the fallback. Pull every 30 seconds while the stream is down, and also on window focus and on the browser's `online` event.
 
@@ -243,6 +253,8 @@ The client never writes push results into base. It pulls after every push.
 ```json
 {"records": [{"id": "…", "issue_id": "…", "body": "…"}]}
 ```
+
+The response is compressed under the same `Accept-Encoding` rule as pull.
 
 Request errors: a non-member receives 403. A missing or malformed `client_id`, or one registered to another user or workspace, receives 400. An unknown or missing `entity`, or a missing or malformed scope id, also receives 400. An empty scope returns `{"records": []}`.
 
@@ -374,7 +386,9 @@ Shape the hooks so call sites change little, but design them from this document,
 - Push skips processed ids, accepts gaps, and advances `last_mutation_id` past rejected mutations atomically with their effects.
 - Two clients editing different fields of one issue both keep their edits.
 - Visibility: private views, admin-only entities, notifications, and a member losing access.
-- A commit produces a poke on the workspace's event stream.
+- A commit produces a poke on the workspace's event stream. The poke carries the committing txid and the current epoch, coalesced pokes carry the highest txid, and a wildcard or a second epoch in a window makes the whole poke a wildcard. The poke after a listener reconnect carries neither. After a history change the next txid poke carries the new epoch or is a wildcard, never the old epoch.
+- Pull and scope responses are gzip-encoded when the request accepts gzip and plain otherwise. The event stream stays uncompressed and delivers a poke promptly.
+- Bootstrap lines keep their shape and content, with every entity covered, and match what pull renders for the same records.
 
 ### Engine, in Node
 
