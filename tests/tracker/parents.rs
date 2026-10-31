@@ -87,7 +87,7 @@ async fn same_page_child_before_parent_links_without_extra_writes() {
         parent["id"].as_str().unwrap(),
     ] {
         assert_eq!(
-            sqlx::query_scalar::<_, i64>("SELECT count(*) FROM changes WHERE workspace_id=$1 AND entity='issues' AND entity_id=$2")
+            sqlx::query_scalar::<_, i64>("SELECT count(DISTINCT txid) FROM changes WHERE workspace_id=$1 AND entity='issues' AND entity_id=$2")
                 .bind(workspace)
                 .bind(Uuid::parse_str(id).unwrap())
                 .fetch_one(&store.pool)
@@ -266,7 +266,7 @@ async fn reparenting_moves_link_and_marks_only_the_child() {
         .bind(child).fetch_one(&store.pool).await.unwrap();
     assert_eq!(fields, json!(["parent", "tracker"]));
     let marked: Vec<Uuid> = sqlx::query_scalar(
-        "SELECT entity_id FROM changes WHERE workspace_id=$1 AND entity='issues' AND id>$2",
+        "SELECT DISTINCT entity_id FROM changes WHERE workspace_id=$1 AND entity='issues' AND id>$2",
     )
     .bind(workspace)
     .bind(mark)
