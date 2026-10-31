@@ -1539,7 +1539,7 @@ describe("record preparation", () => {
       await f.engine.open();
       const before = await f.disk();
       const full = await f.server.fetch(
-        `/internal-api/workspaces/${f.workspace.id}/sync/bootstrap?client_id=${before.meta.clientId}`,
+        `/internal-api/workspaces/${f.workspace.id}/sync/bootstrap?client_id=${before.meta.clientId}&user_id=${f.owner.id}`,
         { headers: { cookie: `blackwall_session=${f.token}` } },
       );
       const bytes = new Uint8Array(await full.arrayBuffer());
@@ -2382,6 +2382,7 @@ describe("pending edits are never frozen or lost", () => {
       async (reset) => {
         const { f, receipt } = await oversized({ processed: false, reset });
         expect(await receipt.settled).toMatchObject({ id: 1, status: 413 });
+        await until(() => f.engine.status.get().unresolved.length === 1);
         expect(f.engine.status.get().unresolved).toMatchObject([{ id: 1 }]);
         expect((await f.disk()).outbox).toEqual([]);
         expect(f.authoritativeIssue(ISSUE).description).toBe("");

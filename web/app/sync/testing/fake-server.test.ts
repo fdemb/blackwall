@@ -838,7 +838,7 @@ describe("fake bootstrap, scope and sessions", () => {
 
   it("keeps idle clients, so a replayed mutation stays a duplicate", async () => {
     const f = fixture();
-    await f.push([{ ...label(1), name: "unknown" }]);
+    await f.push([label(1)]);
     f.server.advance(400 * 24 * 60 * 60 * 1000);
     expect(f.server.clientState(CLIENT).last_mutation_id).toBe(1);
     const token = f.server.login(f.owner);
@@ -1810,7 +1810,7 @@ describe("cookie authentication", () => {
     expect(me.status).toBe(200);
     expect(me.headers.get("X-CSRF-Token")).toBe(f.server.csrfToken(f.token));
     const push = (csrf?: string) =>
-      f.server.fetch(f.url("push"), {
+      f.server.fetch(f.url("push", { user_id: f.owner.id }), {
         method: "POST",
         headers: {
           cookie,
