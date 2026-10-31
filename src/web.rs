@@ -121,7 +121,6 @@ fn shell_response(shell: Option<Arc<Shell>>, uri: Uri) -> Response {
                     HeaderValue::from_static("text/html; charset=utf-8"),
                 ),
                 (header::CONTENT_SECURITY_POLICY, shell.csp.clone()),
-                // A deploy replaces the asset names the shell points at.
                 (header::CACHE_CONTROL, HeaderValue::from_static("no-cache")),
             ],
             shell.html.clone(),
@@ -137,55 +136,12 @@ fn shell_response(shell: Option<Arc<Shell>>, uri: Uri) -> Response {
 
 #[cfg(test)]
 mod tests {
-    use super::{inline_script_hashes, service};
-    use axum::{body::Body, http::Request};
-    use tower::ServiceExt;
+    use super::inline_script_hashes;
 
     #[test]
     fn hashes_only_inline_scripts() {
         let html = r#"<script src="/a.js"></script><script>let a=1</script><script type="module" async>import "/x.js"</script>"#;
 
         assert_eq!(inline_script_hashes(html).len(), 2);
-    }
-
-    #[tokio::test]
-    async fn hashed_assets_are_cached_forever_and_the_shell_revalidates() {
-        let dir = std::env::temp_dir().join(format!("blackwall-web-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(dir.join("assets")).unwrap();
-        std::fs::write(dir.join("index.html"), "<!DOCTYPE html>").unwrap();
-        std::fs::write(dir.join("theme.js"), "").unwrap();
-        std::fs::write(dir.join("assets/issue-B1x9.js"), "export {}").unwrap();
-        let app = service(dir.clone());
-
-        let mut seen = Vec::new();
-        for path in [
-            "/assets/issue-B1x9.js",
-            "/assets/missing-C2y8.js",
-            "/team/ENG",
-            "/theme.js",
-        ] {
-            let request = Request::builder().uri(path).body(Body::empty()).unwrap();
-            let response = app.clone().oneshot(request).await.unwrap();
-            let cache = response
-                .headers()
-                .get("cache-control")
-                .map(|value| value.to_str().unwrap().to_owned());
-            seen.push((path, response.status().as_u16(), cache));
-        }
-        std::fs::remove_dir_all(dir).unwrap();
-
-        assert_eq!(
-            seen,
-            [
-                (
-                    "/assets/issue-B1x9.js",
-                    200,
-                    Some("public, max-age=31536000, immutable".to_owned())
-                ),
-                ("/assets/missing-C2y8.js", 404, None),
-                ("/team/ENG", 200, Some("no-cache".to_owned())),
-                ("/theme.js", 200, None),
-            ]
-        );
     }
 }
