@@ -195,7 +195,8 @@ async fn complete_contract_on_postgres() {
     )
     .unwrap();
     std::fs::create_dir_all(web.join("assets")).unwrap();
-    std::fs::write(web.join("assets/issue-B1x9.js"), "export {}").unwrap();
+    std::fs::write(web.join("assets/issue-B1x9Qz7k.js"), "export {}").unwrap();
+    std::fs::write(web.join("assets/logo.svg"), "<svg/>").unwrap();
 
     let owner = account(&store, "owner").await;
     let colleague = account(&store, "colleague").await;
@@ -1010,8 +1011,9 @@ async fn complete_contract_on_postgres() {
     let mut cache = Vec::new();
     for path in [
         "/some/client/route",
-        "/assets/issue-B1x9.js",
-        "/assets/missing-C2y8.js",
+        "/assets/issue-B1x9Qz7k.js",
+        "/assets/logo.svg",
+        "/assets/missing-C2y8Rw4m.js",
         "/internal-api/schema.json",
     ] {
         let response = app
@@ -1031,11 +1033,12 @@ async fn complete_contract_on_postgres() {
         [
             ("/some/client/route", 200, "no-cache".to_owned()),
             (
-                "/assets/issue-B1x9.js",
+                "/assets/issue-B1x9Qz7k.js",
                 200,
                 "public, max-age=31536000, immutable".to_owned()
             ),
-            ("/assets/missing-C2y8.js", 404, "no-store".to_owned()),
+            ("/assets/logo.svg", 200, "no-cache".to_owned()),
+            ("/assets/missing-C2y8Rw4m.js", 404, "no-store".to_owned()),
             ("/internal-api/schema.json", 200, "no-store".to_owned()),
         ]
     );
