@@ -2445,6 +2445,33 @@ describe("pending edits are never frozen or lost", () => {
       },
     );
 
+    it.each([true, false])(
+      "decides only after the bootstrap that follows a reset completes, processed %s",
+      async (processed) => {
+        const { f, receipt, held } = await oversized({ processed, reset: false, held: true });
+        let decided = false;
+        void receipt.settled.then(() => (decided = true));
+        await until(() => held.length > 0);
+        f.server.inject({ kind: "reset_pull" });
+        const bootstraps: (() => void)[] = [];
+        f.fetch.mockImplementation(async (...args) => {
+          if (String(args[0]).includes("/bootstrap?"))
+            await new Promise<void>((release) => bootstraps.push(release));
+          return f.server.fetch(...args);
+        });
+        held.shift()?.();
+        await until(() => bootstraps.length > 0);
+        for (let tick = 0; tick < 5; tick += 1) await flush();
+        expect(decided).toBe(false);
+        expect((await f.disk()).outbox).toHaveLength(1);
+        bootstraps.shift()?.();
+        await until(() => decided);
+        expect(await receipt.settled).toEqual(
+          processed ? "unknown" : expect.objectContaining({ status: 413 }),
+        );
+      },
+    );
+
     it.each([false, true])(
       "settles unknown when the server processed it, reset %s",
       async (reset) => {
