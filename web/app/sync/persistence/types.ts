@@ -65,7 +65,11 @@ export interface Replica {
     skipped?: readonly SkippedRecord[];
     resync?: boolean;
   }): Promise<void>;
-  writeScope(input: { scope: Scope; records: readonly object[] }): Promise<void>;
+  /**
+   * Replaces a scope's records and marks it loaded. A `partial` load skipped records, so it stays
+   * unloaded and the next open fetches it again.
+   */
+  writeScope(input: { scope: Scope; records: readonly object[]; partial?: boolean }): Promise<void>;
   /** Whether the scope is loaded, and its records, read in one transaction. */
   loadScope(scope: Scope): Promise<{ loaded: boolean; records: readonly object[] }>;
   appendMutation(build: (id: number) => Omit<PendingMutation, "id">): Promise<PendingMutation>;

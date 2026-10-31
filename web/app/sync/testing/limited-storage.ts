@@ -10,6 +10,7 @@ export function limited(inner: ReplicaStorage = new MemoryReplicaStorage()) {
     "writeScope",
     "appendMutation",
     "confirm",
+    "discard",
   ]);
   const disk = {
     full: false,

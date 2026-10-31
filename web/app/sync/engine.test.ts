@@ -3211,6 +3211,73 @@ describe("a skipped record", () => {
       release();
     });
   });
+
+  it("fetches a scope that left a record out again after a reload, without another server edit", async () => {
+    await silenced(async () => {
+      const f = fixture();
+      await f.ready();
+      f.server.run(f.peer, {
+        type: "add_comment",
+        id: id(60),
+        issue_id: ISSUE,
+        body: "hello",
+        mentions: [],
+        attachments: [],
+      });
+      const scope: Scope = { entity: "comments", issueId: ISSUE };
+      const original = f.transport.scope;
+      let broken = true;
+      f.transport.scope = vi.fn(async (...args: Parameters<typeof original>) => {
+        const response = await original(...args);
+        return broken
+          ? { records: response.records.map((record) => ({ ...record, created_at: "not a time" })) }
+          : response;
+      });
+      const release = f.engine.useScope(scope);
+      await until(() => f.engine.scopeStatus(scope) === "loaded");
+      expect(f.engine.store.all("comments")).toEqual([]);
+      release();
+      await f.engine.close();
+
+      broken = false;
+      const reopened = f.build();
+      await reopened.start();
+      const releaseAgain = reopened.useScope(scope);
+      await until(() => reopened.store.all("comments").length === 1);
+      expect(f.transport.scope).toHaveBeenCalledTimes(2);
+      expect(reopened.scopeStatus(scope)).toBe("loaded");
+      releaseAgain();
+    });
+  });
+
+  it("runs a repair that fell due during a session check only after the session is valid", async () => {
+    await silenced(async () => {
+      const f = fixture();
+      await f.ready();
+      const events: EngineEvent[] = [];
+      f.engine.subscribe((event) => events.push(event));
+      f.server.corruptRecord("issues", ISSUE, bad);
+      f.server.run(f.peer, { type: "update_issue", id: ISSUE, patch: { title: "v2" } });
+      await f.engine.pull();
+      expect(f.engine.status.get().skipped).toMatchObject([{ entity: "issues", id: ISSUE }]);
+      f.server.repairRecord("issues", ISSUE);
+      f.server.inject({ kind: "fail_response", route: "pull", status: 401 });
+      await f.engine.pull();
+      await until(() => events.some((event) => event.type === "unauthorized"));
+      const bootstraps = f.requests("bootstrap");
+      for (let step = 0; step < 4; step += 1) {
+        await f.advance(30_000);
+        for (let tick = 0; tick < 20; tick += 1) await flush();
+      }
+      expect(f.requests("bootstrap")).toBe(bootstraps);
+      expect(f.engine.store.get("issues", ISSUE)?.title).toBe("Original");
+
+      f.engine.resume();
+      await elapse(f, () => f.engine.store.get("issues", ISSUE)?.title === "v2");
+      expect(f.requests("bootstrap")).toBe(bootstraps + 1);
+      expect(f.engine.status.get().skipped).toEqual([]);
+    });
+  });
 });
 
 describe("an event stream", () => {
@@ -3330,5 +3397,41 @@ describe("a full disk", () => {
     expect(
       saved.records.issues?.find((record) => Reflect.get(record, "id") === OTHER_ISSUE),
     ).toMatchObject({ title: "Seen in memory" });
+  });
+
+  it("keeps a too-large edit out of pushes until the disk can keep its rejection", async () => {
+    const disk = limited();
+    disk.allow.add("appendMutation");
+    const f = fixture(disk.storage, { maxPushBytes: 1500 });
+    await f.ready();
+    disk.full = true;
+    const receipt = await f.engine.mutate("update_issue", {
+      id: ISSUE,
+      patch: { description: "x".repeat(4000) },
+    });
+    let outcome: unknown = null;
+    void receipt.settled.then((settled) => {
+      outcome = settled;
+    });
+    await until(() => (disk.attempts.get("discard") ?? 0) > 0);
+    expect(f.engine.status.get().storage).toBe("full");
+    expect(f.pushes()).toHaveLength(1);
+    for (let step = 0; step < 10; step += 1) {
+      await f.advance(60_000);
+      for (let tick = 0; tick < 20; tick += 1) await flush();
+    }
+    expect(f.pushes()).toHaveLength(1);
+    expect(outcome).toBeNull();
+
+    disk.full = false;
+    await f.advance(5 * 60_000);
+    await until(() => f.engine.status.get().storage === "ok");
+    expect(await receipt.settled).toMatchObject({ id: receipt.mutationId, status: 413 });
+    expect(f.engine.status.get().pending).toBe(0);
+    const saved = await f.disk();
+    expect(saved.outbox).toEqual([]);
+    expect(saved.rejected).toMatchObject([{ id: receipt.mutationId, status: 413 }]);
+    for (let tick = 0; tick < 20; tick += 1) await flush();
+    expect(f.pushes()).toHaveLength(1);
   });
 });

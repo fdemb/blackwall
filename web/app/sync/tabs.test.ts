@@ -739,6 +739,66 @@ describe("tab coordination", () => {
     for (const tab of f.tabs) f.converged(tab);
   });
 
+  it("gives a follower a scope the leader loaded with a record left out", async () => {
+    const errors = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const f = fixture(2);
+    await f.start();
+    const { leader, follower } = f.roles();
+    for (const [n, body] of [
+      [60, "kept"],
+      [61, "broken"],
+    ] as const)
+      f.server.run(f.peer, {
+        type: "add_comment",
+        id: id(n),
+        issue_id: ISSUE,
+        body,
+        mentions: [],
+        attachments: [],
+      });
+    f.server.corruptRecord("comments", id(61), { created_at: "not a time" });
+    const scope = { entity: "comments", issueId: ISSUE } as const;
+    const releaseLeader = leader.engine.useScope(scope);
+    await until(() => leader.engine.scopeStatus(scope) === "loaded");
+    expect(leader.engine.store.all("comments")).toHaveLength(1);
+
+    const release = follower.engine.useScope(scope);
+    await until(() => follower.engine.scopeStatus(scope) === "loaded");
+    expect(follower.engine.store.all("comments")).toMatchObject([{ id: id(60) }]);
+    release();
+    releaseLeader();
+    errors.mockRestore();
+  });
+
+  it("refuses online commands in every tab while the disk is full, and runs them once it recovers", async () => {
+    const f = fixture(2);
+    await f.start();
+    const { leader, follower } = f.roles();
+    const commands = (tab: Tab) =>
+      tab.fetch.mock.calls.filter(([url]) => String(url).includes("/commands?")).length;
+    f.disk.full = true;
+    f.server.run(f.peer, { type: "update_issue", id: ISSUE, patch: { title: "While full" } });
+    await f.advance(1000);
+    await until(() => follower.engine.status.get().storage === "full");
+    expect(leader.engine.status.get().storage).toBe("full");
+    for (const tab of [leader, follower])
+      await expect(
+        tab.engine.runOnline("set_role", { user_id: f.peer.id, role: "admin" }),
+      ).rejects.toMatchObject({ status: 507, message: expect.stringContaining("storage space") });
+    expect(commands(leader) + commands(follower)).toBe(0);
+
+    f.disk.full = false;
+    await f.advance(5 * 60_000);
+    await until(() => follower.engine.status.get().storage === "ok");
+    expect(
+      await follower.engine.runOnline("set_role", { user_id: f.peer.id, role: "admin" }),
+    ).toEqual({ id: 0, status: "applied" });
+    expect(
+      await leader.engine.runOnline("set_role", { user_id: f.peer.id, role: "viewer" }),
+    ).toEqual({ id: 0, status: "applied" });
+    expect(commands(leader) + commands(follower)).toBe(2);
+  });
+
   it("converges after a leader handover while the disk is full", async () => {
     const f = fixture(2);
     await f.start();

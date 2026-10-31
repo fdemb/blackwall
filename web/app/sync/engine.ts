@@ -287,6 +287,8 @@ export class SyncEngine {
   private pulling: Promise<void> | null = null;
   private pushing: Promise<void> | null = null;
   private batch: PushBatch | null = null;
+  /** 413 rejections the disk had no room to keep. Their mutations stay out of every push. */
+  private readonly setAside = new Map<number, Rejection>();
   /** The last error came from a push, so only a push success clears it. */
   private writeFailing = false;
   private readonly protocolFailures = new Map<RequestKind, number>();
@@ -685,6 +687,7 @@ export class SyncEngine {
       throw new MutationError(400, "This command requires an online connection");
     await this.open();
     if (this.sealed) throw new Error("Engine is retiring");
+    this.refuseOnFullDisk();
     if (!this.snapshot.online)
       throw new MutationError(400, "This command requires an online connection");
     if (
@@ -777,6 +780,7 @@ export class SyncEngine {
   private async drainOutbox(signal: AbortSignal): Promise<void> {
     for (;;) {
       signal.throwIfAborted();
+      this.refuseOnFullDisk();
       if (this.unauthorized === "refused") throw new UnauthorizedError("Session check failed", 401);
       if (this.started && this.snapshot.online && this.unauthorized === null) {
         const stored = await this.requireReplica().loadOutbox();
@@ -794,6 +798,14 @@ export class SyncEngine {
       this.requestPush();
       await this.waitForOutboxChange(signal);
     }
+  }
+
+  /**
+   * The outbox can't drain while the disk is full, since the leader stops announcing pull pages and
+   * acknowledged rows stay stored, so an online command would wait for it forever.
+   */
+  private refuseOnFullDisk(): void {
+    if (this.snapshot.storage === "full") throw new MutationError(507, STORAGE_FULL_EDIT);
   }
 
   /**
@@ -1263,8 +1275,18 @@ export class SyncEngine {
     return new Promise((resolve) => {
       const settle = (): boolean => {
         let reply: TabReply;
-        if (this.loadedScopes.has(key)) reply = { ok: true, value: null };
-        else {
+        if (this.loadedScopes.has(key)) {
+          // A load that left records out isn't marked loaded on disk, so its records go out here.
+          if (this.scopeRepairs.has(key) && this.snapshot.storage === "ok")
+            this.post({
+              type: "pulled",
+              changes: this.scopeChanges(scope, this.scopedRecords(scope)),
+              cursor: this.cursor,
+              acknowledgedUpTo: null,
+              scope,
+            });
+          reply = { ok: true, value: null };
+        } else {
           const failure = this.scopeFailures.get(key);
           if (failure === undefined) return false;
           reply = { ok: false, error: tabError(failure) };
@@ -1880,7 +1902,9 @@ export class SyncEngine {
     const confirmations = new Map<number, Mutation>(this.unconfirmed);
     for (const { mutation } of this.outcomes.values())
       if (mutation.id <= this.acknowledged) confirmations.set(mutation.id, mutation);
-    return [...confirmations.values(), ...this.store.pending()].sort((a, b) => a.id - b.id);
+    return [...confirmations.values(), ...this.store.pending()]
+      .filter((mutation) => !this.setAside.has(mutation.id))
+      .sort((a, b) => a.id - b.id);
   }
 
   private requestScope(scope: Scope): void {
@@ -1947,7 +1971,7 @@ export class SyncEngine {
     await this.commits.run(async () => {
       this.check(controller);
       const persisted = await this.persist(
-        () => this.requireReplica().writeScope({ scope, records }),
+        () => this.requireReplica().writeScope({ scope, records, partial: skippedHere }),
         "increment",
       );
       if (persisted) await this.verified();
@@ -1980,11 +2004,7 @@ export class SyncEngine {
 
   /** Base changes that replace a scope's records with `records`: remove the old ones, then upsert. */
   private scopeChanges(scope: Scope, records: readonly object[]): Change[] {
-    const scoped =
-      scope.entity === "comments"
-        ? this.store.baseByIndex("comments", "issue_id", scope.issueId)
-        : this.store.baseByIndex("activity", "entity_id", scope.entityId);
-    const removed = scoped.map((record) => ({
+    const removed = this.scopedRecords(scope).map((record) => ({
       entity: scope.entity,
       id: recordKey(scope.entity, record),
       record: null,
@@ -1995,6 +2015,12 @@ export class SyncEngine {
       record,
     }));
     return [...removed, ...upserts];
+  }
+
+  private scopedRecords(scope: Scope): readonly object[] {
+    return scope.entity === "comments"
+      ? this.store.baseByIndex("comments", "issue_id", scope.issueId)
+      : this.store.baseByIndex("activity", "entity_id", scope.entityId);
   }
 
   private failScope(key: string, error: Error): void {
@@ -2172,20 +2198,46 @@ export class SyncEngine {
       this.post({ type: "result", mutationId: id, outcome: "unknown" });
       return "again";
     }
-    const outcome = { id, status: 413, message: TOO_LARGE };
-    const rejection = this.settle(id, outcome, true) ?? {
-      ...outcome,
-      command: { name: mutation.name, args: immutableCopy(mutation.args) },
-    };
-    this.appendedIds.delete(id);
-    await this.commits.run(async () => {
-      await this.requireReplica().discard([rejection]);
+    this.setAside.set(
+      id,
+      Object.freeze({
+        id,
+        status: 413,
+        message: TOO_LARGE,
+        command: { name: mutation.name, args: immutableCopy(mutation.args) },
+      }),
+    );
+    await this.commits.run(() => this.storeSetAside());
+    return "again";
+  }
+
+  /**
+   * Keeps the set-aside rejections and drops their mutations from the outbox. Their receipts
+   * settle only then, so a rejection the user sees is one a reload still shows. On a full disk they
+   * wait for the storage retry. Runs inside `commits`.
+   */
+  private async storeSetAside(): Promise<boolean> {
+    const rejections = [...this.setAside.values()];
+    if (rejections.length === 0) return true;
+    try {
+      await this.requireReplica().discard(rejections);
+    } catch (error) {
+      if (!(error instanceof StorageFullError)) throw error;
+      this.setStorage("full");
+      return false;
+    }
+    for (const rejection of rejections) {
+      const { id, status, message } = rejection;
+      const outcome = { id, status, message };
+      this.setAside.delete(id);
+      this.settle(id, outcome, true);
+      this.appendedIds.delete(id);
       this.store.setPending(this.store.pending().filter((pending) => pending.id !== id));
       this.keepUnresolved([rejection]);
       this.post({ type: "result", mutationId: id, outcome });
-      this.post({ type: "reset" });
-    });
-    return "again";
+    }
+    this.post({ type: "reset" });
+    return true;
   }
 
   /**
@@ -2425,7 +2477,7 @@ export class SyncEngine {
       this.setStorage("full");
       return false;
     }
-    if (kind === "snapshot") this.setStorage("ok");
+    if (kind === "snapshot" && (await this.storeSetAside())) this.setStorage("ok");
     return true;
   }
 
@@ -2466,7 +2518,10 @@ export class SyncEngine {
     try {
       await this.commits.run(async () => {
         if (this.snapshot.storage !== "full") return;
-        if (this.cursor === null) return this.setStorage("ok");
+        if (this.cursor === null) {
+          if (await this.storeSetAside()) this.setStorage("ok");
+          return;
+        }
         const records: Partial<Record<Entity, readonly object[]>> = {};
         for (const entity of BOOTSTRAP_ENTITIES) records[entity] = this.store.baseAll(entity);
         const saved = await this.persist(
@@ -2483,13 +2538,18 @@ export class SyncEngine {
           "snapshot",
         );
         if (!saved) return;
-        for (const scope of this.loadedScopes.values()) {
+        for (const [key, scope] of this.loadedScopes) {
           const scoped = this.store.baseAll(scope.entity).filter((record) => {
             const found = recordScope(scope.entity, record);
             return found !== null && scopeKey(found) === scopeKey(scope);
           });
           const written = await this.persist(
-            () => this.requireReplica().writeScope({ scope, records: scoped }),
+            () =>
+              this.requireReplica().writeScope({
+                scope,
+                records: scoped,
+                partial: this.scopeRepairs.has(key),
+              }),
             "snapshot",
           );
           if (!written) return;

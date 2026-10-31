@@ -302,7 +302,8 @@ class IndexedDBReplica implements Replica {
           recordKey(input.scope.entity, record);
           store.put(record);
         }
-        tx.objectStore("scopes").put(input.scope, key);
+        if (input.partial) tx.objectStore("scopes").delete(key);
+        else tx.objectStore("scopes").put(input.scope, key);
         done(undefined);
       });
     });

@@ -159,7 +159,8 @@ class MemoryReplica implements Replica {
       for (const record of input.records) {
         table.set(recordKey(input.scope.entity, record), structuredClone(record));
       }
-      state.scopes.set(key, structuredClone(input.scope));
+      if (input.partial) state.scopes.delete(key);
+      else state.scopes.set(key, structuredClone(input.scope));
     });
   }
 
