@@ -23,6 +23,7 @@ import { IssueList } from "../components/app/issue-list";
 import { OfflineBanner } from "../components/app/offline-banner";
 import { SaveStatus } from "../components/app/save-status";
 import { CoreProperties } from "../components/app/issue-properties";
+import { Timeline } from "../components/app/issue-timeline";
 import { QueryStatus } from "../components/app/query-status";
 import { ToastProvider, useToast } from "../components/ui/toast";
 import { createEngine, SCHEMA, type SyncEngine } from "../sync/engine";
@@ -35,6 +36,7 @@ import { createTransport } from "../sync/transport";
 import { useRecord, useSyncStatus, useView } from "../sync/react";
 import { I18nProvider } from "./i18n";
 import {
+  countedIssue,
   useActivity,
   useComments,
   useIssueDetail,
@@ -65,12 +67,14 @@ async function fixture({
   storage = new MemoryReplicaStorage(),
   teamId = "team-1",
   role = "owner",
+  scopes = ["comments", "activity"],
 }: {
   online?: boolean;
   otherMember?: boolean;
   storage?: ReplicaStorage;
   teamId?: string;
   role?: Role;
+  scopes?: readonly ("comments" | "activity")[];
 } = {}) {
   const replica = await storage.open({
     sessionId: "session",
@@ -152,28 +156,30 @@ async function fixture({
       ],
     },
   });
-  await replica.writeScope({
-    scope: { entity: "comments", issueId: "issue" },
-    records: [
-      {
-        id: "comment",
-        version: 1,
-        issue_id: "issue",
-        author: profile.id,
-        body: "Replica comment",
-        mentions: [],
-        attachments: [],
-        created_at: NOW,
-        edited_at: null,
-      },
-    ],
-  });
-  await replica.writeScope({
-    scope: { entity: "activity", entityId: "issue" },
-    records: [
-      { id: "activity", actor: profile.id, action: "created", entity_id: "issue", at: NOW },
-    ],
-  });
+  if (scopes.includes("comments"))
+    await replica.writeScope({
+      scope: { entity: "comments", issueId: "issue" },
+      records: [
+        {
+          id: "comment",
+          version: 1,
+          issue_id: "issue",
+          author: profile.id,
+          body: "Replica comment",
+          mentions: [],
+          attachments: [],
+          created_at: NOW,
+          edited_at: null,
+        },
+      ],
+    });
+  if (scopes.includes("activity"))
+    await replica.writeScope({
+      scope: { entity: "activity", entityId: "issue" },
+      records: [
+        { id: "activity", actor: profile.id, action: "created", entity_id: "issue", at: NOW },
+      ],
+    });
   replica.close();
   const engine = createEngine({
     storage,
@@ -702,4 +708,74 @@ describe("outdated workspace", () => {
       }
     },
   );
+});
+
+describe("issue timeline", () => {
+  const timeline = (engine: SyncEngine) =>
+    render(
+      engine,
+      <MemoryRouter>
+        <Timeline issue={countedIssue(engine.store, "issue")!} />
+      </MemoryRouter>,
+    );
+
+  // Static markup is the pre-mount state: the status region exists, still empty, so the text the
+  // effect adds later is announced.
+  const status = '<p role="status" class="sr-only"></p>';
+  const skeleton = 'aria-hidden="true" class="animate-in fade-in';
+  const composer = '<div class="mt-6 space-y-2">';
+
+  it("shows cached comments on the first render without a loading state", async () => {
+    const html = timeline(await fixture({ role: "viewer" }));
+    expect(html).toContain("Replica comment");
+    expect(html).not.toContain("animate-pulse");
+    expect(html).toContain(status);
+  });
+
+  it("announces the load and holds one event row behind a delayed skeleton", async () => {
+    const html = timeline(await fixture({ role: "viewer", online: true, scopes: [] }));
+    expect(html).toContain(status);
+    expect(html).toContain(
+      '<div aria-hidden="true" class="animate-in fade-in fill-mode-both delay-300 flex min-h-7 items-center gap-3">',
+    );
+  });
+
+  it("waits for activity before showing loaded comments, so the list never reorders", async () => {
+    const html = timeline(await fixture({ role: "viewer", online: true, scopes: ["comments"] }));
+    expect(html).not.toContain("Replica comment");
+    expect(html).toContain(skeleton);
+  });
+
+  it("shows what it has when the other scope can't load offline", async () => {
+    const html = timeline(await fixture({ role: "viewer", scopes: ["comments"] }));
+    expect(html).toContain("Replica comment");
+    expect(html).not.toContain(skeleton);
+  });
+
+  it("shows a comment the user posts while the scopes load", async () => {
+    const engine = await fixture({ online: true, scopes: [] });
+    await engine.mutate("add_comment", {
+      issue_id: "issue",
+      body: "Fresh comment",
+      mentions: [],
+      attachments: [],
+    });
+    const html = timeline(engine);
+    expect(html).toContain("Fresh comment");
+    expect(html).not.toContain(skeleton);
+  });
+
+  it("keeps the composer's margin while loading, empty, and loaded", async () => {
+    const loading = timeline(await fixture({ online: true, scopes: [] }));
+    const empty = timeline(await fixture({ scopes: [] }));
+    const loaded = timeline(await fixture());
+    expect(loading).toContain(skeleton);
+    expect(empty).not.toContain(skeleton);
+    expect(empty).not.toContain("<ol");
+    expect(loaded).toContain("Replica comment");
+    for (const html of [loading, empty, loaded]) {
+      expect(html.split(composer)).toHaveLength(2);
+      expect(html).toContain(">Comment</button>");
+    }
+  });
 });

@@ -41,6 +41,7 @@ import { stageOf, isDoneOnly } from "~/lib/filters";
 import { milestoneGroups, projectMilestones } from "~/lib/projects";
 import { useI18n } from "~/lib/i18n";
 import { useWorkspace } from "~/lib/workspace";
+import { useIssueIntent } from "~/lib/queries";
 import type { Id, Issue, IssuePatch, ListGroup, Priority } from "~/lib/types";
 import { PriorityIcon, StageIcon } from "./icons";
 import { BlockedBadge, SubtaskProgress, TrackerBadge } from "./issue-parts";
@@ -384,12 +385,14 @@ export function IssueRow({
   const { ws, canWrite } = useWorkspace();
   const stage = stageOf(ws, issue);
   const project = ws.projects.find((p) => p.id === issue.project_id);
+  const intent = useIssueIntent(issue.id);
   const locked = !canWrite;
   return (
     <GridListItem
       id={issue.id}
       textValue={issue.title}
       href={`/${ws.slug}/issue/${issue.ref}`}
+      {...intent}
       className="group flex h-10 cursor-default items-center gap-2.5 border-b border-border/70 px-4  outline-none hover:bg-muted/60 focus-visible:bg-muted/60 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/60 selected:bg-accent/60"
     >
       {canSelect && <RowSelectBox />}

@@ -14,6 +14,7 @@ import { cn } from "~/lib/utils";
 import { useIssueKeyWidth } from "./issue-key";
 import { useI18n } from "~/lib/i18n";
 import { useWorkspace } from "~/lib/workspace";
+import { useIssueIntent } from "~/lib/queries";
 import type { Id, Issue } from "~/lib/types";
 import { BlockedBadge, SubtaskProgress, TrackerBadge } from "./issue-parts";
 import {
@@ -188,12 +189,14 @@ export function ReadOnlyColumn(props: Omit<DndColumnProps, "canDrop">) {
  */
 export function BoardCard({ issue, keyWidth }: { issue: Issue; keyWidth?: string }) {
   const { ws, canWrite } = useWorkspace();
+  const intent = useIssueIntent(issue.id);
   const locked = !canWrite;
   return (
     <GridListItem
       id={issue.id}
       textValue={issue.title}
       href={`/${ws.slug}/issue/${issue.ref}`}
+      {...intent}
       className="group flex cursor-default flex-col gap-2 rounded-lg border border-border/70 bg-board-card px-3 pb-2 pt-2.5 shadow-xs outline-none transition-[border-color,box-shadow,opacity] hover:border-foreground/15 hover:shadow-sm focus-visible:ring-2 focus-visible:ring-ring/60 dragging:opacity-40 dark:shadow-black/30"
     >
       <div className="flex h-5 items-center gap-1.5 text-muted-foreground">

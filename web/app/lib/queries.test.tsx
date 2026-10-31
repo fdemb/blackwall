@@ -1,6 +1,6 @@
 import "fake-indexeddb/auto";
 import { renderToStaticMarkup } from "react-dom/server";
-import { afterEach, describe, expect, it } from "vite-plus/test";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { createEngine, SCHEMA, type SyncEngine } from "../sync/engine";
 import { EngineProvider } from "../sync/react";
 import { MemoryReplicaStorage } from "../sync/persistence/memory";
@@ -8,7 +8,7 @@ import type { Scope } from "../sync/persistence/types";
 import { createFakeServer } from "../sync/testing/fake-server";
 import { createTransport } from "../sync/transport";
 import { setCsrf } from "./api";
-import { useActivity, useComments } from "./queries";
+import { useActivity, useComments, useIssueIntent } from "./queries";
 
 const id = (n: number) => `11111111-1111-4111-8111-${String(n).padStart(12, "0")}`;
 const engines: SyncEngine[] = [];
@@ -22,6 +22,11 @@ async function until(check: () => boolean) {
     await new Promise<void>((resolve) => setImmediate(resolve));
   }
   expect(check()).toBe(true);
+}
+
+async function settle() {
+  for (let step = 0; step < 50; step += 1)
+    await new Promise<void>((resolve) => setImmediate(resolve));
 }
 
 type Server = ReturnType<typeof createFakeServer>;
@@ -91,6 +96,12 @@ function Probe() {
   );
 }
 
+type Intent = ReturnType<typeof useIssueIntent>;
+function IntentProbe({ onRender }: { onRender: (intent: Intent) => void }) {
+  onRender(useIssueIntent(id(2)));
+  return null;
+}
+
 function render(engine: SyncEngine) {
   const html = renderToStaticMarkup(
     <EngineProvider engine={engine}>
@@ -147,5 +158,86 @@ describe("scope hooks", () => {
       comments: { loading: false, error: message, length: 0 },
       activity: { loading: true, error: null },
     });
+  });
+});
+
+describe("issue intent", () => {
+  it("loads an issue's scopes once when the pointer rests on its row", async () => {
+    const { engine, scopeRequests } = fixture();
+    await engine.start();
+    await until(() => engine.status.get().phase === "ready");
+    let intent: Intent | undefined;
+    renderToStaticMarkup(
+      <EngineProvider engine={engine}>
+        <IntentProbe onRender={(value) => (intent = value)} />
+      </EngineProvider>,
+    );
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      intent!.onHoverStart();
+      intent!.onHoverEnd();
+      vi.advanceTimersByTime(1000);
+      await settle();
+      expect(scopeRequests).toEqual([]);
+
+      intent!.onHoverStart();
+      vi.advanceTimersByTime(99);
+      await settle();
+      expect(scopeRequests).toEqual([]);
+      vi.advanceTimersByTime(1);
+      intent!.onPressStart();
+      intent!.onHoverStart();
+      vi.advanceTimersByTime(1000);
+    } finally {
+      vi.useRealTimers();
+    }
+    await until(
+      () => engine.scopeStatus(COMMENTS) === "loaded" && engine.scopeStatus(ACTIVITY) === "loaded",
+    );
+    expect(scopeRequests).toHaveLength(2);
+    expect(render(engine)).toEqual({
+      comments: { loading: false, error: null, length: 1 },
+      activity: { loading: false, error: null },
+    });
+
+    intent!.onPressStart();
+    await settle();
+    expect(scopeRequests).toHaveLength(2);
+  });
+
+  it("loads an issue's scopes once when focus rests on its row", async () => {
+    const { engine, scopeRequests } = fixture();
+    await engine.start();
+    await until(() => engine.status.get().phase === "ready");
+    let intent: Intent | undefined;
+    renderToStaticMarkup(
+      <EngineProvider engine={engine}>
+        <IntentProbe onRender={(value) => (intent = value)} />
+      </EngineProvider>,
+    );
+    const row = new EventTarget();
+    intent!.ref(row);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      row.dispatchEvent(new Event("focus"));
+      row.dispatchEvent(new Event("blur"));
+      vi.advanceTimersByTime(1000);
+      await settle();
+      expect(scopeRequests).toEqual([]);
+
+      row.dispatchEvent(new Event("focus"));
+      vi.advanceTimersByTime(100);
+    } finally {
+      vi.useRealTimers();
+    }
+    await until(
+      () => engine.scopeStatus(COMMENTS) === "loaded" && engine.scopeStatus(ACTIVITY) === "loaded",
+    );
+    expect(scopeRequests).toHaveLength(2);
+
+    row.dispatchEvent(new Event("focus"));
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    await settle();
+    expect(scopeRequests).toHaveLength(2);
   });
 });
