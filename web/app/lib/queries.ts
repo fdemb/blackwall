@@ -126,7 +126,7 @@ export function useComments(issueId: string) {
     [issueId],
   );
   // A comment only the outbox holds, such as one the user just posted.
-  const unconfirmed = useView(
+  const overlayOnly = useView(
     (store) =>
       store
         .byIndex("comments", "issue_id", issueId)
@@ -134,7 +134,7 @@ export function useComments(issueId: string) {
     ["comments"],
     [issueId],
   );
-  return { ...scopeState(useListState(items), scope), unconfirmed };
+  return { ...scopeState(useListState(items), scope), overlayOnly };
 }
 
 export function useTimeEntries(issueId?: string) {

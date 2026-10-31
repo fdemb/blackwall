@@ -92,7 +92,7 @@ export function Timeline({ issue }: { issue: Issue }) {
     Boolean(comments.error || activity.error) ||
     offline ||
     waited ||
-    comments.unconfirmed;
+    comments.overlayOnly;
   const [ready, setReady] = useState(show);
   if (show && !ready) setReady(true);
   useEffect(() => {
@@ -100,24 +100,26 @@ export function Timeline({ issue }: { issue: Issue }) {
     const timer = setTimeout(() => setWaited(true), GATE_MS);
     return () => clearTimeout(timer);
   }, [ready]);
+  // Screen readers announce a status region's text changes, not a region that mounts already
+  // filled, so the region is always there and the text arrives after mount.
+  const [announce, setAnnounce] = useState(false);
+  useEffect(() => setAnnounce(!ready), [ready]);
   const listed = ready && items.length > 0;
   return (
     <Section title={t("activity.title")}>
+      <p role="status" className="sr-only">
+        {announce ? t("action.loading") : ""}
+      </p>
       {!ready && (
-        <>
-          <p role="status" className="sr-only">
-            {t("action.loading")}
-          </p>
-          <div
-            aria-hidden="true"
-            className="animate-in fade-in fill-mode-both delay-300 flex min-h-7 items-center gap-3"
-          >
-            <span className="grid size-7 shrink-0 place-items-center">
-              <span className="size-5 animate-pulse rounded-full bg-muted" />
-            </span>
-            <span className="h-4 w-48 animate-pulse rounded bg-muted" />
-          </div>
-        </>
+        <div
+          aria-hidden="true"
+          className="animate-in fade-in fill-mode-both delay-300 flex min-h-7 items-center gap-3"
+        >
+          <span className="grid size-7 shrink-0 place-items-center">
+            <span className="size-5 animate-pulse rounded-full bg-muted" />
+          </span>
+          <span className="h-4 w-48 animate-pulse rounded bg-muted" />
+        </div>
       )}
       {listed && (
         // The line sits behind the list. Event dots ride on it and comment cards cover it.

@@ -719,19 +719,22 @@ describe("issue timeline", () => {
       </MemoryRouter>,
     );
 
-  const loadingStatus = '<p role="status" class="sr-only">Loading…</p>';
+  // Static markup is the pre-mount state: the status region exists, still empty, so the text the
+  // effect adds later is announced.
+  const status = '<p role="status" class="sr-only"></p>';
+  const skeleton = 'aria-hidden="true" class="animate-in fade-in';
   const composer = '<div class="mt-6 space-y-2">';
 
   it("shows cached comments on the first render without a loading state", async () => {
     const html = timeline(await fixture({ role: "viewer" }));
     expect(html).toContain("Replica comment");
     expect(html).not.toContain("animate-pulse");
-    expect(html).not.toContain('role="status"');
+    expect(html).toContain(status);
   });
 
   it("announces the load and holds one event row behind a delayed skeleton", async () => {
     const html = timeline(await fixture({ role: "viewer", online: true, scopes: [] }));
-    expect(html).toContain(loadingStatus);
+    expect(html).toContain(status);
     expect(html).toContain(
       '<div aria-hidden="true" class="animate-in fade-in fill-mode-both delay-300 flex min-h-7 items-center gap-3">',
     );
@@ -740,13 +743,13 @@ describe("issue timeline", () => {
   it("waits for activity before showing loaded comments, so the list never reorders", async () => {
     const html = timeline(await fixture({ role: "viewer", online: true, scopes: ["comments"] }));
     expect(html).not.toContain("Replica comment");
-    expect(html).toContain(loadingStatus);
+    expect(html).toContain(skeleton);
   });
 
   it("shows what it has when the other scope can't load offline", async () => {
     const html = timeline(await fixture({ role: "viewer", scopes: ["comments"] }));
     expect(html).toContain("Replica comment");
-    expect(html).not.toContain('role="status"');
+    expect(html).not.toContain(skeleton);
   });
 
   it("shows a comment the user posts while the scopes load", async () => {
@@ -759,15 +762,15 @@ describe("issue timeline", () => {
     });
     const html = timeline(engine);
     expect(html).toContain("Fresh comment");
-    expect(html).not.toContain('role="status"');
+    expect(html).not.toContain(skeleton);
   });
 
   it("keeps the composer's margin while loading, empty, and loaded", async () => {
     const loading = timeline(await fixture({ online: true, scopes: [] }));
     const empty = timeline(await fixture({ scopes: [] }));
     const loaded = timeline(await fixture());
-    expect(loading).toContain(loadingStatus);
-    expect(empty).not.toContain('role="status"');
+    expect(loading).toContain(skeleton);
+    expect(empty).not.toContain(skeleton);
     expect(empty).not.toContain("<ol");
     expect(loaded).toContain("Replica comment");
     for (const html of [loading, empty, loaded]) {
