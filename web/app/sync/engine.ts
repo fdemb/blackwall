@@ -191,8 +191,7 @@ type RemoteRequest = {
 type TabReply = { ok: true; value: unknown } | { ok: false; error: TabError };
 type ServedReply = { reply: Promise<TabReply>; cancelExpiry: () => void };
 const markOf = ({ term, seq }: TabMark): TabMark => ({ term, seq });
-const sameMark = (a: TabMark | null, b: TabMark | null) =>
-  a?.term === b?.term && a?.seq === b?.seq;
+const sameMark = (a: TabMark | null, b: TabMark | null) => a?.term === b?.term && a?.seq === b?.seq;
 
 /** Its share of a push body, as the transport encodes it. */
 function encodedSize({ id, name, args, at }: Mutation): number {
@@ -3095,9 +3094,9 @@ export class SyncEngine {
     }
     idle.sort((a, b) => a.used - b.used);
     const excess = this.loadedScopes.size - SCOPES_KEPT;
-    const evicted = idle
-      .filter(({ used }, index) => index < excess || now - used >= SCOPE_IDLE_MS)
-      .map(({ scope }) => scope);
+    const evicted: Scope[] = [];
+    for (const [index, { scope, used }] of idle.entries())
+      if (index < excess || now - used >= SCOPE_IDLE_MS) evicted.push(scope);
     if (evicted.length === 0) return;
     if (!(await this.persist(() => this.requireReplica().evictScopes(evicted), "increment")))
       return;
