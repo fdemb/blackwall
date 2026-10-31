@@ -287,7 +287,10 @@ export class SyncEngine {
   private pulling: Promise<void> | null = null;
   private pushing: Promise<void> | null = null;
   private batch: PushBatch | null = null;
-  /** 413 rejections the disk had no room to keep. Their mutations stay out of every push. */
+  /**
+   * 413 rejections the disk had no room to keep. Nothing is pushed until they are saved, so no
+   * acknowledgement can pass them and a reload can still find them in the outbox.
+   */
   private readonly setAside = new Map<number, Rejection>();
   /** The last error came from a push, so only a push success clears it. */
   private writeFailing = false;
@@ -579,8 +582,8 @@ export class SyncEngine {
     await this.commits.run(async () => {
       this.applyLoaded(await this.requireReplica().load());
     });
-    // The view now matches the database, so the previous leader's unsaved state is gone.
-    this.setStorage("ok");
+    // The view now matches the database, so only an unsaved 413 rejection keeps the disk full.
+    this.setStorage(this.setAside.size === 0 ? "ok" : "full");
     for (const [requestId, remote] of [...this.remote]) {
       this.remote.delete(requestId);
       remote.cancelResend();
@@ -1899,12 +1902,11 @@ export class SyncEngine {
   }
 
   private pushCandidates(): Mutation[] {
+    if (this.setAside.size > 0) return [];
     const confirmations = new Map<number, Mutation>(this.unconfirmed);
     for (const { mutation } of this.outcomes.values())
       if (mutation.id <= this.acknowledged) confirmations.set(mutation.id, mutation);
-    return [...confirmations.values(), ...this.store.pending()]
-      .filter((mutation) => !this.setAside.has(mutation.id))
-      .sort((a, b) => a.id - b.id);
+    return [...confirmations.values(), ...this.store.pending()].sort((a, b) => a.id - b.id);
   }
 
   private requestScope(scope: Scope): void {
@@ -2214,7 +2216,7 @@ export class SyncEngine {
   /**
    * Keeps the set-aside rejections and drops their mutations from the outbox. Their receipts
    * settle only then, so a rejection the user sees is one a reload still shows. On a full disk they
-   * wait for the storage retry. Runs inside `commits`.
+   * wait for the storage retry, and pushing resumes once they are saved. Runs inside `commits`.
    */
   private async storeSetAside(): Promise<boolean> {
     const rejections = [...this.setAside.values()];
@@ -2230,6 +2232,7 @@ export class SyncEngine {
       const { id, status, message } = rejection;
       const outcome = { id, status, message };
       this.setAside.delete(id);
+      this.unconfirmed.delete(id);
       this.settle(id, outcome, true);
       this.appendedIds.delete(id);
       this.store.setPending(this.store.pending().filter((pending) => pending.id !== id));
@@ -2237,6 +2240,7 @@ export class SyncEngine {
       this.post({ type: "result", mutationId: id, outcome });
     }
     this.post({ type: "reset" });
+    this.requestPush();
     return true;
   }
 

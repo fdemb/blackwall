@@ -11,6 +11,7 @@ import type { ReplicaStorage, Scope } from "./persistence/types";
 import { BOOTSTRAP_ENTITIES, normalize } from "./records";
 import { createFakeServer } from "./testing/fake-server";
 import { limited } from "./testing/limited-storage";
+import { createTabHub } from "./testing/tabs";
 import type { FakeServerOptions } from "./testing/fake-server";
 import {
   AccountChangedError,
@@ -3399,7 +3400,7 @@ describe("a full disk", () => {
     ).toMatchObject({ title: "Seen in memory" });
   });
 
-  it("keeps a too-large edit out of pushes until the disk can keep its rejection", async () => {
+  it("pushes nothing until the disk can keep a too-large edit's rejection", async () => {
     const disk = limited();
     disk.allow.add("appendMutation");
     const f = fixture(disk.storage, { maxPushBytes: 1500 });
@@ -3416,6 +3417,10 @@ describe("a full disk", () => {
     await until(() => (disk.attempts.get("discard") ?? 0) > 0);
     expect(f.engine.status.get().storage).toBe("full");
     expect(f.pushes()).toHaveLength(1);
+    const later = await f.engine.mutate("update_issue", {
+      id: OTHER_ISSUE,
+      patch: { title: "Queued behind the held edit" },
+    });
     for (let step = 0; step < 10; step += 1) {
       await f.advance(60_000);
       for (let tick = 0; tick < 20; tick += 1) await flush();
@@ -3427,11 +3432,54 @@ describe("a full disk", () => {
     await f.advance(5 * 60_000);
     await until(() => f.engine.status.get().storage === "ok");
     expect(await receipt.settled).toMatchObject({ id: receipt.mutationId, status: 413 });
-    expect(f.engine.status.get().pending).toBe(0);
+    expect(await later.settled).toBe("applied");
+    expect(f.server.record("issues", OTHER_ISSUE)).toMatchObject({
+      title: "Queued behind the held edit",
+    });
+    await until(() => f.engine.status.get().pending === 0);
+    for (let tick = 0; tick < 20; tick += 1) await flush();
+    const saved = await f.disk();
+    expect(saved.outbox).toEqual([]);
+    expect(saved.unconfirmed).toEqual([]);
+    expect(saved.rejected).toMatchObject([{ id: receipt.mutationId, status: 413 }]);
+    const pushed = f.pushes().slice(1).flat();
+    expect(pushed.map((mutation) => mutation.id)).toContain(later.mutationId);
+    expect(pushed.map((mutation) => mutation.id)).not.toContain(receipt.mutationId);
+    const pushes = f.pushes().length;
+    await f.advance(5 * 60_000);
+    for (let tick = 0; tick < 20; tick += 1) await flush();
+    expect(f.pushes()).toHaveLength(pushes);
+  });
+
+  it("keeps retrying a held rejection after the engine stops and leads again", async () => {
+    const disk = limited();
+    disk.allow.add("appendMutation");
+    const f = fixture(disk.storage, { maxPushBytes: 1500 });
+    const engine = f.build(SCHEMA, { locks: createTabHub().locks });
+    await engine.start();
+    await until(() => engine.status.get().phase === "ready" && engine.status.get().connected);
+    disk.full = true;
+    const receipt = await engine.mutate("update_issue", {
+      id: ISSUE,
+      patch: { description: "x".repeat(4000) },
+    });
+    void receipt.settled.catch(() => undefined);
+    await until(() => (disk.attempts.get("discard") ?? 0) > 0);
+    engine.stop();
+    await engine.start();
+    await until(() => engine.status.get().role === "leader");
+    for (let tick = 0; tick < 20; tick += 1) await flush();
+    expect(engine.status.get().storage).toBe("full");
+    expect(f.pushes()).toHaveLength(1);
+
+    disk.full = false;
+    await f.advance(5 * 60_000);
+    await until(() => engine.status.get().storage === "ok");
     const saved = await f.disk();
     expect(saved.outbox).toEqual([]);
     expect(saved.rejected).toMatchObject([{ id: receipt.mutationId, status: 413 }]);
-    for (let tick = 0; tick < 20; tick += 1) await flush();
+    expect(engine.status.get().pending).toBe(0);
     expect(f.pushes()).toHaveLength(1);
+  });
   });
 });
