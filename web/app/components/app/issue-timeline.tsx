@@ -81,13 +81,13 @@ export function Timeline({ issue }: { issue: Issue }) {
   const hidden = Math.max(0, items.length - limit);
   const loading = comments.loading || activity.loading;
   // Comments and events interleave by time, so the list waits for both instead of reordering when
-  // the second lands. Once shown it stays, even while a bootstrap reloads the scopes.
+  // the second lands. Once shown it stays, even while a bootstrap reloads the scopes. Until then a
+  // skeleton holds its space and stays invisible through a short load.
   const [ready, setReady] = useState(!loading);
   if (!loading && !ready) setReady(true);
   return (
     <Section title={t("activity.title")}>
       {!ready && (
-        // Holds the list's space from the first frame and stays invisible through a short load.
         <div aria-busy="true" className="animate-in fade-in fill-mode-both delay-300 space-y-3">
           {[0, 1].map((i) => (
             <div key={i} className="flex items-center gap-3">
