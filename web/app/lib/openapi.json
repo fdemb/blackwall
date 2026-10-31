@@ -863,6 +863,15 @@
               "type": "string",
               "format": "uuid"
             }
+          },
+          {
+            "name": "user_id",
+            "in": "query",
+            "description": "User the sending replica belongs to. A different account is 401 `account changed`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "requestBody": {
@@ -1339,6 +1348,15 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "user_id",
+            "in": "query",
+            "description": "User the replica belongs to. A different account is 401 `account changed`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -1370,6 +1388,15 @@
             "name": "client_id",
             "in": "query",
             "description": "Client replica id. A client_id owned by another user or workspace is 400.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "user_id",
+            "in": "query",
+            "description": "User the replica belongs to. A different account is 401 `account changed`.",
             "required": false,
             "schema": {
               "type": "string"
@@ -1418,6 +1445,15 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "user_id",
+            "in": "query",
+            "description": "User the replica belongs to. A different account is 401 `account changed`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -1437,7 +1473,7 @@
     "/internal-api/workspaces/{id}/sync/push": {
       "post": {
         "tags": ["sync"],
-        "description": "Applies one client's ordered mutations through the same store code as the command endpoint. Each mutation runs in its own transaction; business errors reject that mutation while transient failures stop the batch.",
+        "description": "Applies one client's ordered mutations through the same store code as the command endpoint. Each mutation runs in its own transaction; business errors reject that mutation while transient failures stop the batch. A client row whose high-water mark is below the request's `acknowledged` id means the server lost the client's state: the batch is refused with 409 `client state lost` and nothing is applied.",
         "operationId": "push",
         "parameters": [
           {
@@ -1447,6 +1483,15 @@
             "schema": {
               "type": "string",
               "format": "uuid"
+            }
+          },
+          {
+            "name": "user_id",
+            "in": "query",
+            "description": "User the replica belongs to. A different account is 401 `account changed`.",
+            "required": false,
+            "schema": {
+              "type": "string"
             }
           }
         ],
@@ -1526,6 +1571,15 @@
           {
             "name": "entity_id",
             "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "user_id",
+            "in": "query",
+            "description": "User the replica belongs to. A different account is 401 `account changed`.",
             "required": false,
             "schema": {
               "type": "string"
@@ -4760,6 +4814,11 @@
         "type": "object",
         "required": ["client_id", "mutations"],
         "properties": {
+          "acknowledged": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The highest mutation id the client has seen acknowledged by a pull or bootstrap.\nA stored high-water mark below it means the server lost the client's state, so\nthe batch is refused with 409 instead of re-running mutations. Defaults to 0."
+          },
           "client_id": {
             "type": "string",
             "format": "uuid"

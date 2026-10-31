@@ -23,6 +23,12 @@ export type Fault =
       milliseconds: number | readonly [number, number];
     }
   | { kind: "drop_response"; route?: Route }
+  /** The route runs and commits, then a proxy answers with this status, like a 502 after the work. */
+  | {
+      kind: "fail_response";
+      route: "pull" | "bootstrap" | "scope" | "push" | "commands";
+      status: number;
+    }
   | { kind: "duplicate_push" }
   | {
       kind: "unavailable";
@@ -47,6 +53,8 @@ export interface FakeServerOptions {
   onPush?: (input: { clientId: string; mutations: readonly Mutation[]; previous: number }) => void;
   onResult?: (clientId: string, result: MutationResult) => void;
   onFault?: (route: string, fault: Fault) => void;
+  /** A push body larger than this many bytes answers 413, as the server's body limit does. */
+  maxPushBytes?: number;
   /** Workspace limits the server enforces, as its `WORKSPACE_LIMIT_*` settings. Unset is unlimited. */
   limits?: Partial<Record<Entity, number>>;
 }
@@ -69,7 +77,6 @@ interface ClientState {
   workspace: string;
   user: string;
   last_mutation_id: number;
-  updatedAt: number;
   rejections: Map<number, { status: number; message: string }>;
 }
 interface Session {
@@ -143,6 +150,7 @@ export class FakeServer {
     }
   >();
   private readonly faults: Fault[] = [];
+  private readonly poisoned = new Map<number, "partial" | "error">();
   private readonly streams = new Map<EventConnection, string>();
   private readonly pageSize: number;
   private readonly timing: EventTiming;
@@ -377,8 +385,23 @@ export class FakeServer {
     return this.render(entity, id, user, workspace);
   }
 
+  /** Forgets a client's high-water mark and remembered rejections, as a database restore would. */
+  loseClient(clientId: string): void {
+    this.clients.delete(clientId);
+  }
   clientState(clientId: string): { last_mutation_id: number } {
     return { last_mutation_id: this.clients.get(clientId)?.last_mutation_id ?? 0 };
+  }
+  /**
+   * Makes every push that reaches this mutation id fail until `healMutation`, unlike one-shot
+   * faults. "partial" commits the mutations before it and answers 503 with their results, like the
+   * server's transient failure. "error" answers 500 and processes nothing.
+   */
+  poisonMutation(id: number, mode: "partial" | "error" = "partial"): void {
+    this.poisoned.set(id, mode);
+  }
+  healMutation(id: number): void {
+    this.poisoned.delete(id);
   }
   inject(fault: Fault): void {
     this.faults.push(structuredClone(fault));
@@ -392,10 +415,6 @@ export class FakeServer {
     this.horizon = txid;
     const retained = this.history.filter((tx) => tx.id >= txid);
     this.history.splice(0, this.history.length, ...retained);
-  }
-  pruneClients(): void {
-    for (const [id, client] of this.clients)
-      if (this.clock.milliseconds() - client.updatedAt > SESSION_LIFETIME) this.clients.delete(id);
   }
   close(): void {
     for (const stream of this.streams.keys()) stream.close();
@@ -507,6 +526,12 @@ export class FakeServer {
           "X-CSRF-Token": session.csrf,
         });
       else {
+        // Like the server: before the workspace, the client row or the command is looked at.
+        const replicaUser = url.searchParams.get("user_id");
+        if (replicaUser === null && bearer === undefined)
+          throw new MutationError(400, "user_id is required");
+        if (replicaUser !== null && replicaUser !== session.user)
+          throw new MutationError(401, "account changed");
         const workspace = uuid(matched?.[1], "workspace_id");
         this.authorize(workspace, session.user);
         if (route === "commands") {
@@ -514,6 +539,12 @@ export class FakeServer {
             ? json({ error: "service unavailable" }, 503, { "retry-after": "5" })
             : json(this.command(workspace, session.user, await request.json()));
         } else {
+          if (
+            route === "push" &&
+            this.options.maxPushBytes !== undefined &&
+            (await request.clone().arrayBuffer()).byteLength > this.options.maxPushBytes
+          )
+            return new Response("length limit exceeded", { status: 413 });
           const payload: unknown = route === "push" ? await extractPushJson(request) : null;
           const clientId = uuid(
             route === "push" && object(payload)
@@ -526,9 +557,24 @@ export class FakeServer {
           this.checkClient(clientId, workspace, session.user);
           const unavailable = faults.find((fault) => fault.kind === "unavailable");
           if (route === "push") {
+            const poison = this.poisonIn(clientId, mutations);
+            if (poison?.mode === "error" && unavailable === undefined)
+              return json({ error: "internal server error" }, 500);
             const after =
-              unavailable?.kind === "unavailable" ? (unavailable.after ?? 0) : undefined;
-            const pushed = this.push(workspace, session.user, clientId, mutations, after);
+              unavailable?.kind === "unavailable" ? (unavailable.after ?? 0) : poison?.index;
+            const acknowledged =
+              object(payload) && typeof payload.acknowledged === "number"
+                ? payload.acknowledged
+                : 0;
+            if (acknowledged < 0) throw new MutationError(400, "acknowledged must not be negative");
+            const pushed = this.push(
+              workspace,
+              session.user,
+              clientId,
+              mutations,
+              after,
+              acknowledged,
+            );
             if (faults.some((fault) => fault.kind === "duplicate_push") && pushed.status === 200)
               this.push(workspace, session.user, clientId, mutations);
             response = json(pushed.body, pushed.status);
@@ -572,6 +618,11 @@ export class FakeServer {
       if (!(error instanceof MutationError)) throw error;
       response = json({ error: error.message }, error.status);
     }
+    const failed = faults.find((fault) => fault.kind === "fail_response");
+    if (failed?.kind === "fail_response") {
+      await response.body?.cancel();
+      return json({ error: "bad gateway" }, failed.status);
+    }
     if (faults.some((fault) => fault.kind === "drop_response")) {
       await response.body?.cancel();
       throw new TypeError("Failed to fetch: injected lost response");
@@ -602,6 +653,17 @@ export class FakeServer {
       throw new MutationError(400, "client_id belongs to another user or workspace");
     // Rust read-only endpoints check ownership without registering a new row.
   }
+  private poisonIn(
+    clientId: string,
+    mutations: readonly Mutation[],
+  ): { index: number; mode: "partial" | "error" } | null {
+    const processed = this.clients.get(clientId)?.last_mutation_id ?? 0;
+    const index = mutations.findIndex(
+      (mutation) => mutation.id > processed && this.poisoned.has(mutation.id),
+    );
+    const mode = index < 0 ? undefined : this.poisoned.get(mutations[index].id);
+    return mode === undefined ? null : { index, mode };
+  }
   private takeFaults(route: string): Fault[] {
     const taken: Fault[] = [];
     const kinds = new Set<string>();
@@ -618,6 +680,7 @@ export class FakeServer {
         fault.kind === "delay" ||
         fault.kind === "response_delay" ||
         fault.kind === "drop_response" ||
+        fault.kind === "fail_response" ||
         fault.kind === "unavailable"
           ? fault.route
           : fault.kind === "truncate_bootstrap" || fault.kind === "cut_bootstrap"
@@ -1044,7 +1107,11 @@ export class FakeServer {
     clientId: string,
     mutations: Mutation[],
     after?: number,
+    acknowledged = 0,
   ): { status: number; body: PushResponse } {
+    // Like the server's push transaction: before anything is applied or a client row created.
+    if ((this.clients.get(clientId)?.last_mutation_id ?? 0) < acknowledged)
+      throw new MutationError(409, "client state lost");
     this.options.onPush?.({
       clientId,
       mutations: structuredClone(mutations),
@@ -1063,7 +1130,6 @@ export class FakeServer {
           workspace,
           user: actor,
           last_mutation_id: 0,
-          updatedAt: this.clock.milliseconds(),
           rejections: new Map(),
         };
         this.clients.set(clientId, client);
@@ -1095,7 +1161,6 @@ export class FakeServer {
         }
         client.last_mutation_id = mutation.id;
       }
-      client.updatedAt = this.clock.milliseconds();
       body.last_mutation_id = client.last_mutation_id;
       this.options.onResult?.(clientId, structuredClone(body.results[body.results.length - 1]));
     }

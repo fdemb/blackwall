@@ -31,8 +31,8 @@ export interface TabChannel {
 export interface EngineDependencies {
   storage: ReplicaStorage;
   transport: Transport;
-  sessionId: string;
   workspaceId: string;
+  /** The user the replica belongs to. It names the replica, its lock and its channel. */
   actor: string;
   clock: EngineClock;
   randomId(): string;
@@ -40,7 +40,7 @@ export interface EngineDependencies {
   signals: EngineSignals;
   /** Elects one leader per replica. Without it, the engine is always the leader. */
   locks?: TabLocks;
-  /** Coordinates engines sharing one replica. Named by the session and workspace. */
+  /** Coordinates engines sharing one replica. Named by the owner and workspace. */
   channel?: (name: string) => TabChannel;
 }
 
@@ -66,6 +66,8 @@ export interface EngineStatus {
   pending: number;
   /** A protocol error stopped pushing or pulling, so the outbox can't drain until unblock(). */
   blocked: boolean;
+  /** The server keeps failing the outbox's pushes. Nothing is dropped, and the push retries. */
+  stalled: boolean;
   lastError: Error | null;
   /** Rejections reported during this engine's life. */
   rejected: readonly Rejection[];
@@ -81,9 +83,15 @@ export type EngineEvent =
   | { type: "outdated" }
   | { type: "closed" };
 
+/**
+ * The server's verdict on a mutation. `unknown` means it processed the mutation but no longer
+ * remembers whether it applied: it keeps only a client's last 1,000 rejections.
+ */
+export type MutationOutcome = "applied" | "unknown" | Rejection;
+
 export interface MutationReceipt {
   /** Created record id, or null for an edit. */
   id: string | null;
   mutationId: number;
-  settled: Promise<"applied" | Rejection>;
+  settled: Promise<MutationOutcome>;
 }

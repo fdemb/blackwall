@@ -32,6 +32,8 @@ pub struct Actor {
     /// Non-secret replica name from the session row. Never a credential.
     pub session_id: Uuid,
     pub token: String,
+    /// Authenticated by the session cookie rather than a bearer token.
+    pub browser: bool,
 }
 
 impl FromRequestParts<Store> for Actor {
@@ -78,6 +80,7 @@ impl FromRequestParts<Store> for Actor {
             profile,
             session_id,
             token: token.into(),
+            browser: bearer.is_none(),
         })
     }
 }
@@ -124,6 +127,13 @@ pub struct CommandRequest {
 }
 
 pub type CommandResponse = OperationResult;
+
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct CommandQuery {
+    /// User the sending replica belongs to. A different account is 401 `account changed`.
+    pub user_id: Option<String>,
+}
 
 #[derive(Deserialize, utoipa::ToSchema)]
 pub struct AcceptInvitation {
@@ -842,7 +852,7 @@ async fn workspace(
 #[utoipa::path(
     post,
     path = "/internal-api/workspaces/{id}/commands",
-    params(("id" = Uuid, Path)),
+    params(("id" = Uuid, Path), CommandQuery),
     request_body = CommandRequest,
     responses(
         (status = 200, body = CommandResponse),
@@ -853,8 +863,10 @@ async fn command(
     State(store): State<Store>,
     actor: Actor,
     Path(id): Path<WorkspaceId>,
+    Query(query): Query<CommandQuery>,
     Json(input): Json<CommandRequest>,
 ) -> Result<Json<CommandResponse>> {
+    sync::fence(&actor, query.user_id.as_deref())?;
     if matches!(
         input.command,
         Command::AddAttachment { .. } | Command::AttachCommentFile { .. }

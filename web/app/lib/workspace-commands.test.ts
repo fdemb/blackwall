@@ -57,8 +57,8 @@ async function fixture() {
     transport: createTransport({
       fetch,
       headers: () => ({ cookie: `blackwall_session=${token}` }),
+      userId: owner.id,
     }),
-    sessionId: id(3),
     workspaceId: workspace.id,
     actor: owner.id,
     schema: SCHEMA,
@@ -133,7 +133,7 @@ describe("workspace commands", () => {
     expect(
       pushed.flatMap((batch) => batch.mutations.map((mutation: { name: string }) => mutation.name)),
     ).not.toContain("set_role");
-    expect(fetch.mock.calls.some(([url]) => String(url).endsWith("/commands"))).toBe(true);
+    expect(fetch.mock.calls.some(([url]) => String(url).includes("/commands?"))).toBe(true);
     expect(engine.store.pending().some((mutation) => mutation.name === "set_role")).toBe(false);
   });
   it("returns the token an invitation issues and whether the server emailed it", async () => {
@@ -370,7 +370,6 @@ describe("offline and rejected commands", () => {
     const offline = createEngine({
       storage: new MemoryReplicaStorage(),
       transport: createTransport({ fetch: sent, headers: () => ({}) }),
-      sessionId: id(3),
       workspaceId: workspace.id,
       actor: owner.id,
       schema: SCHEMA,

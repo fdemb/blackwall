@@ -15,6 +15,7 @@ import { immutableCopy, ingest, SyncStore } from "./store";
 import type { PendingMutation } from "./store";
 import {
   AccessError,
+  AccountChangedError,
   NetworkError,
   ProtocolError,
   UnauthorizedError,
@@ -27,6 +28,7 @@ import type {
   EngineEvent,
   EngineRole,
   EngineStatus,
+  MutationOutcome,
   MutationReceipt,
   Rejection,
   ScopeStatus,
@@ -54,6 +56,8 @@ export type { TabMessage } from "./tabs";
 export const SCHEMA = 8;
 
 export type OnlineResult = MutationResult & { invitation?: IssuedInvitation };
+/** A refreshed CSRF token, retried at once, or a failure to retry after a backoff. */
+type OnlineRetry = "refreshed" | { retryAfter: number | string | null };
 
 export class OutdatedError extends Error {
   constructor(message = "A newer version is open in another tab. Reload to continue.") {
@@ -74,6 +78,16 @@ const PUSH_MUTATIONS = 100;
 const PUSH_BYTES = 4 * 1024 * 1024;
 const encoder = new TextEncoder();
 type RequestKind = "bootstrap" | "pull" | "scope" | "push" | "events";
+/** The server keeps a client's 1,000 newest rejections, so older ones read back as duplicates. */
+const REJECTIONS_KEPT = 1000;
+/**
+ * Server failures in a row on one batch before the engine reports a stall. Nothing is dropped for
+ * them: a 5xx or a timeout says nothing about the mutation, so the push retries with capped backoff.
+ */
+const STALLED_AFTER = 3;
+/** 401s in a row, each with the session checked and found valid, before retries stop. */
+const UNAUTHORIZED_RETRIES = 3;
+const TOO_LARGE = "This edit is too large to save.";
 type PushBatch = {
   /** Halved after a 413, so a body the server refuses never blocks the outbox. */
   mutations: readonly Mutation[];
@@ -81,7 +95,25 @@ type PushBatch = {
   attempt: number;
   retryAt: number;
   csrfRefreshes: number;
+  /** Server failures in a row on this batch. Network failures never count. */
+  failures: number;
+  /** Leading mutations a partial response already processed. */
+  settled: number;
 };
+type PushFailure = "unreachable" | "server" | "too-large";
+
+/** Null for errors that stop network work, lose access or block pushing instead of retrying. */
+function pushFailure(error: unknown): PushFailure | null {
+  if (error instanceof ProtocolError && error.status === 413) return "too-large";
+  if (error instanceof UnavailableError) return "server";
+  if (
+    error instanceof UnauthorizedError ||
+    error instanceof AccessError ||
+    error instanceof ProtocolError
+  )
+    return null;
+  return "unreachable";
+}
 /** A follower's request to the leader, kept until its reply or the engine stops. */
 type RemoteRequest = {
   call: TabCall;
@@ -171,7 +203,7 @@ export class SyncEngine {
     number,
     {
       mutation: Mutation;
-      resolve: (result: "applied" | Rejection) => void;
+      resolve: (result: MutationOutcome) => void;
       reject: (error: Error) => void;
     }
   >();
@@ -181,11 +213,21 @@ export class SyncEngine {
   private sealed = false;
   private readonly reported = new Set<number>();
   private readonly onlineCalls = new Set<AbortController>();
+  /** Requests of online calls, which a 401 aborts without failing their calls. */
+  private readonly onlineAttempts = new Set<AbortController>();
   private readonly delay: ReturnType<typeof backoff>;
   private replica: Replica | null = null;
   private opening: Promise<void> | null = null;
   private closed = false;
   private terminal = false;
+  /**
+   * A 401 stopped network work: "checking" until the app has checked the session, "refused" once
+   * 401s kept coming with a valid session, until the user retries.
+   */
+  private unauthorized: "checking" | "refused" | null = null;
+  /** 401s since the server last answered a pull or a push. */
+  private unauthorizedStreak = 0;
+  private cancelResume: (() => void) | null = null;
   private outdated: OutdatedError | null = null;
   private started = false;
   private lifecycle = 0;
@@ -194,6 +236,8 @@ export class SyncEngine {
   private clientId = "";
   private cursor: string | null = null;
   private acknowledged = 0;
+  /** The replica's marker: access was denied and no read has succeeded since. */
+  private accessUnverified = false;
   private pullAgain = false;
   private pulling: Promise<void> | null = null;
   private pushing: Promise<void> | null = null;
@@ -203,8 +247,8 @@ export class SyncEngine {
 
   constructor(private readonly deps: EngineDependencies) {
     this.store = new SyncStore(createReplay(deps.actor));
-    this.delay = backoff(`${deps.sessionId}:${deps.workspaceId}`, deps.clock);
-    this.lockName = `blackwall-sync:${deps.sessionId}:${deps.workspaceId}`;
+    this.delay = backoff(`${deps.actor}:${deps.workspaceId}`, deps.clock);
+    this.lockName = `blackwall-sync:${deps.actor}:${deps.workspaceId}`;
     this.role = deps.locks ? "follower" : "leader";
     this.tabId = deps.channel ? deps.randomId() : "";
     this.channel = deps.channel?.(this.lockName) ?? null;
@@ -216,6 +260,7 @@ export class SyncEngine {
       connected: false,
       pending: 0,
       blocked: false,
+      stalled: false,
       lastError: null,
       rejected: Object.freeze([]),
       unresolved: Object.freeze([]),
@@ -261,7 +306,7 @@ export class SyncEngine {
       return Promise.reject(this.outdated ?? new Error("Engine is closed"));
     this.opening ??= this.commits.run(async () => {
       const replica = await this.deps.storage.open({
-        sessionId: this.deps.sessionId,
+        userId: this.deps.actor,
         workspaceId: this.deps.workspaceId,
         schema: this.deps.schema,
         onClose: (reason, newVersion) => this.replicaClosed(reason, newVersion),
@@ -273,7 +318,7 @@ export class SyncEngine {
         loaded = await replica.load();
       }
       this.applyLoaded(loaded);
-      this.update({ phase: this.cursor === null ? "bootstrapping" : "ready" });
+      this.update({ phase: this.openPhase() });
       if (!this.closed && !this.terminal) {
         this.unsubscribeSignals = this.deps.signals.subscribe((signal) => {
           if (signal === "offline") {
@@ -298,11 +343,18 @@ export class SyncEngine {
     return this.opening;
   }
 
+  /** A replica whose access was denied shows nothing as ready until a read succeeds. */
+  private openPhase(): EngineStatus["phase"] {
+    if (this.accessUnverified) return "loading";
+    return this.cursor === null ? "bootstrapping" : "ready";
+  }
+
   /** Replaces the in-memory replica with what the database holds. */
   private applyLoaded(loaded: LoadedReplica): void {
     this.clientId = loaded.meta.clientId;
     this.cursor = loaded.meta.cursor;
     this.acknowledged = loaded.meta.lastMutationId;
+    this.accessUnverified = loaded.meta.accessLost === true;
     for (const mutation of loaded.unconfirmed) this.unconfirmed.set(mutation.id, mutation);
     this.loadedScopes.clear();
     for (const scope of loaded.scopes) this.loadedScopes.set(scopeKey(scope), scope);
@@ -334,7 +386,37 @@ export class SyncEngine {
     this.lifecycle += 1;
     this.cancelNetwork();
     this.releaseLeadership();
+    // An online call waiting out a 401 fails the way that 401 would have.
+    if (this.unauthorized !== null) this.cancelOnline(new UnauthorizedError("Session ended", 401));
     this.rejectCallers(new Error(this.closed ? "Engine is closed" : "Engine is stopped"));
+  }
+
+  /**
+   * The app checked the session after a 401 and it is still valid, so the 401 came from something
+   * in between. Network work restarts after a backoff. When 401s keep coming, the engine reports
+   * itself blocked instead, until the user retries.
+   */
+  resume(): void {
+    if (this.closed || this.unauthorized !== "checking") return;
+    if (this.terminal) {
+      this.unauthorized = null;
+      return;
+    }
+    if (this.unauthorizedStreak >= UNAUTHORIZED_RETRIES) {
+      this.unauthorized = "refused";
+      this.update({ blocked: true });
+      this.post(this.statusMessage());
+      return;
+    }
+    const wait = this.unauthorizedStreak === 0 ? 0 : this.delay(this.unauthorizedStreak - 1);
+    this.cancelResume?.();
+    this.cancelResume = this.deps.clock.schedule(wait, () => {
+      this.cancelResume = null;
+      if (this.closed || this.unauthorized !== "checking") return;
+      this.unauthorized = null;
+      this.notifyChange();
+      this.beginNetwork();
+    });
   }
 
   private rejectCallers(error: Error): void {
@@ -363,6 +445,8 @@ export class SyncEngine {
     this.channel?.close();
     this.unsubscribeSignals?.();
     this.unsubscribeSignals = null;
+    this.cancelResume?.();
+    this.cancelResume = null;
     this.notifyChange();
     await this.commits.drain();
     this.replica?.close();
@@ -427,6 +511,7 @@ export class SyncEngine {
       role,
       online: this.deps.signals.getOnline() && (role === "leader" || this.leaderOnline),
       blocked: role === "leader" ? this.outboxBlocked() : this.leaderBlocked,
+      stalled: false,
     });
   }
 
@@ -483,7 +568,7 @@ export class SyncEngine {
         at,
         ...(admitted.local === undefined ? {} : { local: admitted.local }),
       }));
-      const settled = new Promise<"applied" | Rejection>((resolve, reject) =>
+      const settled = new Promise<MutationOutcome>((resolve, reject) =>
         this.outcomes.set(mutation.id, { mutation, resolve, reject }),
       );
       void settled.catch(() => undefined);
@@ -545,35 +630,70 @@ export class SyncEngine {
     for (let attempt = 0, csrfRefreshes = 0; ; attempt++) {
       controller.signal.throwIfAborted();
       await this.drainOutbox(controller.signal);
+      // A 401 aborts only this attempt. The next one waits in drainOutbox for the session check,
+      // and resends with the same key.
+      const request = new AbortController();
+      const abort = () => request.abort(controller.signal.reason);
+      controller.signal.addEventListener("abort", abort, { once: true });
+      this.onlineAttempts.add(request);
+      let next: OnlineResult | OnlineRetry;
       try {
-        const { result } = await this.withDeadline(controller, WRITE_DEADLINE_MS, (signal) =>
-          this.deps.transport.command(this.deps.workspaceId, input, { signal }),
-        );
+        next = await this.attemptOnline(input, request, csrfRefreshes === 0);
+      } catch (error) {
         controller.signal.throwIfAborted();
-        // The server pokes the leader's event stream, including when a follower sends this call.
-        if (this.role === "leader") void this.pull();
-        // Keep the callers' mutation-result shape without allocating a sync mutation id.
-        return result.invitation
-          ? { id: 0, status: "applied", invitation: result.invitation }
-          : { id: 0, status: "applied" };
-      } catch (caught) {
-        controller.signal.throwIfAborted();
-        const next = await this.onlineFailure(caught, controller, csrfRefreshes === 0);
-        if (next === "refreshed") {
-          csrfRefreshes++;
-          continue;
-        }
-        await pause(this.deps.clock, this.delay(attempt, next.retryAfter), controller.signal);
+        if (request.signal.aborted) continue;
+        throw error;
+      } finally {
+        controller.signal.removeEventListener("abort", abort);
+        this.onlineAttempts.delete(request);
       }
+      if (next === "refreshed") {
+        csrfRefreshes++;
+        continue;
+      }
+      if ("status" in next) return next;
+      await pause(this.deps.clock, this.delay(attempt, next.retryAfter), controller.signal);
     }
   }
 
-  /** Online commands wait until earlier offline edits have been pushed. */
+  private async attemptOnline(
+    input: { command: object; idempotencyKey: string },
+    controller: AbortController,
+    canRefreshCsrf: boolean,
+  ): Promise<OnlineResult | OnlineRetry> {
+    try {
+      const { result } = await this.withDeadline(controller, WRITE_DEADLINE_MS, (signal) =>
+        this.deps.transport.command(this.deps.workspaceId, input, { signal }),
+      );
+      controller.signal.throwIfAborted();
+      // The server pokes the leader's event stream, including when a follower sends this call.
+      if (this.role === "leader") void this.pull();
+      // Keep the callers' mutation-result shape without allocating a sync mutation id.
+      return result.invitation
+        ? { id: 0, status: "applied", invitation: result.invitation }
+        : { id: 0, status: "applied" };
+    } catch (caught) {
+      controller.signal.throwIfAborted();
+      return this.onlineFailure(caught, controller, canRefreshCsrf);
+    }
+  }
+
+  /**
+   * Online commands wait until earlier offline edits have been pushed, and while the app checks
+   * the session after a 401. Once 401s kept coming with a valid session, they fail.
+   */
   private async drainOutbox(signal: AbortSignal): Promise<void> {
     for (;;) {
       signal.throwIfAborted();
-      if (this.started && this.snapshot.online) {
-        if ((await this.requireReplica().loadOutbox()).length === 0) return;
+      if (this.unauthorized === "refused") throw new UnauthorizedError("Session check failed", 401);
+      if (this.started && this.snapshot.online && this.unauthorized === null) {
+        if ((await this.requireReplica().loadOutbox()).length === 0) {
+          // A 401 or close can land while the outbox loads; check again with no await before
+          // the caller registers its attempt.
+          signal.throwIfAborted();
+          if (this.started && this.snapshot.online && this.unauthorized === null) return;
+          continue;
+        }
         if (this.role === "leader" ? this.outboxBlocked() : this.leaderBlocked)
           throw new Error("Pending changes can't be sent. Reload and try again.");
       }
@@ -591,7 +711,7 @@ export class SyncEngine {
     caught: unknown,
     controller: AbortController,
     canRefreshCsrf: boolean,
-  ): Promise<"refreshed" | { retryAfter: number | string | null }> {
+  ): Promise<OnlineRetry> {
     let error = caught;
     if (error instanceof AccessError && (error.status === 403 || error.status === 404)) {
       const { status, message } = error;
@@ -628,7 +748,7 @@ export class SyncEngine {
     controller: AbortController,
     refreshCsrf: boolean,
   ): Promise<void> {
-    if (refreshCsrf) await cancellable(this.refreshCsrf(), controller.signal);
+    if (refreshCsrf) await cancellable(this.refreshCsrf(controller.signal), controller.signal);
     // A command may forbid an action or miss its target while workspace access is still valid.
     await cancellable(
       this.deps.transport.pull(this.deps.workspaceId, this.clientId, this.cursor, {
@@ -707,7 +827,9 @@ export class SyncEngine {
     this.blocked.clear();
     this.scopeFailures.clear();
     this.batch = null;
-    this.update({ blocked: false, lastError: null });
+    this.unauthorized = null;
+    this.unauthorizedStreak = 0;
+    this.update({ blocked: false, stalled: false, lastError: null });
     this.post(this.statusMessage());
     this.notifyScopes();
     this.cancelNetwork();
@@ -716,7 +838,12 @@ export class SyncEngine {
 
   /** Only unblock() or a new engine clears these blocks; until then the outbox can't drain. */
   private outboxBlocked(): boolean {
-    return this.blocked.has("push") || this.blocked.has("pull") || this.blocked.has("bootstrap");
+    return (
+      this.unauthorized === "refused" ||
+      this.blocked.has("push") ||
+      this.blocked.has("pull") ||
+      this.blocked.has("bootstrap")
+    );
   }
 
   private statusMessage(): TabBody {
@@ -726,6 +853,7 @@ export class SyncEngine {
       connected: this.snapshot.connected,
       online: this.snapshot.online,
       blocked: this.outboxBlocked(),
+      stalled: this.snapshot.stalled,
       error:
         error === null || error instanceof OutdatedError
           ? null
@@ -743,7 +871,7 @@ export class SyncEngine {
     for (const listener of this.statusListeners) listener();
     if (
       this.role === "leader" &&
-      ("connected" in patch || "online" in patch || "lastError" in patch)
+      ("connected" in patch || "online" in patch || "stalled" in patch || "lastError" in patch)
     )
       this.post(this.statusMessage());
   }
@@ -838,6 +966,7 @@ export class SyncEngine {
       connected: message.connected,
       online: this.leaderOnline && this.deps.signals.getOnline(),
       blocked: message.blocked,
+      stalled: message.stalled,
       lastError: this.leaderError(message.error),
     });
     this.notifyChange();
@@ -871,6 +1000,7 @@ export class SyncEngine {
 
   /** The leader persisted this page or scope before sending it, so the follower never runs ahead. */
   private receivePulled(message: Extract<TabBody, { type: "pulled" }>): void {
+    this.accessUnverified = false;
     if (message.scope) {
       this.loadedScopes.set(scopeKey(message.scope), message.scope);
       this.scopeFailures.delete(scopeKey(message.scope));
@@ -887,17 +1017,29 @@ export class SyncEngine {
       this.store.applyBase(accepted);
       if (message.acknowledgedUpTo !== null) this.acknowledge(message.acknowledgedUpTo);
     });
-    this.update({ phase: this.cursor === null ? "bootstrapping" : "ready" });
+    this.update({ phase: this.openPhase() });
     if (message.scope) this.notifyScopes();
   }
 
-  /** Another tab's session ended. This tab stops, closes its handle and clears its view. */
+  /**
+   * Another tab got 401 or lost access. A 401 stops this tab's network work until its own session
+   * check. Lost access stops this tab for good, closes its handle and clears its view.
+   */
   private receiveSessionEnd(ending: "unauthorized" | "accessLost"): void {
-    const failure =
-      ending === "unauthorized"
-        ? new UnauthorizedError("Session ended in another tab", 401)
-        : new AccessError("Workspace access ended in another tab", 403);
-    this.endLocal(ending, failure);
+    if (ending === "unauthorized") this.suspend();
+    else this.endLocal(ending, new AccessError("Workspace access ended in another tab", 403));
+  }
+
+  /**
+   * A 401 stops network work and keeps the replica, the view and every receipt. A proxy can answer
+   * 401 too, so the app checks the session, then calls `resume` or closes the engine.
+   */
+  private suspend(): void {
+    if (this.closed || this.unauthorized !== null || (this.terminal && !this.outdated)) return;
+    this.unauthorized = "checking";
+    this.cancelNetwork();
+    for (const attempt of this.onlineAttempts) attempt.abort(new Cancelled());
+    this.emit({ type: "unauthorized" });
   }
 
   /** An upgrade keeps the readable view; deleting the database still ends workspace access. */
@@ -955,6 +1097,7 @@ export class SyncEngine {
         this.applyLoaded(await this.requireReplica().load());
       })
       .then(() => {
+        this.update({ phase: this.openPhase() });
         this.notifyScopes();
         for (const { scope } of this.heldScopes.values()) this.requestScope(scope);
       })
@@ -1060,8 +1203,8 @@ export class SyncEngine {
   private settle(id: number, outcome: TabOutcome, reportOrphan: boolean): Rejection | null {
     const owned = this.outcomes.get(id);
     this.outcomes.delete(id);
-    if (outcome === "applied") {
-      owned?.resolve("applied");
+    if (outcome === "applied" || outcome === "unknown") {
+      owned?.resolve(outcome);
       return null;
     }
     const source =
@@ -1206,7 +1349,14 @@ export class SyncEngine {
   }
 
   private beginNetwork(): void {
-    if (!this.started || !this.snapshot.online || this.controller || this.role !== "leader") return;
+    if (
+      !this.started ||
+      !this.snapshot.online ||
+      this.controller ||
+      this.role !== "leader" ||
+      this.unauthorized !== null
+    )
+      return;
     const controller = new AbortController();
     this.controller = controller;
     void this.pull();
@@ -1262,6 +1412,7 @@ export class SyncEngine {
       })(),
       controller.signal,
     );
+    this.checkAcknowledged(response.header.last_mutation_id);
     await this.commits.run(async () => {
       this.check(controller);
       await this.requireReplica().writeBootstrap({
@@ -1271,6 +1422,7 @@ export class SyncEngine {
         records: response.records,
         entities: BOOTSTRAP_ENTITIES,
       });
+      await this.verified();
       this.cursor = response.header.cursor;
       this.loadedScopes.clear();
       this.store.batch(() => {
@@ -1352,6 +1504,7 @@ export class SyncEngine {
       this.deps.transport.pull(this.deps.workspaceId, this.clientId, cursor, { signal }),
     );
     this.check(controller);
+    this.checkAcknowledged(response.last_mutation_id);
     const changes = response.changes.map((change) => {
       const record =
         change.record === null ? null : this.prepareRecord(change.entity, change.record);
@@ -1367,6 +1520,7 @@ export class SyncEngine {
         cursor: response.cursor,
         acknowledgedUpTo: response.last_mutation_id,
       });
+      await this.verified();
       const accepted = changes.filter((change) =>
         acceptsChange(
           change.entity,
@@ -1388,6 +1542,27 @@ export class SyncEngine {
       });
     });
     return response;
+  }
+
+  /**
+   * The server never forgets a client's high-water mark now, so an answer below what this replica
+   * already holds means a database restore or a bug. Pushing again would run mutations a second
+   * time, so pushing stops until unblock(), and the state is loud instead of silently kept.
+   */
+  private checkAcknowledged(id: number | null): void {
+    if (id === null || id >= this.acknowledged) return;
+    this.blocked.add("push");
+    throw new ProtocolError(
+      `The server acknowledged mutation ${id}, but this replica already holds ${this.acknowledged}`,
+      200,
+    );
+  }
+
+  /** A read succeeded, so the access that was denied is back. */
+  private async verified(): Promise<void> {
+    if (!this.accessUnverified) return;
+    await this.requireReplica().setAccessLost(false);
+    this.accessUnverified = false;
   }
 
   private acknowledge(id: number): void {
@@ -1474,6 +1649,7 @@ export class SyncEngine {
     await this.commits.run(async () => {
       this.check(controller);
       await this.requireReplica().writeScope({ scope, records });
+      await this.verified();
       const changes = this.scopeChanges(scope, records);
       this.loadedScopes.set(scopeKey(scope), scope);
       this.scopeFailures.delete(scopeKey(scope));
@@ -1541,6 +1717,7 @@ export class SyncEngine {
 
   private async push(controller: AbortController): Promise<void> {
     while (this.active(controller)) {
+      if (this.blocked.has("push")) return;
       this.batch ??= await this.nextBatch(controller);
       const batch = this.batch;
       if (!batch) return;
@@ -1569,7 +1746,15 @@ export class SyncEngine {
       await this.reloadOutbox();
       const mutations = pushBatch(this.pushCandidates());
       if (mutations.length === 0) return null;
-      return { mutations, processed: false, attempt: 0, retryAt: 0, csrfRefreshes: 0 };
+      return {
+        mutations,
+        processed: false,
+        attempt: 0,
+        retryAt: 0,
+        csrfRefreshes: 0,
+        failures: 0,
+        settled: 0,
+      };
     });
   }
 
@@ -1582,10 +1767,13 @@ export class SyncEngine {
       const response = await this.withDeadline(controller, WRITE_DEADLINE_MS, (signal) =>
         this.deps.transport.push(this.deps.workspaceId, this.clientId, batch.mutations, {
           signal,
+          acknowledged: this.acknowledged,
         }),
       );
       this.check(controller);
-      const rejected = response.results.flatMap((result) => this.recordResult(result) ?? []);
+      const rejected = response.results.flatMap(
+        (result) => this.recordResult(result, response.lastMutationId) ?? [],
+      );
       this.keepUnresolved(rejected);
       this.confirm(
         response.results.map((result) => result.id),
@@ -1594,9 +1782,14 @@ export class SyncEngine {
       this.recovered("push");
       void this.pull();
       if (response.status === "partial") {
-        this.scheduleRetry(batch, response.retryAfter);
-        return "again";
+        if (response.results.length > batch.settled) {
+          batch.settled = response.results.length;
+          batch.failures = 0;
+          this.update({ stalled: false });
+        }
+        return this.failPush("server", response.retryAfter, batch);
       }
+      this.update({ stalled: false });
       batch.processed = true;
       return "sent";
     } catch (error) {
@@ -1610,14 +1803,72 @@ export class SyncEngine {
     batch: PushBatch,
     controller: AbortController,
   ): Promise<"again" | "stop"> {
-    if (error instanceof ProtocolError && error.status === 413 && batch.mutations.length > 1) {
+    if (error instanceof AccessError && error.status === 403)
+      return this.pushForbidden(error, batch, controller);
+    const failure = pushFailure(error);
+    if (failure !== "too-large" && (await this.handleError(error, "push"))) return "stop";
+    const retryAfter = error instanceof UnavailableError ? error.retryAfter : null;
+    if (failure !== "too-large") return this.failPush(failure ?? "unreachable", retryAfter, batch);
+    if (batch.mutations.length > 1) {
       batch.mutations = batch.mutations.slice(0, Math.ceil(batch.mutations.length / 2));
       return "again";
     }
-    if (error instanceof AccessError && error.status === 403)
-      return this.pushForbidden(error, batch, controller);
-    if (await this.handleError(error, "push")) return "stop";
-    this.scheduleRetry(batch, error instanceof UnavailableError ? error.retryAfter : null);
+    return this.setAsideTooLarge(batch.mutations[0], controller);
+  }
+
+  /**
+   * Retries a failed attempt after a capped backoff. A server failure or a timeout never discards
+   * an edit, because it can't say whether the command ran or what it would have done.
+   */
+  private failPush(
+    failure: "unreachable" | "server",
+    retryAfter: number | string | null | undefined,
+    batch: PushBatch,
+  ): "again" {
+    if (failure === "server") {
+      batch.failures += 1;
+      if (batch.failures >= STALLED_AFTER) this.update({ stalled: true });
+    } else this.update({ stalled: false });
+    batch.retryAt = Date.parse(this.deps.clock.now()) + this.delay(batch.attempt++, retryAfter);
+    return "again";
+  }
+
+  /**
+   * A 413 means the request never reached a command, so a single mutation the server refuses by
+   * size can never be sent. Reads first, to a final page or a finished bootstrap, because an
+   * earlier push of it may have succeeded with its response lost: then the server holds its
+   * outcome, and only the confirmation is too large. An acknowledgement is only final on the last
+   * page, so a probe that returned `more` or `reset` decides nothing.
+   */
+  private async setAsideTooLarge(
+    mutation: Mutation | undefined,
+    controller: AbortController,
+  ): Promise<"again" | "stop"> {
+    this.batch = null;
+    if (mutation === undefined) return "again";
+    for (let more = true; more;) more = await this.pullPages(controller);
+    const { id } = mutation;
+    if (id <= this.acknowledged) {
+      this.settle(id, "unknown", false);
+      this.unconfirmed.delete(id);
+      this.confirm([id], []);
+      this.appendedIds.delete(id);
+      this.post({ type: "result", mutationId: id, outcome: "unknown" });
+      return "again";
+    }
+    const outcome = { id, status: 413, message: TOO_LARGE };
+    const rejection = this.settle(id, outcome, true) ?? {
+      ...outcome,
+      command: { name: mutation.name, args: immutableCopy(mutation.args) },
+    };
+    this.appendedIds.delete(id);
+    await this.commits.run(async () => {
+      await this.requireReplica().discard([rejection]);
+      this.store.setPending(this.store.pending().filter((pending) => pending.id !== id));
+      this.keepUnresolved([rejection]);
+      this.post({ type: "result", mutationId: id, outcome });
+      this.post({ type: "reset" });
+    });
     return "again";
   }
 
@@ -1630,7 +1881,8 @@ export class SyncEngine {
     batch: PushBatch,
     controller: AbortController,
   ): Promise<"again" | "stop"> {
-    if (batch.csrfRefreshes === 0) await this.retry("push", controller, () => this.refreshCsrf());
+    if (batch.csrfRefreshes === 0)
+      await this.retry("push", controller, () => this.refreshCsrf(controller.signal));
     const read = await this.retry("pull", controller, () =>
       this.reads.run(() => this.readPull(controller)),
     );
@@ -1643,14 +1895,13 @@ export class SyncEngine {
     return "stop";
   }
 
-  private scheduleRetry(batch: PushBatch, retryAfter?: number | string | null): void {
-    batch.retryAt = Date.parse(this.deps.clock.now()) + this.delay(batch.attempt++, retryAfter);
-  }
-
-  /** A forbidden /api/me means the refresh itself failed, which no retry fixes. */
-  private async refreshCsrf(): Promise<void> {
+  /**
+   * A forbidden /api/me means the refresh itself failed, which no retry fixes. Closing or
+   * suspending the engine aborts `signal`, so a late answer can't replace a newer session's token.
+   */
+  private async refreshCsrf(signal: AbortSignal): Promise<void> {
     try {
-      await this.deps.transport.me();
+      await this.deps.transport.me({ signal });
     } catch (cause) {
       if (cause instanceof AccessError)
         throw new ProtocolError("CSRF refresh failed", cause.status, { cause });
@@ -1688,11 +1939,14 @@ export class SyncEngine {
   }
 
   /** Returns a rejection that kept its command, so the user can still recover the edit. */
-  private recordResult(result: MutationResult): Rejection | null {
+  private recordResult(result: MutationResult, lastMutationId: number): Rejection | null {
+    // A duplicate this far behind may be a pruned rejection, not an applied edit.
     const outcome: TabOutcome =
       result.status === "rejected"
         ? { id: result.id, status: result.error.status, message: result.error.message }
-        : "applied";
+        : result.status === "duplicate" && lastMutationId - result.id >= REJECTIONS_KEPT
+          ? "unknown"
+          : "applied";
     // The creating tab reports its own rejections. The leader reports the others that no tab
     // appended while it listened, since their creator may have closed.
     const reportOrphan = this.role === "leader" && !this.appendedIds.has(result.id);
@@ -1738,7 +1992,7 @@ export class SyncEngine {
     if (signal.aborted) return;
     this.check(controller);
     this.update({ connected: true });
-    this.recovered();
+    this.recovered("stream");
     for await (const message of stream) {
       if (signal.aborted) return;
       this.check(controller);
@@ -1759,23 +2013,29 @@ export class SyncEngine {
     this.writeFailing = kind === "push";
     this.update({ lastError: failure });
     this.emit({ type: "error", error: failure });
-    if (failure instanceof UnauthorizedError || failure instanceof AccessError) {
-      const ending = failure instanceof UnauthorizedError ? "unauthorized" : "accessLost";
-      // Followers hear first, so they stop before the replica they read is deleted.
+    if (failure instanceof UnauthorizedError && !(failure instanceof AccountChangedError)) {
+      if (this.unauthorized === null) {
+        this.unauthorizedStreak += 1;
+        // Every tab stops its network work, and each checks the session for itself.
+        this.post({ type: "unauthorized" });
+        this.suspend();
+      }
+      return true;
+    }
+    // A changed account means the replica isn't the signed-in user's, so this engine ends.
+    if (failure instanceof AccountChangedError || failure instanceof AccessError) {
+      const ending = failure instanceof AccessError ? "accessLost" : "unauthorized";
       this.post({ type: ending });
       this.endSession(failure);
+      // The replica stays on disk with its outbox. The same user's next sign-in, or access
+      // returning, continues from it, and the server's answers decide what happens to each edit.
       await this.commits.run(async () => {
+        if (failure instanceof AccessError)
+          // The cached base may predate the removal, so the next open verifies before it shows it.
+          // A replica deleted from outside has nothing left to mark.
+          await this.replica?.setAccessLost(true).catch(() => undefined);
         this.replica?.close();
         this.replica = null;
-        if (failure instanceof UnauthorizedError) {
-          for (const identity of await this.deps.storage.list())
-            if (identity.sessionId === this.deps.sessionId)
-              await this.deps.storage.delete(identity);
-        } else
-          await this.deps.storage.delete({
-            sessionId: this.deps.sessionId,
-            workspaceId: this.deps.workspaceId,
-          });
         this.clearView();
         this.update({ phase: "loading" });
         this.emit({ type: ending });
@@ -1796,7 +2056,9 @@ export class SyncEngine {
    * A request succeeded, so an earlier error no longer describes the connection. Blocks stay. A
    * failing push stays reported until a push succeeds, since reads can't drain the outbox.
    */
-  private recovered(kind: "read" | "push" = "read"): void {
+  private recovered(kind: "read" | "push" | "stream" = "read"): void {
+    // An open stream doesn't prove that pulls and pushes get past whatever answered 401.
+    if (kind !== "stream") this.unauthorizedStreak = 0;
     if (this.writeFailing && kind !== "push") return;
     this.writeFailing = false;
     const error = this.snapshot.lastError;

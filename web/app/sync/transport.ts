@@ -11,10 +11,24 @@ export interface TransportOptions {
   baseUrl?: string;
   headers?: () => HeadersInit;
   signal?: AbortSignal;
+  /**
+   * The user the replica belongs to. Every sync request and online command names it, and the
+   * server answers 401 "account changed" when the session belongs to someone else. A browser must
+   * set it.
+   */
+  userId?: string;
 }
 
 export interface StreamOptions {
   signal?: AbortSignal;
+}
+
+export interface PushOptions extends StreamOptions {
+  /**
+   * The highest mutation id this replica holds as acknowledged. The server refuses the batch with
+   * 409 "client state lost" when its own mark is lower. Defaults to 0.
+   */
+  acknowledged?: number;
 }
 
 export interface BootstrapHeader {
@@ -90,6 +104,8 @@ class TransportError extends Error {
 export class NetworkError extends TransportError {}
 export class TruncatedError extends TransportError {}
 export class UnauthorizedError extends TransportError {}
+/** The server's fence: the cookie's user isn't the user the replica belongs to. */
+export class AccountChangedError extends UnauthorizedError {}
 export class AccessError extends TransportError {}
 export class ProtocolError extends TransportError {}
 export class UnavailableError extends TransportError {
@@ -112,24 +128,40 @@ export function createTransport(options: TransportOptions) {
       ? AbortSignal.any([options.signal, signal])
       : (signal ?? options.signal);
   }
-  function path(ws: string, route: string, clientId: string, query: Record<string, string> = {}) {
-    return `/internal-api/workspaces/${encodeURIComponent(ws)}/sync/${route}?${new URLSearchParams({ client_id: clientId, ...query })}`;
+  function path(ws: string, route: string, query: Record<string, string> = {}) {
+    const params = new URLSearchParams(query);
+    if (options.userId !== undefined) params.set("user_id", options.userId);
+    const search = params.toString();
+    const base = `/internal-api/workspaces/${encodeURIComponent(ws)}/${route}`;
+    return search ? `${base}?${search}` : base;
+  }
+  function syncPath(
+    ws: string,
+    route: string,
+    clientId: string,
+    query: Record<string, string> = {},
+  ) {
+    return path(ws, `sync/${route}`, { client_id: clientId, ...query });
   }
   async function request(path: string, init: RequestInit = {}): Promise<Response> {
     const headers = new Headers(options.headers?.());
     new Headers(init.headers).forEach((value, key) => headers.set(key, value));
     if ((init.method ?? "GET").toUpperCase() !== "GET") headers.set("X-CSRF-Token", getCsrf());
+    const signal = init.signal ?? options.signal;
     let response: Response;
     try {
       response = await options.fetch(`${baseUrl}${path}`, {
         ...init,
         credentials: "same-origin",
         headers,
-        signal: init.signal ?? options.signal,
+        signal,
       });
     } catch (cause) {
       throw new NetworkError("Request failed", null, { cause });
     }
+    // A fetch can ignore its abort. A newer session may have stored its token since, so a late
+    // answer stores nothing.
+    if (signal?.aborted) throw new NetworkError("Request failed", null, { cause: signal.reason });
     const token = response.headers.get("X-CSRF-Token");
     if (token) setCsrf(token);
     return response;
@@ -146,7 +178,7 @@ export function createTransport(options: TransportOptions) {
       stream: StreamOptions = {},
     ): Promise<BootstrapResponse> {
       const signal = signalFor(stream.signal);
-      const response = await checked(path(ws, "bootstrap", clientId), { signal });
+      const response = await checked(syncPath(ws, "bootstrap", clientId), { signal });
       await contentType(response, "application/x-ndjson");
       const iterator = lines(response, signal, "bootstrap");
       try {
@@ -167,7 +199,7 @@ export function createTransport(options: TransportOptions) {
       requestOptions: StreamOptions = {},
     ): Promise<PullResponse> {
       const response = await checked(
-        path(ws, "pull", clientId, cursor === null ? {} : { cursor }),
+        syncPath(ws, "pull", clientId, cursor === null ? {} : { cursor }),
         { signal: signalFor(requestOptions.signal) },
       );
       return parsePull(await json(response), response.status);
@@ -176,15 +208,16 @@ export function createTransport(options: TransportOptions) {
       ws: string,
       clientId: string,
       mutations: readonly Mutation[],
-      requestOptions: StreamOptions = {},
+      requestOptions: PushOptions = {},
     ): Promise<PushResponse> {
-      const response = await request(path(ws, "push", clientId), {
+      const response = await request(syncPath(ws, "push", clientId), {
         method: "POST",
         signal: signalFor(requestOptions.signal),
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           client_id: clientId,
           mutations: mutations.map(({ id, name, args, at }) => ({ id, name, args, at })),
+          acknowledged: requestOptions.acknowledged ?? 0,
         }),
       });
       if (!response.ok && response.status !== 503) await fail(response, true);
@@ -213,15 +246,12 @@ export function createTransport(options: TransportOptions) {
       input: { command: object; idempotencyKey: string },
       requestOptions: StreamOptions = {},
     ): Promise<CommandResponse> {
-      const response = await checked(
-        `/internal-api/workspaces/${encodeURIComponent(ws)}/commands`,
-        {
-          method: "POST",
-          signal: signalFor(requestOptions.signal),
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ command: input.command, idempotency_key: input.idempotencyKey }),
-        },
-      );
+      const response = await checked(path(ws, "commands"), {
+        method: "POST",
+        signal: signalFor(requestOptions.signal),
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ command: input.command, idempotency_key: input.idempotencyKey }),
+      });
       const value = await json(response);
       if (
         !object(value) ||
@@ -262,7 +292,7 @@ export function createTransport(options: TransportOptions) {
         scope.entity === "comments"
           ? { entity: scope.entity, issue_id: scope.issueId }
           : { entity: scope.entity, entity_id: scope.entityId };
-      const response = await checked(path(ws, "scope", clientId, query), {
+      const response = await checked(syncPath(ws, "scope", clientId, query), {
         signal: signalFor(requestOptions.signal),
       });
       const value = await json(response);
@@ -278,7 +308,7 @@ export function createTransport(options: TransportOptions) {
       const signal = signalFor(stream.signal);
       let response: Response;
       try {
-        response = await checked(path(ws, "events", clientId), {
+        response = await checked(syncPath(ws, "events", clientId), {
           signal,
           headers: { Accept: "text/event-stream" },
         });
@@ -289,8 +319,10 @@ export function createTransport(options: TransportOptions) {
       await contentType(response, "text/event-stream");
       return pokes(response, signal);
     },
-    async me(): Promise<SessionProfile> {
-      const response = await checked("/internal-api/me");
+    async me(requestOptions: StreamOptions = {}): Promise<SessionProfile> {
+      const response = await checked("/internal-api/me", {
+        signal: signalFor(requestOptions.signal),
+      });
       return parseProfile(await json(response), response.status);
     },
   };
@@ -334,10 +366,23 @@ function retryAfter(response: Response): number | string | null {
   return null;
 }
 
-function httpError(response: Response, message: string, workspace: boolean): TransportError {
+/**
+ * A workspace 404 means lost access only when it is the server's own JSON error. A proxy or CDN
+ * 404 says nothing about the workspace, so it is a protocol error and deletes nothing.
+ */
+function httpError(
+  response: Response,
+  message: string,
+  workspace: boolean,
+  serverError = false,
+): TransportError {
   const status = response.status;
-  if (status === 401) return new UnauthorizedError(message, status);
-  if (status === 403 || (status === 404 && workspace)) return new AccessError(message, status);
+  if (status === 401)
+    return serverError && message === "account changed"
+      ? new AccountChangedError(message, status)
+      : new UnauthorizedError(message, status);
+  if (status === 403 || (status === 404 && workspace && serverError))
+    return new AccessError(message, status);
   if (status >= 500) {
     return new UnavailableError(message, status, retryAfter(response));
   }
@@ -353,13 +398,18 @@ async function fail(response: Response, workspace: boolean): Promise<never> {
     throw failure;
   }
   let message = text || fallback;
+  let serverError = false;
   try {
     const value: unknown = JSON.parse(text);
+    serverError =
+      object(value) &&
+      typeof value.error === "string" &&
+      response.headers.get("Content-Type")?.startsWith("application/json") === true;
     message = object(value) && typeof value.error === "string" ? value.error : fallback;
   } catch {
     // Axum's JSON extractor returns plain text for 400, 415 and 422.
   }
-  throw httpError(response, message, workspace);
+  throw httpError(response, message, workspace, serverError);
 }
 async function contentType(response: Response, expected: string): Promise<void> {
   if (response.headers.get("Content-Type")?.split(";", 1)[0].trim().toLowerCase() !== expected) {

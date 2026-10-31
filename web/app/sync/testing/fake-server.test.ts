@@ -35,11 +35,11 @@ function fixture(options: FakeServerOptions = {}) {
     server.fetch(url(route, { client_id: auth === memberToken ? id(11) : CLIENT, ...query }), {
       headers: { authorization: `Bearer ${auth}` },
     });
-  const push = (mutations: unknown[], auth = token, client = CLIENT) =>
+  const push = (mutations: unknown[], auth = token, client = CLIENT, acknowledged?: number) =>
     server.fetch(url("push"), {
       method: "POST",
       headers: { authorization: `Bearer ${auth}`, "content-type": "application/json" },
-      body: JSON.stringify({ client_id: client, mutations }),
+      body: JSON.stringify({ client_id: client, mutations, acknowledged }),
     });
   const pull = async (cursor?: string, auth = token): Promise<PullResponse> => {
     const response = await get("pull", cursor === undefined ? {} : { cursor }, auth);
@@ -234,6 +234,26 @@ describe("fake sync push", () => {
       { status: "rejected", error: { status: 409 } },
     ]);
     expect(f.server.record("issues", ISSUE)).toEqual(before);
+  });
+
+  it("refuses a batch whose acknowledged id is above the stored mark and applies nothing", async () => {
+    const f = fixture();
+    await f.push([label(1), label(2)]);
+    const labels = f.server.records("labels").length;
+    const refused = await f.push([label(3)], f.token, CLIENT, 3);
+    expect(refused.status).toBe(409);
+    expect(await refused.json()).toEqual({ error: "client state lost" });
+    expect(f.server.clientState(CLIENT).last_mutation_id).toBe(2);
+    expect(f.server.records("labels")).toHaveLength(labels);
+
+    const lost = await f.push([label(6)], f.token, id(12), 5);
+    expect(lost.status).toBe(409);
+    expect(f.server.clientState(id(12)).last_mutation_id).toBe(0);
+    expect(f.server.records("labels")).toHaveLength(labels);
+
+    expect((await f.push([label(3)], f.token, CLIENT, 2)).status).toBe(200);
+    expect((await f.push([label(4)], f.token, CLIENT, 1)).status).toBe(200);
+    expect((await f.push([label(5)], f.token, CLIENT, -1)).status).toBe(400);
   });
 
   it("isolates client ownership across actors and workspaces", async () => {
@@ -836,18 +856,71 @@ describe("fake bootstrap, scope and sessions", () => {
     expect((await f.server.fetch("/unknown")).status).toBe(404);
   });
 
-  it("prunes idle clients after the session lifetime", async () => {
+  it("keeps idle clients, so a replayed mutation stays a duplicate", async () => {
     const f = fixture();
-    await f.push([{ ...label(1), name: "unknown" }]);
-    f.server.advance(30 * 24 * 60 * 60 * 1000 + 1);
-    f.server.pruneClients();
-    expect(f.server.clientState(CLIENT).last_mutation_id).toBe(0);
+    await f.push([label(1)]);
+    f.server.advance(400 * 24 * 60 * 60 * 1000);
+    expect(f.server.clientState(CLIENT).last_mutation_id).toBe(1);
     const token = f.server.login(f.owner);
     const response: PushResponse = await (await f.push([label(1)], token)).json();
-    expect(response.results).toEqual([{ id: 1, status: "applied" }]);
-    expect((await (await f.push([label(1)], token)).json()).results).toEqual([
-      { id: 1, status: "duplicate" },
-    ]);
+    expect(response.results).toEqual([{ id: 1, status: "duplicate" }]);
+  });
+
+  it("refuses another account's replica before touching the client row", async () => {
+    const f = fixture();
+    const headers = { cookie: `blackwall_session=${f.memberToken}` };
+    for (const route of ["pull", "bootstrap", "scope", "events", "push"]) {
+      const response = await f.server.fetch(
+        f.url(route, {
+          user_id: f.owner.id,
+          ...(route === "scope" ? { entity: "comments", issue_id: ISSUE } : {}),
+        }),
+        route === "push"
+          ? {
+              method: "POST",
+              headers: {
+                ...headers,
+                "content-type": "application/json",
+                "X-CSRF-Token": f.server.csrfToken(f.memberToken),
+              },
+              body: JSON.stringify({ client_id: CLIENT, mutations: [label(1)] }),
+            }
+          : { headers },
+      );
+      expect(response.status, route).toBe(401);
+      expect(await response.json(), route).toEqual({ error: "account changed" });
+    }
+    expect(f.server.clientState(CLIENT).last_mutation_id).toBe(0);
+  });
+
+  it("refuses a command from another account's replica without running it", async () => {
+    const f = fixture();
+    const response = await f.server.fetch(
+      `/internal-api/workspaces/${f.workspace.id}/commands?user_id=${f.owner.id}`,
+      {
+        method: "POST",
+        headers: {
+          cookie: `blackwall_session=${f.memberToken}`,
+          "content-type": "application/json",
+          "X-CSRF-Token": f.server.csrfToken(f.memberToken),
+        },
+        body: JSON.stringify({
+          command: { type: "create_label", name: "Fenced", color: "#000000" },
+        }),
+      },
+    );
+    expect(response.status).toBe(401);
+    expect(await response.json()).toEqual({ error: "account changed" });
+    expect(f.server.records("labels")).toHaveLength(0);
+  });
+
+  it("makes a browser name its replica's account", async () => {
+    const f = fixture();
+    const cookie = { cookie: `blackwall_session=${f.token}` };
+    expect((await f.server.fetch(f.url("pull"), { headers: cookie })).status).toBe(400);
+    const named = f.url("pull", { user_id: f.owner.id });
+    expect((await f.server.fetch(named, { headers: cookie })).status).toBe(200);
+    expect((await f.get("pull")).status).toBe(200);
   });
 });
 
@@ -1778,7 +1851,7 @@ describe("cookie authentication", () => {
     expect(me.status).toBe(200);
     expect(me.headers.get("X-CSRF-Token")).toBe(f.server.csrfToken(f.token));
     const push = (csrf?: string) =>
-      f.server.fetch(f.url("push"), {
+      f.server.fetch(f.url("push", { user_id: f.owner.id }), {
         method: "POST",
         headers: {
           cookie,

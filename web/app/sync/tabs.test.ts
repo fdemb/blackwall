@@ -16,7 +16,6 @@ import { createTransport, NetworkError, ProtocolError } from "./transport";
 const id = (n: number) => `11111111-1111-4111-8111-${n.toString(16).padStart(12, "0")}`;
 const TEAM = id(1);
 const ISSUE = id(2);
-const SESSION = id(4);
 const engines: SyncEngine[] = [];
 const servers: ReturnType<typeof createFakeServer>[] = [];
 
@@ -50,6 +49,10 @@ interface Tab {
   engine: SyncEngine;
   fetch: ReturnType<typeof vi.fn>;
   events: EngineEvent[];
+}
+
+function pending(f: { tabs: Tab[] }) {
+  return f.tabs.some((tab) => tab.engine.status.get().pending > 0);
 }
 
 function fixture(count = 2, options: FakeServerOptions = {}) {
@@ -91,6 +94,7 @@ function fixture(count = 2, options: FakeServerOptions = {}) {
     const transport = createTransport({
       fetch,
       headers: () => ({ cookie: `blackwall_session=${token}` }),
+      userId: owner.id,
     });
     const signals = new Signals();
     const events: EngineEvent[] = [];
@@ -98,7 +102,6 @@ function fixture(count = 2, options: FakeServerOptions = {}) {
       storage: new IndexedDBReplicaStorage({ indexedDB: database }),
       transport,
       actor: owner.id,
-      sessionId: SESSION,
       workspaceId: workspace.id,
       schema: SCHEMA,
       clock: { now: server.now, schedule: server.schedule },
@@ -259,6 +262,58 @@ describe("tab coordination", () => {
       expect(tab.engine.store.get("labels", receipt.id ?? "")?.name).toBe("Authoritative");
   });
 
+  it("sets a follower's too-large mutation aside in every tab and keeps the rest syncing", async () => {
+    const f = fixture(2, { maxPushBytes: 1500 });
+    await f.start();
+    const { leader, follower } = f.roles();
+    const large = await follower.engine.mutate("update_issue", {
+      id: ISSUE,
+      patch: { description: "x".repeat(4000) },
+    });
+    const later = await follower.engine.mutate("update_issue", {
+      id: ISSUE,
+      patch: { title: "Later" },
+    });
+    for (let step = 0; step < 120 && pending(f); step += 1) {
+      f.server.advance(1000);
+      for (let tick = 0; tick < 20; tick += 1) await flush();
+    }
+    expect(await large.settled).toMatchObject({ id: 1, status: 413 });
+    expect(await later.settled).toBe("applied");
+    for (const tab of f.tabs) {
+      expect(tab.engine.status.get().pending).toBe(0);
+      expect(tab.engine.status.get().unresolved).toMatchObject([{ id: 1, status: 413 }]);
+      expect(tab.engine.store.get("issues", ISSUE)).toMatchObject({
+        title: "Later",
+        description: "",
+      });
+    }
+    expect(leader.events.filter((event) => event.type === "rejected")).toHaveLength(1);
+    f.converged(leader);
+    f.converged(follower);
+  });
+
+  it("shows a follower the leader's stalled push", async () => {
+    const f = fixture(2);
+    await f.start();
+    const { leader, follower } = f.roles();
+    f.server.poisonMutation(1, "error");
+    await follower.engine.mutate("update_issue", { id: ISSUE, patch: { title: "Stuck" } });
+    for (let step = 0; step < 60 && !follower.engine.status.get().stalled; step += 1) {
+      f.server.advance(1000);
+      for (let tick = 0; tick < 20; tick += 1) await flush();
+    }
+    expect(leader.engine.status.get().stalled).toBe(true);
+    expect(follower.engine.status.get()).toMatchObject({ stalled: true, pending: 1 });
+    f.server.healMutation(1);
+    for (let step = 0; step < 120 && pending(f); step += 1) {
+      f.server.advance(1000);
+      for (let tick = 0; tick < 20; tick += 1) await flush();
+    }
+    await until(() => !follower.engine.status.get().stalled);
+    expect(follower.engine.store.get("issues", ISSUE)?.title).toBe("Stuck");
+  });
+
   it("lets a follower take over with mutations in the closed leader's outbox", async () => {
     const f = fixture(2);
     await f.start();
@@ -306,9 +361,11 @@ describe("tab coordination", () => {
     expect(f.requests(follower)).toBe(0);
     f.server.inject({ kind: "response_delay", route: "commands", milliseconds: 500 });
     const online = follower.engine.runOnline("set_role", { user_id: f.peer.id, role: "admin" });
-    await until(() => follower.fetch.mock.calls.some(([url]) => String(url).endsWith("/commands")));
+    await until(() =>
+      follower.fetch.mock.calls.some(([url]) => String(url).includes("/commands?")),
+    );
     await until(() => f.server.record("members", f.peer.id)?.role === "admin");
-    expect(leader.fetch.mock.calls.some(([url]) => String(url).endsWith("/commands"))).toBe(false);
+    expect(leader.fetch.mock.calls.some(([url]) => String(url).includes("/commands?"))).toBe(false);
     await leader.engine.close();
     await until(() => follower.engine.status.get().role === "leader");
     await f.advance(500);
@@ -329,7 +386,7 @@ describe("tab coordination", () => {
     await until(() => leader.engine.status.get().lastError instanceof ProtocolError);
     const online = follower.engine.runOnline("set_role", { user_id: f.peer.id, role: "admin" });
     await expect(online).rejects.toThrow("Reload");
-    expect(follower.fetch.mock.calls.some(([url]) => String(url).endsWith("/commands"))).toBe(
+    expect(follower.fetch.mock.calls.some(([url]) => String(url).includes("/commands?"))).toBe(
       false,
     );
   });
@@ -339,7 +396,7 @@ describe("tab coordination", () => {
     await f.start();
     const { leader } = f.roles();
     const load = vi.spyOn(leader.engine, "useScope");
-    const channel = f.hub.channel(`blackwall-sync:${SESSION}:${f.workspaceId}`);
+    const channel = f.hub.channel(`blackwall-sync:${f.owner.id}:${f.workspaceId}`);
     const request = {
       type: "request",
       requestId: "repeated-scope",
@@ -365,7 +422,7 @@ describe("tab coordination", () => {
     await f.start();
     const { leader } = f.roles();
     const load = vi.spyOn(leader.engine, "useScope");
-    const channel = f.hub.channel(`blackwall-sync:${SESSION}:${f.workspaceId}`);
+    const channel = f.hub.channel(`blackwall-sync:${f.owner.id}:${f.workspaceId}`);
     const request = {
       type: "request",
       requestId: "late-scope",
@@ -391,7 +448,7 @@ describe("tab coordination", () => {
     await f.start();
     const { leader } = f.roles();
     const load = vi.spyOn(leader.engine, "useScope");
-    const channel = f.hub.channel(`blackwall-sync:${SESSION}:${f.workspaceId}`);
+    const channel = f.hub.channel(`blackwall-sync:${f.owner.id}:${f.workspaceId}`);
     const request = {
       type: "request",
       requestId: "pending-scope",
@@ -535,20 +592,30 @@ describe("tab coordination", () => {
     release();
   });
 
-  it("ends the session in every tab when the leader gets 401", async () => {
-    const f = fixture(2, { sessionLifetimeMs: 1000 });
+  it("a 401 stops network work in every tab, and each resumes after its session check", async () => {
+    const f = fixture(2);
     await f.start();
     const { leader, follower } = f.roles();
-    await f.advance(2000);
+    f.server.inject({ kind: "fail_response", route: "pull", status: 401 });
     void leader.engine.pull();
     await until(() => leader.events.some((event) => event.type === "unauthorized"));
     await until(() => follower.events.some((event) => event.type === "unauthorized"));
-    expect(leader.engine.status.get().phase).toBe("loading");
-    expect(follower.engine.status.get().phase).toBe("loading");
-    expect(follower.engine.store.all("issues")).toEqual([]);
+    expect(follower.engine.store.get("issues", ISSUE)?.title).toBe("Original");
+    const receipt = await follower.engine.mutate("update_issue", {
+      id: ISSUE,
+      patch: { title: "Typed in the other tab" },
+    });
     const requests = f.requests(leader);
     await f.advance(60_000);
     expect(f.requests(leader)).toBe(requests);
+    expect(f.server.record("issues", ISSUE)?.title).toBe("Original");
+
+    leader.engine.resume();
+    follower.engine.resume();
+    await f.advance(1000);
+    await until(() => f.server.record("issues", ISSUE)?.title === "Typed in the other tab");
+    expect(await receipt.settled).toBe("applied");
+    expect(follower.engine.isClosed()).toBe(false);
   });
 
   it("ends the session in every tab when the leader gets 403", async () => {
@@ -574,7 +641,7 @@ describe("tab coordination", () => {
       indexedDB: f.database,
       version: IDB_VERSION + 1,
     }).open({
-      sessionId: SESSION,
+      userId: f.owner.id,
       workspaceId: f.workspaceId,
       schema: SCHEMA,
     });
@@ -587,18 +654,18 @@ describe("tab coordination", () => {
         ).rejects.toBeInstanceOf(OutdatedError);
       }
       const nextLeader = vi.fn(async () => {});
-      await f.hub.locks.request(`blackwall-sync:${SESSION}:${f.workspaceId}`, nextLeader);
+      await f.hub.locks.request(`blackwall-sync:${f.owner.id}:${f.workspaceId}`, nextLeader);
       expect(nextLeader).toHaveBeenCalledOnce();
       const requests = f.tabs.map(f.requests);
       await f.advance(60_000);
       expect(f.tabs.map(f.requests)).toEqual(requests);
       // The newer code can still end the session in the old tabs through the channel.
-      const channel = f.hub.channel(`blackwall-sync:${SESSION}:${f.workspaceId}`);
+      const channel = f.hub.channel(`blackwall-sync:${f.owner.id}:${f.workspaceId}`);
       channel.postMessage({ type: "unauthorized", from: "newer-tab" });
       await until(() =>
         f.tabs.every((tab) => tab.events.some((event) => event.type === "unauthorized")),
       );
-      expect(f.tabs.every((tab) => tab.engine.store.all("issues").length === 0)).toBe(true);
+      expect(f.tabs.map((tab) => tab.engine.store.all("issues"))).toEqual(views);
       channel.close();
     } finally {
       upgraded.close();
@@ -610,7 +677,7 @@ describe("tab coordination", () => {
     await f.start();
     const { follower } = f.roles();
     await new IndexedDBReplicaStorage({ indexedDB: f.database }).delete({
-      sessionId: SESSION,
+      userId: f.owner.id,
       workspaceId: f.workspaceId,
     });
     await until(() => follower.events.some((event) => event.type === "accessLost"));

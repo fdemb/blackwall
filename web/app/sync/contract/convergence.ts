@@ -208,7 +208,12 @@ class ConvergenceRun {
     await this.setViewerRole("viewer");
     viewer.connection.send("online");
     const verdict = await staleRole.settled;
-    if (verdict === "applied" || verdict.status !== 403 || verdict.message !== "permission denied")
+    if (
+      verdict === "applied" ||
+      verdict === "unknown" ||
+      verdict.status !== 403 ||
+      verdict.message !== "permission denied"
+    )
       throw new Error(`wrong stale-role verdict ${JSON.stringify(verdict)}`);
     this.log("server-rejected", verdict);
     await settle(viewer.engine);
@@ -309,7 +314,7 @@ class ConvergenceRun {
 
   private async verifyDisk(index: number, c: Client) {
     const replica = await c.storage.open({
-      sessionId: c.user.sessionId,
+      userId: c.user.id,
       workspaceId: this.ws,
       schema: SCHEMA,
     });

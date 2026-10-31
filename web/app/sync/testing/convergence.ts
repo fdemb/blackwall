@@ -58,7 +58,6 @@ interface Accepted {
 interface Client {
   index: number;
   actor: string;
-  sessionId: string;
   token: string;
   csrf: string;
   signals: Signals;
@@ -304,7 +303,6 @@ export async function runConvergence(
     ...storage,
     list: () => storage.list(),
     delete: (identity) => storage.delete(identity),
-    deleteAllExcept: (session) => storage.deleteAllExcept(session),
     async open(input) {
       const replica = await storage.open(input);
       async function write<T>(work: () => Promise<T>): Promise<T> {
@@ -336,13 +334,16 @@ export async function runConvergence(
         loadScope: (scope) => replica.loadScope(scope),
         appendMutation: (value) => write(() => replica.appendMutation(value)),
         confirm: (ids, rejected) => write(() => replica.confirm(ids, rejected)),
+        discard: (rejections) => write(() => replica.discard(rejections)),
         resolveRejection: (id) => write(() => replica.resolveRejection(id)),
+        setAccessLost: (lost) => replica.setAccessLost(lost),
       };
     },
   });
 
   const build = (client: Client): SyncEngine => {
     const transport = createTransport({
+      userId: client.actor,
       headers: () => ({ cookie: `blackwall_session=${client.token}` }),
       async fetch(input, init) {
         const url = new URL(String(input), "http://fake.test");
@@ -359,7 +360,8 @@ export async function runConvergence(
         if (route === "push") client.pendingPushes++;
         try {
           if (route === "push") {
-            const payload = String(init?.body);
+            // `acknowledged` may rise between attempts. The batch itself must not change.
+            const payload = JSON.stringify(JSON.parse(String(init?.body)).mutations);
             if (client.retryPayload !== null)
               equal(payload, client.retryPayload, "retry changed the captured batch");
             client.retryPayload = payload;
@@ -396,7 +398,6 @@ export async function runConvergence(
       storage: client.storage,
       transport,
       actor: client.actor,
-      sessionId: client.sessionId,
       workspaceId: workspace.id,
       schema: SCHEMA,
       signals: client.signals,
@@ -421,7 +422,7 @@ export async function runConvergence(
 
   async function disk(client: Client): Promise<LoadedReplica> {
     const replica = await client.storage.open({
-      sessionId: client.sessionId,
+      userId: client.actor,
       workspaceId: workspace.id,
       schema: SCHEMA,
     });
@@ -472,7 +473,7 @@ export async function runConvergence(
           void receipt.settled.then(
             (value) => {
               item.outcome =
-                value === "applied"
+                value === "applied" || value === "unknown"
                   ? { kind: "applied" }
                   : { kind: "rejected", status: value.status, message: value.message };
             },
@@ -591,7 +592,6 @@ export async function runConvergence(
         actor: actor.id,
         token,
         csrf: server.csrfToken(token),
-        sessionId: simulationId(tabs ? 20 : 20 + index),
         signals: new Signals(),
         storage,
         generation: 0,
@@ -1023,8 +1023,10 @@ export async function runConvergence(
       check(authClient.blocked, "CSRF refresh refusal did not complete callers");
       check((await authClient.storage.list()).length === 1, "CSRF refusal removed persistence");
     } else {
-      equal(await authClient.storage.list(), [], "wiped client retained persistence");
-      equal(authClient.engine.store.all("issues"), [], "wiped client retained its view");
+      check((await authClient.storage.list()).length === 1, "ended session deleted its replica");
+      // A 401 keeps the view until the app's session check closes the engine.
+      if (authStatus === 403)
+        equal(authClient.engine.store.all("issues"), [], "wiped client retained its view");
       check(
         server.record("members", authClient.actor, owner.id) === null,
         "wiped actor retained access",

@@ -7,6 +7,7 @@ use axum::{
 use blackwall::{
     auth::{Register, Session},
     http::router,
+    jobs::{self, Mailer},
     store::Store,
 };
 use http_body_util::BodyExt;
@@ -1088,32 +1089,17 @@ async fn push_session_id_from_me_and_login() {
 }
 
 #[tokio::test]
-async fn push_pruning_removes_idle_clients() {
+async fn maintenance_keeps_idle_clients_and_their_rejections() {
     let database = support::TestDatabase::new().await;
     let store = Store::connect(&database.url).await.unwrap();
     let app = router(store.clone());
     let owner = account(&store, "owner").await;
     let (ws, _) = setup(&app, &owner).await;
-    let fresh = Uuid::new_v4();
-
-    let (status, result) = push(
-        &app,
-        &owner.token,
-        ws,
-        fresh,
-        vec![mutation(
-            1,
-            "create_label",
-            json!({"name": "fresh", "color": "#000000"}),
-        )],
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "{result}");
 
     let idle = Uuid::new_v4();
     sqlx::query(
         "INSERT INTO sync_clients (client_id, workspace_id, user_id, last_mutation_id, updated_at) \
-         VALUES ($1, $2, $3, 9, now() - make_interval(days => 31))",
+         VALUES ($1, $2, $3, 9, now() - make_interval(days => 400))",
     )
     .bind(idle)
     .bind(ws)
@@ -1121,19 +1107,33 @@ async fn push_pruning_removes_idle_clients() {
     .execute(&store.pool)
     .await
     .unwrap();
+    sqlx::query(
+        "INSERT INTO sync_rejections (client_id, mutation_id, status, message) \
+         VALUES ($1, 9, 400, 'idle rejection')",
+    )
+    .bind(idle)
+    .execute(&store.pool)
+    .await
+    .unwrap();
 
-    sqlx::query("INSERT INTO sync_rejections (client_id, mutation_id, status, message) VALUES ($1, 9, 400, 'idle rejection'), ($2, 1, 409, 'fresh rejection')")
-        .bind(idle).bind(fresh).execute(&store.pool).await.unwrap();
-    assert_eq!(store.prune_sync_clients().await.unwrap(), 1);
-    let retained: Vec<Uuid> =
-        sqlx::query_scalar("SELECT client_id FROM sync_rejections ORDER BY client_id")
-            .fetch_all(&store.pool)
-            .await
-            .unwrap();
-    assert_eq!(retained, vec![fresh]);
-    assert_eq!(last_mutation_id(&store, idle).await, None);
-    assert_eq!(last_mutation_id(&store, fresh).await, Some(1));
-    assert_eq!(store.prune_sync_clients().await.unwrap(), 0);
+    jobs::tick(&store, &Mailer::Disabled).await.unwrap();
+
+    assert_eq!(last_mutation_id(&store, idle).await, Some(9));
+    let (status, result) = push(
+        &app,
+        &owner.token,
+        ws,
+        idle,
+        vec![mutation(
+            9,
+            "create_label",
+            json!({"name": "again", "color": "#000000"}),
+        )],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+    assert_eq!(result["results"][0]["status"], "rejected");
+    assert_eq!(result["results"][0]["error"]["message"], "idle rejection");
 
     drop(app);
     store.pool.close().await;
@@ -1401,6 +1401,159 @@ async fn push_refuses_online_only_commands() {
     let (status, replay) = push(&app, &owner.token, ws, client, mutations).await;
     assert_eq!(status, StatusCode::OK, "{replay}");
     assert_eq!(replay["results"], result["results"]);
+
+    drop(app);
+    store.pool.close().await;
+    database.cleanup().await;
+}
+
+async fn push_acknowledged(
+    app: &axum::Router,
+    token: &str,
+    workspace: Uuid,
+    client: Uuid,
+    acknowledged: i64,
+    mutations: Vec<Value>,
+) -> (StatusCode, Value) {
+    call(
+        app,
+        "POST",
+        &format!("/internal-api/workspaces/{workspace}/sync/push"),
+        Some(token),
+        Some(json!({"client_id": client, "mutations": mutations, "acknowledged": acknowledged})),
+    )
+    .await
+}
+
+async fn labels_named(store: &Store, workspace: Uuid, name: &str) -> i64 {
+    sqlx::query_scalar("SELECT count(*) FROM labels WHERE workspace_id = $1 AND name = $2")
+        .bind(workspace)
+        .bind(name)
+        .fetch_one(&store.pool)
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn push_acknowledged_above_the_stored_mark_is_refused_and_applies_nothing() {
+    let database = support::TestDatabase::new().await;
+    let store = Store::connect(&database.url).await.unwrap();
+    let app = router(store.clone());
+    let owner = account(&store, "owner").await;
+    let (ws, _) = setup(&app, &owner).await;
+    let client = Uuid::new_v4();
+    let label = |id: i64, name: &str| {
+        mutation(
+            id,
+            "create_label",
+            json!({"name": name, "color": "#000000"}),
+        )
+    };
+
+    let (status, first) = push(
+        &app,
+        &owner.token,
+        ws,
+        client,
+        vec![label(1, "one"), label(2, "two")],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{first}");
+
+    let (status, refused) = push_acknowledged(
+        &app,
+        &owner.token,
+        ws,
+        client,
+        3,
+        vec![label(3, "three"), label(4, "four")],
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{refused}");
+    assert_eq!(refused["error"], "client state lost");
+    assert_eq!(last_mutation_id(&store, client).await, Some(2));
+    assert_eq!(labels_named(&store, ws, "three").await, 0);
+    assert_eq!(labels_named(&store, ws, "four").await, 0);
+
+    drop(app);
+    store.pool.close().await;
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn push_acknowledged_without_a_client_row_is_refused_and_creates_none() {
+    let database = support::TestDatabase::new().await;
+    let store = Store::connect(&database.url).await.unwrap();
+    let app = router(store.clone());
+    let owner = account(&store, "owner").await;
+    let (ws, _) = setup(&app, &owner).await;
+    let client = Uuid::new_v4();
+
+    let (status, refused) = push_acknowledged(
+        &app,
+        &owner.token,
+        ws,
+        client,
+        5,
+        vec![mutation(
+            6,
+            "create_label",
+            json!({"name": "replayed", "color": "#000000"}),
+        )],
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{refused}");
+    assert_eq!(refused["error"], "client state lost");
+    assert_eq!(last_mutation_id(&store, client).await, None);
+    assert_eq!(labels_named(&store, ws, "replayed").await, 0);
+
+    drop(app);
+    store.pool.close().await;
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn push_acknowledged_at_or_below_the_stored_mark_is_accepted() {
+    let database = support::TestDatabase::new().await;
+    let store = Store::connect(&database.url).await.unwrap();
+    let app = router(store.clone());
+    let owner = account(&store, "owner").await;
+    let (ws, _) = setup(&app, &owner).await;
+    let client = Uuid::new_v4();
+    let label = |id: i64, name: &str| {
+        mutation(
+            id,
+            "create_label",
+            json!({"name": name, "color": "#000000"}),
+        )
+    };
+
+    let (status, first) = push_acknowledged(
+        &app,
+        &owner.token,
+        ws,
+        client,
+        0,
+        vec![label(1, "one"), label(2, "two")],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{first}");
+
+    let (status, equal) =
+        push_acknowledged(&app, &owner.token, ws, client, 2, vec![label(3, "three")]).await;
+    assert_eq!(status, StatusCode::OK, "{equal}");
+    assert_eq!(equal["results"][0]["status"], "applied");
+
+    let (status, lower) =
+        push_acknowledged(&app, &owner.token, ws, client, 1, vec![label(4, "four")]).await;
+    assert_eq!(status, StatusCode::OK, "{lower}");
+    assert_eq!(lower["results"][0]["status"], "applied");
+    assert_eq!(last_mutation_id(&store, client).await, Some(4));
+
+    let (status, negative) =
+        push_acknowledged(&app, &owner.token, ws, client, -1, vec![label(5, "five")]).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{negative}");
+    assert_eq!(last_mutation_id(&store, client).await, Some(4));
 
     drop(app);
     store.pool.close().await;

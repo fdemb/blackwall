@@ -6,6 +6,7 @@ import { useWorkspace, type SyncProblem } from "~/lib/workspace";
 const VIEW: Record<Exclude<SyncProblem, null>, { icon: LucideIcon; message: Key }> = {
   offline: { icon: WifiOff, message: "error.offline" },
   unreachable: { icon: WifiOff, message: "error.offline" },
+  stalled: { icon: AlertTriangle, message: "error.syncStalled" },
   blocked: { icon: AlertTriangle, message: "error.syncBlocked" },
   error: { icon: AlertTriangle, message: "error.syncFailed" },
 };

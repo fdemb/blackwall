@@ -345,6 +345,25 @@ class IndexedDBReplica implements Replica {
     });
   }
 
+  discard(rejections: readonly Rejection[]): Promise<void> {
+    return this.transaction(["outbox", "rejected"], "readwrite", (tx, done) => {
+      for (const rejection of rejections) {
+        tx.objectStore("rejected").put(structuredClone(rejection));
+        tx.objectStore("outbox").delete(rejection.id);
+      }
+      done(undefined);
+    });
+  }
+
+  setAccessLost(lost: boolean): Promise<void> {
+    return this.transaction(["meta"], "readwrite", (tx, done, guard) => {
+      read<ReplicaMeta>(tx.objectStore("meta").get(META_KEY), guard, (meta) => {
+        tx.objectStore("meta").put({ ...meta, accessLost: lost }, META_KEY);
+        done(undefined);
+      });
+    });
+  }
+
   resolveRejection(id: number): Promise<void> {
     return this.transaction(["rejected"], "readwrite", (tx, done) => {
       tx.objectStore("rejected").delete(id);
@@ -432,7 +451,7 @@ export class IndexedDBReplicaStorage implements ReplicaStorage {
     return new IndexedDBReplica(
       db,
       input.schema,
-      { sessionId: input.sessionId, workspaceId: input.workspaceId },
+      { userId: input.userId, workspaceId: input.workspaceId },
       (event) => {
         input.onClose?.(
           event.reason,
@@ -459,11 +478,5 @@ export class IndexedDBReplicaStorage implements ReplicaStorage {
       request.onerror = () => reject(request.error);
       request.onblocked = () => reject(new Error(`replica delete blocked: ${replicaName(input)}`));
     });
-  }
-
-  async deleteAllExcept(sessionId: string | null): Promise<void> {
-    for (const identity of await this.list()) {
-      if (identity.sessionId !== sessionId) await this.delete(identity);
-    }
   }
 }

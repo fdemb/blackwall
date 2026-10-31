@@ -1,7 +1,7 @@
 import "fake-indexeddb/auto";
 import { forceCloseDatabase, IDBFactory } from "fake-indexeddb";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
-import { setCsrf } from "../lib/api";
+import { getCsrf, setCsrf } from "../lib/api";
 import { createEngine, OutdatedError, SCHEMA } from "./engine";
 import type { EngineEvent, EngineSignal, SyncEngine } from "./engine";
 import { IDB_VERSION, IndexedDBReplicaStorage } from "./persistence/idb";
@@ -10,14 +10,20 @@ import type { ReplicaStorage, Scope } from "./persistence/types";
 import { BOOTSTRAP_ENTITIES, normalize } from "./records";
 import { createFakeServer } from "./testing/fake-server";
 import type { FakeServerOptions } from "./testing/fake-server";
-import { createTransport, ProtocolError, TruncatedError, UnavailableError } from "./transport";
+import {
+  AccountChangedError,
+  createTransport,
+  ProtocolError,
+  TruncatedError,
+  UnauthorizedError,
+  UnavailableError,
+} from "./transport";
 import type { Mutation } from "./transport";
 
 const id = (n: number) => `11111111-1111-4111-8111-${n.toString(16).padStart(12, "0")}`;
 const TEAM = id(1);
 const ISSUE = id(2);
 const OTHER_ISSUE = id(3);
-const SESSION = id(4);
 const engines: SyncEngine[] = [];
 const servers: ReturnType<typeof createFakeServer>[] = [];
 
@@ -87,6 +93,7 @@ function fixture(
   const transport = createTransport({
     fetch,
     headers: () => ({ cookie: `blackwall_session=${token}` }),
+    userId: owner.id,
   });
   const signals = new Signals();
   let sequence = 100;
@@ -95,7 +102,6 @@ function fixture(
       storage,
       transport,
       actor: owner.id,
-      sessionId: SESSION,
       workspaceId: workspace.id,
       schema,
       clock: { now: server.now, schedule: server.schedule },
@@ -119,7 +125,7 @@ function fixture(
       .map(([, init]) => JSON.parse(String(init?.body)).mutations);
   const commands = () =>
     fetch.mock.calls
-      .filter(([url]) => String(url).endsWith("/commands"))
+      .filter(([url]) => String(url).includes("/commands?"))
       .map(([, init]) => JSON.parse(String(init?.body)));
   const requests = (route: string) =>
     fetch.mock.calls.filter(([url]) =>
@@ -133,7 +139,7 @@ function fixture(
   };
   const disk = async () => {
     const replica = await storage.open({
-      sessionId: SESSION,
+      userId: owner.id,
       workspaceId: workspace.id,
       schema: SCHEMA,
     });
@@ -172,6 +178,10 @@ afterEach(async () => {
   for (const engine of engines.splice(0)) await engine.close();
   for (const server of servers.splice(0)) server.close();
 });
+
+async function workspacesOnDisk(f: { storage: ReplicaStorage }) {
+  return (await f.storage.list()).map((identity) => identity.workspaceId).sort();
+}
 
 describe("sync engine", () => {
   it("interprets HTTP-date Retry-After using the injected clock", async () => {
@@ -523,7 +533,7 @@ describe("sync engine", () => {
     const fetch = f.server.fetch;
     let failed = false;
     f.fetch.mockImplementation(async (...args) => {
-      if (String(args[0]).endsWith("/commands") && !failed) {
+      if (String(args[0]).includes("/commands?") && !failed) {
         failed = true;
         return Response.json({ error: "try again" }, { status });
       }
@@ -543,7 +553,7 @@ describe("sync engine", () => {
     await f.ready();
     const fetch = f.server.fetch;
     f.fetch.mockImplementation(async (...args) =>
-      String(args[0]).endsWith("/commands")
+      String(args[0]).includes("/commands?")
         ? Response.json({ error: "invitation not found" }, { status: 404 })
         : fetch(...args),
     );
@@ -586,13 +596,23 @@ describe("sync engine", () => {
   it.each(["session", "membership"] as const)("handles online command loss of %s", async (kind) => {
     const f = fixture();
     await f.ready();
+    const events: EngineEvent[] = [];
+    f.engine.subscribe((event) => events.push(event));
     if (kind === "session") f.server.logout(f.token);
     else f.server.removeMember(f.workspace.id, f.owner.id);
-    await expect(
-      f.engine.runOnline("set_role", { user_id: f.peer.id, role: "viewer" }),
-    ).rejects.toMatchObject({ status: kind === "session" ? 401 : 403 });
-    expect(await f.storage.list()).toEqual([]);
-    expect(f.engine.store.all("issues")).toEqual([]);
+    const online = f.engine.runOnline("set_role", { user_id: f.peer.id, role: "viewer" });
+    const rejected = expect(online).rejects.toMatchObject({
+      status: kind === "session" ? 401 : 403,
+    });
+    if (kind === "session") {
+      // A 401 waits for the app's session check with the view intact. This check finds it ended.
+      await until(() => events.some((event) => event.type === "unauthorized"));
+      expect(f.engine.store.all("issues").length).toBeGreaterThan(0);
+      await f.engine.close();
+    }
+    await rejected;
+    expect(await f.storage.list()).toEqual([{ userId: f.owner.id, workspaceId: f.workspace.id }]);
+    if (kind === "membership") expect(f.engine.store.all("issues")).toHaveLength(0);
   });
 
   it("continues core syncing when a scope protocol error blocks only scope loads", async () => {
@@ -991,7 +1011,7 @@ describe("sync engine", () => {
     ]);
     expect((await f.disk()).outbox).toHaveLength(0);
     const routes = f.fetch.mock.calls.map(([url]) => String(url));
-    expect(routes.findIndex((url) => url.endsWith("/commands"))).toBeGreaterThan(
+    expect(routes.findIndex((url) => url.includes("/commands?"))).toBeGreaterThan(
       routes.findIndex((url) => url.includes("/push?")),
     );
     expect((await f.disk()).meta.nextMutationId).toBe(2);
@@ -1014,7 +1034,7 @@ describe("sync engine", () => {
   });
 
   it.each(["memory", "indexeddb"])(
-    "wipes only the expired session's replicas on 401 with %s",
+    "stops network work on 401, keeps its view and leaves every replica as it is with %s",
     async (backend) => {
       const f = fixture(
         backend === "memory"
@@ -1022,32 +1042,31 @@ describe("sync engine", () => {
           : new IndexedDBReplicaStorage({ indexedDB: new IDBFactory() }),
       );
       await f.ready();
-      for (const identity of [
-        { sessionId: SESSION, workspaceId: id(60) },
-        { sessionId: id(61), workspaceId: f.workspace.id },
-      ])
-        (await f.storage.open({ ...identity, schema: SCHEMA })).close();
+      (await f.storage.open({ userId: f.owner.id, workspaceId: id(60), schema: SCHEMA })).close();
       const events: EngineEvent[] = [];
       f.engine.subscribe((event) => events.push(event));
       f.server.logout(f.token);
       await f.engine.pull();
       await until(() => events.some((event) => event.type === "unauthorized"));
-      expect(await f.storage.list()).toEqual([{ sessionId: id(61), workspaceId: f.workspace.id }]);
-      expect(f.engine.status.get().phase).toBe("loading");
-      expect(f.engine.store.all("issues")).toHaveLength(0);
+      expect(await workspacesOnDisk(f)).toEqual([f.workspace.id, id(60)].sort());
+      expect(f.engine.status.get().phase).toBe("ready");
+      expect(f.engine.store.get("issues", ISSUE)?.title).toBe("Original");
+      const requests = f.fetch.mock.calls.length;
+      await f.advance(60_000);
+      expect(f.fetch.mock.calls.length).toBe(requests);
     },
   );
 
-  it("wipes only this workspace replica on 403 and emits accessLost", async () => {
+  it("stops on 403, emits accessLost and leaves the replica as it is", async () => {
     const f = fixture();
     await f.ready();
-    (await f.storage.open({ sessionId: SESSION, workspaceId: id(60), schema: SCHEMA })).close();
+    (await f.storage.open({ userId: f.owner.id, workspaceId: id(60), schema: SCHEMA })).close();
     const events: EngineEvent[] = [];
     f.engine.subscribe((event) => events.push(event));
     f.server.removeMember(f.workspace.id, f.owner.id);
     await f.engine.pull();
     await until(() => events.some((event) => event.type === "accessLost"));
-    expect(await f.storage.list()).toEqual([{ sessionId: SESSION, workspaceId: id(60) }]);
+    expect(await workspacesOnDisk(f)).toEqual([f.workspace.id, id(60)].sort());
   });
 
   it.each(["memory", "indexeddb"])(
@@ -1093,7 +1112,7 @@ describe("sync engine", () => {
       // Schema 4 issues carried `openproject`, and comments had no `tracker`.
       const { tracker: _, ...current } = f.authoritativeIssue(ISSUE);
       const old = await f.storage.open({
-        sessionId: SESSION,
+        userId: f.owner.id,
         workspaceId: f.workspace.id,
         schema: 4,
       });
@@ -1354,7 +1373,7 @@ describe("cookie sessions and pending callers", () => {
     expect(pushHeaders()[3].get("X-CSRF-Token")).toBe("refresh-needed");
     expect(f.requests("me")).toBe(2);
     expect(events.some((event) => event.type === "accessLost")).toBe(false);
-    expect(await f.storage.list()).toEqual([{ sessionId: SESSION, workspaceId: f.workspace.id }]);
+    expect(await f.storage.list()).toEqual([{ userId: f.owner.id, workspaceId: f.workspace.id }]);
     expect(f.engine.store.get("issues", ISSUE)?.title).toBe("Recovered");
   });
 
@@ -1381,7 +1400,7 @@ describe("cookie sessions and pending callers", () => {
     await expect(receipt.settled).rejects.toThrow(/closed|stopped/);
   });
 
-  it("confirms a push membership 403 with a read before wiping", async () => {
+  it("confirms a push membership 403 with a read before ending access", async () => {
     const f = fixture();
     await f.ready();
     const events: EngineEvent[] = [];
@@ -1408,7 +1427,7 @@ describe("cookie sessions and pending callers", () => {
     expect(responses).toContainEqual({ route: "push", status: 403 });
     expect(responses).toContainEqual({ route: "me", status: 200 });
     expect(responses).toContainEqual({ route: "pull", status: 403 });
-    expect(await f.storage.list()).toEqual([]);
+    expect(await f.storage.list()).toEqual([{ userId: f.owner.id, workspaceId: f.workspace.id }]);
     expect(f.engine.store.all("issues")).toHaveLength(0);
     expect(f.engine.status.get().pending).toBe(0);
   });
@@ -1432,7 +1451,7 @@ describe("cookie sessions and pending callers", () => {
     const original = f.server.fetch;
     f.fetch.mockImplementation(async (...args) => {
       const response = await original(...args);
-      return String(args[0]).endsWith("/commands")
+      return String(args[0]).includes("/commands?")
         ? Response.json({ result: {}, versions: {}, changes: [] })
         : response;
     });
@@ -1540,7 +1559,7 @@ describe("record preparation", () => {
       await f.engine.open();
       const before = await f.disk();
       const full = await f.server.fetch(
-        `/internal-api/workspaces/${f.workspace.id}/sync/bootstrap?client_id=${before.meta.clientId}`,
+        `/internal-api/workspaces/${f.workspace.id}/sync/bootstrap?client_id=${before.meta.clientId}&user_id=${f.owner.id}`,
         { headers: { cookie: `blackwall_session=${f.token}` } },
       );
       const bytes = new Uint8Array(await full.arrayBuffer());
@@ -1717,7 +1736,7 @@ describe("external replica closure", () => {
       indexedDB: database,
       version: IDB_VERSION + 1,
     }).open({
-      sessionId: SESSION,
+      userId: f.owner.id,
       workspaceId: f.workspace.id,
       schema: SCHEMA,
     });
@@ -1779,7 +1798,7 @@ describe("external replica closure", () => {
     await f.ready();
     const events: EngineEvent[] = [];
     f.engine.subscribe((event) => events.push(event));
-    await f.storage.delete({ sessionId: SESSION, workspaceId: f.workspace.id });
+    await f.storage.delete({ userId: f.owner.id, workspaceId: f.workspace.id });
     await until(() => events.some((event) => event.type === "accessLost"));
     expect(events).toEqual([{ type: "accessLost" }]);
     expect(f.engine.store.all("issues")).toEqual([]);
@@ -1978,5 +1997,795 @@ describe("offline sync review fixes", () => {
     expect(f.engine.status.get()).toMatchObject({ blocked: false, lastError: null });
     await until(() => f.engine.status.get().pending === 0);
     expect(f.authoritativeIssue(ISSUE).title).toBe("Blocked");
+  });
+});
+
+type Fixture = ReturnType<typeof fixture>;
+
+/** Advances the fake clock in steps, letting the engine's async work run in between. */
+async function elapse(f: Fixture, done: () => boolean, step = 1000, limit = 600) {
+  for (let steps = 0; steps < limit && !done(); steps += 1) {
+    f.server.advance(step);
+    for (let tick = 0; tick < 20; tick += 1) await flush();
+  }
+  expect(done(), "scenario did not finish within the simulated time").toBe(true);
+}
+
+let signIns = 0;
+/**
+ * Another sign-in of `userId`: a new session over the same storage, transport and server. The
+ * replica is `replicaUser`'s, which differs when the browser's cookie changed accounts under it.
+ */
+function signIn(f: Fixture, userId: string, replicaUser = userId): SyncEngine {
+  const token = f.server.login(userId);
+  setCsrf(f.server.csrfToken(token));
+  const engine = createEngine({
+    storage: f.storage,
+    transport: createTransport({
+      fetch: f.fetch,
+      headers: () => ({ cookie: `blackwall_session=${token}` }),
+      userId: replicaUser,
+    }),
+    actor: replicaUser,
+    workspaceId: f.workspace.id,
+    schema: SCHEMA,
+    clock: { now: f.server.now, schedule: f.server.schedule },
+    randomId: () => id(5000 + signIns++),
+    signals: f.signals,
+  });
+  engines.push(engine);
+  return engine;
+}
+
+const titled = (issues: readonly { title: string }[], title: string) =>
+  issues.filter((issue) => issue.title === title);
+
+describe("pending edits are never frozen or lost", () => {
+  it("continues the same replica when the user signs in again after a 401", async () => {
+    const f = fixture();
+    await f.ready();
+    const { clientId } = (await f.disk()).meta;
+    const events: EngineEvent[] = [];
+    f.engine.subscribe((event) => events.push(event));
+    f.server.inject({ kind: "drop_response", route: "push" });
+    await f.engine.mutate("create_issue", {
+      input: { title: "Its response was lost", team_id: TEAM },
+    });
+    await until(() => f.pushes().length === 1);
+    f.signals.send("offline");
+    await f.engine.mutate("create_issue", { input: { title: "Typed offline", team_id: TEAM } });
+    f.server.logout(f.token);
+    f.signals.send("online");
+    await until(() => events.some((event) => event.type === "unauthorized"));
+    expect(await f.storage.list()).toEqual([{ userId: f.owner.id, workspaceId: f.workspace.id }]);
+    // The app's session check found the session ended.
+    await f.engine.close();
+
+    const second = signIn(f, f.owner.id);
+    await second.start();
+    await until(() => second.status.get().phase === "ready" && second.status.get().pending === 0);
+    const issues = f.server.records("issues");
+    expect(titled(issues, "Its response was lost")).toHaveLength(1);
+    expect(titled(issues, "Typed offline")).toHaveLength(1);
+    expect(f.server.clientState(clientId).last_mutation_id).toBe(2);
+    expect(second.status.get()).toMatchObject({ rejected: [], unresolved: [] });
+    expect(events.some((event) => event.type === "rejected")).toBe(false);
+    expect(await f.storage.list()).toEqual([{ userId: f.owner.id, workspaceId: f.workspace.id }]);
+    expect((await f.disk()).meta.clientId).toBe(clientId);
+  });
+
+  it("waits through a 401 with its view intact, resumes when the session is valid, and sends the edit typed meanwhile", async () => {
+    const f = fixture();
+    await f.ready();
+    const events: EngineEvent[] = [];
+    f.engine.subscribe((event) => events.push(event));
+    f.server.inject({ kind: "fail_response", route: "pull", status: 401 });
+    await f.engine.pull();
+    await until(() => events.some((event) => event.type === "unauthorized"));
+    const receipt = await f.engine.mutate("update_issue", {
+      id: ISSUE,
+      patch: { title: "Typed during the session check" },
+    });
+    await f.advance(60_000);
+    expect(f.pushes()).toEqual([]);
+    expect(f.engine.store.get("issues", OTHER_ISSUE)?.title).toBe("Other");
+    expect(f.engine.status.get().phase).toBe("ready");
+
+    f.engine.resume();
+    await elapse(f, () => f.engine.status.get().pending === 0);
+    expect(await receipt.settled).toBe("applied");
+    expect(f.authoritativeIssue(ISSUE).title).toBe("Typed during the session check");
+    expect(f.engine.status.get()).toMatchObject({ blocked: false, lastError: null });
+  });
+
+  it("stops retrying and reports blocked when 401s keep coming while the session is valid", async () => {
+    const f = fixture();
+    await f.ready();
+    const events: EngineEvent[] = [];
+    f.engine.subscribe((event) => {
+      events.push(event);
+      if (event.type === "unauthorized") f.engine.resume();
+    });
+    for (let attempt = 0; attempt < 10; attempt += 1)
+      f.server.inject({ kind: "fail_response", route: "pull", status: 401 });
+    await f.engine.pull();
+    await elapse(f, () => f.engine.status.get().blocked);
+    expect(events.filter((event) => event.type === "unauthorized")).toHaveLength(3);
+    expect(f.engine.status.get().lastError).toBeInstanceOf(UnauthorizedError);
+    const receipt = await f.engine.mutate("update_issue", {
+      id: ISSUE,
+      patch: { title: "Typed while blocked" },
+    });
+    const requests = f.fetch.mock.calls.length;
+    await f.advance(120_000);
+    expect(f.fetch.mock.calls.length).toBe(requests);
+
+    f.server.clearFaults();
+    f.engine.unblock();
+    expect(await receipt.settled).toBe("applied");
+    expect(f.authoritativeIssue(ISSUE).title).toBe("Typed while blocked");
+  });
+
+  it("holds an online command issued during a session check and sends it once the session is valid", async () => {
+    const f = fixture();
+    await f.ready();
+    const events: EngineEvent[] = [];
+    f.engine.subscribe((event) => events.push(event));
+    f.server.inject({ kind: "fail_response", route: "pull", status: 401 });
+    await f.engine.pull();
+    await until(() => events.some((event) => event.type === "unauthorized"));
+    const online = f.engine.runOnline("set_role", { user_id: f.peer.id, role: "viewer" });
+    await f.advance(60_000);
+    expect(f.commands()).toEqual([]);
+
+    f.engine.resume();
+    await elapse(f, () => f.commands().length === 1);
+    expect(await online).toEqual({ id: 0, status: "applied" });
+    expect(f.server.record("members", f.peer.id)?.role).toBe("viewer");
+  });
+
+  it("holds an online command when a 401 lands while its outbox check is loading", async () => {
+    const storage = new MemoryReplicaStorage();
+    const open = storage.open.bind(storage);
+    let holdLoad = false;
+    let releaseLoad: (() => void) | undefined;
+    storage.open = async (input) => {
+      const replica = await open(input);
+      const load = replica.loadOutbox.bind(replica);
+      replica.loadOutbox = async () => {
+        // Only the online command's outbox check; the push lane reads the outbox too.
+        const fromCommand = new Error().stack?.includes("drainOutbox") ?? false;
+        const outbox = await load();
+        if (holdLoad && fromCommand) {
+          holdLoad = false;
+          await new Promise<void>((resolve) => {
+            releaseLoad = resolve;
+          });
+        }
+        return outbox;
+      };
+      return replica;
+    };
+    const f = fixture(storage);
+    await f.ready();
+    const events: EngineEvent[] = [];
+    f.engine.subscribe((event) => events.push(event));
+    holdLoad = true;
+    const online = f.engine.runOnline("set_role", { user_id: f.peer.id, role: "viewer" });
+    await until(() => releaseLoad !== undefined);
+    f.server.inject({ kind: "fail_response", route: "pull", status: 401 });
+    await f.engine.pull();
+    await until(() => events.some((event) => event.type === "unauthorized"));
+    releaseLoad?.();
+    await f.advance(60_000);
+    expect(f.commands()).toEqual([]);
+
+    f.engine.resume();
+    await elapse(f, () => f.commands().length === 1);
+    expect(await online).toEqual({ id: 0, status: "applied" });
+  });
+
+  it("rejects an online command when the engine closes while its outbox check is loading", async () => {
+    const storage = new MemoryReplicaStorage();
+    const open = storage.open.bind(storage);
+    let holdLoad = false;
+    let releaseLoad: (() => void) | undefined;
+    storage.open = async (input) => {
+      const replica = await open(input);
+      const load = replica.loadOutbox.bind(replica);
+      replica.loadOutbox = async () => {
+        // Only the online command's outbox check; the push lane reads the outbox too.
+        const fromCommand = new Error().stack?.includes("drainOutbox") ?? false;
+        const outbox = await load();
+        if (holdLoad && fromCommand) {
+          holdLoad = false;
+          await new Promise<void>((resolve) => {
+            releaseLoad = resolve;
+          });
+        }
+        return outbox;
+      };
+      return replica;
+    };
+    const f = fixture(storage);
+    await f.ready();
+    holdLoad = true;
+    const online = f.engine.runOnline("set_role", { user_id: f.peer.id, role: "viewer" });
+    const rejected = expect(online).rejects.toBeDefined();
+    await until(() => releaseLoad !== undefined);
+    const closing = f.engine.close();
+    releaseLoad?.();
+    await closing;
+    await rejected;
+    expect(f.commands()).toEqual([]);
+  });
+
+  it("aborts an online command in flight on another request's 401 and resends it with the same key", async () => {
+    const f = fixture();
+    await f.ready();
+    const events: EngineEvent[] = [];
+    f.engine.subscribe((event) => events.push(event));
+    f.server.inject({ kind: "delay", route: "commands", milliseconds: 1000 });
+    const online = f.engine.runOnline("set_role", { user_id: f.peer.id, role: "viewer" });
+    await until(() => f.commands().length === 1);
+    f.server.inject({ kind: "fail_response", route: "pull", status: 401 });
+    await f.engine.pull();
+    await until(() => events.some((event) => event.type === "unauthorized"));
+    await f.advance(60_000);
+    expect(f.commands()).toHaveLength(1);
+    expect(f.server.record("members", f.peer.id)?.role).not.toBe("viewer");
+
+    f.engine.resume();
+    await elapse(f, () => f.commands().length === 2);
+    expect(await online).toEqual({ id: 0, status: "applied" });
+    expect(f.commands()[1]).toEqual(f.commands()[0]);
+    expect(f.server.record("members", f.peer.id)?.role).toBe("viewer");
+  });
+
+  it("rejects an online command held through a session check when the session ended", async () => {
+    const f = fixture();
+    await f.ready();
+    const events: EngineEvent[] = [];
+    f.engine.subscribe((event) => events.push(event));
+    f.server.logout(f.token);
+    await f.engine.pull();
+    await until(() => events.some((event) => event.type === "unauthorized"));
+    const online = f.engine.runOnline("set_role", { user_id: f.peer.id, role: "viewer" });
+    const rejected = expect(online).rejects.toBeInstanceOf(UnauthorizedError);
+    await f.advance(5000);
+    // The app's session check found the session ended.
+    await f.engine.close();
+    await rejected;
+    expect(f.commands()).toEqual([]);
+  });
+
+  it("refuses an online command once the cookie belongs to another user, and runs nothing", async () => {
+    const f = fixture();
+    const third = f.server.addUser();
+    f.server.addMember(f.workspace.id, third);
+    f.server.setRole(f.workspace.id, f.peer.id, "admin");
+    await f.ready();
+    // Another tab signed in as the peer, so this tab's requests now carry the peer's cookie.
+    const other = f.server.login(f.peer);
+    setCsrf(f.server.csrfToken(other));
+    const fetch = f.server.fetch;
+    f.fetch.mockImplementation(async (input, init) => {
+      const headers = new Headers(init?.headers);
+      headers.set("cookie", `blackwall_session=${other}`);
+      return fetch(input, { ...init, headers });
+    });
+    const online = f.engine.runOnline("set_role", { user_id: third.id, role: "viewer" });
+    await expect(online).rejects.toBeInstanceOf(AccountChangedError);
+    expect(f.commands()).toHaveLength(1);
+    expect(f.server.record("members", third.id)?.role).toBe("member");
+    expect(await f.storage.list()).toEqual([{ userId: f.owner.id, workspaceId: f.workspace.id }]);
+  });
+
+  it("keeps a newer sign-in's CSRF token when a refresh answers after the engine closed", async () => {
+    const f = fixture();
+    await f.ready();
+    const fetch = f.server.fetch;
+    let release = () => {};
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const answered: Promise<Response>[] = [];
+    f.fetch.mockImplementation(async (input, init) => {
+      if (!String(input).endsWith("/internal-api/me")) return fetch(input, init);
+      // A fetch that ignores its abort.
+      const response = held.then(() => fetch(input, { ...init, signal: undefined }));
+      answered.push(response);
+      return response;
+    });
+    f.server.rotateCsrf(f.token, "older-session");
+    await f.engine.mutate("update_issue", { id: ISSUE, patch: { title: "Forbidden" } });
+    await until(() => f.requests("me") === 1);
+    await f.engine.close();
+
+    const newer = f.server.login(f.owner);
+    setCsrf(f.server.csrfToken(newer));
+    release();
+    await Promise.all(answered);
+    for (let tick = 0; tick < 20; tick += 1) await flush();
+    expect(getCsrf()).toBe(f.server.csrfToken(newer));
+  });
+
+  it("keeps an edit through a 5xx streak while reads work, reports a stall, and applies it on recovery", async () => {
+    const f = fixture();
+    await f.ready();
+    f.server.poisonMutation(1, "error");
+    const receipt = await f.engine.mutate("update_issue", {
+      id: ISSUE,
+      patch: { description: "Text the user typed" },
+    });
+    const later = await f.engine.mutate("update_issue", { id: ISSUE, patch: { title: "Later" } });
+    await elapse(f, () => f.engine.status.get().stalled);
+    expect(f.engine.status.get()).toMatchObject({ pending: 2, blocked: false, unresolved: [] });
+
+    await elapse(f, () => f.pushes().length >= 15);
+    expect(f.engine.status.get()).toMatchObject({
+      stalled: true,
+      pending: 2,
+      blocked: false,
+      rejected: [],
+      unresolved: [],
+    });
+    expect(f.authoritativeIssue(ISSUE).description).toBe("");
+    expect(f.pushes().every((batch) => batch[0].id === 1)).toBe(true);
+
+    f.server.healMutation(1);
+    await elapse(f, () => f.engine.status.get().pending === 0);
+    expect(await receipt.settled).toBe("applied");
+    expect(await later.settled).toBe("applied");
+    expect(f.engine.status.get()).toMatchObject({ stalled: false, rejected: [], unresolved: [] });
+    expect(f.authoritativeIssue(ISSUE)).toMatchObject({
+      title: "Later",
+      description: "Text the user typed",
+    });
+    expect(f.engine.store.get("issues", ISSUE)).toEqual(f.authoritativeIssue(ISSUE));
+  });
+
+  it.each(["network", "outage"] as const)(
+    "keeps an edit through a %s failure and applies it afterwards",
+    async (kind) => {
+      const f = fixture();
+      await f.ready();
+      const original = f.server.fetch;
+      let down = true;
+      let attempts = 0;
+      f.fetch.mockImplementation(async (...args) => {
+        const url = String(args[0]);
+        if (!down || !url.includes("/sync/")) return original(...args);
+        if (url.includes("/push?")) attempts += 1;
+        if (kind === "network") throw new TypeError("Failed to fetch");
+        return Response.json({ error: "down" }, { status: 503 });
+      });
+      const receipt = await f.engine.mutate("update_issue", {
+        id: ISSUE,
+        patch: { title: "Kept through the outage" },
+      });
+      await elapse(f, () => attempts >= 12);
+      expect(f.engine.status.get().unresolved).toEqual([]);
+      down = false;
+      await elapse(f, () => f.engine.status.get().pending === 0);
+      expect(await receipt.settled).toBe("applied");
+      expect(f.engine.status.get()).toMatchObject({ rejected: [], unresolved: [] });
+      expect(f.authoritativeIssue(ISSUE).title).toBe("Kept through the outage");
+    },
+  );
+
+  it("neither duplicates nor rejects an edit the server committed before a 502", async () => {
+    const f = fixture();
+    await f.ready();
+    f.server.inject({ kind: "fail_response", route: "push", status: 502 });
+    const receipt = await f.engine.mutate("create_issue", {
+      input: { title: "Committed before the 502", team_id: TEAM },
+    });
+    let outcome: unknown;
+    void receipt.settled.then((value) => (outcome = value));
+    await elapse(f, () => outcome !== undefined && f.engine.status.get().pending === 0);
+    expect(outcome).toBe("applied");
+    expect(titled(f.server.records("issues"), "Committed before the 502")).toHaveLength(1);
+    expect(f.engine.status.get()).toMatchObject({ rejected: [], unresolved: [], stalled: false });
+    expect(f.engine.store.all("issues")).toHaveLength(3);
+  });
+
+  it("sets a single mutation the server refuses as too large aside, without blocking", async () => {
+    const f = fixture(new MemoryReplicaStorage(), { maxPushBytes: 1500 });
+    await f.ready();
+    f.signals.send("offline");
+    const receipts = [
+      await f.engine.mutate("update_issue", { id: ISSUE, patch: { title: "Small" } }),
+      await f.engine.mutate("update_issue", {
+        id: ISSUE,
+        patch: { description: "x".repeat(4000) },
+      }),
+      await f.engine.mutate("update_issue", { id: ISSUE, patch: { title: "Also small" } }),
+    ];
+    f.signals.send("online");
+    await elapse(f, () => f.engine.status.get().pending === 0);
+
+    expect(await Promise.all(receipts.map((receipt) => receipt.settled))).toMatchObject([
+      "applied",
+      { id: 2, status: 413, message: "This edit is too large to save." },
+      "applied",
+    ]);
+    expect(f.engine.status.get().blocked).toBe(false);
+    expect(f.engine.status.get().unresolved).toMatchObject([
+      { id: 2, command: { args: { patch: { description: "x".repeat(4000) } } } },
+    ]);
+    expect(f.engine.store.get("issues", ISSUE)).toEqual(f.authoritativeIssue(ISSUE));
+  });
+
+  it("does not set aside a too-large mutation the server already processed", async () => {
+    const f = fixture(new MemoryReplicaStorage(), { maxPushBytes: 1500 });
+    await f.ready();
+    f.engine.stop();
+    const receipt = await f.engine.mutate("update_issue", {
+      id: ISSUE,
+      patch: { description: "x".repeat(4000) },
+    });
+    const { meta, outbox } = await f.disk();
+    const small = { id: 1, name: "update_issue", args: { id: ISSUE, patch: { title: "A" } } };
+    await f.transport.push(f.workspace.id, meta.clientId, [{ ...small, at: outbox[0].at }]);
+    await f.engine.start();
+    expect(await receipt.settled).toBe("unknown");
+    expect(f.engine.status.get()).toMatchObject({ rejected: [], unresolved: [] });
+  });
+
+  it("treats a proxy 404 on push as a protocol error and keeps the replica", async () => {
+    const f = fixture();
+    await f.ready();
+    const original = f.server.fetch;
+    f.fetch.mockImplementation(async (...args) =>
+      String(args[0]).includes("/push?")
+        ? new Response("<html>Not Found</html>", {
+            status: 404,
+            headers: { "Content-Type": "text/html" },
+          })
+        : original(...args),
+    );
+    const events: EngineEvent[] = [];
+    f.engine.subscribe((event) => events.push(event));
+    await f.engine.mutate("update_issue", { id: ISSUE, patch: { title: "Edit" } });
+    await until(() => f.engine.status.get().blocked);
+    expect(events.some((event) => event.type === "accessLost")).toBe(false);
+    expect(await f.storage.list()).toHaveLength(1);
+    expect(f.engine.status.get().pending).toBe(1);
+  });
+
+  it("keeps the replica and its edits when access is lost, and pushes them when access returns", async () => {
+    const f = fixture();
+    await f.ready();
+    const { clientId } = (await f.disk()).meta;
+    const events: EngineEvent[] = [];
+    f.engine.subscribe((event) => events.push(event));
+    f.signals.send("offline");
+    await f.engine.mutate("create_label", { name: "Typed before access ended", color: "#00ff00" });
+    f.server.removeMember(f.workspace.id, f.owner.id);
+    f.signals.send("online");
+    await until(() => events.some((event) => event.type === "accessLost"));
+
+    const disk = await f.disk();
+    expect(disk.outbox).toMatchObject([{ id: 1, name: "create_label" }]);
+    expect(disk.rejected).toEqual([]);
+    expect(f.server.clientState(clientId).last_mutation_id).toBe(0);
+
+    f.server.addMember(f.workspace.id, f.owner, "owner");
+    const returned = f.build();
+    await returned.start();
+    await until(
+      () => returned.status.get().phase === "ready" && returned.status.get().pending === 0,
+    );
+    expect(returned.status.get()).toMatchObject({ rejected: [], unresolved: [] });
+    expect(f.server.clientState(clientId).last_mutation_id).toBe(1);
+    expect(
+      f.server.records("labels").filter((label) => label.name === "Typed before access ended"),
+    ).toHaveLength(1);
+  });
+
+  it("reports an outcome as unknown when the server no longer remembers a rejection", async () => {
+    const f = fixture();
+    await f.ready();
+    f.engine.stop();
+    const receipt = await f.engine.mutate("update_issue", {
+      id: ISSUE,
+      patch: { dependencies: [OTHER_ISSUE] },
+    });
+    f.server.run(f.peer, {
+      type: "update_issue",
+      id: OTHER_ISSUE,
+      patch: { dependencies: [ISSUE] },
+    });
+    const { meta, outbox } = await f.disk();
+    expect((await f.transport.push(f.workspace.id, meta.clientId, outbox)).results[0].status).toBe(
+      "rejected",
+    );
+    for (let batch = 0; batch < 10; batch += 1)
+      await f.transport.push(
+        f.workspace.id,
+        meta.clientId,
+        Array.from({ length: 100 }, (_, index) => ({
+          id: 2 + batch * 100 + index,
+          name: "update_issue",
+          args: { id: id(500), patch: { title: "Gone" } },
+          at: "2026-10-09T12:00:00Z",
+        })),
+      );
+    await f.engine.start();
+    expect(await receipt.settled).toBe("unknown");
+    expect(f.engine.status.get().rejected).toEqual([]);
+  });
+
+  it("stops without pushing when the cookie belongs to another user than the replica", async () => {
+    const f = fixture();
+    await f.ready();
+    const { clientId } = (await f.disk()).meta;
+    f.engine.stop();
+    await f.engine.mutate("create_label", { name: "Typed as the first user", color: "#00ff00" });
+    await f.engine.close();
+
+    const stale = signIn(f, f.peer.id, f.owner.id);
+    const events: EngineEvent[] = [];
+    stale.subscribe((event) => events.push(event));
+    await stale.start();
+    await until(() => events.some((event) => event.type === "unauthorized"));
+    expect(stale.status.get().lastError).toMatchObject({ message: "account changed", status: 401 });
+    const requests = f.fetch.mock.calls.length;
+    await f.advance(120_000);
+    expect(f.fetch.mock.calls.length).toBe(requests);
+
+    expect(f.server.clientState(clientId).last_mutation_id).toBe(0);
+    expect(f.server.records("labels")).toHaveLength(0);
+    expect((await f.disk()).outbox).toMatchObject([{ id: 1, name: "create_label" }]);
+    expect(await f.storage.list()).toEqual([{ userId: f.owner.id, workspaceId: f.workspace.id }]);
+  });
+
+  it.each(["pull", "bootstrap"] as const)(
+    "stops pushing and reports a blocked state when a %s acknowledges fewer mutations than the replica holds",
+    async (route) => {
+      const f = fixture();
+      await f.ready();
+      await f.engine.mutate("create_label", { name: "Acknowledged", color: "#00ff00" });
+      await until(() => f.engine.status.get().pending === 0);
+      expect((await f.disk()).meta.lastMutationId).toBe(1);
+
+      const original = f.server.fetch;
+      f.fetch.mockImplementation(async (...args) => {
+        const response = await original(...args);
+        const url = String(args[0]);
+        if (route === "pull" && url.includes("/pull?")) {
+          const body = await response.json();
+          return Response.json({ ...body, last_mutation_id: body.last_mutation_id && 0 });
+        }
+        if (route === "bootstrap" && url.includes("/bootstrap?")) {
+          const [header, ...rest] = (await response.text()).split("\n");
+          const forgotten = JSON.stringify({ ...JSON.parse(header), last_mutation_id: 0 });
+          return new Response([forgotten, ...rest].join("\n"), { headers: response.headers });
+        }
+        return response;
+      });
+      if (route === "bootstrap") f.server.inject({ kind: "reset_pull" });
+      f.server.run(f.owner, { type: "create_label", name: "Elsewhere", color: "#0000ff" });
+      const pushes = f.pushes().length;
+      await f.engine.pull();
+      await until(() => f.engine.status.get().blocked);
+      expect(f.engine.status.get().lastError).toBeInstanceOf(ProtocolError);
+      expect(f.engine.status.get().lastError?.message).toContain("already holds 1");
+
+      await f.engine.mutate("create_label", { name: "Must wait", color: "#ff0000" });
+      await f.advance(120_000);
+      expect(f.pushes()).toHaveLength(pushes);
+      expect(f.engine.status.get().pending).toBe(1);
+      expect((await f.disk()).meta.lastMutationId).toBe(1);
+    },
+  );
+
+  it("blocks pushing and keeps the outbox when the server refuses a push as lost client state", async () => {
+    const f = fixture();
+    await f.ready();
+    await f.engine.mutate("create_label", { name: "Acknowledged", color: "#00ff00" });
+    await until(() => f.engine.status.get().pending === 0);
+    const { clientId, lastMutationId } = (await f.disk()).meta;
+    expect(lastMutationId).toBe(1);
+
+    const original = f.server.fetch;
+    f.fetch.mockImplementation((...args) =>
+      String(args[0]).includes("/pull?") ? new Promise<Response>(() => {}) : original(...args),
+    );
+    f.server.loseClient(clientId);
+    const pushes = f.pushes().length;
+    await f.engine.mutate("create_label", { name: "Must not run", color: "#ff0000" });
+    await until(() => f.engine.status.get().blocked);
+    expect(f.engine.status.get().lastError).toBeInstanceOf(ProtocolError);
+    expect(f.engine.status.get().lastError).toMatchObject({
+      status: 409,
+      message: "client state lost",
+    });
+    const refused = f.fetch.mock.calls.filter(([url]) => String(url).includes("/push?")).at(-1);
+    expect(JSON.parse(String(refused?.[1]?.body)).acknowledged).toBe(1);
+
+    await f.advance(120_000);
+    expect(f.pushes()).toHaveLength(pushes + 1);
+    expect(f.server.records("labels").map((label) => label.name)).toEqual(["Acknowledged"]);
+    expect(f.server.clientState(clientId).last_mutation_id).toBe(0);
+    expect(f.engine.status.get().pending).toBe(1);
+    expect((await f.disk()).outbox).toMatchObject([{ id: 2, name: "create_label" }]);
+  });
+
+  describe("a single too-large mutation waits for a final acknowledgement", () => {
+    async function oversized(options: { processed: boolean; reset: boolean; held?: boolean }) {
+      // A label's transaction changes two pairs, the label and its activity row. Page size 2
+      // holds one transaction per page, while 1 would reset every pull before it paged.
+      const f = fixture(new MemoryReplicaStorage(), {
+        maxPushBytes: 1500,
+        pageSize: options.held ? 2 : 1,
+      });
+      await f.ready();
+      f.engine.stop();
+      const receipt = await f.engine.mutate("update_issue", {
+        id: ISSUE,
+        patch: { description: "x".repeat(4000) },
+      });
+      const { meta, outbox } = await f.disk();
+      if (options.processed) {
+        const small = { id: 1, name: "update_issue", args: { id: ISSUE, patch: { title: "A" } } };
+        await f.transport.push(f.workspace.id, meta.clientId, [{ ...small, at: outbox[0].at }]);
+      }
+      for (const [index, name] of ["One", "Two", "Three"].entries())
+        f.server.run(f.owner, {
+          type: "create_label",
+          id: id(700 + index),
+          name,
+          color: "#0000ff",
+        });
+      const held: (() => void)[] = [];
+      const delivered: { final: boolean; more: boolean; reset: boolean; ack: number | null }[] = [];
+      if (options.held) {
+        const original = f.server.fetch;
+        f.fetch.mockImplementation(async (...args) => {
+          if (!String(args[0]).includes("/pull?")) return original(...args);
+          await new Promise<void>((release) => held.push(release));
+          const response = await original(...args);
+          const page = await response.clone().json();
+          delivered.push({
+            final: !page.more && !page.reset && page.last_mutation_id !== null,
+            more: page.more,
+            reset: page.reset,
+            ack: page.last_mutation_id,
+          });
+          return response;
+        });
+      }
+      if (options.reset) {
+        const original = f.server.fetch;
+        let refused = false;
+        f.fetch.mockImplementation(async (...args) => {
+          const url = String(args[0]);
+          if (refused && url.includes("/pull?")) {
+            refused = false;
+            f.server.inject({ kind: "reset_pull" });
+          }
+          const response = await original(...args);
+          if (url.includes("/push?") && response.status === 413) refused = true;
+          return response;
+        });
+      }
+      await f.engine.start();
+      return { f, receipt, held, delivered };
+    }
+
+    it.each([true, false])(
+      "decides only after the final page, with every pull held, processed %s",
+      async (processed) => {
+        const { f, receipt, held, delivered } = await oversized({
+          processed,
+          reset: false,
+          held: true,
+        });
+        let decided = false;
+        void receipt.settled.then(() => (decided = true));
+        for (let step = 0; step < 100 && !decided; step += 1) {
+          await until(() => held.length > 0 || decided);
+          if (decided) break;
+          held.shift()?.();
+          for (let tick = 0; tick < 5; tick += 1) await flush();
+          if (!delivered.some((page) => page.final)) {
+            expect(decided, `decided early after ${JSON.stringify(delivered)}`).toBe(false);
+            expect((await f.disk()).outbox).toHaveLength(1);
+          }
+        }
+        expect(delivered.filter((page) => !page.final).length).toBeGreaterThan(1);
+        await until(() => decided);
+        expect(await receipt.settled).toEqual(
+          processed ? "unknown" : expect.objectContaining({ status: 413 }),
+        );
+      },
+    );
+
+    it.each([true, false])(
+      "decides only after the bootstrap that follows a reset completes, processed %s",
+      async (processed) => {
+        const { f, receipt, held } = await oversized({ processed, reset: false, held: true });
+        let decided = false;
+        void receipt.settled.then(() => (decided = true));
+        await until(() => held.length > 0);
+        f.server.inject({ kind: "reset_pull" });
+        const bootstraps: (() => void)[] = [];
+        f.fetch.mockImplementation(async (...args) => {
+          if (String(args[0]).includes("/bootstrap?"))
+            await new Promise<void>((release) => bootstraps.push(release));
+          return f.server.fetch(...args);
+        });
+        held.shift()?.();
+        await until(() => bootstraps.length > 0);
+        for (let tick = 0; tick < 5; tick += 1) await flush();
+        expect(decided).toBe(false);
+        expect((await f.disk()).outbox).toHaveLength(1);
+        bootstraps.shift()?.();
+        await until(() => decided);
+        expect(await receipt.settled).toEqual(
+          processed ? "unknown" : expect.objectContaining({ status: 413 }),
+        );
+      },
+    );
+
+    it.each([false, true])(
+      "settles unknown when the server processed it, reset %s",
+      async (reset) => {
+        const { f, receipt } = await oversized({ processed: true, reset });
+        expect(await receipt.settled).toBe("unknown");
+        expect(f.engine.status.get()).toMatchObject({
+          rejected: [],
+          unresolved: [],
+          blocked: false,
+        });
+        await until(() => f.engine.status.get().pending === 0);
+        expect((await f.disk()).rejected).toEqual([]);
+      },
+    );
+
+    it.each([false, true])(
+      "sets it aside as a 413 when it was not processed, reset %s",
+      async (reset) => {
+        const { f, receipt } = await oversized({ processed: false, reset });
+        expect(await receipt.settled).toMatchObject({ id: 1, status: 413 });
+        await until(() => f.engine.status.get().unresolved.length === 1);
+        expect(f.engine.status.get().unresolved).toMatchObject([{ id: 1 }]);
+        expect((await f.disk()).outbox).toEqual([]);
+        expect(f.authoritativeIssue(ISSUE).description).toBe("");
+      },
+    );
+  });
+
+  it("does not show a cached workspace as ready after access was lost until a read succeeds", async () => {
+    const f = fixture();
+    await f.ready();
+    const lost: EngineEvent[] = [];
+    f.engine.subscribe((event) => lost.push(event));
+    f.server.removeMember(f.workspace.id, f.owner.id);
+    await f.engine.pull();
+    await until(() => lost.some((event) => event.type === "accessLost"));
+    expect((await f.disk()).meta.accessLost).toBe(true);
+
+    const denied = f.build();
+    const phases: string[] = [];
+    denied.status.subscribe(() => phases.push(denied.status.get().phase));
+    const events: EngineEvent[] = [];
+    denied.subscribe((event) => events.push(event));
+    await denied.open();
+    expect(denied.status.get().phase).toBe("loading");
+    await denied.start();
+    await until(() => events.some((event) => event.type === "accessLost"));
+    expect(phases).not.toContain("ready");
+    expect((await f.disk()).meta.accessLost).toBe(true);
+
+    f.server.addMember(f.workspace.id, f.owner, "owner");
+    const returned = f.build();
+    await returned.open();
+    expect(returned.status.get().phase).toBe("loading");
+    await returned.start();
+    await until(() => returned.status.get().phase === "ready");
+    expect((await f.disk()).meta.accessLost).toBe(false);
   });
 });

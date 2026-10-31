@@ -47,7 +47,13 @@ describe("review regressions", () => {
     );
     await expect(responseTransport(response).pull(id(50), CLIENT, null)).rejects.toMatchObject({
       name:
-        status === 401 ? "UnauthorizedError" : status === 503 ? "UnavailableError" : "AccessError",
+        status === 401
+          ? "UnauthorizedError"
+          : status === 503
+            ? "UnavailableError"
+            : status === 404
+              ? "ProtocolError"
+              : "AccessError",
       status,
       ...(status === 503 ? { retryAfter: 5 } : {}),
     });
@@ -279,7 +285,11 @@ describe("sync transport requests", () => {
       `https://example.test${f.fetch.mock.calls[0][0]}`,
       f.fetch.mock.calls[0][1],
     );
-    expect(await request.json()).toEqual({ client_id: CLIENT, mutations: [label(1)] });
+    expect(await request.json()).toEqual({
+      client_id: CLIENT,
+      mutations: [label(1)],
+      acknowledged: 0,
+    });
     expect(request.credentials).toBe("same-origin");
     expect(request.headers.get("Content-Type")).toBe("application/json");
     expect(request.headers.get("X-CSRF-Token")).toBe("csrf");
@@ -359,6 +369,91 @@ describe("sync transport requests", () => {
     );
     expect(new Headers(fetch.mock.calls[1][1]?.headers).get("X-CSRF-Token")).toBe("second");
     expect(new Headers(fetch.mock.calls[1][1]?.headers).get("X-Request")).toBe("second");
+  });
+
+  it("sends the acknowledged id and reports a lost client state as a protocol error", async () => {
+    const f = fixture();
+    await f.transport.push(f.workspace.id, CLIENT, [label(1)]);
+    const fetch = vi.fn(f.server.fetch);
+    const transport = createTransport({
+      fetch,
+      headers: () => ({ authorization: `Bearer ${f.token}` }),
+    });
+    await transport.push(f.workspace.id, CLIENT, [label(2)], { acknowledged: 1 });
+    expect(JSON.parse(String(fetch.mock.calls[0][1]?.body)).acknowledged).toBe(1);
+    await transport.push(f.workspace.id, CLIENT, [label(3)]);
+    expect(JSON.parse(String(fetch.mock.calls[1][1]?.body)).acknowledged).toBe(0);
+
+    f.server.loseClient(CLIENT);
+    await expect(
+      transport.push(f.workspace.id, CLIENT, [label(4)], { acknowledged: 3 }),
+    ).rejects.toMatchObject({
+      name: "ProtocolError",
+      status: 409,
+      message: "client state lost",
+    });
+  });
+
+  it("names the replica's user on every sync request but not on /me", async () => {
+    const f = fixture();
+    f.createIssue();
+    const fetch = vi.fn(f.server.fetch);
+    const transport = createTransport({
+      fetch,
+      headers: () => ({ authorization: `Bearer ${f.token}`, "X-CSRF-Token": "csrf" }),
+      userId: f.owner.id,
+    });
+    const ws = f.workspace.id;
+    await transport.push(ws, CLIENT, [label(1)]);
+    await transport.pull(ws, CLIENT, null);
+    await collect((await transport.bootstrap(ws, CLIENT)).records);
+    await transport.scope(ws, CLIENT, { entity: "comments", issueId: ISSUE });
+    const stop = new AbortController();
+    await transport.events(ws, CLIENT, { signal: stop.signal });
+    stop.abort();
+    await transport.command(ws, {
+      command: { type: "create_label", name: "Named", color: "#000000" },
+      idempotencyKey: "key",
+    });
+    await transport.me();
+    const users = fetch.mock.calls.map(([url]) => [
+      String(url).split("?")[0].split("/").at(-1),
+      new URL(String(url), "http://fake.test").searchParams.get("user_id"),
+    ]);
+    expect(users).toEqual([
+      ["push", f.owner.id],
+      ["pull", f.owner.id],
+      ["bootstrap", f.owner.id],
+      ["scope", f.owner.id],
+      ["events", f.owner.id],
+      ["commands", f.owner.id],
+      ["me", null],
+    ]);
+  });
+
+  it("reads a session of another account as an ended session", async () => {
+    const f = fixture();
+    const transport = createTransport({
+      fetch: f.fetch,
+      headers: () => ({ authorization: `Bearer ${f.token}`, "X-CSRF-Token": "csrf" }),
+      userId: id(999),
+    });
+    await expect(transport.pull(f.workspace.id, CLIENT, null)).rejects.toMatchObject({
+      name: "AccountChangedError",
+      message: "account changed",
+      status: 401,
+    });
+    await expect(transport.push(f.workspace.id, CLIENT, [label(1)])).rejects.toBeInstanceOf(
+      UnauthorizedError,
+    );
+    await expect(
+      transport.command(f.workspace.id, {
+        command: { type: "create_label", name: "Fenced", color: "#000000" },
+        idempotencyKey: "key",
+      }),
+    ).rejects.toMatchObject({ name: "AccountChangedError", status: 401 });
+    expect(f.server.clientState(CLIENT).last_mutation_id).toBe(0);
+    expect(f.server.records("labels")).toHaveLength(0);
   });
 
   it("refreshes the REST client's CSRF token from response headers", async () => {
@@ -668,6 +763,23 @@ describe("event streams", () => {
 });
 
 describe("HTTP and network errors", () => {
+  it.each(["text/html", "text/plain"])(
+    "treats a %s 404 from a proxy as a protocol error, not lost access",
+    async (type) => {
+      const proxy = new Response("<h1>404</h1>", {
+        status: 404,
+        headers: { "Content-Type": type },
+      });
+      await expect(responseTransport(proxy).pull(id(50), CLIENT, null)).rejects.toBeInstanceOf(
+        ProtocolError,
+      );
+      const jsonWithoutError = Response.json({ message: "nope" }, { status: 404 });
+      await expect(
+        responseTransport(jsonWithoutError).push(id(50), CLIENT, [label(1)]),
+      ).rejects.toBeInstanceOf(ProtocolError);
+    },
+  );
+
   it.each(methods)(
     "maps authentication, access, protocol and unavailable errors for %s",
     async (method) => {

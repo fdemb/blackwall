@@ -21,6 +21,11 @@ pub struct SyncMutation {
 pub struct PushRequest {
     pub client_id: Uuid,
     pub mutations: Vec<SyncMutation>,
+    /// The highest mutation id the client has seen acknowledged by a pull or bootstrap.
+    /// A stored high-water mark below it means the server lost the client's state, so
+    /// the batch is refused with 409 instead of re-running mutations. Defaults to 0.
+    #[serde(default)]
+    pub acknowledged: i64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, utoipa::ToSchema)]
@@ -71,6 +76,8 @@ enum PushFailure {
     },
     /// The client row belongs to another user or workspace; answer 400.
     ClientTaken,
+    /// The stored high-water mark is below what the client already holds; answer 409.
+    StateLost,
 }
 
 async fn abort(
@@ -96,6 +103,7 @@ fn fatal(failure: PushFailure, workspace_id: Uuid, client_id: Uuid) -> Result<()
         PushFailure::ClientTaken => Err(Error::BadRequest(
             "client_id belongs to another user or workspace".into(),
         )),
+        PushFailure::StateLost => Err(Error::Conflict("client state lost".into())),
         PushFailure::Transient {
             error,
             phase,
@@ -173,7 +181,9 @@ fn disposition(error: &Error) -> Disposition {
         | Error::Denied(_)
         | Error::Forbidden
         | Error::Json(_) => Disposition::Business,
-        Error::Unauthorized | Error::ServiceUnavailable(_) => Disposition::Retry,
+        Error::Unauthorized | Error::AccountChanged | Error::ServiceUnavailable(_) => {
+            Disposition::Retry
+        }
         Error::Internal(_) => Disposition::Defect,
         Error::Database(error) => database_disposition(error),
     }
@@ -234,6 +244,7 @@ fn rejection(error: &Error) -> MutationError {
         Error::Database(_)
         | Error::Internal(_)
         | Error::Unauthorized
+        | Error::AccountChanged
         | Error::ServiceUnavailable(_) => (500, "internal server error".to_owned()),
     };
     MutationError { status, message }
@@ -243,6 +254,8 @@ fn rejection(error: &Error) -> MutationError {
 enum PushStep {
     /// The client row belongs to another user or workspace.
     ClientTaken,
+    /// The row's high-water mark is below the client's acknowledged id.
+    StateLost,
     /// Already processed: the stored high-water mark and the remembered result.
     Seen(i64, MutationResult),
     /// Applied or rejected now; the transaction should commit.
@@ -265,6 +278,7 @@ impl<T, E: Into<Error>> Phase<T> for std::result::Result<T, E> {
 async fn apply_mutation(
     op: &mut Operation<'_>,
     client_id: Uuid,
+    acknowledged: i64,
     mutation: &SyncMutation,
     built: Result<Command>,
 ) -> std::result::Result<PushStep, (Error, &'static str)> {
@@ -290,6 +304,10 @@ async fn apply_mutation(
     let stored = row.last_mutation_id;
     if row.workspace_id != op.workspace_id || row.user_id != op.actor {
         return Ok(PushStep::ClientTaken);
+    }
+    // A row this transaction just inserted reads 0, and the rollback removes it.
+    if stored < acknowledged {
+        return Ok(PushStep::StateLost);
     }
     if mutation.id <= stored {
         let result = remembered_result(op, client_id, mutation.id).await?;
@@ -419,11 +437,17 @@ impl Store {
         workspace_id: WorkspaceId,
         actor: Uuid,
         client_id: Uuid,
+        acknowledged: i64,
         mutations: Vec<SyncMutation>,
     ) -> Result<PushOutcome> {
         let workspace_id = workspace_id.0;
         if mutations.is_empty() || mutations.len() > MAX_MUTATIONS {
             return Err(Error::BadRequest("push 1 to 100 mutations".into()));
+        }
+        if acknowledged < 0 {
+            return Err(Error::BadRequest(
+                "acknowledged must not be negative".into(),
+            ));
         }
         let mut previous = 0i64;
         for mutation in &mutations {
@@ -457,7 +481,7 @@ impl Store {
         let mut results = Vec::with_capacity(mutations.len());
         for mutation in &mutations {
             match self
-                .push_mutation(workspace_id, actor, client_id, mutation)
+                .push_mutation(workspace_id, actor, client_id, acknowledged, mutation)
                 .await
             {
                 Ok((current, result)) => {
@@ -523,6 +547,7 @@ impl Store {
         workspace_id: Uuid,
         actor: Uuid,
         client_id: Uuid,
+        acknowledged: i64,
         mutation: &SyncMutation,
     ) -> std::result::Result<(i64, MutationResult), PushFailure> {
         // Pure deserialization first; the variant decides the operation's lock.
@@ -547,7 +572,7 @@ impl Store {
             }
         };
 
-        let step = match apply_mutation(&mut op, client_id, mutation, built).await {
+        let step = match apply_mutation(&mut op, client_id, acknowledged, mutation, built).await {
             Ok(step) => step,
             Err((error, phase)) => return Err(abort(op, error, phase, mutation.id).await),
         };
@@ -555,6 +580,10 @@ impl Store {
             PushStep::ClientTaken => {
                 let _ = op.tx.rollback().await;
                 return Err(PushFailure::ClientTaken);
+            }
+            PushStep::StateLost => {
+                let _ = op.tx.rollback().await;
+                return Err(PushFailure::StateLost);
             }
             PushStep::Seen(stored, result) => {
                 (op.tx.rollback().await, "client row", (stored, result))
@@ -568,21 +597,6 @@ impl Store {
                 phase,
                 mutation_id: Some(mutation.id),
             })
-    }
-
-    /// Deletes sync clients idle longer than the session lifetime. A pruned
-    /// client cannot still have a live replica, because its session expired first.
-    pub async fn prune_sync_clients(&self) -> Result<u64> {
-        Ok(sqlx::query!(
-            "DELETE FROM sync_clients WHERE client_id IN (\
-             SELECT client_id FROM sync_clients \
-             WHERE updated_at < now() - make_interval(days => $1) \
-             ORDER BY updated_at LIMIT 1000 FOR UPDATE SKIP LOCKED)",
-            crate::auth::SESSION_LIFETIME_DAYS as i32,
-        )
-        .execute(&self.pool)
-        .await?
-        .rows_affected())
     }
 }
 

@@ -14,6 +14,8 @@ pub struct PullQuery {
     /// A cursor no server could have issued is 400. One from another database
     /// history, or past this server's snapshot, answers `reset: true`.
     pub cursor: Option<String>,
+    /// User the replica belongs to. A different account is 401 `account changed`.
+    pub user_id: Option<String>,
 }
 
 #[utoipa::path(
@@ -29,6 +31,7 @@ pub(super) async fn pull(
     Path(id): Path<WorkspaceId>,
     Query(query): Query<PullQuery>,
 ) -> Result<Json<PullResponse>> {
+    fence(&actor, query.user_id.as_deref())?;
     let client_id = client_id(query.client_id.as_deref())?;
     Ok(Json(
         store
@@ -37,25 +40,40 @@ pub(super) async fn pull(
     ))
 }
 
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct PushQuery {
+    /// User the replica belongs to. A different account is 401 `account changed`.
+    pub user_id: Option<String>,
+}
+
 #[utoipa::path(
     post,
     path = "/internal-api/workspaces/{id}/sync/push",
-    params(("id" = Uuid, Path)),
+    params(("id" = Uuid, Path), PushQuery),
     request_body = PushRequest,
     responses(
         (status = 200, body = PushResponse),
         (status = 503, body = PushResponse)
     ),
-    description = "Applies one client's ordered mutations through the same store code as the command endpoint. Each mutation runs in its own transaction; business errors reject that mutation while transient failures stop the batch."
+    description = "Applies one client's ordered mutations through the same store code as the command endpoint. Each mutation runs in its own transaction; business errors reject that mutation while transient failures stop the batch. A client row whose high-water mark is below the request's `acknowledged` id means the server lost the client's state: the batch is refused with 409 `client state lost` and nothing is applied."
 )]
 pub(super) async fn push(
     State(store): State<Store>,
     actor: Actor,
     Path(id): Path<WorkspaceId>,
+    Query(query): Query<PushQuery>,
     Json(input): Json<PushRequest>,
 ) -> Result<Response> {
+    fence(&actor, query.user_id.as_deref())?;
     let outcome = store
-        .sync_push(id, actor.profile.id, input.client_id, input.mutations)
+        .sync_push(
+            id,
+            actor.profile.id,
+            input.client_id,
+            input.acknowledged,
+            input.mutations,
+        )
         .await?;
 
     let status = if outcome.truncated {
@@ -72,10 +90,33 @@ fn client_id(value: Option<&str>) -> Result<Uuid> {
     Uuid::parse_str(value).map_err(|_| Error::BadRequest("client_id must be a UUID".into()))
 }
 
+/// Refuses a replica that belongs to another account than the request's, before
+/// any sync row is read or written or any command runs. A browser replica always
+/// names its user, so a cookie that changed accounts since the replica was opened
+/// can't send its edits. Bearer tokens have no replica and may omit it.
+pub(super) fn fence(actor: &Actor, replica_user: Option<&str>) -> Result<()> {
+    let Some(value) = replica_user else {
+        return if actor.browser {
+            Err(Error::BadRequest("user_id is required".into()))
+        } else {
+            Ok(())
+        };
+    };
+    let user =
+        Uuid::parse_str(value).map_err(|_| Error::BadRequest("user_id must be a UUID".into()))?;
+    if user == actor.profile.id {
+        Ok(())
+    } else {
+        Err(Error::AccountChanged)
+    }
+}
+
 #[derive(Debug, Deserialize, utoipa::IntoParams)]
 #[into_params(parameter_in = Query)]
 pub struct BootstrapQuery {
     pub client_id: Option<String>,
+    /// User the replica belongs to. A different account is 401 `account changed`.
+    pub user_id: Option<String>,
 }
 
 #[utoipa::path(
@@ -91,6 +132,7 @@ pub(super) async fn bootstrap(
     Path(id): Path<WorkspaceId>,
     Query(query): Query<BootstrapQuery>,
 ) -> Result<Response> {
+    fence(&actor, query.user_id.as_deref())?;
     let receiver = store
         .sync_bootstrap(id, actor.profile.id, client_id(query.client_id.as_deref())?)
         .await?;
@@ -105,6 +147,8 @@ pub struct ScopeQuery {
     pub entity: Option<String>,
     pub issue_id: Option<String>,
     pub entity_id: Option<String>,
+    /// User the replica belongs to. A different account is 401 `account changed`.
+    pub user_id: Option<String>,
 }
 
 #[utoipa::path(
@@ -120,6 +164,7 @@ pub(super) async fn scope(
     Path(id): Path<WorkspaceId>,
     Query(query): Query<ScopeQuery>,
 ) -> Result<Json<ScopeResponse>> {
+    fence(&actor, query.user_id.as_deref())?;
     let client_id = client_id(query.client_id.as_deref())?;
     let (value, name) = match query.entity.as_deref() {
         Some("comments") => (query.issue_id.as_deref(), "issue_id"),
@@ -150,6 +195,8 @@ pub(super) async fn scope(
 pub struct EventsQuery {
     /// Client replica id. A client_id owned by another user or workspace is 400.
     pub client_id: Option<String>,
+    /// User the replica belongs to. A different account is 401 `account changed`.
+    pub user_id: Option<String>,
 }
 
 fn poke_event(poke: Poke) -> Event {
@@ -175,6 +222,7 @@ pub(super) async fn events(
     Path(id): Path<WorkspaceId>,
     Query(query): Query<EventsQuery>,
 ) -> Result<Sse<impl Stream<Item = std::result::Result<Event, std::convert::Infallible>> + Send>> {
+    fence(&actor, query.user_id.as_deref())?;
     let client_id = client_id(query.client_id.as_deref())?;
     store
         .sync_events_check(id, actor.profile.id, client_id)

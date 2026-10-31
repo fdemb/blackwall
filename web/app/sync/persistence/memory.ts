@@ -189,6 +189,22 @@ class MemoryReplica implements Replica {
     });
   }
 
+  async discard(rejections: readonly Rejection[]): Promise<void> {
+    this.transaction((state) => {
+      for (const rejection of rejections) {
+        state.rejected.set(rejection.id, structuredClone(rejection));
+        state.outbox.delete(rejection.id);
+        state.confirmed.delete(rejection.id);
+      }
+    });
+  }
+
+  async setAccessLost(lost: boolean): Promise<void> {
+    this.transaction((state) => {
+      state.meta.accessLost = lost;
+    });
+  }
+
   async resolveRejection(id: number): Promise<void> {
     this.transaction((state) => state.rejected.delete(id));
   }
@@ -232,7 +248,7 @@ export class MemoryReplicaStorage implements ReplicaStorage {
 
   async list(): Promise<readonly ReplicaIdentity[]> {
     return [...this.replicas.values()].map(({ state: { meta } }) => ({
-      sessionId: meta.sessionId,
+      userId: meta.userId,
       workspaceId: meta.workspaceId,
     }));
   }
@@ -243,11 +259,5 @@ export class MemoryReplicaStorage implements ReplicaStorage {
     if (entry === undefined) return;
     for (const handle of entry.handles) handle.closeExternally();
     this.replicas.delete(name);
-  }
-
-  async deleteAllExcept(sessionId: string | null): Promise<void> {
-    for (const identity of await this.list()) {
-      if (identity.sessionId !== sessionId) await this.delete(identity);
-    }
   }
 }

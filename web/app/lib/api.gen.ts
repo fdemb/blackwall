@@ -646,7 +646,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Applies one client's ordered mutations through the same store code as the command endpoint. Each mutation runs in its own transaction; business errors reject that mutation while transient failures stop the batch. */
+    /** @description Applies one client's ordered mutations through the same store code as the command endpoint. Each mutation runs in its own transaction; business errors reject that mutation while transient failures stop the batch. A client row whose high-water mark is below the request's `acknowledged` id means the server lost the client's state: the batch is refused with 409 `client state lost` and nothing is applied. */
     post: operations["push"];
     delete?: never;
     options?: never;
@@ -1884,6 +1884,13 @@ export interface components {
       reset: boolean;
     };
     PushRequest: {
+      /**
+       * Format: int64
+       * @description The highest mutation id the client has seen acknowledged by a pull or bootstrap.
+       *     A stored high-water mark below it means the server lost the client's state, so
+       *     the batch is refused with 409 instead of re-running mutations. Defaults to 0.
+       */
+      acknowledged?: number;
       /** Format: uuid */
       client_id: string;
       mutations: components["schemas"]["SyncMutation"][];
@@ -2952,7 +2959,10 @@ export interface operations {
   };
   command: {
     parameters: {
-      query?: never;
+      query?: {
+        /** @description User the sending replica belongs to. A different account is 401 `account changed`. */
+        user_id?: string;
+      };
       header?: never;
       path: {
         id: string;
@@ -3205,6 +3215,8 @@ export interface operations {
     parameters: {
       query?: {
         client_id?: string;
+        /** @description User the replica belongs to. A different account is 401 `account changed`. */
+        user_id?: string;
       };
       header?: never;
       path: {
@@ -3229,6 +3241,8 @@ export interface operations {
       query?: {
         /** @description Client replica id. A client_id owned by another user or workspace is 400. */
         client_id?: string;
+        /** @description User the replica belongs to. A different account is 401 `account changed`. */
+        user_id?: string;
       };
       header?: never;
       path: {
@@ -3259,6 +3273,8 @@ export interface operations {
          *     history, or past this server's snapshot, answers `reset: true`.
          */
         cursor?: string;
+        /** @description User the replica belongs to. A different account is 401 `account changed`. */
+        user_id?: string;
       };
       header?: never;
       path: {
@@ -3280,7 +3296,10 @@ export interface operations {
   };
   push: {
     parameters: {
-      query?: never;
+      query?: {
+        /** @description User the replica belongs to. A different account is 401 `account changed`. */
+        user_id?: string;
+      };
       header?: never;
       path: {
         id: string;
@@ -3318,6 +3337,8 @@ export interface operations {
         entity?: string;
         issue_id?: string;
         entity_id?: string;
+        /** @description User the replica belongs to. A different account is 401 `account changed`. */
+        user_id?: string;
       };
       header?: never;
       path: {

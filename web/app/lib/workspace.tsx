@@ -41,12 +41,13 @@ export interface UploadOptions {
 }
 
 /** Why edits can't reach the server right now, or null when sync is healthy. */
-export type SyncProblem = "offline" | "unreachable" | "blocked" | "error" | null;
+export type SyncProblem = "offline" | "unreachable" | "stalled" | "blocked" | "error" | null;
 
 function syncProblem(status: EngineStatus): SyncProblem {
   const error = status.lastError;
   if (!status.online) return "offline";
   if (status.blocked) return "blocked";
+  if (status.stalled) return "stalled";
   if (error instanceof NetworkError || error instanceof UnavailableError) return "unreachable";
   return error && !(error instanceof OutdatedError) ? "error" : null;
 }

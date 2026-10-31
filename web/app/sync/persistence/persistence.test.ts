@@ -10,7 +10,7 @@ import { MemoryReplicaStorage } from "./memory";
 import { replicaName } from "./shared";
 import type { Replica, ReplicaCloseListener, ReplicaStorage, Scope } from "./types";
 
-const INPUT = { sessionId: "session-1", workspaceId: "workspace-1", schema: 7 };
+const INPUT = { userId: "user-1", workspaceId: "workspace-1", schema: 7 };
 const COMMENT_SCOPE = { entity: "comments", issueId: "issue-1" } satisfies Scope;
 const ACTIVITY_SCOPE = { entity: "activity", entityId: "issue-1" } satisfies Scope;
 const COMMENT = {
@@ -123,6 +123,34 @@ for (const backend of ["memory", "idb"]) {
       await replica.writeBootstrap(bootstrap());
       expect((await replica.load()).meta.lastMutationId).toBe(1);
       expect((await replica.load()).outbox).toHaveLength(2);
+    });
+
+    it("discard keeps the rejection and removes its mutation from the outbox for good", async () => {
+      await replica.appendMutation(mutation);
+      await replica.appendMutation(mutation);
+      const rejection = {
+        id: 1,
+        status: 500,
+        message: "kept",
+        command: { name: "update_issue", args: { id: "issue-1" } },
+      };
+      await replica.discard([rejection]);
+      const loaded = await replica.load();
+      expect(loaded.outbox.map((m) => m.id)).toEqual([2]);
+      expect(loaded.rejected).toEqual([rejection]);
+      expect(loaded.meta.nextMutationId).toBe(3);
+    });
+
+    it("keeps the access-lost marker across writes and handles until it is cleared", async () => {
+      expect((await replica.load()).meta.accessLost).toBeUndefined();
+      await replica.setAccessLost(true);
+      await replica.appendMutation(mutation);
+      await replica.writeBootstrap(bootstrap());
+      replica.close();
+      replica = await open();
+      expect((await replica.load()).meta.accessLost).toBe(true);
+      await replica.setAccessLost(false);
+      expect((await replica.load()).meta.accessLost).toBe(false);
     });
 
     it("bootstrap replaces listed entities, empties omitted ones and clears scopes", async () => {
@@ -485,15 +513,15 @@ for (const backend of ["memory", "idb"]) {
       expect((await replica.load()).outbox).toHaveLength(1);
     });
 
-    it("lists, deletes and prunes replicas by exact session, including deleting everything", async () => {
+    it("lists and deletes replicas by exact user and workspace", async () => {
       const otherWorkspace = { ...INPUT, workspaceId: "workspace-2" };
-      const otherSession = { ...INPUT, sessionId: "session-10" };
+      const otherUser = { ...INPUT, userId: "user-10" };
       await open(otherWorkspace);
-      const deleted = await open(otherSession);
+      const deleted = await open(otherUser);
       expect(await storage.list()).toEqual(
         expect.arrayContaining(
-          [INPUT, otherWorkspace, otherSession].map(({ sessionId, workspaceId }) => ({
-            sessionId,
+          [INPUT, otherWorkspace, otherUser].map(({ userId, workspaceId }) => ({
+            userId,
             workspaceId,
           })),
         ),
@@ -502,13 +530,13 @@ for (const backend of ["memory", "idb"]) {
       await storage.delete(otherWorkspace);
       await storage.delete(otherWorkspace);
       expect(await storage.list()).toHaveLength(2);
-      await storage.deleteAllExcept(INPUT.sessionId);
+      await storage.delete(otherUser);
       expect(await storage.list()).toEqual([
-        { sessionId: INPUT.sessionId, workspaceId: INPUT.workspaceId },
+        { userId: INPUT.userId, workspaceId: INPUT.workspaceId },
       ]);
       await expect(deleted.load()).rejects.toThrow();
       const oldClient = (await replica.load()).meta.clientId;
-      await storage.deleteAllExcept(null);
+      await storage.delete(INPUT);
       expect(await storage.list()).toEqual([]);
       await expect(replica.load()).rejects.toThrow();
       expect((await (await open()).load()).meta.clientId).not.toBe(oldClient);
@@ -591,7 +619,7 @@ describe("IndexedDB lifecycle", () => {
       expect(events).toHaveLength(2);
       for (const event of events)
         expect(event).toMatchObject({
-          sessionId: INPUT.sessionId,
+          userId: INPUT.userId,
           workspaceId: INPUT.workspaceId,
           reason: "versionchange",
           newVersion: IDB_VERSION + 1,
@@ -663,7 +691,7 @@ describe("IndexedDB lifecycle", () => {
     expect(events).toEqual([]);
   });
 
-  it("lists only replica names and pruning leaves unrelated databases intact", async () => {
+  it("lists only replica names and deleting leaves unrelated databases intact", async () => {
     const factory = new IDBFactory();
     const unrelated = await rawOpen(factory, "another-app");
     const malformed = await rawOpen(factory, "blackwall:invalid");
@@ -671,9 +699,9 @@ describe("IndexedDB lifecycle", () => {
     const replica = await storage.open(INPUT);
     try {
       expect(await storage.list()).toEqual([
-        { sessionId: INPUT.sessionId, workspaceId: INPUT.workspaceId },
+        { userId: INPUT.userId, workspaceId: INPUT.workspaceId },
       ]);
-      await storage.deleteAllExcept(null);
+      await storage.delete(INPUT);
       expect((await factory.databases()).map((db) => db.name).sort()).toEqual([
         "another-app",
         "blackwall:invalid",

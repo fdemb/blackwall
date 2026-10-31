@@ -1,9 +1,8 @@
 import { redirect } from "react-router";
-import { ApiError, auth, workspaces } from "./api";
+import { ApiError, workspaces } from "./api";
 import { safeGet, safeRemove, safeSet } from "./storage";
 import {
   acceptSession,
-  clearSession,
   rememberWorkspaces,
   rememberedWorkspaces,
   restoreSession,
@@ -11,37 +10,24 @@ import {
 import type { SessionProfile } from "../sync/transport";
 import type { WorkspaceSummary } from "./types";
 
-let meRequests = 0;
-let newestMe: Promise<SessionProfile | null> = Promise.resolve(null);
-
-export function currentProfile(): Promise<SessionProfile | null> {
-  const sequence = (meRequests += 1);
-  newestMe = readProfile(sequence);
-  return newestMe;
-}
-
-// Only the newest /internal-api/me may change the session. An older reply that lands last answers with
-// the newest one, so it can't delete the replicas of the session the newest reply started.
-async function readProfile(sequence: number): Promise<SessionProfile | null> {
+/** Who the cookie belongs to. The session module asks the server inside its lock. */
+export async function currentProfile(): Promise<SessionProfile | null> {
   try {
-    const profile = await auth.me();
-    if (sequence !== meRequests) return newestMe;
-    return await acceptSession(profile);
+    return await acceptSession();
   } catch (e) {
-    if (sequence !== meRequests) return newestMe;
-    if (e instanceof ApiError && e.status === 401) {
-      await clearSession();
-      return null;
-    }
     const restored = unavailable(e) ? restoreSession() : null;
     if (restored) return restored;
     throw e;
   }
 }
 
-/** The server could not be reached or failed, as opposed to answering about the session. */
+/** The server was unreachable, failed or timed out, as opposed to answering about the session. */
 function unavailable(e: unknown) {
-  return e instanceof TypeError || (e instanceof ApiError && e.status >= 500);
+  return (
+    e instanceof TypeError ||
+    (e instanceof DOMException && e.name === "TimeoutError") ||
+    (e instanceof ApiError && e.status >= 500)
+  );
 }
 
 export function signInFor(url: string): string {

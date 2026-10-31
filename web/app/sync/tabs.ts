@@ -7,8 +7,8 @@ export interface TabError {
   status?: number;
 }
 
-/** A push result: applied, or the server's rejection without its command. */
-export type TabOutcome = "applied" | { id: number; status: number; message: string };
+/** A push result: applied, unknown, or the server's rejection without its command. */
+export type TabOutcome = "applied" | "unknown" | { id: number; status: number; message: string };
 
 /** Messages between engines that share one replica. Each one names its sender. */
 export type TabBody =
@@ -27,6 +27,7 @@ export type TabBody =
   | { type: "accessLost" }
   /**
    * `blocked`: a protocol error stopped the leader's push or reads, so the outbox can't drain.
+   * `stalled`: the server keeps failing the leader's pushes, which it keeps retrying.
    * `error`: the leader's last sync error, while it retries.
    */
   | {
@@ -34,6 +35,7 @@ export type TabBody =
       connected: boolean;
       online: boolean;
       blocked: boolean;
+      stalled: boolean;
       error: { message: string; unreachable: boolean } | null;
     }
   | { type: "result"; mutationId: number; outcome: TabOutcome }

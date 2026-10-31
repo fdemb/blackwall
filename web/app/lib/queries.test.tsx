@@ -66,8 +66,8 @@ function fixture(wrap: (server: Server) => typeof server.fetch = (server) => ser
         return serve(input, init);
       },
       headers,
+      userId: owner.id,
     }),
-    sessionId: id(4),
     workspaceId: workspace.id,
     actor: owner.id,
     schema: SCHEMA,
