@@ -588,7 +588,7 @@ impl Store {
 
 /// Most distinct `(entity, id)` pairs one pull page may carry.
 const PULL_PAIRS: usize = 1000;
-/// Stop before the next txid once this many raw rows have been exceeded.
+/// Most raw change rows one pull page accepts. Repeats of one record count.
 const PULL_ROWS: usize = 20_000;
 /// Change rows read per round trip while scanning the pull window.
 const PULL_BATCH: i64 = 2000;
@@ -772,36 +772,44 @@ struct PullPage {
 }
 
 impl PullPage {
+    /// The cut for a row of `txid` that does not fit. Inside the page's first
+    /// transaction the rows accepted so far stay, and the transaction resumes
+    /// after the last of them. Otherwise the transaction waits whole.
+    fn cut_here(&mut self, txid: i64) -> Cut {
+        if self.included_txids == 0 {
+            self.pairs.append(&mut self.group);
+            Cut::Inside {
+                txid,
+                row: self.group_row,
+            }
+        } else {
+            Cut::Before(txid)
+        }
+    }
+
     /// Adds one change row. Returns false once the page is full. A
     /// transaction that does not fit waits for the next page, unless it is
     /// the first one on this page: then no whole transaction fits, and the
-    /// page ends inside it.
+    /// page ends inside it. The raw-row cap works the same way, so a page
+    /// never reads more than `PULL_ROWS` rows to accept them.
     fn add(&mut self, txid: i64, row: i64, entity: String, entity_id: Uuid) -> bool {
         if self.group_txid != Some(txid) {
             if self.group_txid.is_some() {
                 self.pairs.append(&mut self.group);
                 self.included_txids += 1;
             }
-            if self.scanned > PULL_ROWS {
-                self.cut = Some(Cut::Before(txid));
-                return false;
-            }
             self.group_txid = Some(txid);
+        }
+        if self.scanned == PULL_ROWS {
+            self.cut = Some(self.cut_here(txid));
+            return false;
         }
         self.scanned += 1;
         if entity != "roles" {
             let pair = (entity, entity_id);
             let fresh = !self.pairs.contains(&pair) && !self.group.contains(&pair);
             if fresh && self.pairs.len() + self.group.len() >= PULL_PAIRS {
-                self.cut = Some(if self.included_txids == 0 {
-                    self.pairs.append(&mut self.group);
-                    Cut::Inside {
-                        txid,
-                        row: self.group_row,
-                    }
-                } else {
-                    Cut::Before(txid)
-                });
+                self.cut = Some(self.cut_here(txid));
                 return false;
             }
             if fresh {
