@@ -3618,7 +3618,8 @@ describe("local edits", () => {
     expect(ids).toEqual([...ids].sort((a, b) => a - b));
     expect(new Set(ids).size).toBe(3);
     for (const receipt of receipts) expect(await receipt.settled).toBe("applied");
-    expect(f.pushes().flat().map((mutation) => mutation.id)).toEqual(ids);
+    const pushed = f.pushes().flat();
+    expect(pushed.map((mutation) => mutation.id)).toEqual(ids);
     expect(f.server.record("issues", ISSUE)).toMatchObject({ title: "Typed" });
     expect(f.engine.store.get("issues", ISSUE)?.title).toBe("Typed");
   });
