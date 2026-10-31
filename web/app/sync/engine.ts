@@ -278,6 +278,8 @@ export class SyncEngine {
   private leaderId = "";
   /** As leader: the term claimed with the lock, and the number of its latest replica message. */
   private term = 0;
+  /** False from taking the lock until its term is stored, so no status goes out under an old term. */
+  private claimed = true;
   private seq = 0;
   /** The database revision the view was built at, or null while the view runs ahead of it. */
   private revision: number | null = 0;
@@ -709,6 +711,7 @@ export class SyncEngine {
    * instead.
    */
   private async takeLeadership(): Promise<void> {
+    this.claimed = false;
     this.setRole("leader");
     this.seq = 0;
     this.announce();
@@ -737,6 +740,7 @@ export class SyncEngine {
       const replica = this.requireReplica();
       const head = await replica.claimTerm();
       this.term = head.meta.term ?? 0;
+      this.claimed = true;
       if (this.matches(head)) this.applyHead(head);
       else this.applyLoaded(await replica.load());
     });
@@ -1245,6 +1249,7 @@ export class SyncEngine {
 
   private post(body: TabBody): void {
     if (!this.channel || this.closed) return;
+    if (body.type === "status" && !this.claimed) return;
     this.channel.postMessage({ ...body, from: this.tabId } as TabMessage);
   }
 
@@ -2892,7 +2897,11 @@ export class SyncEngine {
     write: () => Promise<number>,
     kind: "snapshot" | "increment",
   ): Promise<number | null> {
-    if (kind === "increment" && this.snapshot.storage === "full") return null;
+    if (kind === "increment" && this.snapshot.storage === "full") {
+      // The view now holds changes the database lacks, so no stored revision describes it.
+      this.revision = null;
+      return null;
+    }
     try {
       this.revision = await write();
     } catch (error) {
