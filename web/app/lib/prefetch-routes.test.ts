@@ -60,12 +60,24 @@ describe("prefetchRoutesWhenIdle", () => {
 
   /** A `<link>` whose attributes read back the properties the helper sets. */
   class Link {
+    get tagName() {
+      return "LINK";
+    }
     getAttribute(name: string) {
       return Reflect.get(this, name) ?? null;
     }
   }
 
-  function browser(connection?: { saveData?: boolean; effectiveType?: string }) {
+  /** An element already in the page, such as the entry script the server rendered. */
+  const element = (tagName: string, attributes: Record<string, string>) => ({
+    tagName,
+    getAttribute: (name: string) => attributes[name] ?? null,
+  });
+
+  function browser(
+    connection?: { saveData?: boolean; effectiveType?: string },
+    existing: ReturnType<typeof element>[] = [],
+  ) {
     const idle = new Map<number, () => void>();
     let handles = 0;
     const head: Link[] = [];
@@ -80,8 +92,9 @@ describe("prefetchRoutesWhenIdle", () => {
     vi.stubGlobal("cancelIdleCallback", (handle: number) => idle.delete(handle));
     vi.stubGlobal("navigator", { connection });
     vi.stubGlobal("document", {
+      baseURI: "https://blackwall.test/w/acme/issues",
       createElement: () => new Link(),
-      querySelectorAll: () => head,
+      querySelectorAll: () => [...existing, ...head],
       head: { append: (link: Link) => head.push(link) },
     });
     return {
@@ -109,6 +122,41 @@ describe("prefetchRoutesWhenIdle", () => {
     prefetchRoutesWhenIdle();
     page.idle();
     prefetchRoutesWhenIdle();
+    page.idle();
+
+    expect(page.head).toEqual([{ rel: "modulepreload", href: "/assets/issue.js" }]);
+  });
+
+  it.each([
+    [
+      "an absolute modulepreload",
+      element("LINK", { rel: "modulepreload", href: "https://blackwall.test/assets/issue.js" }),
+    ],
+    [
+      "a relative module script",
+      element("SCRIPT", { type: "module", src: "../../assets/issue.js" }),
+    ],
+    ["a preload", element("LINK", { rel: "preload", as: "script", href: "/assets/issue.js" })],
+  ])("skips a module the page already loaded through %s", (_, loaded) => {
+    const page = browser({ effectiveType: "4g" }, [loaded]);
+    prefetchRoutesWhenIdle();
+
+    page.idle();
+
+    expect(page.head).toEqual([]);
+  });
+
+  it.each([
+    ["only prefetched it", element("LINK", { rel: "prefetch", href: "/assets/issue.js" })],
+    ["loaded it as a classic script", element("SCRIPT", { src: "/assets/issue.js" })],
+    [
+      "loaded another version of it",
+      element("LINK", { rel: "modulepreload", href: "/assets/issue.js?v=2" }),
+    ],
+  ])("preloads a module when the page %s", (_, other) => {
+    const page = browser({ effectiveType: "4g" }, [other]);
+    prefetchRoutesWhenIdle();
+
     page.idle();
 
     expect(page.head).toEqual([{ rel: "modulepreload", href: "/assets/issue.js" }]);

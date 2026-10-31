@@ -69,17 +69,37 @@ function constrained(connection: Connection | undefined) {
   );
 }
 
+/**
+ * Files already requested in a way that serves each link type. A module is only in the module
+ * map once preloaded or imported, while any fetch of a stylesheet fills the cache a style
+ * prefetch would.
+ */
+function presentLinks(): Record<PrefetchLink["rel"], Set<string>> {
+  const present = { modulepreload: new Set<string>(), prefetch: new Set<string>() };
+  for (const element of document.querySelectorAll("link, script")) {
+    const href = element.getAttribute("href") ?? element.getAttribute("src");
+    if (!href) continue;
+    const url = new URL(href, document.baseURI).href;
+    const rel = element.getAttribute("rel");
+    const module =
+      element.tagName === "SCRIPT"
+        ? element.getAttribute("type") === "module"
+        : rel === "modulepreload" || rel === "preload";
+    if (module) present.modulepreload.add(url);
+    if (rel === "stylesheet" || rel === "preload" || rel === "prefetch") present.prefetch.add(url);
+  }
+  return present;
+}
+
 /** Prefetches every route's code when the browser is idle, unless the connection is constrained. */
 export function prefetchRoutesWhenIdle() {
   const manifest = window.__reactRouterManifest;
   if (!manifest || constrained(navigator.connection)) return () => {};
   const prefetch = () => {
     // The layout remounts when someone leaves a workspace and comes back.
-    const present = new Set(
-      [...document.querySelectorAll("link")].map((link) => link.getAttribute("href")),
-    );
+    const present = presentLinks();
     for (const { rel, href, as } of routeLinks(manifest.routes)) {
-      if (present.has(href)) continue;
+      if (present[rel].has(new URL(href, document.baseURI).href)) continue;
       const link = document.createElement("link");
       link.rel = rel;
       link.href = href;
