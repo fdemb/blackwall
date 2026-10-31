@@ -1588,7 +1588,7 @@ mod tests {
             ("990:1000:990", true),
             ("990:1000:990:990.1", true),
             ("990:995:990:996.1", true),
-            ("990:1010:", false),
+            ("1010:1010:", false),
             ("99999999:99999999:", false),
             ("990:1000:990:1000.1", false),
             ("845:847:845:99999999.1", false),
@@ -1651,7 +1651,7 @@ mod tests {
         ] {
             assert!(parse_cursor(bad).is_err(), "{bad:?}");
         }
-        assert!(parse_cursor("990:1010:").is_ok());
+        assert!(parse_cursor("1010:1010:").is_ok());
         assert!(parse_cursor("990:1000:990").is_ok());
         // Over the xip cap.
         let huge = format!(
