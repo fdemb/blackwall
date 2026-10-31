@@ -6,6 +6,13 @@ export class Cancelled extends Error {
   }
 }
 
+/** A pull that keeps failing with protocol errors asks for a fresh bootstrap instead of blocking. */
+export class Resync extends Error {
+  constructor() {
+    super("Sync state needs a fresh download");
+  }
+}
+
 /** Queue failures reach the caller without poisoning subsequent work. */
 export class SerialQueue {
   private tail: Promise<unknown> = Promise.resolve();
@@ -45,7 +52,14 @@ export async function pause(clock: EngineClock, milliseconds: number, signal: Ab
   }
 }
 
-/** A per-engine seeded generator; ids and user actions do not change jitter. */
+/** The longest wait a Retry-After can ask for. A wrong wall clock turns an HTTP date into hours. */
+const MAX_RETRY_AFTER_MS = 5 * 60_000;
+
+/**
+ * A per-engine seeded generator; ids and user actions do not change jitter. The result is a
+ * duration. An HTTP-date Retry-After is turned into one here, once, against the wall clock, and
+ * callers track the wait with the monotonic clock from then on.
+ */
 export function backoff(
   seed: string,
   clock: EngineClock,
@@ -59,6 +73,9 @@ export function backoff(
       typeof retryAfter === "string"
         ? Date.parse(retryAfter) - Date.parse(clock.now())
         : (retryAfter ?? 0) * 1000;
-    return Math.max(cap * (0.5 + state / 0x1_0000_0000 / 2), requested);
+    return Math.max(
+      cap * (0.5 + state / 0x1_0000_0000 / 2),
+      Math.min(Number.isNaN(requested) ? 0 : requested, MAX_RETRY_AFTER_MS),
+    );
   };
 }

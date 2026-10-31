@@ -63,7 +63,7 @@ async function fixture() {
     actor: owner.id,
     schema: SCHEMA,
     randomId: () => id(sequence++),
-    clock: { now: server.now, schedule: server.schedule },
+    clock: { now: server.now, monotonic: server.monotonic, schedule: server.schedule },
     signals: { getOnline: () => true, subscribe: () => () => {} },
   });
   engines.push(engine);
@@ -374,7 +374,7 @@ describe("offline and rejected commands", () => {
       actor: owner.id,
       schema: SCHEMA,
       randomId: () => crypto.randomUUID(),
-      clock: { now: server.now, schedule: server.schedule },
+      clock: { now: server.now, monotonic: server.monotonic, schedule: server.schedule },
       signals: { getOnline: () => false, subscribe: () => () => {} },
     });
     engines.push(offline);

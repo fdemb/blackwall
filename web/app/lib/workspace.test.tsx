@@ -192,7 +192,7 @@ async function fixture({
     actor: profile.id,
     schema: SCHEMA,
     randomId: () => crypto.randomUUID(),
-    clock: { now: () => NOW, schedule: () => () => {} },
+    clock: { now: () => NOW, monotonic: () => 0, schedule: () => () => {} },
     signals: { getOnline: () => online, subscribe: () => () => {} },
   });
   engines.push(engine);

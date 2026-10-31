@@ -1,6 +1,10 @@
-/** Explicit time for request delays, sessions and event streams. No wall-clock timers. */
+/**
+ * Explicit time for request delays, sessions and event streams. No wall-clock timers. `now` is the
+ * client's wall clock, which `jump` can move in either direction. `monotonic` never does.
+ */
 export class FakeClock {
   private time: number;
+  private skew = 0;
   private sequence = 0;
   private readonly timers = new Map<number, { at: number; run: () => void }>();
 
@@ -10,7 +14,18 @@ export class FakeClock {
   }
 
   now(): string {
-    return new Date(this.time).toISOString();
+    return new Date(this.time + this.skew).toISOString();
+  }
+
+  /** Milliseconds since an arbitrary start. Unaffected by `jump`. */
+  monotonic(): number {
+    return this.time;
+  }
+
+  /** Moves the wall clock without moving timers, like a user or NTP correcting the system time. */
+  jump(ms: number): void {
+    if (!Number.isFinite(ms)) throw new Error("clock must jump by a finite duration");
+    this.skew += ms;
   }
 
   milliseconds(): number {

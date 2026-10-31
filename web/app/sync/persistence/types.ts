@@ -1,4 +1,4 @@
-import type { Rejection } from "../engine-types";
+import type { Rejection, SkippedRecord } from "../engine-types";
 import type { Change, Entity } from "../records";
 import type { PendingMutation } from "../store";
 
@@ -16,6 +16,13 @@ export interface ReplicaMeta {
    * may predate a removal, so it isn't shown as ready until a read succeeds.
    */
   accessLost?: boolean;
+  /** Records the client couldn't parse at its last bootstrap or pull, kept for diagnostics. */
+  skipped?: readonly SkippedRecord[];
+  /**
+   * A pull page skipped a record, so a bootstrap is owed to fetch it again. It survives a reload
+   * and ends only with a bootstrap.
+   */
+  resync?: boolean;
 }
 
 export type Scope =
@@ -47,11 +54,16 @@ export interface Replica {
     serverSchema: number;
     records: Partial<Record<Entity, readonly object[]>>;
     entities: readonly Entity[];
+    skipped?: readonly SkippedRecord[];
+    resync?: boolean;
   }): Promise<void>;
   applyPull(input: {
     changes: readonly Change[];
     cursor: string;
     acknowledgedUpTo: number | null;
+    /** When given, replaces the meta's skipped list and resync obligation in the same write. */
+    skipped?: readonly SkippedRecord[];
+    resync?: boolean;
   }): Promise<void>;
   writeScope(input: { scope: Scope; records: readonly object[] }): Promise<void>;
   /** Whether the scope is loaded, and its records, read in one transaction. */

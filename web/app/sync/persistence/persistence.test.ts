@@ -1,13 +1,13 @@
 import "fake-indexeddb/auto";
 import { forceCloseDatabase, IDBFactory } from "fake-indexeddb";
-import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { BOOTSTRAP_ENTITIES, BOOTSTRAP_REPLACED_ENTITIES, ENTITIES } from "../records";
 import type { Entity } from "../records";
 import { SyncStore } from "../store";
 import type { PendingMutation } from "../store";
 import { IDB_VERSION, IndexedDBReplicaStorage } from "./idb";
 import { MemoryReplicaStorage } from "./memory";
-import { replicaName } from "./shared";
+import { replicaName, StorageFullError, storageFailure } from "./shared";
 import type { Replica, ReplicaCloseListener, ReplicaStorage, Scope } from "./types";
 
 const INPUT = { userId: "user-1", workspaceId: "workspace-1", schema: 7 };
@@ -151,6 +151,29 @@ for (const backend of ["memory", "idb"]) {
       expect((await replica.load()).meta.accessLost).toBe(true);
       await replica.setAccessLost(false);
       expect((await replica.load()).meta.accessLost).toBe(false);
+    });
+
+    it("keeps the skipped list and the resync obligation until a bootstrap clears them", async () => {
+      const skipped = [{ entity: "issues", id: "issue-1", message: "bad time" }] as const;
+      await replica.writeBootstrap(bootstrap());
+      await replica.applyPull({
+        changes: [],
+        cursor: "page",
+        acknowledgedUpTo: null,
+        skipped,
+        resync: true,
+      });
+      expect((await replica.load()).meta).toMatchObject({ resync: true, skipped });
+      await replica.applyPull({ changes: [], cursor: "next", acknowledgedUpTo: null });
+      expect((await replica.load()).meta).toMatchObject({ resync: true, skipped });
+      await replica.writeBootstrap({ ...bootstrap(), skipped, resync: false });
+      const kept = (await replica.load()).meta;
+      expect(kept.skipped).toEqual(skipped);
+      expect(kept.resync).toBeUndefined();
+      await replica.writeBootstrap(bootstrap());
+      const cleared = (await replica.load()).meta;
+      expect(cleared.skipped).toBeUndefined();
+      expect(cleared.resync).toBeUndefined();
     });
 
     it("bootstrap replaces listed entities, empties omitted ones and clears scopes", async () => {
@@ -779,5 +802,36 @@ describe("IndexedDB lifecycle", () => {
     expect(events).toHaveLength(1);
     expect(events[0].reason).toBe("terminated");
     await expect(replica.load()).rejects.toThrow("replica is closed");
+  });
+});
+
+describe("quota errors", () => {
+  it("turns a write that runs out of space into StorageFullError and keeps the old state", async () => {
+    const storage = new IndexedDBReplicaStorage({ indexedDB: new IDBFactory() });
+    const replica = await storage.open(INPUT);
+    const kept = { id: "issue-1", created_at: "2026-10-08T14:00:00+02:00" };
+    await replica.writeBootstrap(bootstrap({ issues: [kept] }));
+    const put = vi.spyOn(IDBObjectStore.prototype, "put").mockImplementation(() => {
+      throw new DOMException("The quota has been exceeded.", "QuotaExceededError");
+    });
+    try {
+      await expect(
+        replica.writeBootstrap(bootstrap({ issues: [{ ...kept, id: "issue-2" }] })),
+      ).rejects.toBeInstanceOf(StorageFullError);
+    } finally {
+      put.mockRestore();
+    }
+    expect((await replica.load()).records.issues).toEqual([kept]);
+    replica.close();
+  });
+
+  it("recognizes a quota error by name and leaves other errors alone", () => {
+    const quota = new DOMException("The quota has been exceeded.", "QuotaExceededError");
+    const converted = storageFailure(quota);
+    expect(converted).toBeInstanceOf(StorageFullError);
+    expect((converted as StorageFullError).cause).toBe(quota);
+    const other = new DOMException("Constraint failed", "ConstraintError");
+    expect(storageFailure(other)).toBe(other);
+    expect(storageFailure(null)).toBeNull();
   });
 });

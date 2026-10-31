@@ -1151,6 +1151,27 @@ describe("app tab coordination", () => {
     }
   });
 
+  it("shows a follower that the leader's disk is full", async () => {
+    const f = await twoTabs();
+    const sender = f.hub.channel(`blackwall-sync:${f.profile.id}:${f.workspace.id}`);
+    try {
+      sender.postMessage({
+        type: "status",
+        connected: true,
+        online: true,
+        blocked: false,
+        stalled: false,
+        storageFull: true,
+        error: null,
+        from: "leader",
+      });
+      await until(() => f.second.status.get().storage === "full");
+    } finally {
+      sender.close();
+      await f.secondSession.closeAllWorkspaceEngines();
+    }
+  });
+
   it("marks a follower offline when its browser or its leader is offline", async () => {
     const f = await twoTabs();
     const sender = f.hub.channel(`blackwall-sync:${f.profile.id}:${f.workspace.id}`);
@@ -1161,6 +1182,7 @@ describe("app tab coordination", () => {
         online,
         blocked: false,
         stalled: false,
+        storageFull: false,
         error: null,
         from: "leader",
       });

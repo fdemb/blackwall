@@ -8,6 +8,7 @@ const VIEW: Record<Exclude<SyncProblem, null>, { icon: LucideIcon; message: Key 
   unreachable: { icon: WifiOff, message: "error.offline" },
   stalled: { icon: AlertTriangle, message: "error.syncStalled" },
   blocked: { icon: AlertTriangle, message: "error.syncBlocked" },
+  storage: { icon: AlertTriangle, message: "error.storageFull" },
   error: { icon: AlertTriangle, message: "error.syncFailed" },
 };
 

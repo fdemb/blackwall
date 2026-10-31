@@ -247,7 +247,7 @@ The client never lets one mutation freeze the outbox or silently drop a user's e
 | 401 | Stop network work and wait for the session check (see Session lifetime). |
 | 401 `account changed` | Stop the engine and keep the replica. Nothing retries. |
 | 409 `client state lost` | Block pushing and report a protocol error. The edits stay in the outbox. The server holds a lower acknowledged id than this replica, so pushing would run an applied mutation again. |
-| Any other 4xx | Block pushing until the user retries or reloads. |
+| Any other 4xx, or a 2xx that isn't the expected JSON | A protocol error. Retry the same batch with backoff, and block pushing after 6 in a row (see below). |
 
 A 5xx says nothing about the mutation: the server answers 503 only for a transient failure and records deterministic failures as `rejected` with status 500. So no number of 5xx answers or timeouts discards an edit. Retry delays grow to 30 seconds, and a `Retry-After` header lengthens them. `stalled` in the engine status turns the offline banner into "The server isn't saving your changes yet" and the save status into "Can't send". It clears on the next push that gets an answer.
 
@@ -326,13 +326,34 @@ One mutator per command in the `Command` union in `web/app/lib/types.ts`, with t
 
 > A mutator runs in one of two modes. **Admit** runs once when the user issues the command, against the current view; a failure there rejects the edit before it reaches the outbox and is shown to the user. **Replay** runs on every rebase; a command whose effect is already in place, because the server applied it before acknowledging it, is a no-op there. Replay errors are diagnostics and are never shown to the user; the user learns about a server rejection from the push result. Before either mode, the engine normalizes command arguments the way the server deserializes them: an absent field gets the server's default, and `null` is dropped except where the server gives it a meaning of its own, such as a team's `archive_after_days`.
 
+#### Protocol errors on the client
+
+A protocol error is an answer the client can't act on: a 4xx it doesn't know, a 200 that isn't the expected JSON (a proxy or captive-portal page), or a record it can't parse. A page that was only briefly wrong shouldn't need a click, so the client retries with the usual backoff, capped at 30 seconds, and blocks that request kind after 6 failures in a row. Any success resets the count. A blocked kind shows in the existing sync banner, and the user's retry clears it. A 401 is not a protocol error. It stops network work for the session check (see Session lifetime). Three cases skip the retries:
+
+- A pull that still fails after 6 attempts is re-bootstrapped once, since a cursor the client holds may be the problem. If the pulls after that still fail 6 times, it blocks.
+- A push 403 that survived a CSRF refresh blocks at once.
+- A push 409 `client state lost` blocks at once. The server holds a lower acknowledged id than this replica, and a retry gets the same refusal.
+
+One record the client can't parse is skipped instead of failing its page. The rest of the bootstrap, pull page or scope loads. The client logs the entity and id with `console.error` and lists them in `status.skipped`. A skipped pull change leaves the earlier version of that record in place, and the cursor moves past it, so the skipped version is never offered again. The engine therefore keeps a resync obligation in the replica meta, with the skipped list, and fetches the record again with a bootstrap:
+
+- A page with a skipped record applies its valid records, its cursor and its acknowledgement, like any other page. If the skipped record is one the user just edited, the acknowledged edit leaves the outbox and the record shows its previous version until the scheduled bootstrap replaces it, about 30 seconds later. That happens only when the server sends a malformed record, and if the record stays malformed the bootstrap drops it anyway.
+- The leader bootstraps after about 30 seconds, then waits twice as long after each failed attempt, up to 30 minutes. A failed attempt goes back on this schedule and doesn't enter the short retry loop. The obligation and the skipped list survive a reload, so a new leader pays it. The delay starts again on a reload, when the browser comes back online, and on a retry from the user, which also runs it at once.
+- A bootstrap acknowledges as usual and clears the obligation, even if it skipped the record again, since the server's record is then malformed. The list stays in the meta and in `status.skipped` for diagnosis. A bootstrap that skips nothing clears the list.
+- A scope that loaded with a skipped record is loaded again on the same schedule, in memory only.
+
+A later pull that brings a valid version, or a deletion, also ends that record's report. Records that point at a skipped record, such as issues of a skipped team, still load and read the missing target as absent. The workspace row can't be skipped, because nothing renders without it.
+
+#### Clocks
+
+Retry times use a monotonic clock, never the wall clock, so a clock change on the device can't stall or hurry a push. The wall clock stays on `at` of each mutation. An HTTP-date `Retry-After` is converted to a duration once, against the wall clock, and capped at 5 minutes.
+
 A mutation acknowledged by a pull without a known push result is pushed once more to learn its outcome; the server answers from its record without applying it again. The engine retains the payload in memory while its caller waits, and sends confirmations in id order through the normal push lane, after any batch already in flight. The caller's `settled` promise resolves only after a push result arrives. Closing the engine rejects waiting callers. A reloaded engine has no waiting callers for earlier mutations and does not recover their outcomes.
 
 ### Persistence
 
 IndexedDB database `blackwall:{user_id}:{workspace_id}` with object stores:
 
-- `meta`: `schema`, `user_id`, `client_id`, `cursor`, `last_mutation_id`, `next_mutation_id`, and `access_lost` once the server denied access.
+- `meta`: `schema`, `user_id`, `client_id`, `cursor`, `last_mutation_id`, `next_mutation_id`, `access_lost` once the server denied access, and `skipped` and `resync` while records are skipped (see protocol errors).
 - One store per entity, keyed like the table above.
 - `outbox`, keyed by mutation id.
 - `scopes`, the loaded comment and activity scopes.
@@ -344,6 +365,16 @@ Opening a replica loads every store into memory, replays the outbox, and renders
 The upgrade closes older tabs' database connections with `versionchange.newVersion` set to the newer version. Those engines emit `outdated`, stop network work, release leadership, and reject edits with a reload message. Their in-memory view stays readable, and the existing toast asks the user to reload. Deleting the database sets `newVersion` to null and still emits `accessLost`.
 
 A bootstrap also drops loaded comment and activity scopes; the engine reloads the ones on screen.
+
+When the engine opens a replica that was never bootstrapped, it asks the browser for persistent storage with `navigator.storage.persist()`, without waiting for the answer.
+
+#### A full disk
+
+A write that fails with `QuotaExceededError`, on a request or as a transaction abort, leaves the database as it was and surfaces as a distinct error. The client doesn't download the workspace again for it. It keeps what it downloaded in memory and keeps pulling, and the sync banner says the device is out of space. While the database is behind memory, incremental writes (pull pages and scope loads) are skipped, because applying them would leave the database ahead of what it holds. A new edit is refused with a message that says why, because the outbox lives in the database and an edit that can't be stored can't be sent after a reload. Edits already stored still push. The leader writes a full snapshot of memory every 5 minutes, after an edit shows space is back, on the user's retry, and on focus at most once a minute. The first snapshot that fits clears the state.
+
+Other tabs only see what the database holds. While it is behind memory the leader sends them no pull pages or scope loads, so they may be behind and show the same banner. The snapshot carries the cursor, records, scopes and any resync obligation, and once it is written the leader sends `reset`, so they reload from the recovered database. A tab opened while the disk is full shows what was persisted. When the leader closes, the next one treats the database as authoritative and pulls from its persisted cursor.
+
+An unloaded comment or activity scope reports offline, not loading, while the browser is offline, and the UI says it loads when the connection returns.
 
 ### Session lifetime
 

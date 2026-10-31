@@ -39,6 +39,8 @@ export type Fault =
   | { kind: "cut_bootstrap"; byte: number }
   | { kind: "close_events"; afterMs: number }
   | { kind: "reset_pull" }
+  /** Answers the next request on the route with this status and body, as a proxy or portal would. */
+  | { kind: "respond"; route: Route; status: number; body?: string; contentType?: string }
   /** The next scope request fails with a protocol error, like a rejected scope read. */
   | { kind: "scope_error" };
 
@@ -151,6 +153,7 @@ export class FakeServer {
   >();
   private readonly faults: Fault[] = [];
   private readonly poisoned = new Map<number, "partial" | "error">();
+  private readonly corrupted = new Map<string, object>();
   private readonly streams = new Map<EventConnection, string>();
   private readonly pageSize: number;
   private readonly timing: EventTiming;
@@ -176,6 +179,9 @@ export class FakeServer {
   }
 
   now = (): string => this.clock.now();
+  monotonic = (): number => this.clock.monotonic();
+  /** Moves the client's wall clock, not the server's or the timers. */
+  jumpClock = (milliseconds: number): void => this.clock.jump(milliseconds);
   advance = (milliseconds: number): void => this.clock.advance(milliseconds);
   schedule = (milliseconds: number, run: () => void): (() => void) =>
     this.clock.schedule(milliseconds, run);
@@ -403,6 +409,22 @@ export class FakeServer {
   healMutation(id: number): void {
     this.poisoned.delete(id);
   }
+  /**
+   * Sends this record with `patch` merged into it in every bootstrap, pull and scope answer until
+   * `repairRecord`, so a client can't parse it. Server state and `records()` stay valid.
+   */
+  corruptRecord(entity: Entity, id: string, patch: object): void {
+    this.corrupted.set(`${entity}:${id}`, patch);
+  }
+  repairRecord(entity: Entity, id: string): void {
+    this.corrupted.delete(`${entity}:${id}`);
+  }
+  private wire<T extends object>(entity: Entity, record: T | null): T | null {
+    if (record === null) return null;
+    const key: unknown = Reflect.get(record, entity === "alert_preferences" ? "user_id" : "id");
+    const patch = this.corrupted.get(`${entity}:${String(key)}`);
+    return patch === undefined ? record : { ...record, ...patch };
+  }
   inject(fault: Fault): void {
     this.faults.push(structuredClone(fault));
   }
@@ -502,6 +524,12 @@ export class FakeServer {
     faults: Fault[],
   ): Promise<Response> {
     request.signal.throwIfAborted();
+    const respond = faults.find((fault) => fault.kind === "respond");
+    if (respond?.kind === "respond")
+      return new Response(respond.body ?? "", {
+        status: respond.status,
+        headers: { "content-type": respond.contentType ?? "text/plain" },
+      });
     let response: Response;
     try {
       const authorization = request.headers.get("authorization");
@@ -681,7 +709,8 @@ export class FakeServer {
         fault.kind === "response_delay" ||
         fault.kind === "drop_response" ||
         fault.kind === "fail_response" ||
-        fault.kind === "unavailable"
+        fault.kind === "unavailable" ||
+        fault.kind === "respond"
           ? fault.route
           : fault.kind === "truncate_bootstrap" || fault.kind === "cut_bootstrap"
             ? "bootstrap"
@@ -1213,7 +1242,11 @@ export class FakeServer {
       .sort((a, b) =>
         a.entity < b.entity ? -1 : a.entity > b.entity ? 1 : a.id < b.id ? -1 : a.id > b.id ? 1 : 0,
       )
-      .map(({ entity, id }) => ({ entity, id, record: this.render(entity, id, actor, workspace) }));
+      .map(({ entity, id }) => ({
+        entity,
+        id,
+        record: this.wire(entity, this.render(entity, id, actor, workspace)),
+      }));
     result.last_mutation_id = result.more ? null : this.clientState(clientId).last_mutation_id;
     return result;
   }
@@ -1237,7 +1270,7 @@ export class FakeServer {
         const idB = "id" in b ? b.id : b.user_id;
         return idA < idB ? -1 : idA > idB ? 1 : 0;
       }))
-        lines.push({ entity, record });
+        lines.push({ entity, record: this.wire(entity, record) });
     const count = lines.length - 1;
     if (truncate === undefined) lines.push({ end: true, records: count });
     else lines.splice(Math.max(0, truncate) + 1);
@@ -1266,7 +1299,8 @@ export class FakeServer {
           key === "issue_id"
             ? "issue_id" in record && record.issue_id === id
             : "entity_id" in record && record.entity_id === id,
-        ),
+        )
+        .map((record) => this.wire(entity, record) ?? record),
     };
   }
 }

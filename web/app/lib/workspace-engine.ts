@@ -27,6 +27,14 @@ export function browserTabDependencies(browser: {
   };
 }
 
+let persistenceRequested = false;
+/** Asks once per page load. The browser may prompt, and the engine never waits for its answer. */
+function requestPersistence(): Promise<boolean> | undefined {
+  if (persistenceRequested) return undefined;
+  persistenceRequested = true;
+  return navigator.storage?.persist?.();
+}
+
 const signals: EngineSignals = {
   getOnline: () => navigator.onLine,
   subscribe(listener) {
@@ -61,8 +69,9 @@ export function waitUntilReady(engine: SyncEngine, signal?: AbortSignal): Promis
     const check = () => {
       const status = engine.status.get();
       if (status.phase === "ready") finish();
+      // The engine retries a protocol error by itself, so only a blocked one ends the wait.
       else if (
-        status.lastError instanceof ProtocolError ||
+        (status.blocked && status.lastError instanceof ProtocolError) ||
         status.lastError instanceof OutdatedError
       )
         finish(status.lastError);
@@ -130,8 +139,10 @@ export function openWorkspaceEngine(
       schema: SCHEMA,
       randomId: () => crypto.randomUUID(),
       signals,
+      requestPersistence,
       clock: {
         now: () => new Date().toISOString(),
+        monotonic: () => performance.now(),
         schedule: (ms, run) => {
           const timer = setTimeout(run, ms);
           return () => clearTimeout(timer);

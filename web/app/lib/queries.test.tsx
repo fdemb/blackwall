@@ -72,7 +72,7 @@ function fixture(wrap: (server: Server) => typeof server.fetch = (server) => ser
     actor: owner.id,
     schema: SCHEMA,
     randomId: () => crypto.randomUUID(),
-    clock: { now: server.now, schedule: server.schedule },
+    clock: { now: server.now, monotonic: server.monotonic, schedule: server.schedule },
     signals: { getOnline: () => true, subscribe: () => () => {} },
   });
   engines.push(engine);
@@ -143,7 +143,7 @@ describe("scope hooks", () => {
   });
 
   it("reports a scope blocked by a protocol error through the hook's error field", async () => {
-    const { engine } = fixture(
+    const { engine, server } = fixture(
       (server) => (input, init) =>
         String(input).includes("/scope?")
           ? Promise.resolve(Response.json({ records: "not a list" }))
@@ -151,6 +151,12 @@ describe("scope hooks", () => {
     );
     engine.useScope(COMMENTS);
     await engine.start();
+    // The engine retries a bad scope answer with backoff before it blocks the scope.
+    for (let step = 0; step < 300 && engine.scopeStatus(COMMENTS) !== "error"; step += 1) {
+      server.advance(1000);
+      for (let tick = 0; tick < 20; tick += 1)
+        await new Promise<void>((resolve) => setImmediate(resolve));
+    }
     await until(() => engine.scopeStatus(COMMENTS) === "error");
     const message = engine.scopeError(COMMENTS)?.message;
     expect(message).toBeTruthy();

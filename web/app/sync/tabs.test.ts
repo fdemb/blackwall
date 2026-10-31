@@ -2,12 +2,13 @@ import "fake-indexeddb/auto";
 import { IDBFactory } from "fake-indexeddb";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { setCsrf } from "../lib/api";
-import { createEngine, OutdatedError, SCHEMA } from "./engine";
+import { createEngine, OutdatedError, PROTOCOL_BLOCK_AFTER, SCHEMA } from "./engine";
 import type { EngineEvent, EngineSignal, SyncEngine, TabMessage } from "./engine";
 import { IDB_VERSION, IndexedDBReplicaStorage } from "./persistence/idb";
 import { recordKey } from "./persistence/shared";
 import { BOOTSTRAP_ENTITIES, normalize } from "./records";
 import { createFakeServer } from "./testing/fake-server";
+import { limited } from "./testing/limited-storage";
 import type { FakeServerOptions } from "./testing/fake-server";
 import { createTabHub } from "./testing/tabs";
 import type { TabHub } from "./testing/tabs";
@@ -89,6 +90,7 @@ function fixture(count = 2, options: FakeServerOptions = {}) {
   const database = new IDBFactory();
   let sequence = 100;
   const tabs: Tab[] = [];
+  const disk = limited(new IndexedDBReplicaStorage({ indexedDB: database }));
   const addTab = (): Tab => {
     const fetch = vi.fn(server.fetch);
     const transport = createTransport({
@@ -99,12 +101,12 @@ function fixture(count = 2, options: FakeServerOptions = {}) {
     const signals = new Signals();
     const events: EngineEvent[] = [];
     const engine = createEngine({
-      storage: new IndexedDBReplicaStorage({ indexedDB: database }),
+      storage: disk.storage,
       transport,
       actor: owner.id,
       workspaceId: workspace.id,
       schema: SCHEMA,
-      clock: { now: server.now, schedule: server.schedule },
+      clock: { now: server.now, monotonic: server.monotonic, schedule: server.schedule },
       randomId: () => id(sequence++),
       signals,
       locks: hub.locks,
@@ -155,6 +157,7 @@ function fixture(count = 2, options: FakeServerOptions = {}) {
     peer,
     workspaceId: workspace.id,
     database,
+    disk,
     hub,
     tabs,
     addTab,
@@ -383,7 +386,11 @@ describe("tab coordination", () => {
         : f.server.fetch(input, init),
     );
     await follower.engine.mutate("update_issue", { id: ISSUE, patch: { title: "Stuck" } });
-    await until(() => leader.engine.status.get().lastError instanceof ProtocolError);
+    for (let step = 0; step < 300 && !leader.engine.status.get().blocked; step += 1) {
+      await f.advance(1000);
+      for (let tick = 0; tick < 20; tick += 1) await flush();
+    }
+    expect(leader.engine.status.get().lastError).toBeInstanceOf(ProtocolError);
     const online = follower.engine.runOnline("set_role", { user_id: f.peer.id, role: "admin" });
     await expect(online).rejects.toThrow("Reload");
     expect(follower.fetch.mock.calls.some(([url]) => String(url).includes("/commands?"))).toBe(
@@ -558,9 +565,13 @@ describe("tab coordination", () => {
     await f.start();
     const { leader, follower } = f.roles();
     const scope = { entity: "comments", issueId: ISSUE } as const;
-    f.server.inject({ kind: "scope_error" });
+    for (let n = 0; n < PROTOCOL_BLOCK_AFTER; n += 1) f.server.inject({ kind: "scope_error" });
     const release = follower.engine.useScope(scope);
-    await until(() => follower.engine.scopeStatus(scope) === "error");
+    for (let step = 0; step < 300 && follower.engine.scopeStatus(scope) !== "error"; step += 1) {
+      await f.advance(1000);
+      for (let tick = 0; tick < 20; tick += 1) await flush();
+    }
+    expect(follower.engine.scopeStatus(scope)).toBe("error");
     expect(follower.engine.scopeError(scope)?.message).toBe("scope rejected");
     expect(leader.engine.scopeStatus(scope)).toBe("error");
     release();
@@ -700,5 +711,63 @@ describe("tab coordination", () => {
     await until(() => follower.engine.store.get("issues", ISSUE)?.title === "After reset");
     await f.settleAll();
     for (const tab of f.tabs) f.converged(tab);
+  });
+
+  it("keeps a follower on what the disk holds while full, then catches it up with a reset", async () => {
+    const f = fixture(1);
+    f.disk.full = true;
+    const [leader] = f.tabs;
+    await leader.engine.start();
+    await until(() => leader.engine.status.get().phase === "ready");
+    expect(leader.engine.status.get().storage).toBe("full");
+    const follower = f.addTab();
+    await follower.engine.start();
+    await until(() => follower.engine.status.get().storage === "full");
+    expect(follower.engine.store.get("issues", ISSUE)).toBeUndefined();
+
+    const pulled = f.hub.sent("pulled");
+    f.server.run(f.peer, { type: "update_issue", id: ISSUE, patch: { title: "Peer edit" } });
+    await f.advance(1000);
+    await until(() => leader.engine.store.get("issues", ISSUE)?.title === "Peer edit");
+    expect(f.hub.sent("pulled")).toBe(pulled);
+    expect(follower.engine.store.get("issues", ISSUE)).toBeUndefined();
+
+    f.disk.full = false;
+    await f.advance(5 * 60_000);
+    await until(() => follower.engine.store.get("issues", ISSUE)?.title === "Peer edit");
+    expect(follower.engine.status.get().storage).toBe("ok");
+    for (const tab of f.tabs) f.converged(tab);
+  });
+
+  it("converges after a leader handover while the disk is full", async () => {
+    const f = fixture(2);
+    await f.start();
+    const { leader, follower } = f.roles();
+    await until(() => follower.engine.store.get("issues", ISSUE)?.title === "Original");
+    f.disk.full = true;
+    f.server.run(f.peer, { type: "update_issue", id: ISSUE, patch: { title: "While full" } });
+    await f.advance(1000);
+    await until(() => leader.engine.store.get("issues", ISSUE)?.title === "While full");
+    expect(leader.engine.status.get().storage).toBe("full");
+    expect(follower.engine.store.get("issues", ISSUE)?.title).toBe("Original");
+
+    await leader.engine.close();
+    await until(() => follower.engine.status.get().role === "leader");
+    await until(() => follower.engine.store.get("issues", ISSUE)?.title === "While full");
+    f.converged(follower);
+
+    f.disk.full = false;
+    await f.advance(5 * 60_000);
+    await until(() => follower.engine.status.get().storage === "ok");
+    const replica = await new IndexedDBReplicaStorage({ indexedDB: f.database }).open({
+      userId: f.owner.id,
+      workspaceId: f.workspaceId,
+      schema: SCHEMA,
+    });
+    const saved = await replica.load();
+    replica.close();
+    expect(
+      saved.records.issues?.find((record) => Reflect.get(record, "id") === ISSUE),
+    ).toMatchObject({ title: "While full" });
   });
 });

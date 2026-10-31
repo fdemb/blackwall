@@ -73,8 +73,15 @@ export function useRecord<E extends Entity>(entity: E, id: string) {
   return useSyncExternalStore(subscribe, snapshot, snapshot);
 }
 
-/** Holds a scope while mounted and reports whether its first load has finished. */
-export function useScope(scope: Scope): { loading: boolean; error: Error | null } {
+/**
+ * Holds a scope while mounted and reports whether its first load has finished. `offline` means it
+ * hasn't loaded and can't while the browser is offline.
+ */
+export function useScope(scope: Scope): {
+  loading: boolean;
+  offline: boolean;
+  error: Error | null;
+} {
   const engine = useEngine();
   const entity = scope.entity;
   const id = scope.entity === "comments" ? scope.issueId : scope.entityId;
@@ -88,6 +95,7 @@ export function useScope(scope: Scope): { loading: boolean; error: Error | null 
   const status = useSyncExternalStore(subscribe, snapshot, snapshot);
   return {
     loading: status === "loading",
+    offline: status === "offline",
     error: status === "error" ? engine.scopeError(scope) : null,
   };
 }

@@ -1,9 +1,13 @@
 import type { ReplicaStorage } from "./persistence/types";
+import type { Entity } from "./records";
 import type { TabMessage } from "./tabs";
 import type { Transport } from "./transport";
 
 export interface EngineClock {
+  /** Wall-clock time, for timestamps that leave the device. It can jump, so never wait on it. */
   now(): string;
+  /** Milliseconds from an arbitrary origin that never goes back. Every retry time uses it. */
+  monotonic(): number;
   /** Returns a cancellation function, like FakeClock.schedule. */
   schedule(milliseconds: number, run: () => void): () => void;
 }
@@ -38,6 +42,8 @@ export interface EngineDependencies {
   randomId(): string;
   schema: number;
   signals: EngineSignals;
+  /** Asks the browser to keep this origin's storage. Called when a replica is first created. */
+  requestPersistence?: () => unknown;
   /** Elects one leader per replica. Without it, the engine is always the leader. */
   locks?: TabLocks;
   /** Coordinates engines sharing one replica. Named by the owner and workspace. */
@@ -47,8 +53,21 @@ export interface EngineDependencies {
 /** Only the leader does network work. Followers keep their store current from messages. */
 export type EngineRole = "leader" | "follower";
 
-/** A comment or activity scope: loaded into the replica, still loading, or blocked by a protocol error. */
-export type ScopeStatus = "loading" | "loaded" | "error";
+/**
+ * A comment or activity scope: loaded into the replica, still loading, blocked by a protocol error,
+ * or not loaded because the browser is offline.
+ */
+export type ScopeStatus = "loading" | "loaded" | "error" | "offline";
+
+/** `full`: the browser refused a write for lack of space, so the replica on disk is behind memory. */
+export type StorageState = "ok" | "full";
+
+/** A server record this client couldn't parse and left out, so the rest of its page still loads. */
+export interface SkippedRecord {
+  entity: Entity;
+  id: string;
+  message: string;
+}
 
 export interface Rejection {
   id: number;
@@ -73,6 +92,13 @@ export interface EngineStatus {
   rejected: readonly Rejection[];
   /** Rejected commands kept in the replica until the user resolves them, across reloads. */
   unresolved: readonly Rejection[];
+  /** Records left out for failing to parse, until a pull brings a valid version or a deletion. */
+  skipped: readonly SkippedRecord[];
+  /**
+   * `full` while the browser refuses writes. The view in memory keeps syncing, edits are refused
+   * with a message, and the engine writes a snapshot again every few minutes and on focus.
+   */
+  storage: StorageState;
 }
 
 export type EngineEvent =

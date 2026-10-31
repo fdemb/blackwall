@@ -9,6 +9,8 @@ import {
   replicaIdentity,
   replicaName,
   scopeKey,
+  storageFailure,
+  withSkipped,
 } from "./shared";
 import type {
   LoadedReplica,
@@ -102,8 +104,18 @@ class IndexedDBReplica implements Replica {
         }
       };
       tx.oncomplete = () => complete();
-      tx.onerror = () => reject(failure ?? tx.error ?? new Error("IndexedDB transaction failed"));
-      tx.onabort = () => reject(failure ?? tx.error ?? new Error("IndexedDB transaction aborted"));
+      // A write that runs out of space fails its request, or aborts the transaction at commit.
+      tx.onerror = (event) =>
+        reject(
+          storageFailure(
+            failure ??
+              (event.target as IDBRequest | null)?.error ??
+              tx.error ??
+              new Error("IndexedDB transaction failed"),
+          ),
+        );
+      tx.onabort = () =>
+        reject(storageFailure(failure ?? tx.error ?? new Error("IndexedDB transaction aborted")));
       guard(() =>
         run(
           tx,
@@ -210,12 +222,16 @@ class IndexedDBReplica implements Replica {
       read<ReplicaMeta>(tx.objectStore("meta").get(META_KEY), guard, (meta) => {
         const lastMutationId = Math.max(meta.lastMutationId, input.lastMutationId);
         tx.objectStore("meta").put(
-          {
-            ...meta,
-            cursor: input.cursor,
-            lastMutationId,
-            serverSchema: input.serverSchema,
-          },
+          withSkipped(
+            {
+              ...meta,
+              cursor: input.cursor,
+              lastMutationId,
+              serverSchema: input.serverSchema,
+            },
+            input.skipped ?? [],
+            input.resync === true,
+          ),
           META_KEY,
         );
         dropConfirmed(tx, lastMutationId, guard);
@@ -262,12 +278,11 @@ class IndexedDBReplica implements Replica {
           meta.lastMutationId,
           input.acknowledgedUpTo ?? meta.lastMutationId,
         );
+        const next = { ...meta, cursor: input.cursor, lastMutationId };
         tx.objectStore("meta").put(
-          {
-            ...meta,
-            cursor: input.cursor,
-            lastMutationId,
-          },
+          input.skipped === undefined
+            ? next
+            : withSkipped(next, input.skipped, input.resync === true),
           META_KEY,
         );
         if (input.acknowledgedUpTo !== null) dropConfirmed(tx, lastMutationId, guard);
@@ -403,7 +418,7 @@ export class IndexedDBReplicaStorage implements ReplicaStorage {
         failed = true;
         reject(new Error(`replica open blocked: ${replicaName(input)}`));
       };
-      request.onerror = () => reject(request.error);
+      request.onerror = () => reject(storageFailure(request.error));
       request.onupgradeneeded = () => {
         if (failed) {
           request.transaction?.abort();
