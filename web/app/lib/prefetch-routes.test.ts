@@ -58,23 +58,38 @@ describe("routeLinks", () => {
 describe("prefetchRoutesWhenIdle", () => {
   afterEach(() => vi.unstubAllGlobals());
 
+  /** A `<link>` whose attributes read back the properties the helper sets. */
+  class Link {
+    getAttribute(name: string) {
+      return Reflect.get(this, name) ?? null;
+    }
+  }
+
   function browser(connection?: { saveData?: boolean; effectiveType?: string }) {
-    const idle: (() => void)[] = [];
-    const head: { rel: string; href: string }[] = [];
+    const idle = new Map<number, () => void>();
+    let handles = 0;
+    const head: Link[] = [];
     vi.stubGlobal("window", {
       __reactRouterManifest: { routes: { "routes/issue": { module: "/assets/issue.js" } } },
-      requestIdleCallback: (run: () => void) => idle.push(run),
+      requestIdleCallback: (run: () => void) => {
+        idle.set(++handles, run);
+        return handles;
+      },
     });
     vi.stubGlobal("requestIdleCallback", window.requestIdleCallback);
+    vi.stubGlobal("cancelIdleCallback", (handle: number) => idle.delete(handle));
     vi.stubGlobal("navigator", { connection });
     vi.stubGlobal("document", {
-      createElement: () => ({}),
-      head: { append: (link: { rel: string; href: string }) => head.push(link) },
+      createElement: () => new Link(),
+      querySelectorAll: () => head,
+      head: { append: (link: Link) => head.push(link) },
     });
     return {
       head,
       idle: () => {
-        for (const run of idle.splice(0)) run();
+        const runs = [...idle.values()];
+        idle.clear();
+        for (const run of runs) run();
       },
     };
   }
@@ -87,6 +102,26 @@ describe("prefetchRoutesWhenIdle", () => {
     page.idle();
 
     expect(page.head).toEqual([{ rel: "modulepreload", href: "/assets/issue.js" }]);
+  });
+
+  it("adds each link once when the workspace layout mounts again", () => {
+    const page = browser({ effectiveType: "4g" });
+    prefetchRoutesWhenIdle();
+    page.idle();
+    prefetchRoutesWhenIdle();
+    page.idle();
+
+    expect(page.head).toEqual([{ rel: "modulepreload", href: "/assets/issue.js" }]);
+  });
+
+  it("adds nothing when the layout unmounts before the browser goes idle", () => {
+    const page = browser({ effectiveType: "4g" });
+    const cleanup = prefetchRoutesWhenIdle();
+
+    cleanup();
+    page.idle();
+
+    expect(page.head).toEqual([]);
   });
 
   it.each([

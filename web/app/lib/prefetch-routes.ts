@@ -74,7 +74,12 @@ export function prefetchRoutesWhenIdle() {
   const manifest = window.__reactRouterManifest;
   if (!manifest || constrained(navigator.connection)) return () => {};
   const prefetch = () => {
+    // The layout remounts when someone leaves a workspace and comes back.
+    const present = new Set(
+      [...document.querySelectorAll("link")].map((link) => link.getAttribute("href")),
+    );
     for (const { rel, href, as } of routeLinks(manifest.routes)) {
+      if (present.has(href)) continue;
       const link = document.createElement("link");
       link.rel = rel;
       link.href = href;

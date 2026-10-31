@@ -14,9 +14,11 @@ function worker(network: Record<string, () => Response>) {
   const store = new Map<string, Response>();
   const key = (request: { url: string } | string) =>
     new URL(typeof request === "string" ? request : request.url, ORIGIN).pathname;
+  const fetched: string[] = [];
   let online = true;
   const fetch = async (request: { url: string } | string) => {
     if (!online) throw new TypeError("Failed to fetch");
+    fetched.push(key(request));
     const route = network[key(request)];
     return route ? route() : new Response("missing", { status: 404 });
   };
@@ -61,6 +63,7 @@ function worker(network: Record<string, () => Response>) {
   }
   return {
     store,
+    fetched,
     offline: () => {
       online = false;
     },
@@ -86,14 +89,35 @@ describe("service worker", () => {
       "/assets/route-1.js": () => new Response("route"),
     });
     await sw.install();
-    expect([...sw.store.keys()]).toEqual(
-      expect.arrayContaining(["/", "/assets/entry-1.js", "/assets/route-1.js"]),
-    );
+    expect([...sw.store.keys()]).toEqual(expect.arrayContaining(["/", "/assets/entry-1.js"]));
+    await sw.get("/assets/route-1.js");
     failing = true;
     expect(await (await sw.navigate("/issues"))?.text()).toBe(SHELL);
     sw.offline();
     expect(await (await sw.navigate("/issues"))?.text()).toBe(SHELL);
     expect(await (await sw.get("/assets/route-1.js"))?.text()).toBe("route");
+  });
+
+  it("installs only the shell, leaving route modules to be cached as the page loads them", async () => {
+    let shell = SHELL;
+    const sw = worker({
+      "/": () => html(shell)(),
+      "/assets/entry-1.js": () => new Response("entry"),
+      "/assets/manifest-1.js": () => new Response(`import("/assets/route-1.js")`),
+      "/assets/route-1.js": () => new Response("route"),
+      "/assets/entry-2.js": () => new Response("new"),
+    });
+    await sw.install();
+    expect(sw.fetched).not.toContain("/assets/route-1.js");
+    expect(sw.store.has("/assets/route-1.js")).toBe(false);
+
+    await sw.get("/assets/route-1.js");
+    await sw.navigate("/");
+    expect(sw.store.has("/assets/route-1.js")).toBe(true);
+
+    shell = `<script type="module" src="/assets/entry-2.js"></script>`;
+    await sw.navigate("/");
+    expect(sw.store.has("/assets/route-1.js")).toBe(false);
   });
 
   it("leaves API requests to the network and drops assets from older builds", async () => {
