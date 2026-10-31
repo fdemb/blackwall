@@ -23,6 +23,7 @@ import { IssueList } from "../components/app/issue-list";
 import { OfflineBanner } from "../components/app/offline-banner";
 import { SaveStatus } from "../components/app/save-status";
 import { CoreProperties } from "../components/app/issue-properties";
+import { Timeline } from "../components/app/issue-timeline";
 import { QueryStatus } from "../components/app/query-status";
 import { ToastProvider, useToast } from "../components/ui/toast";
 import { createEngine, SCHEMA, type SyncEngine } from "../sync/engine";
@@ -35,6 +36,7 @@ import { createTransport } from "../sync/transport";
 import { useRecord, useSyncStatus, useView } from "../sync/react";
 import { I18nProvider } from "./i18n";
 import {
+  countedIssue,
   useActivity,
   useComments,
   useIssueDetail,
@@ -65,12 +67,14 @@ async function fixture({
   storage = new MemoryReplicaStorage(),
   teamId = "team-1",
   role = "owner",
+  scopes = ["comments", "activity"],
 }: {
   online?: boolean;
   otherMember?: boolean;
   storage?: ReplicaStorage;
   teamId?: string;
   role?: Role;
+  scopes?: readonly ("comments" | "activity")[];
 } = {}) {
   const replica = await storage.open({
     sessionId: "session",
@@ -152,28 +156,30 @@ async function fixture({
       ],
     },
   });
-  await replica.writeScope({
-    scope: { entity: "comments", issueId: "issue" },
-    records: [
-      {
-        id: "comment",
-        version: 1,
-        issue_id: "issue",
-        author: profile.id,
-        body: "Replica comment",
-        mentions: [],
-        attachments: [],
-        created_at: NOW,
-        edited_at: null,
-      },
-    ],
-  });
-  await replica.writeScope({
-    scope: { entity: "activity", entityId: "issue" },
-    records: [
-      { id: "activity", actor: profile.id, action: "created", entity_id: "issue", at: NOW },
-    ],
-  });
+  if (scopes.includes("comments"))
+    await replica.writeScope({
+      scope: { entity: "comments", issueId: "issue" },
+      records: [
+        {
+          id: "comment",
+          version: 1,
+          issue_id: "issue",
+          author: profile.id,
+          body: "Replica comment",
+          mentions: [],
+          attachments: [],
+          created_at: NOW,
+          edited_at: null,
+        },
+      ],
+    });
+  if (scopes.includes("activity"))
+    await replica.writeScope({
+      scope: { entity: "activity", entityId: "issue" },
+      records: [
+        { id: "activity", actor: profile.id, action: "created", entity_id: "issue", at: NOW },
+      ],
+    });
   replica.close();
   const engine = createEngine({
     storage,
@@ -702,4 +708,34 @@ describe("outdated workspace", () => {
       }
     },
   );
+});
+
+describe("issue timeline", () => {
+  const timeline = (engine: SyncEngine) =>
+    render(
+      engine,
+      <MemoryRouter>
+        <Timeline issue={countedIssue(engine.store, "issue")!} />
+      </MemoryRouter>,
+    );
+
+  it("shows cached comments on the first render without a loading state", async () => {
+    const html = timeline(await fixture({ role: "viewer" }));
+    expect(html).toContain("Replica comment");
+    expect(html).not.toContain("aria-busy");
+    expect(html).not.toContain('role="status"');
+  });
+
+  it("holds the list's space with a skeleton that stays hidden through a short load", async () => {
+    const html = timeline(await fixture({ role: "viewer", scopes: [] }));
+    expect(html).toContain('aria-busy="true" class="animate-in fade-in fill-mode-both delay-300');
+    expect(html).not.toContain('role="status"');
+  });
+
+  it("waits for activity before showing loaded comments, so the list never reorders", async () => {
+    const html = timeline(await fixture({ role: "viewer", scopes: ["comments"] }));
+    expect(html).not.toContain("Replica comment");
+    expect(html).toContain("aria-busy");
+    expect(html).not.toContain('role="status"');
+  });
 });

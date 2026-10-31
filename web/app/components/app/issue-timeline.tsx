@@ -79,11 +79,16 @@ export function Timeline({ issue }: { issue: Issue }) {
       .map((a): TimelineItem => ({ kind: "event", at: a.at, event: a })),
   ].sort((a, b) => +new Date(a.at) - +new Date(b.at));
   const hidden = Math.max(0, items.length - limit);
-  const loadingTimeline = (comments.loading || activity.loading) && items.length === 0;
+  const loading = comments.loading || activity.loading;
+  // Comments and events interleave by time, so the list waits for both instead of reordering when
+  // the second lands. Once shown it stays, even while a bootstrap reloads the scopes.
+  const [ready, setReady] = useState(!loading);
+  if (!loading && !ready) setReady(true);
   return (
     <Section title={t("activity.title")}>
-      {loadingTimeline && (
-        <div aria-busy="true" className="space-y-3">
+      {!ready && (
+        // Holds the list's space from the first frame and stays invisible through a short load.
+        <div aria-busy="true" className="animate-in fade-in fill-mode-both delay-300 space-y-3">
           {[0, 1].map((i) => (
             <div key={i} className="flex items-center gap-3">
               <span className="size-7 shrink-0 animate-pulse rounded-full bg-muted" />
@@ -92,7 +97,7 @@ export function Timeline({ issue }: { issue: Issue }) {
           ))}
         </div>
       )}
-      {items.length > 0 && (
+      {ready && items.length > 0 && (
         // The line sits behind the list. Event dots ride on it and comment cards cover it.
         <ol className="relative space-y-2 before:absolute before:inset-y-3 before:left-3.5 before:w-px before:-translate-x-1/2 before:bg-border">
           {hidden > 0 && (
@@ -121,9 +126,9 @@ export function Timeline({ issue }: { issue: Issue }) {
             )}
         </ol>
       )}
-      <QueryStatus query={comments} />
-      <QueryStatus query={activity} />
-      <Composer issue={issue} hasItems={items.length > 0} />
+      {comments.error && <QueryStatus query={comments} />}
+      {activity.error && <QueryStatus query={activity} />}
+      <Composer issue={issue} hasItems={!ready || items.length > 0} />
     </Section>
   );
 }
