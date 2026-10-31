@@ -2357,7 +2357,12 @@ describe("pending edits are never frozen or lost", () => {
 
   describe("a single too-large mutation waits for a final acknowledgement", () => {
     async function oversized(options: { processed: boolean; reset: boolean; held?: boolean }) {
-      const f = fixture(new MemoryReplicaStorage(), { maxPushBytes: 1500, pageSize: 1 });
+      // A label's transaction changes two pairs, the label and its activity row. Page size 2
+      // holds one transaction per page, while 1 would reset every pull before it paged.
+      const f = fixture(new MemoryReplicaStorage(), {
+        maxPushBytes: 1500,
+        pageSize: options.held ? 2 : 1,
+      });
       await f.ready();
       f.engine.stop();
       const receipt = await f.engine.mutate("update_issue", {
