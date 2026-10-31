@@ -10,11 +10,12 @@ import { DEFAULT_STAGES } from "./mutators/planning";
 import {
   acceptsChange,
   recordKey,
+  BOOTSTRAP_CHUNK,
   recordScope,
   scopeKey,
   StorageFullError,
 } from "./persistence/shared";
-import type { Replica, ReplicaCloseReason, Scope } from "./persistence/types";
+import type { BootstrapStage, Replica, ReplicaCloseReason, Scope } from "./persistence/types";
 import { BOOTSTRAP_ENTITIES, BOOTSTRAP_REPLACED_ENTITIES } from "./records";
 import type { Change, Entity } from "./records";
 import { immutableCopy, ingest, SyncStore } from "./store";
@@ -108,6 +109,8 @@ const STORAGE_FULL_EDIT =
 const PUSH_MUTATIONS = 100;
 const PUSH_BYTES = 4 * 1024 * 1024;
 const encoder = new TextEncoder();
+/** Records between bootstrap progress reports, so the status doesn't change on every line. */
+const PROGRESS_STEP = 500;
 type RequestKind = "bootstrap" | "pull" | "scope" | "push" | "events";
 /** The server keeps a client's 1,000 newest rejections, so older ones read back as duplicates. */
 const REJECTIONS_KEPT = 1000;
@@ -358,6 +361,7 @@ export class SyncEngine {
       unresolved: Object.freeze([]),
       skipped: Object.freeze([]),
       storage: "ok",
+      progress: null,
     });
     this.status = {
       get: () => this.snapshot,
@@ -1656,22 +1660,43 @@ export class SyncEngine {
   }
 
   private async bootstrap(controller: AbortController): Promise<void> {
-    this.update({ phase: "bootstrapping" });
+    try {
+      await this.downloadBootstrap(controller);
+    } finally {
+      this.update({ progress: null });
+    }
+  }
+
+  /**
+   * Streams the bootstrap into a staged base while it downloads, one chunk write in flight, so the
+   * trailer only has to swap it in. A bootstrap without a trailer is never committed, and a reload
+   * before the commit finds the previous base. A full disk stops the staging and keeps the
+   * download in memory only.
+   */
+  private async downloadBootstrap(controller: AbortController): Promise<void> {
+    this.update({ phase: "bootstrapping", progress: 0 });
     this.check(controller);
     // Every record is parsed again below, so the ones still unparseable are reported again.
     const previous = new Map(this.skipped);
     this.setSkipped(new Map());
+    const staging = this.stageBootstrap(controller);
     const response = await cancellable(
       (async () => {
         const response = await this.deps.transport.bootstrap(this.deps.workspaceId, this.clientId, {
           signal: controller.signal,
         });
         const records: Partial<Record<Entity, object[]>> = {};
+        let received = 0;
         for await (const { entity, record } of response.records) {
+          received += 1;
+          if (received % PROGRESS_STEP === 0) this.update({ progress: received });
           const prepared = this.prepareRecord(entity, record);
-          if (prepared !== null) (records[entity] ??= []).push(prepared);
+          if (prepared === null) continue;
+          (records[entity] ??= []).push(prepared);
+          await staging.add(entity, prepared);
         }
-        return { header: response.header, records };
+        this.update({ progress: received });
+        return { header: response.header, records, stage: await staging.finish() };
       })(),
       controller.signal,
     )
@@ -1685,20 +1710,22 @@ export class SyncEngine {
       });
     await this.commits.run(async () => {
       this.check(controller);
+      const { stage } = response;
       // A full disk keeps the downloaded workspace in memory instead of downloading it again.
-      const persisted = await this.persist(
-        () =>
-          this.requireReplica().writeBootstrap({
-            cursor: response.header.cursor,
-            lastMutationId: response.header.last_mutation_id,
-            serverSchema: response.header.schema,
-            records: response.records,
-            entities: BOOTSTRAP_ENTITIES,
-            skipped: [...this.skipped.values()],
-            resync: false,
-          }),
-        "snapshot",
-      );
+      const persisted =
+        stage !== null &&
+        (await this.persist(
+          () =>
+            stage.commit({
+              cursor: response.header.cursor,
+              lastMutationId: response.header.last_mutation_id,
+              serverSchema: response.header.schema,
+              entities: BOOTSTRAP_ENTITIES,
+              skipped: [...this.skipped.values()],
+              resync: false,
+            }),
+          "snapshot",
+        ));
       if (persisted) await this.verified();
       this.cursor = response.header.cursor;
       this.serverSchema = response.header.schema;
@@ -1716,6 +1743,62 @@ export class SyncEngine {
     this.update({ phase: "ready" });
     for (const { scope } of this.heldScopes.values()) this.requestScope(scope);
     this.requestPush();
+  }
+
+  /**
+   * Writes bootstrap records into a staged base in chunks through the commit queue. `add` waits
+   * only while an earlier chunk is still being written. `finish` returns the stage, or null once
+   * the disk refused a write, and rethrows any other failure.
+   */
+  private stageBootstrap(controller: AbortController) {
+    let stage: BootstrapStage | null = null;
+    let full = false;
+    let failure: unknown = null;
+    let chunk: Partial<Record<Entity, object[]>> = {};
+    let size = 0;
+    let writing: Promise<void> = Promise.resolve();
+    const run = (work: () => Promise<void>) => {
+      writing = writing
+        .then(() =>
+          this.commits.run(async () => {
+            this.check(controller);
+            if (!full) await work();
+          }),
+        )
+        .catch((error: unknown) => {
+          if (!(error instanceof StorageFullError)) failure ??= error;
+          else {
+            full = true;
+            this.setStorage("full");
+          }
+        });
+    };
+    const flush = async () => {
+      await writing;
+      if (failure !== null) throw failure;
+      const records = chunk;
+      chunk = {};
+      size = 0;
+      run(async () => {
+        await stage?.write(records);
+      });
+    };
+    run(async () => {
+      stage = await this.requireReplica().stageBootstrap();
+    });
+    return {
+      add: async (entity: Entity, record: object) => {
+        (chunk[entity] ??= []).push(record);
+        size += 1;
+        if (size >= BOOTSTRAP_CHUNK) await flush();
+      },
+      finish: async (): Promise<BootstrapStage | null> => {
+        if (size > 0) await flush();
+        await writing;
+        if (failure !== null) throw failure;
+        return full ? null : stage;
+      },
+    };
   }
 
   /**

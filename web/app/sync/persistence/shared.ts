@@ -1,6 +1,6 @@
 import type { Entity } from "../records";
 import type { SkippedRecord } from "../engine-types";
-import type { ReplicaIdentity, ReplicaMeta, Scope } from "./types";
+import type { BootstrapInput, Replica, ReplicaIdentity, ReplicaMeta, Scope } from "./types";
 
 /** The browser refused a database write for lack of space. Nothing of that write was kept. */
 export class StorageFullError extends Error {
@@ -93,4 +93,25 @@ export function acceptsChange(
   if (entity !== "comments" && entity !== "activity") return true;
   const scope = record === undefined ? null : recordScope(entity, record);
   return scope !== null && scopes.has(scopeKey(scope));
+}
+
+/** Records per staged bootstrap write, so no one transaction holds the database for long. */
+export const BOOTSTRAP_CHUNK = 2000;
+
+/** Writes a whole bootstrap through a stage, in chunks. */
+export async function writeStaged(replica: Replica, input: BootstrapInput): Promise<void> {
+  const stage = await replica.stageBootstrap();
+  let chunk: Partial<Record<Entity, object[]>> = {};
+  let size = 0;
+  for (const entity of input.entities)
+    for (const record of input.records[entity] ?? []) {
+      (chunk[entity] ??= []).push(record);
+      size += 1;
+      if (size < BOOTSTRAP_CHUNK) continue;
+      await stage.write(chunk);
+      chunk = {};
+      size = 0;
+    }
+  if (size > 0) await stage.write(chunk);
+  await stage.commit(input);
 }

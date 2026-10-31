@@ -3,7 +3,7 @@ import { forceCloseDatabase, IDBFactory } from "fake-indexeddb";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { getCsrf, setCsrf } from "../lib/api";
 import { createEngine, OutdatedError, PROTOCOL_BLOCK_AFTER, SCHEMA } from "./engine";
-import type { EngineEvent, EngineSignal, SyncEngine } from "./engine";
+import type { EngineEvent, EngineSignal, MutationReceipt, SyncEngine } from "./engine";
 import type { EngineDependencies } from "./engine-types";
 import { IDB_VERSION, IndexedDBReplicaStorage } from "./persistence/idb";
 import { MemoryReplicaStorage } from "./persistence/memory";
@@ -3599,9 +3599,9 @@ describe("local edits", () => {
     await f.ready();
     const held = gate();
     disk.appendGate = held.closed;
-    const edits = ["T", "Ty", "Typed"].map((title) =>
-      f.engine.mutate("update_issue", { id: ISSUE, patch: { title } }),
-    );
+    const edits: Promise<MutationReceipt>[] = [];
+    for (const title of ["T", "Ty", "Typed"])
+      edits.push(f.engine.mutate("update_issue", { id: ISSUE, patch: { title } }));
     await until(() => f.engine.store.get("issues", ISSUE)?.title === "Typed");
     expect(f.engine.status.get().pending).toBe(3);
     await f.engine.pull();
@@ -3662,5 +3662,48 @@ describe("local edits", () => {
     held.open();
     await edit;
     await until(() => follower.store.get("issues", ISSUE)?.title === "Leader typed");
+  });
+});
+
+describe("first load", () => {
+  it("streams a large bootstrap with rising progress and keeps no part of a cut one", async () => {
+    const f = fixture(new IndexedDBReplicaStorage({ indexedDB: new IDBFactory() }));
+    f.server.seed(
+      "labels",
+      Array.from({ length: 2600 }, (_, n) => ({
+        id: id(1000 + n),
+        version: 1,
+        name: `Label ${n}`,
+        color: "red",
+      })),
+    );
+    const progress: number[] = [];
+    f.engine.status.subscribe(() => {
+      const received = f.engine.status.get().progress;
+      if (received !== null) progress.push(received);
+    });
+    f.server.inject({ kind: "truncate_bootstrap", afterRecords: 2400 });
+    await f.engine.start();
+    await until(() => f.engine.status.get().lastError instanceof TruncatedError);
+    f.engine.stop();
+    expect(progress).toEqual([0, 500, 1000, 1500, 2000]);
+    expect(f.engine.status.get().progress).toBeNull();
+    const cut = await f.disk();
+    expect(cut.meta.cursor).toBeNull();
+    expect(cut.records.labels).toEqual([]);
+
+    progress.length = 0;
+    await f.engine.start();
+    await until(() => f.engine.status.get().phase === "ready");
+    expect(progress.length).toBeGreaterThan(5);
+    expect(progress).toEqual([...progress].sort((a, b) => a - b));
+    expect(progress.at(-1)).toBeGreaterThan(2600);
+    expect(f.engine.status.get().progress).toBeNull();
+    const saved = await f.disk();
+    expect(saved.meta.cursor).not.toBeNull();
+    const bulk = (records: readonly object[] = []) =>
+      records.filter((record) => String(Reflect.get(record, "name")).startsWith("Label "));
+    expect(bulk(saved.records.labels)).toHaveLength(2600);
+    expect(bulk(f.engine.store.all("labels"))).toHaveLength(2600);
   });
 });

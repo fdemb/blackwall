@@ -73,6 +73,32 @@ for (const backend of ["memory", "idb"]) {
       expect((await other.load()).meta.clientId).not.toBe(loaded.meta.clientId);
     });
 
+    it("a staged bootstrap shows nothing until it commits, from any handle", async () => {
+      await replica.writeBootstrap(bootstrap({ issues: [{ id: "old" }], teams: [{ id: "t" }] }));
+      const stage = await replica.stageBootstrap();
+      await stage.write({ issues: [{ id: "new" }] });
+      const reloaded = await (await open()).load();
+      expect(reloaded.records.issues).toEqual([{ id: "old" }]);
+      expect(reloaded.records.teams).toEqual([{ id: "t" }]);
+      expect(reloaded.meta.cursor).toBe("bootstrap");
+
+      const next = await replica.stageBootstrap();
+      await expect(stage.write({ issues: [{ id: "stale" }] })).rejects.toThrow(
+        "bootstrap stage was replaced",
+      );
+      await next.write({ issues: [{ id: "a" }] });
+      await next.write({ issues: [{ id: "b" }], teams: [{ id: "t2" }] });
+      await next.commit({ ...bootstrap(), cursor: "staged" });
+      const loaded = await (await open()).load();
+      expect(loaded.records.issues).toEqual([{ id: "a" }, { id: "b" }]);
+      expect(loaded.records.teams).toEqual([{ id: "t2" }]);
+      expect(loaded.meta.cursor).toBe("staged");
+      await expect(stage.commit({ ...bootstrap(), cursor: "late" })).rejects.toThrow(
+        "bootstrap stage was replaced",
+      );
+      expect((await replica.load()).meta.cursor).toBe("staged");
+    });
+
     it("reopens the same raw records, metadata, outbox and scopes", async () => {
       const issue = { id: "issue-1", created_at: "2026-10-08T14:00:00+02:00" };
       await replica.writeBootstrap(bootstrap({ issues: [issue] }));

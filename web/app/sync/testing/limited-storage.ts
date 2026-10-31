@@ -9,6 +9,7 @@ import type { ReplicaStorage } from "../persistence/types";
 export function limited(inner: ReplicaStorage = new MemoryReplicaStorage()) {
   const writes = new Set([
     "writeBootstrap",
+    "stageBootstrap",
     "applyPull",
     "writeScope",
     "appendMutation",

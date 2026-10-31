@@ -104,6 +104,8 @@ export interface EngineStatus {
    * with a message, and the engine writes a snapshot again every few minutes and on focus.
    */
   storage: StorageState;
+  /** Records the running bootstrap has received so far, or null when none runs. */
+  progress: number | null;
 }
 
 export type EngineEvent =

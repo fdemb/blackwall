@@ -41,6 +41,25 @@ export interface LoadedReplica {
   rejected: readonly Rejection[];
 }
 
+export interface BootstrapInput {
+  cursor: string;
+  lastMutationId: number;
+  serverSchema: number;
+  records: Partial<Record<Entity, readonly object[]>>;
+  entities: readonly Entity[];
+  skipped?: readonly SkippedRecord[];
+  resync?: boolean;
+}
+
+/**
+ * A replacement base written in steps. Nothing of it shows until `commit`, which swaps it in
+ * atomically. A reload, a newer stage, or a failed step leaves the previous base as it was.
+ */
+export interface BootstrapStage {
+  write(records: Partial<Record<Entity, readonly object[]>>): Promise<void>;
+  commit(input: Omit<BootstrapInput, "records">): Promise<void>;
+}
+
 /** Each write is one atomic transaction, including its metadata and outbox changes. */
 export interface Replica {
   load(): Promise<LoadedReplica>;
@@ -48,15 +67,10 @@ export interface Replica {
   loadOutbox(): Promise<readonly PendingMutation[]>;
   /** Discard base and scopes, adopt the open schema, and keep meta ids and the outbox. */
   resetBase(): Promise<void>;
-  writeBootstrap(input: {
-    cursor: string;
-    lastMutationId: number;
-    serverSchema: number;
-    records: Partial<Record<Entity, readonly object[]>>;
-    entities: readonly Entity[];
-    skipped?: readonly SkippedRecord[];
-    resync?: boolean;
-  }): Promise<void>;
+  /** A whole bootstrap at once, written through a stage. */
+  writeBootstrap(input: BootstrapInput): Promise<void>;
+  /** Starts a staged bootstrap. Starting another one abandons this one. */
+  stageBootstrap(): Promise<BootstrapStage>;
   applyPull(input: {
     changes: readonly Change[];
     cursor: string;

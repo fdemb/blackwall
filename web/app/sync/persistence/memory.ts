@@ -10,8 +10,10 @@ import {
   replicaName,
   scopeKey,
   withSkipped,
+  writeStaged,
 } from "./shared";
 import type {
+  BootstrapStage,
   LoadedReplica,
   Replica,
   ReplicaCloseReason,
@@ -48,6 +50,8 @@ function sortedOutbox(state: State): PendingMutation[] {
 interface Entry {
   state: State;
   handles: Set<MemoryReplica>;
+  /** The bootstrap being staged, outside `state` like IndexedDB's idle stores. */
+  stage: { token: string; records: Map<Entity, Map<string, object>> } | null;
 }
 
 class MemoryReplica implements Replica {
@@ -93,6 +97,7 @@ class MemoryReplica implements Replica {
   }
 
   async resetBase(): Promise<void> {
+    this.entry.stage = null;
     this.transaction((state) => {
       for (const table of state.records.values()) table.clear();
       state.scopes.clear();
@@ -102,24 +107,48 @@ class MemoryReplica implements Replica {
     });
   }
 
-  async writeBootstrap(input: Parameters<Replica["writeBootstrap"]>[0]): Promise<void> {
-    this.transaction((state) => {
-      for (const entity of input.entities) {
-        const table = new Map<string, object>();
-        for (const record of input.records[entity] ?? []) {
-          table.set(recordKey(entity, record), structuredClone(record));
+  writeBootstrap(input: Parameters<Replica["writeBootstrap"]>[0]): Promise<void> {
+    return writeStaged(this, input);
+  }
+
+  async stageBootstrap(): Promise<BootstrapStage> {
+    if (this.closed) throw new Error("replica is closed");
+    const stage = { token: crypto.randomUUID(), records: new Map<Entity, Map<string, object>>() };
+    this.entry.stage = stage;
+    const current = () => {
+      if (this.entry.stage !== stage) throw new Error("bootstrap stage was replaced");
+    };
+    return {
+      write: async (records) => {
+        if (this.closed) throw new Error("replica is closed");
+        current();
+        const writes: [Entity, string, object][] = [];
+        for (const [entity, list] of Object.entries(records) as [Entity, object[]][])
+          for (const record of list)
+            writes.push([entity, recordKey(entity, record), structuredClone(record)]);
+        for (const [entity, key, record] of writes) {
+          const table = stage.records.get(entity) ?? new Map<string, object>();
+          stage.records.set(entity, table);
+          table.set(key, record);
         }
-        state.records.set(entity, table);
-      }
-      state.records.get("comments")?.clear();
-      state.records.get("activity")?.clear();
-      state.scopes.clear();
-      state.meta.cursor = input.cursor;
-      state.meta.lastMutationId = Math.max(state.meta.lastMutationId, input.lastMutationId);
-      dropConfirmed(state);
-      state.meta.serverSchema = input.serverSchema;
-      state.meta = withSkipped(state.meta, input.skipped ?? [], input.resync === true);
-    });
+      },
+      commit: async (input) => {
+        this.transaction((state) => {
+          current();
+          for (const entity of input.entities)
+            state.records.set(entity, new Map(stage.records.get(entity)));
+          state.records.get("comments")?.clear();
+          state.records.get("activity")?.clear();
+          state.scopes.clear();
+          state.meta.cursor = input.cursor;
+          state.meta.lastMutationId = Math.max(state.meta.lastMutationId, input.lastMutationId);
+          dropConfirmed(state);
+          state.meta.serverSchema = input.serverSchema;
+          state.meta = withSkipped(state.meta, input.skipped ?? [], input.resync === true);
+        });
+        this.entry.stage = null;
+      },
+    };
   }
 
   async applyPull(input: Parameters<Replica["applyPull"]>[0]): Promise<void> {
@@ -243,6 +272,7 @@ export class MemoryReplicaStorage implements ReplicaStorage {
           rejected: new Map(),
         },
         handles: new Set(),
+        stage: null,
       };
       this.replicas.set(name, entry);
     }

@@ -308,6 +308,14 @@ export async function runConvergence(
         close: () => replica.close(),
         resetBase: () => write(() => replica.resetBase()),
         writeBootstrap: (value) => write(() => replica.writeBootstrap(value)),
+        stageBootstrap: () =>
+          write(async () => {
+            const stage = await replica.stageBootstrap();
+            return {
+              write: (records) => write(() => stage.write(records)),
+              commit: (input) => write(() => stage.commit(input)),
+            };
+          }),
         applyPull: (value) => write(() => replica.applyPull(value)),
         writeScope: (value) => write(() => replica.writeScope(value)),
         loadScope: (scope) => replica.loadScope(scope),
