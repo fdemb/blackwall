@@ -7,6 +7,7 @@ use axum::{
 use blackwall::{
     auth::{Register, Session},
     http::router,
+    jobs::{self, Mailer},
     store::Store,
 };
 use http_body_util::BodyExt;
@@ -1088,32 +1089,17 @@ async fn push_session_id_from_me_and_login() {
 }
 
 #[tokio::test]
-async fn push_pruning_removes_idle_clients() {
+async fn maintenance_keeps_idle_clients_and_their_rejections() {
     let database = support::TestDatabase::new().await;
     let store = Store::connect(&database.url).await.unwrap();
     let app = router(store.clone());
     let owner = account(&store, "owner").await;
     let (ws, _) = setup(&app, &owner).await;
-    let fresh = Uuid::new_v4();
-
-    let (status, result) = push(
-        &app,
-        &owner.token,
-        ws,
-        fresh,
-        vec![mutation(
-            1,
-            "create_label",
-            json!({"name": "fresh", "color": "#000000"}),
-        )],
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "{result}");
 
     let idle = Uuid::new_v4();
     sqlx::query(
         "INSERT INTO sync_clients (client_id, workspace_id, user_id, last_mutation_id, updated_at) \
-         VALUES ($1, $2, $3, 9, now() - make_interval(days => 31))",
+         VALUES ($1, $2, $3, 9, now() - make_interval(days => 400))",
     )
     .bind(idle)
     .bind(ws)
@@ -1121,19 +1107,33 @@ async fn push_pruning_removes_idle_clients() {
     .execute(&store.pool)
     .await
     .unwrap();
+    sqlx::query(
+        "INSERT INTO sync_rejections (client_id, mutation_id, status, message) \
+         VALUES ($1, 9, 400, 'idle rejection')",
+    )
+    .bind(idle)
+    .execute(&store.pool)
+    .await
+    .unwrap();
 
-    sqlx::query("INSERT INTO sync_rejections (client_id, mutation_id, status, message) VALUES ($1, 9, 400, 'idle rejection'), ($2, 1, 409, 'fresh rejection')")
-        .bind(idle).bind(fresh).execute(&store.pool).await.unwrap();
-    assert_eq!(store.prune_sync_clients().await.unwrap(), 1);
-    let retained: Vec<Uuid> =
-        sqlx::query_scalar("SELECT client_id FROM sync_rejections ORDER BY client_id")
-            .fetch_all(&store.pool)
-            .await
-            .unwrap();
-    assert_eq!(retained, vec![fresh]);
-    assert_eq!(last_mutation_id(&store, idle).await, None);
-    assert_eq!(last_mutation_id(&store, fresh).await, Some(1));
-    assert_eq!(store.prune_sync_clients().await.unwrap(), 0);
+    jobs::tick(&store, &Mailer::Disabled).await.unwrap();
+
+    assert_eq!(last_mutation_id(&store, idle).await, Some(9));
+    let (status, result) = push(
+        &app,
+        &owner.token,
+        ws,
+        idle,
+        vec![mutation(
+            9,
+            "create_label",
+            json!({"name": "again", "color": "#000000"}),
+        )],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+    assert_eq!(result["results"][0]["status"], "rejected");
+    assert_eq!(result["results"][0]["error"]["message"], "idle rejection");
 
     drop(app);
     store.pool.close().await;

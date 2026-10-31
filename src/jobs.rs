@@ -783,12 +783,6 @@ async fn sweep(store: &Store, config: &WorkerConfig) -> Result<()> {
         s.prune_changes(changes_retention_days).await
     })
     .await?;
-    // Idle sync clients go after the sessions they belong to; a pruned
-    // client cannot still have a live replica.
-    drain(deadline, 1000, store.clone(), |s| async move {
-        s.prune_sync_clients().await
-    })
-    .await?;
     drain(deadline, 1, store.clone(), |s| async move {
         s.purge_trash().await
     })

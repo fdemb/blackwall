@@ -13,6 +13,9 @@ pub enum Error {
     BadRequest(String),
     #[error("authentication required")]
     Unauthorized,
+    /// A sync replica belongs to another account than the request's cookie. HTTP 401.
+    #[error("account changed")]
+    AccountChanged,
     #[error("permission denied")]
     Forbidden,
     /// Denied with a reason the caller can act on, such as a token's scope.
@@ -54,7 +57,7 @@ impl IntoResponse for Error {
         }
         let status = match self {
             Self::BadRequest(_) => StatusCode::BAD_REQUEST,
-            Self::Unauthorized => StatusCode::UNAUTHORIZED,
+            Self::Unauthorized | Self::AccountChanged => StatusCode::UNAUTHORIZED,
             Self::Forbidden | Self::Denied(_) => StatusCode::FORBIDDEN,
             Self::NotFound => StatusCode::NOT_FOUND,
             Self::Conflict(_) | Self::Stale(_) => StatusCode::CONFLICT,

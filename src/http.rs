@@ -32,6 +32,8 @@ pub struct Actor {
     /// Non-secret replica name from the session row. Never a credential.
     pub session_id: Uuid,
     pub token: String,
+    /// Authenticated by the session cookie rather than a bearer token.
+    pub browser: bool,
 }
 
 impl FromRequestParts<Store> for Actor {
@@ -78,6 +80,7 @@ impl FromRequestParts<Store> for Actor {
             profile,
             session_id,
             token: token.into(),
+            browser: bearer.is_none(),
         })
     }
 }

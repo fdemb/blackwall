@@ -173,7 +173,9 @@ fn disposition(error: &Error) -> Disposition {
         | Error::Denied(_)
         | Error::Forbidden
         | Error::Json(_) => Disposition::Business,
-        Error::Unauthorized | Error::ServiceUnavailable(_) => Disposition::Retry,
+        Error::Unauthorized | Error::AccountChanged | Error::ServiceUnavailable(_) => {
+            Disposition::Retry
+        }
         Error::Internal(_) => Disposition::Defect,
         Error::Database(error) => database_disposition(error),
     }
@@ -234,6 +236,7 @@ fn rejection(error: &Error) -> MutationError {
         Error::Database(_)
         | Error::Internal(_)
         | Error::Unauthorized
+        | Error::AccountChanged
         | Error::ServiceUnavailable(_) => (500, "internal server error".to_owned()),
     };
     MutationError { status, message }
@@ -568,21 +571,6 @@ impl Store {
                 phase,
                 mutation_id: Some(mutation.id),
             })
-    }
-
-    /// Deletes sync clients idle longer than the session lifetime. A pruned
-    /// client cannot still have a live replica, because its session expired first.
-    pub async fn prune_sync_clients(&self) -> Result<u64> {
-        Ok(sqlx::query!(
-            "DELETE FROM sync_clients WHERE client_id IN (\
-             SELECT client_id FROM sync_clients \
-             WHERE updated_at < now() - make_interval(days => $1) \
-             ORDER BY updated_at LIMIT 1000 FOR UPDATE SKIP LOCKED)",
-            crate::auth::SESSION_LIFETIME_DAYS as i32,
-        )
-        .execute(&self.pool)
-        .await?
-        .rows_affected())
     }
 }
 
