@@ -1,0 +1,20 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE sync_history SET epoch = gen_random_uuid(), cluster = sync_identity() WHERE cluster <> sync_identity() RETURNING epoch AS \"epoch!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "epoch!",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "4b0aeca209ffab111950e04fb99761a166a0dc715253b6f7f81cd9dcd916c93b"
+}

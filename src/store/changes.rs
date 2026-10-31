@@ -1,5 +1,8 @@
 use super::{
-    reads::{ISSUE_JSON, MEMBER_JSON, SYNC_ISSUE_JSON, collection_select, push_visibility},
+    reads::{
+        ISSUE_JSON, MEMBER_JSON, SYNC_INTEGRATION_JSON, SYNC_ISSUE_JSON, collection_select,
+        push_visibility,
+    },
     *,
 };
 use serde_json::Value;
@@ -74,6 +77,10 @@ pub(super) fn select(
         }
         kind => {
             let (table, expression, _) = collection_select(kind)?;
+            let expression = match (kind, shape) {
+                ("integrations", RecordShape::Sync) => SYNC_INTEGRATION_JSON,
+                _ => expression,
+            };
             QueryBuilder::new(format!(
                 "SELECT t.{},{expression} FROM {table} WHERE t.workspace_id=",
                 key_column(kind)
@@ -143,6 +150,9 @@ impl Store {
     /// Deletes change rows older than the retention period. Clients whose cursor predates them
     /// get `reset` and reload.
     pub async fn prune_changes(&self, retention_days: i32) -> Result<u64> {
+        // Rows from another history carry txids that would put the horizon
+        // past every cursor this database can issue.
+        self.adopt_sync_history().await?;
         let mut tx = self.pool.begin().await?;
 
         let gone = sqlx::query!(

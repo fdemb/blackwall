@@ -1320,7 +1320,7 @@
     "/internal-api/workspaces/{id}/sync/bootstrap": {
       "get": {
         "tags": ["sync"],
-        "description": "Streams the always-loaded records from one snapshot. A header carries cursor, last_mutation_id and schema; a trailer confirms the record count. Accept-Encoding negotiates gzip.",
+        "description": "Streams the always-loaded records from one snapshot. A header carries cursor, last_mutation_id and schema; a trailer confirms the record count. Accept-Encoding negotiates gzip. A user runs one bootstrap at a time; others get 503 with Retry-After.",
         "operationId": "bootstrap",
         "parameters": [
           {
@@ -1413,7 +1413,7 @@
           {
             "name": "cursor",
             "in": "query",
-            "description": "Cursor from a previous pull. Omit for a starting cursor. Must be a\nsnapshot in `xmin:xmax:xip` text form from this server; anything else\nis 400.",
+            "description": "Cursor from a previous pull or bootstrap. Omit for a starting cursor.\nA cursor no server could have issued is 400. One from another database\nhistory, or past this server's snapshot, answers `reset: true`.",
             "required": false,
             "schema": {
               "type": "string"
@@ -4739,7 +4739,7 @@
           },
           "cursor": {
             "type": "string",
-            "description": "Snapshot in `xmin:xmax:xip` text form. Every txid below its xmax\nexcept those listed is reflected. An unfinished page may append\n`:txid.row`, the one transaction delivered only up to that change row."
+            "description": "Opaque cursor, `epoch@` and a snapshot in `xmin:xmax:xip` text form.\nEvery txid below the snapshot's xmax except those listed is reflected.\nAn unfinished page may append `:txid.row`, the one transaction\ndelivered only up to that change row."
           },
           "last_mutation_id": {
             "type": ["integer", "null"],

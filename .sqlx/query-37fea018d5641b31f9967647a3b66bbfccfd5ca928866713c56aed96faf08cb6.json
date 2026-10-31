@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE change_horizon SET txid = 0",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "37fea018d5641b31f9967647a3b66bbfccfd5ca928866713c56aed96faf08cb6"
+}

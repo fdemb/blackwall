@@ -9,9 +9,9 @@ use tokio_stream::wrappers::ReceiverStream;
 pub struct PullQuery {
     /// Client replica id. A client_id owned by another user or workspace is 400.
     pub client_id: Option<String>,
-    /// Cursor from a previous pull. Omit for a starting cursor. Must be a
-    /// snapshot in `xmin:xmax:xip` text form from this server; anything else
-    /// is 400.
+    /// Cursor from a previous pull or bootstrap. Omit for a starting cursor.
+    /// A cursor no server could have issued is 400. One from another database
+    /// history, or past this server's snapshot, answers `reset: true`.
     pub cursor: Option<String>,
 }
 
@@ -82,7 +82,7 @@ pub struct BootstrapQuery {
     path = "/internal-api/workspaces/{id}/sync/bootstrap",
     params(("id" = Uuid, Path), BootstrapQuery),
     responses((status = 200, content_type = "application/x-ndjson")),
-    description = "Streams the always-loaded records from one snapshot. A header carries cursor, last_mutation_id and schema; a trailer confirms the record count. Accept-Encoding negotiates gzip."
+    description = "Streams the always-loaded records from one snapshot. A header carries cursor, last_mutation_id and schema; a trailer confirms the record count. Accept-Encoding negotiates gzip. A user runs one bootstrap at a time; others get 503 with Retry-After."
 )]
 pub(super) async fn bootstrap(
     State(store): State<Store>,

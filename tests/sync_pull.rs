@@ -11,6 +11,7 @@ use blackwall::{
 };
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
+use std::time::Duration;
 use tower::ServiceExt;
 use uuid::Uuid;
 
@@ -171,8 +172,24 @@ fn cursor_of(page: &Value) -> String {
     page["cursor"].as_str().unwrap().to_owned()
 }
 
+/// Splits a cursor into the epoch that issued it and its snapshot text.
+fn epoch_and_snapshot(cursor: &str) -> (&str, &str) {
+    cursor.split_once('@').expect("cursor carries an epoch")
+}
+
 fn cursor_xmax(cursor: &str) -> i64 {
     cursor.split(':').nth(1).unwrap().parse().unwrap()
+}
+
+fn cursor_xip(cursor: &str) -> Vec<i64> {
+    cursor
+        .split(':')
+        .nth(2)
+        .unwrap()
+        .split(',')
+        .filter(|txid| !txid.is_empty())
+        .map(|txid| txid.parse().unwrap())
+        .collect()
 }
 
 async fn invite_member(app: &axum::Router, owner: &Session, workspace: Uuid, user: &Session) {
@@ -1577,7 +1594,13 @@ async fn pull_cursor_below_horizon_resets() {
     )
     .await;
 
-    let xmin: i64 = before.split(':').next().unwrap().parse().unwrap();
+    let xmin: i64 = epoch_and_snapshot(&before)
+        .1
+        .split(':')
+        .next()
+        .unwrap()
+        .parse()
+        .unwrap();
     sqlx::query("UPDATE change_horizon SET txid = $1")
         .bind(xmin + 1)
         .execute(&store.pool)
@@ -1923,8 +1946,9 @@ async fn pull_cursor_validation() {
     let client = Uuid::new_v4();
 
     // Malformed strings, inverted snapshots, xip entries outside
-    // `[xmin, xmax)`, unsorted or duplicated xip, and a snapshot from the
-    // future are each 400.
+    // `[xmin, xmax)`, unsorted or duplicated xip, and malformed partials are
+    // each 400. A well-formed cursor this database can't honor resets
+    // instead, see `pull_cursor_the_database_cannot_honor_resets`.
     let bad = vec![
         "nope".to_owned(),
         String::new(),
@@ -1942,8 +1966,6 @@ async fn pull_cursor_validation() {
         "99:105:99,105".to_owned(),
         "99:110:99,104,103".to_owned(),
         "99:110:99,99".to_owned(),
-        "99999990:99999999:99999990".to_owned(),
-        "99999999:99999999:".to_owned(),
         // Partial transactions: malformed, outside the window, or from the future.
         "99:105:99:".to_owned(),
         "99:105:99:99".to_owned(),
@@ -1957,7 +1979,6 @@ async fn pull_cursor_validation() {
         "99:105:99:99.1:1".to_owned(),
         "99:105:99:100.1".to_owned(),
         "99:105:99:98.1".to_owned(),
-        "99:105:99:99999999.1".to_owned(),
     ];
     for cursor in &bad {
         let (status, _) = pull(&app, &owner.token, ws, client, Some(cursor)).await;
@@ -1974,6 +1995,242 @@ async fn pull_cursor_validation() {
     );
     let (status, _) = pull(&app, &owner.token, ws, client, Some(&huge)).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    drop(app);
+    store.pool.close().await;
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn pull_cursor_from_another_history_resets() {
+    let database = support::TestDatabase::new().await;
+    let store = Store::connect(&database.url).await.unwrap();
+    let app = router(store.clone());
+    let owner = account(&store, "owner").await;
+    let (ws, team) = setup(&app, &owner).await;
+    let client = Uuid::new_v4();
+
+    let before = cursor_of(&pull_ok(&app, &owner.token, ws, client, None).await);
+    let (epoch, snapshot) = epoch_and_snapshot(&before);
+    assert_eq!(epoch.len(), 32, "{before}");
+    let issue = created(
+        &app,
+        &owner,
+        ws,
+        json!({"type": "create_issue", "input": {"team_id": team, "title": "After"}}),
+    )
+    .await;
+
+    let forged = format!("{}@{snapshot}", Uuid::new_v4().simple());
+    let legacy = snapshot.to_owned();
+    for cursor in [forged, legacy] {
+        let page = pull_ok(&app, &owner.token, ws, client, Some(&cursor)).await;
+        assert_eq!(page["reset"], true, "{cursor}");
+        assert_eq!(page["more"], false);
+        assert_eq!(page["changes"], json!([]));
+        assert_eq!(page["last_mutation_id"], Value::Null);
+        assert_eq!(epoch_and_snapshot(&cursor_of(&page)).0, epoch);
+    }
+
+    let page = pull_ok(&app, &owner.token, ws, client, Some(&before)).await;
+    assert_eq!(page["reset"], false);
+    assert!(record(&page["changes"], "issues", &issue.to_string()).is_some());
+
+    drop(app);
+    store.pool.close().await;
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn pull_cursor_the_database_cannot_honor_resets() {
+    let database = support::TestDatabase::new().await;
+    let store = Store::connect(&database.url).await.unwrap();
+    let app = router(store.clone());
+    let owner = account(&store, "owner").await;
+    let (ws, _) = setup(&app, &owner).await;
+    let client = Uuid::new_v4();
+
+    let before = cursor_of(&pull_ok(&app, &owner.token, ws, client, None).await);
+    let epoch = epoch_and_snapshot(&before).0.to_owned();
+
+    // The snapshot or a partial transaction reaches past this database's own.
+    for snapshot in [
+        "99999990:99999999:99999990",
+        "99999999:99999999:",
+        "99:105:99:99999999.1",
+    ] {
+        let page = pull_ok(
+            &app,
+            &owner.token,
+            ws,
+            client,
+            Some(&format!("{epoch}@{snapshot}")),
+        )
+        .await;
+        assert_eq!(page["reset"], true, "{snapshot}");
+        assert_eq!(page["changes"], json!([]));
+        assert_eq!(page["last_mutation_id"], Value::Null);
+    }
+
+    // A cursor this server could never have issued is still 400, with or
+    // without an epoch.
+    for bad in [
+        format!("{epoch}@nope"),
+        format!("{epoch}@99:105:99:99.0"),
+        format!("{epoch}@"),
+        "nope@99:105:".to_owned(),
+        format!("{}@99:105:99", &epoch[..31]),
+    ] {
+        let (status, _) = pull(&app, &owner.token, ws, client, Some(&bad)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "cursor {bad:?}");
+    }
+
+    drop(app);
+    store.pool.close().await;
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn pull_after_a_restore_resets_once_and_recovers() {
+    let database = support::TestDatabase::new().await;
+    let store = Store::connect(&database.url).await.unwrap();
+    let app = router(store.clone());
+    let owner = account(&store, "owner").await;
+    let (ws, team) = setup(&app, &owner).await;
+    let client = Uuid::new_v4();
+
+    let before = cursor_of(&pull_ok(&app, &owner.token, ws, client, None).await);
+
+    // A dump restored into a new cluster brings the old cluster's identity,
+    // a horizon and change rows at txids this cluster hasn't reached.
+    sqlx::query("UPDATE sync_history SET cluster = 'restored-from-elsewhere'")
+        .execute(&store.pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE change_horizon SET txid = 9000000000")
+        .execute(&store.pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO changes(workspace_id, entity, entity_id, txid) \
+         VALUES ($1, 'issues', gen_random_uuid(), 9000000001)",
+    )
+    .bind(ws)
+    .execute(&store.pool)
+    .await
+    .unwrap();
+
+    let page = pull_ok(&app, &owner.token, ws, client, Some(&before)).await;
+    assert_eq!(page["reset"], true);
+    assert_eq!(page["changes"], json!([]));
+    assert_ne!(
+        epoch_and_snapshot(&cursor_of(&page)).0,
+        epoch_and_snapshot(&before).0
+    );
+    let stale: i64 = sqlx::query_scalar("SELECT count(*) FROM changes WHERE txid >= 9000000000")
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+    assert_eq!(stale, 0);
+    let horizon: i64 = sqlx::query_scalar("SELECT txid FROM change_horizon")
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+    assert_eq!(horizon, 0);
+
+    let page = pull_ok(&app, &owner.token, ws, client, Some(&before)).await;
+    assert_eq!(page["reset"], true, "the old cursor keeps resetting");
+
+    // A cursor from the new history works.
+    let fresh = cursor_of(&pull_ok(&app, &owner.token, ws, client, None).await);
+    let issue = created(
+        &app,
+        &owner,
+        ws,
+        json!({"type": "create_issue", "input": {"team_id": team, "title": "After"}}),
+    )
+    .await;
+    let page = pull_ok(&app, &owner.token, ws, client, Some(&fresh)).await;
+    assert_eq!(page["reset"], false);
+    assert!(record(&page["changes"], "issues", &issue.to_string()).is_some());
+
+    drop(app);
+    store.pool.close().await;
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn pull_adopting_a_history_never_pairs_the_new_epoch_with_an_older_snapshot() {
+    let database = support::TestDatabase::new().await;
+    let store = Store::connect(&database.url).await.unwrap();
+    let app = router(store.clone());
+    let owner = account(&store, "owner").await;
+    let (ws, team) = setup(&app, &owner).await;
+    let client = Uuid::new_v4();
+    let before = cursor_of(&pull_ok(&app, &owner.token, ws, client, None).await);
+
+    for cursor in [None, Some(before)] {
+        sqlx::query("UPDATE sync_history SET cluster = 'restored-from-elsewhere'")
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        // Holding the row lock parks the pull in adoption, after it has
+        // taken its snapshot and seen the other history.
+        let mut gate = store.pool.begin().await.unwrap();
+        sqlx::query("UPDATE sync_history SET epoch = epoch")
+            .execute(&mut *gate)
+            .await
+            .unwrap();
+        let pulling = tokio::spawn({
+            let app = app.clone();
+            let token = owner.token.clone();
+            let cursor = cursor.clone();
+            async move { pull_ok(&app, &token, ws, client, cursor.as_deref()).await }
+        });
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let parked: i64 = sqlx::query_scalar(
+                    "SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() \
+                     AND wait_event_type = 'Lock' AND query LIKE 'UPDATE sync_history%'",
+                )
+                .fetch_one(&store.pool)
+                .await
+                .unwrap();
+                if parked > 0 {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the pull never parked on the history lock");
+
+        let issue = created(
+            &app,
+            &owner,
+            ws,
+            json!({"type": "create_issue", "input": {"team_id": team, "title": "Between"}}),
+        )
+        .await;
+        gate.commit().await.unwrap();
+        let page = pulling.await.unwrap();
+
+        // Adoption deleted the issue's change row, so the cursor must
+        // already cover its transaction, or the client must start over.
+        let written: i64 =
+            sqlx::query_scalar("SELECT xmin::text::bigint FROM issues WHERE id = $1")
+                .bind(issue)
+                .fetch_one(&store.pool)
+                .await
+                .unwrap();
+        let issued = cursor_of(&page);
+        assert!(
+            cursor_xmax(&issued) > written && !cursor_xip(&issued).contains(&written),
+            "cursor {issued} does not cover transaction {written}"
+        );
+        assert_eq!(page["changes"], json!([]));
+        assert_eq!(page["reset"], cursor.is_some());
+    }
 
     drop(app);
     store.pool.close().await;

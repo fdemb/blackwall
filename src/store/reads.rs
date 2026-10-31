@@ -355,6 +355,16 @@ fn push_issue_search(
     Ok(())
 }
 
+/// Sync replicas keep only an integration's scheme, host and port. Slack and
+/// Discord embed their secret in the URL path, and IndexedDB is not a place
+/// for it. The URL itself stays on the REST endpoints.
+///
+/// The authority ends at the first `/`, `?` or `#`, and its userinfo ends at
+/// the last `@`. A URL that does not fit scheme, userinfo, host, optional
+/// numeric port and path renders as an empty string, a backslash before the
+/// path included, since parsers disagree on where that authority ends.
+pub(super) const SYNC_INTEGRATION_JSON: &str = r#"(to_jsonb(t)-'workspace_id') || jsonb_build_object('secret','','webhook_url',COALESCE((SELECT lower(m.g[1]) || '://' || m.g[2] || COALESCE(m.g[3],'') FROM regexp_match(t.webhook_url, '^([A-Za-z][A-Za-z0-9+.-]*)://(?:[^/?#\\]*@)?(\[[0-9A-Fa-f:.]+\]|[^[:space:]/?#\\@:\[\]]+)(:[0-9]*)?(?:[/?#].*)?$') AS m(g)),''))"#;
+
 pub(super) const MEMBER_JSON: &str = r#"jsonb_build_object('id',u.id,'email',u.email,'display_name',u.profile->>'display_name','avatar_url',u.profile->'avatar_url','contact',u.profile->>'contact','role',m.role,'version',m.version,'team_ids',COALESCE((SELECT jsonb_agg(tm.team_id ORDER BY tm.team_id) FROM team_members tm WHERE tm.workspace_id=m.workspace_id AND tm.user_id=u.id),'[]'::jsonb))"#;
 
 pub(super) async fn authorize(
