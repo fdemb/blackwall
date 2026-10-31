@@ -1865,7 +1865,8 @@ export interface components {
       changes: components["schemas"]["Change"][];
       /**
        * @description Snapshot in `xmin:xmax:xip` text form. Every txid below its xmax
-       *     except those listed is reflected.
+       *     except those listed is reflected. An unfinished page may append
+       *     `:txid.row`, the one transaction delivered only up to that change row.
        */
       cursor: string;
       /**

@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM comment_mentions WHERE workspace_id=$1 AND comment_id=$2 AND user_id<>ALL($3)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "UuidArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "219568fd51f93a81665bbcf5927f550066069afd748f8e47d12071bf02b0e61e"
+}

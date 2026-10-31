@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM issue_dependencies WHERE issue_id=$1 AND dependency_id<>ALL($2)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "UuidArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "7a3609574b2fbb41054fca7db4fcbda73fd65c4601f867bf5b56e0d3f11e170c"
+}

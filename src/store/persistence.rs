@@ -252,35 +252,54 @@ async fn save_fields(
     save_relations(conn, workspace, i).await
 }
 
+/// Writes only the links that differ from the stored ones, since every
+/// inserted or deleted link row records a change.
 async fn save_relations(conn: &mut PgConnection, workspace: Uuid, i: &Issue) -> Result<()> {
-    sqlx::query!("DELETE FROM issue_labels WHERE issue_id=$1", i.id)
-        .execute(&mut *conn)
-        .await?;
+    let labels: Vec<Uuid> = i
+        .labels
+        .iter()
+        .copied()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    sqlx::query!(
+        "DELETE FROM issue_labels WHERE issue_id=$1 AND label_id<>ALL($2)",
+        i.id,
+        &labels,
+    )
+    .execute(&mut *conn)
+    .await?;
+    sqlx::query!(
+        "INSERT INTO issue_labels(workspace_id,issue_id,label_id) SELECT $1,$2,label FROM unnest($3::uuid[]) AS t(label) ON CONFLICT DO NOTHING",
+        workspace,
+        i.id,
+        &labels,
+    )
+    .execute(&mut *conn)
+    .await?;
 
-    for label in i.labels.iter().copied().collect::<BTreeSet<_>>() {
-        sqlx::query!(
-            "INSERT INTO issue_labels(workspace_id,issue_id,label_id) VALUES($1,$2,$3)",
-            workspace,
-            i.id,
-            label,
-        )
-        .execute(&mut *conn)
-        .await?;
-    }
-
-    sqlx::query!("DELETE FROM issue_dependencies WHERE issue_id=$1", i.id)
-        .execute(&mut *conn)
-        .await?;
-    for dep in i.dependencies.iter().copied().collect::<BTreeSet<_>>() {
-        sqlx::query!(
-            "INSERT INTO issue_dependencies(workspace_id,issue_id,dependency_id) VALUES($1,$2,$3)",
-            workspace,
-            i.id,
-            dep,
-        )
-        .execute(&mut *conn)
-        .await?;
-    }
+    let dependencies: Vec<Uuid> = i
+        .dependencies
+        .iter()
+        .copied()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    sqlx::query!(
+        "DELETE FROM issue_dependencies WHERE issue_id=$1 AND dependency_id<>ALL($2)",
+        i.id,
+        &dependencies,
+    )
+    .execute(&mut *conn)
+    .await?;
+    sqlx::query!(
+        "INSERT INTO issue_dependencies(workspace_id,issue_id,dependency_id) SELECT $1,$2,dependency FROM unnest($3::uuid[]) AS t(dependency) ON CONFLICT DO NOTHING",
+        workspace,
+        i.id,
+        &dependencies,
+    )
+    .execute(&mut *conn)
+    .await?;
 
     Ok(())
 }
