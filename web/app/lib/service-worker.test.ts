@@ -147,9 +147,9 @@ describe("service worker", () => {
   });
 
   it.each([
-    ["missing", () => new Response("missing", { status: 404 })],
-    ["not a route manifest", () => new Response("<!doctype html>")],
-  ])("prunes nothing when the new build's manifest is %s", async (_, next) => {
+    ["missing", 404, "missing"],
+    ["not a route manifest", 200, "<!doctype html>"],
+  ])("prunes nothing when the new build's manifest is %s", async (_, status, body) => {
     let shell = SHELL;
     const sw = worker({
       "/": () => html(shell)(),
@@ -157,7 +157,7 @@ describe("service worker", () => {
       "/assets/manifest-1.js": manifest("/assets/route-1.js"),
       "/assets/route-1.js": () => new Response("route"),
       "/assets/entry-2.js": () => new Response("new"),
-      "/assets/manifest-2.js": next,
+      "/assets/manifest-2.js": () => new Response(body, { status }),
     });
     await sw.install();
     await sw.get("/assets/route-1.js");
@@ -194,10 +194,13 @@ describe("registerServiceWorker", () => {
     });
     const listeners: (() => void)[] = [];
     const reports: Promise<unknown>[] = [];
-    let installed: Promise<unknown> | undefined;
+    const controller = { postMessage: (data: unknown) => reports.push(sw.message(data)) };
+    let claimed = false;
     const container = {
-      controller: null as { postMessage: (data: unknown) => void } | null,
-      register: () => (installed = sw.install()),
+      get controller() {
+        return claimed ? controller : null;
+      },
+      register: async () => {},
       addEventListener: (_: string, listener: () => void) => listeners.push(listener),
       removeEventListener: () => {},
     };
@@ -221,11 +224,11 @@ describe("registerServiceWorker", () => {
       ],
     });
 
+    await sw.install();
     registerServiceWorker();
-    await installed;
     expect(sw.store.has("/assets/route-1.js")).toBe(false);
 
-    container.controller = { postMessage: (data) => reports.push(sw.message(data)) };
+    claimed = true;
     for (const listener of listeners) listener();
     await Promise.all(reports);
     sw.offline();
