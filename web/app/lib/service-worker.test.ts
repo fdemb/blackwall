@@ -7,8 +7,11 @@ const ORIGIN = "https://blackwall.test";
 const SOURCE = readFileSync(new URL("../../public/sw.js", import.meta.url), "utf8");
 const SHELL = `<script type="module" src="/assets/entry-1.js"></script><link href="/assets/manifest-1.js">`;
 const NEXT_SHELL = `<script type="module" src="/assets/entry-2.js"></script><link href="/assets/manifest-2.js">`;
-const manifest = (...modules: string[]) => () =>
-  new Response(`window.__reactRouterManifest=${JSON.stringify({ routes: { modules } })}`);
+
+function manifest(...modules: string[]) {
+  const routes = JSON.stringify({ routes: { modules } });
+  return () => new Response(`window.__reactRouterManifest=${routes}`);
+}
 
 type Handler = (event: object) => void;
 
