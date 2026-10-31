@@ -2144,6 +2144,78 @@ describe("pending edits are never frozen or lost", () => {
     expect(f.server.record("members", f.peer.id)?.role).toBe("viewer");
   });
 
+  it("holds an online command when a 401 lands while its outbox check is loading", async () => {
+    const storage = new MemoryReplicaStorage();
+    const open = storage.open.bind(storage);
+    let holdLoad = false;
+    let releaseLoad: (() => void) | undefined;
+    storage.open = async (input) => {
+      const replica = await open(input);
+      const load = replica.loadOutbox.bind(replica);
+      replica.loadOutbox = async () => {
+        const outbox = await load();
+        if (holdLoad) {
+          holdLoad = false;
+          await new Promise<void>((resolve) => {
+            releaseLoad = resolve;
+          });
+        }
+        return outbox;
+      };
+      return replica;
+    };
+    const f = fixture(storage);
+    await f.ready();
+    const events: EngineEvent[] = [];
+    f.engine.subscribe((event) => events.push(event));
+    holdLoad = true;
+    const online = f.engine.runOnline("set_role", { user_id: f.peer.id, role: "viewer" });
+    await until(() => releaseLoad !== undefined);
+    f.server.inject({ kind: "fail_response", route: "pull", status: 401 });
+    await f.engine.pull();
+    await until(() => events.some((event) => event.type === "unauthorized"));
+    releaseLoad?.();
+    await f.advance(60_000);
+    expect(f.commands()).toEqual([]);
+
+    f.engine.resume();
+    await elapse(f, () => f.commands().length === 1);
+    expect(await online).toEqual({ id: 0, status: "applied" });
+  });
+
+  it("rejects an online command when the engine closes while its outbox check is loading", async () => {
+    const storage = new MemoryReplicaStorage();
+    const open = storage.open.bind(storage);
+    let holdLoad = false;
+    let releaseLoad: (() => void) | undefined;
+    storage.open = async (input) => {
+      const replica = await open(input);
+      const load = replica.loadOutbox.bind(replica);
+      replica.loadOutbox = async () => {
+        const outbox = await load();
+        if (holdLoad) {
+          holdLoad = false;
+          await new Promise<void>((resolve) => {
+            releaseLoad = resolve;
+          });
+        }
+        return outbox;
+      };
+      return replica;
+    };
+    const f = fixture(storage);
+    await f.ready();
+    holdLoad = true;
+    const online = f.engine.runOnline("set_role", { user_id: f.peer.id, role: "viewer" });
+    const rejected = expect(online).rejects.toBeDefined();
+    await until(() => releaseLoad !== undefined);
+    const closing = f.engine.close();
+    releaseLoad?.();
+    await closing;
+    await rejected;
+    expect(f.commands()).toEqual([]);
+  });
+
   it("aborts an online command in flight on another request's 401 and resends it with the same key", async () => {
     const f = fixture();
     await f.ready();

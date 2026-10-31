@@ -687,7 +687,13 @@ export class SyncEngine {
       signal.throwIfAborted();
       if (this.unauthorized === "refused") throw new UnauthorizedError("Session check failed", 401);
       if (this.started && this.snapshot.online && this.unauthorized === null) {
-        if ((await this.requireReplica().loadOutbox()).length === 0) return;
+        if ((await this.requireReplica().loadOutbox()).length === 0) {
+          // A 401 or close can land while the outbox loads; check again with no await before
+          // the caller registers its attempt.
+          signal.throwIfAborted();
+          if (this.started && this.snapshot.online && this.unauthorized === null) return;
+          continue;
+        }
         if (this.role === "leader" ? this.outboxBlocked() : this.leaderBlocked)
           throw new Error("Pending changes can't be sent. Reload and try again.");
       }
