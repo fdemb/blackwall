@@ -391,7 +391,9 @@ async fn security_headers(request: Request, next: Next) -> Response {
             ),
         );
     }
-    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    headers
+        .entry(header::CACHE_CONTROL)
+        .or_insert(HeaderValue::from_static("no-store"));
 
     response
 }

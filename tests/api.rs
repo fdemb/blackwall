@@ -194,6 +194,9 @@ async fn complete_contract_on_postgres() {
         "<!DOCTYPE html><script src=\"/theme.js\"></script><script>window.boot=1</script>",
     )
     .unwrap();
+    std::fs::create_dir_all(web.join("assets")).unwrap();
+    std::fs::write(web.join("assets/issue-B1x9Qz7k.js"), "export {}").unwrap();
+    std::fs::write(web.join("assets/logo.svg"), "<svg/>").unwrap();
 
     let owner = account(&store, "owner").await;
     let colleague = account(&store, "colleague").await;
@@ -1004,6 +1007,41 @@ async fn complete_contract_on_postgres() {
                 .starts_with(b"<!DOCTYPE html>")
         );
     }
+
+    let mut cache = Vec::new();
+    for path in [
+        "/some/client/route",
+        "/assets/issue-B1x9Qz7k.js",
+        "/assets/logo.svg",
+        "/assets/missing-C2y8Rw4m.js",
+        "/internal-api/schema.json",
+    ] {
+        let response = app
+            .clone()
+            .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let header = response.headers()["cache-control"]
+            .to_str()
+            .unwrap()
+            .to_owned();
+        cache.push((path, response.status().as_u16(), header));
+    }
+
+    assert_eq!(
+        cache,
+        [
+            ("/some/client/route", 200, "no-cache".to_owned()),
+            (
+                "/assets/issue-B1x9Qz7k.js",
+                200,
+                "public, max-age=31536000, immutable".to_owned()
+            ),
+            ("/assets/logo.svg", 200, "no-cache".to_owned()),
+            ("/assets/missing-C2y8Rw4m.js", 404, "no-store".to_owned()),
+            ("/internal-api/schema.json", 200, "no-store".to_owned()),
+        ]
+    );
 
     let (status, _) = call(&app, "GET", "/internal-api/nope", None, None).await;
 

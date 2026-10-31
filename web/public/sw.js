@@ -35,6 +35,24 @@ self.addEventListener("fetch", (event) => {
   else if (STATIC.includes(url.pathname)) event.respondWith(staleWhileRevalidate(event));
 });
 
+// The page reports the assets it loaded before this worker controlled it,
+// since those requests never reached the fetch handler.
+self.addEventListener("message", (event) => {
+  const { type, urls } = event.data ?? {};
+  if (type !== "loaded-assets" || !Array.isArray(urls)) return;
+  event.waitUntil(keepAssets(urls));
+});
+
+async function keepAssets(urls) {
+  const cache = await caches.open(CACHE);
+  for (const href of urls) {
+    const url = new URL(href, location.origin);
+    if (url.origin !== location.origin || !url.pathname.startsWith("/assets/")) continue;
+    const asset = url.pathname + url.search;
+    if (!(await cache.match(asset))) await cache.add(asset).catch(() => {});
+  }
+}
+
 async function navigate(event) {
   try {
     const response = await fetch(event.request);
@@ -76,28 +94,29 @@ async function staleWhileRevalidate(event) {
 
 const ASSET = /\/assets\/[^"'\s)]+/g;
 
-// Stores the shell and every build asset it can load, then drops assets from older builds.
+// Stores the shell and the assets it boots with, then drops assets from older builds.
+// Route modules are cached by cacheFirst as the page loads them, so install downloads no more than a visit.
 async function keepShell(response) {
   if (!response.ok) return;
   const cache = await caches.open(CACHE);
   const html = await response.clone().text();
   await cache.put(SHELL, response);
-  const assets = await assetsOf(html);
+  const shell = new Set([...STATIC, ...(html.match(ASSET) ?? [])]);
   // A missing file only costs that file offline; it must not stop the rest from being stored.
-  for (const path of assets) if (!(await cache.match(path))) await cache.add(path).catch(() => {});
-  await prune(cache, assets);
+  for (const path of shell) if (!(await cache.match(path))) await cache.add(path).catch(() => {});
+  const build = await currentBuild(cache, shell);
+  if (build) await prune(cache, build);
 }
 
-// The shell's assets, plus lazy route modules listed in the route manifest.
-async function assetsOf(html) {
-  const assets = new Set([...STATIC, ...(html.match(ASSET) ?? [])]);
-  for (const manifest of [...assets].filter((path) => path.includes("/manifest-"))) {
-    const text = await fetch(manifest)
-      .then((response) => (response.ok ? response.text() : ""))
-      .catch(() => "");
-    for (const path of text.match(ASSET) ?? []) assets.add(path);
-  }
-  return assets;
+// The shell's assets plus the route modules its manifest lists, so pruning keeps cached routes.
+// Without a readable manifest the cached routes can't be told apart from older builds,
+// so nothing is pruned.
+async function currentBuild(cache, shell) {
+  const manifest = [...shell].find((path) => path.includes("/manifest-"));
+  const response = manifest && (await cache.match(manifest));
+  const text = response?.ok ? await response.text().catch(() => "") : "";
+  if (!text.includes("__reactRouterManifest")) return undefined;
+  return new Set([...shell, ...(text.match(ASSET) ?? [])]);
 }
 
 // Fonts are referenced from CSS, which isn't scanned, so they stay.

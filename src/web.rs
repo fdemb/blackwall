@@ -6,7 +6,9 @@
 
 use axum::{
     Router,
+    extract::Request,
     http::{HeaderValue, StatusCode, Uri, header},
+    middleware::{Next, from_fn},
     response::{IntoResponse, Response},
 };
 use base64::{Engine, engine::general_purpose::STANDARD};
@@ -68,7 +70,7 @@ pub fn default_dir() -> PathBuf {
     PathBuf::from(std::env::var("WEB_DIR").unwrap_or_else(|_| "web/build/client".into()))
 }
 
-pub fn service(dir: PathBuf) -> ServeDir<Router> {
+pub fn service(dir: PathBuf) -> Router {
     let shell = load_shell(&dir).map(Arc::new);
 
     if shell.is_none() {
@@ -80,9 +82,45 @@ pub fn service(dir: PathBuf) -> ServeDir<Router> {
         async move { shell_response(shell, uri) }
     });
 
-    ServeDir::new(dir)
-        .append_index_html_on_directories(false)
-        .fallback(fallback)
+    Router::new()
+        .nest_service("/assets", ServeDir::new(dir.join("assets")))
+        .layer(from_fn(asset_cache))
+        .fallback_service(
+            ServeDir::new(dir)
+                .append_index_html_on_directories(false)
+                .fallback(fallback),
+        )
+}
+
+/// A content-hashed asset never changes, so a browser can keep it without revalidating.
+/// Anything else under `/assets` could be rewritten in place by a deploy.
+async fn asset_cache(request: Request, next: Next) -> Response {
+    let policy = if content_hashed(request.uri().path()) {
+        "public, max-age=31536000, immutable"
+    } else {
+        "no-cache"
+    };
+    let mut response = next.run(request).await;
+    if response.status().is_success() || response.status() == StatusCode::NOT_MODIFIED {
+        response
+            .headers_mut()
+            .insert(header::CACHE_CONTROL, HeaderValue::from_static(policy));
+    }
+    response
+}
+
+/// Vite names build output `name-HASH.ext`, where HASH is 8 base64url characters.
+fn content_hashed(path: &str) -> bool {
+    let file = path.rsplit('/').next().unwrap_or(path);
+    let Some((stem, _)) = file.rsplit_once('.') else {
+        return false;
+    };
+    let bytes = stem.as_bytes();
+    bytes.len() > 9
+        && bytes[bytes.len() - 9] == b'-'
+        && bytes[bytes.len() - 8..]
+            .iter()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-'))
 }
 
 fn shell_response(shell: Option<Arc<Shell>>, uri: Uri) -> Response {
@@ -104,6 +142,7 @@ fn shell_response(shell: Option<Arc<Shell>>, uri: Uri) -> Response {
                     HeaderValue::from_static("text/html; charset=utf-8"),
                 ),
                 (header::CONTENT_SECURITY_POLICY, shell.csp.clone()),
+                (header::CACHE_CONTROL, HeaderValue::from_static("no-cache")),
             ],
             shell.html.clone(),
         )
@@ -118,12 +157,32 @@ fn shell_response(shell: Option<Arc<Shell>>, uri: Uri) -> Response {
 
 #[cfg(test)]
 mod tests {
-    use super::inline_script_hashes;
+    use super::{content_hashed, inline_script_hashes};
 
     #[test]
     fn hashes_only_inline_scripts() {
         let html = r#"<script src="/a.js"></script><script>let a=1</script><script type="module" async>import "/x.js"</script>"#;
 
         assert_eq!(inline_script_hashes(html).len(), 2);
+    }
+
+    #[test]
+    fn recognizes_vite_content_hashes() {
+        for path in [
+            "/issue-B1x9Qz7k.js",
+            "/account-client-loader-C8YeX1nN.js",
+            "/root-a_b-C9d0.css",
+        ] {
+            assert!(content_hashed(path), "{path}");
+        }
+        for path in [
+            "/sw.js",
+            "/issue-B1x9.js",
+            "/issue-route-module.js",
+            "/fonts/inter.woff2",
+            "/B1x9Qz7k",
+        ] {
+            assert!(!content_hashed(path), "{path}");
+        }
     }
 }

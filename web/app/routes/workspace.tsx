@@ -6,6 +6,7 @@ import { Dialog } from "~/components/ui/dialog";
 import { Kbd } from "~/components/ui/tooltip";
 import { ApiError } from "~/lib/api";
 import { attachWorkspaceEngine, openWorkspaceEngine } from "~/lib/workspace-engine";
+import { prefetchRoutesWhenIdle } from "~/lib/prefetch-routes";
 import { AccessError, UnauthorizedError } from "~/sync/transport";
 import { clearLastWs, findWorkspace, writeLastWs } from "~/lib/auth-guard";
 import { WorkspaceProvider, useWorkspace } from "~/lib/workspace";
@@ -57,6 +58,7 @@ export function shouldRevalidate({
 
 export default function WorkspaceLayout({ loaderData }: Route.ComponentProps) {
   useEffect(() => attachWorkspaceEngine(loaderData.engine), [loaderData.engine]);
+  useEffect(() => prefetchRoutesWhenIdle(), []);
   return (
     <WorkspaceProvider key={loaderData.id} engine={loaderData.engine}>
       <Workspace />

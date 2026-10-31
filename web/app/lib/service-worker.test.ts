@@ -1,22 +1,35 @@
 import { readFileSync } from "node:fs";
 import { runInNewContext } from "node:vm";
-import { describe, expect, it } from "vite-plus/test";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
+import { registerServiceWorker } from "./service-worker";
 
 const ORIGIN = "https://blackwall.test";
 const SOURCE = readFileSync(new URL("../../public/sw.js", import.meta.url), "utf8");
 const SHELL = `<script type="module" src="/assets/entry-1.js"></script><link href="/assets/manifest-1.js">`;
+const NEXT_SHELL = `<script type="module" src="/assets/entry-2.js"></script><link href="/assets/manifest-2.js">`;
+
+function manifest(...modules: string[]) {
+  const routes = JSON.stringify({ routes: { modules } });
+  return () => new Response(`window.__reactRouterManifest=${routes}`);
+}
 
 type Handler = (event: object) => void;
+
+const get = (path: string, mode: string) => ({ url: `${ORIGIN}${path}`, method: "GET", mode });
 
 /** Runs public/sw.js against an in-memory cache and a scripted network. */
 function worker(network: Record<string, () => Response>) {
   const handlers = new Map<string, Handler>();
   const store = new Map<string, Response>();
-  const key = (request: { url: string } | string) =>
-    new URL(typeof request === "string" ? request : request.url, ORIGIN).pathname;
+  const key = (request: { url: string } | string) => {
+    const url = new URL(typeof request === "string" ? request : request.url, ORIGIN);
+    return url.pathname + url.search;
+  };
+  const fetched: string[] = [];
   let online = true;
   const fetch = async (request: { url: string } | string) => {
     if (!online) throw new TypeError("Failed to fetch");
+    fetched.push(key(request));
     const route = network[key(request)];
     return route ? route() : new Response("missing", { status: 404 });
   };
@@ -45,11 +58,11 @@ function worker(network: Record<string, () => Response>) {
     clients: { claim: async () => {} },
   };
   runInNewContext(SOURCE, { self, caches, fetch, location: new URL(ORIGIN), URL, Set, Promise });
-  async function dispatch(type: string, request?: object) {
+  async function dispatch(type: string, fields: object = {}) {
     const waits: Promise<unknown>[] = [];
     let response: Promise<Response> | undefined;
     handlers.get(type)?.({
-      request,
+      ...fields,
       waitUntil: (work: Promise<unknown>) => waits.push(work),
       respondWith: (work: Promise<Response>) => {
         response = work;
@@ -61,14 +74,14 @@ function worker(network: Record<string, () => Response>) {
   }
   return {
     store,
+    fetched,
     offline: () => {
       online = false;
     },
     install: () => dispatch("install"),
-    navigate: (path: string) =>
-      dispatch("fetch", { url: `${ORIGIN}${path}`, method: "GET", mode: "navigate" }),
-    get: (path: string) =>
-      dispatch("fetch", { url: `${ORIGIN}${path}`, method: "GET", mode: "cors" }),
+    navigate: (path: string) => dispatch("fetch", { request: get(path, "navigate") }),
+    get: (path: string) => dispatch("fetch", { request: get(path, "cors") }),
+    message: (data: unknown) => dispatch("message", { data }),
   };
 }
 
@@ -82,18 +95,40 @@ describe("service worker", () => {
       "/": html(SHELL),
       "/issues": () => (failing ? new Response("down", { status: 503 }) : html(SHELL)()),
       "/assets/entry-1.js": () => new Response("entry"),
-      "/assets/manifest-1.js": () => new Response(`import("/assets/route-1.js")`),
+      "/assets/manifest-1.js": manifest("/assets/route-1.js"),
       "/assets/route-1.js": () => new Response("route"),
     });
     await sw.install();
-    expect([...sw.store.keys()]).toEqual(
-      expect.arrayContaining(["/", "/assets/entry-1.js", "/assets/route-1.js"]),
-    );
+    expect([...sw.store.keys()]).toEqual(expect.arrayContaining(["/", "/assets/entry-1.js"]));
+    await sw.get("/assets/route-1.js");
     failing = true;
     expect(await (await sw.navigate("/issues"))?.text()).toBe(SHELL);
     sw.offline();
     expect(await (await sw.navigate("/issues"))?.text()).toBe(SHELL);
     expect(await (await sw.get("/assets/route-1.js"))?.text()).toBe("route");
+  });
+
+  it("installs only the shell, leaving route modules to be cached as the page loads them", async () => {
+    let shell = SHELL;
+    const sw = worker({
+      "/": () => html(shell)(),
+      "/assets/entry-1.js": () => new Response("entry"),
+      "/assets/manifest-1.js": manifest("/assets/route-1.js"),
+      "/assets/route-1.js": () => new Response("route"),
+      "/assets/entry-2.js": () => new Response("new"),
+      "/assets/manifest-2.js": manifest(),
+    });
+    await sw.install();
+    expect(sw.fetched).not.toContain("/assets/route-1.js");
+    expect(sw.store.has("/assets/route-1.js")).toBe(false);
+
+    await sw.get("/assets/route-1.js");
+    await sw.navigate("/");
+    expect(sw.store.has("/assets/route-1.js")).toBe(true);
+
+    shell = NEXT_SHELL;
+    await sw.navigate("/");
+    expect(sw.store.has("/assets/route-1.js")).toBe(false);
   });
 
   it("leaves API requests to the network and drops assets from older builds", async () => {
@@ -102,16 +137,119 @@ describe("service worker", () => {
       "/": () => html(shell)(),
       "/assets/entry-1.js": () => new Response("old"),
       "/assets/entry-2.js": () => new Response("new"),
-      "/assets/manifest-1.js": () => new Response(""),
+      "/assets/manifest-1.js": manifest(),
+      "/assets/manifest-2.js": manifest(),
       "/assets/font-1.woff2": () => new Response("font"),
     });
     await sw.install();
     await sw.get("/assets/font-1.woff2");
     expect(await sw.get("/api/me")).toBeUndefined();
-    shell = `<script type="module" src="/assets/entry-2.js"></script>`;
+    shell = NEXT_SHELL;
     await sw.navigate("/");
     expect(sw.store.has("/assets/entry-1.js")).toBe(false);
     expect(sw.store.has("/assets/entry-2.js")).toBe(true);
     expect(sw.store.has("/assets/font-1.woff2")).toBe(true);
+  });
+
+  it.each([
+    ["missing", 404, "missing"],
+    ["not a route manifest", 200, "<!doctype html>"],
+  ])("prunes nothing when the new build's manifest is %s", async (_, status, body) => {
+    let shell = SHELL;
+    const sw = worker({
+      "/": () => html(shell)(),
+      "/assets/entry-1.js": () => new Response("entry"),
+      "/assets/manifest-1.js": manifest("/assets/route-1.js"),
+      "/assets/route-1.js": () => new Response("route"),
+      "/assets/entry-2.js": () => new Response("new"),
+      "/assets/manifest-2.js": () => new Response(body, { status }),
+    });
+    await sw.install();
+    await sw.get("/assets/route-1.js");
+
+    shell = NEXT_SHELL;
+    await sw.navigate("/");
+
+    expect(sw.store.has("/assets/route-1.js")).toBe(true);
+    expect(sw.store.has("/assets/entry-1.js")).toBe(true);
+  });
+
+  it("ignores reported URLs outside this origin's build assets", async () => {
+    const sw = worker({ "/": html(SHELL), "/api/me": () => new Response("me") });
+    await sw.install();
+
+    const urls = ["https://cdn.test/assets/x.js", "/api/me"];
+    await sw.message({ type: "loaded-assets", urls });
+
+    expect(sw.fetched).not.toContain("/api/me");
+    expect(sw.store.has("/api/me")).toBe(false);
+  });
+
+  it("caches a reported asset under its full URL, query included", async () => {
+    const sw = worker({ "/": html(SHELL), "/assets/route-1.js?v=2": () => new Response("v2") });
+    await sw.install();
+
+    await sw.message({ type: "loaded-assets", urls: ["/assets/route-1.js?v=2"] });
+    sw.offline();
+
+    expect(await (await sw.get("/assets/route-1.js?v=2"))?.text()).toBe("v2");
+  });
+});
+
+describe("registerServiceWorker", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("caches the modules a first visit loaded before the worker took control", async () => {
+    const sw = worker({
+      "/": html(SHELL),
+      "/assets/entry-1.js": () => new Response("entry"),
+      "/assets/manifest-1.js": manifest("/assets/route-1.js"),
+      "/assets/route-1.js": () => new Response("route"),
+      "/assets/chunk-1.js": () => new Response("chunk"),
+    });
+    const listeners: (() => void)[] = [];
+    const reports: Promise<unknown>[] = [];
+    const controller = { postMessage: (data: unknown) => reports.push(sw.message(data)) };
+    let claimed = false;
+    const container = {
+      get controller() {
+        return claimed ? controller : null;
+      },
+      register: async () => {},
+      addEventListener: (_: string, listener: () => void) => listeners.push(listener),
+      removeEventListener: () => {},
+    };
+    vi.stubGlobal("navigator", { serviceWorker: container });
+    vi.stubGlobal("location", new URL(`${ORIGIN}/issues/BLA-1`));
+    vi.stubGlobal("performance", {
+      getEntriesByType: () => [
+        { name: `${ORIGIN}/assets/route-1.js` },
+        { name: `${ORIGIN}/api/me` },
+        { name: "https://fonts.test/assets/font.woff2" },
+      ],
+    });
+    const element = (attributes: Record<string, string>) => ({
+      getAttribute: (name: string) => attributes[name] ?? null,
+    });
+    vi.stubGlobal("document", {
+      baseURI: `${ORIGIN}/issues/BLA-1`,
+      querySelectorAll: () => [
+        element({ type: "module", src: "/assets/entry-1.js" }),
+        element({ rel: "modulepreload", href: "../assets/chunk-1.js" }),
+      ],
+    });
+
+    await sw.install();
+    registerServiceWorker();
+    expect(sw.store.has("/assets/route-1.js")).toBe(false);
+
+    claimed = true;
+    for (const listener of listeners) listener();
+    await Promise.all(reports);
+    sw.offline();
+
+    expect(await (await sw.get("/assets/route-1.js"))?.text()).toBe("route");
+    expect(await (await sw.get("/assets/chunk-1.js"))?.text()).toBe("chunk");
+    expect(sw.fetched).not.toContain("/api/me");
   });
 });
