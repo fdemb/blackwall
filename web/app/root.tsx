@@ -15,7 +15,6 @@ import { QueryClientProvider } from "@tanstack/react-query";
 import "./app.css";
 import { ToastProvider } from "~/components/ui/toast";
 import { I18nProvider, initialLanguage, createI18n } from "~/lib/i18n";
-import { prefetchRoutesWhenIdle } from "~/lib/prefetch-routes";
 import { queryClient } from "~/lib/query-client";
 import { watchSystemTheme } from "~/lib/theme";
 import type { Route } from "./+types/root";
@@ -66,7 +65,6 @@ export function HydrateFallback() {
 export default function App() {
   const navigate = useNavigate();
   useEffect(() => watchSystemTheme(), []);
-  useEffect(() => prefetchRoutesWhenIdle(), []);
   useEffect(() => {
     // Caches the app shell so a reload can reopen the local replicas while offline.
     if (import.meta.env.PROD && window.isSecureContext && "serviceWorker" in navigator)
