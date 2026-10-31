@@ -474,6 +474,37 @@ for (const backend of ["memory", "idb"]) {
       expect(reports).toEqual(["versionchange"]);
     });
 
+    it("evicts scopes with their records and keeps the others", async () => {
+      const otherComment = { ...COMMENT, id: "comment-2", issue_id: "issue-2" };
+      const otherScope = { entity: "comments", issueId: "issue-2" } satisfies Scope;
+      await replica.writeScope({ scope: COMMENT_SCOPE, records: [COMMENT] });
+      await replica.writeScope({ scope: ACTIVITY_SCOPE, records: [ACTIVITY] });
+      await replica.writeScope({ scope: otherScope, records: [otherComment] });
+      await replica.evictScopes([COMMENT_SCOPE, ACTIVITY_SCOPE]);
+      const loaded = await (await open()).load();
+      expect(loaded.scopes).toEqual([otherScope]);
+      expect(loaded.records.comments).toEqual([otherComment]);
+      expect(loaded.records.activity).toEqual([]);
+      expect(await replica.loadScope(COMMENT_SCOPE)).toEqual({ loaded: false, records: [] });
+    });
+
+    it("loads a head that matches the full load's meta, unconfirmed mutations and scopes", async () => {
+      const first = await replica.appendMutation(() => mutation(1));
+      await replica.appendMutation(() => mutation(2));
+      await replica.applyPull({ changes: [], cursor: "pull-1", acknowledgedUpTo: 1 });
+      await replica.writeScope({ scope: COMMENT_SCOPE, records: [COMMENT] });
+      const head = await replica.loadHead();
+      const loaded = await replica.load();
+      expect(head).toEqual({
+        meta: loaded.meta,
+        unconfirmed: loaded.unconfirmed,
+        scopes: loaded.scopes,
+      });
+      expect(head.meta.cursor).toBe("pull-1");
+      expect(head.unconfirmed).toEqual([first]);
+      expect(head.scopes).toEqual([COMMENT_SCOPE]);
+    });
+
     it("loads only the outbox, ascending by id, and matches the outbox of a full load", async () => {
       for (let index = 0; index < 3; index += 1) await replica.appendMutation(mutation);
       await replica.applyPull({ changes: [], cursor: "flushed", acknowledgedUpTo: 1 });

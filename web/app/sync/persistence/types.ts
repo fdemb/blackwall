@@ -29,14 +29,18 @@ export type Scope =
   | { entity: "comments"; issueId: string }
   | { entity: "activity"; entityId: string };
 
-export interface LoadedReplica {
+/** What a replica holds besides its records, outbox and kept rejections. Cheap to read. */
+export interface ReplicaHead {
   meta: ReplicaMeta;
-  records: Partial<Record<Entity, readonly object[]>>;
-  /** Mutations the server hasn't acknowledged, ascending by id. */
-  outbox: readonly PendingMutation[];
   /** Acknowledged mutations whose push result was never received, so a rejection may be unknown. */
   unconfirmed: readonly PendingMutation[];
   scopes: readonly Scope[];
+}
+
+export interface LoadedReplica extends ReplicaHead {
+  records: Partial<Record<Entity, readonly object[]>>;
+  /** Mutations the server hasn't acknowledged, ascending by id. */
+  outbox: readonly PendingMutation[];
   /** Rejected commands kept until the user resolves them, ascending by mutation id. */
   rejected: readonly Rejection[];
 }
@@ -63,6 +67,8 @@ export interface BootstrapStage {
 /** Each write is one atomic transaction, including its metadata and outbox changes. */
 export interface Replica {
   load(): Promise<LoadedReplica>;
+  /** The head alone, to tell whether a view in memory still matches the replica. */
+  loadHead(): Promise<ReplicaHead>;
   /** The unacknowledged outbox alone, ascending by id, for a push that doesn't need the whole replica. */
   loadOutbox(): Promise<readonly PendingMutation[]>;
   /** Discard base and scopes, adopt the open schema, and keep meta ids and the outbox. */
@@ -84,6 +90,8 @@ export interface Replica {
    * unloaded and the next open fetches it again.
    */
   writeScope(input: { scope: Scope; records: readonly object[]; partial?: boolean }): Promise<void>;
+  /** Drops these scopes' records and loaded markers in one transaction. */
+  evictScopes(scopes: readonly Scope[]): Promise<void>;
   /** Whether the scope is loaded, and its records, read in one transaction. */
   loadScope(scope: Scope): Promise<{ loaded: boolean; records: readonly object[] }>;
   appendMutation(build: (id: number) => Omit<PendingMutation, "id">): Promise<PendingMutation>;

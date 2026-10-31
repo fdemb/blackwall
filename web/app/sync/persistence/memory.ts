@@ -17,6 +17,7 @@ import type {
   LoadedReplica,
   Replica,
   ReplicaCloseReason,
+  ReplicaHead,
   ReplicaIdentity,
   ReplicaMeta,
   ReplicaOpenInput,
@@ -86,6 +87,11 @@ class MemoryReplica implements Replica {
       scopes: [...state.scopes.values()],
       rejected: [...state.rejected.values()].sort((a, b) => a.id - b.id),
     };
+  }
+
+  async loadHead(): Promise<ReplicaHead> {
+    const { meta, unconfirmed, scopes } = await this.load();
+    return { meta, unconfirmed, scopes };
   }
 
   async loadOutbox(): Promise<readonly PendingMutation[]> {
@@ -190,6 +196,21 @@ class MemoryReplica implements Replica {
       }
       if (input.partial) state.scopes.delete(key);
       else state.scopes.set(key, structuredClone(input.scope));
+    });
+  }
+
+  async evictScopes(scopes: readonly Scope[]): Promise<void> {
+    this.transaction((state) => {
+      for (const scope of scopes) {
+        const key = scopeKey(scope);
+        const table = state.records.get(scope.entity);
+        if (table === undefined) throw new Error(`unknown entity ${scope.entity}`);
+        for (const [id, record] of table) {
+          const current = recordScope(scope.entity, record);
+          if (current !== null && scopeKey(current) === key) table.delete(id);
+        }
+        state.scopes.delete(key);
+      }
     });
   }
 

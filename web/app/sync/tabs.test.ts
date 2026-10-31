@@ -50,6 +50,7 @@ interface Tab {
   engine: SyncEngine;
   fetch: ReturnType<typeof vi.fn>;
   events: EngineEvent[];
+  signals: Signals;
 }
 
 function pending(f: { tabs: Tab[] }) {
@@ -114,7 +115,7 @@ function fixture(count = 2, options: FakeServerOptions = {}) {
     });
     engine.subscribe((event) => events.push(event));
     engines.push(engine);
-    const tab = { engine, fetch, events };
+    const tab = { engine, fetch, events, signals };
     tabs.push(tab);
     return tab;
   };
@@ -170,6 +171,14 @@ function fixture(count = 2, options: FakeServerOptions = {}) {
     settleAll,
     converged,
   };
+}
+
+/** Moves the clock in steps, letting each step's timers, messages and database writes run. */
+async function elapse(f: { advance: (ms: number) => Promise<void> }, ms: number, step = 1000) {
+  for (let spent = 0; spent < ms; spent += step) {
+    await f.advance(step);
+    for (let tick = 0; tick < 20; tick += 1) await flush();
+  }
 }
 
 afterEach(async () => {
@@ -829,5 +838,140 @@ describe("tab coordination", () => {
     expect(
       saved.records.issues?.find((record) => Reflect.get(record, "id") === ISSUE),
     ).toMatchObject({ title: "While full" });
+  });
+
+  it("catches a follower up from the database when the leader's numbering skips a page", async () => {
+    const f = fixture(2);
+    await f.start();
+    const { leader, follower } = f.roles();
+    f.hub.drop("pulled");
+    f.server.run(f.peer, { type: "update_issue", id: ISSUE, patch: { title: "Dropped" } });
+    await f.advance(1000);
+    await until(() => leader.engine.store.get("issues", ISSUE)?.title === "Dropped");
+    expect(follower.engine.store.get("issues", ISSUE)?.title).toBe("Original");
+    f.server.run(f.owner, { type: "create_label", id: id(60), name: "Next", color: "#00ff00" });
+    await f.advance(1000);
+    await until(() => follower.engine.store.get("labels", id(60)) !== undefined);
+    expect(follower.engine.store.get("issues", ISSUE)?.title).toBe("Dropped");
+    f.converged(follower);
+  });
+
+  it("catches up a follower that resumes after missing pages while frozen", async () => {
+    const f = fixture(2);
+    await f.start();
+    const { leader, follower } = f.roles();
+    f.hub.drop("pulled", 1000);
+    f.server.run(f.peer, { type: "update_issue", id: ISSUE, patch: { title: "While frozen" } });
+    await f.advance(1000);
+    await until(() => leader.engine.store.get("issues", ISSUE)?.title === "While frozen");
+    expect(follower.engine.store.get("issues", ISSUE)?.title).toBe("Original");
+    follower.signals.send("resume");
+    await until(() => follower.engine.store.get("issues", ISSUE)?.title === "While frozen");
+    f.converged(follower);
+  });
+
+  it("hands leadership from a hidden leader to a visible follower once its push finishes", async () => {
+    const f = fixture(2);
+    await f.start();
+    const { leader, follower } = f.roles();
+    f.server.inject({ kind: "response_delay", route: "push", milliseconds: 40_000 });
+    const first = await leader.engine.mutate("update_issue", {
+      id: ISSUE,
+      patch: { title: "Before hand-off" },
+    });
+    await until(() => f.pushes(leader).length === 1);
+    leader.signals.send("hidden");
+    const second = await leader.engine.mutate("create_label", { name: "Queued", color: "#0000ff" });
+    for (let step = 0; step < 90 && follower.engine.status.get().role !== "leader"; step += 1)
+      await elapse(f, 1000);
+    expect(follower.engine.status.get().role).toBe("leader");
+    expect(leader.engine.status.get().role).toBe("follower");
+    expect(await first.settled).toBe("applied");
+    expect(await second.settled).toBe("applied");
+    await f.settleAll();
+    const pushed = f.tabs.flatMap((tab) =>
+      f.pushes(tab).flatMap((batch) => batch.map((mutation) => mutation.id)),
+    );
+    expect(pushed.sort((a, b) => a - b)).toEqual([first.mutationId, second.mutationId]);
+    for (const tab of f.tabs) f.converged(tab);
+  });
+
+  it("keeps leadership in a hidden tab until another tab is visible", async () => {
+    const f = fixture(2);
+    await f.start();
+    const { leader, follower } = f.roles();
+    follower.signals.send("hidden");
+    leader.signals.send("hidden");
+    await elapse(f, 120_000, 5000);
+    expect(leader.engine.status.get().role).toBe("leader");
+    follower.signals.send("visible");
+    for (let step = 0; step < 30 && follower.engine.status.get().role !== "leader"; step += 1)
+      await elapse(f, 1000);
+    expect(follower.engine.status.get().role).toBe("leader");
+  });
+
+  it("takes over without reloading the view of a follower that applied every page", async () => {
+    const f = fixture(2);
+    await f.start();
+    const { leader, follower } = f.roles();
+    f.server.run(f.peer, { type: "update_issue", id: ISSUE, patch: { title: "Seen" } });
+    await f.advance(1000);
+    await until(() => follower.engine.store.get("issues", ISSUE)?.title === "Seen");
+    const before = follower.engine.store.get("issues", ISSUE);
+    await leader.engine.close();
+    await until(() => follower.engine.status.get().role === "leader");
+    await until(() => follower.engine.status.get().connected);
+    expect(follower.engine.store.get("issues", ISSUE)).toBe(before);
+    f.converged(follower);
+  });
+
+  it("reloads a new leader that missed a page, before it reaches the network", async () => {
+    const f = fixture(2);
+    await f.start();
+    const { leader, follower } = f.roles();
+    f.hub.drop("pulled");
+    f.server.run(f.peer, { type: "update_issue", id: ISSUE, patch: { title: "Missed" } });
+    await f.advance(1000);
+    await until(() => leader.engine.store.get("issues", ISSUE)?.title === "Missed");
+    follower.signals.send("offline");
+    await leader.engine.close();
+    await until(() => follower.engine.status.get().role === "leader");
+    await until(() => follower.engine.store.get("issues", ISSUE)?.title === "Missed");
+    expect(f.requests(follower)).toBe(0);
+  });
+
+  it("evicts a scope no tab holds from every tab, but not one a follower holds", async () => {
+    const f = fixture(2);
+    f.server.run(f.owner, {
+      type: "add_comment",
+      id: id(50),
+      issue_id: ISSUE,
+      body: "Held",
+      attachments: [],
+      mentions: [],
+    });
+    await f.start();
+    const { leader, follower } = f.roles();
+    const comments = { entity: "comments", issueId: ISSUE } as const;
+    const activity = { entity: "activity", entityId: ISSUE } as const;
+    const release = follower.engine.useScope(comments);
+    // A hover prefetch holds and releases at once.
+    follower.engine.useScope(activity)();
+    await until(() =>
+      f.tabs.every(
+        (tab) =>
+          tab.engine.scopeStatus(comments) === "loaded" &&
+          tab.engine.scopeStatus(activity) === "loaded",
+      ),
+    );
+    await elapse(f, 5 * 60_000, 10_000);
+    expect(leader.engine.scopeStatus(activity)).toBe("loaded");
+    await elapse(f, 7 * 60_000, 10_000);
+    for (const tab of f.tabs) {
+      expect(tab.engine.scopeStatus(activity)).toBe("loading");
+      expect(tab.engine.scopeStatus(comments)).toBe("loaded");
+      expect(tab.engine.store.baseAll("comments").map((comment) => comment.id)).toEqual([id(50)]);
+    }
+    release();
   });
 });

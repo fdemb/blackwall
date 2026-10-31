@@ -12,10 +12,16 @@ export interface EngineClock {
   schedule(milliseconds: number, run: () => void): () => void;
 }
 
-export type EngineSignal = "online" | "offline" | "focus" | "visible";
+/**
+ * `visible` and `hidden` follow the page's visibility. `resume` means the page runs again after the
+ * browser froze it or kept it in the back/forward cache.
+ */
+export type EngineSignal = "online" | "offline" | "focus" | "visible" | "hidden" | "resume";
 
 export interface EngineSignals {
   getOnline(): boolean;
+  /** Whether the page is visible when the engine opens. Without it, the engine assumes it is. */
+  getVisible?(): boolean;
   subscribe(listener: (signal: EngineSignal) => void): () => void;
 }
 

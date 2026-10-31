@@ -7,6 +7,7 @@ import type { EngineEvent, EngineSignal, MutationReceipt, SyncEngine } from "./e
 import type { EngineDependencies } from "./engine-types";
 import { IDB_VERSION, IndexedDBReplicaStorage } from "./persistence/idb";
 import { MemoryReplicaStorage } from "./persistence/memory";
+import { recordKey } from "./persistence/shared";
 import type { ReplicaStorage, Scope } from "./persistence/types";
 import { BOOTSTRAP_ENTITIES, normalize } from "./records";
 import { createFakeServer } from "./testing/fake-server";
@@ -658,6 +659,48 @@ describe("sync engine", () => {
     await reopened.open();
     expect(reopened.scopeStatus(scope)).toBe("loaded");
     expect(reopened.scopeError(scope)).toBeNull();
+  });
+
+  it("evicts a scope unheld for ten minutes from memory and disk, keeps a held one, and loads it again on reopen", async () => {
+    const f = fixture();
+    for (const [n, issue] of [
+      [50, ISSUE],
+      [51, OTHER_ISSUE],
+    ] as const)
+      f.server.run(f.owner, {
+        type: "add_comment",
+        id: id(n),
+        issue_id: issue,
+        body: "Comment",
+        attachments: [],
+        mentions: [],
+      });
+    await f.ready();
+    const idle: Scope = { entity: "comments", issueId: ISSUE };
+    const held: Scope = { entity: "comments", issueId: OTHER_ISSUE };
+    const releaseHeld = f.engine.useScope(held);
+    // A hover prefetch holds and releases at once.
+    f.engine.useScope(idle)();
+    await until(() => f.engine.scopeStatus(idle) === "loaded");
+    await until(() => f.engine.scopeStatus(held) === "loaded");
+    const comments = () => f.engine.store.baseAll("comments").map((comment) => comment.id);
+    const released = f.server.monotonic();
+    await elapse(f, () => f.server.monotonic() - released >= 9 * 60_000);
+    expect(f.engine.scopeStatus(idle)).toBe("loaded");
+    await elapse(f, () => f.engine.scopeStatus(idle) !== "loaded");
+    expect(comments()).toEqual([id(51)]);
+    const saved = await f.disk();
+    expect(saved.scopes).toEqual([held]);
+    expect(saved.records.comments?.map((comment) => recordKey("comments", comment))).toEqual([
+      id(51),
+    ]);
+    const loads = f.requests("scope");
+    const release = f.engine.useScope(idle);
+    await until(() => f.engine.scopeStatus(idle) === "loaded");
+    expect(f.requests("scope")).toBe(loads + 1);
+    expect(comments().sort()).toEqual([id(50), id(51)]);
+    release();
+    releaseHeld();
   });
 
   it("reports a scope blocked by a protocol error as error and leaves other scopes loading", async () => {

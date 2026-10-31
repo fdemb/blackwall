@@ -1157,6 +1157,8 @@ describe("app tab coordination", () => {
     try {
       sender.postMessage({
         type: "status",
+        term: "leader",
+        seq: 0,
         connected: true,
         online: true,
         blocked: false,
@@ -1178,6 +1180,8 @@ describe("app tab coordination", () => {
     const status = (connected: boolean, online: boolean) =>
       sender.postMessage({
         type: "status",
+        term: "leader",
+        seq: 0,
         connected,
         online,
         blocked: false,

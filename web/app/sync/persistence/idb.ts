@@ -19,6 +19,7 @@ import type {
   LoadedReplica,
   Replica,
   ReplicaCloseListener,
+  ReplicaHead,
   ReplicaIdentity,
   ReplicaMeta,
   ReplicaOpenInput,
@@ -224,6 +225,24 @@ class IndexedDBReplica implements Replica {
     });
   }
 
+  loadHead(): Promise<ReplicaHead> {
+    return this.transaction<ReplicaHead>(
+      ["meta", "outbox", "scopes"],
+      "readonly",
+      (tx, done, guard) => {
+        read<Scope[]>(tx.objectStore("scopes").getAll(), guard, (scopes) => {
+          read<ReplicaMeta | undefined>(tx.objectStore("meta").get(META_KEY), guard, (meta) => {
+            if (meta === undefined) throw new Error("replica metadata is missing");
+            const acknowledged = IDBKeyRange.upperBound(meta.lastMutationId);
+            read<StoredMutation[]>(tx.objectStore("outbox").getAll(acknowledged), guard, (rows) =>
+              done({ meta, unconfirmed: rows.map(pendingOf), scopes }),
+            );
+          });
+        });
+      },
+    );
+  }
+
   loadOutbox(): Promise<readonly PendingMutation[]> {
     return this.transaction<readonly PendingMutation[]>(
       ["meta", "outbox"],
@@ -410,6 +429,23 @@ class IndexedDBReplica implements Replica {
         else tx.objectStore("scopes").put(input.scope, key);
         done(undefined);
       });
+    });
+  }
+
+  evictScopes(scopes: readonly Scope[]): Promise<void> {
+    return this.transaction(["scopes", "comments", "activity"], "readwrite", (tx, done, guard) => {
+      let remaining = scopes.length;
+      if (remaining === 0) done(undefined);
+      for (const scope of scopes) {
+        tx.objectStore("scopes").delete(scopeKey(scope));
+        const store = tx.objectStore(scope.entity);
+        const index = store.index(SCOPE_INDEX[scope.entity]);
+        read<IDBValidKey[]>(index.getAllKeys(scopeValue(scope)), guard, (keys) => {
+          for (const key of keys) store.delete(key);
+          remaining -= 1;
+          if (remaining === 0) done(undefined);
+        });
+      }
     });
   }
 

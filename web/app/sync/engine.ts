@@ -15,7 +15,13 @@ import {
   scopeKey,
   StorageFullError,
 } from "./persistence/shared";
-import type { BootstrapStage, Replica, ReplicaCloseReason, Scope } from "./persistence/types";
+import type {
+  BootstrapStage,
+  Replica,
+  ReplicaCloseReason,
+  ReplicaHead,
+  Scope,
+} from "./persistence/types";
 import { BOOTSTRAP_ENTITIES, BOOTSTRAP_REPLACED_ENTITIES } from "./records";
 import type { Change, Entity } from "./records";
 import { immutableCopy, ingest, SyncStore } from "./store";
@@ -44,6 +50,7 @@ import type {
   EngineDependencies,
   EngineEvent,
   EngineRole,
+  EngineSignal,
   EngineStatus,
   MutationOutcome,
   MutationReceipt,
@@ -54,7 +61,15 @@ import type {
   TabChannel,
 } from "./engine-types";
 import type { LoadedReplica } from "./persistence/types";
-import type { TabBody, TabCall, TabError, TabMessage, TabOutcome } from "./tabs";
+import type {
+  ReplicaMessage,
+  TabBody,
+  TabCall,
+  TabError,
+  TabMark,
+  TabMessage,
+  TabOutcome,
+} from "./tabs";
 
 export type {
   EngineClock,
@@ -88,6 +103,19 @@ export class OutdatedError extends Error {
 
 /** A follower re-sends an unanswered request on this cadence, in case the leader went away. */
 const REQUEST_RESEND_MS = 1000;
+/** Every tab announces its visibility and held scopes this often. Others forget a silent tab. */
+const PRESENCE_MS = 10_000;
+const PRESENCE_TTL_MS = 25_000;
+/** A leader hidden this long hands over to a visible tab. A tab hands over at most this often. */
+const HANDOFF_AFTER_MS = 30_000;
+/** A hand-off waiting for a push in flight looks again after this long. */
+const HANDOFF_RETRY_MS = 1000;
+/** Scopes no tab held for this long are dropped, and the least recently used past the cap. */
+const SCOPE_IDLE_MS = 10 * 60_000;
+const SCOPES_KEPT = 200;
+/** A hidden tab's timers may run only once a minute, so its holds count for two minutes past it. */
+const SCOPE_LEASE_MS = 2 * 60_000;
+const SCOPE_SWEEP_MS = 60_000;
 /** A pull or scope read that takes longer fails and retries, so it can't hold the read queue. */
 const READ_DEADLINE_MS = 30_000;
 /** A push or online command that takes longer fails and retries with the same ids. */
@@ -162,6 +190,9 @@ type RemoteRequest = {
 };
 type TabReply = { ok: true; value: unknown } | { ok: false; error: TabError };
 type ServedReply = { reply: Promise<TabReply>; cancelExpiry: () => void };
+const markOf = ({ term, seq }: TabMark): TabMark => ({ term, seq });
+const sameMark = (a: TabMark | null, b: TabMark | null) =>
+  a?.term === b?.term && a?.seq === b?.seq;
 
 /** Its share of a push body, as the transport encodes it. */
 function encodedSize({ id, name, args, at }: Mutation): number {
@@ -245,6 +276,23 @@ export class SyncEngine {
   private readonly remote = new Map<string, RemoteRequest>();
   private requestCount = 0;
   private leaderId = "";
+  /** As leader: this term, and the number of the latest replica message sent in it. */
+  private term = "";
+  private seq = 0;
+  private terms = 0;
+  /** As follower: the leader's last message the view includes, and the newest one received. */
+  private heard: TabMark | null = null;
+  private latest: TabMark | null = null;
+  /** Replica messages received while a catch-up reads the database, or null when none runs. */
+  private behind: ReplicaMessage[] | null = null;
+  /** Other tabs by id: whether each is visible and waits for the lock, and when it said so. */
+  private readonly peers = new Map<string, { visible: boolean; at: number }>();
+  /** On the monotonic clock, or null while the page is visible. */
+  private hiddenSince: number | null = null;
+  private handedOffAt = Number.NEGATIVE_INFINITY;
+  private handingOff = false;
+  private cancelHandOff: (() => void) | null = null;
+  private cancelPresence: (() => void) | null = null;
   private leaderOnline = false;
   private leaderBlocked = false;
   private readonly onMessage = (event: { data: TabMessage }) => this.receive(event.data);
@@ -262,6 +310,8 @@ export class SyncEngine {
   private readonly loadedScopes = new Map<string, Scope>();
   private readonly heldScopes = new Map<string, { scope: Scope; holders: number }>();
   private readonly scopeWork = new Map<string, Promise<void>>();
+  /** When each scope was last held in any tab, on the monotonic clock. */
+  private readonly scopeUse = new Map<string, number>();
   private readonly scopeFailures = new Map<string, Error>();
   private readonly scopeListeners = new Set<() => void>();
   /** Leader requests waiting for their scope to load or fail. */
@@ -348,6 +398,7 @@ export class SyncEngine {
     this.lockName = `blackwall-sync:${deps.actor}:${deps.workspaceId}`;
     this.role = deps.locks ? "follower" : "leader";
     this.tabId = deps.channel ? deps.randomId() : "";
+    if (deps.signals.getVisible?.() === false) this.hiddenSince = deps.clock.monotonic();
     this.channel = deps.channel?.(this.lockName) ?? null;
     this.channel?.addEventListener("message", this.onMessage);
     this.snapshot = Object.freeze({
@@ -425,31 +476,50 @@ export class SyncEngine {
       if (loaded.meta.cursor === null) this.requestPersistence();
       this.update({ phase: this.openPhase() });
       if (!this.closed && !this.terminal) {
-        this.unsubscribeSignals = this.deps.signals.subscribe((signal) => {
-          if (signal === "offline") {
-            this.update({ online: false });
-            this.notifyChange();
-            this.cancelNetwork();
-          } else if (signal === "online") {
-            this.update({ online: this.role === "leader" || this.leaderOnline });
-            this.notifyChange();
-            this.resyncAttempts = 0;
-            this.beginNetwork();
-            void this.pull();
-          } else {
-            void this.pull();
-            this.retryStorageOnFocus();
-          }
-        });
+        this.unsubscribeSignals = this.deps.signals.subscribe((signal) =>
+          this.receiveSignal(signal),
+        );
         this.update({
           online: this.deps.signals.getOnline() && (this.role === "leader" || this.leaderOnline),
         });
       }
       this.ready = true;
       if (this.channel && !this.closed) this.post({ type: "hello" });
+      this.beat();
       for (const message of this.inbox.splice(0)) this.receive(message);
     });
     return this.opening;
+  }
+
+  private receiveSignal(signal: EngineSignal): void {
+    if (signal === "offline") {
+      this.update({ online: false });
+      this.notifyChange();
+      this.cancelNetwork();
+      return;
+    }
+    if (signal === "online") {
+      this.update({ online: this.role === "leader" || this.leaderOnline });
+      this.notifyChange();
+      this.resyncAttempts = 0;
+      this.beginNetwork();
+      void this.pull();
+      return;
+    }
+    if (signal === "hidden") {
+      this.hiddenSince ??= this.deps.clock.monotonic();
+      this.announce();
+      this.considerHandOff();
+      return;
+    }
+    if (signal === "visible") {
+      this.hiddenSince = null;
+      this.announce();
+    }
+    // A frozen or restored page may have missed messages. The leader's status shows which.
+    if (signal !== "focus" && this.role === "follower") this.post({ type: "hello" });
+    void this.pull();
+    this.retryStorageOnFocus();
   }
 
   /** A replica whose access was denied shows nothing as ready until a read succeeds. */
@@ -460,25 +530,40 @@ export class SyncEngine {
 
   /** Replaces the in-memory replica with what the database holds. */
   private applyLoaded(loaded: LoadedReplica): void {
-    this.clientId = loaded.meta.clientId;
-    this.serverSchema = loaded.meta.serverSchema;
-    this.cursor = loaded.meta.cursor;
-    this.acknowledged = loaded.meta.lastMutationId;
-    this.accessUnverified = loaded.meta.accessLost === true;
-    this.resyncOwed = loaded.meta.resync === true;
-    this.setSkipped(
-      new Map(
-        (loaded.meta.skipped ?? []).map((record) => [`${record.entity}:${record.id}`, record]),
-      ),
-    );
-    for (const mutation of loaded.unconfirmed) this.unconfirmed.set(mutation.id, mutation);
-    this.loadedScopes.clear();
-    for (const scope of loaded.scopes) this.loadedScopes.set(scopeKey(scope), scope);
+    this.applyHead(loaded);
     this.store.batch(() => {
       this.store.replaceBase(loaded.records, BOOTSTRAP_REPLACED_ENTITIES);
       this.store.setPending(this.withUnsaved(loaded.outbox));
     });
     this.update({ unresolved: Object.freeze(loaded.rejected) });
+  }
+
+  private applyHead({ meta, unconfirmed, scopes }: ReplicaHead): void {
+    this.clientId = meta.clientId;
+    this.serverSchema = meta.serverSchema;
+    this.cursor = meta.cursor;
+    this.acknowledged = meta.lastMutationId;
+    this.accessUnverified = meta.accessLost === true;
+    this.resyncOwed = meta.resync === true;
+    this.setSkipped(
+      new Map((meta.skipped ?? []).map((record) => [`${record.entity}:${record.id}`, record])),
+    );
+    for (const mutation of unconfirmed) this.unconfirmed.set(mutation.id, mutation);
+    this.loadedScopes.clear();
+    for (const scope of scopes) this.loadedScopes.set(scopeKey(scope), scope);
+  }
+
+  /**
+   * Whether the view holds what the database does. Every write to its base moves the cursor or
+   * the loaded scopes, so these tell, without reading a record.
+   */
+  private matches({ meta, scopes }: ReplicaHead): boolean {
+    return (
+      meta.cursor === this.cursor &&
+      meta.lastMutationId === this.acknowledged &&
+      scopes.length === this.loadedScopes.size &&
+      scopes.every((scope) => this.loadedScopes.has(scopeKey(scope)))
+    );
   }
 
   async start(): Promise<void> {
@@ -491,6 +576,7 @@ export class SyncEngine {
       online: this.deps.signals.getOnline() && (this.role === "leader" || this.leaderOnline),
     });
     this.requestLeadership();
+    this.announce();
     this.beginNetwork();
     if (this.snapshot.storage === "full" && this.role === "leader") this.scheduleStorageRetry();
     // A follower has no network work to begin, so its holds are requested here instead.
@@ -522,7 +608,7 @@ export class SyncEngine {
     if (this.unauthorizedStreak >= UNAUTHORIZED_RETRIES) {
       this.unauthorized = "refused";
       this.update({ blocked: true });
-      this.post(this.statusMessage());
+      if (this.role === "leader") this.post(this.statusMessage());
       return;
     }
     const wait = this.unauthorizedStreak === 0 ? 0 : this.delay(this.unauthorizedStreak - 1);
@@ -555,6 +641,7 @@ export class SyncEngine {
 
   async close(): Promise<void> {
     const first = !this.closed;
+    if (first) this.post({ type: "presence", visible: false, holding: [] });
     this.closed = true;
     if (first) this.emit({ type: "closed" });
     this.stop();
@@ -564,6 +651,10 @@ export class SyncEngine {
     this.unsubscribeSignals = null;
     this.cancelResume?.();
     this.cancelResume = null;
+    this.cancelPresence?.();
+    this.cancelPresence = null;
+    this.cancelHandOff?.();
+    this.cancelHandOff = null;
     this.stopStorageRetry();
     this.notifyChange();
     await this.commits.drain();
@@ -596,6 +687,8 @@ export class SyncEngine {
   }
 
   private releaseLeadership(): void {
+    // Its own messages are what this tab follows now, until the next leader's status.
+    if (this.role === "leader") this.heard = this.latest = { term: this.term, seq: this.seq };
     if (this.deps.locks) this.setRole("follower");
     if (!this.lockHeld) return;
     this.lockHeld = false;
@@ -606,12 +699,19 @@ export class SyncEngine {
 
   /**
    * Runs once the lock is granted. The leader role starts immediately, so messages from the
-   * previous leader are ignored. The replica reloads before network work, which picks up
-   * everything that leader persisted. Requests this tab sent as a follower run here instead.
+   * previous leader are ignored. The view catches up with the database before network work,
+   * which picks up everything that leader persisted. Requests this tab sent as a follower run here
+   * instead.
    */
   private async takeLeadership(): Promise<void> {
     this.setRole("leader");
-    await this.reload();
+    this.terms += 1;
+    this.term = `${this.tabId}:${this.terms}`;
+    this.seq = 0;
+    this.announce();
+    await this.syncWithDisk();
+    // A hand-off may have released the lock while the view caught up.
+    if (this.role !== "leader") return;
     // The view now matches the database, so only an unsaved 413 rejection keeps the disk full.
     this.setStorage(this.setAside.size === 0 ? "ok" : "full");
     for (const [requestId, remote] of [...this.remote]) {
@@ -621,6 +721,22 @@ export class SyncEngine {
     }
     this.post(this.statusMessage());
     this.beginNetwork();
+    this.considerHandOff();
+  }
+
+  /**
+   * Reloads the view from the database unless it already matches, as it does in a follower that
+   * applied every message. A reload replaces every record, so every view renders again.
+   */
+  private syncWithDisk(): Promise<void> {
+    const work = this.commits.run(async () => {
+      const replica = this.requireReplica();
+      const head = await replica.loadHead();
+      if (this.matches(head)) this.applyHead(head);
+      else this.applyLoaded(await replica.load());
+    });
+    this.reloading = work.catch(() => undefined);
+    return work;
   }
 
   private setRole(role: EngineRole): void {
@@ -978,13 +1094,18 @@ export class SyncEngine {
     const held = this.heldScopes.get(key) ?? { scope: { ...scope }, holders: 0 };
     held.holders += 1;
     this.heldScopes.set(key, held);
+    this.scopeUse.set(key, this.deps.clock.monotonic());
+    if (held.holders === 1) this.announce();
     this.requestScope(held.scope);
     let released = false;
     return () => {
       if (released) return;
       released = true;
       held.holders -= 1;
-      if (held.holders === 0) this.heldScopes.delete(key);
+      this.scopeUse.set(key, this.deps.clock.monotonic());
+      if (held.holders > 0) return;
+      this.heldScopes.delete(key);
+      this.announce();
     };
   }
 
@@ -1082,6 +1203,8 @@ export class SyncEngine {
     const error = this.snapshot.lastError;
     return {
       type: "status",
+      term: this.term,
+      seq: this.seq,
       connected: this.snapshot.connected,
       online: this.snapshot.online,
       blocked: this.outboxBlocked(),
@@ -1137,8 +1260,12 @@ export class SyncEngine {
         return;
       case "pulled":
       case "reset":
+      case "evicted":
       case "status":
         if (this.role === "follower") this.receiveFromLeader(message);
+        return;
+      case "presence":
+        this.receivePresence(message);
         return;
       case "result":
         this.receiveResult(message.mutationId, message.outcome);
@@ -1166,19 +1293,10 @@ export class SyncEngine {
   }
 
   private receiveFromLeader(
-    message: Extract<TabMessage, { type: "pulled" | "reset" | "status" }>,
+    message: ReplicaMessage | Extract<TabMessage, { type: "status" }>,
   ): void {
-    switch (message.type) {
-      case "pulled":
-        this.receivePulled(message);
-        return;
-      case "reset":
-        this.receiveReset();
-        return;
-      case "status":
-        this.receiveStatus(message);
-        return;
-    }
+    if (message.type === "status") this.receiveStatus(message);
+    else this.receiveReplica(message);
   }
 
   private receiveFromFollower(
@@ -1215,6 +1333,83 @@ export class SyncEngine {
       this.leaderId = message.from;
       this.resendScopeRequests();
     }
+    this.latest = markOf(message);
+    if (this.behind === null && !sameMark(this.heard, this.latest)) {
+      this.behind = [];
+      this.catchUp();
+    }
+  }
+
+  /** Applies the leader's messages in order. A gap, a reset or a new leader reads the database. */
+  private receiveReplica(message: ReplicaMessage): void {
+    this.latest = markOf(message);
+    if (this.behind !== null) {
+      this.behind.push(message);
+      return;
+    }
+    if (message.type === "reset" || !this.follows(message)) {
+      this.behind = [message];
+      this.catchUp();
+      return;
+    }
+    this.applyReplica(message);
+  }
+
+  private follows(message: ReplicaMessage): boolean {
+    return message.term === this.heard?.term && message.seq === this.heard.seq + 1;
+  }
+
+  private applyReplica(message: Exclude<ReplicaMessage, { type: "reset" }>): void {
+    this.heard = markOf(message);
+    if (message.type === "pulled") this.receivePulled(message);
+    else this.dropScopes(message.scopes);
+  }
+
+  /**
+   * Brings the view up to the newest mark received. The leader writes before it sends, so the
+   * database holds every message received before a read starts. A missed message of the same
+   * term may have been a reset, which only a reload shows. A new leader only needs the view to
+   * match the database. Resets that arrive together share one reload, and messages that arrive
+   * during it are applied after it in order.
+   */
+  private catchUp(): void {
+    const work = this.commits
+      .run(async () => {
+        while (this.behind !== null && this.latest !== null) {
+          const target = this.latest;
+          const replica = this.requireReplica();
+          let reload = this.behind.length > 0 || this.heard?.term === target.term;
+          this.behind = [];
+          if (!reload) {
+            const head = await replica.loadHead();
+            reload = !this.matches(head);
+            if (!reload) this.applyHead(head);
+          }
+          if (reload) {
+            this.behind = [];
+            this.applyLoaded(await replica.load());
+          }
+          this.heard = target;
+          const later = this.behind;
+          this.behind = [];
+          for (const [index, message] of later.entries()) {
+            if (message.type === "reset" || !this.follows(message)) {
+              this.behind = later.slice(index);
+              break;
+            }
+            this.applyReplica(message);
+          }
+          if (this.behind.length === 0 && sameMark(this.heard, this.latest)) this.behind = null;
+        }
+        this.update({ phase: this.openPhase() });
+        this.notifyScopes();
+        for (const { scope } of this.heldScopes.values()) this.requestScope(scope);
+      })
+      .finally(() => {
+        this.behind = null;
+      });
+    this.reloading = work.catch(() => undefined);
+    work.catch((error: unknown) => this.finishError(error));
   }
 
   /** The leader's sync error as this follower reports it. This tab's outdated error stays. */
@@ -1331,25 +1526,6 @@ export class SyncEngine {
     });
   }
 
-  /** Replaces the view with the database's, through the commit queue. */
-  private reload(): Promise<void> {
-    const work = this.commits.run(async () => {
-      this.applyLoaded(await this.requireReplica().load());
-    });
-    this.reloading = work.catch(() => undefined);
-    return work;
-  }
-
-  private receiveReset(): void {
-    this.reload()
-      .then(() => {
-        this.update({ phase: this.openPhase() });
-        this.notifyScopes();
-        for (const { scope } of this.heldScopes.values()) this.requestScope(scope);
-      })
-      .catch((error: unknown) => this.finishError(error));
-  }
-
   /** The leader's verdict for a mutation. Only the tab that created it settles its receipt. */
   private receiveResult(mutationId: number, outcome: TabOutcome): void {
     if (mutationId > this.acknowledged) this.resulted.add(mutationId);
@@ -1411,6 +1587,7 @@ export class SyncEngine {
               cursor: this.cursor,
               acknowledgedUpTo: null,
               scope,
+              ...this.nextMark(),
             });
           reply = { ok: true, value: null };
         } else {
@@ -1610,7 +1787,8 @@ export class SyncEngine {
       !this.snapshot.online ||
       this.controller ||
       this.role !== "leader" ||
-      this.unauthorized !== null
+      this.unauthorized !== null ||
+      this.handingOff
     )
       return;
     const controller = new AbortController();
@@ -1622,6 +1800,7 @@ export class SyncEngine {
     for (const key of this.scopeRepairs.keys()) this.scheduleScopeRepair(key, controller);
     void this.events(controller).catch((error: unknown) => this.finishError(error));
     void this.poll(controller).catch((error: unknown) => this.finishError(error));
+    void this.sweepScopes(controller).catch((error: unknown) => this.finishError(error));
   }
 
   private cancelNetwork(): void {
@@ -1745,7 +1924,7 @@ export class SyncEngine {
       });
       this.notifyScopes();
       // Other tabs reload from the database, which holds nothing new when the write failed.
-      if (persisted) this.post({ type: "reset" });
+      if (persisted) this.post({ type: "reset", ...this.nextMark() });
     });
     this.check(controller);
     this.update({ phase: "ready" });
@@ -2041,6 +2220,7 @@ export class SyncEngine {
           changes,
           cursor: response.cursor,
           acknowledgedUpTo: response.last_mutation_id,
+          ...this.nextMark(),
         });
     });
     return response;
@@ -2197,6 +2377,7 @@ export class SyncEngine {
           cursor: this.cursor,
           acknowledgedUpTo: null,
           scope,
+          ...this.nextMark(),
         });
       this.notifyScopes();
       const key = scopeKey(scope);
@@ -2456,7 +2637,7 @@ export class SyncEngine {
       this.keepUnresolved([rejection]);
       this.post({ type: "result", mutationId: id, outcome });
     }
-    this.post({ type: "reset" });
+    this.post({ type: "reset", ...this.nextMark() });
     this.requestPush();
     return true;
   }
@@ -2776,7 +2957,7 @@ export class SyncEngine {
           if (!written) return;
         }
         // Followers missed every page and scope since the disk filled, so they reload from it.
-        this.post({ type: "reset" });
+        this.post({ type: "reset", ...this.nextMark() });
       });
     } catch (error) {
       this.finishError(error);
@@ -2791,6 +2972,152 @@ export class SyncEngine {
     } catch {
       // A browser without the storage API is no reason to stop syncing.
     }
+  }
+
+  /** The mark of the next replica message, so followers can tell when they missed one. */
+  private nextMark(): TabMark {
+    this.seq += 1;
+    return { term: this.term, seq: this.seq };
+  }
+
+  /** Tells other tabs whether this one could lead now, and which scopes it holds. */
+  private announce(): void {
+    this.post({
+      type: "presence",
+      visible: this.hiddenSince === null && this.lockPending,
+      holding: [...this.heldScopes.keys()],
+    });
+  }
+
+  private beat(): void {
+    if (!this.channel || this.closed) return;
+    this.announce();
+    this.cancelPresence = this.deps.clock.schedule(PRESENCE_MS, () => this.beat());
+  }
+
+  private receivePresence(message: Extract<TabMessage, { type: "presence" }>): void {
+    const now = this.deps.clock.monotonic();
+    this.peers.set(message.from, { visible: message.visible, at: now });
+    for (const key of message.holding) this.scopeUse.set(key, now);
+    this.considerHandOff();
+  }
+
+  private visiblePeer(): boolean {
+    const now = this.deps.clock.monotonic();
+    let visible = false;
+    for (const [id, peer] of this.peers) {
+      if (now - peer.at >= PRESENCE_TTL_MS) this.peers.delete(id);
+      else visible ||= peer.visible;
+    }
+    return visible;
+  }
+
+  /**
+   * The browser throttles a hidden tab's timers, which slows pushes and polling for every tab, so
+   * a leader hidden for a while hands the lock to a visible tab waiting for it. It never does
+   * without one, and a tab hands it on at most once per interval, so tabs can't pass it around.
+   */
+  private considerHandOff(): void {
+    this.cancelHandOff?.();
+    this.cancelHandOff = null;
+    if (
+      this.role !== "leader" ||
+      !this.lockHeld ||
+      this.handingOff ||
+      this.hiddenSince === null ||
+      !this.visiblePeer()
+    )
+      return;
+    const wait =
+      Math.max(this.hiddenSince, this.handedOffAt) + HANDOFF_AFTER_MS - this.deps.clock.monotonic();
+    // A sent batch waits for its acknowledgement here, so the next leader doesn't send it again.
+    if (wait > 0 || this.sending || this.batch?.processed) {
+      this.cancelHandOff = this.deps.clock.schedule(Math.max(wait, HANDOFF_RETRY_MS), () => {
+        this.cancelHandOff = null;
+        this.considerHandOff();
+      });
+      return;
+    }
+    this.handOff().catch((error: unknown) => this.finishError(error));
+  }
+
+  /**
+   * Stops network work and lets the writes it started finish before releasing the lock, so the
+   * next leader reads a database nothing else writes to. Then this tab queues for the lock again.
+   */
+  private async handOff(): Promise<void> {
+    this.handingOff = true;
+    this.handedOffAt = this.deps.clock.monotonic();
+    this.cancelNetwork();
+    // The next leader builds its own batch from the outbox, and this one may be stale by then.
+    this.batch = null;
+    try {
+      await this.commits.drain();
+    } finally {
+      this.handingOff = false;
+    }
+    if (this.role !== "leader" || !this.lockHeld) return;
+    if (this.hiddenSince === null) {
+      this.beginNetwork();
+      return;
+    }
+    this.releaseLeadership();
+    this.requestLeadership();
+    this.announce();
+  }
+
+  /** Runs with network work, so a stopped or offline leader leaves scopes as they are. */
+  private async sweepScopes(controller: AbortController): Promise<void> {
+    while (this.active(controller)) {
+      await pause(this.deps.clock, SCOPE_SWEEP_MS, controller.signal);
+      await this.commits.run(() => this.evictScopes(controller));
+    }
+  }
+
+  /**
+   * Drops loaded scopes that no tab has held for a while, and the least recently used ones past
+   * the cap, from the database, the view and every follower. A scope seen for the first time
+   * counts as used now. A scope held here, or by a tab whose presence is recent, stays. Runs
+   * inside `commits`.
+   */
+  private async evictScopes(controller: AbortController): Promise<void> {
+    this.check(controller);
+    if (this.snapshot.storage === "full") return;
+    const now = this.deps.clock.monotonic();
+    for (const key of this.scopeUse.keys())
+      if (!this.loadedScopes.has(key) && !this.heldScopes.has(key)) this.scopeUse.delete(key);
+    const idle: { scope: Scope; used: number }[] = [];
+    for (const [key, scope] of this.loadedScopes) {
+      const used = this.scopeUse.get(key);
+      if (used === undefined) this.scopeUse.set(key, now);
+      else if (!this.heldScopes.has(key) && now - used >= SCOPE_LEASE_MS)
+        idle.push({ scope, used });
+    }
+    idle.sort((a, b) => a.used - b.used);
+    const excess = this.loadedScopes.size - SCOPES_KEPT;
+    const evicted = idle
+      .filter(({ used }, index) => index < excess || now - used >= SCOPE_IDLE_MS)
+      .map(({ scope }) => scope);
+    if (evicted.length === 0) return;
+    if (!(await this.persist(() => this.requireReplica().evictScopes(evicted), "increment")))
+      return;
+    this.dropScopes(evicted);
+    this.post({ type: "evicted", scopes: evicted, ...this.nextMark() });
+  }
+
+  /** Removes scopes and their records from the view. One held here again by now loads again. */
+  private dropScopes(scopes: readonly Scope[]): void {
+    this.store.batch(() => {
+      for (const scope of scopes) this.store.applyBase(this.scopeChanges(scope, []));
+    });
+    for (const scope of scopes) {
+      const key = scopeKey(scope);
+      this.loadedScopes.delete(key);
+      this.scopeRepairs.get(key)?.cancel?.();
+      this.scopeRepairs.delete(key);
+    }
+    this.notifyScopes();
+    for (const scope of scopes) if (this.heldScopes.has(scopeKey(scope))) this.requestScope(scope);
   }
 
   private finishError(error: unknown): void {
