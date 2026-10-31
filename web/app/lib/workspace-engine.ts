@@ -38,22 +38,30 @@ function requestPersistence(): Promise<boolean> | undefined {
 
 const signals: EngineSignals = {
   getOnline: () => navigator.onLine,
+  getVisible: () => document.visibilityState === "visible",
   subscribe(listener) {
     const online = () => listener("online");
     const offline = () => listener("offline");
     const focus = () => listener("focus");
-    const visible = () => {
-      if (document.visibilityState === "visible") listener("visible");
+    const visibility = () =>
+      listener(document.visibilityState === "visible" ? "visible" : "hidden");
+    const resume = () => listener("resume");
+    const show = (event: PageTransitionEvent) => {
+      if (event.persisted) listener("resume");
     };
     window.addEventListener("online", online);
     window.addEventListener("offline", offline);
     window.addEventListener("focus", focus);
-    document.addEventListener("visibilitychange", visible);
+    window.addEventListener("pageshow", show);
+    document.addEventListener("visibilitychange", visibility);
+    document.addEventListener("resume", resume);
     return () => {
       window.removeEventListener("online", online);
       window.removeEventListener("offline", offline);
       window.removeEventListener("focus", focus);
-      document.removeEventListener("visibilitychange", visible);
+      window.removeEventListener("pageshow", show);
+      document.removeEventListener("visibilitychange", visibility);
+      document.removeEventListener("resume", resume);
     };
   },
 };

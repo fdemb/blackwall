@@ -12,6 +12,7 @@ export function limited(inner: ReplicaStorage = new MemoryReplicaStorage()) {
     "stageBootstrap",
     "applyPull",
     "writeScope",
+    "evictScopes",
     "appendMutation",
     "confirm",
     "discard",

@@ -9,6 +9,7 @@ import {
   recordKey,
   replicaIdentity,
   replicaName,
+  revisionOf,
   scopeKey,
   storageFailure,
   withSkipped,
@@ -19,6 +20,7 @@ import type {
   LoadedReplica,
   Replica,
   ReplicaCloseListener,
+  ReplicaHead,
   ReplicaIdentity,
   ReplicaMeta,
   ReplicaOpenInput,
@@ -88,6 +90,15 @@ function readGeneration(tx: IDBTransaction, guard: Guard, receive: (live: Genera
   read<Generation | undefined>(tx.objectStore("meta").get(GENERATION_KEY), guard, (value) =>
     receive(value ?? 0),
   );
+}
+
+/** Moves the meta's revision on, and makes the new one the transaction's result. */
+function revise(tx: IDBTransaction, guard: Guard, done: (revision: number) => void): void {
+  read<ReplicaMeta>(tx.objectStore("meta").get(META_KEY), guard, (meta) => {
+    const revision = revisionOf(meta) + 1;
+    tx.objectStore("meta").put({ ...meta, revision }, META_KEY);
+    done(revision);
+  });
 }
 
 /** Fails the transaction unless `token` still names the current stage. */
@@ -224,6 +235,34 @@ class IndexedDBReplica implements Replica {
     });
   }
 
+  loadHead(): Promise<ReplicaHead> {
+    return this.readHead("readonly", (meta) => meta);
+  }
+
+  claimTerm(): Promise<ReplicaHead> {
+    return this.readHead("readwrite", (meta) => ({ ...meta, term: (meta.term ?? 0) + 1 }));
+  }
+
+  /** Reads the head with its meta changed by `next`, and writes a changed meta back. */
+  private readHead(
+    mode: IDBTransactionMode,
+    next: (meta: ReplicaMeta) => ReplicaMeta,
+  ): Promise<ReplicaHead> {
+    return this.transaction<ReplicaHead>(["meta", "outbox", "scopes"], mode, (tx, done, guard) => {
+      read<Scope[]>(tx.objectStore("scopes").getAll(), guard, (scopes) => {
+        read<ReplicaMeta | undefined>(tx.objectStore("meta").get(META_KEY), guard, (stored) => {
+          if (stored === undefined) throw new Error("replica metadata is missing");
+          const meta = next(stored);
+          if (meta !== stored) tx.objectStore("meta").put(meta, META_KEY);
+          const acknowledged = IDBKeyRange.upperBound(meta.lastMutationId);
+          read<StoredMutation[]>(tx.objectStore("outbox").getAll(acknowledged), guard, (rows) =>
+            done({ meta, unconfirmed: rows.map(pendingOf), scopes }),
+          );
+        });
+      });
+    });
+  }
+
   loadOutbox(): Promise<readonly PendingMutation[]> {
     return this.transaction<readonly PendingMutation[]>(
       ["meta", "outbox"],
@@ -239,23 +278,24 @@ class IndexedDBReplica implements Replica {
     );
   }
 
-  resetBase(): Promise<void> {
+  resetBase(): Promise<number> {
     const stores = ["meta", ...ENTITY_STORES, "scopes", "stage"];
-    return this.transaction(stores, "readwrite", (tx, done, guard) => {
+    return this.transaction<number>(stores, "readwrite", (tx, done, guard) => {
       for (const store of ENTITY_STORES) tx.objectStore(store).clear();
       tx.objectStore("scopes").clear();
       tx.objectStore("stage").clear();
       read<ReplicaMeta>(tx.objectStore("meta").get(META_KEY), guard, (meta) => {
+        const revision = revisionOf(meta) + 1;
         tx.objectStore("meta").put(
-          { ...meta, schema: this.schema, serverSchema: 0, cursor: null },
+          { ...meta, schema: this.schema, serverSchema: 0, cursor: null, revision },
           META_KEY,
         );
-        done(undefined);
+        done(revision);
       });
     });
   }
 
-  writeBootstrap(input: Parameters<Replica["writeBootstrap"]>[0]): Promise<void> {
+  writeBootstrap(input: Parameters<Replica["writeBootstrap"]>[0]): Promise<number> {
     return writeStaged(this, input);
   }
 
@@ -294,7 +334,7 @@ class IndexedDBReplica implements Replica {
       commit: (input) => {
         const stores = ["meta", "outbox", "scopes", "stage", "comments", "activity"];
         stores.push(...SWAPPED_STORES);
-        return this.transaction(stores, "readwrite", (tx, done, guard) => {
+        return this.transaction<number>(stores, "readwrite", (tx, done, guard) => {
           checkStage(tx, guard, token, () =>
             readGeneration(tx, guard, (current) => {
               if (current !== live) throw new Error("bootstrap stage was replaced");
@@ -318,6 +358,7 @@ class IndexedDBReplica implements Replica {
               tx.objectStore("meta").put(target, GENERATION_KEY);
               read<ReplicaMeta>(tx.objectStore("meta").get(META_KEY), guard, (meta) => {
                 const lastMutationId = Math.max(meta.lastMutationId, input.lastMutationId);
+                const revision = revisionOf(meta) + 1;
                 tx.objectStore("meta").put(
                   withSkipped(
                     {
@@ -325,6 +366,7 @@ class IndexedDBReplica implements Replica {
                       cursor: input.cursor,
                       lastMutationId,
                       serverSchema: input.serverSchema,
+                      revision,
                     },
                     input.skipped ?? [],
                     input.resync === true,
@@ -332,7 +374,7 @@ class IndexedDBReplica implements Replica {
                   META_KEY,
                 );
                 dropConfirmed(tx, lastMutationId, guard);
-                done(undefined);
+                done(revision);
               });
             }),
           );
@@ -341,11 +383,11 @@ class IndexedDBReplica implements Replica {
     };
   }
 
-  applyPull(input: Parameters<Replica["applyPull"]>[0]): Promise<void> {
+  applyPull(input: Parameters<Replica["applyPull"]>[0]): Promise<number> {
     const stores = ["meta", "scopes"];
     for (const { entity } of input.changes) stores.push(storeOf(entity, 0), storeOf(entity, 1));
     if (input.acknowledgedUpTo !== null) stores.push("outbox");
-    return this.transaction(stores, "readwrite", (tx, done, guard) => {
+    return this.transaction<number>(stores, "readwrite", (tx, done, guard) => {
       read<Scope[]>(tx.objectStore("scopes").getAll(), guard, (loaded) => {
         const scopes = new Map(loaded.map((scope) => [scopeKey(scope), scope]));
         readGeneration(tx, guard, (live) => {
@@ -382,7 +424,8 @@ class IndexedDBReplica implements Replica {
           meta.lastMutationId,
           input.acknowledgedUpTo ?? meta.lastMutationId,
         );
-        const next = { ...meta, cursor: input.cursor, lastMutationId };
+        const revision = revisionOf(meta) + 1;
+        const next = { ...meta, cursor: input.cursor, lastMutationId, revision };
         tx.objectStore("meta").put(
           input.skipped === undefined
             ? next
@@ -390,13 +433,14 @@ class IndexedDBReplica implements Replica {
           META_KEY,
         );
         if (input.acknowledgedUpTo !== null) dropConfirmed(tx, lastMutationId, guard);
-        done(undefined);
+        done(revision);
       });
     });
   }
 
-  writeScope(input: Parameters<Replica["writeScope"]>[0]): Promise<void> {
-    return this.transaction(["scopes", input.scope.entity], "readwrite", (tx, done, guard) => {
+  writeScope(input: Parameters<Replica["writeScope"]>[0]): Promise<number> {
+    const stores = ["meta", "scopes", input.scope.entity];
+    return this.transaction<number>(stores, "readwrite", (tx, done, guard) => {
       const key = scopeKey(input.scope);
       const store = tx.objectStore(input.scope.entity);
       const index = store.index(SCOPE_INDEX[input.scope.entity]);
@@ -408,8 +452,23 @@ class IndexedDBReplica implements Replica {
         }
         if (input.partial) tx.objectStore("scopes").delete(key);
         else tx.objectStore("scopes").put(input.scope, key);
-        done(undefined);
       });
+      revise(tx, guard, done);
+    });
+  }
+
+  evictScopes(scopes: readonly Scope[]): Promise<number> {
+    const stores = ["meta", "scopes", "comments", "activity"];
+    return this.transaction<number>(stores, "readwrite", (tx, done, guard) => {
+      for (const scope of scopes) {
+        tx.objectStore("scopes").delete(scopeKey(scope));
+        const store = tx.objectStore(scope.entity);
+        const index = store.index(SCOPE_INDEX[scope.entity]);
+        read<IDBValidKey[]>(index.getAllKeys(scopeValue(scope)), guard, (keys) => {
+          for (const key of keys) store.delete(key);
+        });
+      }
+      revise(tx, guard, done);
     });
   }
 
@@ -465,13 +524,14 @@ class IndexedDBReplica implements Replica {
     });
   }
 
-  discard(rejections: readonly Rejection[]): Promise<void> {
-    return this.transaction(["outbox", "rejected"], "readwrite", (tx, done) => {
+  discard(rejections: readonly Rejection[]): Promise<number> {
+    const stores = ["meta", "outbox", "rejected"];
+    return this.transaction<number>(stores, "readwrite", (tx, done, guard) => {
       for (const rejection of rejections) {
         tx.objectStore("rejected").put(structuredClone(rejection));
         tx.objectStore("outbox").delete(rejection.id);
       }
-      done(undefined);
+      revise(tx, guard, done);
     });
   }
 

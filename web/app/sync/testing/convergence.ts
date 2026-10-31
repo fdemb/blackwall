@@ -305,6 +305,8 @@ export async function runConvergence(
       return {
         load: () => replica.load(),
         loadOutbox: () => replica.loadOutbox(),
+        loadHead: () => replica.loadHead(),
+        claimTerm: () => replica.claimTerm(),
         close: () => replica.close(),
         resetBase: () => write(() => replica.resetBase()),
         writeBootstrap: (value) => write(() => replica.writeBootstrap(value)),
@@ -318,6 +320,7 @@ export async function runConvergence(
           }),
         applyPull: (value) => write(() => replica.applyPull(value)),
         writeScope: (value) => write(() => replica.writeScope(value)),
+        evictScopes: (scopes) => write(() => replica.evictScopes(scopes)),
         loadScope: (scope) => replica.loadScope(scope),
         appendMutation: (value) => write(() => replica.appendMutation(value)),
         confirm: (ids, rejected) => write(() => replica.confirm(ids, rejected)),

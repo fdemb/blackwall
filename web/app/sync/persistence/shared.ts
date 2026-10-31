@@ -60,6 +60,10 @@ export function withSkipped(
   return next;
 }
 
+export function revisionOf(meta: ReplicaMeta): number {
+  return meta.revision ?? 0;
+}
+
 /** Same key paths as records.keyOf, without normalizing or changing the wire record. */
 export function keyPath(entity: Entity): "id" | "user_id" {
   return entity === "alert_preferences" ? "user_id" : "id";
@@ -99,7 +103,7 @@ export function acceptsChange(
 export const BOOTSTRAP_CHUNK = 2000;
 
 /** Writes a whole bootstrap through a stage, in chunks. */
-export async function writeStaged(replica: Replica, input: BootstrapInput): Promise<void> {
+export async function writeStaged(replica: Replica, input: BootstrapInput): Promise<number> {
   const stage = await replica.stageBootstrap();
   let chunk: Partial<Record<Entity, object[]>> = {};
   let size = 0;
@@ -113,5 +117,5 @@ export async function writeStaged(replica: Replica, input: BootstrapInput): Prom
       size = 0;
     }
   if (size > 0) await stage.write(chunk);
-  await stage.commit(input);
+  return stage.commit(input);
 }
