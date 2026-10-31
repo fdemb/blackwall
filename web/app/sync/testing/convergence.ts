@@ -306,6 +306,7 @@ export async function runConvergence(
         load: () => replica.load(),
         loadOutbox: () => replica.loadOutbox(),
         loadHead: () => replica.loadHead(),
+        claimTerm: () => replica.claimTerm(),
         close: () => replica.close(),
         resetBase: () => write(() => replica.resetBase()),
         writeBootstrap: (value) => write(() => replica.writeBootstrap(value)),

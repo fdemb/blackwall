@@ -12,6 +12,7 @@ import {
   recordKey,
   BOOTSTRAP_CHUNK,
   recordScope,
+  revisionOf,
   scopeKey,
   StorageFullError,
 } from "./persistence/shared";
@@ -275,11 +276,15 @@ export class SyncEngine {
   private readonly remote = new Map<string, RemoteRequest>();
   private requestCount = 0;
   private leaderId = "";
-  /** As leader: this term, and the number of the latest replica message sent in it. */
-  private term = "";
+  /** As leader: the term claimed with the lock, and the number of its latest replica message. */
+  private term = 0;
   private seq = 0;
-  private terms = 0;
-  /** As follower: the leader's last message the view includes, and the newest one received. */
+  /** The database revision the view was built at, or null while the view runs ahead of it. */
+  private revision: number | null = 0;
+  /**
+   * As follower: the leader's last message the view includes, and the newest one received. A
+   * message from an older term than the newest is a superseded leader's, and is ignored.
+   */
   private heard: TabMark | null = null;
   private latest: TabMark | null = null;
   /** Replica messages received while a catch-up reads the database, or null when none runs. */
@@ -538,6 +543,7 @@ export class SyncEngine {
   }
 
   private applyHead({ meta, unconfirmed, scopes }: ReplicaHead): void {
+    this.revision = revisionOf(meta);
     this.clientId = meta.clientId;
     this.serverSchema = meta.serverSchema;
     this.cursor = meta.cursor;
@@ -553,13 +559,13 @@ export class SyncEngine {
   }
 
   /**
-   * Whether the view holds what the database does. Every write to its base moves the cursor or
-   * the loaded scopes, so these tell, without reading a record.
+   * Whether the view holds what the database does, without reading a record. Every write that
+   * only a reload shows moves the revision. A scope that loaded with a skipped record is loaded in
+   * the view but not on disk, which the scopes show.
    */
   private matches({ meta, scopes }: ReplicaHead): boolean {
     return (
-      meta.cursor === this.cursor &&
-      meta.lastMutationId === this.acknowledged &&
+      revisionOf(meta) === this.revision &&
       scopes.length === this.loadedScopes.size &&
       scopes.every((scope) => this.loadedScopes.has(scopeKey(scope)))
     );
@@ -704,8 +710,6 @@ export class SyncEngine {
    */
   private async takeLeadership(): Promise<void> {
     this.setRole("leader");
-    this.terms += 1;
-    this.term = `${this.tabId}:${this.terms}`;
     this.seq = 0;
     this.announce();
     await this.syncWithDisk();
@@ -724,13 +728,15 @@ export class SyncEngine {
   }
 
   /**
-   * Reloads the view from the database unless it already matches, as it does in a follower that
-   * applied every message. A reload replaces every record, so every view renders again.
+   * Claims a new term, then reloads the view from the database unless it already matches, as it
+   * does in a follower that applied every message. A reload replaces every record, so every view
+   * renders again.
    */
   private syncWithDisk(): Promise<void> {
     const work = this.commits.run(async () => {
       const replica = this.requireReplica();
-      const head = await replica.loadHead();
+      const head = await replica.claimTerm();
+      this.term = head.meta.term ?? 0;
       if (this.matches(head)) this.applyHead(head);
       else this.applyLoaded(await replica.load());
     });
@@ -1315,6 +1321,7 @@ export class SyncEngine {
   }
 
   private receiveStatus(message: Extract<TabMessage, { type: "status" }>): void {
+    if (!this.hear(message)) return;
     // Not `connected`: the leader's stream drops on every reconnect, and the leader stays online then.
     this.leaderOnline = message.online;
     this.leaderBlocked = message.blocked;
@@ -1332,7 +1339,6 @@ export class SyncEngine {
       this.leaderId = message.from;
       this.resendScopeRequests();
     }
-    this.latest = markOf(message);
     if (this.behind === null && !sameMark(this.heard, this.latest)) {
       this.behind = [];
       this.catchUp();
@@ -1341,7 +1347,7 @@ export class SyncEngine {
 
   /** Applies the leader's messages in order. A gap, a reset or a new leader reads the database. */
   private receiveReplica(message: ReplicaMessage): void {
-    this.latest = markOf(message);
+    if (!this.hear(message)) return;
     if (this.behind !== null) {
       this.behind.push(message);
       return;
@@ -1354,12 +1360,22 @@ export class SyncEngine {
     this.applyReplica(message);
   }
 
+  /** Records a leader's mark as the newest, unless a leader of a newer term superseded it. */
+  private hear(mark: TabMark): boolean {
+    const latest = this.latest;
+    if (latest !== null && mark.term < latest.term) return false;
+    if (latest === null || mark.term > latest.term || mark.seq > latest.seq)
+      this.latest = markOf(mark);
+    return true;
+  }
+
   private follows(message: ReplicaMessage): boolean {
     return message.term === this.heard?.term && message.seq === this.heard.seq + 1;
   }
 
   private applyReplica(message: Exclude<ReplicaMessage, { type: "reset" }>): void {
     this.heard = markOf(message);
+    if (message.revision !== undefined) this.revision = message.revision;
     if (message.type === "pulled") this.receivePulled(message);
     else this.dropScopes(message.scopes);
   }
@@ -1898,6 +1914,7 @@ export class SyncEngine {
       this.check(controller);
       const { stage } = response;
       // A full disk keeps the downloaded workspace in memory instead of downloading it again.
+      if (stage === null) this.revision = null;
       const persisted =
         stage !== null &&
         (await this.persist(
@@ -1911,7 +1928,7 @@ export class SyncEngine {
               resync: false,
             }),
           "snapshot",
-        ));
+        )) !== null;
       if (persisted) await this.verified();
       this.cursor = response.header.cursor;
       this.serverSchema = response.header.schema;
@@ -2186,7 +2203,7 @@ export class SyncEngine {
     await this.commits.run(async () => {
       this.check(controller);
       // Once a write has failed for space, the database waits for a full snapshot instead.
-      const persisted = await this.persist(
+      const revision = await this.persist(
         () =>
           this.requireReplica().applyPull({
             changes,
@@ -2197,7 +2214,7 @@ export class SyncEngine {
           }),
         "increment",
       );
-      if (persisted) await this.verified();
+      if (revision !== null) await this.verified();
       const accepted = changes.filter((change) =>
         acceptsChange(
           change.entity,
@@ -2213,12 +2230,13 @@ export class SyncEngine {
       this.recovered();
       // Followers only see what the database holds. Until a snapshot lands they may be behind,
       // and its reset catches them up.
-      if (persisted)
+      if (revision !== null)
         this.post({
           type: "pulled",
           changes,
           cursor: response.cursor,
           acknowledgedUpTo: response.last_mutation_id,
+          revision,
           ...this.nextMark(),
         });
     });
@@ -2360,22 +2378,23 @@ export class SyncEngine {
     }
     await this.commits.run(async () => {
       this.check(controller);
-      const persisted = await this.persist(
+      const revision = await this.persist(
         () => this.requireReplica().writeScope({ scope, records, partial: skippedHere }),
         "increment",
       );
-      if (persisted) await this.verified();
+      if (revision !== null) await this.verified();
       const changes = this.scopeChanges(scope, records);
       this.loadedScopes.set(scopeKey(scope), scope);
       this.scopeFailures.delete(scopeKey(scope));
       this.store.batch(() => this.store.applyBase(changes));
-      if (persisted)
+      if (revision !== null)
         this.post({
           type: "pulled",
           changes,
           cursor: this.cursor,
           acknowledgedUpTo: null,
           scope,
+          revision,
           ...this.nextMark(),
         });
       this.notifyScopes();
@@ -2619,7 +2638,9 @@ export class SyncEngine {
     const rejections = [...this.setAside.values()];
     if (rejections.length === 0) return true;
     try {
-      await this.requireReplica().discard(rejections);
+      const revision = await this.requireReplica().discard(rejections);
+      // A view that runs ahead of the database still does.
+      if (this.revision !== null) this.revision = revision;
     } catch (error) {
       if (!(error instanceof StorageFullError)) throw error;
       this.setStorage("full");
@@ -2864,22 +2885,25 @@ export class SyncEngine {
   /**
    * Runs a database write. A "snapshot" leaves the database equal to memory. An "increment" builds
    * on the database as it was, so it is skipped once an earlier write failed for space, since
-   * applying it would leave the database ahead of what it holds. Both report whether it happened.
+   * applying it would leave the database ahead of what it holds. Both resolve to the revision
+   * written, or null when the write didn't happen and the view runs ahead of the database.
    */
   private async persist(
-    write: () => Promise<void>,
+    write: () => Promise<number>,
     kind: "snapshot" | "increment",
-  ): Promise<boolean> {
-    if (kind === "increment" && this.snapshot.storage === "full") return false;
+  ): Promise<number | null> {
+    if (kind === "increment" && this.snapshot.storage === "full") return null;
     try {
-      await write();
+      this.revision = await write();
     } catch (error) {
       if (!(error instanceof StorageFullError)) throw error;
+      this.revision = null;
       this.setStorage("full");
-      return false;
+      return null;
     }
+    const revision = this.revision;
     if (kind === "snapshot" && (await this.storeSetAside())) this.setStorage("ok");
-    return true;
+    return revision;
   }
 
   private setStorage(storage: StorageState): void {
@@ -2938,7 +2962,7 @@ export class SyncEngine {
             }),
           "snapshot",
         );
-        if (!saved) return;
+        if (saved === null) return;
         for (const [key, scope] of this.loadedScopes) {
           const scoped = this.store.baseAll(scope.entity).filter((record) => {
             const found = recordScope(scope.entity, record);
@@ -2953,7 +2977,7 @@ export class SyncEngine {
               }),
             "snapshot",
           );
-          if (!written) return;
+          if (written === null) return;
         }
         // Followers missed every page and scope since the disk filled, so they reload from it.
         this.post({ type: "reset", ...this.nextMark() });
@@ -3076,8 +3100,8 @@ export class SyncEngine {
   /**
    * Drops loaded scopes that no tab has held for a while, and the least recently used ones past
    * the cap, from the database, the view and every follower. A scope seen for the first time
-   * counts as used now. A scope held here, or by a tab whose presence is recent, stays. Runs
-   * inside `commits`.
+   * counts as used now. A scope held here, or by a tab whose presence is recent, stays. Nothing is
+   * dropped while a mutation is pending anywhere. Runs inside `commits`.
    */
   private async evictScopes(controller: AbortController): Promise<void> {
     this.check(controller);
@@ -3097,11 +3121,24 @@ export class SyncEngine {
     const evicted: Scope[] = [];
     for (const [index, { scope, used }] of idle.entries())
       if (index < excess || now - used >= SCOPE_IDLE_MS) evicted.push(scope);
-    if (evicted.length === 0) return;
-    if (!(await this.persist(() => this.requireReplica().evictScopes(evicted), "increment")))
-      return;
+    if (evicted.length === 0 || (await this.mutationsPending())) return;
+    const revision = await this.persist(
+      () => this.requireReplica().evictScopes(evicted),
+      "increment",
+    );
+    if (revision === null) return;
     this.dropScopes(evicted);
-    this.post({ type: "evicted", scopes: evicted, ...this.nextMark() });
+    this.post({ type: "evicted", scopes: evicted, revision, ...this.nextMark() });
+  }
+
+  /**
+   * Whether any tab has a mutation the server hasn't acknowledged: one this tab knows of, saved or
+   * not, or one in the shared outbox. Replaying it may need the records of a scope nobody holds,
+   * such as a comment edit whose push keeps failing.
+   */
+  private async mutationsPending(): Promise<boolean> {
+    if (this.store.pending().length > 0) return true;
+    return (await this.requireReplica().loadOutbox()).length > 0;
   }
 
   /** Removes scopes and their records from the view. One held here again by now loads again. */

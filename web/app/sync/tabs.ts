@@ -11,11 +11,12 @@ export interface TabError {
 export type TabOutcome = "applied" | "unknown" | { id: number; status: number; message: string };
 
 /**
- * A leader's term and the number of its latest replica message. Followers count the messages, so a
- * gap shows one they missed.
+ * A leader's term and the number of its latest replica message. Each tab that takes the lock
+ * claims a higher term in the database, so followers ignore a superseded leader's late messages.
+ * They count the messages of a term, so a gap shows one they missed.
  */
 export interface TabMark {
-  term: string;
+  term: number;
   seq: number;
 }
 
@@ -29,10 +30,12 @@ export type TabBody =
       acknowledgedUpTo: number | null;
       /** Set when this message loads a comment or activity scope. */
       scope?: Scope;
+      /** The replica's revision after the write this reports. Absent when nothing was written. */
+      revision?: number;
     } & TabMark)
   | ({ type: "reset" } & TabMark)
   /** The leader dropped these scopes from the replica, because no tab held them for a while. */
-  | ({ type: "evicted"; scopes: readonly Scope[] } & TabMark)
+  | ({ type: "evicted"; scopes: readonly Scope[]; revision: number } & TabMark)
   /** The session ended, so every tab stops. The leader sends this before it deletes anything. */
   | { type: "unauthorized" }
   | { type: "accessLost" }

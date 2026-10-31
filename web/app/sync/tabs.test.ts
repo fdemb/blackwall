@@ -974,4 +974,89 @@ describe("tab coordination", () => {
     }
     release();
   });
+
+  it("reloads a new leader after a repair bootstrap that kept the cursor and lost its reset", async () => {
+    const errors = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const f = fixture(2);
+    await f.start();
+    const { leader, follower } = f.roles();
+    f.server.corruptRecord("issues", ISSUE, { updated_at: "not a time" });
+    f.server.run(f.peer, { type: "update_issue", id: ISSUE, patch: { title: "Unreadable" } });
+    f.server.run(f.owner, { type: "create_label", id: id(60), name: "Page", color: "#00ff00" });
+    await f.advance(1000);
+    await until(() => follower.engine.store.get("labels", id(60)) !== undefined);
+    expect(leader.engine.status.get().skipped).toMatchObject([{ entity: "issues", id: ISSUE }]);
+    expect(follower.engine.store.get("issues", ISSUE)?.title).toBe("Original");
+    // The leader dies before any tab hears of its repair.
+    for (const type of ["reset", "status", "pulled"] as const) f.hub.drop(type, 1000);
+    for (let step = 0; step < 120 && leader.engine.store.get("issues", ISSUE); step += 1)
+      await elapse(f, 1000);
+    expect(leader.engine.store.get("issues", ISSUE)).toBeUndefined();
+    expect(follower.engine.store.get("issues", ISSUE)?.title).toBe("Original");
+    follower.signals.send("offline");
+    const requests = f.requests(follower);
+    await leader.engine.close();
+    await until(() => follower.engine.status.get().role === "leader");
+    await until(() => follower.engine.store.get("issues", ISSUE) === undefined);
+    expect(f.requests(follower)).toBe(requests);
+    errors.mockRestore();
+  });
+
+  it("ignores a superseded leader's late status and page, after a catch-up and during a reload", async () => {
+    const f = fixture(3);
+    await f.start();
+    const { leader } = f.roles();
+    const followers = f.tabs.filter((tab) => tab !== leader);
+    const title = (tab: Tab) => tab.engine.store.get("issues", ISSUE)?.title;
+    const capture = async (type: "status" | "pulled", send: () => Promise<void> | void) => {
+      const sent = f.hub.sent(type);
+      const deliver = f.hub.delay(type);
+      await send();
+      await until(() => f.hub.sent(type) > sent);
+      return deliver;
+    };
+    const resume = () => followers[0].signals.send("resume");
+    const edit = (tab: Tab, text: string) => async () => {
+      f.server.run(f.peer, { type: "update_issue", id: ISSUE, patch: { title: text } });
+      await f.advance(1000);
+      await until(() => title(tab) === text);
+    };
+    const firstStatus = await capture("status", resume);
+    const firstPage = await capture("pulled", edit(leader, "Old"));
+    const secondStatus = await capture("status", resume);
+    const secondPage = await capture("pulled", edit(leader, "Older"));
+    await leader.engine.close();
+    await until(() => followers.some((tab) => tab.engine.status.get().role === "leader"));
+    const next = followers.find((tab) => tab.engine.status.get().role === "leader") ?? leader;
+    const watcher = followers.find((tab) => tab !== next) ?? leader;
+    await until(() => title(watcher) === "Older");
+
+    await edit(watcher, "Current")();
+    const caughtUp = watcher.engine.store.get("issues", ISSUE);
+    firstStatus();
+    firstPage();
+    for (let tick = 0; tick < 20; tick += 1) await flush();
+    f.server.run(f.owner, { type: "create_label", id: id(60), name: "After", color: "#00ff00" });
+    await f.advance(1000);
+    await until(() => watcher.engine.store.get("labels", id(60)) !== undefined);
+    expect(watcher.engine.store.get("issues", ISSUE)).toBe(caughtUp);
+
+    f.hub.drop("pulled");
+    await edit(next, "Newest")();
+    f.hub.hold();
+    f.server.run(f.owner, { type: "create_label", id: id(61), name: "Gap", color: "#00ff00" });
+    await f.advance(1000);
+    await until(() => next.engine.store.get("labels", id(61)) !== undefined);
+    secondStatus();
+    secondPage();
+    f.hub.release();
+    await until(() => watcher.engine.store.get("labels", id(61)) !== undefined);
+    expect(title(watcher)).toBe("Newest");
+    const reloaded = watcher.engine.store.get("issues", ISSUE);
+    f.server.run(f.owner, { type: "create_label", id: id(62), name: "Last", color: "#00ff00" });
+    await f.advance(1000);
+    await until(() => watcher.engine.store.get("labels", id(62)) !== undefined);
+    expect(watcher.engine.store.get("issues", ISSUE)).toBe(reloaded);
+    f.converged(watcher);
+  });
 });

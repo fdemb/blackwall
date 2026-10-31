@@ -703,6 +703,40 @@ describe("sync engine", () => {
     releaseHeld();
   });
 
+  it("keeps an idle scope while an edit to its comment is pending, and evicts it once the edit lands", async () => {
+    const f = fixture();
+    f.server.run(f.owner, {
+      type: "add_comment",
+      id: id(50),
+      issue_id: ISSUE,
+      body: "Comment",
+      attachments: [],
+      mentions: [],
+    });
+    await f.ready();
+    const scope: Scope = { entity: "comments", issueId: ISSUE };
+    const release = f.engine.useScope(scope);
+    await until(() => f.engine.scopeStatus(scope) === "loaded");
+    f.server.poisonMutation(1, "error");
+    const edit = await f.engine.mutate("edit_comment", {
+      id: id(50),
+      body: "Edited",
+      mentions: [],
+    });
+    release();
+    const released = f.server.monotonic();
+    await elapse(f, () => f.server.monotonic() - released >= 15 * 60_000, 10_000);
+    expect(f.engine.scopeStatus(scope)).toBe("loaded");
+    expect(f.engine.store.get("comments", id(50))?.body).toBe("Edited");
+
+    f.server.healMutation(1);
+    await elapse(f, () => f.engine.status.get().pending === 0);
+    expect(await edit.settled).toBe("applied");
+    await elapse(f, () => f.engine.scopeStatus(scope) !== "loaded");
+    expect(f.engine.store.get("comments", id(50))).toBeUndefined();
+    expect((await f.disk()).scopes).toEqual([]);
+  });
+
   it("reports a scope blocked by a protocol error as error and leaves other scopes loading", async () => {
     const f = fixture();
     const scope: Scope = { entity: "comments", issueId: ISSUE };

@@ -141,7 +141,9 @@ for (const backend of ["memory", "idb"]) {
         schema: INPUT.schema + 1,
         serverSchema: 0,
         cursor: null,
+        revision: expect.any(Number),
       });
+      expect(loaded.meta.revision).toBeGreaterThan(before.meta.revision ?? 0);
       expect(loaded.outbox).toEqual(before.outbox);
       expect(loaded.scopes).toEqual([]);
       for (const entity of ENTITIES) expect(loaded.records[entity]).toEqual([]);
@@ -503,6 +505,40 @@ for (const backend of ["memory", "idb"]) {
       expect(head.meta.cursor).toBe("pull-1");
       expect(head.unconfirmed).toEqual([first]);
       expect(head.scopes).toEqual([COMMENT_SCOPE]);
+    });
+
+    it("moves the revision with every write that only a reload shows, and with nothing else", async () => {
+      const revisions = [
+        await replica.writeBootstrap(bootstrap()),
+        await replica.applyPull({ changes: [], cursor: "pull-1", acknowledgedUpTo: null }),
+        await replica.writeScope({ scope: COMMENT_SCOPE, records: [COMMENT] }),
+        await replica.evictScopes([COMMENT_SCOPE]),
+      ];
+      await replica.appendMutation(mutation);
+      await replica.appendMutation(mutation);
+      const rejection = {
+        id: 1,
+        status: 413,
+        message: "too large",
+        command: { name: "update_issue", args: {} },
+      };
+      revisions.push(await replica.discard([rejection]));
+      await replica.confirm([2]);
+      await replica.setAccessLost(true);
+      await replica.claimTerm();
+      expect((await (await open()).loadHead()).meta.revision).toBe(revisions.at(-1));
+      revisions.push(await replica.resetBase());
+      expect(revisions).toEqual([...new Set(revisions)].sort((a, b) => a - b));
+      expect((await replica.load()).meta.revision).toBe(revisions.at(-1));
+    });
+
+    it("claims a higher term each time, and reads the head with it", async () => {
+      await replica.writeScope({ scope: COMMENT_SCOPE, records: [COMMENT] });
+      const first = await replica.claimTerm();
+      const second = await (await open()).claimTerm();
+      expect(first.scopes).toEqual([COMMENT_SCOPE]);
+      expect(second.meta.term).toBeGreaterThan(first.meta.term ?? 0);
+      expect((await replica.loadHead()).meta.term).toBe(second.meta.term);
     });
 
     it("loads only the outbox, ascending by id, and matches the outbox of a full load", async () => {

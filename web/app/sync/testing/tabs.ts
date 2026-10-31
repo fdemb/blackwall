@@ -13,6 +13,8 @@ export interface TabHub {
   release(): void;
   /** Discards the next `count` messages of this type, whichever tab sends them. */
   drop(type: TabMessage["type"], count?: number): void;
+  /** Holds back the next message of this type, from any tab, until the call it returns. */
+  delay(type: TabMessage["type"]): () => void;
   /** Messages of this type posted so far, dropped or not. */
   sent(type: TabMessage["type"]): number;
 }
@@ -23,6 +25,9 @@ interface Endpoint {
   listeners: Set<(event: { data: TabMessage }) => void>;
 }
 
+type Delivery = { to: Endpoint; message: TabMessage };
+type Delay = { type: TabMessage["type"]; held: Delivery[] | null };
+
 interface LockState {
   held: boolean;
   waiting: Array<() => void>;
@@ -31,8 +36,9 @@ interface LockState {
 export function createTabHub(): TabHub {
   const locks = new Map<string, LockState>();
   const endpoints = new Set<Endpoint>();
-  const queue: Array<{ to: Endpoint; message: TabMessage }> = [];
+  const queue: Delivery[] = [];
   const drops: Array<{ type: TabMessage["type"]; count: number }> = [];
+  const delays: Delay[] = [];
   const posted: TabMessage["type"][] = [];
   let held = false;
   let draining = false;
@@ -96,8 +102,15 @@ export function createTabHub(): TabHub {
             drop.count -= 1;
             return;
           }
+          const deliveries: Delivery[] = [];
           for (const other of endpoints)
-            if (other !== endpoint && other.name === name) queue.push({ to: other, message });
+            if (other !== endpoint && other.name === name) deliveries.push({ to: other, message });
+          const delayed = delays.find((entry) => entry.type === message.type && !entry.held);
+          if (delayed) {
+            delayed.held = deliveries;
+            return;
+          }
+          queue.push(...deliveries);
           schedule();
         },
         addEventListener: (_type, listener) => {
@@ -121,6 +134,15 @@ export function createTabHub(): TabHub {
     },
     drop: (type, count = 1) => {
       drops.push({ type, count });
+    },
+    delay: (type) => {
+      const entry: Delay = { type, held: null };
+      delays.push(entry);
+      return () => {
+        delays.splice(delays.indexOf(entry), 1);
+        queue.push(...(entry.held ?? []));
+        schedule();
+      };
     },
     sent: (type) => posted.filter((kind) => kind === type).length,
   };

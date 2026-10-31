@@ -8,6 +8,7 @@ import {
   recordKey,
   recordScope,
   replicaName,
+  revisionOf,
   scopeKey,
   withSkipped,
   writeStaged,
@@ -42,6 +43,13 @@ function dropConfirmed(state: State): void {
     state.outbox.delete(id);
     state.confirmed.delete(id);
   }
+}
+
+/** Moves the base revision on, for a write that changes what only a reload shows. */
+function revise(state: State): number {
+  const revision = revisionOf(state.meta) + 1;
+  state.meta.revision = revision;
+  return revision;
 }
 
 function sortedOutbox(state: State): PendingMutation[] {
@@ -94,6 +102,13 @@ class MemoryReplica implements Replica {
     return { meta, unconfirmed, scopes };
   }
 
+  async claimTerm(): Promise<ReplicaHead> {
+    this.transaction((state) => {
+      state.meta.term = (state.meta.term ?? 0) + 1;
+    });
+    return this.loadHead();
+  }
+
   async loadOutbox(): Promise<readonly PendingMutation[]> {
     if (this.closed) throw new Error("replica is closed");
     const { state } = this.entry;
@@ -102,18 +117,19 @@ class MemoryReplica implements Replica {
     );
   }
 
-  async resetBase(): Promise<void> {
+  async resetBase(): Promise<number> {
     this.entry.stage = null;
-    this.transaction((state) => {
+    return this.transaction((state) => {
       for (const table of state.records.values()) table.clear();
       state.scopes.clear();
       state.meta.schema = this.schema;
       state.meta.serverSchema = 0;
       state.meta.cursor = null;
+      return revise(state);
     });
   }
 
-  writeBootstrap(input: Parameters<Replica["writeBootstrap"]>[0]): Promise<void> {
+  writeBootstrap(input: Parameters<Replica["writeBootstrap"]>[0]): Promise<number> {
     return writeStaged(this, input);
   }
 
@@ -139,7 +155,7 @@ class MemoryReplica implements Replica {
         }
       },
       commit: async (input) => {
-        this.transaction((state) => {
+        const revision = this.transaction((state) => {
           current();
           for (const entity of input.entities)
             state.records.set(entity, new Map(stage.records.get(entity)));
@@ -151,14 +167,16 @@ class MemoryReplica implements Replica {
           dropConfirmed(state);
           state.meta.serverSchema = input.serverSchema;
           state.meta = withSkipped(state.meta, input.skipped ?? [], input.resync === true);
+          return revise(state);
         });
         this.entry.stage = null;
+        return revision;
       },
     };
   }
 
-  async applyPull(input: Parameters<Replica["applyPull"]>[0]): Promise<void> {
-    this.transaction((state) => {
+  async applyPull(input: Parameters<Replica["applyPull"]>[0]): Promise<number> {
+    return this.transaction((state) => {
       for (const change of input.changes) {
         const table = state.records.get(change.entity);
         if (table === undefined) throw new Error(`unknown entity ${change.entity}`);
@@ -179,11 +197,12 @@ class MemoryReplica implements Replica {
       }
       if (input.skipped !== undefined)
         state.meta = withSkipped(state.meta, input.skipped, input.resync === true);
+      return revise(state);
     });
   }
 
-  async writeScope(input: Parameters<Replica["writeScope"]>[0]): Promise<void> {
-    this.transaction((state) => {
+  async writeScope(input: Parameters<Replica["writeScope"]>[0]): Promise<number> {
+    return this.transaction((state) => {
       const key = scopeKey(input.scope);
       const table = state.records.get(input.scope.entity);
       if (table === undefined) throw new Error(`unknown entity ${input.scope.entity}`);
@@ -196,11 +215,12 @@ class MemoryReplica implements Replica {
       }
       if (input.partial) state.scopes.delete(key);
       else state.scopes.set(key, structuredClone(input.scope));
+      return revise(state);
     });
   }
 
-  async evictScopes(scopes: readonly Scope[]): Promise<void> {
-    this.transaction((state) => {
+  async evictScopes(scopes: readonly Scope[]): Promise<number> {
+    return this.transaction((state) => {
       for (const scope of scopes) {
         const key = scopeKey(scope);
         const table = state.records.get(scope.entity);
@@ -211,6 +231,7 @@ class MemoryReplica implements Replica {
         }
         state.scopes.delete(key);
       }
+      return revise(state);
     });
   }
 
@@ -244,13 +265,14 @@ class MemoryReplica implements Replica {
     });
   }
 
-  async discard(rejections: readonly Rejection[]): Promise<void> {
-    this.transaction((state) => {
+  async discard(rejections: readonly Rejection[]): Promise<number> {
+    return this.transaction((state) => {
       for (const rejection of rejections) {
         state.rejected.set(rejection.id, structuredClone(rejection));
         state.outbox.delete(rejection.id);
         state.confirmed.delete(rejection.id);
       }
+      return revise(state);
     });
   }
 

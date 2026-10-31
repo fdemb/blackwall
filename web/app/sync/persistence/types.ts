@@ -23,6 +23,14 @@ export interface ReplicaMeta {
    * and ends only with a bootstrap.
    */
   resync?: boolean;
+  /**
+   * Moves on, in the same transaction, with every write that other tabs see only by reading the
+   * database: the base, its loaded scopes, and discarded mutations. A view built at the same
+   * revision holds what the database does. Absent counts as 0.
+   */
+  revision?: number;
+  /** The last leader term a tab claimed when it took the lock. Absent counts as 0. */
+  term?: number;
 }
 
 export type Scope =
@@ -61,20 +69,25 @@ export interface BootstrapInput {
  */
 export interface BootstrapStage {
   write(records: Partial<Record<Entity, readonly object[]>>): Promise<void>;
-  commit(input: Omit<BootstrapInput, "records">): Promise<void>;
+  commit(input: Omit<BootstrapInput, "records">): Promise<number>;
 }
 
-/** Each write is one atomic transaction, including its metadata and outbox changes. */
+/**
+ * Each write is one atomic transaction, including its metadata and outbox changes. A write that
+ * moves the revision resolves to the revision it wrote.
+ */
 export interface Replica {
   load(): Promise<LoadedReplica>;
   /** The head alone, to tell whether a view in memory still matches the replica. */
   loadHead(): Promise<ReplicaHead>;
+  /** Claims the next leader term and reads the head, in one transaction. */
+  claimTerm(): Promise<ReplicaHead>;
   /** The unacknowledged outbox alone, ascending by id, for a push that doesn't need the whole replica. */
   loadOutbox(): Promise<readonly PendingMutation[]>;
   /** Discard base and scopes, adopt the open schema, and keep meta ids and the outbox. */
-  resetBase(): Promise<void>;
+  resetBase(): Promise<number>;
   /** A whole bootstrap at once, written through a stage. */
-  writeBootstrap(input: BootstrapInput): Promise<void>;
+  writeBootstrap(input: BootstrapInput): Promise<number>;
   /** Starts a staged bootstrap. Starting another one abandons this one. */
   stageBootstrap(): Promise<BootstrapStage>;
   applyPull(input: {
@@ -84,14 +97,18 @@ export interface Replica {
     /** When given, replaces the meta's skipped list and resync obligation in the same write. */
     skipped?: readonly SkippedRecord[];
     resync?: boolean;
-  }): Promise<void>;
+  }): Promise<number>;
   /**
    * Replaces a scope's records and marks it loaded. A `partial` load skipped records, so it stays
    * unloaded and the next open fetches it again.
    */
-  writeScope(input: { scope: Scope; records: readonly object[]; partial?: boolean }): Promise<void>;
+  writeScope(input: {
+    scope: Scope;
+    records: readonly object[];
+    partial?: boolean;
+  }): Promise<number>;
   /** Drops these scopes' records and loaded markers in one transaction. */
-  evictScopes(scopes: readonly Scope[]): Promise<void>;
+  evictScopes(scopes: readonly Scope[]): Promise<number>;
   /** Whether the scope is loaded, and its records, read in one transaction. */
   loadScope(scope: Scope): Promise<{ loaded: boolean; records: readonly object[] }>;
   appendMutation(build: (id: number) => Omit<PendingMutation, "id">): Promise<PendingMutation>;
@@ -102,7 +119,7 @@ export interface Replica {
    */
   confirm(ids: readonly number[], rejected?: readonly Rejection[]): Promise<void>;
   /** Keeps these rejections and drops their mutations from the outbox, so they are never pushed. */
-  discard(rejections: readonly Rejection[]): Promise<void>;
+  discard(rejections: readonly Rejection[]): Promise<number>;
   /** Sets or clears the access-lost marker in the meta. */
   setAccessLost(lost: boolean): Promise<void>;
   /** Forgets a kept rejection once the user restored, retried or dismissed it. */
