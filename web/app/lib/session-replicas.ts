@@ -114,10 +114,12 @@ export function acceptSession(): Promise<SessionProfile | null> {
 }
 /**
  * A sign-in in this tab just succeeded. A remembered session of another user must not stand in for
- * the new one when the next `/me` fails, so it is forgotten. The same user's is kept.
+ * the new one when the next `/me` fails, so it is forgotten, in this tab's memory and in storage.
+ * Another tab may already have stored the new user's session, and that one is kept.
  */
 export function signedInAs(userId: string): Promise<void> {
   return transition(async () => {
+    if (session?.id !== userId) session = null;
     if (read<SessionProfile>(SESSION_KEY)?.id !== userId) forgetSession();
   });
 }
