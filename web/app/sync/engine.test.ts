@@ -3695,7 +3695,10 @@ describe("first load", () => {
 
     progress.length = 0;
     await f.engine.start();
-    await until(() => f.engine.status.get().phase === "ready");
+    // Fake IndexedDB answers each of the thousands of puts on its own turn.
+    for (let tick = 0; tick < 50_000 && f.engine.status.get().phase !== "ready"; tick += 1)
+      await flush();
+    expect(f.engine.status.get().phase).toBe("ready");
     expect(progress.length).toBeGreaterThan(5);
     expect(progress).toEqual([...progress].sort((a, b) => a - b));
     expect(progress.at(-1)).toBeGreaterThan(2600);
