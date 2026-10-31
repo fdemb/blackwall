@@ -12,9 +12,11 @@ import {
   clearSession,
   closeAllWorkspaceEngines,
   currentSession,
+  expireSession,
   replicaStorage,
   sessionHasPending,
   setSessionLocks,
+  signedInAs,
 } from "./session-replicas";
 import {
   browserTabDependencies,
@@ -245,6 +247,21 @@ describe("user replica lifetime", () => {
       });
       return { inside, release };
     }
+    /** Lets the next /me finish, then holds its answer until released, inside the caller's lock. */
+    function holdNextMeAnswer() {
+      let release: () => void = () => {};
+      let entered: () => void = () => {};
+      const gate = new Promise<void>((resolve) => (release = resolve));
+      const inside = new Promise<void>((resolve) => (entered = resolve));
+      const real = auth.me.bind(auth);
+      vi.spyOn(auth, "me").mockImplementationOnce(async (signal) => {
+        const answer = await real(signal);
+        entered();
+        await gate;
+        return answer;
+      });
+      return { inside, release };
+    }
     const published = () => ({
       session: JSON.parse(window.localStorage.getItem("bw-session:v1") ?? "null")?.id ?? null,
       lastUser: window.localStorage.getItem("bw-last-user:v1"),
@@ -334,6 +351,151 @@ describe("user replica lifetime", () => {
       } finally {
         setSessionLocks(undefined);
       }
+    });
+
+    it("a /me answer held inside the lock keeps another tab's acceptance waiting, and that tab's edits survive", async () => {
+      const hub = createTabHub();
+      setSessionLocks(hub.locks);
+      const { profile, server, signIn, fetch } = await fixture();
+      const other = server.addUser();
+      vi.resetModules();
+      const tabB = await import("./session-replicas");
+      tabB.setSessionLocks(hub.locks);
+      const asked = () =>
+        fetch.mock.calls.filter(([url]) => String(url) === "/internal-api/me").length;
+      try {
+        const held = holdNextMeAnswer();
+        const accepting = acceptSession();
+        await held.inside;
+        signIn(other.id);
+        const before = asked();
+        let acceptedB = false;
+        const acceptingB = tabB.acceptSession().then((next) => {
+          acceptedB = true;
+          return next;
+        });
+        await settle();
+        expect(acceptedB).toBe(false);
+        expect(asked()).toBe(before);
+
+        held.release();
+        expect((await accepting)?.id).toBe(profile.id);
+        expect((await acceptingB)?.id).toBe(other.id);
+        await seed(other.id, id(90), "pending");
+        await settle();
+        expect(await replicaStorage().list()).toEqual([{ userId: other.id, workspaceId: id(90) }]);
+        expect(published()).toEqual({ session: other.id, lastUser: other.id });
+        expect(tabB.currentSession()?.id).toBe(other.id);
+      } finally {
+        await tabB.clearSession();
+        setSessionLocks(undefined);
+      }
+    });
+
+    it("a stalled /me times out and releases the lock, a queued logout proceeds and the late answer publishes nothing", async () => {
+      const hub = createTabHub();
+      setSessionLocks(hub.locks);
+      const { profile, server, token } = await fixture();
+      await seed(profile.id, id(91), "pending");
+      vi.spyOn(auth, "logout").mockImplementation(async () => {
+        server.logout(token);
+        return null;
+      });
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      try {
+        const held = holdNextMeAnswer();
+        const accepting = acceptSession().catch((error: unknown) => error);
+        await held.inside;
+        const leaving = logoutSession();
+        await vi.advanceTimersByTimeAsync(15_000);
+        expect(await accepting).toMatchObject({ name: "TimeoutError" });
+        await leaving;
+        expect(assign).toHaveBeenCalledWith("/login");
+        expect(published()).toEqual({ session: null, lastUser: null });
+        expect(await replicaStorage().list()).toEqual([]);
+
+        held.release();
+        await settle();
+        expect(currentSession()).toBeNull();
+        expect(published()).toEqual({ session: null, lastUser: null });
+      } finally {
+        vi.useRealTimers();
+        setSessionLocks(undefined);
+      }
+    });
+
+    it("a stalled logout request times out after the local cleanup and still leaves for sign-in", async () => {
+      const { profile } = await fixture();
+      await seed(profile.id, id(91), "pending");
+      const logout = vi.spyOn(auth, "logout").mockImplementation(() => new Promise<null>(() => {}));
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      try {
+        const leaving = logoutSession().catch((error: unknown) => error);
+        await until(() => logout.mock.calls.length > 0);
+        await vi.advanceTimersByTimeAsync(15_000);
+        expect(await leaving).toMatchObject({ name: "TimeoutError" });
+        expect(assign).toHaveBeenCalledWith("/login");
+        expect(currentSession()).toBeNull();
+        expect(published()).toEqual({ session: null, lastUser: null });
+        expect(await replicaStorage().list()).toEqual([]);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("an engine's 401 that arrives after another tab accepted another user keeps that user's session", async () => {
+      const hub = createTabHub();
+      setSessionLocks(hub.locks);
+      const { server, signIn } = await fixture();
+      const other = server.addUser();
+      vi.resetModules();
+      const tabB = await import("./session-replicas");
+      tabB.setSessionLocks(hub.locks);
+      try {
+        signIn(other.id);
+        await tabB.acceptSession();
+        await seed(other.id, id(90), "pending");
+        await expect(expireSession()).resolves.toBe(true);
+        expect(currentSession()).toBeNull();
+        expect(tabB.currentSession()?.id).toBe(other.id);
+        expect(published()).toEqual({ session: other.id, lastUser: other.id });
+        expect(await replicaStorage().list()).toEqual([{ userId: other.id, workspaceId: id(90) }]);
+      } finally {
+        await tabB.clearSession();
+        setSessionLocks(undefined);
+      }
+    });
+
+    it("an engine's 401 older than this tab's current session ends nothing", async () => {
+      const { server, signIn } = await fixture();
+      const other = server.addUser();
+      signIn(other.id);
+      await acceptSession();
+      await expect(expireSession()).resolves.toBe(false);
+      expect(currentSession()?.id).toBe(other.id);
+      expect(published()).toEqual({ session: other.id, lastUser: other.id });
+    });
+
+    it("signing in as another user drops the previous user's remembered session from the offline fallback", async () => {
+      const { server, signIn, fetch } = await fixture();
+      const other = server.addUser();
+      signIn(other.id);
+      await signedInAs(other.id);
+      expect(published().session).toBeNull();
+      vi.resetModules();
+      const page = await import("./auth-guard");
+      fetch.mockRejectedValueOnce(new TypeError("Failed to fetch"));
+      await expect(page.currentProfile()).rejects.toThrow(TypeError);
+    });
+
+    it("the same user's sign-in keeps the remembered session for an offline reload", async () => {
+      const { profile, signIn, fetch } = await fixture();
+      signIn(profile.id);
+      await signedInAs(profile.id);
+      vi.resetModules();
+      const page = await import("./auth-guard");
+      fetch.mockRejectedValueOnce(new TypeError("Failed to fetch"));
+      await expect(page.currentProfile()).resolves.toMatchObject({ id: profile.id });
     });
 
     it("a failed /me changes nothing", async () => {
