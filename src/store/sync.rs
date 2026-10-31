@@ -126,6 +126,17 @@ fn log_transient(
     );
 }
 
+/// A deterministic server failure rejected one mutation. Ids only, as above.
+fn log_defect(workspace_id: Uuid, client_id: Uuid, mutation_id: i64, error: &Error) {
+    tracing::error!(
+        workspace_id = %workspace_id,
+        client_id = %client_id,
+        mutation_id = mutation_id,
+        error = %error,
+        "sync push rejected a mutation on a server failure"
+    );
+}
+
 fn build_command(name: &str, args: &Value) -> Result<Command> {
     let mut object = match args {
         Value::Null => serde_json::Map::new(),
@@ -140,8 +151,19 @@ fn build_command(name: &str, args: &Value) -> Result<Command> {
     Ok(serde_json::from_value(Value::Object(object))?)
 }
 
-/// Business errors reject one mutation; everything else stops the batch.
-fn is_business(error: &Error) -> bool {
+/// What a failed mutation does to its batch.
+#[derive(Debug, PartialEq, Eq)]
+enum Disposition {
+    /// The command was refused for a reason the client can see.
+    Business,
+    /// A server-side failure a retry would repeat, such as a bug or a bad
+    /// schema state. One mutation is rejected so the client's queue moves on.
+    Defect,
+    /// A retry can succeed. The batch stops and the client resends it.
+    Retry,
+}
+
+fn disposition(error: &Error) -> Disposition {
     match error {
         Error::BadRequest(_)
         | Error::NotFound
@@ -150,14 +172,53 @@ fn is_business(error: &Error) -> bool {
         | Error::PreconditionFailed(_)
         | Error::Denied(_)
         | Error::Forbidden
-        | Error::Json(_) => true,
-        Error::Database(sqlx::Error::Database(db)) => db
-            .code()
-            .is_some_and(|code| code.starts_with("22") || code.starts_with("23")),
-        Error::Database(_)
-        | Error::Internal(_)
-        | Error::Unauthorized
-        | Error::ServiceUnavailable(_) => false,
+        | Error::Json(_) => Disposition::Business,
+        Error::Unauthorized | Error::ServiceUnavailable(_) => Disposition::Retry,
+        Error::Internal(_) => Disposition::Defect,
+        Error::Database(error) => database_disposition(error),
+    }
+}
+
+fn database_disposition(error: &sqlx::Error) -> Disposition {
+    match error {
+        sqlx::Error::Database(db) => match db.code().as_deref() {
+            Some(code) if code.starts_with("22") || code.starts_with("23") => Disposition::Business,
+            Some("40001" | "40P01" | "55P03" | "57014" | "57P01" | "57P02" | "57P03") => {
+                Disposition::Retry
+            }
+            Some(code) if code.starts_with("08") || code.starts_with("53") => Disposition::Retry,
+            _ => Disposition::Defect,
+        },
+        sqlx::Error::Io(_)
+        | sqlx::Error::Tls(_)
+        | sqlx::Error::Protocol(_)
+        | sqlx::Error::PoolTimedOut
+        | sqlx::Error::PoolClosed
+        | sqlx::Error::WorkerCrashed => Disposition::Retry,
+        _ => Disposition::Defect,
+    }
+}
+
+/// Commands push never runs, with the message the rejection carries.
+fn refusal(command: &Command) -> Option<&'static str> {
+    match command {
+        // Uploads need their bytes.
+        Command::AddAttachment { .. } | Command::AttachCommentFile { .. } => {
+            Some("use the attachment upload endpoint")
+        }
+        // An invitation's token can't ride in a push result, and an
+        // integration's secret must not sit in the client's outbox. The
+        // rest are online-only per docs/sync.md.
+        Command::Invite { .. }
+        | Command::ResendInvitation { .. }
+        | Command::CreateIntegration { .. }
+        | Command::UpdateWorkspace { .. }
+        | Command::SetRole { .. }
+        | Command::RemoveMember { .. }
+        | Command::TransferOwnership { .. }
+        | Command::DeleteTeam { .. }
+        | Command::ImportIssues { .. } => Some("use the commands endpoint"),
+        _ => None,
     }
 }
 
@@ -245,12 +306,26 @@ async fn apply_mutation(
             status: MutationStatus::Applied,
             error: None,
         },
-        Err(error) if is_business(&error) => MutationResult {
-            id: mutation.id,
-            status: MutationStatus::Rejected,
-            error: Some(rejection(&error)),
-        },
-        Err(error) => return Err((error, "command")),
+        Err(error) => {
+            let disposition = disposition(&error);
+            if disposition == Disposition::Retry {
+                return Err((error, "command"));
+            }
+            // Any failed statement aborts the transaction until this runs, so
+            // the client row can only advance after it succeeds.
+            sqlx::query("ROLLBACK TO SAVEPOINT sync_mutation")
+                .execute(&mut *op.tx)
+                .await
+                .phase("rollback")?;
+            if disposition == Disposition::Defect {
+                log_defect(op.workspace_id, client_id, mutation.id, &error);
+            }
+            MutationResult {
+                id: mutation.id,
+                status: MutationStatus::Rejected,
+                error: Some(rejection(&error)),
+            }
+        }
     };
     if let Some(error) = &result.error {
         remember_rejection(op, client_id, mutation.id, error).await?;
@@ -298,36 +373,14 @@ async fn remembered_result(
     })
 }
 
-/// Runs the command, rolling back to the savepoint on a business rejection
-/// so the client row still advances.
+/// Runs the command inside the savepoint. The caller rolls back on failure.
 async fn run_in_savepoint(op: &mut Operation<'_>, built: Result<Command>) -> Result<()> {
     let command = built?;
-    // Uploads need their bytes; the client must use the upload endpoint.
-    if matches!(
-        command,
-        Command::AddAttachment { .. } | Command::AttachCommentFile { .. }
-    ) {
-        return Err(Error::BadRequest(
-            "use the attachment upload endpoint".into(),
-        ));
+    if let Some(message) = refusal(&command) {
+        return Err(Error::BadRequest(message.into()));
     }
-    // A push result can't carry the new token, so the invitation would be unusable.
-    if matches!(
-        command,
-        Command::Invite { .. } | Command::ResendInvitation { .. }
-    ) {
-        return Err(Error::BadRequest("use the commands endpoint".into()));
-    }
-    match op.run_command(command, None).await {
-        Ok(_) => Ok(()),
-        Err(error) if is_business(&error) => {
-            sqlx::query("ROLLBACK TO SAVEPOINT sync_mutation")
-                .execute(&mut *op.tx)
-                .await?;
-            Err(error)
-        }
-        Err(error) => Err(error),
-    }
+    op.run_command(command, None).await?;
+    Ok(())
 }
 
 /// Keeps the newest 1000 rejections per client for replay.
@@ -476,7 +529,7 @@ impl Store {
         let built = build_command(&mutation.name, &mutation.args);
         let exclusive = built
             .as_ref()
-            .map(super::membership_exclusive)
+            .map(|command| refusal(command).is_none() && super::membership_exclusive(command))
             .unwrap_or(false);
 
         let mut op = match self
