@@ -593,7 +593,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Streams the always-loaded records from one snapshot. A header carries cursor, last_mutation_id and schema; a trailer confirms the record count. Accept-Encoding negotiates gzip. */
+    /** @description Streams the always-loaded records from one snapshot. A header carries cursor, last_mutation_id and schema; a trailer confirms the record count. Accept-Encoding negotiates gzip. A user runs one bootstrap at a time; others get 503 with Retry-After. */
     get: operations["bootstrap"];
     put?: never;
     post?: never;
@@ -1864,9 +1864,10 @@ export interface components {
     PullResponse: {
       changes: components["schemas"]["Change"][];
       /**
-       * @description Snapshot in `xmin:xmax:xip` text form. Every txid below its xmax
-       *     except those listed is reflected. An unfinished page may append
-       *     `:txid.row`, the one transaction delivered only up to that change row.
+       * @description Opaque cursor, `epoch@` and a snapshot in `xmin:xmax:xip` text form.
+       *     Every txid below the snapshot's xmax except those listed is reflected.
+       *     An unfinished page may append `:txid.row`, the one transaction
+       *     delivered only up to that change row.
        */
       cursor: string;
       /**
@@ -3253,9 +3254,9 @@ export interface operations {
         /** @description Client replica id. A client_id owned by another user or workspace is 400. */
         client_id?: string;
         /**
-         * @description Cursor from a previous pull. Omit for a starting cursor. Must be a
-         *     snapshot in `xmin:xmax:xip` text form from this server; anything else
-         *     is 400.
+         * @description Cursor from a previous pull or bootstrap. Omit for a starting cursor.
+         *     A cursor no server could have issued is 400. One from another database
+         *     history, or past this server's snapshot, answers `reset: true`.
          */
         cursor?: string;
       };
