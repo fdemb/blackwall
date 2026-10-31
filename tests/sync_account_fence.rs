@@ -221,3 +221,103 @@ async fn a_browser_must_name_its_replicas_account() {
     store.pool.close().await;
     database.cleanup().await;
 }
+
+async fn labels(store: &Store, ws: Uuid) -> i64 {
+    sqlx::query_scalar("SELECT count(*) FROM labels WHERE workspace_id = $1")
+        .bind(ws)
+        .fetch_one(&store.pool)
+        .await
+        .unwrap()
+}
+
+fn command_path(ws: Uuid, user: Option<Uuid>) -> String {
+    let query = user
+        .map(|user| format!("?user_id={user}"))
+        .unwrap_or_default();
+    format!("/internal-api/workspaces/{ws}/commands{query}")
+}
+
+fn create_label(name: &str) -> Value {
+    json!({
+        "command": {"type": "create_label", "name": name, "color": "#000000"},
+        "idempotency_key": Uuid::new_v4().to_string(),
+    })
+}
+
+#[tokio::test]
+async fn a_command_from_another_accounts_replica_runs_nothing() {
+    let database = support::TestDatabase::new().await;
+    let store = Store::connect(&database.url).await.unwrap();
+    let app = router(store.clone());
+    let previous = account(&store, "previous").await;
+    let current = account(&store, "current").await;
+    let ws = workspace(&app, &current).await;
+    let before = labels(&store, ws).await;
+
+    for auth in [Auth::Bearer(&current.token), Auth::Cookie(&current.token)] {
+        let response = request(
+            &app,
+            "POST",
+            &command_path(ws, Some(previous.profile.id)),
+            auth,
+            Some(create_label("fenced")),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            json_body(response).await,
+            json!({"error": "account changed"})
+        );
+    }
+    assert_eq!(labels(&store, ws).await, before);
+
+    drop(app);
+    store.pool.close().await;
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn a_command_names_its_replicas_account_from_a_browser_only() {
+    let database = support::TestDatabase::new().await;
+    let store = Store::connect(&database.url).await.unwrap();
+    let app = router(store.clone());
+    let owner = account(&store, "owner").await;
+    let ws = workspace(&app, &owner).await;
+    let before = labels(&store, ws).await;
+
+    let response = request(
+        &app,
+        "POST",
+        &command_path(ws, Some(owner.profile.id)),
+        Auth::Cookie(&owner.token),
+        Some(create_label("named")),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    finish("", response).await;
+    let response = request(
+        &app,
+        "POST",
+        &command_path(ws, None),
+        Auth::Bearer(&owner.token),
+        Some(create_label("bearer")),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    finish("", response).await;
+    let response = request(
+        &app,
+        "POST",
+        &command_path(ws, None),
+        Auth::Cookie(&owner.token),
+        Some(create_label("unnamed")),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    finish("", response).await;
+    assert_eq!(labels(&store, ws).await, before + 2);
+
+    drop(app);
+    store.pool.close().await;
+    database.cleanup().await;
+}

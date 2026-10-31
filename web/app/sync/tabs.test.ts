@@ -361,9 +361,11 @@ describe("tab coordination", () => {
     expect(f.requests(follower)).toBe(0);
     f.server.inject({ kind: "response_delay", route: "commands", milliseconds: 500 });
     const online = follower.engine.runOnline("set_role", { user_id: f.peer.id, role: "admin" });
-    await until(() => follower.fetch.mock.calls.some(([url]) => String(url).endsWith("/commands")));
+    await until(() =>
+      follower.fetch.mock.calls.some(([url]) => String(url).includes("/commands?")),
+    );
     await until(() => f.server.record("members", f.peer.id)?.role === "admin");
-    expect(leader.fetch.mock.calls.some(([url]) => String(url).endsWith("/commands"))).toBe(false);
+    expect(leader.fetch.mock.calls.some(([url]) => String(url).includes("/commands?"))).toBe(false);
     await leader.engine.close();
     await until(() => follower.engine.status.get().role === "leader");
     await f.advance(500);
@@ -384,7 +386,7 @@ describe("tab coordination", () => {
     await until(() => leader.engine.status.get().lastError instanceof ProtocolError);
     const online = follower.engine.runOnline("set_role", { user_id: f.peer.id, role: "admin" });
     await expect(online).rejects.toThrow("Reload");
-    expect(follower.fetch.mock.calls.some(([url]) => String(url).endsWith("/commands"))).toBe(
+    expect(follower.fetch.mock.calls.some(([url]) => String(url).includes("/commands?"))).toBe(
       false,
     );
   });

@@ -1,7 +1,7 @@
 import "fake-indexeddb/auto";
 import { forceCloseDatabase, IDBFactory } from "fake-indexeddb";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
-import { setCsrf } from "../lib/api";
+import { getCsrf, setCsrf } from "../lib/api";
 import { createEngine, OutdatedError, SCHEMA } from "./engine";
 import type { EngineEvent, EngineSignal, SyncEngine } from "./engine";
 import { IDB_VERSION, IndexedDBReplicaStorage } from "./persistence/idb";
@@ -11,6 +11,7 @@ import { BOOTSTRAP_ENTITIES, normalize } from "./records";
 import { createFakeServer } from "./testing/fake-server";
 import type { FakeServerOptions } from "./testing/fake-server";
 import {
+  AccountChangedError,
   createTransport,
   ProtocolError,
   TruncatedError,
@@ -124,7 +125,7 @@ function fixture(
       .map(([, init]) => JSON.parse(String(init?.body)).mutations);
   const commands = () =>
     fetch.mock.calls
-      .filter(([url]) => String(url).endsWith("/commands"))
+      .filter(([url]) => String(url).includes("/commands?"))
       .map(([, init]) => JSON.parse(String(init?.body)));
   const requests = (route: string) =>
     fetch.mock.calls.filter(([url]) =>
@@ -532,7 +533,7 @@ describe("sync engine", () => {
     const fetch = f.server.fetch;
     let failed = false;
     f.fetch.mockImplementation(async (...args) => {
-      if (String(args[0]).endsWith("/commands") && !failed) {
+      if (String(args[0]).includes("/commands?") && !failed) {
         failed = true;
         return Response.json({ error: "try again" }, { status });
       }
@@ -552,7 +553,7 @@ describe("sync engine", () => {
     await f.ready();
     const fetch = f.server.fetch;
     f.fetch.mockImplementation(async (...args) =>
-      String(args[0]).endsWith("/commands")
+      String(args[0]).includes("/commands?")
         ? Response.json({ error: "invitation not found" }, { status: 404 })
         : fetch(...args),
     );
@@ -595,14 +596,23 @@ describe("sync engine", () => {
   it.each(["session", "membership"] as const)("handles online command loss of %s", async (kind) => {
     const f = fixture();
     await f.ready();
+    const events: EngineEvent[] = [];
+    f.engine.subscribe((event) => events.push(event));
     if (kind === "session") f.server.logout(f.token);
     else f.server.removeMember(f.workspace.id, f.owner.id);
-    await expect(
-      f.engine.runOnline("set_role", { user_id: f.peer.id, role: "viewer" }),
-    ).rejects.toMatchObject({ status: kind === "session" ? 401 : 403 });
+    const online = f.engine.runOnline("set_role", { user_id: f.peer.id, role: "viewer" });
+    const rejected = expect(online).rejects.toMatchObject({
+      status: kind === "session" ? 401 : 403,
+    });
+    if (kind === "session") {
+      // A 401 waits for the app's session check with the view intact. This check finds it ended.
+      await until(() => events.some((event) => event.type === "unauthorized"));
+      expect(f.engine.store.all("issues").length).toBeGreaterThan(0);
+      await f.engine.close();
+    }
+    await rejected;
     expect(await f.storage.list()).toEqual([{ userId: f.owner.id, workspaceId: f.workspace.id }]);
-    // A 401 waits for the app's session check with the view intact. Lost access clears it.
-    expect(f.engine.store.all("issues").length > 0).toBe(kind === "session");
+    if (kind === "membership") expect(f.engine.store.all("issues")).toHaveLength(0);
   });
 
   it("continues core syncing when a scope protocol error blocks only scope loads", async () => {
@@ -1001,7 +1011,7 @@ describe("sync engine", () => {
     ]);
     expect((await f.disk()).outbox).toHaveLength(0);
     const routes = f.fetch.mock.calls.map(([url]) => String(url));
-    expect(routes.findIndex((url) => url.endsWith("/commands"))).toBeGreaterThan(
+    expect(routes.findIndex((url) => url.includes("/commands?"))).toBeGreaterThan(
       routes.findIndex((url) => url.includes("/push?")),
     );
     expect((await f.disk()).meta.nextMutationId).toBe(2);
@@ -1441,7 +1451,7 @@ describe("cookie sessions and pending callers", () => {
     const original = f.server.fetch;
     f.fetch.mockImplementation(async (...args) => {
       const response = await original(...args);
-      return String(args[0]).endsWith("/commands")
+      return String(args[0]).includes("/commands?")
         ? Response.json({ result: {}, versions: {}, changes: [] })
         : response;
     });
@@ -2114,6 +2124,114 @@ describe("pending edits are never frozen or lost", () => {
     f.engine.unblock();
     expect(await receipt.settled).toBe("applied");
     expect(f.authoritativeIssue(ISSUE).title).toBe("Typed while blocked");
+  });
+
+  it("holds an online command issued during a session check and sends it once the session is valid", async () => {
+    const f = fixture();
+    await f.ready();
+    const events: EngineEvent[] = [];
+    f.engine.subscribe((event) => events.push(event));
+    f.server.inject({ kind: "fail_response", route: "pull", status: 401 });
+    await f.engine.pull();
+    await until(() => events.some((event) => event.type === "unauthorized"));
+    const online = f.engine.runOnline("set_role", { user_id: f.peer.id, role: "viewer" });
+    await f.advance(60_000);
+    expect(f.commands()).toEqual([]);
+
+    f.engine.resume();
+    await elapse(f, () => f.commands().length === 1);
+    expect(await online).toEqual({ id: 0, status: "applied" });
+    expect(f.server.record("members", f.peer.id)?.role).toBe("viewer");
+  });
+
+  it("aborts an online command in flight on another request's 401 and resends it with the same key", async () => {
+    const f = fixture();
+    await f.ready();
+    const events: EngineEvent[] = [];
+    f.engine.subscribe((event) => events.push(event));
+    f.server.inject({ kind: "delay", route: "commands", milliseconds: 1000 });
+    const online = f.engine.runOnline("set_role", { user_id: f.peer.id, role: "viewer" });
+    await until(() => f.commands().length === 1);
+    f.server.inject({ kind: "fail_response", route: "pull", status: 401 });
+    await f.engine.pull();
+    await until(() => events.some((event) => event.type === "unauthorized"));
+    await f.advance(60_000);
+    expect(f.commands()).toHaveLength(1);
+    expect(f.server.record("members", f.peer.id)?.role).not.toBe("viewer");
+
+    f.engine.resume();
+    await elapse(f, () => f.commands().length === 2);
+    expect(await online).toEqual({ id: 0, status: "applied" });
+    expect(f.commands()[1]).toEqual(f.commands()[0]);
+    expect(f.server.record("members", f.peer.id)?.role).toBe("viewer");
+  });
+
+  it("rejects an online command held through a session check when the session ended", async () => {
+    const f = fixture();
+    await f.ready();
+    const events: EngineEvent[] = [];
+    f.engine.subscribe((event) => events.push(event));
+    f.server.logout(f.token);
+    await f.engine.pull();
+    await until(() => events.some((event) => event.type === "unauthorized"));
+    const online = f.engine.runOnline("set_role", { user_id: f.peer.id, role: "viewer" });
+    const rejected = expect(online).rejects.toBeInstanceOf(UnauthorizedError);
+    await f.advance(5000);
+    // The app's session check found the session ended.
+    await f.engine.close();
+    await rejected;
+    expect(f.commands()).toEqual([]);
+  });
+
+  it("refuses an online command once the cookie belongs to another user, and runs nothing", async () => {
+    const f = fixture();
+    const third = f.server.addUser();
+    f.server.addMember(f.workspace.id, third);
+    f.server.setRole(f.workspace.id, f.peer.id, "admin");
+    await f.ready();
+    // Another tab signed in as the peer, so this tab's requests now carry the peer's cookie.
+    const other = f.server.login(f.peer);
+    setCsrf(f.server.csrfToken(other));
+    const fetch = f.server.fetch;
+    f.fetch.mockImplementation(async (input, init) => {
+      const headers = new Headers(init?.headers);
+      headers.set("cookie", `blackwall_session=${other}`);
+      return fetch(input, { ...init, headers });
+    });
+    const online = f.engine.runOnline("set_role", { user_id: third.id, role: "viewer" });
+    await expect(online).rejects.toBeInstanceOf(AccountChangedError);
+    expect(f.commands()).toHaveLength(1);
+    expect(f.server.record("members", third.id)?.role).toBe("member");
+    expect(await f.storage.list()).toEqual([{ userId: f.owner.id, workspaceId: f.workspace.id }]);
+  });
+
+  it("keeps a newer sign-in's CSRF token when a refresh answers after the engine closed", async () => {
+    const f = fixture();
+    await f.ready();
+    const fetch = f.server.fetch;
+    let release = () => {};
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const answered: Promise<Response>[] = [];
+    f.fetch.mockImplementation(async (input, init) => {
+      if (!String(input).endsWith("/internal-api/me")) return fetch(input, init);
+      // A fetch that ignores its abort.
+      const response = held.then(() => fetch(input, { ...init, signal: undefined }));
+      answered.push(response);
+      return response;
+    });
+    f.server.rotateCsrf(f.token, "older-session");
+    await f.engine.mutate("update_issue", { id: ISSUE, patch: { title: "Forbidden" } });
+    await until(() => f.requests("me") === 1);
+    await f.engine.close();
+
+    const newer = f.server.login(f.owner);
+    setCsrf(f.server.csrfToken(newer));
+    release();
+    await Promise.all(answered);
+    for (let tick = 0; tick < 20; tick += 1) await flush();
+    expect(getCsrf()).toBe(f.server.csrfToken(newer));
   });
 
   it("keeps an edit through a 5xx streak while reads work, reports a stall, and applies it on recovery", async () => {

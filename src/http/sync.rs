@@ -91,10 +91,10 @@ fn client_id(value: Option<&str>) -> Result<Uuid> {
 }
 
 /// Refuses a replica that belongs to another account than the request's, before
-/// any sync row is read or written. A browser replica always names its user, so
-/// a cookie that changed accounts since the replica was opened can't send its
-/// edits. Bearer tokens have no replica and may omit it.
-fn fence(actor: &Actor, replica_user: Option<&str>) -> Result<()> {
+/// any sync row is read or written or any command runs. A browser replica always
+/// names its user, so a cookie that changed accounts since the replica was opened
+/// can't send its edits. Bearer tokens have no replica and may omit it.
+pub(super) fn fence(actor: &Actor, replica_user: Option<&str>) -> Result<()> {
     let Some(value) = replica_user else {
         return if actor.browser {
             Err(Error::BadRequest("user_id is required".into()))

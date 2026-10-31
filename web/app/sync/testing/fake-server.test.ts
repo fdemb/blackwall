@@ -893,6 +893,27 @@ describe("fake bootstrap, scope and sessions", () => {
     expect(f.server.clientState(CLIENT).last_mutation_id).toBe(0);
   });
 
+  it("refuses a command from another account's replica without running it", async () => {
+    const f = fixture();
+    const response = await f.server.fetch(
+      `/internal-api/workspaces/${f.workspace.id}/commands?user_id=${f.owner.id}`,
+      {
+        method: "POST",
+        headers: {
+          cookie: `blackwall_session=${f.memberToken}`,
+          "content-type": "application/json",
+          "X-CSRF-Token": f.server.csrfToken(f.memberToken),
+        },
+        body: JSON.stringify({
+          command: { type: "create_label", name: "Fenced", color: "#000000" },
+        }),
+      },
+    );
+    expect(response.status).toBe(401);
+    expect(await response.json()).toEqual({ error: "account changed" });
+    expect(f.server.records("labels")).toHaveLength(0);
+  });
+
   it("makes a browser name its replica's account", async () => {
     const f = fixture();
     const cookie = { cookie: `blackwall_session=${f.token}` };

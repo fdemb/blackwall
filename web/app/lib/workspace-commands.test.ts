@@ -133,7 +133,7 @@ describe("workspace commands", () => {
     expect(
       pushed.flatMap((batch) => batch.mutations.map((mutation: { name: string }) => mutation.name)),
     ).not.toContain("set_role");
-    expect(fetch.mock.calls.some(([url]) => String(url).endsWith("/commands"))).toBe(true);
+    expect(fetch.mock.calls.some(([url]) => String(url).includes("/commands?"))).toBe(true);
     expect(engine.store.pending().some((mutation) => mutation.name === "set_role")).toBe(false);
   });
   it("returns the token an invitation issues and whether the server emailed it", async () => {

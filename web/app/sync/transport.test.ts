@@ -411,6 +411,10 @@ describe("sync transport requests", () => {
     const stop = new AbortController();
     await transport.events(ws, CLIENT, { signal: stop.signal });
     stop.abort();
+    await transport.command(ws, {
+      command: { type: "create_label", name: "Named", color: "#000000" },
+      idempotencyKey: "key",
+    });
     await transport.me();
     const users = fetch.mock.calls.map(([url]) => [
       String(url).split("?")[0].split("/").at(-1),
@@ -422,6 +426,7 @@ describe("sync transport requests", () => {
       ["bootstrap", f.owner.id],
       ["scope", f.owner.id],
       ["events", f.owner.id],
+      ["commands", f.owner.id],
       ["me", null],
     ]);
   });
@@ -441,7 +446,14 @@ describe("sync transport requests", () => {
     await expect(transport.push(f.workspace.id, CLIENT, [label(1)])).rejects.toBeInstanceOf(
       UnauthorizedError,
     );
+    await expect(
+      transport.command(f.workspace.id, {
+        command: { type: "create_label", name: "Fenced", color: "#000000" },
+        idempotencyKey: "key",
+      }),
+    ).rejects.toMatchObject({ name: "AccountChangedError", status: 401 });
     expect(f.server.clientState(CLIENT).last_mutation_id).toBe(0);
+    expect(f.server.records("labels")).toHaveLength(0);
   });
 
   it("refreshes the REST client's CSRF token from response headers", async () => {

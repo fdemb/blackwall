@@ -56,6 +56,8 @@ export type { TabMessage } from "./tabs";
 export const SCHEMA = 8;
 
 export type OnlineResult = MutationResult & { invitation?: IssuedInvitation };
+/** A refreshed CSRF token, retried at once, or a failure to retry after a backoff. */
+type OnlineRetry = "refreshed" | { retryAfter: number | string | null };
 
 export class OutdatedError extends Error {
   constructor(message = "A newer version is open in another tab. Reload to continue.") {
@@ -211,6 +213,8 @@ export class SyncEngine {
   private sealed = false;
   private readonly reported = new Set<number>();
   private readonly onlineCalls = new Set<AbortController>();
+  /** Requests of online calls, which a 401 aborts without failing their calls. */
+  private readonly onlineAttempts = new Set<AbortController>();
   private readonly delay: ReturnType<typeof backoff>;
   private replica: Replica | null = null;
   private opening: Promise<void> | null = null;
@@ -382,6 +386,8 @@ export class SyncEngine {
     this.lifecycle += 1;
     this.cancelNetwork();
     this.releaseLeadership();
+    // An online call waiting out a 401 fails the way that 401 would have.
+    if (this.unauthorized !== null) this.cancelOnline(new UnauthorizedError("Session ended", 401));
     this.rejectCallers(new Error(this.closed ? "Engine is closed" : "Engine is stopped"));
   }
 
@@ -408,6 +414,7 @@ export class SyncEngine {
       this.cancelResume = null;
       if (this.closed || this.unauthorized !== "checking") return;
       this.unauthorized = null;
+      this.notifyChange();
       this.beginNetwork();
     });
   }
@@ -623,34 +630,63 @@ export class SyncEngine {
     for (let attempt = 0, csrfRefreshes = 0; ; attempt++) {
       controller.signal.throwIfAborted();
       await this.drainOutbox(controller.signal);
+      // A 401 aborts only this attempt. The next one waits in drainOutbox for the session check,
+      // and resends with the same key.
+      const request = new AbortController();
+      const abort = () => request.abort(controller.signal.reason);
+      controller.signal.addEventListener("abort", abort, { once: true });
+      this.onlineAttempts.add(request);
+      let next: OnlineResult | OnlineRetry;
       try {
-        const { result } = await this.withDeadline(controller, WRITE_DEADLINE_MS, (signal) =>
-          this.deps.transport.command(this.deps.workspaceId, input, { signal }),
-        );
+        next = await this.attemptOnline(input, request, csrfRefreshes === 0);
+      } catch (error) {
         controller.signal.throwIfAborted();
-        // The server pokes the leader's event stream, including when a follower sends this call.
-        if (this.role === "leader") void this.pull();
-        // Keep the callers' mutation-result shape without allocating a sync mutation id.
-        return result.invitation
-          ? { id: 0, status: "applied", invitation: result.invitation }
-          : { id: 0, status: "applied" };
-      } catch (caught) {
-        controller.signal.throwIfAborted();
-        const next = await this.onlineFailure(caught, controller, csrfRefreshes === 0);
-        if (next === "refreshed") {
-          csrfRefreshes++;
-          continue;
-        }
-        await pause(this.deps.clock, this.delay(attempt, next.retryAfter), controller.signal);
+        if (request.signal.aborted) continue;
+        throw error;
+      } finally {
+        controller.signal.removeEventListener("abort", abort);
+        this.onlineAttempts.delete(request);
       }
+      if (next === "refreshed") {
+        csrfRefreshes++;
+        continue;
+      }
+      if ("status" in next) return next;
+      await pause(this.deps.clock, this.delay(attempt, next.retryAfter), controller.signal);
     }
   }
 
-  /** Online commands wait until earlier offline edits have been pushed. */
+  private async attemptOnline(
+    input: { command: object; idempotencyKey: string },
+    controller: AbortController,
+    canRefreshCsrf: boolean,
+  ): Promise<OnlineResult | OnlineRetry> {
+    try {
+      const { result } = await this.withDeadline(controller, WRITE_DEADLINE_MS, (signal) =>
+        this.deps.transport.command(this.deps.workspaceId, input, { signal }),
+      );
+      controller.signal.throwIfAborted();
+      // The server pokes the leader's event stream, including when a follower sends this call.
+      if (this.role === "leader") void this.pull();
+      // Keep the callers' mutation-result shape without allocating a sync mutation id.
+      return result.invitation
+        ? { id: 0, status: "applied", invitation: result.invitation }
+        : { id: 0, status: "applied" };
+    } catch (caught) {
+      controller.signal.throwIfAborted();
+      return this.onlineFailure(caught, controller, canRefreshCsrf);
+    }
+  }
+
+  /**
+   * Online commands wait until earlier offline edits have been pushed, and while the app checks
+   * the session after a 401. Once 401s kept coming with a valid session, they fail.
+   */
   private async drainOutbox(signal: AbortSignal): Promise<void> {
     for (;;) {
       signal.throwIfAborted();
-      if (this.started && this.snapshot.online) {
+      if (this.unauthorized === "refused") throw new UnauthorizedError("Session check failed", 401);
+      if (this.started && this.snapshot.online && this.unauthorized === null) {
         if ((await this.requireReplica().loadOutbox()).length === 0) return;
         if (this.role === "leader" ? this.outboxBlocked() : this.leaderBlocked)
           throw new Error("Pending changes can't be sent. Reload and try again.");
@@ -669,7 +705,7 @@ export class SyncEngine {
     caught: unknown,
     controller: AbortController,
     canRefreshCsrf: boolean,
-  ): Promise<"refreshed" | { retryAfter: number | string | null }> {
+  ): Promise<OnlineRetry> {
     let error = caught;
     if (error instanceof AccessError && (error.status === 403 || error.status === 404)) {
       const { status, message } = error;
@@ -706,7 +742,7 @@ export class SyncEngine {
     controller: AbortController,
     refreshCsrf: boolean,
   ): Promise<void> {
-    if (refreshCsrf) await cancellable(this.refreshCsrf(), controller.signal);
+    if (refreshCsrf) await cancellable(this.refreshCsrf(controller.signal), controller.signal);
     // A command may forbid an action or miss its target while workspace access is still valid.
     await cancellable(
       this.deps.transport.pull(this.deps.workspaceId, this.clientId, this.cursor, {
@@ -996,6 +1032,7 @@ export class SyncEngine {
     if (this.closed || this.unauthorized !== null || (this.terminal && !this.outdated)) return;
     this.unauthorized = "checking";
     this.cancelNetwork();
+    for (const attempt of this.onlineAttempts) attempt.abort(new Cancelled());
     this.emit({ type: "unauthorized" });
   }
 
@@ -1838,7 +1875,8 @@ export class SyncEngine {
     batch: PushBatch,
     controller: AbortController,
   ): Promise<"again" | "stop"> {
-    if (batch.csrfRefreshes === 0) await this.retry("push", controller, () => this.refreshCsrf());
+    if (batch.csrfRefreshes === 0)
+      await this.retry("push", controller, () => this.refreshCsrf(controller.signal));
     const read = await this.retry("pull", controller, () =>
       this.reads.run(() => this.readPull(controller)),
     );
@@ -1851,10 +1889,13 @@ export class SyncEngine {
     return "stop";
   }
 
-  /** A forbidden /api/me means the refresh itself failed, which no retry fixes. */
-  private async refreshCsrf(): Promise<void> {
+  /**
+   * A forbidden /api/me means the refresh itself failed, which no retry fixes. Closing or
+   * suspending the engine aborts `signal`, so a late answer can't replace a newer session's token.
+   */
+  private async refreshCsrf(signal: AbortSignal): Promise<void> {
     try {
-      await this.deps.transport.me();
+      await this.deps.transport.me({ signal });
     } catch (cause) {
       if (cause instanceof AccessError)
         throw new ProtocolError("CSRF refresh failed", cause.status, { cause });

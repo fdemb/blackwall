@@ -12,8 +12,9 @@ export interface TransportOptions {
   headers?: () => HeadersInit;
   signal?: AbortSignal;
   /**
-   * The user the replica belongs to. Every sync request names it, and the server answers 401
-   * "account changed" when the session belongs to someone else. A browser must set it.
+   * The user the replica belongs to. Every sync request and online command names it, and the
+   * server answers 401 "account changed" when the session belongs to someone else. A browser must
+   * set it.
    */
   userId?: string;
 }
@@ -127,26 +128,40 @@ export function createTransport(options: TransportOptions) {
       ? AbortSignal.any([options.signal, signal])
       : (signal ?? options.signal);
   }
-  function path(ws: string, route: string, clientId: string, query: Record<string, string> = {}) {
-    const params = new URLSearchParams({ client_id: clientId, ...query });
+  function path(ws: string, route: string, query: Record<string, string> = {}) {
+    const params = new URLSearchParams(query);
     if (options.userId !== undefined) params.set("user_id", options.userId);
-    return `/internal-api/workspaces/${encodeURIComponent(ws)}/sync/${route}?${params}`;
+    const search = params.toString();
+    const base = `/internal-api/workspaces/${encodeURIComponent(ws)}/${route}`;
+    return search ? `${base}?${search}` : base;
+  }
+  function syncPath(
+    ws: string,
+    route: string,
+    clientId: string,
+    query: Record<string, string> = {},
+  ) {
+    return path(ws, `sync/${route}`, { client_id: clientId, ...query });
   }
   async function request(path: string, init: RequestInit = {}): Promise<Response> {
     const headers = new Headers(options.headers?.());
     new Headers(init.headers).forEach((value, key) => headers.set(key, value));
     if ((init.method ?? "GET").toUpperCase() !== "GET") headers.set("X-CSRF-Token", getCsrf());
+    const signal = init.signal ?? options.signal;
     let response: Response;
     try {
       response = await options.fetch(`${baseUrl}${path}`, {
         ...init,
         credentials: "same-origin",
         headers,
-        signal: init.signal ?? options.signal,
+        signal,
       });
     } catch (cause) {
       throw new NetworkError("Request failed", null, { cause });
     }
+    // A fetch can ignore its abort. A newer session may have stored its token since, so a late
+    // answer stores nothing.
+    if (signal?.aborted) throw new NetworkError("Request failed", null, { cause: signal.reason });
     const token = response.headers.get("X-CSRF-Token");
     if (token) setCsrf(token);
     return response;
@@ -163,7 +178,7 @@ export function createTransport(options: TransportOptions) {
       stream: StreamOptions = {},
     ): Promise<BootstrapResponse> {
       const signal = signalFor(stream.signal);
-      const response = await checked(path(ws, "bootstrap", clientId), { signal });
+      const response = await checked(syncPath(ws, "bootstrap", clientId), { signal });
       await contentType(response, "application/x-ndjson");
       const iterator = lines(response, signal, "bootstrap");
       try {
@@ -184,7 +199,7 @@ export function createTransport(options: TransportOptions) {
       requestOptions: StreamOptions = {},
     ): Promise<PullResponse> {
       const response = await checked(
-        path(ws, "pull", clientId, cursor === null ? {} : { cursor }),
+        syncPath(ws, "pull", clientId, cursor === null ? {} : { cursor }),
         { signal: signalFor(requestOptions.signal) },
       );
       return parsePull(await json(response), response.status);
@@ -195,7 +210,7 @@ export function createTransport(options: TransportOptions) {
       mutations: readonly Mutation[],
       requestOptions: PushOptions = {},
     ): Promise<PushResponse> {
-      const response = await request(path(ws, "push", clientId), {
+      const response = await request(syncPath(ws, "push", clientId), {
         method: "POST",
         signal: signalFor(requestOptions.signal),
         headers: { "Content-Type": "application/json" },
@@ -231,15 +246,12 @@ export function createTransport(options: TransportOptions) {
       input: { command: object; idempotencyKey: string },
       requestOptions: StreamOptions = {},
     ): Promise<CommandResponse> {
-      const response = await checked(
-        `/internal-api/workspaces/${encodeURIComponent(ws)}/commands`,
-        {
-          method: "POST",
-          signal: signalFor(requestOptions.signal),
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ command: input.command, idempotency_key: input.idempotencyKey }),
-        },
-      );
+      const response = await checked(path(ws, "commands"), {
+        method: "POST",
+        signal: signalFor(requestOptions.signal),
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ command: input.command, idempotency_key: input.idempotencyKey }),
+      });
       const value = await json(response);
       if (
         !object(value) ||
@@ -280,7 +292,7 @@ export function createTransport(options: TransportOptions) {
         scope.entity === "comments"
           ? { entity: scope.entity, issue_id: scope.issueId }
           : { entity: scope.entity, entity_id: scope.entityId };
-      const response = await checked(path(ws, "scope", clientId, query), {
+      const response = await checked(syncPath(ws, "scope", clientId, query), {
         signal: signalFor(requestOptions.signal),
       });
       const value = await json(response);
@@ -296,7 +308,7 @@ export function createTransport(options: TransportOptions) {
       const signal = signalFor(stream.signal);
       let response: Response;
       try {
-        response = await checked(path(ws, "events", clientId), {
+        response = await checked(syncPath(ws, "events", clientId), {
           signal,
           headers: { Accept: "text/event-stream" },
         });
@@ -307,8 +319,10 @@ export function createTransport(options: TransportOptions) {
       await contentType(response, "text/event-stream");
       return pokes(response, signal);
     },
-    async me(): Promise<SessionProfile> {
-      const response = await checked("/internal-api/me");
+    async me(requestOptions: StreamOptions = {}): Promise<SessionProfile> {
+      const response = await checked("/internal-api/me", {
+        signal: signalFor(requestOptions.signal),
+      });
       return parseProfile(await json(response), response.status);
     },
   };

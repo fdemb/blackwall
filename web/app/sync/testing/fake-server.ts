@@ -526,14 +526,12 @@ export class FakeServer {
           "X-CSRF-Token": session.csrf,
         });
       else {
-        if (route !== "commands") {
-          // Like the server: before the workspace or the client row is looked at.
-          const replicaUser = url.searchParams.get("user_id");
-          if (replicaUser === null && bearer === undefined)
-            throw new MutationError(400, "user_id is required");
-          if (replicaUser !== null && replicaUser !== session.user)
-            throw new MutationError(401, "account changed");
-        }
+        // Like the server: before the workspace, the client row or the command is looked at.
+        const replicaUser = url.searchParams.get("user_id");
+        if (replicaUser === null && bearer === undefined)
+          throw new MutationError(400, "user_id is required");
+        if (replicaUser !== null && replicaUser !== session.user)
+          throw new MutationError(401, "account changed");
         const workspace = uuid(matched?.[1], "workspace_id");
         this.authorize(workspace, session.user);
         if (route === "commands") {
