@@ -2377,7 +2377,7 @@ describe("pending edits are never frozen or lost", () => {
           color: "#0000ff",
         });
       const held: (() => void)[] = [];
-      const delivered: { final: boolean }[] = [];
+      const delivered: { final: boolean; more: boolean; reset: boolean; ack: number | null }[] = [];
       if (options.held) {
         const original = f.server.fetch;
         f.fetch.mockImplementation(async (...args) => {
@@ -2385,7 +2385,12 @@ describe("pending edits are never frozen or lost", () => {
           await new Promise<void>((release) => held.push(release));
           const response = await original(...args);
           const page = await response.clone().json();
-          delivered.push({ final: !page.more && !page.reset && page.last_mutation_id !== null });
+          delivered.push({
+            final: !page.more && !page.reset && page.last_mutation_id !== null,
+            more: page.more,
+            reset: page.reset,
+            ack: page.last_mutation_id,
+          });
           return response;
         });
       }
@@ -2423,7 +2428,7 @@ describe("pending edits are never frozen or lost", () => {
           held.shift()?.();
           for (let tick = 0; tick < 5; tick += 1) await flush();
           if (!delivered.some((page) => page.final)) {
-            expect(decided, "decided before a final acknowledgement").toBe(false);
+            expect(decided, `decided early after ${JSON.stringify(delivered)}`).toBe(false);
             expect((await f.disk()).outbox).toHaveLength(1);
           }
         }

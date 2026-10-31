@@ -285,7 +285,11 @@ describe("sync transport requests", () => {
       `https://example.test${f.fetch.mock.calls[0][0]}`,
       f.fetch.mock.calls[0][1],
     );
-    expect(await request.json()).toEqual({ client_id: CLIENT, mutations: [label(1)] });
+    expect(await request.json()).toEqual({
+      client_id: CLIENT,
+      mutations: [label(1)],
+      acknowledged: 0,
+    });
     expect(request.credentials).toBe("same-origin");
     expect(request.headers.get("Content-Type")).toBe("application/json");
     expect(request.headers.get("X-CSRF-Token")).toBe("csrf");

@@ -360,7 +360,8 @@ export async function runConvergence(
         if (route === "push") client.pendingPushes++;
         try {
           if (route === "push") {
-            const payload = String(init?.body);
+            // `acknowledged` may rise between attempts. The batch itself must not change.
+            const payload = JSON.stringify(JSON.parse(String(init?.body)).mutations);
             if (client.retryPayload !== null)
               equal(payload, client.retryPayload, "retry changed the captured batch");
             client.retryPayload = payload;
