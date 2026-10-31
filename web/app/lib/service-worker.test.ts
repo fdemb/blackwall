@@ -12,6 +12,8 @@ const manifest = (...modules: string[]) => () =>
 
 type Handler = (event: object) => void;
 
+const get = (path: string, mode: string) => ({ url: `${ORIGIN}${path}`, method: "GET", mode });
+
 /** Runs public/sw.js against an in-memory cache and a scripted network. */
 function worker(network: Record<string, () => Response>) {
   const handlers = new Map<string, Handler>();
@@ -72,10 +74,8 @@ function worker(network: Record<string, () => Response>) {
       online = false;
     },
     install: () => dispatch("install"),
-    navigate: (path: string) =>
-      dispatch("fetch", { request: { url: `${ORIGIN}${path}`, method: "GET", mode: "navigate" } }),
-    get: (path: string) =>
-      dispatch("fetch", { request: { url: `${ORIGIN}${path}`, method: "GET", mode: "cors" } }),
+    navigate: (path: string) => dispatch("fetch", { request: get(path, "navigate") }),
+    get: (path: string) => dispatch("fetch", { request: get(path, "cors") }),
     message: (data: unknown) => dispatch("message", { data }),
   };
 }
@@ -173,7 +173,8 @@ describe("service worker", () => {
     const sw = worker({ "/": html(SHELL), "/api/me": () => new Response("me") });
     await sw.install();
 
-    await sw.message({ type: "loaded-assets", urls: ["https://cdn.test/assets/x.js", "/api/me"] });
+    const urls = ["https://cdn.test/assets/x.js", "/api/me"];
+    await sw.message({ type: "loaded-assets", urls });
 
     expect(sw.fetched).not.toContain("/api/me");
     expect(sw.store.has("/api/me")).toBe(false);
