@@ -355,6 +355,11 @@ fn push_issue_search(
     Ok(())
 }
 
+/// Sync replicas keep only an integration's scheme and host. Slack and
+/// Discord embed their secret in the URL path, and IndexedDB is not a place
+/// for it. The URL itself stays on the REST endpoints.
+pub(super) const SYNC_INTEGRATION_JSON: &str = r#"(to_jsonb(t)-'workspace_id') || jsonb_build_object('secret','','webhook_url',COALESCE(substring(t.webhook_url from '^[A-Za-z][A-Za-z0-9+.-]*://') || substring(t.webhook_url from '^[A-Za-z][A-Za-z0-9+.-]*://(?:[^/?#@]*@)?([^/?#]*)'),''))"#;
+
 pub(super) const MEMBER_JSON: &str = r#"jsonb_build_object('id',u.id,'email',u.email,'display_name',u.profile->>'display_name','avatar_url',u.profile->'avatar_url','contact',u.profile->>'contact','role',m.role,'version',m.version,'team_ids',COALESCE((SELECT jsonb_agg(tm.team_id ORDER BY tm.team_id) FROM team_members tm WHERE tm.workspace_id=m.workspace_id AND tm.user_id=u.id),'[]'::jsonb))"#;
 
 pub(super) async fn authorize(

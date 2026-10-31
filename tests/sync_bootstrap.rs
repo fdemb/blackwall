@@ -1057,6 +1057,21 @@ async fn issue_and_stage_changes_do_not_fan_out_to_count_neighbors() {
     database.cleanup().await;
 }
 
+async fn join(store: &Store, ws: Uuid, name: &str) -> Session {
+    let user = account(store, name).await;
+    sqlx::query("INSERT INTO workspace_members(workspace_id,user_id,role) VALUES($1,$2,'member')")
+        .bind(ws)
+        .bind(user.profile.id)
+        .execute(&store.pool)
+        .await
+        .unwrap();
+    user
+}
+
+fn bootstrap_path(ws: Uuid, client: Uuid) -> String {
+    format!("/internal-api/workspaces/{ws}/sync/bootstrap?client_id={client}")
+}
+
 async fn bulk_issues_n(store: &Store, ws: Uuid, team: Uuid, n: i64) {
     let stage: Uuid =
         sqlx::query_scalar("SELECT id FROM stages WHERE team_id=$1 ORDER BY position LIMIT 1")
@@ -1082,6 +1097,7 @@ async fn bootstrap_concurrency_limit_returns_503_and_spares_rest() {
     .unwrap();
     let app = router(store.clone());
     let (owner, ws, team) = setup(&store, &app).await;
+    let member = join(&store, ws, "member").await;
     bulk_issues_n(&store, ws, team, 200).await;
     let client = Uuid::new_v4();
     let mut filler = store
@@ -1103,7 +1119,7 @@ async fn bootstrap_concurrency_limit_returns_503_and_spares_rest() {
     let start = Instant::now();
     let response = request(
         &app,
-        &owner,
+        &member,
         "GET",
         &format!(
             "/internal-api/workspaces/{ws}/sync/bootstrap?client_id={}",
@@ -1145,6 +1161,188 @@ async fn bootstrap_concurrency_limit_returns_503_and_spares_rest() {
     })
     .await
     .unwrap();
+    drop(app);
+    store.pool.close().await;
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn bootstrap_allows_one_at_a_time_per_user() {
+    let database = support::TestDatabase::new().await;
+    let store = Store::connect(&database.url).await.unwrap();
+    let app = router(store.clone());
+    let (owner, ws, team) = setup(&store, &app).await;
+    let member = join(&store, ws, "member").await;
+    bulk_issues_n(&store, ws, team, 200).await;
+    let mut filler = store
+        .sync_bootstrap(WorkspaceId(ws), owner.profile.id, Uuid::new_v4())
+        .await
+        .unwrap();
+    lines(&filler.recv().await.unwrap().unwrap());
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while filler.len() != 16 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+
+    // The same user, even from another replica, is refused at once instead
+    // of waiting out the permit deadline.
+    let start = Instant::now();
+    let response = request(
+        &app,
+        &owner,
+        "GET",
+        &bootstrap_path(ws, Uuid::new_v4()),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(response.headers()["retry-after"], "5");
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let body: Value = serde_json::from_slice(&bytes).unwrap();
+    assert!(body["error"].is_string());
+    assert!(
+        start.elapsed() < Duration::from_secs(3),
+        "refusal took {:?}",
+        start.elapsed()
+    );
+
+    // Another user streams to the end meanwhile.
+    let data = lines(&bootstrap(&app, &member, ws, Uuid::new_v4(), None).await.1);
+    assert_eq!(data.last().unwrap()["end"], true);
+
+    // Finishing the first bootstrap frees the user's slot.
+    drop(filler);
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let response = request(
+                &app,
+                &owner,
+                "GET",
+                &bootstrap_path(ws, Uuid::new_v4()),
+                None,
+                None,
+            )
+            .await;
+            let status = response.status();
+            response.into_body().collect().await.unwrap();
+            if status == StatusCode::OK {
+                break;
+            }
+            assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+
+    drop(app);
+    store.pool.close().await;
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn sync_records_carry_no_webhook_secret() {
+    let database = support::TestDatabase::new().await;
+    let store = Store::connect(&database.url).await.unwrap();
+    let app = router(store.clone());
+    let (owner, ws, _) = setup(&store, &app).await;
+    let client = Uuid::new_v4();
+    let before = lines(&bootstrap(&app, &owner, ws, client, None).await.1)[0]["cursor"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    let slack = "https://hooks.slack.com/services/T000/B000/SECRETA";
+    let discord =
+        "http://user:SECRETB@discord.example:8443/api/webhooks/1/SECRETC?token=SECRETD#SECRETE";
+    for (name, url) in [("Slack", slack), ("Discord", discord)] {
+        created(
+            &app,
+            &owner,
+            ws,
+            json!({"type":"create_integration","name":name,"webhook_url":url,"secret":"SECRETF"}),
+        )
+        .await;
+    }
+    let expected = BTreeSet::from([
+        "https://hooks.slack.com".to_owned(),
+        "http://discord.example:8443".to_owned(),
+    ]);
+
+    let (_, bytes) = bootstrap(&app, &owner, ws, Uuid::new_v4(), None).await;
+    assert!(!String::from_utf8(bytes.clone()).unwrap().contains("SECRET"));
+    let urls: BTreeSet<String> = records(&lines(&bytes))
+        .into_iter()
+        .filter(|((entity, _), _)| entity == "integrations")
+        .map(|(_, record)| record["webhook_url"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(urls, expected);
+
+    let pulled = pull(&app, &owner, ws, client, Some(&before)).await;
+    assert!(!pulled.to_string().contains("SECRET"));
+    let urls: BTreeSet<String> = pulled["changes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|change| change["entity"] == "integrations")
+        .map(|change| change["record"]["webhook_url"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(urls, expected);
+
+    // Admins still read the full URL through REST, where it is configured.
+    let listed = call(
+        &app,
+        &owner,
+        "GET",
+        &format!("/internal-api/workspaces/{ws}/integrations"),
+        None,
+    )
+    .await;
+    assert!(
+        listed["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["webhook_url"] == slack)
+    );
+
+    drop(app);
+    store.pool.close().await;
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn bootstrap_after_a_history_change_retries_with_a_new_epoch() {
+    let database = support::TestDatabase::new().await;
+    let store = Store::connect(&database.url).await.unwrap();
+    let app = router(store.clone());
+    let (owner, ws, _) = setup(&store, &app).await;
+    let client = Uuid::new_v4();
+    let first = lines(&bootstrap(&app, &owner, ws, client, None).await.1)[0]["cursor"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let (epoch, _) = first.split_once('@').unwrap();
+
+    sqlx::query("UPDATE sync_history SET cluster = 'restored-from-elsewhere'")
+        .execute(&store.pool)
+        .await
+        .unwrap();
+    let response = request(&app, &owner, "GET", &bootstrap_path(ws, client), None, None).await;
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(response.headers()["retry-after"], "5");
+    response.into_body().collect().await.unwrap();
+
+    let second = lines(&bootstrap(&app, &owner, ws, client, None).await.1)[0]["cursor"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_ne!(second.split_once('@').unwrap().0, epoch);
+
     drop(app);
     store.pool.close().await;
     database.cleanup().await;

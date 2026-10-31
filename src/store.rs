@@ -83,6 +83,7 @@ pub struct Store {
     pub outbox: Outbox,
     pub(crate) tracker_client: reqwest::Client,
     pub(crate) bootstrap_permits: Arc<Semaphore>,
+    pub(crate) bootstrap_users: Arc<sync::BootstrapUsers>,
     pub(crate) bootstrap_permit_wait: Duration,
     pub(crate) bootstrap_send_timeout: Duration,
     pub(crate) bootstrap_overall_timeout: Duration,
@@ -296,12 +297,13 @@ impl Store {
             .await
             .map_err(|e| Error::Internal(e.to_string()))?;
 
-        Ok(Self {
+        let store = Self {
             outbox: Outbox::new(pool.clone()),
             tracker_client: crate::tracker::http_client()?,
             bootstrap_permits: Arc::new(Semaphore::new(sync::bootstrap_permits(
                 config.max_connections,
             ))),
+            bootstrap_users: Arc::default(),
             bootstrap_permit_wait: config.bootstrap_permit_wait,
             bootstrap_send_timeout: config.bootstrap_send_timeout,
             bootstrap_overall_timeout: config.bootstrap_overall_timeout,
@@ -313,7 +315,11 @@ impl Store {
             mail_enabled: false,
             registration: crate::auth::RegistrationMode::Open,
             pool,
-        })
+        };
+        // A restore is detected here, so its stale change rows are gone
+        // before the first request instead of during it.
+        store.adopt_sync_history().await?;
+        Ok(store)
     }
 
     /// Open subscriptions held by live `/sync/events` streams.

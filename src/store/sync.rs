@@ -647,6 +647,18 @@ struct Cursor {
     partial: Option<Partial>,
 }
 
+impl Cursor {
+    /// Whether the pull's snapshot can have followed this cursor. A cursor
+    /// that reaches past it, with its xmax or a partial transaction, came
+    /// from another history.
+    fn within(&self, snapshot: &Snapshot) -> bool {
+        self.snapshot.xmax <= snapshot.xmax
+            && self
+                .partial
+                .is_none_or(|partial| partial.txid < snapshot.xmax)
+    }
+}
+
 fn snapshot_text(snapshot: &Snapshot) -> String {
     let xip = snapshot
         .xip
@@ -665,10 +677,32 @@ fn cursor_text(cursor: &Cursor) -> String {
     }
 }
 
-/// Strictly parses a request cursor. Anything that is not a cursor the
-/// server could have produced is 400.
-fn parse_cursor(cursor: &str, snapshot_xmax: i64) -> Result<Cursor> {
-    let invalid = || Error::BadRequest("cursor must be a cursor from this server".into());
+fn invalid_cursor() -> Error {
+    Error::BadRequest("cursor must be a cursor from this server".into())
+}
+
+/// Splits a request cursor into the epoch that issued it and its snapshot
+/// text. Cursors from before epochs existed have no epoch.
+fn split_epoch(cursor: &str) -> Result<(Option<Uuid>, &str)> {
+    let Some((epoch, rest)) = cursor.split_once('@') else {
+        return Ok((None, cursor));
+    };
+    if epoch.len() != 32 {
+        return Err(invalid_cursor());
+    }
+    let epoch = Uuid::try_parse(epoch).map_err(|_| invalid_cursor())?;
+    Ok((Some(epoch), rest))
+}
+
+fn with_epoch(epoch: Uuid, cursor: &str) -> String {
+    format!("{}@{cursor}", epoch.simple())
+}
+
+/// Strictly parses a request cursor's snapshot. Anything that is not a
+/// cursor the server could have produced is 400. Whether this database can
+/// honor a well-formed one is `Cursor::within`.
+fn parse_cursor(cursor: &str) -> Result<Cursor> {
+    let invalid = invalid_cursor;
     let parts = cursor.split(':').collect::<Vec<_>>();
     let (xmin_s, xmax_s, xip_s, partial_s) = match parts.as_slice() {
         [xmin, xmax, xip] => (*xmin, *xmax, *xip, None),
@@ -693,7 +727,6 @@ fn parse_cursor(cursor: &str, snapshot_xmax: i64) -> Result<Cursor> {
         }
     }
     if xmin > xmax
-        || xmax > snapshot_xmax
         || xip.windows(2).any(|pair| pair[0] >= pair[1])
         || xip.first().is_some_and(|first| *first != xmin)
         || xip.is_empty() && xmin != xmax
@@ -705,10 +738,9 @@ fn parse_cursor(cursor: &str, snapshot_xmax: i64) -> Result<Cursor> {
         .map(|text| {
             let (txid, row) = text.split_once('.').ok_or_else(invalid)?;
             let (txid, row) = (integer(txid)?, integer(row)?);
-            // The transaction must be one the snapshot's window holds, and
-            // already committed as far as the pull's own snapshot can tell.
+            // The transaction must be one the snapshot's window holds.
             let in_window = txid >= xmax || xip.binary_search(&txid).is_ok();
-            if !in_window || txid >= snapshot_xmax || row < 1 {
+            if !in_window || row < 1 {
                 return Err(invalid());
             }
             Ok(Partial { txid, row })
@@ -721,30 +753,48 @@ fn parse_cursor(cursor: &str, snapshot_xmax: i64) -> Result<Cursor> {
 }
 
 /// The pull's own snapshot, as cursor text and parsed, plus the change
-/// horizon. Rows committed after it are invisible to the pull's queries, so
-/// the window is exactly "visible here but not in the request cursor". A
-/// transaction open elsewhere only sits in xip lists; it never holds the
-/// cursor back.
-async fn pull_snapshot(tx: &mut PgConnection) -> Result<(String, Snapshot, i64)> {
+/// horizon and the history it was taken in. Rows committed after it are
+/// invisible to the pull's queries, so the window is exactly "visible here
+/// but not in the request cursor". A transaction open elsewhere only sits in
+/// xip lists; it never holds the cursor back.
+struct PullSnapshot {
+    text: String,
+    snapshot: Snapshot,
+    horizon: i64,
+    /// Issues every cursor handed out from this snapshot.
+    epoch: Uuid,
+    /// False when this database is another history than the one `epoch`
+    /// names, so `adopt_sync_history` has to rotate it first.
+    current: bool,
+}
+
+async fn pull_snapshot(tx: &mut PgConnection) -> Result<PullSnapshot> {
     let row = sqlx::query!(
         "SELECT pg_current_snapshot()::text AS \"text!\", \
               pg_snapshot_xmin(pg_current_snapshot())::text::bigint AS \"xmin!\", \
               pg_snapshot_xmax(pg_current_snapshot())::text::bigint AS \"xmax!\", \
               COALESCE((SELECT array_agg(x::text::bigint) \
                         FROM pg_snapshot_xip(pg_current_snapshot()) AS t(x)), '{}'::bigint[]) AS \"xip!\", \
-              (SELECT txid FROM change_horizon) AS \"horizon!\"",
+              (SELECT txid FROM change_horizon) AS \"horizon!\", \
+              (SELECT epoch FROM sync_history) AS \"epoch!\", \
+              (SELECT cluster = sync_identity() FROM sync_history) AS \"current!\"",
     )
     .fetch_one(&mut *tx)
     .await?;
     let mut xip = row.xip;
     xip.sort_unstable();
     xip.dedup();
-    let snapshot = Snapshot {
-        xmin: row.xmin,
-        xmax: row.xmax,
-        xip,
-    };
-    Ok((row.text, snapshot, row.horizon))
+    Ok(PullSnapshot {
+        text: row.text,
+        snapshot: Snapshot {
+            xmin: row.xmin,
+            xmax: row.xmax,
+            xip,
+        },
+        horizon: row.horizon,
+        epoch: row.epoch,
+        current: row.current,
+    })
 }
 
 /// Where a full page stopped.
@@ -926,9 +976,10 @@ fn next_cursor(requested: &Cursor, snapshot: &Snapshot, cut: Cut) -> Cursor {
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct PullResponse {
-    /// Snapshot in `xmin:xmax:xip` text form. Every txid below its xmax
-    /// except those listed is reflected. An unfinished page may append
-    /// `:txid.row`, the one transaction delivered only up to that change row.
+    /// Opaque cursor, `epoch@` and a snapshot in `xmin:xmax:xip` text form.
+    /// Every txid below the snapshot's xmax except those listed is reflected.
+    /// An unfinished page may append `:txid.row`, the one transaction
+    /// delivered only up to that change row.
     pub cursor: String,
     /// True when more pages remain. `last_mutation_id` is null then.
     pub more: bool,
@@ -971,14 +1022,34 @@ impl Store {
     ) -> Result<PullResponse> {
         let workspace_id = workspace_id.0;
         let (mut tx, last_mutation_id) = self.sync_read(workspace_id, actor, client_id).await?;
-        let (snap_text, snapshot, horizon) = pull_snapshot(&mut tx).await?;
+        let pulled = pull_snapshot(&mut tx).await?;
+        let snapshot = pulled.snapshot;
 
-        let Some(cursor) = cursor else {
+        let requested = cursor
+            .map(|cursor| {
+                let (epoch, text) = split_epoch(cursor)?;
+                Ok::<_, Error>((epoch, parse_cursor(text)?))
+            })
+            .transpose()?;
+        if !pulled.current {
+            tx.commit().await?;
+            let epoch = self.adopt_sync_history().await?;
+            return Ok(PullResponse::restart(
+                with_epoch(epoch, &pulled.text),
+                requested.is_some(),
+            ));
+        }
+        let snap_text = with_epoch(pulled.epoch, &pulled.text);
+        let Some((epoch, requested)) = requested else {
             tx.commit().await?;
             return Ok(PullResponse::restart(snap_text, false));
         };
-        let requested = parse_cursor(cursor, snapshot.xmax)?;
-        if requested.snapshot.xmin < horizon {
+        // A cursor this database can't honor is a reset, never a 400: its
+        // client did nothing wrong, the history under it changed.
+        if epoch != Some(pulled.epoch)
+            || !requested.within(&snapshot)
+            || requested.snapshot.xmin < pulled.horizon
+        {
             tx.commit().await?;
             return Ok(PullResponse::restart(snap_text, true));
         }
@@ -1019,7 +1090,10 @@ impl Store {
         let more = page.cut.is_some();
         let next = match page.cut {
             None => snap_text,
-            Some(cut) => cursor_text(&next_cursor(&requested, &snapshot, cut)),
+            Some(cut) => with_epoch(
+                pulled.epoch,
+                &cursor_text(&next_cursor(&requested, &snapshot, cut)),
+            ),
         };
         let response = PullResponse {
             cursor: next,
@@ -1034,6 +1108,42 @@ impl Store {
 }
 
 impl Store {
+    /// Rotates the sync epoch when this database is another history than the
+    /// one that issued it, such as after a restore into a new cluster or a
+    /// failover, and returns the epoch in force. Every cursor then resets.
+    /// The change rows go too: a restore can leave rows with txids the new
+    /// cluster hasn't reached, which no window could ever deliver cleanly.
+    /// Concurrent callers serialize on the `sync_history` row, so one rotates
+    /// and the rest find it done.
+    pub async fn adopt_sync_history(&self) -> Result<Uuid> {
+        let mut tx = self.pool.begin().await?;
+        let rotated = sqlx::query_scalar!(
+            "UPDATE sync_history SET epoch = gen_random_uuid(), cluster = sync_identity() \
+             WHERE cluster <> sync_identity() RETURNING epoch AS \"epoch!\"",
+        )
+        .fetch_optional(&mut *tx)
+        .await?;
+        let epoch = match rotated {
+            Some(epoch) => {
+                tracing::warn!(%epoch, "sync history changed, resetting every cursor");
+                sqlx::query!("DELETE FROM changes")
+                    .execute(&mut *tx)
+                    .await?;
+                sqlx::query!("UPDATE change_horizon SET txid = 0")
+                    .execute(&mut *tx)
+                    .await?;
+                epoch
+            }
+            None => {
+                sqlx::query_scalar!("SELECT epoch AS \"epoch!\" FROM sync_history")
+                    .fetch_one(&mut *tx)
+                    .await?
+            }
+        };
+        tx.commit().await?;
+        Ok(epoch)
+    }
+
     async fn sync_read(
         &self,
         workspace_id: Uuid,
@@ -1096,20 +1206,50 @@ impl Store {
 }
 
 /// Bump whenever a sync record shape changes.
-pub const SYNC_SCHEMA: u32 = 7;
+pub const SYNC_SCHEMA: u32 = 8;
 
 /// How long a bootstrap waits for a concurrency permit before answering 503.
 pub const BOOTSTRAP_PERMIT_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
 /// Deadline for each channel send while streaming a bootstrap. A slow reader
 /// that stops consuming ends the body without a trailer after this long.
-pub const BOOTSTRAP_SEND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+/// Until then it holds a permit and a `REPEATABLE READ` snapshot.
+pub const BOOTSTRAP_SEND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 /// Deadline for a whole bootstrap, from permit acquisition to trailer.
 pub const BOOTSTRAP_OVERALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
 
 /// Concurrent bootstraps are capped at a quarter of the pool's connections,
-/// at least one, so slow readers cannot hold every shared connection.
+/// at least one, so slow readers cannot hold every shared connection. Each
+/// user also holds at most one, see `BootstrapUsers`.
 pub(crate) fn bootstrap_permits(max_connections: u32) -> usize {
     ((max_connections / 4).max(1)) as usize
+}
+
+/// Users with a bootstrap running. A user holds at most one, so a client
+/// that retries or opens many tabs can't take every permit.
+#[derive(Default)]
+pub(crate) struct BootstrapUsers(std::sync::Mutex<std::collections::HashSet<Uuid>>);
+
+/// A user's claim on the one bootstrap they may run. Dropping it releases it.
+struct BootstrapClaim {
+    users: std::sync::Arc<BootstrapUsers>,
+    user: Uuid,
+}
+
+impl BootstrapClaim {
+    fn take(users: &std::sync::Arc<BootstrapUsers>, user: Uuid) -> Option<Self> {
+        let mut held = users.0.lock().unwrap_or_else(|e| e.into_inner());
+        held.insert(user).then(|| Self {
+            users: users.clone(),
+            user,
+        })
+    }
+}
+
+impl Drop for BootstrapClaim {
+    fn drop(&mut self) {
+        let mut held = self.users.0.lock().unwrap_or_else(|e| e.into_inner());
+        held.remove(&self.user);
+    }
 }
 
 const BOOTSTRAP_ENTITIES: &[&str] = &[
@@ -1246,6 +1386,9 @@ impl Store {
         client_id: Uuid,
     ) -> Result<tokio::sync::mpsc::Receiver<Result<Vec<u8>>>> {
         let workspace = workspace.0;
+        let claim = BootstrapClaim::take(&self.bootstrap_users, actor).ok_or_else(|| {
+            Error::ServiceUnavailable("a bootstrap is already running, retry later".into())
+        })?;
         // The permit comes before the connection and is held until the task
         // ends, so queued bootstraps wait here instead of holding pool
         // connections while unread.
@@ -1270,17 +1413,22 @@ impl Store {
         let (ready, started) = tokio::sync::oneshot::channel();
         tokio::spawn(async move {
             let _permit = permit;
+            let _claim = claim;
             let prepared: Result<_> = async {
                 let (mut tx, last_mutation_id) =
                     store.sync_read(workspace, actor, client_id).await?;
-                let cursor: String =
-                    sqlx::query_scalar!(r#"SELECT pg_current_snapshot()::text AS "cursor!""#)
-                        .fetch_one(&mut *tx)
-                        .await?;
+                let pulled = pull_snapshot(&mut tx).await?;
+                if !pulled.current {
+                    tx.rollback().await?;
+                    store.adopt_sync_history().await?;
+                    return Err(Error::ServiceUnavailable(
+                        "database history changed, retry".into(),
+                    ));
+                }
                 Ok((
                     tx,
                     serde_json::json!({
-                        "cursor": cursor,
+                        "cursor": with_epoch(pulled.epoch, &pulled.text),
                         "last_mutation_id": last_mutation_id,
                         "schema": SYNC_SCHEMA,
                     }),
@@ -1369,7 +1517,7 @@ impl Store {
 mod tests {
     use super::{
         Cursor, Cut, MAX_XIP, PULL_PAIRS, Partial, PullPage, Snapshot, advance_cursor, cursor_text,
-        next_cursor, parse_cursor, snapshot_text,
+        next_cursor, parse_cursor, snapshot_text, split_epoch, with_epoch,
     };
     use uuid::Uuid;
 
@@ -1391,10 +1539,10 @@ mod tests {
             "845:847:845,846:846.3",
             "845:847:845,846:900.3",
         ] {
-            let parsed = parse_cursor(text, 1000).unwrap();
+            let parsed = parse_cursor(text).unwrap();
             assert_eq!(cursor_text(&parsed), text);
         }
-        let parsed = parse_cursor("845:847:845,846:846.3", 1000).unwrap();
+        let parsed = parse_cursor("845:847:845,846:846.3").unwrap();
         assert_eq!(parsed.snapshot, snapshot(845, 847, &[845, 846]));
         assert_eq!(parsed.partial, Some(Partial { txid: 846, row: 3 }));
         assert_eq!(snapshot_text(&parsed.snapshot), "845:847:845,846");
@@ -1423,17 +1571,58 @@ mod tests {
             // is already reflected, so it has no window to be partial in.
             "845:847:845:846.3",
             "847:847::846.3",
-            // At or beyond the pull's own snapshot: from the future.
-            "845:847:845:1000.3",
-            "845:847:845:1001.3",
             // Past i64.
             "845:847:845:846.99999999999999999999",
         ] {
-            assert!(parse_cursor(bad, 1000).is_err(), "{bad:?}");
+            assert!(parse_cursor(bad).is_err(), "{bad:?}");
         }
-        assert!(parse_cursor("845:847:845:845.1", 1000).is_ok());
-        assert!(parse_cursor("845:847:845:847.1", 1000).is_ok());
-        assert!(parse_cursor("845:847:845:999.1", 1000).is_ok());
+        assert!(parse_cursor("845:847:845:845.1").is_ok());
+        assert!(parse_cursor("845:847:845:847.1").is_ok());
+        assert!(parse_cursor("845:847:845:999.1").is_ok());
+    }
+
+    #[test]
+    fn cursor_from_the_future_parses_but_is_not_within_the_snapshot() {
+        let pulled = snapshot(990, 1000, &[990]);
+        for (text, within) in [
+            ("990:1000:990", true),
+            ("990:1000:990:990.1", true),
+            ("990:995:990:996.1", true),
+            ("990:1010:", false),
+            ("99999999:99999999:", false),
+            ("990:1000:990:1000.1", false),
+            ("845:847:845:99999999.1", false),
+        ] {
+            let parsed = parse_cursor(text).unwrap();
+            assert_eq!(parsed.within(&pulled), within, "{text:?}");
+        }
+    }
+
+    #[test]
+    fn cursor_epoch_prefix() {
+        let epoch = Uuid::parse_str("0123456789abcdef0123456789abcdef").unwrap();
+        let text = with_epoch(epoch, "845:847:845,846:846.3");
+        assert_eq!(
+            text,
+            "0123456789abcdef0123456789abcdef@845:847:845,846:846.3"
+        );
+        assert_eq!(
+            split_epoch(&text).unwrap(),
+            (Some(epoch), "845:847:845,846:846.3")
+        );
+        assert_eq!(split_epoch("845:847:").unwrap(), (None, "845:847:"));
+        for bad in [
+            "@845:847:",
+            "nope@845:847:",
+            "0123456789abcdef0123456789abcde@845:847:",
+            "0123456789abcdef0123456789abcdef0@845:847:",
+            "0123456789abcdef-123456789abcdef@845:847:",
+            "01234567-89ab-cdef-0123-456789abcdef@845:847:",
+        ] {
+            assert!(split_epoch(bad).is_err(), "{bad:?}");
+        }
+        // Only the snapshot part is parsed after the split.
+        assert!(parse_cursor("0123456789abcdef0123456789abcdef@845:847:").is_err());
     }
 
     #[test]
@@ -1460,11 +1649,10 @@ mod tests {
             "845:847:845,845",
             "845:847:844",
         ] {
-            assert!(parse_cursor(bad, 1000).is_err(), "{bad:?}");
+            assert!(parse_cursor(bad).is_err(), "{bad:?}");
         }
-        // Beyond the pull's own snapshot: from the future.
-        assert!(parse_cursor("990:1010:", 1000).is_err());
-        assert!(parse_cursor("990:1000:990", 1000).is_ok());
+        assert!(parse_cursor("990:1010:").is_ok());
+        assert!(parse_cursor("990:1000:990").is_ok());
         // Over the xip cap.
         let huge = format!(
             "1:20000:{}",
@@ -1473,7 +1661,7 @@ mod tests {
                 .collect::<Vec<_>>()
                 .join(",")
         );
-        assert!(parse_cursor(&huge, 1_000_000).is_err());
+        assert!(parse_cursor(&huge).is_err());
     }
 
     #[test]
@@ -1611,6 +1799,6 @@ mod tests {
         let next = next_cursor(&requested, &pulled, Cut::Inside { txid: 24, row: 5 });
         assert_eq!(next.snapshot, snapshot(24, 30, &[24]));
         assert_eq!(cursor_text(&next), "24:30:24:24.5");
-        assert!(parse_cursor(&cursor_text(&next), 40).is_ok());
+        assert!(parse_cursor(&cursor_text(&next)).is_ok());
     }
 }

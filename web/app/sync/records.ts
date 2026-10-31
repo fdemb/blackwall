@@ -127,6 +127,7 @@ export interface SyncInvitation extends Invitation {
   token_hash: string;
 }
 
+/** The server sends `webhook_url` as scheme and host only, because the path holds the secret. */
 export interface SyncIntegration extends Integration {
   secret: string;
 }
