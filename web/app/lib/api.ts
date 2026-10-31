@@ -47,6 +47,9 @@ export async function api<T>(
     body: init.body === undefined ? undefined : isForm ? form : JSON.stringify(init.body),
     signal: init.signal,
   });
+  // A fetch can ignore its abort. A newer request may have stored state since, so a late answer
+  // stores nothing.
+  init.signal?.throwIfAborted();
   const token = response.headers.get("X-CSRF-Token");
   if (token) setCsrf(token);
   const text = response.status === 204 ? "" : await response.text();
