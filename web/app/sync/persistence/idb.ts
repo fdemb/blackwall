@@ -170,17 +170,22 @@ class IndexedDBReplica implements Replica {
 
   load(): Promise<LoadedReplica> {
     return this.transaction(STORES, "readonly", (tx, done, guard) => {
-      const records: LoadedReplica["records"] = {};
+      // Every store is read up front, both copies included, and the live copy picked at the end:
+      // a request issued after a callback can run after an upgrade has replaced the stores.
+      const contents = new Map<string, object[]>();
+      let live: Generation = 0;
       let meta: ReplicaMeta;
       let stored: StoredMutation[] = [];
       let scopes: Scope[] = [];
       let rejected: Rejection[] = [];
-      let remaining = ENTITIES.length + 4;
+      let remaining = ENTITY_STORES.length + 5;
       const received = () => {
         remaining -= 1;
         if (remaining > 0) return;
         const acknowledged = (mutation: PendingMutation) => mutation.id <= meta.lastMutationId;
         const rows = stored.map(pendingOf);
+        const records: LoadedReplica["records"] = {};
+        for (const entity of ENTITIES) records[entity] = contents.get(storeOf(entity, live)) ?? [];
         done({
           meta,
           records,
@@ -195,14 +200,15 @@ class IndexedDBReplica implements Replica {
         meta = value;
         received();
       });
-      readGeneration(tx, guard, (live) => {
-        for (const entity of ENTITIES) {
-          read<object[]>(tx.objectStore(storeOf(entity, live)).getAll(), guard, (value) => {
-            records[entity] = value;
-            received();
-          });
-        }
+      readGeneration(tx, guard, (generation) => {
+        live = generation;
+        received();
       });
+      for (const store of ENTITY_STORES)
+        read<object[]>(tx.objectStore(store).getAll(), guard, (value) => {
+          contents.set(store, value);
+          received();
+        });
       read<StoredMutation[]>(tx.objectStore("outbox").getAll(), guard, (value) => {
         stored = value;
         received();

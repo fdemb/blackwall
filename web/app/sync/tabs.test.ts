@@ -648,24 +648,6 @@ describe("tab coordination", () => {
       f.tabs.every((tab) => tab.engine.store.get("issues", ISSUE)?.title === "Original"),
     );
     const views = f.tabs.map((tab) => tab.engine.store.all("issues"));
-    const trace = (label: string) =>
-      console.log(
-        "TRACE",
-        label,
-        JSON.stringify(
-          f.tabs.map((tab) => ({
-            role: tab.engine.status.get().role,
-            phase: tab.engine.status.get().phase,
-            issues: tab.engine.store.all("issues").length,
-            base: tab.engine.store.baseAll("issues").length,
-            events: tab.events.map((event) => event.type),
-          })),
-        ),
-      );
-    trace("before");
-    f.tabs.forEach((tab, index) =>
-      tab.engine.store.subscribe(() => trace(`change ${index} ${new Error().stack}`)),
-    );
     const upgraded = await new IndexedDBReplicaStorage({
       indexedDB: f.database,
       version: IDB_VERSION + 1,
@@ -674,7 +656,6 @@ describe("tab coordination", () => {
       workspaceId: f.workspaceId,
       schema: SCHEMA,
     });
-    trace("after");
     try {
       for (const [index, tab] of f.tabs.entries()) {
         expect(tab.events).toEqual([{ type: "outdated" }]);
