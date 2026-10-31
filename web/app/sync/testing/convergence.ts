@@ -1024,7 +1024,9 @@ export async function runConvergence(
       check((await authClient.storage.list()).length === 1, "CSRF refusal removed persistence");
     } else {
       check((await authClient.storage.list()).length === 1, "ended session deleted its replica");
-      equal(authClient.engine.store.all("issues"), [], "wiped client retained its view");
+      // A 401 keeps the view until the app's session check closes the engine.
+      if (authStatus === 403)
+        equal(authClient.engine.store.all("issues"), [], "wiped client retained its view");
       check(
         server.record("members", authClient.actor, owner.id) === null,
         "wiped actor retained access",
