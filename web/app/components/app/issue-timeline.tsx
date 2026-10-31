@@ -150,6 +150,9 @@ export function Timeline({ issue }: { issue: Issue }) {
             )}
         </ol>
       )}
+      {(comments.offline || activity.offline) && (
+        <p className="px-4 py-3 text-muted-foreground">{t("timeline.offline")}</p>
+      )}
       {comments.error && <QueryStatus query={comments} />}
       {activity.error && <QueryStatus query={activity} />}
       <Composer issue={issue} />

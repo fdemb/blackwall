@@ -36,6 +36,8 @@ export type TabBody =
       online: boolean;
       blocked: boolean;
       stalled: boolean;
+      /** The leader's disk refused a write, so this tab's data can run ahead of it. */
+      storageFull: boolean;
       error: { message: string; unreachable: boolean } | null;
     }
   | { type: "result"; mutationId: number; outcome: TabOutcome }

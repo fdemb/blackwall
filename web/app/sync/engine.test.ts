@@ -2,13 +2,16 @@ import "fake-indexeddb/auto";
 import { forceCloseDatabase, IDBFactory } from "fake-indexeddb";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { getCsrf, setCsrf } from "../lib/api";
-import { createEngine, OutdatedError, SCHEMA } from "./engine";
+import { createEngine, OutdatedError, PROTOCOL_BLOCK_AFTER, SCHEMA } from "./engine";
 import type { EngineEvent, EngineSignal, SyncEngine } from "./engine";
+import type { EngineDependencies } from "./engine-types";
 import { IDB_VERSION, IndexedDBReplicaStorage } from "./persistence/idb";
 import { MemoryReplicaStorage } from "./persistence/memory";
 import type { ReplicaStorage, Scope } from "./persistence/types";
 import { BOOTSTRAP_ENTITIES, normalize } from "./records";
 import { createFakeServer } from "./testing/fake-server";
+import { limited } from "./testing/limited-storage";
+import { createTabHub } from "./testing/tabs";
 import type { FakeServerOptions } from "./testing/fake-server";
 import {
   AccountChangedError,
@@ -18,6 +21,7 @@ import {
   UnauthorizedError,
   UnavailableError,
 } from "./transport";
+import { withCounts, issueRef } from "./derived";
 import type { Mutation } from "./transport";
 
 const id = (n: number) => `11111111-1111-4111-8111-${n.toString(16).padStart(12, "0")}`;
@@ -97,16 +101,17 @@ function fixture(
   });
   const signals = new Signals();
   let sequence = 100;
-  const build = (schema = SCHEMA) => {
+  const build = (schema = SCHEMA, extra: Partial<EngineDependencies> = {}) => {
     const engine = createEngine({
       storage,
       transport,
       actor: owner.id,
       workspaceId: workspace.id,
       schema,
-      clock: { now: server.now, schedule: server.schedule },
+      clock: { now: server.now, monotonic: server.monotonic, schedule: server.schedule },
       randomId: () => id(sequence++),
       signals,
+      ...extra,
     });
     engines.push(engine);
     return engine;
@@ -623,14 +628,17 @@ describe("sync engine", () => {
     });
     await f.engine.start();
     await until(() => f.engine.status.get().phase === "ready");
-    expect(f.engine.status.get().lastError).toBeInstanceOf(ProtocolError);
+    await until(() => vi.mocked(f.transport.scope).mock.calls.length > 0);
     const receipt = await f.engine.mutate("update_issue", {
       id: ISSUE,
       patch: { title: "Core still works" },
     });
     expect(await receipt.settled).toBe("applied");
     await until(() => f.engine.status.get().pending === 0);
-    expect(f.transport.scope).toHaveBeenCalledTimes(1);
+    await elapse(f, () => f.engine.scopeStatus({ entity: "comments", issueId: ISSUE }) === "error");
+    expect(f.transport.scope).toHaveBeenCalledTimes(PROTOCOL_BLOCK_AFTER);
+    await f.advance(600_000);
+    expect(f.transport.scope).toHaveBeenCalledTimes(PROTOCOL_BLOCK_AFTER);
   });
 
   it("reports a scope as loading until its first load, then loaded, and loaded from disk on reopen", async () => {
@@ -660,7 +668,7 @@ describe("sync engine", () => {
     });
     f.engine.useScope(scope);
     await f.engine.start();
-    await until(() => f.engine.scopeStatus(scope) === "error");
+    await elapse(f, () => f.engine.scopeStatus(scope) === "error");
     expect(f.engine.scopeError(scope)).toBe(failure);
     expect(f.engine.scopeStatus({ entity: "activity", entityId: ISSUE })).toBe("loading");
   });
@@ -1152,21 +1160,6 @@ describe("sync engine", () => {
     },
   );
 
-  it("surfaces protocol errors once and stops retrying that request kind", async () => {
-    const f = fixture();
-    await f.ready();
-    const pull = vi.fn(async () => {
-      throw new ProtocolError("Bad cursor", 400);
-    });
-    f.transport.pull = pull;
-    await f.engine.pull();
-    f.signals.send("focus");
-    await f.advance(60_000);
-    expect(pull).toHaveBeenCalledTimes(1);
-    expect(f.engine.status.get().lastError).toBeInstanceOf(ProtocolError);
-    expect(f.engine.status.get().connected).toBe(true);
-  });
-
   it("rejects failed admission and online-only misuse without consuming an outbox id", async () => {
     const f = fixture();
     await f.ready();
@@ -1186,7 +1179,7 @@ describe("sync engine", () => {
 
 describe("review regressions", () => {
   it.each([{ updated_at: "invalid" }, { dependencies: null }, { id: "mismatched" }])(
-    "validates a final pull page before persisting its cursor or acknowledgement: %j",
+    "skips a malformed record in a final pull page and applies the rest: %j",
     async (malformed) => {
       const f = fixture();
       await f.ready();
@@ -1198,6 +1191,11 @@ describe("review regressions", () => {
       void receipt.settled.catch(() => undefined);
       const before = await f.disk();
       await f.transport.push(f.workspace.id, before.meta.clientId, before.outbox);
+      f.server.run(f.peer, {
+        type: "update_issue",
+        id: OTHER_ISSUE,
+        patch: { title: "Valid beside it" },
+      });
       const original = f.transport.pull;
       f.transport.pull = async (...args) => {
         const response = await original(...args);
@@ -1206,24 +1204,30 @@ describe("review regressions", () => {
           changes: response.changes.map((change) => ({
             ...change,
             record:
-              change.entity === "issues" && change.record
+              change.entity === "issues" && change.id === ISSUE && change.record
                 ? { ...change.record, ...malformed }
                 : change.record,
           })),
         };
       };
       await f.engine.start();
-      await until(() => f.engine.status.get().lastError !== null);
-      expect(f.engine.status.get().lastError).toBeInstanceOf(ProtocolError);
+      await until(() => f.engine.status.get().skipped.length === 1);
+      expect(f.engine.status.get().skipped).toMatchObject([{ entity: "issues", id: ISSUE }]);
+      expect(f.engine.status.get()).toMatchObject({ blocked: false, lastError: null });
+      expect(f.engine.store.get("issues", OTHER_ISSUE)?.title).toBe("Valid beside it");
+      await until(() => f.engine.status.get().pending === 0);
+      expect(f.engine.store.get("issues", ISSUE)?.title).toBe("Original");
       const after = await f.disk();
-      expect(after.meta.cursor).toBe(before.meta.cursor);
-      expect(after.meta.lastMutationId).toBe(before.meta.lastMutationId);
-      expect(after.outbox).toEqual(before.outbox);
-      expect(after.records).toEqual(before.records);
-      expect(f.engine.store.get("issues", ISSUE)?.title).toBe("Pending");
-      const reloaded = f.build();
-      await reloaded.open();
-      expect(reloaded.store.get("issues", ISSUE)?.title).toBe("Pending");
+      expect(after.meta.cursor).not.toBe(before.meta.cursor);
+      expect(after.meta.lastMutationId).toBeGreaterThan(before.meta.lastMutationId);
+      expect(after.meta.resync).toBe(true);
+      const stored = (state: typeof after, key: string) =>
+        state.records.issues?.find((record) => Reflect.get(record, "id") === key);
+      expect(stored(after, ISSUE)).toEqual(stored(before, ISSUE));
+      expect(stored(after, OTHER_ISSUE)).toMatchObject({ title: "Valid beside it" });
+      f.transport.pull = original;
+      await elapse(f, () => f.engine.store.get("issues", ISSUE)?.title === "Pending");
+      expect(f.engine.status.get().skipped).toEqual([]);
     },
   );
 
@@ -1439,7 +1443,7 @@ describe("cookie sessions and pending callers", () => {
       throw new ProtocolError("Bad push body", 400);
     };
     await f.engine.mutate("update_issue", { id: ISSUE, patch: { title: "Stuck" } });
-    await until(() => f.engine.status.get().lastError instanceof ProtocolError);
+    await elapse(f, () => f.engine.status.get().blocked);
     const online = f.engine.runOnline("set_role", { user_id: f.peer.id, role: "viewer" });
     await expect(online).rejects.toThrow("Reload");
     expect(f.server.record("members", f.peer.id)?.role).not.toBe("viewer");
@@ -1577,58 +1581,51 @@ describe("record preparation", () => {
     },
   );
 
+  const storageFor = (backend: string) =>
+    backend === "memory"
+      ? new MemoryReplicaStorage()
+      : new IndexedDBReplicaStorage({ indexedDB: new IDBFactory() });
+
   it.each(["memory", "indexeddb"])(
-    "rejects records outside the requested scope before writing %s state",
+    "loads a scope around an unparseable record and reports it with %s state",
     async (backend) => {
-      const f = fixture(
-        backend === "memory"
-          ? new MemoryReplicaStorage()
-          : new IndexedDBReplicaStorage({ indexedDB: new IDBFactory() }),
-      );
+      const f = fixture(storageFor(backend));
       await f.ready();
-      const before = await f.disk();
       const valid = f.server.records("activity").find((row) => row.entity_id === ISSUE);
       if (!valid) throw new Error("missing activity fixture");
+      const scope: Scope = { entity: "activity", entityId: ISSUE };
       f.transport.scope = async () => ({
-        records: [valid, { id: id(87), created_at: "bad timestamp" }],
+        records: [valid, { ...valid, id: id(87), at: "bad timestamp" }],
       });
-      const release = f.engine.useScope({ entity: "activity", entityId: ISSUE });
-      await until(() => f.engine.status.get().lastError instanceof ProtocolError);
-      expect(await f.disk()).toEqual(before);
-      expect(f.engine.store.all("activity")).toEqual([]);
+      const release = f.engine.useScope(scope);
+      await until(() => f.engine.scopeStatus(scope) === "loaded");
+      expect(f.engine.store.all("activity").map((row) => row.id)).toEqual([valid.id]);
+      expect(f.engine.status.get().skipped).toMatchObject([{ entity: "activity", id: id(87) }]);
+      const disk = await f.disk();
+      expect(disk.scopes).toEqual([]);
+      expect(disk.records.activity?.map((row) => Reflect.get(row, "id"))).toEqual([valid.id]);
       release();
     },
   );
 
-  it("rejects a well-formed record belonging to a different scope", async () => {
+  it("skips a well-formed record belonging to a different scope", async () => {
     const f = fixture();
     await f.ready();
     const foreign = f.server.records("activity").find((row) => row.entity_id === OTHER_ISSUE);
     if (!foreign) throw new Error("missing foreign activity");
+    const scope: Scope = { entity: "activity", entityId: ISSUE };
     f.transport.scope = async () => ({ records: [foreign] });
-    const release = f.engine.useScope({ entity: "activity", entityId: ISSUE });
-    await until(() => f.engine.status.get().lastError instanceof ProtocolError);
-    expect((await f.disk()).scopes).toEqual([]);
+    const release = f.engine.useScope(scope);
+    await until(() => f.engine.scopeStatus(scope) === "loaded");
+    expect(f.engine.status.get().skipped).toMatchObject([{ entity: "activity", id: foreign.id }]);
     expect(f.engine.store.all("activity")).toEqual([]);
     release();
   });
 
   it.each(["memory", "indexeddb"])(
-    "rejects a malformed bootstrap before replacing or acknowledging %s state",
+    "bootstraps around a malformed record with %s state",
     async (backend) => {
-      const f = fixture(
-        backend === "memory"
-          ? new MemoryReplicaStorage()
-          : new IndexedDBReplicaStorage({ indexedDB: new IDBFactory() }),
-      );
-      await f.ready();
-      f.engine.stop();
-      const receipt = await f.engine.mutate("update_issue", {
-        id: ISSUE,
-        patch: { title: "Pending bootstrap" },
-      });
-      const before = await f.disk();
-      await f.transport.push(f.workspace.id, before.meta.clientId, before.outbox);
+      const f = fixture(storageFor(backend));
       const original = f.transport.bootstrap;
       f.transport.bootstrap = async (...args) => {
         const response = await original(...args);
@@ -1636,38 +1633,28 @@ describe("record preparation", () => {
           header: response.header,
           records: (async function* () {
             for await (const item of response.records)
-              yield {
-                ...item,
-                record:
-                  item.entity === "issues"
-                    ? { ...item.record, updated_at: "bad timestamp" }
-                    : item.record,
-              };
+              yield item.entity === "issues" && Reflect.get(item.record, "id") === ISSUE
+                ? { ...item, record: { ...item.record, updated_at: "bad timestamp" } }
+                : item;
           })(),
         };
       };
-      f.server.inject({ kind: "reset_pull" });
-      await f.engine.start();
-      await until(() => f.engine.status.get().lastError instanceof ProtocolError);
-      const after = await f.disk();
-      expect(after).toEqual(before);
-      expect(f.engine.store.get("issues", ISSUE)?.title).toBe("Pending bootstrap");
-      await f.engine.close();
-      await receipt.settled.catch(() => undefined);
-      const reloaded = f.build();
-      await reloaded.open();
-      expect(reloaded.store.get("issues", ISSUE)?.title).toBe("Pending bootstrap");
+      await f.ready();
+      expect(f.engine.store.get("issues", ISSUE)).toBeUndefined();
+      expect(f.engine.store.get("issues", OTHER_ISSUE)?.title).toBe("Other");
+      expect(f.engine.store.get("teams", TEAM)).toBeDefined();
+      expect(f.engine.status.get().skipped).toMatchObject([{ entity: "issues", id: ISSUE }]);
+      expect(f.engine.status.get()).toMatchObject({ blocked: false, lastError: null });
+      expect(f.requests("bootstrap")).toBe(1);
+      const disk = await f.disk();
+      expect(disk.records.issues?.map((row) => Reflect.get(row, "id"))).toEqual([OTHER_ISSUE]);
     },
   );
 
   it.each(["memory", "indexeddb"])(
-    "rejects malformed scope records before writing their marker with %s",
+    "loads the valid comments of a scope with one malformed record with %s",
     async (backend) => {
-      const f = fixture(
-        backend === "memory"
-          ? new MemoryReplicaStorage()
-          : new IndexedDBReplicaStorage({ indexedDB: new IDBFactory() }),
-      );
+      const f = fixture(storageFor(backend));
       await f.ready();
       f.server.run(f.owner, {
         type: "add_comment",
@@ -1687,12 +1674,14 @@ describe("record preparation", () => {
           ],
         };
       };
-      const release = f.engine.useScope({ entity: "comments", issueId: ISSUE });
-      await until(() => f.engine.status.get().lastError instanceof ProtocolError);
+      const scope: Scope = { entity: "comments", issueId: ISSUE };
+      const release = f.engine.useScope(scope);
+      await until(() => f.engine.scopeStatus(scope) === "loaded");
       const disk = await f.disk();
       expect(disk.scopes).toEqual([]);
-      expect(disk.records.comments).toEqual([]);
-      expect(f.engine.store.all("comments")).toEqual([]);
+      expect(disk.records.comments?.map((row) => Reflect.get(row, "id"))).toEqual([id(85)]);
+      expect(f.engine.store.all("comments").map((row) => row.id)).toEqual([id(85)]);
+      expect(f.engine.status.get().skipped).toMatchObject([{ entity: "comments", id: id(86) }]);
       release();
     },
   );
@@ -1991,7 +1980,7 @@ describe("offline sync review fixes", () => {
       throw new ProtocolError("Bad cursor", 400);
     };
     await f.engine.mutate("update_issue", { id: ISSUE, patch: { title: "Blocked" } });
-    await until(() => f.engine.status.get().blocked);
+    await elapse(f, () => f.engine.status.get().blocked);
     f.transport.pull = original;
     f.engine.unblock();
     expect(f.engine.status.get()).toMatchObject({ blocked: false, lastError: null });
@@ -2029,7 +2018,7 @@ function signIn(f: Fixture, userId: string, replicaUser = userId): SyncEngine {
     actor: replicaUser,
     workspaceId: f.workspace.id,
     schema: SCHEMA,
-    clock: { now: f.server.now, schedule: f.server.schedule },
+    clock: { now: f.server.now, monotonic: f.server.monotonic, schedule: f.server.schedule },
     randomId: () => id(5000 + signIns++),
     signals: f.signals,
   });
@@ -2448,7 +2437,7 @@ describe("pending edits are never frozen or lost", () => {
     const events: EngineEvent[] = [];
     f.engine.subscribe((event) => events.push(event));
     await f.engine.mutate("update_issue", { id: ISSUE, patch: { title: "Edit" } });
-    await until(() => f.engine.status.get().blocked);
+    await elapse(f, () => f.engine.status.get().blocked);
     expect(events.some((event) => event.type === "accessLost")).toBe(false);
     expect(await f.storage.list()).toHaveLength(1);
     expect(f.engine.status.get().pending).toBe(1);
@@ -2568,9 +2557,11 @@ describe("pending edits are never frozen or lost", () => {
       if (route === "bootstrap") f.server.inject({ kind: "reset_pull" });
       f.server.run(f.owner, { type: "create_label", name: "Elsewhere", color: "#0000ff" });
       const pushes = f.pushes().length;
-      await f.engine.pull();
-      await until(() => f.engine.status.get().blocked);
-      expect(f.engine.status.get().lastError).toBeInstanceOf(ProtocolError);
+      void f.engine.pull();
+      await until(
+        () =>
+          f.engine.status.get().blocked && f.engine.status.get().lastError instanceof ProtocolError,
+      );
       expect(f.engine.status.get().lastError?.message).toContain("already holds 1");
 
       await f.engine.mutate("create_label", { name: "Must wait", color: "#ff0000" });
@@ -2611,6 +2602,31 @@ describe("pending edits are never frozen or lost", () => {
     expect(f.server.clientState(clientId).last_mutation_id).toBe(0);
     expect(f.engine.status.get().pending).toBe(1);
     expect((await f.disk()).outbox).toMatchObject([{ id: 2, name: "create_label" }]);
+  });
+
+  it("sends nothing from a push retry that was already waiting when a pull finds a lower acknowledgement", async () => {
+    const f = fixture();
+    await f.ready();
+    await f.engine.mutate("create_label", { name: "Acknowledged", color: "#00ff00" });
+    await until(() => f.engine.status.get().pending === 0);
+    f.server.inject({ kind: "unavailable", route: "push" });
+    const before = f.pushes().length;
+    await f.engine.mutate("create_label", { name: "Waiting", color: "#ff0000" });
+    await until(() => f.pushes().length === before + 1);
+    for (let tick = 0; tick < 10; tick += 1) await flush();
+
+    const original = f.server.fetch;
+    f.fetch.mockImplementation(async (...args) => {
+      const response = await original(...args);
+      if (!String(args[0]).includes("/pull?")) return response;
+      return Response.json({ ...(await response.json()), last_mutation_id: 0 });
+    });
+    void f.engine.pull();
+    await until(() => f.engine.status.get().blocked);
+    const pushes = f.pushes().length;
+    await f.advance(120_000);
+    expect(f.pushes()).toHaveLength(pushes);
+    expect(f.engine.status.get().pending).toBe(1);
   });
 
   describe("a single too-large mutation waits for a final acknowledgement", () => {
@@ -2787,5 +2803,682 @@ describe("pending edits are never frozen or lost", () => {
     await returned.start();
     await until(() => returned.status.get().phase === "ready");
     expect((await f.disk()).meta.accessLost).toBe(false);
+  });
+});
+
+describe("sync recovers without a manual retry", () => {
+  it("retries a proxy page sent in place of a pull answer and resumes by itself", async () => {
+    const f = fixture();
+    await f.ready();
+    f.server.run(f.peer, {
+      type: "update_issue",
+      id: ISSUE,
+      patch: { title: "Behind the portal" },
+    });
+    for (let n = 0; n < 2; n += 1)
+      f.server.inject({
+        kind: "respond",
+        route: "pull",
+        status: 200,
+        body: "<html>Sign in to the network</html>",
+        contentType: "text/html",
+      });
+    f.signals.send("focus");
+    await until(() => f.engine.status.get().lastError instanceof ProtocolError);
+    expect(f.engine.status.get().blocked).toBe(false);
+    await elapse(f, () => f.engine.store.get("issues", ISSUE)?.title === "Behind the portal");
+    expect(f.engine.status.get()).toMatchObject({ blocked: false, lastError: null });
+  });
+
+  it("retries an unexpected 4xx on push and delivers the edit", async () => {
+    const f = fixture();
+    await f.ready();
+    for (let n = 0; n < 2; n += 1)
+      f.server.inject({ kind: "respond", route: "push", status: 418, body: "I'm a teapot" });
+    const receipt = await f.engine.mutate("update_issue", {
+      id: ISSUE,
+      patch: { title: "Through the teapot" },
+    });
+    await until(() => f.engine.status.get().lastError instanceof ProtocolError);
+    expect(f.engine.status.get().blocked).toBe(false);
+    await elapse(f, () => f.engine.status.get().pending === 0);
+    expect(await receipt.settled).toBe("applied");
+    expect(f.authoritativeIssue(ISSUE).title).toBe("Through the teapot");
+    expect(f.engine.status.get()).toMatchObject({ blocked: false, lastError: null });
+  });
+
+  it("re-bootstraps once after a pull keeps failing, then blocks without hammering", async () => {
+    const f = fixture();
+    await f.ready();
+    const bootstraps = f.requests("bootstrap");
+    const pull = vi.fn(async () => {
+      throw new ProtocolError("Bad cursor", 400);
+    });
+    f.transport.pull = pull;
+    f.signals.send("focus");
+    await elapse(f, () => f.requests("bootstrap") === bootstraps + 1);
+    expect(pull).toHaveBeenCalledTimes(PROTOCOL_BLOCK_AFTER);
+    expect(f.engine.status.get().blocked).toBe(false);
+    f.signals.send("focus");
+    await elapse(f, () => f.engine.status.get().blocked);
+    expect(pull).toHaveBeenCalledTimes(2 * PROTOCOL_BLOCK_AFTER);
+    expect(f.requests("bootstrap")).toBe(bootstraps + 1);
+    f.signals.send("focus");
+    await f.advance(600_000);
+    expect(pull).toHaveBeenCalledTimes(2 * PROTOCOL_BLOCK_AFTER);
+  });
+
+  it("recovers a pull that only a fresh bootstrap fixes, without unblock", async () => {
+    const f = fixture();
+    await f.ready();
+    const stale = (await f.disk()).meta.cursor;
+    const original = f.transport.pull;
+    f.transport.pull = async (workspace, client, cursor, options) => {
+      if (cursor === stale) throw new ProtocolError("Cursor not understood", 400);
+      return original(workspace, client, cursor, options);
+    };
+    f.server.run(f.peer, {
+      type: "update_issue",
+      id: ISSUE,
+      patch: { title: "Only a bootstrap sees this" },
+    });
+    f.signals.send("focus");
+    await elapse(
+      f,
+      () => f.engine.store.get("issues", ISSUE)?.title === "Only a bootstrap sees this",
+    );
+    expect(f.engine.status.get().blocked).toBe(false);
+    expect((await f.disk()).meta.cursor).not.toBe(stale);
+  });
+
+  it("skips a record it can't parse and replaces it when a valid version arrives", async () => {
+    const f = fixture();
+    await f.ready();
+    const errors = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      f.server.corruptRecord("issues", ISSUE, { updated_at: "not a time" });
+      f.server.run(f.peer, { type: "update_issue", id: ISSUE, patch: { title: "v2" } });
+      f.server.run(f.peer, {
+        type: "update_issue",
+        id: OTHER_ISSUE,
+        patch: { title: "Beside it" },
+      });
+      await f.engine.pull();
+      expect(f.engine.status.get().skipped).toMatchObject([{ entity: "issues", id: ISSUE }]);
+      expect(errors).toHaveBeenCalledWith(expect.stringContaining(ISSUE), expect.anything());
+      expect(f.engine.store.get("issues", ISSUE)?.title).toBe("Original");
+      expect(f.engine.store.get("issues", OTHER_ISSUE)?.title).toBe("Beside it");
+      f.server.repairRecord("issues", ISSUE);
+      f.server.run(f.peer, { type: "update_issue", id: ISSUE, patch: { title: "v3" } });
+      await f.engine.pull();
+      expect(f.engine.store.get("issues", ISSUE)?.title).toBe("v3");
+      expect(f.engine.status.get().skipped).toEqual([]);
+    } finally {
+      errors.mockRestore();
+    }
+  });
+
+  it("loads the workspace when the team of an issue can't be parsed", async () => {
+    const f = fixture();
+    const errors = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      f.server.corruptRecord("teams", TEAM, { id: 5 });
+      await f.ready();
+      expect(f.engine.store.get("teams", TEAM)).toBeUndefined();
+      expect(f.engine.status.get().skipped).toMatchObject([{ entity: "teams" }]);
+      const issue = f.engine.store.get("issues", ISSUE);
+      if (!issue) throw new Error("the issue should still load");
+      expect(withCounts(f.engine.store, issue)).toMatchObject({ id: ISSUE });
+      expect(issueRef(f.engine.store, ISSUE)).toBe(ISSUE);
+      expect(f.engine.status.get().blocked).toBe(false);
+    } finally {
+      errors.mockRestore();
+    }
+  });
+
+  it.each([-1, 1])(
+    "sends a retry after the delay when the wall clock jumps by %s hour",
+    async (hours) => {
+      const f = fixture();
+      await f.ready();
+      f.server.inject({ kind: "drop_response", route: "push" });
+      const receipt = await f.engine.mutate("update_issue", {
+        id: ISSUE,
+        patch: { title: "Across the clock change" },
+      });
+      await until(() => f.pushes().length === 1);
+      for (let tick = 0; tick < 10; tick += 1) await flush();
+      f.server.jumpClock(hours * 3_600_000);
+      for (let tick = 0; tick < 10; tick += 1) await flush();
+      if (hours > 0) expect(f.pushes()).toHaveLength(1);
+      await f.advance(1000);
+      await until(() => f.pushes().length === 2);
+      expect(await receipt.settled).toBe("applied");
+    },
+  );
+
+  it("tracks an HTTP-date Retry-After on push without the wall clock", async () => {
+    const f = fixture();
+    await f.ready();
+    const original = f.server.fetch;
+    f.fetch.mockImplementation(async (...args) => {
+      const response = await original(...args);
+      if (response.status === 503)
+        response.headers.set(
+          "Retry-After",
+          new Date(Date.parse(f.server.now()) + 5000).toUTCString(),
+        );
+      return response;
+    });
+    f.server.inject({ kind: "unavailable", route: "push" });
+    await f.engine.mutate("update_issue", { id: ISSUE, patch: { title: "After the date" } });
+    await until(() => f.pushes().length === 1);
+    for (let tick = 0; tick < 10; tick += 1) await flush();
+    f.server.jumpClock(-3_600_000);
+    await f.advance(4999);
+    expect(f.pushes()).toHaveLength(1);
+    await f.advance(1);
+    await until(() => f.pushes().length === 2);
+  });
+
+  it("reports an unloaded scope as offline while offline and loading once back online", async () => {
+    const f = fixture();
+    await f.ready();
+    const scope: Scope = { entity: "comments", issueId: ISSUE };
+    f.signals.send("offline");
+    const seen: string[] = [];
+    const unsubscribe = f.engine.subscribeScopes(() => seen.push(f.engine.scopeStatus(scope)));
+    const release = f.engine.useScope(scope);
+    expect(f.engine.scopeStatus(scope)).toBe("offline");
+    f.signals.send("online");
+    await until(() => f.engine.scopeStatus(scope) === "loaded");
+    expect(seen[0]).not.toBe("offline");
+    expect(seen).not.toContain("error");
+    release();
+    unsubscribe();
+  });
+
+  it("asks the browser to persist storage once, when it creates the replica", async () => {
+    const f = fixture();
+    const first = vi.fn(() => {
+      throw new Error("persist is not supported here");
+    });
+    const created = f.build(SCHEMA, { requestPersistence: first });
+    await created.start();
+    await until(() => created.status.get().phase === "ready");
+    await created.close();
+    expect(first).toHaveBeenCalledTimes(1);
+    const later = vi.fn();
+    const reopened = f.build(SCHEMA, { requestPersistence: later });
+    await reopened.open();
+    expect(later).not.toHaveBeenCalled();
+  });
+});
+
+describe("a skipped record", () => {
+  const bad = { updated_at: "not a time" };
+
+  async function silenced(run: () => Promise<void>) {
+    const errors = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      await run();
+    } finally {
+      errors.mockRestore();
+    }
+  }
+
+  it("is fetched again by a scheduled bootstrap, without another server edit", async () => {
+    await silenced(async () => {
+      const f = fixture();
+      await f.ready();
+      f.server.corruptRecord("issues", ISSUE, bad);
+      f.server.run(f.peer, { type: "update_issue", id: ISSUE, patch: { title: "v2" } });
+      await f.engine.pull();
+      expect(f.engine.status.get().skipped).toMatchObject([{ entity: "issues", id: ISSUE }]);
+      expect(f.engine.store.get("issues", ISSUE)?.title).toBe("Original");
+      expect((await f.disk()).meta).toMatchObject({
+        resync: true,
+        skipped: [{ entity: "issues", id: ISSUE }],
+      });
+      const bootstraps = f.requests("bootstrap");
+      f.server.repairRecord("issues", ISSUE);
+      await f.advance(29_000);
+      expect(f.requests("bootstrap")).toBe(bootstraps);
+      await elapse(f, () => f.engine.store.get("issues", ISSUE)?.title === "v2");
+      expect(f.requests("bootstrap")).toBe(bootstraps + 1);
+      expect(f.engine.status.get().skipped).toEqual([]);
+      const meta = (await f.disk()).meta;
+      expect(meta.resync).toBeUndefined();
+      expect(meta.skipped).toBeUndefined();
+    });
+  });
+
+  it("acknowledges its page's edits, then a scheduled bootstrap shows the record it left out", async () => {
+    await silenced(async () => {
+      const f = fixture();
+      await f.ready();
+      f.server.corruptRecord("issues", ISSUE, bad);
+      const receipt = await f.engine.mutate("update_issue", {
+        id: ISSUE,
+        patch: { title: "Mine" },
+      });
+      expect(await receipt.settled).toBe("applied");
+      await f.engine.pull();
+      await until(() => f.engine.status.get().pending === 0);
+      expect(f.engine.status.get().skipped).toMatchObject([{ entity: "issues", id: ISSUE }]);
+      expect(f.engine.store.get("issues", ISSUE)?.title).toBe("Original");
+      const disk = await f.disk();
+      expect(disk.outbox).toEqual([]);
+      expect(disk.meta.lastMutationId).toBeGreaterThan(0);
+      expect(disk.meta.resync).toBe(true);
+
+      const bootstraps = f.requests("bootstrap");
+      f.server.repairRecord("issues", ISSUE);
+      await elapse(f, () => f.engine.store.get("issues", ISSUE)?.title === "Mine");
+      expect(f.requests("bootstrap")).toBe(bootstraps + 1);
+      expect(f.engine.status.get()).toMatchObject({ pending: 0, skipped: [] });
+    });
+  });
+
+  it("survives a reload as an obligation that the next leader pays", async () => {
+    await silenced(async () => {
+      const f = fixture();
+      await f.ready();
+      f.server.corruptRecord("issues", ISSUE, bad);
+      f.server.run(f.peer, { type: "update_issue", id: ISSUE, patch: { title: "v2" } });
+      await f.engine.pull();
+      await f.engine.close();
+      const reopened = f.build();
+      await reopened.open();
+      expect(reopened.status.get().skipped).toMatchObject([{ entity: "issues", id: ISSUE }]);
+      f.server.repairRecord("issues", ISSUE);
+      const bootstraps = f.requests("bootstrap");
+      await reopened.start();
+      await elapse(f, () => reopened.store.get("issues", ISSUE)?.title === "v2");
+      expect(f.requests("bootstrap")).toBe(bootstraps + 1);
+      expect(reopened.status.get().skipped).toEqual([]);
+      expect((await f.disk()).meta.resync).toBeUndefined();
+    });
+  });
+
+  it("stays listed after a bootstrap that can't parse it either, and isn't fetched again", async () => {
+    await silenced(async () => {
+      const f = fixture();
+      await f.ready();
+      f.server.corruptRecord("issues", ISSUE, bad);
+      f.server.run(f.peer, { type: "update_issue", id: ISSUE, patch: { title: "v2" } });
+      const receipt = await f.engine.mutate("update_issue", {
+        id: OTHER_ISSUE,
+        patch: { title: "Mine" },
+      });
+      await receipt.settled;
+      await f.engine.pull();
+      const bootstraps = f.requests("bootstrap");
+      await elapse(f, () => f.requests("bootstrap") === bootstraps + 1);
+      await elapse(f, () => f.engine.status.get().pending === 0);
+      expect(f.engine.status.get().skipped).toMatchObject([{ entity: "issues", id: ISSUE }]);
+      const meta = (await f.disk()).meta;
+      expect(meta.resync).toBeUndefined();
+      expect(meta.skipped).toMatchObject([{ entity: "issues", id: ISSUE }]);
+      for (let step = 0; step < 40; step += 1) await f.advance(60_000);
+      expect(f.requests("bootstrap")).toBe(bootstraps + 1);
+    });
+  });
+
+  it("backs off from a repair that keeps failing, doubling the wait each time", async () => {
+    await silenced(async () => {
+      const f = fixture();
+      await f.ready();
+      f.server.corruptRecord("issues", ISSUE, bad);
+      f.server.run(f.peer, { type: "update_issue", id: ISSUE, patch: { title: "v2" } });
+      await f.engine.pull();
+      const original = f.server.fetch;
+      const attempts: number[] = [];
+      f.fetch.mockImplementation(async (...args) => {
+        if (!String(args[0]).includes("/bootstrap?")) return original(...args);
+        attempts.push(f.server.monotonic());
+        return new Response("", { status: 503 });
+      });
+      await elapse(f, () => attempts.length === 4);
+      expect(attempts[1] - attempts[0]).toBe(60_000);
+      expect(attempts[2] - attempts[1]).toBe(120_000);
+      expect(attempts[3] - attempts[2]).toBe(240_000);
+
+      f.fetch.mockImplementation(original);
+      f.server.repairRecord("issues", ISSUE);
+      await elapse(f, () => f.engine.store.get("issues", ISSUE)?.title === "v2", 10_000, 200);
+      expect(f.engine.status.get().skipped).toEqual([]);
+    });
+  });
+
+  it("pushes edits as usual while a repair keeps failing", async () => {
+    await silenced(async () => {
+      const f = fixture();
+      await f.ready();
+      f.server.corruptRecord("issues", ISSUE, bad);
+      f.server.run(f.peer, { type: "update_issue", id: ISSUE, patch: { title: "v2" } });
+      await f.engine.pull();
+      await until(() => f.engine.status.get().skipped.length === 1);
+      const original = f.server.fetch;
+      f.fetch.mockImplementation(async (...args) =>
+        String(args[0]).includes("/bootstrap?")
+          ? new Response("", { status: 503 })
+          : original(...args),
+      );
+      const labels = f.server.records("labels").length;
+      const later = await f.engine.mutate("create_label", { name: "Later", color: "#00ff00" });
+      expect(await later.settled).toBe("applied");
+      expect(f.server.records("labels")).toHaveLength(labels + 1);
+      await until(() => f.engine.status.get().pending === 0);
+      expect(f.engine.status.get().blocked).toBe(false);
+      expect(f.engine.status.get().skipped).toHaveLength(1);
+
+      f.fetch.mockImplementation(original);
+      f.server.repairRecord("issues", ISSUE);
+      await elapse(f, () => f.engine.store.get("issues", ISSUE)?.title === "v2", 10_000, 200);
+    });
+  });
+
+  it("makes a scope load again later after it left a record out", async () => {
+    await silenced(async () => {
+      const f = fixture();
+      await f.ready();
+      f.server.run(f.peer, {
+        type: "add_comment",
+        id: id(60),
+        issue_id: ISSUE,
+        body: "hello",
+        mentions: [],
+        attachments: [],
+      });
+      const scope: Scope = { entity: "comments", issueId: ISSUE };
+      const original = f.transport.scope;
+      let broken = true;
+      f.transport.scope = vi.fn(async (...args: Parameters<typeof original>) => {
+        const response = await original(...args);
+        return broken
+          ? { records: response.records.map((record) => ({ ...record, created_at: "not a time" })) }
+          : response;
+      });
+      const release = f.engine.useScope(scope);
+      await until(() => f.engine.scopeStatus(scope) === "loaded");
+      expect(f.engine.status.get().skipped).toHaveLength(1);
+      expect(f.engine.store.all("comments")).toEqual([]);
+      broken = false;
+      await f.advance(29_000);
+      expect(f.transport.scope).toHaveBeenCalledTimes(1);
+      await elapse(f, () => f.engine.store.all("comments").length === 1);
+      expect(f.engine.status.get().skipped).toEqual([]);
+      release();
+    });
+  });
+
+  it("fetches a scope that left a record out again after a reload, without another server edit", async () => {
+    await silenced(async () => {
+      const f = fixture();
+      await f.ready();
+      f.server.run(f.peer, {
+        type: "add_comment",
+        id: id(60),
+        issue_id: ISSUE,
+        body: "hello",
+        mentions: [],
+        attachments: [],
+      });
+      const scope: Scope = { entity: "comments", issueId: ISSUE };
+      const original = f.transport.scope;
+      let broken = true;
+      f.transport.scope = vi.fn(async (...args: Parameters<typeof original>) => {
+        const response = await original(...args);
+        return broken
+          ? { records: response.records.map((record) => ({ ...record, created_at: "not a time" })) }
+          : response;
+      });
+      const release = f.engine.useScope(scope);
+      await until(() => f.engine.scopeStatus(scope) === "loaded");
+      expect(f.engine.store.all("comments")).toEqual([]);
+      release();
+      await f.engine.close();
+
+      broken = false;
+      const reopened = f.build();
+      await reopened.start();
+      const releaseAgain = reopened.useScope(scope);
+      await until(() => reopened.store.all("comments").length === 1);
+      expect(f.transport.scope).toHaveBeenCalledTimes(2);
+      expect(reopened.scopeStatus(scope)).toBe("loaded");
+      releaseAgain();
+    });
+  });
+
+  it("runs a repair that fell due during a session check only after the session is valid", async () => {
+    await silenced(async () => {
+      const f = fixture();
+      await f.ready();
+      const events: EngineEvent[] = [];
+      f.engine.subscribe((event) => events.push(event));
+      f.server.corruptRecord("issues", ISSUE, bad);
+      f.server.run(f.peer, { type: "update_issue", id: ISSUE, patch: { title: "v2" } });
+      await f.engine.pull();
+      expect(f.engine.status.get().skipped).toMatchObject([{ entity: "issues", id: ISSUE }]);
+      f.server.repairRecord("issues", ISSUE);
+      f.server.inject({ kind: "fail_response", route: "pull", status: 401 });
+      await f.engine.pull();
+      await until(() => events.some((event) => event.type === "unauthorized"));
+      const bootstraps = f.requests("bootstrap");
+      for (let step = 0; step < 4; step += 1) {
+        await f.advance(30_000);
+        for (let tick = 0; tick < 20; tick += 1) await flush();
+      }
+      expect(f.requests("bootstrap")).toBe(bootstraps);
+      expect(f.engine.store.get("issues", ISSUE)?.title).toBe("Original");
+
+      f.engine.resume();
+      await elapse(f, () => f.engine.store.get("issues", ISSUE)?.title === "v2");
+      expect(f.requests("bootstrap")).toBe(bootstraps + 1);
+      expect(f.engine.status.get().skipped).toEqual([]);
+    });
+  });
+});
+
+describe("an event stream", () => {
+  it("stops reconnecting once malformed bodies reach the limit", async () => {
+    const f = fixture();
+    const original = f.server.fetch;
+    f.fetch.mockImplementation(async (...args) =>
+      String(args[0]).includes("/events?")
+        ? new Response("event: poke\ndata: not json\n\n", {
+            headers: { "content-type": "text/event-stream" },
+          })
+        : original(...args),
+    );
+    await f.engine.start();
+    await until(() => f.engine.status.get().phase === "ready");
+    await elapse(f, () => f.requests("events") >= PROTOCOL_BLOCK_AFTER);
+    for (let step = 0; step < 40; step += 1) await f.advance(30_000);
+    expect(f.requests("events")).toBe(PROTOCOL_BLOCK_AFTER);
+    expect(f.engine.status.get().connected).toBe(false);
+  });
+});
+
+describe("a full disk", () => {
+  it("keeps the downloaded workspace, reports it and doesn't download again", async () => {
+    const disk = limited();
+    disk.full = true;
+    const f = fixture(disk.storage);
+    await f.ready();
+    expect(f.engine.status.get().storage).toBe("full");
+    expect(f.engine.store.get("issues", ISSUE)?.title).toBe("Original");
+    expect(f.requests("bootstrap")).toBe(1);
+    for (let step = 0; step < 4; step += 1) {
+      await f.advance(5 * 60_000);
+      for (let tick = 0; tick < 20; tick += 1) await flush();
+    }
+    expect(f.requests("bootstrap")).toBe(1);
+    expect(disk.attempts.get("writeBootstrap")).toBeLessThanOrEqual(6);
+    disk.full = false;
+    await f.advance(5 * 60_000);
+    await until(() => f.engine.status.get().storage === "ok");
+    expect(f.requests("bootstrap")).toBe(1);
+    const saved = await f.disk();
+    expect(saved.meta.cursor).not.toBeNull();
+    expect(saved.records.issues).toHaveLength(2);
+  });
+
+  it("retries on focus, at most once a minute", async () => {
+    const disk = limited();
+    disk.full = true;
+    const f = fixture(disk.storage);
+    await f.ready();
+    const attempts = () => disk.attempts.get("writeBootstrap") ?? 0;
+    const start = attempts();
+    f.signals.send("focus");
+    await until(() => attempts() === start + 1);
+    f.signals.send("focus");
+    for (let tick = 0; tick < 10; tick += 1) await flush();
+    expect(attempts()).toBe(start + 1);
+    await f.advance(61_000);
+    f.signals.send("focus");
+    await until(() => attempts() === start + 2);
+    disk.full = false;
+    await f.advance(61_000);
+    f.signals.send("focus");
+    await until(() => f.engine.status.get().storage === "ok");
+  });
+
+  it("refuses an edit it can't store with a message and applies nothing", async () => {
+    const disk = limited();
+    const f = fixture(disk.storage);
+    await f.ready();
+    disk.full = true;
+    await expect(
+      f.engine.mutate("update_issue", { id: ISSUE, patch: { title: "Too big for the disk" } }),
+    ).rejects.toMatchObject({ status: 507, message: expect.stringContaining("storage space") });
+    expect(f.engine.store.get("issues", ISSUE)?.title).toBe("Original");
+    expect(f.engine.status.get().pending).toBe(0);
+    disk.full = false;
+    const receipt = await f.engine.mutate("update_issue", {
+      id: ISSUE,
+      patch: { title: "Fits now" },
+    });
+    expect(await receipt.settled).toBe("applied");
+  });
+
+  it("keeps syncing in memory and doesn't resend what the server acknowledged", async () => {
+    const disk = limited();
+    disk.allow.add("appendMutation");
+    const f = fixture(disk.storage);
+    await f.ready();
+    disk.full = true;
+    const receipt = await f.engine.mutate("update_issue", {
+      id: ISSUE,
+      patch: { title: "Sent as the disk filled" },
+    });
+    await until(() => f.engine.status.get().pending === 0);
+    expect(await receipt.settled).toBe("applied");
+    expect(f.engine.status.get().storage).toBe("full");
+    const pushes = f.pushes().length;
+    f.server.run(f.peer, {
+      type: "update_issue",
+      id: OTHER_ISSUE,
+      patch: { title: "Seen in memory" },
+    });
+    await f.engine.pull();
+    expect(f.engine.store.get("issues", OTHER_ISSUE)?.title).toBe("Seen in memory");
+    await f.advance(60_000);
+    for (let tick = 0; tick < 20; tick += 1) await flush();
+    expect(f.pushes()).toHaveLength(pushes);
+    expect(f.engine.status.get().pending).toBe(0);
+    disk.full = false;
+    f.signals.send("focus");
+    await until(() => f.engine.status.get().storage === "ok");
+    const saved = await f.disk();
+    expect(saved.meta.lastMutationId).toBeGreaterThanOrEqual(receipt.mutationId);
+    expect(saved.outbox).toEqual([]);
+    expect(
+      saved.records.issues?.find((record) => Reflect.get(record, "id") === OTHER_ISSUE),
+    ).toMatchObject({ title: "Seen in memory" });
+  });
+
+  it("pushes nothing until the disk can keep a too-large edit's rejection", async () => {
+    const disk = limited();
+    disk.allow.add("appendMutation");
+    const f = fixture(disk.storage, { maxPushBytes: 1500 });
+    await f.ready();
+    disk.full = true;
+    const receipt = await f.engine.mutate("update_issue", {
+      id: ISSUE,
+      patch: { description: "x".repeat(4000) },
+    });
+    let outcome: unknown = null;
+    void receipt.settled.then((settled) => {
+      outcome = settled;
+    });
+    await until(() => (disk.attempts.get("discard") ?? 0) > 0);
+    expect(f.engine.status.get().storage).toBe("full");
+    expect(f.pushes()).toHaveLength(1);
+    const later = await f.engine.mutate("update_issue", {
+      id: OTHER_ISSUE,
+      patch: { title: "Queued behind the held edit" },
+    });
+    for (let step = 0; step < 10; step += 1) {
+      await f.advance(60_000);
+      for (let tick = 0; tick < 20; tick += 1) await flush();
+    }
+    expect(f.pushes()).toHaveLength(1);
+    expect(outcome).toBeNull();
+
+    disk.full = false;
+    await f.advance(5 * 60_000);
+    await until(() => f.engine.status.get().storage === "ok");
+    expect(await receipt.settled).toMatchObject({ id: receipt.mutationId, status: 413 });
+    expect(await later.settled).toBe("applied");
+    expect(f.server.record("issues", OTHER_ISSUE)).toMatchObject({
+      title: "Queued behind the held edit",
+    });
+    await until(() => f.engine.status.get().pending === 0);
+    for (let tick = 0; tick < 20; tick += 1) await flush();
+    const saved = await f.disk();
+    expect(saved.outbox).toEqual([]);
+    expect(saved.unconfirmed).toEqual([]);
+    expect(saved.rejected).toMatchObject([{ id: receipt.mutationId, status: 413 }]);
+    const pushed = f.pushes().slice(1).flat();
+    expect(pushed.map((mutation) => mutation.id)).toContain(later.mutationId);
+    expect(pushed.map((mutation) => mutation.id)).not.toContain(receipt.mutationId);
+    const pushes = f.pushes().length;
+    await f.advance(5 * 60_000);
+    for (let tick = 0; tick < 20; tick += 1) await flush();
+    expect(f.pushes()).toHaveLength(pushes);
+  });
+
+  it("keeps retrying a held rejection after the engine stops and leads again", async () => {
+    const disk = limited();
+    disk.allow.add("appendMutation");
+    const f = fixture(disk.storage, { maxPushBytes: 1500 });
+    const engine = f.build(SCHEMA, { locks: createTabHub().locks });
+    await engine.start();
+    await until(() => engine.status.get().phase === "ready" && engine.status.get().connected);
+    disk.full = true;
+    const receipt = await engine.mutate("update_issue", {
+      id: ISSUE,
+      patch: { description: "x".repeat(4000) },
+    });
+    void receipt.settled.catch(() => undefined);
+    await until(() => (disk.attempts.get("discard") ?? 0) > 0);
+    engine.stop();
+    await engine.start();
+    await until(() => engine.status.get().role === "leader");
+    for (let tick = 0; tick < 20; tick += 1) await flush();
+    expect(engine.status.get().storage).toBe("full");
+    expect(f.pushes()).toHaveLength(1);
+
+    disk.full = false;
+    await f.advance(5 * 60_000);
+    await until(() => engine.status.get().storage === "ok");
+    const saved = await f.disk();
+    expect(saved.outbox).toEqual([]);
+    expect(saved.rejected).toMatchObject([{ id: receipt.mutationId, status: 413 }]);
+    expect(engine.status.get().pending).toBe(0);
+    expect(f.pushes()).toHaveLength(1);
   });
 });

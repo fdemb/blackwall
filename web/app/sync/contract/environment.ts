@@ -188,6 +188,7 @@ export function client(
     randomId: options.randomId ?? randomUUID,
     clock: {
       now: () => new Date().toISOString(),
+      monotonic: () => performance.now(),
       schedule: (ms, run) => {
         const timer = setTimeout(run, ms);
         return () => clearTimeout(timer);

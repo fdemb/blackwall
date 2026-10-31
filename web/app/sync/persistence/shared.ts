@@ -1,5 +1,24 @@
 import type { Entity } from "../records";
+import type { SkippedRecord } from "../engine-types";
 import type { ReplicaIdentity, ReplicaMeta, Scope } from "./types";
+
+/** The browser refused a database write for lack of space. Nothing of that write was kept. */
+export class StorageFullError extends Error {
+  constructor(options?: ErrorOptions) {
+    super("This device is out of storage space", options);
+    this.name = "StorageFullError";
+  }
+}
+
+/** Turns a quota failure from IndexedDB into a StorageFullError. Anything else passes through. */
+export function storageFailure(error: unknown): unknown {
+  const quota =
+    error !== null &&
+    typeof error === "object" &&
+    "name" in error &&
+    error.name === "QuotaExceededError";
+  return quota ? new StorageFullError({ cause: error }) : error;
+}
 
 export const REPLICA_PREFIX = "blackwall:";
 
@@ -25,6 +44,20 @@ export function initialMeta(input: ReplicaIdentity & { schema: number }): Replic
     lastMutationId: 0,
     nextMutationId: 1,
   };
+}
+
+/** The meta with its skipped list and resync obligation replaced. Empty ones leave no trace. */
+export function withSkipped(
+  meta: ReplicaMeta,
+  skipped: readonly SkippedRecord[],
+  resync: boolean,
+): ReplicaMeta {
+  const next = { ...meta };
+  delete next.skipped;
+  delete next.resync;
+  if (skipped.length > 0) next.skipped = skipped;
+  if (resync) next.resync = true;
+  return next;
 }
 
 /** Same key paths as records.keyOf, without normalizing or changing the wire record. */

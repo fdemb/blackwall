@@ -860,6 +860,9 @@ export const en = {
   "error.syncStalled":
     "The server isn't saving your changes yet. They're kept on this device, and we keep trying.",
   "error.syncFailed": "Sync stopped: {{message}}",
+  "error.storageFull":
+    "This device is out of storage space. Recent data isn't saved here and may be gone after a reload. Free some space, then retry.",
+  "timeline.offline": "Comments and activity load when you're back online.",
 
   "error.network": "Couldn't reach the server. Check your connection and try again.",
   "error.onlineRequired": "This needs a connection to the server. Reconnect, then try again.",

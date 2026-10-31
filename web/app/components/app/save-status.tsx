@@ -21,7 +21,7 @@ function saveState(
 ): SaveState | null {
   if (pending > 0) {
     if (problem === "offline" || problem === "unreachable") return "queued";
-    return problem === null ? "saving" : "unsent";
+    return problem === null || problem === "storage" ? "saving" : "unsent";
   }
   if (failed) return "failed";
   return saved ? "saved" : null;

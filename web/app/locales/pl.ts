@@ -905,6 +905,9 @@ export const pl = {
   "error.syncStalled":
     "Serwer jeszcze nie zapisuje Twoich zmian. Są przechowywane na tym urządzeniu, a my próbujemy dalej.",
   "error.syncFailed": "Synchronizacja zatrzymana: {{message}}",
+  "error.storageFull":
+    "Na tym urządzeniu brakuje miejsca. Ostatnie dane nie są tu zapisane i mogą zniknąć po odświeżeniu strony. Zwolnij miejsce i spróbuj ponownie.",
+  "timeline.offline": "Komentarze i aktywność wczytają się po powrocie połączenia.",
 
   "error.network": "Nie udało się połączyć z serwerem. Sprawdź połączenie i spróbuj ponownie.",
   "error.onlineRequired":

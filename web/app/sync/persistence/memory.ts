@@ -9,6 +9,7 @@ import {
   recordScope,
   replicaName,
   scopeKey,
+  withSkipped,
 } from "./shared";
 import type {
   LoadedReplica,
@@ -117,6 +118,7 @@ class MemoryReplica implements Replica {
       state.meta.lastMutationId = Math.max(state.meta.lastMutationId, input.lastMutationId);
       dropConfirmed(state);
       state.meta.serverSchema = input.serverSchema;
+      state.meta = withSkipped(state.meta, input.skipped ?? [], input.resync === true);
     });
   }
 
@@ -140,6 +142,8 @@ class MemoryReplica implements Replica {
         state.meta.lastMutationId = Math.max(state.meta.lastMutationId, input.acknowledgedUpTo);
         dropConfirmed(state);
       }
+      if (input.skipped !== undefined)
+        state.meta = withSkipped(state.meta, input.skipped, input.resync === true);
     });
   }
 
@@ -155,7 +159,8 @@ class MemoryReplica implements Replica {
       for (const record of input.records) {
         table.set(recordKey(input.scope.entity, record), structuredClone(record));
       }
-      state.scopes.set(key, structuredClone(input.scope));
+      if (input.partial) state.scopes.delete(key);
+      else state.scopes.set(key, structuredClone(input.scope));
     });
   }
 

@@ -60,9 +60,14 @@ export function useIssueRef(ref: string): string | undefined {
 // A scope list loads on its own schedule, so its loading state comes from the scope, not the bootstrap.
 function scopeState<T>(
   list: ListState<T>,
-  scope: { loading: boolean; error: Error | null },
-): ListState<T> {
-  return { ...list, loading: scope.loading, error: scope.error?.message ?? null };
+  scope: { loading: boolean; offline: boolean; error: Error | null },
+): ListState<T> & { offline: boolean } {
+  return {
+    ...list,
+    loading: scope.loading,
+    offline: scope.offline,
+    error: scope.error?.message ?? null,
+  };
 }
 
 function useListState<T>(items: T[], error: string | null = null): ListState<T> {

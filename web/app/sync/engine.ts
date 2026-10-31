@@ -7,7 +7,13 @@ import {
   ONLINE_ONLY,
 } from "./mutators";
 import { DEFAULT_STAGES } from "./mutators/planning";
-import { acceptsChange, recordKey, recordScope, scopeKey } from "./persistence/shared";
+import {
+  acceptsChange,
+  recordKey,
+  recordScope,
+  scopeKey,
+  StorageFullError,
+} from "./persistence/shared";
 import type { Replica, ReplicaCloseReason, Scope } from "./persistence/types";
 import { BOOTSTRAP_ENTITIES, BOOTSTRAP_REPLACED_ENTITIES } from "./records";
 import type { Change, Entity } from "./records";
@@ -22,7 +28,7 @@ import {
   UnavailableError,
 } from "./transport";
 import type { IssuedInvitation, Mutation, MutationResult, PullResponse } from "./transport";
-import { backoff, Cancelled, cancellable, pause, SerialQueue } from "./engine-scheduling";
+import { backoff, Cancelled, cancellable, pause, Resync, SerialQueue } from "./engine-scheduling";
 import type {
   EngineDependencies,
   EngineEvent,
@@ -32,6 +38,8 @@ import type {
   MutationReceipt,
   Rejection,
   ScopeStatus,
+  SkippedRecord,
+  StorageState,
   TabChannel,
 } from "./engine-types";
 import type { LoadedReplica } from "./persistence/types";
@@ -48,6 +56,8 @@ export type {
   MutationReceipt,
   Rejection,
   ScopeStatus,
+  SkippedRecord,
+  StorageState,
   TabChannel,
   TabLocks,
 } from "./engine-types";
@@ -73,6 +83,17 @@ const READ_DEADLINE_MS = 30_000;
 const WRITE_DEADLINE_MS = 60_000;
 /** The server comments every 15 seconds, so an event stream silent for five of them is dead. */
 const STREAM_IDLE_MS = 75_000;
+/** Protocol failures in a row on one request kind before the engine stops retrying it. */
+export const PROTOCOL_BLOCK_AFTER = 6;
+/** A write the browser refused for space is retried this often, and on focus after the minimum. */
+const STORAGE_RETRY_MS = 5 * 60_000;
+const STORAGE_FOCUS_RETRY_MS = 60_000;
+/** A skipped record is fetched again after this long, doubling per failed attempt to the cap. */
+const REPAIR_BASE_MS = 30_000;
+const REPAIR_CAP_MS = 30 * 60_000;
+const repairDelay = (attempts: number) => Math.min(REPAIR_BASE_MS * 2 ** attempts, REPAIR_CAP_MS);
+const STORAGE_FULL_EDIT =
+  "There isn't enough storage space on this device to save this edit. Free some space and try again.";
 /** The server caps mutations per push at 100 and request bodies at 6 MiB. */
 const PUSH_MUTATIONS = 100;
 const PUSH_BYTES = 4 * 1024 * 1024;
@@ -93,6 +114,7 @@ type PushBatch = {
   mutations: readonly Mutation[];
   processed: boolean;
   attempt: number;
+  /** On the monotonic clock, so a wall-clock change can neither stall nor hurry the retry. */
   retryAt: number;
   csrfRefreshes: number;
   /** Server failures in a row on this batch. Network failures never count. */
@@ -139,6 +161,29 @@ function pushBatch(candidates: readonly Mutation[]): Mutation[] {
     batch.push(mutation);
   }
   return batch;
+}
+
+/** The key a raw record would have, or a placeholder for the report when it has none. */
+function recordId(entity: Entity, record: object): string {
+  try {
+    return recordKey(entity, record);
+  } catch {
+    return "(no id)";
+  }
+}
+
+type ProtocolStep = "retry" | "resync" | "block";
+
+/**
+ * What a protocol failure does next, from how many came in a row on that request kind. A 403 that
+ * survived a CSRF refresh, and a push's 409 `client state lost`, never improve by waiting, so they
+ * block at once. A pull that keeps failing is re-bootstrapped once, when `resync` allows it,
+ * before it blocks.
+ */
+function protocolStep(error: ProtocolError, failures: number, resync: boolean): ProtocolStep {
+  if (error.status === 403 || error.status === 409) return "block";
+  if (failures < PROTOCOL_BLOCK_AFTER) return "retry";
+  return resync ? "resync" : "block";
 }
 
 function tabError(error: unknown): TabError {
@@ -242,8 +287,30 @@ export class SyncEngine {
   private pulling: Promise<void> | null = null;
   private pushing: Promise<void> | null = null;
   private batch: PushBatch | null = null;
+  /**
+   * 413 rejections the disk had no room to keep. Nothing is pushed until they are saved, so no
+   * acknowledgement can pass them and a reload can still find them in the outbox.
+   */
+  private readonly setAside = new Map<number, Rejection>();
   /** The last error came from a push, so only a push success clears it. */
   private writeFailing = false;
+  private readonly protocolFailures = new Map<RequestKind, number>();
+  /** A persistent pull protocol error already caused one re-bootstrap. */
+  private resynced = false;
+  private readonly skipped = new Map<string, SkippedRecord>();
+  /** A pull page skipped a record, so a bootstrap is owed. Only a bootstrap clears it. */
+  private resyncOwed = false;
+  /** The repair timer ran, so the next pull is a bootstrap. */
+  private resyncDue = false;
+  private resyncAttempts = 0;
+  private cancelResync: (() => void) | null = null;
+  private readonly scopeRepairs = new Map<
+    string,
+    { scope: Scope; attempts: number; cancel: (() => void) | null }
+  >();
+  private serverSchema = 0;
+  private cancelStorageRetry: (() => void) | null = null;
+  private storageAttempt = Number.NEGATIVE_INFINITY;
 
   constructor(private readonly deps: EngineDependencies) {
     this.store = new SyncStore(createReplay(deps.actor));
@@ -264,6 +331,8 @@ export class SyncEngine {
       lastError: null,
       rejected: Object.freeze([]),
       unresolved: Object.freeze([]),
+      skipped: Object.freeze([]),
+      storage: "ok",
     });
     this.status = {
       get: () => this.snapshot,
@@ -285,11 +354,15 @@ export class SyncEngine {
     return () => this.eventListeners.delete(listener);
   }
 
-  /** Whether a scope is in the replica. A protocol error that blocks its loads reports "error". */
+  /**
+   * Whether a scope is in the replica. A protocol error that blocks its loads reports "error". An
+   * unloaded scope reports "offline" while the browser is, since nothing is loading it then.
+   */
   scopeStatus(scope: Scope): ScopeStatus {
     const key = scopeKey(scope);
     if (this.loadedScopes.has(key)) return "loaded";
-    return this.scopeFailures.has(key) ? "error" : "loading";
+    if (this.scopeFailures.has(key)) return "error";
+    return this.deps.signals.getOnline() ? "loading" : "offline";
   }
 
   scopeError(scope: Scope): Error | null {
@@ -318,6 +391,7 @@ export class SyncEngine {
         loaded = await replica.load();
       }
       this.applyLoaded(loaded);
+      if (loaded.meta.cursor === null) this.requestPersistence();
       this.update({ phase: this.openPhase() });
       if (!this.closed && !this.terminal) {
         this.unsubscribeSignals = this.deps.signals.subscribe((signal) => {
@@ -328,9 +402,13 @@ export class SyncEngine {
           } else if (signal === "online") {
             this.update({ online: this.role === "leader" || this.leaderOnline });
             this.notifyChange();
+            this.resyncAttempts = 0;
             this.beginNetwork();
             void this.pull();
-          } else void this.pull();
+          } else {
+            void this.pull();
+            this.retryStorageOnFocus();
+          }
         });
         this.update({
           online: this.deps.signals.getOnline() && (this.role === "leader" || this.leaderOnline),
@@ -352,9 +430,16 @@ export class SyncEngine {
   /** Replaces the in-memory replica with what the database holds. */
   private applyLoaded(loaded: LoadedReplica): void {
     this.clientId = loaded.meta.clientId;
+    this.serverSchema = loaded.meta.serverSchema;
     this.cursor = loaded.meta.cursor;
     this.acknowledged = loaded.meta.lastMutationId;
     this.accessUnverified = loaded.meta.accessLost === true;
+    this.resyncOwed = loaded.meta.resync === true;
+    this.setSkipped(
+      new Map(
+        (loaded.meta.skipped ?? []).map((record) => [`${record.entity}:${record.id}`, record]),
+      ),
+    );
     for (const mutation of loaded.unconfirmed) this.unconfirmed.set(mutation.id, mutation);
     this.loadedScopes.clear();
     for (const scope of loaded.scopes) this.loadedScopes.set(scopeKey(scope), scope);
@@ -376,6 +461,7 @@ export class SyncEngine {
     });
     this.requestLeadership();
     this.beginNetwork();
+    if (this.snapshot.storage === "full" && this.role === "leader") this.scheduleStorageRetry();
     // A follower has no network work to begin, so its holds are requested here instead.
     if (this.role === "follower")
       for (const { scope } of this.heldScopes.values()) this.requestScope(scope);
@@ -447,6 +533,7 @@ export class SyncEngine {
     this.unsubscribeSignals = null;
     this.cancelResume?.();
     this.cancelResume = null;
+    this.stopStorageRetry();
     this.notifyChange();
     await this.commits.drain();
     this.replica?.close();
@@ -495,6 +582,8 @@ export class SyncEngine {
     await this.commits.run(async () => {
       this.applyLoaded(await this.requireReplica().load());
     });
+    // The view now matches the database, so only an unsaved 413 rejection keeps the disk full.
+    this.setStorage(this.setAside.size === 0 ? "ok" : "full");
     for (const [requestId, remote] of [...this.remote]) {
       this.remote.delete(requestId);
       remote.cancelResend();
@@ -562,12 +651,20 @@ export class SyncEngine {
       const prepared = this.prepare(name, args);
       const at = this.deps.clock.now();
       const admitted = admit(this.store, this.deps.actor, { name, args: prepared.args, at });
-      const mutation = await replica.appendMutation(() => ({
-        name,
-        args: admitted.args,
-        at,
-        ...(admitted.local === undefined ? {} : { local: admitted.local }),
-      }));
+      const mutation = await replica
+        .appendMutation(() => ({
+          name,
+          args: admitted.args,
+          at,
+          ...(admitted.local === undefined ? {} : { local: admitted.local }),
+        }))
+        .catch((error: unknown) => {
+          // The edit is refused whole and the caller shows this, so none is lost without a word.
+          throw error instanceof StorageFullError
+            ? new MutationError(507, STORAGE_FULL_EDIT)
+            : error;
+        });
+      if (this.snapshot.storage === "full" && this.role === "leader") void this.retryStorage();
       const settled = new Promise<MutationOutcome>((resolve, reject) =>
         this.outcomes.set(mutation.id, { mutation, resolve, reject }),
       );
@@ -593,6 +690,7 @@ export class SyncEngine {
       throw new MutationError(400, "This command requires an online connection");
     await this.open();
     if (this.sealed) throw new Error("Engine is retiring");
+    this.refuseOnFullDisk();
     if (!this.snapshot.online)
       throw new MutationError(400, "This command requires an online connection");
     if (
@@ -685,9 +783,12 @@ export class SyncEngine {
   private async drainOutbox(signal: AbortSignal): Promise<void> {
     for (;;) {
       signal.throwIfAborted();
+      this.refuseOnFullDisk();
       if (this.unauthorized === "refused") throw new UnauthorizedError("Session check failed", 401);
       if (this.started && this.snapshot.online && this.unauthorized === null) {
-        if ((await this.requireReplica().loadOutbox()).length === 0) {
+        const stored = await this.requireReplica().loadOutbox();
+        // A full disk can leave acknowledged mutations stored after memory settled them.
+        if (stored.every((mutation) => mutation.id <= this.acknowledged)) {
           // A 401 or close can land while the outbox loads; check again with no await before
           // the caller registers its attempt.
           signal.throwIfAborted();
@@ -700,6 +801,14 @@ export class SyncEngine {
       this.requestPush();
       await this.waitForOutboxChange(signal);
     }
+  }
+
+  /**
+   * The outbox can't drain while the disk is full, since the leader stops announcing pull pages and
+   * acknowledged rows stay stored, so an online command would wait for it forever.
+   */
+  private refuseOnFullDisk(): void {
+    if (this.snapshot.storage === "full") throw new MutationError(507, STORAGE_FULL_EDIT);
   }
 
   /**
@@ -825,11 +934,16 @@ export class SyncEngine {
       return;
     }
     this.blocked.clear();
+    this.protocolFailures.clear();
+    this.resynced = false;
+    this.resyncDue = this.resyncOwed;
+    this.resyncAttempts = 0;
     this.scopeFailures.clear();
     this.batch = null;
     this.unauthorized = null;
     this.unauthorizedStreak = 0;
     this.update({ blocked: false, stalled: false, lastError: null });
+    void this.retryStorage();
     this.post(this.statusMessage());
     this.notifyScopes();
     this.cancelNetwork();
@@ -854,6 +968,7 @@ export class SyncEngine {
       online: this.snapshot.online,
       blocked: this.outboxBlocked(),
       stalled: this.snapshot.stalled,
+      storageFull: this.snapshot.storage === "full",
       error:
         error === null || error instanceof OutdatedError
           ? null
@@ -869,9 +984,15 @@ export class SyncEngine {
       return;
     this.snapshot = Object.freeze({ ...this.snapshot, ...patch });
     for (const listener of this.statusListeners) listener();
+    // A scope that can't load while offline reports it, so its status changes with the connection.
+    if ("online" in patch) this.notifyScopes();
     if (
       this.role === "leader" &&
-      ("connected" in patch || "online" in patch || "stalled" in patch || "lastError" in patch)
+      ("connected" in patch ||
+        "online" in patch ||
+        "stalled" in patch ||
+        "lastError" in patch ||
+        "storage" in patch)
     )
       this.post(this.statusMessage());
   }
@@ -967,6 +1088,7 @@ export class SyncEngine {
       online: this.leaderOnline && this.deps.signals.getOnline(),
       blocked: message.blocked,
       stalled: message.stalled,
+      storage: message.storageFull ? "full" : "ok",
       lastError: this.leaderError(message.error),
     });
     this.notifyChange();
@@ -1156,8 +1278,18 @@ export class SyncEngine {
     return new Promise((resolve) => {
       const settle = (): boolean => {
         let reply: TabReply;
-        if (this.loadedScopes.has(key)) reply = { ok: true, value: null };
-        else {
+        if (this.loadedScopes.has(key)) {
+          // A load that left records out isn't marked loaded on disk, so its records go out here.
+          if (this.scopeRepairs.has(key) && this.snapshot.storage === "ok")
+            this.post({
+              type: "pulled",
+              changes: this.scopeChanges(scope, this.scopedRecords(scope)),
+              cursor: this.cursor,
+              acknowledgedUpTo: null,
+              scope,
+            });
+          reply = { ok: true, value: null };
+        } else {
           const failure = this.scopeFailures.get(key);
           if (failure === undefined) return false;
           reply = { ok: false, error: tabError(failure) };
@@ -1362,6 +1494,8 @@ export class SyncEngine {
     void this.pull();
     this.requestPush();
     for (const { scope } of this.heldScopes.values()) this.requestScope(scope);
+    this.scheduleResync(controller);
+    for (const key of this.scopeRepairs.keys()) this.scheduleScopeRepair(key, controller);
     void this.events(controller).catch((error: unknown) => this.finishError(error));
     void this.poll(controller).catch((error: unknown) => this.finishError(error));
   }
@@ -1370,13 +1504,21 @@ export class SyncEngine {
     this.controller?.abort();
     this.controller = null;
     this.pullAgain = false;
+    this.cancelResync?.();
+    this.cancelResync = null;
+    for (const repair of this.scopeRepairs.values()) {
+      repair.cancel?.();
+      repair.cancel = null;
+    }
     this.update({ connected: false });
   }
 
+  /** With `resync`, a persistent protocol error throws `Resync` once instead of blocking. */
   private async retry<T>(
     kind: RequestKind,
     controller: AbortController,
     work: () => Promise<T>,
+    resync = false,
   ): Promise<T> {
     for (let attempt = 0; ; attempt += 1) {
       this.check(controller);
@@ -1384,10 +1526,11 @@ export class SyncEngine {
       try {
         const result = await cancellable(work(), controller.signal);
         this.check(controller);
+        this.succeeded(kind);
         return result;
       } catch (error) {
         this.check(controller);
-        if (await this.handleError(error, kind)) throw new Cancelled();
+        if (await this.handleError(error, kind, resync)) throw new Cancelled();
         await pause(
           this.deps.clock,
           this.delay(attempt, error instanceof UnavailableError ? error.retryAfter : null),
@@ -1400,37 +1543,59 @@ export class SyncEngine {
   private async bootstrap(controller: AbortController): Promise<void> {
     this.update({ phase: "bootstrapping" });
     this.check(controller);
+    // Every record is parsed again below, so the ones still unparseable are reported again.
+    const previous = new Map(this.skipped);
+    this.setSkipped(new Map());
     const response = await cancellable(
       (async () => {
         const response = await this.deps.transport.bootstrap(this.deps.workspaceId, this.clientId, {
           signal: controller.signal,
         });
         const records: Partial<Record<Entity, object[]>> = {};
-        for await (const { entity, record } of response.records)
-          (records[entity] ??= []).push(this.prepareRecord(entity, record));
+        for await (const { entity, record } of response.records) {
+          const prepared = this.prepareRecord(entity, record);
+          if (prepared !== null) (records[entity] ??= []).push(prepared);
+        }
         return { header: response.header, records };
       })(),
       controller.signal,
-    );
-    this.checkAcknowledged(response.header.last_mutation_id);
+    )
+      .then((downloaded) => {
+        this.checkAcknowledged(downloaded.header.last_mutation_id);
+        return downloaded;
+      })
+      .catch((error: unknown) => {
+        this.setSkipped(previous);
+        throw error;
+      });
     await this.commits.run(async () => {
       this.check(controller);
-      await this.requireReplica().writeBootstrap({
-        cursor: response.header.cursor,
-        lastMutationId: response.header.last_mutation_id,
-        serverSchema: response.header.schema,
-        records: response.records,
-        entities: BOOTSTRAP_ENTITIES,
-      });
-      await this.verified();
+      // A full disk keeps the downloaded workspace in memory instead of downloading it again.
+      const persisted = await this.persist(
+        () =>
+          this.requireReplica().writeBootstrap({
+            cursor: response.header.cursor,
+            lastMutationId: response.header.last_mutation_id,
+            serverSchema: response.header.schema,
+            records: response.records,
+            entities: BOOTSTRAP_ENTITIES,
+            skipped: [...this.skipped.values()],
+            resync: false,
+          }),
+        "snapshot",
+      );
+      if (persisted) await this.verified();
       this.cursor = response.header.cursor;
+      this.serverSchema = response.header.schema;
+      this.clearResync();
       this.loadedScopes.clear();
       this.store.batch(() => {
         this.store.replaceBase(response.records, BOOTSTRAP_REPLACED_ENTITIES);
         this.acknowledge(response.header.last_mutation_id);
       });
       this.notifyScopes();
-      this.post({ type: "reset" });
+      // Other tabs reload from the database, which holds nothing new when the write failed.
+      if (persisted) this.post({ type: "reset" });
     });
     this.check(controller);
     this.update({ phase: "ready" });
@@ -1438,33 +1603,144 @@ export class SyncEngine {
     this.requestPush();
   }
 
-  private prepareRecord(entity: Entity, record: object): object {
+  /**
+   * A bootstrap acknowledges and replaces everything, so no obligation is left, even when it
+   * skipped a record again. That record is then malformed on the server, and stays listed.
+   */
+  private clearResync(): void {
+    this.resyncOwed = false;
+    this.resyncDue = false;
+    this.resyncAttempts = 0;
+    this.cancelResync?.();
+    this.cancelResync = null;
+    for (const repair of this.scopeRepairs.values()) repair.cancel?.();
+    this.scopeRepairs.clear();
+  }
+
+  /**
+   * Parses a server record, or returns null and reports it when this client can't. One bad record
+   * is left out so the rest of its page loads. Without the workspace row the app can't render, so
+   * that one stays a protocol error. `id` is the change's id, which the record's key must match.
+   */
+  private prepareRecord(entity: Entity, record: object, id?: string): object | null {
     try {
       const prepared = ingest(entity, record);
-      recordKey(entity, prepared);
+      const key = recordKey(entity, prepared);
+      if (id !== undefined && key !== id) throw new Error("Change id does not match record key");
+      this.unskip(entity, key);
       return prepared;
     } catch (cause) {
-      throw new ProtocolError(`Invalid ${entity} record`, 200, { cause });
+      if (entity === "workspace")
+        throw new ProtocolError(`Invalid ${entity} record`, 200, { cause });
+      this.skip(entity, id ?? recordId(entity, record), cause);
+      return null;
     }
   }
 
-  private async pullPages(controller: AbortController): Promise<boolean> {
+  private skip(entity: Entity, id: string, cause: unknown): void {
+    const message = cause instanceof Error ? cause.message : String(cause);
+    console.error(`Skipped invalid ${entity} record ${id}`, cause);
+    this.setSkipped(new Map(this.skipped).set(`${entity}:${id}`, { entity, id, message }));
+  }
+
+  /** A valid version, or a deletion, of a skipped record ends its report. */
+  private unskip(entity: Entity, id: string): void {
+    if (!this.skipped.has(`${entity}:${id}`)) return;
+    const next = new Map(this.skipped);
+    next.delete(`${entity}:${id}`);
+    this.setSkipped(next);
+  }
+
+  private setSkipped(next: Map<string, SkippedRecord>): void {
+    if (next.size === 0 && this.skipped.size === 0) return;
+    this.skipped.clear();
+    for (const [key, value] of next) this.skipped.set(key, value);
+    this.update({ skipped: Object.freeze([...next.values()]) });
+  }
+
+  /**
+   * One timer at a time. It makes the next pull a bootstrap, with a delay that doubles per failed
+   * attempt, from 30 seconds to 30 minutes.
+   */
+  private scheduleResync(controller: AbortController): void {
+    if (!this.resyncOwed || this.cancelResync) return;
+    this.cancelResync = this.deps.clock.schedule(repairDelay(this.resyncAttempts), () => {
+      this.cancelResync = null;
+      if (!this.active(controller)) return;
+      this.resyncDue = true;
+      void this.pull();
+    });
+  }
+
+  /** One attempt at the owed bootstrap. A failure goes back on the repair schedule, not the retry loop. */
+  private async repair(controller: AbortController): Promise<void> {
+    try {
+      await cancellable(
+        this.reads.run(() => this.bootstrap(controller)),
+        controller.signal,
+      );
+      this.check(controller);
+      this.succeeded("bootstrap");
+    } catch (error) {
+      this.check(controller);
+      if (await this.handleError(error, "bootstrap")) throw new Cancelled();
+      this.resyncDue = false;
+      this.resyncAttempts += 1;
+      this.update({ phase: "ready" });
+      this.scheduleResync(controller);
+    }
+  }
+
+  /** A scope that loaded with a skipped record is loaded again later, on the same backoff. */
+  private scheduleScopeRepair(key: string, controller: AbortController): void {
+    const repair = this.scopeRepairs.get(key);
+    if (!repair || repair.cancel) return;
+    repair.cancel = this.deps.clock.schedule(repairDelay(repair.attempts), () => {
+      repair.cancel = null;
+      if (!this.active(controller) || this.scopeRepairs.get(key) !== repair) return;
+      repair.attempts += 1;
+      this.retry("scope", controller, () =>
+        this.reads.run(async () => {
+          this.check(controller);
+          await this.loadScope(repair.scope, controller);
+        }),
+      ).catch((error: unknown) => this.finishError(error));
+    });
+  }
+
+  /** `repair` false leaves a due bootstrap to the next pull, for a caller that decides on this answer. */
+  private async pullPages(controller: AbortController, repair = true): Promise<boolean> {
     if (this.cursor === null) {
       await this.retry("bootstrap", controller, () =>
         this.reads.run(() => this.bootstrap(controller)),
       );
       return false;
     }
-    const response = await this.retry("pull", controller, () =>
-      this.reads.run(() => this.readPull(controller)),
-    );
-    if (response.reset)
+    if (this.resyncDue && repair) {
+      await this.repair(controller);
+      return false;
+    }
+    let response: PullResponse | "resync";
+    try {
+      response = await this.retry(
+        "pull",
+        controller,
+        () => this.reads.run(() => this.readPull(controller)),
+        !this.resynced,
+      );
+    } catch (error) {
+      if (!(error instanceof Resync)) throw error;
+      response = "resync";
+    }
+    if (response === "resync" || response.reset) {
+      this.resynced = response === "resync";
       await this.retry("bootstrap", controller, () =>
         this.reads.run(() => this.bootstrap(controller)),
       );
+    }
     this.check(controller);
     this.update({ phase: "ready" });
-    return response.more;
+    return response !== "resync" && response.more;
   }
 
   /**
@@ -1505,22 +1781,39 @@ export class SyncEngine {
     );
     this.check(controller);
     this.checkAcknowledged(response.last_mutation_id);
-    const changes = response.changes.map((change) => {
-      const record =
-        change.record === null ? null : this.prepareRecord(change.entity, change.record);
-      if (record !== null && recordKey(change.entity, record) !== change.id)
-        throw new ProtocolError("Change id does not match record key", 200);
-      return { ...change, record };
-    });
     if (response.reset) return response;
+    const changes: Change[] = [];
+    let pageSkipped = false;
+    for (const change of response.changes) {
+      if (change.record === null) {
+        this.unskip(change.entity, change.id);
+        changes.push(change);
+        continue;
+      }
+      // A skipped change leaves the previous version in place until a bootstrap replaces it.
+      const record = this.prepareRecord(change.entity, change.record, change.id);
+      if (record === null) pageSkipped = true;
+      else changes.push({ ...change, record });
+    }
+    if (pageSkipped) {
+      this.resyncOwed = true;
+      this.scheduleResync(controller);
+    }
     await this.commits.run(async () => {
       this.check(controller);
-      await this.requireReplica().applyPull({
-        changes,
-        cursor: response.cursor,
-        acknowledgedUpTo: response.last_mutation_id,
-      });
-      await this.verified();
+      // Once a write has failed for space, the database waits for a full snapshot instead.
+      const persisted = await this.persist(
+        () =>
+          this.requireReplica().applyPull({
+            changes,
+            cursor: response.cursor,
+            acknowledgedUpTo: response.last_mutation_id,
+            skipped: [...this.skipped.values()],
+            resync: this.resyncOwed,
+          }),
+        "increment",
+      );
+      if (persisted) await this.verified();
       const accepted = changes.filter((change) =>
         acceptsChange(
           change.entity,
@@ -1534,12 +1827,15 @@ export class SyncEngine {
         if (response.last_mutation_id !== null) this.acknowledge(response.last_mutation_id);
       });
       this.recovered();
-      this.post({
-        type: "pulled",
-        changes,
-        cursor: response.cursor,
-        acknowledgedUpTo: response.last_mutation_id,
-      });
+      // Followers only see what the database holds. Until a snapshot lands they may be behind,
+      // and its reset catches them up.
+      if (persisted)
+        this.post({
+          type: "pulled",
+          changes,
+          cursor: response.cursor,
+          acknowledgedUpTo: response.last_mutation_id,
+        });
     });
     return response;
   }
@@ -1552,6 +1848,9 @@ export class SyncEngine {
   private checkAcknowledged(id: number | null): void {
     if (id === null || id >= this.acknowledged) return;
     this.blocked.add("push");
+    // Pushing stops now, not after the read's retries run out.
+    this.update({ blocked: true });
+    if (this.role === "leader") this.post(this.statusMessage());
     throw new ProtocolError(
       `The server acknowledged mutation ${id}, but this replica already holds ${this.acknowledged}`,
       200,
@@ -1594,10 +1893,16 @@ export class SyncEngine {
   private async reloadOutbox(): Promise<void> {
     const current = new Map(this.store.pending().map((mutation) => [mutation.id, mutation]));
     const stored = await this.requireReplica().loadOutbox();
-    this.store.setPending(stored.map((mutation) => current.get(mutation.id) ?? mutation));
+    // A full disk can leave acknowledged mutations in the database that memory already settled.
+    this.store.setPending(
+      stored
+        .filter((mutation) => mutation.id > this.acknowledged)
+        .map((mutation) => current.get(mutation.id) ?? mutation),
+    );
   }
 
   private pushCandidates(): Mutation[] {
+    if (this.setAside.size > 0) return [];
     const confirmations = new Map<number, Mutation>(this.unconfirmed);
     for (const { mutation } of this.outcomes.values())
       if (mutation.id <= this.acknowledged) confirmations.set(mutation.id, mutation);
@@ -1619,16 +1924,21 @@ export class SyncEngine {
       this.blocked.has("scope")
     )
       return;
+    let protocolError: ProtocolError | null = null;
     const work = this.retry("scope", controller, () =>
       this.reads.run(async () => {
         this.check(controller);
         if (this.loadedScopes.has(key)) return;
         await this.loadScope(scope, controller).catch((error: unknown) => {
-          if (error instanceof ProtocolError) this.failScope(key, error);
+          if (error instanceof ProtocolError) protocolError = error;
           throw error;
         });
       }),
-    ).catch((error: unknown) => this.finishError(error));
+    ).catch((error: unknown) => {
+      // The scope reports an error once its protocol failures have blocked it, not while they retry.
+      if (protocolError && this.blocked.has("scope")) this.failScope(key, protocolError);
+      this.finishError(error);
+    });
     this.scopeWork.set(key, work);
     void work.then(() => {
       this.scopeWork.delete(key);
@@ -1640,38 +1950,63 @@ export class SyncEngine {
     const response = await this.withDeadline(controller, READ_DEADLINE_MS, (signal) =>
       this.deps.transport.scope(this.deps.workspaceId, this.clientId, scope, { signal }),
     );
-    const records = response.records.map((record) => this.prepareRecord(scope.entity, record));
-    for (const record of records) {
+    const records: object[] = [];
+    let skippedHere = false;
+    for (const raw of response.records) {
+      const record = this.prepareRecord(scope.entity, raw);
+      if (record === null) {
+        skippedHere = true;
+        continue;
+      }
       const receivedScope = recordScope(scope.entity, record);
-      if (receivedScope === null || scopeKey(receivedScope) !== scopeKey(scope))
-        throw new ProtocolError("Record does not belong to requested scope", 200);
+      if (receivedScope !== null && scopeKey(receivedScope) === scopeKey(scope)) {
+        records.push(record);
+        continue;
+      }
+      skippedHere = true;
+      this.skip(
+        scope.entity,
+        recordId(scope.entity, record),
+        new Error("Record does not belong to requested scope"),
+      );
     }
     await this.commits.run(async () => {
       this.check(controller);
-      await this.requireReplica().writeScope({ scope, records });
-      await this.verified();
+      const persisted = await this.persist(
+        () => this.requireReplica().writeScope({ scope, records, partial: skippedHere }),
+        "increment",
+      );
+      if (persisted) await this.verified();
       const changes = this.scopeChanges(scope, records);
       this.loadedScopes.set(scopeKey(scope), scope);
       this.scopeFailures.delete(scopeKey(scope));
       this.store.batch(() => this.store.applyBase(changes));
-      this.post({
-        type: "pulled",
-        changes,
-        cursor: this.cursor,
-        acknowledgedUpTo: null,
-        scope,
-      });
+      if (persisted)
+        this.post({
+          type: "pulled",
+          changes,
+          cursor: this.cursor,
+          acknowledgedUpTo: null,
+          scope,
+        });
       this.notifyScopes();
+      const key = scopeKey(scope);
+      if (skippedHere) {
+        this.scopeRepairs.set(
+          key,
+          this.scopeRepairs.get(key) ?? { scope, attempts: 0, cancel: null },
+        );
+        this.scheduleScopeRepair(key, controller);
+      } else {
+        this.scopeRepairs.get(key)?.cancel?.();
+        this.scopeRepairs.delete(key);
+      }
     });
   }
 
   /** Base changes that replace a scope's records with `records`: remove the old ones, then upsert. */
   private scopeChanges(scope: Scope, records: readonly object[]): Change[] {
-    const scoped =
-      scope.entity === "comments"
-        ? this.store.baseByIndex("comments", "issue_id", scope.issueId)
-        : this.store.baseByIndex("activity", "entity_id", scope.entityId);
-    const removed = scoped.map((record) => ({
+    const removed = this.scopedRecords(scope).map((record) => ({
       entity: scope.entity,
       id: recordKey(scope.entity, record),
       record: null,
@@ -1682,6 +2017,12 @@ export class SyncEngine {
       record,
     }));
     return [...removed, ...upserts];
+  }
+
+  private scopedRecords(scope: Scope): readonly object[] {
+    return scope.entity === "comments"
+      ? this.store.baseByIndex("comments", "issue_id", scope.issueId)
+      : this.store.baseByIndex("activity", "entity_id", scope.entityId);
   }
 
   private failScope(key: string, error: Error): void {
@@ -1722,8 +2063,10 @@ export class SyncEngine {
       const batch = this.batch;
       if (!batch) return;
       this.check(controller);
-      const wait = batch.retryAt - Date.parse(this.deps.clock.now());
+      const wait = batch.retryAt - this.deps.clock.monotonic();
       if (wait > 0) await pause(this.deps.clock, wait, controller.signal);
+      // A block can arrive while the batch was chosen or the retry delay ran.
+      if (this.blocked.has("push")) return;
       if (!batch.processed) {
         const step = await this.sendBatch(batch, controller);
         if (step === "stop") return;
@@ -1780,6 +2123,7 @@ export class SyncEngine {
         rejected,
       );
       this.recovered("push");
+      this.protocolFailures.delete("push");
       void this.pull();
       if (response.status === "partial") {
         if (response.results.length > batch.settled) {
@@ -1829,7 +2173,7 @@ export class SyncEngine {
       batch.failures += 1;
       if (batch.failures >= STALLED_AFTER) this.update({ stalled: true });
     } else this.update({ stalled: false });
-    batch.retryAt = Date.parse(this.deps.clock.now()) + this.delay(batch.attempt++, retryAfter);
+    batch.retryAt = this.deps.clock.monotonic() + this.delay(batch.attempt++, retryAfter);
     return "again";
   }
 
@@ -1846,7 +2190,7 @@ export class SyncEngine {
   ): Promise<"again" | "stop"> {
     this.batch = null;
     if (mutation === undefined) return "again";
-    for (let more = true; more;) more = await this.pullPages(controller);
+    for (let more = true; more;) more = await this.pullPages(controller, false);
     const { id } = mutation;
     if (id <= this.acknowledged) {
       this.settle(id, "unknown", false);
@@ -1856,20 +2200,48 @@ export class SyncEngine {
       this.post({ type: "result", mutationId: id, outcome: "unknown" });
       return "again";
     }
-    const outcome = { id, status: 413, message: TOO_LARGE };
-    const rejection = this.settle(id, outcome, true) ?? {
-      ...outcome,
-      command: { name: mutation.name, args: immutableCopy(mutation.args) },
-    };
-    this.appendedIds.delete(id);
-    await this.commits.run(async () => {
-      await this.requireReplica().discard([rejection]);
+    this.setAside.set(
+      id,
+      Object.freeze({
+        id,
+        status: 413,
+        message: TOO_LARGE,
+        command: { name: mutation.name, args: immutableCopy(mutation.args) },
+      }),
+    );
+    await this.commits.run(() => this.storeSetAside());
+    return "again";
+  }
+
+  /**
+   * Keeps the set-aside rejections and drops their mutations from the outbox. Their receipts
+   * settle only then, so a rejection the user sees is one a reload still shows. On a full disk they
+   * wait for the storage retry, and pushing resumes once they are saved. Runs inside `commits`.
+   */
+  private async storeSetAside(): Promise<boolean> {
+    const rejections = [...this.setAside.values()];
+    if (rejections.length === 0) return true;
+    try {
+      await this.requireReplica().discard(rejections);
+    } catch (error) {
+      if (!(error instanceof StorageFullError)) throw error;
+      this.setStorage("full");
+      return false;
+    }
+    for (const rejection of rejections) {
+      const { id, status, message } = rejection;
+      const outcome = { id, status, message };
+      this.setAside.delete(id);
+      this.unconfirmed.delete(id);
+      this.settle(id, outcome, true);
+      this.appendedIds.delete(id);
       this.store.setPending(this.store.pending().filter((pending) => pending.id !== id));
       this.keepUnresolved([rejection]);
       this.post({ type: "result", mutationId: id, outcome });
-      this.post({ type: "reset" });
-    });
-    return "again";
+    }
+    this.post({ type: "reset" });
+    this.requestPush();
+    return true;
   }
 
   /**
@@ -1935,7 +2307,11 @@ export class SyncEngine {
     if (ids.length === 0) return;
     this.commits
       .run(() => this.requireReplica().confirm(ids, rejected))
-      .catch((error: unknown) => this.finishError(error));
+      .catch((error: unknown) => {
+        // The row stays unconfirmed on disk, which only costs a repeat push after a reload.
+        if (error instanceof StorageFullError) this.setStorage("full");
+        else this.finishError(error);
+      });
   }
 
   /** Returns a rejection that kept its command, so the user can still recover the edit. */
@@ -1962,11 +2338,17 @@ export class SyncEngine {
     let attempt = 0;
     while (this.active(controller) && !this.blocked.has("events")) {
       let retryAfter: number | string | null = null;
+      let proven = false;
       try {
         await this.withDeadline(controller, STREAM_IDLE_MS, (signal, extend) =>
           this.listen(controller, signal, () => {
             extend();
             attempt = 0;
+            // An open stream proves nothing: a malformed body only fails once it is read.
+            if (proven) return;
+            proven = true;
+            this.recovered("other");
+            this.protocolFailures.delete("events");
           }),
         );
         this.check(controller);
@@ -1992,7 +2374,6 @@ export class SyncEngine {
     if (signal.aborted) return;
     this.check(controller);
     this.update({ connected: true });
-    this.recovered("stream");
     for await (const message of stream) {
       if (signal.aborted) return;
       this.check(controller);
@@ -2008,7 +2389,7 @@ export class SyncEngine {
     }
   }
 
-  private async handleError(error: unknown, kind: RequestKind): Promise<boolean> {
+  private async handleError(error: unknown, kind: RequestKind, resync = false): Promise<boolean> {
     const failure = error instanceof Error ? error : new Error(String(error));
     this.writeFailing = kind === "push";
     this.update({ lastError: failure });
@@ -2043,6 +2424,14 @@ export class SyncEngine {
       return true;
     }
     if (failure instanceof ProtocolError) {
+      const failures = (this.protocolFailures.get(kind) ?? 0) + 1;
+      this.protocolFailures.set(kind, failures);
+      const step = protocolStep(failure, failures, resync);
+      if (step === "retry") return false;
+      if (step === "resync") {
+        this.protocolFailures.delete(kind);
+        throw new Resync();
+      }
       this.blocked.add(kind);
       this.update({ blocked: this.outboxBlocked() });
       if (this.role === "leader") this.post(this.statusMessage());
@@ -2053,17 +2442,138 @@ export class SyncEngine {
   }
 
   /**
-   * A request succeeded, so an earlier error no longer describes the connection. Blocks stay. A
-   * failing push stays reported until a push succeeds, since reads can't drain the outbox.
+   * A request succeeded, so an earlier error no longer describes the connection. Blocks stay, and
+   * so does the protocol error that explains one. A failing push stays reported until a push
+   * succeeds, since reads can't drain the outbox.
    */
-  private recovered(kind: "read" | "push" | "stream" = "read"): void {
-    // An open stream doesn't prove that pulls and pushes get past whatever answered 401.
-    if (kind !== "stream") this.unauthorizedStreak = 0;
+  private recovered(kind: "read" | "push" | "other" = "read"): void {
+    // Only an answered pull or push proves that they get past whatever answered 401.
+    if (kind !== "other") this.unauthorizedStreak = 0;
     if (this.writeFailing && kind !== "push") return;
     this.writeFailing = false;
     const error = this.snapshot.lastError;
-    if (error && !(error instanceof ProtocolError || error instanceof OutdatedError))
-      this.update({ lastError: null });
+    const kept =
+      error instanceof ProtocolError ? this.blocked.size > 0 : error instanceof OutdatedError;
+    if (error && !kept) this.update({ lastError: null });
+  }
+
+  /** A request of this kind worked, so earlier protocol failures no longer count against it. */
+  private succeeded(kind: RequestKind): void {
+    this.protocolFailures.delete(kind);
+    if (kind === "pull") this.resynced = false;
+    this.recovered("other");
+  }
+
+  /**
+   * Runs a database write. A "snapshot" leaves the database equal to memory. An "increment" builds
+   * on the database as it was, so it is skipped once an earlier write failed for space, since
+   * applying it would leave the database ahead of what it holds. Both report whether it happened.
+   */
+  private async persist(
+    write: () => Promise<void>,
+    kind: "snapshot" | "increment",
+  ): Promise<boolean> {
+    if (kind === "increment" && this.snapshot.storage === "full") return false;
+    try {
+      await write();
+    } catch (error) {
+      if (!(error instanceof StorageFullError)) throw error;
+      this.setStorage("full");
+      return false;
+    }
+    if (kind === "snapshot" && (await this.storeSetAside())) this.setStorage("ok");
+    return true;
+  }
+
+  private setStorage(storage: StorageState): void {
+    if (storage === "full") this.scheduleStorageRetry();
+    else this.stopStorageRetry();
+    if (this.snapshot.storage === storage) return;
+    this.update({ storage });
+    if (storage === "full") this.emit({ type: "error", error: new StorageFullError() });
+  }
+
+  /** One timer at a time, so repeated failures can't keep pushing the retry back. */
+  private scheduleStorageRetry(): void {
+    if (this.cancelStorageRetry || this.closed || this.terminal) return;
+    this.cancelStorageRetry = this.deps.clock.schedule(STORAGE_RETRY_MS, () => {
+      this.cancelStorageRetry = null;
+      void this.retryStorage();
+    });
+  }
+
+  private stopStorageRetry(): void {
+    this.cancelStorageRetry?.();
+    this.cancelStorageRetry = null;
+  }
+
+  private retryStorageOnFocus(): void {
+    if (this.deps.clock.monotonic() - this.storageAttempt >= STORAGE_FOCUS_RETRY_MS)
+      void this.retryStorage();
+  }
+
+  /**
+   * Writes everything memory holds as one snapshot, which brings the database level again. The
+   * loaded scopes follow, since a snapshot clears them from disk.
+   */
+  private async retryStorage(): Promise<void> {
+    if (this.snapshot.storage !== "full" || this.role !== "leader" || !this.started) return;
+    this.storageAttempt = this.deps.clock.monotonic();
+    try {
+      await this.commits.run(async () => {
+        if (this.snapshot.storage !== "full") return;
+        if (this.cursor === null) {
+          if (await this.storeSetAside()) this.setStorage("ok");
+          return;
+        }
+        const records: Partial<Record<Entity, readonly object[]>> = {};
+        for (const entity of BOOTSTRAP_ENTITIES) records[entity] = this.store.baseAll(entity);
+        const saved = await this.persist(
+          () =>
+            this.requireReplica().writeBootstrap({
+              cursor: this.cursor ?? "",
+              lastMutationId: this.acknowledged,
+              serverSchema: this.serverSchema,
+              records,
+              entities: BOOTSTRAP_ENTITIES,
+              skipped: [...this.skipped.values()],
+              resync: this.resyncOwed,
+            }),
+          "snapshot",
+        );
+        if (!saved) return;
+        for (const [key, scope] of this.loadedScopes) {
+          const scoped = this.store.baseAll(scope.entity).filter((record) => {
+            const found = recordScope(scope.entity, record);
+            return found !== null && scopeKey(found) === scopeKey(scope);
+          });
+          const written = await this.persist(
+            () =>
+              this.requireReplica().writeScope({
+                scope,
+                records: scoped,
+                partial: this.scopeRepairs.has(key),
+              }),
+            "snapshot",
+          );
+          if (!written) return;
+        }
+        // Followers missed every page and scope since the disk filled, so they reload from it.
+        this.post({ type: "reset" });
+      });
+    } catch (error) {
+      this.finishError(error);
+      if (this.snapshot.storage === "full") this.scheduleStorageRetry();
+    }
+  }
+
+  /** Asks the browser to keep this origin's data, so it isn't evicted under storage pressure. */
+  private requestPersistence(): void {
+    try {
+      void Promise.resolve(this.deps.requestPersistence?.()).catch(() => undefined);
+    } catch {
+      // A browser without the storage API is no reason to stop syncing.
+    }
   }
 
   private finishError(error: unknown): void {

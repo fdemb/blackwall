@@ -16,7 +16,6 @@ import type { Entity } from "../records";
 import { createTransport, ProtocolError } from "../transport";
 import { createFakeServer } from "./fake-server";
 import type { Fault, MutationResult, Route } from "./fake-server";
-import { object } from "./commands";
 import { createTabHub } from "./tabs";
 
 import { seededRandom, simulationId } from "./seeded";
@@ -172,39 +171,19 @@ function unreadableBody(status: number): Response {
   );
 }
 
-/** Corrupts a successful response so the client must reject it as a protocol error. */
-async function malformed(
-  route: string | undefined,
-  response: Response,
-  issue: string,
-  issueRecord: () => unknown,
-): Promise<Response> {
-  if (route === "bootstrap") {
-    const text = await response.text();
-    const lines = text.trimEnd().split("\n");
-    const index = lines.findIndex((line) => line.includes('"entity":"issues"'));
-    check(index > 0, "missing bootstrap issue for corruption");
-    const row: unknown = JSON.parse(lines[index]);
-    check(object(row) && object(row.record), "invalid bootstrap fixture");
-    row.record.updated_at = "bad timestamp";
-    lines[index] = JSON.stringify(row);
-    return new Response(lines.join("\n") + "\n", { headers: response.headers });
-  }
+/**
+ * Replaces a successful response with one the client must reject as a protocol error: a proxy
+ * page for a read, which the client retries, and a result list that doesn't match a push.
+ */
+function malformed(route: string | undefined): Response {
   if (route === "push")
     return Response.json({
       last_mutation_id: 999999,
       results: [{ id: 999999, status: "applied" }],
     });
-  if (route === "scope")
-    return Response.json({ records: [{ id: issue, created_at: "bad timestamp" }] });
-  const page: unknown = await response.json();
-  check(object(page) && Array.isArray(page.changes), "invalid pull fixture");
-  page.changes.push({
-    entity: "issues",
-    id: issue,
-    record: { ...(issueRecord() as object), updated_at: "bad timestamp" },
+  return new Response("<html>Sign in to the network</html>", {
+    headers: { "content-type": "text/html" },
   });
-  return Response.json(page);
 }
 
 export async function runConvergence(
@@ -383,9 +362,8 @@ export async function runConvergence(
           }
           if (fault?.kind === "malformed" && response.ok) {
             coverage.add(`malformed-${route}`);
-            response = await malformed(route, response, issue, () =>
-              server.record("issues", issue),
-            );
+            await response.body?.cancel();
+            response = malformed(route);
           }
           return response;
         } finally {
@@ -401,7 +379,7 @@ export async function runConvergence(
       workspaceId: workspace.id,
       schema: SCHEMA,
       signals: client.signals,
-      clock: { now: server.now, schedule: server.schedule },
+      clock: { now: server.now, monotonic: server.monotonic, schedule: server.schedule },
       randomId: () => simulationId(sequence++),
       ...(hub ? { locks: hub.locks, channel: hub.channel } : {}),
     });
@@ -801,7 +779,7 @@ export async function runConvergence(
         client.tabClosed = false;
         await reload(client);
       }
-      // Protocol errors deliberately block their lane until a new engine opens.
+      // A client that saw a protocol error reloads, whether or not its lane blocked.
       if (client.blocked) await reload(client);
       await client.engine.start();
       void client.engine.pull();
