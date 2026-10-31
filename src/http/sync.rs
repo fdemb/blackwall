@@ -173,7 +173,7 @@ pub(super) async fn events(
         .sync_events_check(id, actor.profile.id, client_id)
         .await?;
     let workspace = id.0;
-    let subscriber = store.sync_broadcast.subscribe();
+    let subscriber = store.sync_pokes.subscribe(workspace);
     let shutdown = store.sync_shutdown.subscribe();
     let config = store.sync_events.clone();
     let keepalive = config.keepalive;
@@ -182,22 +182,19 @@ pub(super) async fn events(
     // `Full` failure means a poke is already queued and loses nothing.
     let (sender, receiver) =
         tokio::sync::mpsc::channel::<std::result::Result<Event, std::convert::Infallible>>(1);
-    tokio::spawn(forward_pokes(
-        sender, subscriber, shutdown, workspace, config,
-    ));
+    tokio::spawn(forward_pokes(sender, subscriber, shutdown, config));
     Ok(Sse::new(ReceiverStream::new(receiver)).keep_alive(KeepAlive::new().interval(keepalive)))
 }
 
 type PokeSender = tokio::sync::mpsc::Sender<std::result::Result<Event, std::convert::Infallible>>;
 
-/// Sends one poke at once, then one per commit to `workspace`, at most one
-/// per coalesce window, until the stream's lifetime ends, the client leaves,
-/// or the server shuts down.
+/// Sends one poke at once, then one per commit to the subscriber's
+/// workspace, at most one per coalesce window, until the stream's lifetime
+/// ends, the client leaves, or the server shuts down.
 async fn forward_pokes(
     sender: PokeSender,
-    mut subscriber: tokio::sync::broadcast::Receiver<Uuid>,
+    mut subscriber: crate::sync_events::Subscription,
     mut shutdown: tokio::sync::watch::Receiver<bool>,
-    workspace: Uuid,
     config: crate::store::SyncEventsConfig,
 ) {
     if sender.try_send(Ok(poke_event())).is_err() {
@@ -222,14 +219,9 @@ async fn forward_pokes(
                 pending = false;
             },
             received = subscriber.recv() => {
-                let poke = match received {
-                    Ok(changed) => changed == workspace || changed.is_nil(),
-                    // A gap means something was missed: pull.
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => true,
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-                };
-                if !poke {
-                    continue;
+                // A gap means something was missed: pull.
+                if matches!(received, Err(tokio::sync::broadcast::error::RecvError::Closed)) {
+                    break;
                 }
                 if pending || last_send.elapsed() < config.coalesce {
                     pending = true;

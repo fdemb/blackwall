@@ -238,7 +238,7 @@ impl Operation<'_> {
     async fn insert_team_members(&mut self, team_id: Uuid, members: Vec<Uuid>) -> Result<()> {
         for user in members {
             sqlx::query!(
-                "INSERT INTO team_members(workspace_id,team_id,user_id) VALUES($1,$2,$3)",
+                "INSERT INTO team_members(workspace_id,team_id,user_id) VALUES($1,$2,$3) ON CONFLICT DO NOTHING",
                 self.workspace_id,
                 team_id,
                 user,
@@ -274,9 +274,10 @@ impl Operation<'_> {
 
         self.touch("teams", id).await?;
         sqlx::query!(
-            "DELETE FROM team_members WHERE workspace_id=$1 AND team_id=$2",
+            "DELETE FROM team_members WHERE workspace_id=$1 AND team_id=$2 AND user_id<>ALL($3)",
             self.workspace_id,
             id,
+            &members,
         )
         .execute(&mut *self.tx)
         .await?;

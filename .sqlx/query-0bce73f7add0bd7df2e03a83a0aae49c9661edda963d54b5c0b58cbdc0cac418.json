@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO issue_dependencies(workspace_id,issue_id,dependency_id) SELECT $1,$2,dependency FROM unnest($3::uuid[]) AS t(dependency) ON CONFLICT DO NOTHING",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "UuidArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "0bce73f7add0bd7df2e03a83a0aae49c9661edda963d54b5c0b58cbdc0cac418"
+}
