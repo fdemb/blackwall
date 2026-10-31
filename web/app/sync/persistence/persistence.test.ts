@@ -602,6 +602,11 @@ for (const backend of ["memory", "idb"]) {
   });
 }
 
+/** The second store of each entity a bootstrap replaces, which layout 4 added. */
+const IDLE_COPIES: string[] = [];
+for (const entity of ENTITIES)
+  if (entity !== "comments" && entity !== "activity") IDLE_COPIES.push(`${entity}:1`);
+
 function rawOpen(factory: IDBFactory, name: string, version?: number): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     const request = factory.open(name, version);
@@ -629,7 +634,7 @@ describe("IndexedDB lifecycle", () => {
     try {
       const db = await rawOpen(factory, replicaName(INPUT));
       expect([...db.objectStoreNames].sort()).toEqual(
-        ["meta", ...ENTITIES, "outbox", "scopes", "rejected"].sort(),
+        ["meta", ...ENTITIES, ...IDLE_COPIES, "outbox", "scopes", "rejected", "stage"].sort(),
       );
       db.close();
       expect((await replica.load()).meta.cursor).toBeNull();
@@ -687,7 +692,7 @@ describe("IndexedDB lifecycle", () => {
       for (const entity of ENTITIES) expect(loaded.records[entity]).toEqual([]);
       const db = await rawOpen(factory, replicaName(INPUT));
       expect([...db.objectStoreNames].sort()).toEqual(
-        ["meta", ...ENTITIES, "outbox", "scopes", "rejected"].sort(),
+        ["meta", ...ENTITIES, ...IDLE_COPIES, "outbox", "scopes", "rejected", "stage"].sort(),
       );
       db.close();
       expect((await upgraded.appendMutation(mutation)).id).toBe(before.meta.nextMutationId);

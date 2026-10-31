@@ -3681,7 +3681,7 @@ describe("first load", () => {
     const progress: number[] = [];
     f.engine.status.subscribe(() => {
       const received = f.engine.status.get().progress;
-      if (received !== null) progress.push(received);
+      if (received !== null && received !== progress.at(-1)) progress.push(received);
     });
     f.server.inject({ kind: "truncate_bootstrap", afterRecords: 2400 });
     await f.engine.start();

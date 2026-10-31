@@ -256,6 +256,8 @@ export class SyncEngine {
   private readonly appends = new SerialQueue();
   private readonly unsaved: Unsaved[] = [];
   private nextProvisional = PROVISIONAL_IDS;
+  /** The latest queued reload of the replica into memory, which a new edit is admitted after. */
+  private reloading: Promise<void> = Promise.resolve();
   private readonly onlineRequests = new SerialQueue();
   private readonly loadedScopes = new Map<string, Scope>();
   private readonly heldScopes = new Map<string, { scope: Scope; holders: number }>();
@@ -609,9 +611,7 @@ export class SyncEngine {
    */
   private async takeLeadership(): Promise<void> {
     this.setRole("leader");
-    await this.commits.run(async () => {
-      this.applyLoaded(await this.requireReplica().load());
-    });
+    await this.reload();
     // The view now matches the database, so only an unsaved 413 rejection keeps the disk full.
     this.setStorage(this.setAside.size === 0 ? "ok" : "full");
     for (const [requestId, remote] of [...this.remote]) {
@@ -677,6 +677,8 @@ export class SyncEngine {
    */
   async mutate(name: string, args: unknown): Promise<MutationReceipt> {
     await this.open();
+    // A view the database is about to replace could refuse an edit the replica would accept.
+    await this.reloading;
     const lifecycle = this.lifecycle;
     if (this.sealed) throw new Error("Engine is retiring");
     const replica = this.requireReplica();
@@ -1329,11 +1331,17 @@ export class SyncEngine {
     });
   }
 
+  /** Replaces the view with the database's, through the commit queue. */
+  private reload(): Promise<void> {
+    const work = this.commits.run(async () => {
+      this.applyLoaded(await this.requireReplica().load());
+    });
+    this.reloading = work.catch(() => undefined);
+    return work;
+  }
+
   private receiveReset(): void {
-    this.commits
-      .run(async () => {
-        this.applyLoaded(await this.requireReplica().load());
-      })
+    this.reload()
       .then(() => {
         this.update({ phase: this.openPhase() });
         this.notifyScopes();
