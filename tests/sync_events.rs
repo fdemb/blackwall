@@ -194,8 +194,52 @@ async fn next_data(body: &mut axum::body::Body, timeout: Duration) -> Option<Vec
     .flatten()
 }
 
+fn poke_data(bytes: &[u8]) -> Option<Value> {
+    let text = std::str::from_utf8(bytes).ok()?;
+    if !text.starts_with("event: poke") {
+        return None;
+    }
+    let data = text.lines().find_map(|line| line.strip_prefix("data: "))?;
+    serde_json::from_str(data).ok()
+}
+
 fn is_poke(bytes: &[u8]) -> bool {
-    bytes.starts_with(b"event: poke") && bytes.windows(8).any(|w| w == b"data: {}")
+    poke_data(bytes).is_some()
+}
+
+/// The txid a poke carries, `None` for a wildcard.
+fn poke_txid(bytes: &[u8]) -> Option<i64> {
+    poke_data(bytes)?.get("txid")?.as_i64()
+}
+
+/// The epoch a poke carries, `None` for a wildcard.
+fn poke_epoch(bytes: &[u8]) -> Option<String> {
+    Some(poke_data(bytes)?.get("epoch")?.as_str()?.to_owned())
+}
+
+/// The epoch cursors start with, as the database holds it.
+async fn current_epoch(store: &Store) -> String {
+    sqlx::query_scalar("SELECT replace(epoch::text, '-', '') FROM sync_history")
+        .fetch_one(&store.pool)
+        .await
+        .unwrap()
+}
+
+/// Commits one change to the workspace and returns its transaction id.
+async fn commit_change(store: &Store, workspace: Uuid) -> i64 {
+    let mut tx = store.pool.begin().await.unwrap();
+    sqlx::query("SELECT mark_change($1, 'issues', $2)")
+        .bind(workspace)
+        .bind(Uuid::new_v4())
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    let txid: i64 = sqlx::query_scalar("SELECT pg_current_xact_id()::text::bigint")
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    txid
 }
 
 fn is_comment(bytes: &[u8]) -> bool {
@@ -225,13 +269,15 @@ async fn settle(body: &mut axum::body::Body) {
     }
 }
 
-async fn expect_poke(body: &mut axum::body::Body, timeout: Duration) {
+/// Waits for a poke and returns the txid it carries, `None` for a wildcard.
+async fn expect_poke(body: &mut axum::body::Body, timeout: Duration) -> Option<i64> {
     let bytes = next_data(body, timeout).await.expect("expected poke");
     assert!(
         is_poke(&bytes),
         "expected poke, got {:?}",
         String::from_utf8_lossy(&bytes)
     );
+    poke_txid(&bytes)
 }
 
 async fn expect_no_data(body: &mut axum::body::Body, wait: Duration) {
@@ -264,6 +310,7 @@ async fn events_sends_initial_poke() {
         .await
         .expect("initial poke");
     assert!(is_poke(&bytes), "got {:?}", String::from_utf8_lossy(&bytes));
+    assert_eq!(poke_txid(&bytes), None, "the initial poke is a wildcard");
 
     drop(app);
     store.pool.close().await;
@@ -443,6 +490,327 @@ async fn events_burst_coalesces_to_one_trailing_poke() {
 }
 
 #[tokio::test]
+async fn events_poke_carries_the_committing_txid() {
+    let database = support::TestDatabase::new().await;
+    let store = connect_store(&database.url, StoreConfig::default()).await;
+    let app = router(store.clone());
+    let owner = account(&store, "owner").await;
+    let (ws, _) = setup(&app, &owner).await;
+    let client = Uuid::new_v4();
+
+    let mut body = sse_response(
+        &app,
+        Some(&owner.token),
+        ws,
+        &format!("?client_id={client}"),
+    )
+    .await
+    .into_body();
+    drain_poke(&mut body).await;
+    settle(&mut body).await;
+
+    let mut tx = store.pool.begin().await.unwrap();
+    for _ in 0..3 {
+        sqlx::query("SELECT mark_change($1, 'issues', $2)")
+            .bind(ws)
+            .bind(Uuid::new_v4())
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+    }
+    let txid: i64 = sqlx::query_scalar("SELECT pg_current_xact_id()::text::bigint")
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    let poked = expect_poke(&mut body, Duration::from_secs(2)).await;
+    assert_eq!(poked, Some(txid));
+    let marked: Vec<i64> = sqlx::query_scalar(
+        "SELECT DISTINCT txid FROM changes WHERE workspace_id = $1 AND txid = $2",
+    )
+    .bind(ws)
+    .bind(txid)
+    .fetch_all(&store.pool)
+    .await
+    .unwrap();
+    assert_eq!(marked, vec![txid], "the poke names the rows' transaction");
+    expect_no_data(&mut body, Duration::from_millis(500)).await;
+
+    drop(app);
+    store.pool.close().await;
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn events_poke_carries_the_current_epoch() {
+    let database = support::TestDatabase::new().await;
+    let store = connect_store(&database.url, StoreConfig::default()).await;
+    let app = router(store.clone());
+    let owner = account(&store, "owner").await;
+    let (ws, _) = setup(&app, &owner).await;
+    let client = Uuid::new_v4();
+
+    let mut body = sse_response(
+        &app,
+        Some(&owner.token),
+        ws,
+        &format!("?client_id={client}"),
+    )
+    .await
+    .into_body();
+    let connect = next_data(&mut body, Duration::from_secs(2))
+        .await
+        .expect("initial poke");
+    assert_eq!(poke_data(&connect), Some(json!({})), "the connect poke");
+    settle(&mut body).await;
+
+    let txid = commit_change(&store, ws).await;
+    let bytes = next_data(&mut body, Duration::from_secs(2))
+        .await
+        .expect("commit poke");
+    let epoch = current_epoch(&store).await;
+    assert_eq!(
+        poke_data(&bytes),
+        Some(json!({"txid": txid, "epoch": epoch}))
+    );
+    expect_no_data(&mut body, Duration::from_millis(500)).await;
+
+    drop(app);
+    store.pool.close().await;
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn events_poke_epoch_follows_a_history_change() {
+    let database = support::TestDatabase::new().await;
+    let store = connect_store(&database.url, StoreConfig::default()).await;
+    let app = router(store.clone());
+    let owner = account(&store, "owner").await;
+    let (ws, _) = setup(&app, &owner).await;
+    let client = Uuid::new_v4();
+
+    let mut body = sse_response(
+        &app,
+        Some(&owner.token),
+        ws,
+        &format!("?client_id={client}"),
+    )
+    .await
+    .into_body();
+    drain_poke(&mut body).await;
+    settle(&mut body).await;
+
+    let before = current_epoch(&store).await;
+    commit_change(&store, ws).await;
+    let bytes = next_data(&mut body, Duration::from_secs(2))
+        .await
+        .expect("poke before the change");
+    assert_eq!(poke_epoch(&bytes), Some(before.clone()));
+
+    sqlx::query("UPDATE sync_history SET cluster = 'restored-from-elsewhere'")
+        .execute(&store.pool)
+        .await
+        .unwrap();
+    store.adopt_sync_history().await.unwrap();
+    let after = current_epoch(&store).await;
+    assert_ne!(before, after, "the history change rotated the epoch");
+
+    let txid = commit_change(&store, ws).await;
+    let bytes = next_data(&mut body, Duration::from_secs(2))
+        .await
+        .expect("poke after the change");
+    let data = poke_data(&bytes).expect("a poke");
+    assert!(
+        data == json!({}) || data == json!({"txid": txid, "epoch": after}),
+        "a txid from the new history carries the new epoch or none: {data}"
+    );
+
+    drop(app);
+    store.pool.close().await;
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn events_listener_reconnect_adopts_a_changed_history_before_stamping() {
+    let database = support::TestDatabase::new().await;
+    let store = connect_store(
+        &database.url,
+        events_config(
+            Duration::from_millis(250),
+            Duration::from_secs(60),
+            Duration::from_secs(30 * 60),
+            Duration::from_millis(50),
+        ),
+    )
+    .await;
+    let app = router(store.clone());
+    let owner = account(&store, "owner").await;
+    let (ws, _) = setup(&app, &owner).await;
+    let client = Uuid::new_v4();
+
+    let mut body = sse_response(
+        &app,
+        Some(&owner.token),
+        ws,
+        &format!("?client_id={client}"),
+    )
+    .await
+    .into_body();
+    drain_poke(&mut body).await;
+    settle(&mut body).await;
+    let before = current_epoch(&store).await;
+
+    sqlx::query("UPDATE sync_history SET cluster = 'restored-from-elsewhere'")
+        .execute(&store.pool)
+        .await
+        .unwrap();
+    let pid: i32 = sqlx::query_scalar(
+        "SELECT pid FROM pg_stat_activity WHERE datname = current_database() \
+         AND query LIKE 'LISTEN%'",
+    )
+    .fetch_one(&store.pool)
+    .await
+    .unwrap();
+    sqlx::query("SELECT pg_terminate_backend($1)")
+        .bind(pid)
+        .execute(&store.pool)
+        .await
+        .unwrap();
+
+    // The wildcard after the reconnect comes after the history check.
+    assert_eq!(expect_poke(&mut body, Duration::from_secs(5)).await, None);
+    let after = current_epoch(&store).await;
+    assert_ne!(before, after, "the reconnect rotated the epoch");
+
+    let txid = commit_change(&store, ws).await;
+    let bytes = next_data(&mut body, Duration::from_secs(2))
+        .await
+        .expect("poke after the reconnect");
+    assert_eq!(poke_txid(&bytes), Some(txid));
+    assert_eq!(poke_epoch(&bytes), Some(after));
+
+    drop(app);
+    store.pool.close().await;
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn events_coalesced_pokes_carry_the_highest_txid() {
+    let database = support::TestDatabase::new().await;
+    let store = connect_store(
+        &database.url,
+        events_config(
+            Duration::from_millis(1500),
+            Duration::from_secs(60),
+            Duration::from_secs(30 * 60),
+            Duration::from_secs(1),
+        ),
+    )
+    .await;
+    let app = router(store.clone());
+    let owner = account(&store, "owner").await;
+    let (ws, _) = setup(&app, &owner).await;
+    let client = Uuid::new_v4();
+
+    let mut body = sse_response(
+        &app,
+        Some(&owner.token),
+        ws,
+        &format!("?client_id={client}"),
+    )
+    .await
+    .into_body();
+    drain_poke(&mut body).await;
+
+    let notify = |payload: String| {
+        let pool = store.pool.clone();
+        async move {
+            sqlx::query("SELECT pg_notify('blackwall_changes', $1)")
+                .bind(payload)
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+    };
+    // Far above any real txid, so a late notification from setup cannot raise the maximum.
+    let base = 9_000_000_000i64;
+    for txid in [base + 100, base + 300, base + 200] {
+        notify(format!("{ws}:{txid}")).await;
+    }
+    assert_eq!(
+        expect_poke(&mut body, Duration::from_secs(5)).await,
+        Some(base + 300)
+    );
+    expect_no_data(&mut body, Duration::from_millis(2000)).await;
+
+    // The window is idle, so the next poke goes out at once. A notification
+    // without a txid inside the following window makes the trailing poke a wildcard.
+    notify(format!("{ws}:{}", base + 400)).await;
+    assert_eq!(
+        expect_poke(&mut body, Duration::from_secs(5)).await,
+        Some(base + 400)
+    );
+    notify(ws.to_string()).await;
+    notify(format!("{ws}:{}", base + 500)).await;
+    assert_eq!(expect_poke(&mut body, Duration::from_secs(5)).await, None);
+    expect_no_data(&mut body, Duration::from_millis(2000)).await;
+
+    drop(app);
+    store.pool.close().await;
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn events_deliver_promptly_when_the_client_accepts_gzip() {
+    let database = support::TestDatabase::new().await;
+    let store = connect_store(&database.url, StoreConfig::default()).await;
+    let app = router(store.clone());
+    let owner = account(&store, "owner").await;
+    let (ws, team) = setup(&app, &owner).await;
+    let client = Uuid::new_v4();
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!(
+                    "/internal-api/workspaces/{ws}/sync/events?client_id={client}"
+                ))
+                .header("Authorization", format!("Bearer {}", owner.token))
+                .header("Accept-Encoding", "gzip")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(!response.headers().contains_key("content-encoding"));
+    let mut body = response.into_body();
+    drain_poke(&mut body).await;
+    settle(&mut body).await;
+
+    created(
+        &app,
+        &owner,
+        ws,
+        json!({"type": "create_issue", "input": {"team_id": team, "title": "Prompt"}}),
+    )
+    .await;
+    // A buffering encoder would hold this frame until the stream closed.
+    assert!(
+        expect_poke(&mut body, Duration::from_secs(2))
+            .await
+            .is_some()
+    );
+
+    drop(app);
+    store.pool.close().await;
+    database.cleanup().await;
+}
+
+#[tokio::test]
 async fn events_request_errors() {
     let database = support::TestDatabase::new().await;
     let store = connect_store(&database.url, StoreConfig::default()).await;
@@ -562,9 +930,9 @@ async fn events_reconnect_pokes_all_and_recovers() {
         .await
         .unwrap();
 
-    // The wildcard after the reconnect pokes every subscriber.
-    expect_poke(&mut body_a, Duration::from_secs(5)).await;
-    expect_poke(&mut body_b, Duration::from_secs(5)).await;
+    // The wildcard after the reconnect pokes every subscriber and names no txid.
+    assert_eq!(expect_poke(&mut body_a, Duration::from_secs(5)).await, None);
+    assert_eq!(expect_poke(&mut body_b, Duration::from_secs(5)).await, None);
 
     // A later commit still pokes normally: only its workspace.
     created(
@@ -574,7 +942,11 @@ async fn events_reconnect_pokes_all_and_recovers() {
         json!({"type": "create_issue", "input": {"team_id": team_a, "title": "After"}}),
     )
     .await;
-    expect_poke(&mut body_a, Duration::from_secs(2)).await;
+    assert!(
+        expect_poke(&mut body_a, Duration::from_secs(2))
+            .await
+            .is_some()
+    );
     expect_no_data(&mut body_b, Duration::from_millis(500)).await;
 
     drop(app);
@@ -934,6 +1306,70 @@ async fn events_lifetime_cap_with_unread_body() {
         "expected at most one buffered poke, got {pokes}"
     );
     expect_no_data(&mut body, Duration::from_millis(300)).await;
+
+    drop(app);
+    store.pool.close().await;
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn events_unread_stream_keeps_the_highest_pending_txid() {
+    let database = support::TestDatabase::new().await;
+    let store = connect_store(
+        &database.url,
+        events_config(
+            Duration::from_millis(200),
+            Duration::from_secs(60),
+            Duration::from_secs(30 * 60),
+            Duration::from_secs(1),
+        ),
+    )
+    .await;
+    let app = router(store.clone());
+    let owner = account(&store, "owner").await;
+    let (ws, _) = setup(&app, &owner).await;
+
+    // Far above any real txid, so a late notification from setup cannot raise the maximum.
+    let base = 9_000_000_000i64;
+    let cases = [
+        (
+            vec![Some(base + 100), Some(base + 300), Some(base + 200)],
+            Some(base + 300),
+        ),
+        (vec![Some(base + 100), None, Some(base + 200)], None),
+    ];
+    for (notifications, expected) in cases {
+        let client = Uuid::new_v4();
+        let mut body = sse_response(
+            &app,
+            Some(&owner.token),
+            ws,
+            &format!("?client_id={client}"),
+        )
+        .await
+        .into_body();
+
+        // The unread initial poke fills the channel, so every later poke
+        // returns to pending and waits for the reader across several windows.
+        for notification in notifications {
+            let payload = match notification {
+                Some(txid) => format!("{ws}:{txid}"),
+                None => ws.to_string(),
+            };
+            sqlx::query("SELECT pg_notify('blackwall_changes', $1)")
+                .bind(payload)
+                .execute(&store.pool)
+                .await
+                .unwrap();
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+
+        drain_poke(&mut body).await;
+        assert_eq!(
+            expect_poke(&mut body, Duration::from_secs(5)).await,
+            expected
+        );
+    }
 
     drop(app);
     store.pool.close().await;

@@ -189,6 +189,10 @@ fn records(lines: &[Value]) -> BTreeMap<(String, Uuid), Value> {
         .collect()
 }
 
+/// Quotes, a backslash, a control character and non-ASCII text, which the
+/// record text must carry through unchanged.
+const PARENT_TITLE: &str = "Par\"ent \\ tab\there \u{fc}n\u{ef} \u{1f680}\nline";
+
 #[tokio::test]
 async fn bootstrap_all_entities_match_pull_and_rest_keeps_counts() {
     let database = support::TestDatabase::new().await;
@@ -254,7 +258,7 @@ async fn bootstrap_all_entities_match_pull_and_rest_keeps_counts() {
         &app,
         &owner,
         ws,
-        json!({"type":"create_issue","input":{"team_id":team,"title":"Parent"}}),
+        json!({"type":"create_issue","input":{"team_id":team,"title":PARENT_TITLE}}),
     )
     .await;
     created(
@@ -313,7 +317,48 @@ async fn bootstrap_all_entities_match_pull_and_rest_keeps_counts() {
     assert_eq!(data[0]["schema"], SYNC_SCHEMA);
     assert_eq!(data[0]["last_mutation_id"], 0);
     assert_eq!(data[0].as_object().unwrap().len(), 3);
+    // Record lines keep the `{"entity":...,"record":...}` shape, in entity order.
+    let mut order: Vec<&str> = Vec::new();
+    for line in &data[1..data.len() - 1] {
+        assert_eq!(line.as_object().unwrap().len(), 2);
+        let entity = line["entity"].as_str().unwrap();
+        if order.last() != Some(&entity) {
+            order.push(entity);
+        }
+    }
+    assert_eq!(
+        order,
+        [
+            "workspace",
+            "members",
+            "teams",
+            "labels",
+            "projects",
+            "milestones",
+            "sprints",
+            "views",
+            "alert_preferences",
+            "notifications",
+            "invitations",
+            "integrations",
+            "issues",
+            "time_entries"
+        ]
+    );
+    for raw in bytes[..bytes.len() - 1]
+        .split(|byte| *byte == b'\n')
+        .skip(1)
+    {
+        if raw.starts_with(br#"{"end""#) {
+            continue;
+        }
+        assert!(raw.starts_with(br#"{"entity":""#) && raw.ends_with(b"}"));
+    }
     let all = records(&data);
+    assert!(
+        all.iter()
+            .any(|((entity, _), record)| entity == "issues" && record["title"] == PARENT_TITLE)
+    );
     let entities: BTreeSet<_> = all.keys().map(|(entity, _)| entity.as_str()).collect();
     assert_eq!(
         entities,
@@ -568,17 +613,37 @@ fn gunzip(bytes: Vec<u8>) -> Vec<u8> {
     output.stdout
 }
 
+async fn body_of(response: Response) -> (HeaderMap, Vec<u8>) {
+    assert_eq!(response.status(), StatusCode::OK);
+    let headers = response.headers().clone();
+    let bytes = response
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes()
+        .to_vec();
+    (headers, bytes)
+}
+
 #[tokio::test]
-async fn bootstrap_negotiates_gzip_only_on_its_route() {
+async fn sync_reads_negotiate_gzip() {
     let database = support::TestDatabase::new().await;
     let store = Store::connect(&database.url).await.unwrap();
     let app = router(store.clone());
     let (owner, ws, team) = setup(&store, &app).await;
-    created(
+    let issue = created(
         &app,
         &owner,
         ws,
         json!({"type":"create_issue","input":{"team_id":team,"title":"Compress"}}),
+    )
+    .await;
+    created(
+        &app,
+        &owner,
+        ws,
+        json!({"type":"add_comment","issue_id":issue,"body":"Compress me, compress me, compress me"}),
     )
     .await;
     let client = Uuid::new_v4();
@@ -604,16 +669,43 @@ async fn bootstrap_negotiates_gzip_only_on_its_route() {
     assert_eq!(plain, decoded);
     let (headers, _) = bootstrap(&app, &owner, ws, client, Some("gzip;q=0")).await;
     assert!(!headers.contains_key("content-encoding"));
+
     for path in [
         format!("/internal-api/workspaces/{ws}/sync/pull?client_id={client}"),
         format!(
-            "/internal-api/workspaces/{ws}/sync/scope?client_id={client}&entity=comments&issue_id={}",
-            Uuid::new_v4()
+            "/internal-api/workspaces/{ws}/sync/scope?client_id={client}&entity=comments&issue_id={issue}"
         ),
     ] {
+        let (headers, bytes) = body_of(request(&app, &owner, "GET", &path, None, None).await).await;
+        assert!(!headers.contains_key("content-encoding"), "{path}");
+        let mut expected: Value = serde_json::from_slice(&bytes).unwrap();
+
         let response = request(&app, &owner, "GET", &path, None, Some("gzip")).await;
-        assert_eq!(response.status(), StatusCode::OK);
-        assert!(!response.headers().contains_key("content-encoding"));
+        let (headers, bytes) = body_of(response).await;
+        assert_eq!(headers["content-encoding"], "gzip", "{path}");
+        assert!(
+            headers["vary"]
+                .to_str()
+                .unwrap()
+                .contains("accept-encoding")
+        );
+        assert_eq!(&bytes[..2], &[0x1f, 0x8b]);
+        let mut decoded: Value = serde_json::from_slice(&gunzip(bytes)).unwrap();
+
+        // A pull's starting cursor is a snapshot, which other databases move.
+        for value in [&mut expected, &mut decoded] {
+            if let Some(object) = value.as_object_mut() {
+                object.remove("cursor");
+            }
+        }
+        assert_eq!(decoded, expected, "{path}");
+        if path.contains("/scope") {
+            assert_eq!(decoded["records"].as_array().unwrap().len(), 1);
+        }
+
+        let response = request(&app, &owner, "GET", &path, None, Some("gzip;q=0")).await;
+        let (headers, _) = body_of(response).await;
+        assert!(!headers.contains_key("content-encoding"), "{path}");
     }
     drop(app);
     store.pool.close().await;

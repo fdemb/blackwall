@@ -1,0 +1,78 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT c.workspace_id AS \"client_workspace?\", c.user_id AS \"client_user?\", c.last_mutation_id AS \"last_mutation_id?\", pg_current_snapshot()::text AS \"snapshot_text!\", pg_snapshot_xmin(pg_current_snapshot())::text::bigint AS \"xmin!\", pg_snapshot_xmax(pg_current_snapshot())::text::bigint AS \"xmax!\", COALESCE((SELECT array_agg(x::text::bigint) FROM pg_snapshot_xip(pg_current_snapshot()) AS t(x)), '{}'::bigint[]) AS \"xip!\", (SELECT txid FROM change_horizon) AS \"horizon!\", (SELECT epoch FROM sync_history) AS \"epoch!\", (SELECT cluster = sync_identity() FROM sync_history) AS \"current!\" FROM workspace_members m LEFT JOIN sync_clients c ON c.client_id = $3 WHERE m.workspace_id = $1 AND m.user_id = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "client_workspace?",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "client_user?",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "last_mutation_id?",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 3,
+        "name": "snapshot_text!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "xmin!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 5,
+        "name": "xmax!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 6,
+        "name": "xip!",
+        "type_info": "Int8Array"
+      },
+      {
+        "ordinal": 7,
+        "name": "horizon!",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 8,
+        "name": "epoch!",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 9,
+        "name": "current!",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "acf74f54d13fcfb4924a59a2b443bac83be2e0f166a275735e1b093a7636a945"
+}

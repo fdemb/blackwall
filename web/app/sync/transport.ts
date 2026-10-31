@@ -299,6 +299,9 @@ export function createTransport(options: TransportOptions) {
 function object(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
+
+const EPOCH = /^[0-9a-f]{32}$/;
+
 function integer(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 }
@@ -625,8 +628,9 @@ async function* pokes(response: Response | null, signal?: AbortSignal): AsyncGen
         const value = parseJson(data.join("\n"), response.status);
         if (
           !object(value) ||
-          Object.keys(value).some((key) => key !== "txid") ||
-          ("txid" in value && !integer(value.txid))
+          Object.keys(value).some((key) => key !== "txid" && key !== "epoch") ||
+          ("txid" in value && !integer(value.txid)) ||
+          ("epoch" in value && !(typeof value.epoch === "string" && EPOCH.test(value.epoch)))
         )
           throw new ProtocolError("Invalid poke data", response.status);
         yield { event: "poke", data: value };

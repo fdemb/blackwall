@@ -1,0 +1,20 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT epoch FROM sync_history WHERE cluster = sync_identity()",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "epoch",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "4bc041a5b82dfc1d49f43d8c8caef497c9a112ecea4c1204a03d585b71c4225b"
+}

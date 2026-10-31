@@ -624,17 +624,33 @@ describe("event streams", () => {
     ]);
   });
 
-  it.each(["not JSON", "[]", "null", '{"unexpected":true}', '{"txid":-1}'])(
-    "rejects malformed poke data: %s",
-    async (data) => {
-      const transport = responseTransport(
-        byteResponse(`event: poke\ndata: ${data}\n\n`, "text/event-stream"),
-      );
-      await expect(collect(await transport.events(id(50), CLIENT))).rejects.toBeInstanceOf(
-        ProtocolError,
-      );
-    },
-  );
+  it("accepts a poke that names the epoch of that transaction", async () => {
+    const epoch = "6f1c0b8e2d9a4c7fa3e51b2d8c04a9f7";
+    const transport = responseTransport(
+      byteResponse(`event: poke\ndata: {"txid":812,"epoch":"${epoch}"}\n\n`, "text/event-stream"),
+    );
+    expect(await collect(await transport.events(id(50), CLIENT))).toEqual([
+      { event: "poke", data: { txid: 812, epoch } },
+    ]);
+  });
+
+  it.each([
+    "not JSON",
+    "[]",
+    "null",
+    '{"unexpected":true}',
+    '{"txid":-1}',
+    '{"txid":1,"epoch":5}',
+    '{"txid":1,"epoch":"nope"}',
+    '{"txid":1,"epoch":"6F1C0B8E2D9A4C7FA3E51B2D8C04A9F7"}',
+  ])("rejects malformed poke data: %s", async (data) => {
+    const transport = responseTransport(
+      byteResponse(`event: poke\ndata: ${data}\n\n`, "text/event-stream"),
+    );
+    await expect(collect(await transport.events(id(50), CLIENT))).rejects.toBeInstanceOf(
+      ProtocolError,
+    );
+  });
 
   it("reports an event body stream failure as a network error", async () => {
     const response = new Response(

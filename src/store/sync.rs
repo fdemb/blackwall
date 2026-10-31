@@ -768,35 +768,6 @@ struct PullSnapshot {
     current: bool,
 }
 
-async fn pull_snapshot(tx: &mut PgConnection) -> Result<PullSnapshot> {
-    let row = sqlx::query!(
-        "SELECT pg_current_snapshot()::text AS \"text!\", \
-              pg_snapshot_xmin(pg_current_snapshot())::text::bigint AS \"xmin!\", \
-              pg_snapshot_xmax(pg_current_snapshot())::text::bigint AS \"xmax!\", \
-              COALESCE((SELECT array_agg(x::text::bigint) \
-                        FROM pg_snapshot_xip(pg_current_snapshot()) AS t(x)), '{}'::bigint[]) AS \"xip!\", \
-              (SELECT txid FROM change_horizon) AS \"horizon!\", \
-              (SELECT epoch FROM sync_history) AS \"epoch!\", \
-              (SELECT cluster = sync_identity() FROM sync_history) AS \"current!\"",
-    )
-    .fetch_one(&mut *tx)
-    .await?;
-    let mut xip = row.xip;
-    xip.sort_unstable();
-    xip.dedup();
-    Ok(PullSnapshot {
-        text: row.text,
-        snapshot: Snapshot {
-            xmin: row.xmin,
-            xmax: row.xmax,
-            xip,
-        },
-        horizon: row.horizon,
-        epoch: row.epoch,
-        current: row.current,
-    })
-}
-
 /// Where a full page stopped.
 #[derive(Debug, PartialEq, Eq)]
 enum Cut {
@@ -1044,8 +1015,11 @@ impl Store {
         cursor: Option<&str>,
     ) -> Result<Option<PullResponse>> {
         let workspace_id = workspace_id.0;
-        let (mut tx, last_mutation_id) = self.sync_read(workspace_id, actor, client_id).await?;
-        let pulled = pull_snapshot(&mut tx).await?;
+        let ReadStart {
+            mut tx,
+            last_mutation_id,
+            pulled,
+        } = self.open_read(workspace_id, actor, client_id).await?;
         let snapshot = pulled.snapshot;
 
         let requested = cursor
@@ -1126,6 +1100,13 @@ impl Store {
     }
 }
 
+/// A read transaction after its opening query, which took the snapshot.
+struct ReadStart {
+    tx: Transaction<'static, Postgres>,
+    last_mutation_id: i64,
+    pulled: PullSnapshot,
+}
+
 impl Store {
     /// Rotates the sync epoch when this database is another history than the
     /// one that issued it, such as after a restore into a new cluster or a
@@ -1134,6 +1115,10 @@ impl Store {
     /// cluster hasn't reached, which no window could ever deliver cleanly.
     /// Concurrent callers serialize on the `sync_history` row, so one rotates
     /// and the rest find it done.
+    ///
+    /// Event streams stamp pokes with the epoch the listener published, so a
+    /// rotation withdraws it before the change rows go. Pokes stay wildcards
+    /// until the listener reconnects and publishes the new one.
     pub async fn adopt_sync_history(&self) -> Result<Uuid> {
         let mut tx = self.pool.begin().await?;
         let rotated = sqlx::query_scalar!(
@@ -1145,6 +1130,7 @@ impl Store {
         let epoch = match rotated {
             Some(epoch) => {
                 tracing::warn!(%epoch, "sync history changed, resetting every cursor");
+                self.sync_pokes.withdraw_epoch();
                 sqlx::query!("DELETE FROM changes")
                     .execute(&mut *tx)
                     .await?;
@@ -1169,32 +1155,76 @@ impl Store {
         actor: Uuid,
         client_id: Uuid,
     ) -> Result<(Transaction<'static, Postgres>, i64)> {
+        let start = self.open_read(workspace_id, actor, client_id).await?;
+        Ok((start.tx, start.last_mutation_id))
+    }
+
+    /// Begins a `REPEATABLE READ READ ONLY` transaction and, in one query,
+    /// checks membership, reads the client's row and takes the snapshot.
+    async fn open_read(
+        &self,
+        workspace_id: Uuid,
+        actor: Uuid,
+        client_id: Uuid,
+    ) -> Result<ReadStart> {
         let mut tx = self.pool.begin().await?;
+        // Not `begin_with`: sqlx counts the transaction only after BEGIN
+        // returns, so a request cancelled meanwhile leaves a READ ONLY
+        // transaction open on a pooled connection.
         sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
             .execute(&mut *tx)
             .await?;
 
-        super::reads::authorize(&mut tx, workspace_id, actor).await?;
-
         let row = sqlx::query!(
-            "SELECT workspace_id, user_id, last_mutation_id FROM sync_clients \
-             WHERE client_id = $1",
+            "SELECT c.workspace_id AS \"client_workspace?\", \
+                    c.user_id AS \"client_user?\", \
+                    c.last_mutation_id AS \"last_mutation_id?\", \
+                    pg_current_snapshot()::text AS \"snapshot_text!\", \
+                    pg_snapshot_xmin(pg_current_snapshot())::text::bigint AS \"xmin!\", \
+                    pg_snapshot_xmax(pg_current_snapshot())::text::bigint AS \"xmax!\", \
+                    COALESCE((SELECT array_agg(x::text::bigint) \
+                              FROM pg_snapshot_xip(pg_current_snapshot()) AS t(x)), '{}'::bigint[]) AS \"xip!\", \
+                    (SELECT txid FROM change_horizon) AS \"horizon!\", \
+                    (SELECT epoch FROM sync_history) AS \"epoch!\", \
+                    (SELECT cluster = sync_identity() FROM sync_history) AS \"current!\" \
+             FROM workspace_members m \
+             LEFT JOIN sync_clients c ON c.client_id = $3 \
+             WHERE m.workspace_id = $1 AND m.user_id = $2",
+            workspace_id,
+            actor,
             client_id,
         )
         .fetch_optional(&mut *tx)
-        .await?;
-        let last_mutation_id = if let Some(row) = row {
-            if row.workspace_id != workspace_id || row.user_id != actor {
-                return Err(Error::BadRequest(
-                    "client_id belongs to another user or workspace".into(),
-                ));
-            }
-            row.last_mutation_id
-        } else {
-            0
-        };
+        .await?
+        .ok_or(Error::Forbidden)?;
 
-        Ok((tx, last_mutation_id))
+        if row
+            .client_workspace
+            .is_some_and(|owner| owner != workspace_id)
+            || row.client_user.is_some_and(|owner| owner != actor)
+        {
+            return Err(Error::BadRequest(
+                "client_id belongs to another user or workspace".into(),
+            ));
+        }
+        let mut xip = row.xip;
+        xip.sort_unstable();
+        xip.dedup();
+        Ok(ReadStart {
+            tx,
+            last_mutation_id: row.last_mutation_id.unwrap_or(0),
+            pulled: PullSnapshot {
+                text: row.snapshot_text,
+                snapshot: Snapshot {
+                    xmin: row.xmin,
+                    xmax: row.xmax,
+                    xip,
+                },
+                horizon: row.horizon,
+                epoch: row.epoch,
+                current: row.current,
+            },
+        })
     }
 
     /// The same membership and client checks as pull, done once when an
@@ -1307,6 +1337,18 @@ enum SendOutcome {
     Closed,
 }
 
+async fn send_line(
+    sender: &tokio::sync::mpsc::Sender<Result<Vec<u8>>>,
+    bytes: Vec<u8>,
+    timeout: std::time::Duration,
+) -> SendOutcome {
+    match tokio::time::timeout(timeout, sender.send(Ok(bytes))).await {
+        Ok(Ok(())) => SendOutcome::Sent,
+        Ok(Err(_)) => SendOutcome::Closed,
+        Err(_) => SendOutcome::Timeout,
+    }
+}
+
 async fn send_value(
     sender: &tokio::sync::mpsc::Sender<Result<Vec<u8>>>,
     value: Value,
@@ -1314,13 +1356,19 @@ async fn send_value(
 ) -> Result<SendOutcome> {
     let mut bytes = serde_json::to_vec(&value)?;
     bytes.push(b'\n');
-    Ok(
-        match tokio::time::timeout(timeout, sender.send(Ok(bytes))).await {
-            Ok(Ok(())) => SendOutcome::Sent,
-            Ok(Err(_)) => SendOutcome::Closed,
-            Err(_) => SendOutcome::Timeout,
-        },
-    )
+    Ok(send_line(sender, bytes, timeout).await)
+}
+
+/// One record line. `record` is the JSON text PostgreSQL produced, written
+/// as is; `entity` comes from `BOOTSTRAP_ENTITIES`, so it needs no escaping.
+fn record_line(entity: &str, record: &str) -> Vec<u8> {
+    let mut line = Vec::with_capacity(entity.len() + record.len() + 32);
+    line.extend_from_slice(br#"{"entity":""#);
+    line.extend_from_slice(entity.as_bytes());
+    line.extend_from_slice(br#"","record":"#);
+    line.extend_from_slice(record.as_bytes());
+    line.extend_from_slice(b"}\n");
+    line
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1343,10 +1391,15 @@ async fn bootstrap_on(
     }
     let mut records = 0u64;
     for entity in BOOTSTRAP_ENTITIES {
-        let mut query =
-            super::changes::select(workspace, actor, entity, super::changes::RecordShape::Sync)?;
+        let mut query = super::changes::select(
+            workspace,
+            actor,
+            entity,
+            super::changes::RecordShape::Sync,
+            super::changes::Column::Text,
+        )?;
         query.push(" ORDER BY 1");
-        let mut rows = query.build_query_as::<(Uuid, Value)>().fetch(&mut *tx);
+        let mut rows = query.build_query_as::<(Uuid, String)>().fetch(&mut *tx);
         loop {
             let row = tokio::select! {
                 _ = sender.closed() => return Ok(()),
@@ -1355,12 +1408,7 @@ async fn bootstrap_on(
             let Some((_, record)) = row.transpose()? else {
                 break;
             };
-            let outcome = send_value(
-                sender,
-                serde_json::json!({"entity": entity, "record": record}),
-                send_timeout,
-            )
-            .await?;
+            let outcome = send_line(sender, record_line(entity, &record), send_timeout).await;
             if !delivered(outcome, workspace, client_id, records) {
                 return Ok(());
             }
@@ -1434,9 +1482,11 @@ impl Store {
             let _permit = permit;
             let _claim = claim;
             let prepared: Result<_> = async {
-                let (mut tx, last_mutation_id) =
-                    store.sync_read(workspace, actor, client_id).await?;
-                let pulled = pull_snapshot(&mut tx).await?;
+                let ReadStart {
+                    tx,
+                    last_mutation_id,
+                    pulled,
+                } = store.open_read(workspace, actor, client_id).await?;
                 if !pulled.current {
                     tx.rollback().await?;
                     store.adopt_sync_history().await?;
@@ -1521,8 +1571,13 @@ impl Store {
             SyncScope::Comments(id) => ("comments", "issue_id", id),
             SyncScope::Activity(id) => ("activity", "entity_id", id),
         };
-        let mut query =
-            super::changes::select(workspace, actor, entity, super::changes::RecordShape::Sync)?;
+        let mut query = super::changes::select(
+            workspace,
+            actor,
+            entity,
+            super::changes::RecordShape::Sync,
+            super::changes::Column::Json,
+        )?;
         query.push(format!(" AND t.{column}=")).push_bind(id);
         query.push(" ORDER BY t.id");
         let rows: Vec<(Uuid, Value)> = query.build_query_as().fetch_all(&mut *tx).await?;

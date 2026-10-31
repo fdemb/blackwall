@@ -206,6 +206,12 @@ pub struct IncomingLink {
     pub title: String,
 }
 
+/// Sync reads compress when the request accepts gzip. The event stream route
+/// has no layer, so an encoder never buffers its frames.
+fn gzip() -> tower_http::compression::CompressionLayer {
+    tower_http::compression::CompressionLayer::new().gzip(true)
+}
+
 pub fn router(store: Store) -> Router {
     router_with_web(store, crate::web::default_dir())
 }
@@ -258,12 +264,18 @@ pub fn router_with_web(store: Store, web_dir: std::path::PathBuf) -> Router {
         .route("/internal-api/workspaces/{id}", get(workspace))
         .route("/internal-api/workspaces/{id}/commands", post(command))
         .route("/internal-api/workspaces/{id}/sync/push", post(push))
-        .route("/internal-api/workspaces/{id}/sync/pull", get(pull))
+        .route(
+            "/internal-api/workspaces/{id}/sync/pull",
+            get(pull).layer(gzip()),
+        )
         .route(
             "/internal-api/workspaces/{id}/sync/bootstrap",
-            get(bootstrap).layer(tower_http::compression::CompressionLayer::new().gzip(true)),
+            get(bootstrap).layer(gzip()),
         )
-        .route("/internal-api/workspaces/{id}/sync/scope", get(scope))
+        .route(
+            "/internal-api/workspaces/{id}/sync/scope",
+            get(scope).layer(gzip()),
+        )
         .route("/internal-api/workspaces/{id}/sync/events", get(events))
         .route("/internal-api/workspaces/{id}/issues", get(issues))
         .route(
