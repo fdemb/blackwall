@@ -37,7 +37,9 @@ const STAGE_KEY = "token";
  * Entities a bootstrap replaces. Each has two stores: a bootstrap fills the idle one in chunks
  * and swaps it in with the generation in meta, so a reload mid-bootstrap sees the old base whole.
  */
-const SWAPPED = ENTITIES.filter((entity) => entity !== "comments" && entity !== "activity");
+const SWAPPED: readonly Entity[] = ENTITIES.filter(
+  (entity) => entity !== "comments" && entity !== "activity",
+);
 type Generation = 0 | 1;
 
 function idle(live: Generation): Generation {
