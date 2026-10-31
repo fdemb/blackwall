@@ -3494,7 +3494,10 @@ function scriptedPokes() {
     for (;;) {
       const next = queue.shift();
       if (next) yield next;
-      else await new Promise<void>((resolve) => (wake = resolve));
+      else
+        await new Promise<void>((resolve) => {
+          wake = resolve;
+        });
     }
   }
   return {
