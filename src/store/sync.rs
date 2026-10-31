@@ -1020,6 +1020,29 @@ impl Store {
         client_id: Uuid,
         cursor: Option<&str>,
     ) -> Result<PullResponse> {
+        // Adoption deletes change rows, so a snapshot taken before it must
+        // never be paired with the new epoch. The retry reads a fresh one.
+        if let Some(response) = self
+            .pull_once(workspace_id, actor, client_id, cursor)
+            .await?
+        {
+            return Ok(response);
+        }
+        self.adopt_sync_history().await?;
+        self.pull_once(workspace_id, actor, client_id, cursor)
+            .await?
+            .ok_or_else(|| Error::ServiceUnavailable("database history changed, retry".into()))
+    }
+
+    /// One pull in one snapshot. `None` means the database is another
+    /// history than the one that issued the epoch.
+    async fn pull_once(
+        &self,
+        workspace_id: WorkspaceId,
+        actor: Uuid,
+        client_id: Uuid,
+        cursor: Option<&str>,
+    ) -> Result<Option<PullResponse>> {
         let workspace_id = workspace_id.0;
         let (mut tx, last_mutation_id) = self.sync_read(workspace_id, actor, client_id).await?;
         let pulled = pull_snapshot(&mut tx).await?;
@@ -1033,16 +1056,12 @@ impl Store {
             .transpose()?;
         if !pulled.current {
             tx.commit().await?;
-            let epoch = self.adopt_sync_history().await?;
-            return Ok(PullResponse::restart(
-                with_epoch(epoch, &pulled.text),
-                requested.is_some(),
-            ));
+            return Ok(None);
         }
         let snap_text = with_epoch(pulled.epoch, &pulled.text);
         let Some((epoch, requested)) = requested else {
             tx.commit().await?;
-            return Ok(PullResponse::restart(snap_text, false));
+            return Ok(Some(PullResponse::restart(snap_text, false)));
         };
         // A cursor this database can't honor is a reset, never a 400: its
         // client did nothing wrong, the history under it changed.
@@ -1051,7 +1070,7 @@ impl Store {
             || requested.snapshot.xmin < pulled.horizon
         {
             tx.commit().await?;
-            return Ok(PullResponse::restart(snap_text, true));
+            return Ok(Some(PullResponse::restart(snap_text, true)));
         }
 
         // Check the full window, even when a role change sits beyond this
@@ -1065,7 +1084,7 @@ impl Store {
             .await?;
         if role_changed {
             tx.commit().await?;
-            return Ok(PullResponse::restart(snap_text, true));
+            return Ok(Some(PullResponse::restart(snap_text, true)));
         }
 
         let page = scan_window(&mut tx, workspace_id, actor, &requested).await?;
@@ -1103,7 +1122,7 @@ impl Store {
             changes,
         };
         tx.commit().await?;
-        Ok(response)
+        Ok(Some(response))
     }
 }
 
@@ -1465,7 +1484,8 @@ impl Store {
                         Ok(Err(error)) => {
                             if !sender.is_closed() {
                                 tracing::error!(%workspace, %error, "sync bootstrap failed");
-                                let _ = sender.send(Err(error)).await;
+                                let _ = tokio::time::timeout(send_timeout, sender.send(Err(error)))
+                                    .await;
                             }
                         }
                         Err(_) => {

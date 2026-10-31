@@ -1316,6 +1316,73 @@ async fn sync_records_carry_no_webhook_secret() {
 }
 
 #[tokio::test]
+async fn sync_records_reduce_webhook_urls_to_scheme_host_and_port() {
+    let database = support::TestDatabase::new().await;
+    let store = Store::connect(&database.url).await.unwrap();
+    let app = router(store.clone());
+    let (owner, ws, _) = setup(&store, &app).await;
+    let cases = [
+        ("https://example.com", "https://example.com"),
+        (
+            "https://example.com/SECRET?SECRET#SECRET",
+            "https://example.com",
+        ),
+        ("https://alice@example.com/SECRET", "https://example.com"),
+        ("https://alice:SECRET@example.com/x", "https://example.com"),
+        (
+            "https://alice:SECRET@SECRET@example.com/x",
+            "https://example.com",
+        ),
+        (
+            "https://SECRET@SECRET:SECRET@SECRET@example.com:8443/x",
+            "https://example.com:8443",
+        ),
+        ("HTTPS://alice:SECRET@Example.com/x", "https://Example.com"),
+        ("https://alice:SECRET@[::1]:8080/x", "https://[::1]:8080"),
+        ("http://[2001:db8::1]/SECRET", "http://[2001:db8::1]"),
+        (r"https://SECRET\x@example.com/x", ""),
+        (r"https://example.com\SECRET@evil.example/x", ""),
+        (r"https://alice:SECRET\@example.com/x", ""),
+        ("https://alice:SECRET/x", ""),
+        ("https://@/SECRET", ""),
+        ("SECRET", ""),
+    ];
+    for (n, (url, _)) in cases.iter().enumerate() {
+        sqlx::query("INSERT INTO integrations(id,workspace_id,name,webhook_url,secret) VALUES(gen_random_uuid(),$1,$2,$3,'SECRET')")
+            .bind(ws)
+            .bind(format!("Hook {n}"))
+            .bind(url)
+            .execute(&store.pool)
+            .await
+            .unwrap();
+    }
+
+    let (_, bytes) = bootstrap(&app, &owner, ws, Uuid::new_v4(), None).await;
+    assert!(!String::from_utf8(bytes.clone()).unwrap().contains("SECRET"));
+    let mut rendered: Vec<(String, String)> = records(&lines(&bytes))
+        .into_iter()
+        .filter(|((entity, _), _)| entity == "integrations")
+        .map(|(_, record)| {
+            (
+                record["name"].as_str().unwrap().to_owned(),
+                record["webhook_url"].as_str().unwrap().to_owned(),
+            )
+        })
+        .collect();
+    rendered.sort_by_key(|(name, _)| name[5..].parse::<usize>().unwrap());
+    let expected: Vec<(String, String)> = cases
+        .iter()
+        .enumerate()
+        .map(|(n, (_, shown))| (format!("Hook {n}"), (*shown).to_owned()))
+        .collect();
+    assert_eq!(rendered, expected);
+
+    drop(app);
+    store.pool.close().await;
+    database.cleanup().await;
+}
+
+#[tokio::test]
 async fn bootstrap_after_a_history_change_retries_with_a_new_epoch() {
     let database = support::TestDatabase::new().await;
     let store = Store::connect(&database.url).await.unwrap();
@@ -1405,6 +1472,84 @@ async fn bootstrap_slow_reader_ends_without_trailer_and_frees_connection() {
     })
     .await
     .unwrap();
+    drop(app);
+    store.pool.close().await;
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn bootstrap_failing_into_a_full_channel_releases_admission() {
+    let database = support::TestDatabase::new().await;
+    let store = Store::connect_with_config(
+        &database.url,
+        StoreConfig {
+            bootstrap_send_timeout: Duration::from_millis(500),
+            ..StoreConfig::default()
+        },
+    )
+    .await
+    .unwrap();
+    let app = router(store.clone());
+    let (owner, ws, team) = setup(&store, &app).await;
+    bulk_issues_n(&store, ws, team, 60).await;
+
+    let full = lines(&bootstrap(&app, &owner, ws, Uuid::new_v4(), None).await.1);
+    let expected: Vec<&Value> = full[1..full.len() - 1].iter().collect();
+    // The task blocks on the record after the 16 queued ones. Its entity's
+    // rows are already buffered, so the stream fails right after the last of
+    // them is sent.
+    let entity = expected[16]["entity"].clone();
+    let last = expected
+        .iter()
+        .rposition(|line| line["entity"] == entity)
+        .unwrap();
+
+    let mut filler = store
+        .sync_bootstrap(WorkspaceId(ws), owner.profile.id, Uuid::new_v4())
+        .await
+        .unwrap();
+    lines(&filler.recv().await.unwrap().unwrap());
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while filler.len() != 16 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    sqlx::query("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname=current_database() AND pid<>pg_backend_pid() AND backend_xmin IS NOT NULL")
+        .execute(&store.pool)
+        .await
+        .unwrap();
+    let mut received = Vec::new();
+    for _ in 0..last - 15 {
+        received.extend(lines(&filler.recv().await.unwrap().unwrap()));
+    }
+
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            match store
+                .sync_bootstrap(WorkspaceId(ws), owner.profile.id, Uuid::new_v4())
+                .await
+            {
+                Ok(_) => break,
+                Err(error) => {
+                    assert!(matches!(
+                        error,
+                        blackwall::error::Error::ServiceUnavailable(_)
+                    ));
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+            }
+        }
+    })
+    .await
+    .expect("a failed bootstrap kept its user's claim while its receiver was idle");
+
+    while let Some(item) = filler.recv().await {
+        received.extend(lines(&item.unwrap()));
+    }
+    assert_eq!(received.iter().collect::<Vec<_>>(), expected[..=last]);
+
     drop(app);
     store.pool.close().await;
     database.cleanup().await;

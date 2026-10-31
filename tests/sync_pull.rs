@@ -11,6 +11,7 @@ use blackwall::{
 };
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
+use std::time::Duration;
 use tower::ServiceExt;
 use uuid::Uuid;
 
@@ -2141,6 +2142,80 @@ async fn pull_after_a_restore_resets_once_and_recovers() {
     let page = pull_ok(&app, &owner.token, ws, client, Some(&fresh)).await;
     assert_eq!(page["reset"], false);
     assert!(record(&page["changes"], "issues", &issue.to_string()).is_some());
+
+    drop(app);
+    store.pool.close().await;
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn pull_adopting_a_history_never_pairs_the_new_epoch_with_an_older_snapshot() {
+    let database = support::TestDatabase::new().await;
+    let store = Store::connect(&database.url).await.unwrap();
+    let app = router(store.clone());
+    let owner = account(&store, "owner").await;
+    let (ws, team) = setup(&app, &owner).await;
+    let client = Uuid::new_v4();
+    let before = cursor_of(&pull_ok(&app, &owner.token, ws, client, None).await);
+
+    for cursor in [None, Some(before)] {
+        sqlx::query("UPDATE sync_history SET cluster = 'restored-from-elsewhere'")
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        // Holding the row lock parks the pull in adoption, after it has
+        // taken its snapshot and seen the other history.
+        let mut gate = store.pool.begin().await.unwrap();
+        sqlx::query("UPDATE sync_history SET epoch = epoch")
+            .execute(&mut *gate)
+            .await
+            .unwrap();
+        let pulling = tokio::spawn({
+            let app = app.clone();
+            let token = owner.token.clone();
+            let cursor = cursor.clone();
+            async move { pull_ok(&app, &token, ws, client, cursor.as_deref()).await }
+        });
+        loop {
+            let parked: i64 = sqlx::query_scalar(
+                "SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() \
+                 AND wait_event_type = 'Lock' AND query LIKE 'UPDATE sync_history%'",
+            )
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+            if parked > 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        let issue = created(
+            &app,
+            &owner,
+            ws,
+            json!({"type": "create_issue", "input": {"team_id": team, "title": "Between"}}),
+        )
+        .await;
+        gate.commit().await.unwrap();
+        let page = pulling.await.unwrap();
+
+        // Adoption deleted the issue's change row, so the cursor must
+        // already cover its transaction, or the client must start over.
+        let written: i64 =
+            sqlx::query_scalar("SELECT xmin::text::bigint FROM issues WHERE id = $1")
+                .bind(issue)
+                .fetch_one(&store.pool)
+                .await
+                .unwrap();
+        let issued = cursor_of(&page);
+        assert!(
+            page["reset"] == true || cursor_xmax(&issued) > written,
+            "cursor {issued} does not cover transaction {written}"
+        );
+        assert_eq!(page["changes"], json!([]));
+        assert_eq!(page["reset"], cursor.is_some());
+    }
 
     drop(app);
     store.pool.close().await;
