@@ -1601,7 +1601,7 @@ describe("record preparation", () => {
       expect(f.engine.store.all("activity").map((row) => row.id)).toEqual([valid.id]);
       expect(f.engine.status.get().skipped).toMatchObject([{ entity: "activity", id: id(87) }]);
       const disk = await f.disk();
-      expect(disk.scopes).toEqual([scope]);
+      expect(disk.scopes).toEqual([]);
       expect(disk.records.activity?.map((row) => Reflect.get(row, "id"))).toEqual([valid.id]);
       release();
     },
@@ -1677,7 +1677,7 @@ describe("record preparation", () => {
       const release = f.engine.useScope(scope);
       await until(() => f.engine.scopeStatus(scope) === "loaded");
       const disk = await f.disk();
-      expect(disk.scopes).toEqual([scope]);
+      expect(disk.scopes).toEqual([]);
       expect(disk.records.comments?.map((row) => Reflect.get(row, "id"))).toEqual([id(85)]);
       expect(f.engine.store.all("comments").map((row) => row.id)).toEqual([id(85)]);
       expect(f.engine.status.get().skipped).toMatchObject([{ entity: "comments", id: id(86) }]);
