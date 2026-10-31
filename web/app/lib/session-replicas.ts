@@ -1,6 +1,7 @@
 import { IndexedDBReplicaStorage } from "../sync/persistence/idb";
 import { SCHEMA } from "../sync/engine";
 import type { SyncEngine } from "../sync/engine";
+import type { TabLocks } from "../sync/engine-types";
 import type { ReplicaIdentity } from "../sync/persistence/types";
 import type { SessionProfile } from "../sync/transport";
 import type { WorkspaceSummary } from "./types";
@@ -19,8 +20,17 @@ const WORKSPACES_KEY = "bw-workspaces:v2";
 // a returning user from another one when a replica names no user. Only logout clears it.
 const LAST_USER_KEY = "bw-last-user:v1";
 
+// One lock for every step that deletes replicas or publishes the session, across tabs.
+const TRANSITION_LOCK = "blackwall-session";
+
 let storage: IndexedDBReplicaStorage | undefined;
 let session: SessionProfile | null = null;
+let injectedLocks: TabLocks | undefined;
+// Without Web Locks, transitions in this tab queue here. Other tabs can't be reached.
+let queued: Promise<unknown> = Promise.resolve();
+// Counts the sign-outs requested so far. A sign-in that was accepted before one must not
+// publish its session once the sign-out has run.
+let signOuts = 0;
 // Engines that take edits, one per workspace. Opening another workspace leaves these open.
 const active = new Map<string, WorkspaceEngine>();
 // Engines whose screen unmounted. Each keeps sending its outbox until it is empty, then closes.
@@ -33,12 +43,53 @@ export function replicaStorage() {
 export function currentSession() {
   return session;
 }
-export async function acceptSession(profile: SessionProfile) {
-  if (session?.session_id !== profile.session_id) await closeAllWorkspaceEngines();
-  await deleteOtherUsersReplicas(profile);
-  session = profile;
-  safeSet("local", SESSION_KEY, JSON.stringify(profile));
-  return profile;
+/** Replaces the lock adapter transitions use. Without one, `navigator.locks` is used when present. */
+export function setSessionLocks(locks: TabLocks | undefined) {
+  injectedLocks = locks;
+}
+function sessionLocks(): TabLocks | undefined {
+  if (injectedLocks) return injectedLocks;
+  const browser = typeof navigator === "undefined" ? undefined : navigator.locks;
+  return browser ? { request: (name, callback) => browser.request(name, callback) } : undefined;
+}
+/**
+ * Runs one session transition alone, in this tab and in every other tab on the browser. Replica
+ * deletion and publishing a session are not reentrant, so nothing inside may call another
+ * transition.
+ */
+function transition<T>(run: () => Promise<T>): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const hold = async () => {
+      try {
+        resolve(await run());
+      } catch (error) {
+        reject(error);
+      }
+    };
+    const locks = sessionLocks();
+    if (locks) locks.request(TRANSITION_LOCK, hold).catch(reject);
+    else queued = queued.then(hold);
+  });
+}
+/**
+ * Accepts a session the server confirmed. `current` says whether the reply that carried it is still
+ * the newest, and is asked again inside the lock before each step that deletes or publishes. An
+ * obsolete acceptance changes nothing and returns null.
+ */
+export function acceptSession(
+  profile: SessionProfile,
+  current: () => boolean = () => true,
+): Promise<SessionProfile | null> {
+  const requested = signOuts;
+  const live = () => requested === signOuts && current();
+  return transition(async () => {
+    if (!live()) return null;
+    if (session?.session_id !== profile.session_id) await closeAllWorkspaceEngines();
+    if (!(await deleteOtherUsersReplicas(profile, live))) return null;
+    session = profile;
+    safeSet("local", SESSION_KEY, JSON.stringify(profile));
+    return profile;
+  });
 }
 /** Resumes the last confirmed session without asking the server. Other replicas stay. */
 export function restoreSession(): SessionProfile | null {
@@ -120,16 +171,23 @@ export async function closeAllWorkspaceEngines() {
  * The server ended the session. Sync stops and every replica stays as it is: the same user's next
  * sign-in continues from it, and only a logout or another user's sign-in deletes it.
  */
-export async function expireSession() {
-  await closeAllWorkspaceEngines();
-  forgetSession();
+export function expireSession(current: () => boolean = () => true): Promise<void> {
+  signOuts += 1;
+  return transition(async () => {
+    if (!current()) return;
+    await closeAllWorkspaceEngines();
+    forgetSession();
+  });
 }
 /** Logout, which the user confirmed: every replica on this browser goes, pending edits included. */
-export async function clearSession() {
-  await closeAllWorkspaceEngines();
-  await deleteReplicas(await replicaStorage().list());
-  safeRemove("local", LAST_USER_KEY);
-  forgetSession();
+export function clearSession(): Promise<void> {
+  signOuts += 1;
+  return transition(async () => {
+    await closeAllWorkspaceEngines();
+    await deleteReplicas(await replicaStorage().list());
+    safeRemove("local", LAST_USER_KEY);
+    forgetSession();
+  });
 }
 function forgetSession() {
   session = null;
@@ -162,8 +220,9 @@ async function inspect(
   }
 }
 
-async function deleteReplicas(identities: readonly ReplicaIdentity[]) {
+async function deleteReplicas(identities: readonly ReplicaIdentity[], live = () => true) {
   for (const identity of identities) {
+    if (!live()) return;
     try {
       await replicaStorage().delete(identity);
     } catch (error) {
@@ -179,8 +238,14 @@ async function deleteReplicas(identities: readonly ReplicaIdentity[]) {
  * browser's last user is someone else. One that holds edits otherwise stays on disk, never opened
  * again, until a logout or another user's sign-in deletes it. An unreadable replica is deleted only
  * when the last user is someone else, because nothing says whose it is.
+ *
+ * Returns false, with the last user unwritten, when `live` turned false: the reply this sign-in
+ * came from was replaced, and the newer one's replicas are not this user's to delete.
  */
-async function deleteOtherUsersReplicas(profile: SessionProfile) {
+async function deleteOtherUsersReplicas(
+  profile: SessionProfile,
+  live: () => boolean,
+): Promise<boolean> {
   const previous = safeGet("local", LAST_USER_KEY);
   const changed = previous !== null && previous !== profile.id;
   const doomed: ReplicaIdentity[] = [];
@@ -190,6 +255,18 @@ async function deleteOtherUsersReplicas(profile: SessionProfile) {
     if (found === null ? changed : !found.legacy || changed || !found.work) doomed.push(identity);
     else console.warn(`Replica ${identity.workspaceId} has edits of unknown ownership, kept`);
   }
-  await deleteReplicas(doomed);
+  if (!live()) return false;
+  // Inspecting is slow. Delete only what is still on disk and still someone else's.
+  const present = await replicaStorage().list();
+  await deleteReplicas(
+    doomed.filter((identity) =>
+      present.some(
+        (found) => found.userId === identity.userId && found.workspaceId === identity.workspaceId,
+      ),
+    ),
+    live,
+  );
+  if (!live()) return false;
   safeSet("local", LAST_USER_KEY, profile.id);
+  return true;
 }

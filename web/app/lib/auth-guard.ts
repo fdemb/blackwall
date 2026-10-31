@@ -26,11 +26,12 @@ async function readProfile(sequence: number): Promise<SessionProfile | null> {
   try {
     const profile = await auth.me();
     if (sequence !== meRequests) return newestMe;
-    return await acceptSession(profile);
+    const accepted = await acceptSession(profile, () => sequence === meRequests);
+    return accepted ?? (sequence === meRequests ? null : newestMe);
   } catch (e) {
     if (sequence !== meRequests) return newestMe;
     if (e instanceof ApiError && e.status === 401) {
-      await expireSession();
+      await expireSession(() => sequence === meRequests);
       return null;
     }
     const restored = unavailable(e) ? restoreSession() : null;

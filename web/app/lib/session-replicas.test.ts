@@ -14,6 +14,7 @@ import {
   currentSession,
   replicaStorage,
   sessionHasPending,
+  setSessionLocks,
 } from "./session-replicas";
 import {
   browserTabDependencies,
@@ -247,6 +248,90 @@ describe("user replica lifetime", () => {
     await expect(older).resolves.toEqual(otherProfile);
     expect(currentSession()?.id).toBe(other.id);
     expect(await replicaStorage().list()).toEqual([{ userId: other.id, workspaceId: id(90) }]);
+  });
+  describe("session transitions run one at a time", () => {
+    /** Holds the next replica scan open, as a slow disk would, so a transition stays inside the lock. */
+    function pauseNextScan() {
+      let release: () => void = () => {};
+      let entered: () => void = () => {};
+      const gate = new Promise<void>((resolve) => (release = resolve));
+      const inside = new Promise<void>((resolve) => (entered = resolve));
+      const original = replicaStorage().list.bind(replicaStorage());
+      vi.spyOn(replicaStorage(), "list").mockImplementationOnce(async () => {
+        entered();
+        await gate;
+        return original();
+      });
+      return { inside, release };
+    }
+
+    it("an obsolete acceptance paused inside the transition neither deletes the newer user's replica nor publishes itself", async () => {
+      const { profile, server } = await fixture();
+      const other = server.addUser();
+      const older = { ...profile, session_id: id(98) };
+      const newer = { ...profile, id: other.id, session_id: id(99) };
+      await seed(profile.id, id(91), "pending");
+      await seed(other.id, id(90), "pending");
+      let resolveOlder: (value: typeof profile) => void = () => {};
+      let resolveNewer: (value: typeof profile) => void = () => {};
+      vi.spyOn(auth, "me")
+        .mockImplementationOnce(() => new Promise((resolve) => (resolveOlder = resolve)))
+        .mockImplementationOnce(() => new Promise((resolve) => (resolveNewer = resolve)));
+      const setItem = vi.spyOn(window.localStorage, "setItem");
+      const paused = pauseNextScan();
+
+      const first = currentProfile();
+      resolveOlder(older);
+      await paused.inside;
+      const second = currentProfile();
+      resolveNewer(newer);
+      for (let tick = 0; tick < 10; tick += 1) await new Promise<void>((r) => setImmediate(r));
+      expect(await replicaStorage().list()).toContainEqual({
+        userId: other.id,
+        workspaceId: id(90),
+      });
+      paused.release();
+
+      await expect(second).resolves.toEqual(newer);
+      await expect(first).resolves.toEqual(newer);
+      expect(currentSession()?.id).toBe(other.id);
+      expect(await replicaStorage().list()).toEqual([{ userId: other.id, workspaceId: id(90) }]);
+      const published = setItem.mock.calls
+        .filter(([key]) => key === "bw-session:v1" || key === "bw-last-user:v1")
+        .map(([key, value]) => [key, key === "bw-last-user:v1" ? value : JSON.parse(value).id]);
+      expect(published).toEqual([
+        ["bw-last-user:v1", other.id],
+        ["bw-session:v1", other.id],
+      ]);
+    });
+
+    it("a sign-in accepted before a logout does not publish its session after it", async () => {
+      const { profile } = await fixture();
+      const paused = pauseNextScan();
+      const accepting = acceptSession({ ...profile, session_id: id(98) });
+      await paused.inside;
+      const leaving = clearSession();
+      paused.release();
+      await expect(accepting).resolves.toBeNull();
+      await leaving;
+      expect(currentSession()).toBeNull();
+    });
+
+    it("takes the lock through the injected adapter", async () => {
+      const { profile } = await fixture();
+      const request = vi.fn((_name: string, callback: () => Promise<void>) => callback());
+      setSessionLocks({ request });
+      try {
+        await acceptSession({ ...profile, session_id: id(98) });
+        await clearSession();
+      } finally {
+        setSessionLocks(undefined);
+      }
+      expect(request.mock.calls.map(([name]) => name)).toEqual([
+        "blackwall-session",
+        "blackwall-session",
+      ]);
+    });
   });
   it("detects pending edits in an unopened workspace and deletes replicas before the logout request", async () => {
     const { profile, fetch } = await fixture();

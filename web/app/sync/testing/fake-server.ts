@@ -389,7 +389,7 @@ export class FakeServer {
   loseClient(clientId: string): void {
     this.clients.delete(clientId);
   }
-    clientState(clientId: string): { last_mutation_id: number } {
+  clientState(clientId: string): { last_mutation_id: number } {
     return { last_mutation_id: this.clients.get(clientId)?.last_mutation_id ?? 0 };
   }
   /**
