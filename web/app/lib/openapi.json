@@ -4805,6 +4805,11 @@
         "type": "object",
         "required": ["client_id", "mutations"],
         "properties": {
+          "acknowledged": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The highest mutation id the client has seen acknowledged by a pull or bootstrap.\nA stored high-water mark below it means the server lost the client's state, so\nthe batch is refused with 409 instead of re-running mutations. Defaults to 0."
+          },
           "client_id": {
             "type": "string",
             "format": "uuid"
@@ -4814,11 +4819,6 @@
             "items": {
               "$ref": "#/components/schemas/SyncMutation"
             }
-          },
-          "acknowledged": {
-            "type": "integer",
-            "format": "int64",
-            "description": "The highest mutation id the client has seen acknowledged by a pull or bootstrap.\nA stored high-water mark below it means the server lost the client's state, so\nthe batch is refused with 409 instead of re-running mutations. Defaults to 0."
           }
         }
       },
