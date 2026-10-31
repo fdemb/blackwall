@@ -214,7 +214,7 @@ The server handles the mutations in order. For each one, it runs one transaction
 5. On a rejectable error, rolls back the command's writes to the savepoint, which also makes the transaction usable again, and records `rejected` with the `{status, message}` the REST endpoint returns for that error. Inserts that outcome into `sync_rejections` and deletes all but the client's 1,000 most recent rejections in the same transaction.
 6. Sets `last_mutation_id = id` and commits, so rejected mutations still advance the id.
 
-`sync_rejections(client_id uuid, mutation_id bigint, status smallint, message text)` has a primary key on `(client_id, mutation_id)`. All columns are non-null. Its foreign key to `sync_clients(client_id)` cascades deletes, so pruning a client also removes its rejections.
+`sync_rejections(client_id uuid, mutation_id bigint, status smallint, message text)` has a primary key on `(client_id, mutation_id)`. All columns are non-null. Its foreign key to `sync_clients(client_id)` cascades deletes, so deleting a client, which happens only with its workspace or user, also removes its rejections.
 
 The server treats `last_mutation_id` as a high-water mark, so a client must never let a later mutation reach the server before an earlier one. Only the leader pushes. It sends the outbox from its oldest entry, in id order, one request at a time, and retries a failed request with the same mutations before sending anything newer. Push carries only outbox mutations. Online-only commands use the REST command endpoint after the issuing tab sees its replica's outbox drain.
 
