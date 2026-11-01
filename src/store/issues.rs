@@ -228,6 +228,28 @@ impl Operation<'_> {
         Ok(())
     }
 
+    /// Started work joins the team's active sprint; see [`Issue::joins_active_sprint`].
+    /// `entered_stage` is true only when the issue changed stage.
+    async fn join_active_sprint(&mut self, i: &mut Issue, entered_stage: bool) -> Result<()> {
+        if i.sprint_id.is_some() || !entered_stage {
+            return Ok(());
+        }
+        let active = sqlx::query_scalar!(
+            "SELECT kind='active' AS \"active!\" FROM stages WHERE workspace_id=$1 AND team_id=$2 AND id=$3",
+            self.workspace_id,
+            i.team_id,
+            i.stage_id,
+        )
+        .fetch_optional(&mut *self.tx)
+        .await?
+        .unwrap_or(false);
+        if i.joins_active_sprint(active, entered_stage) {
+            i.sprint_id =
+                persistence::active_sprint(&mut self.tx, self.workspace_id, i.team_id).await?;
+        }
+        Ok(())
+    }
+
     async fn stage_kind(&mut self, stage_id: Uuid) -> Result<String> {
         Ok(
             sqlx::query_scalar!("SELECT kind FROM stages WHERE id=$1", stage_id)
@@ -308,6 +330,8 @@ impl Operation<'_> {
         }
 
         self.fit_sprint(&mut i, input.stage_id.is_some()).await?;
+        self.join_active_sprint(&mut i, input.stage_id.is_some())
+            .await?;
         self.validate_issue_sql(&i, None).await?;
         if self.stage_kind(i.stage_id).await? == "done" {
             i.done_at = Some(now);
@@ -373,6 +397,7 @@ impl Operation<'_> {
         }
         let entered_stage = i.stage_id != old.stage_id;
         self.fit_sprint(&mut i, entered_stage).await?;
+        self.join_active_sprint(&mut i, entered_stage).await?;
 
         let changes = old.changes(&i);
         if changes.is_empty() {
@@ -639,6 +664,8 @@ impl Operation<'_> {
         let mut i = old.clone();
         i.stage_id = stage_id;
         self.fit_sprint(&mut i, true).await?;
+        self.join_active_sprint(&mut i, old.stage_id != stage_id)
+            .await?;
         self.validate_issue_sql(&i, Some(&old)).await?;
         if old.stage_id != stage_id {
             self.restamp_done(&mut i).await?;

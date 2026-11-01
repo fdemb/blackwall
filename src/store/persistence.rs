@@ -45,6 +45,21 @@ pub(crate) async fn lock_team_numbers(
     Ok(())
 }
 
+/// The team's active sprint, when the team uses sprints.
+pub(crate) async fn active_sprint(
+    conn: &mut PgConnection,
+    workspace: Uuid,
+    team: Uuid,
+) -> Result<Option<Uuid>> {
+    Ok(sqlx::query_scalar!(
+        "SELECT s.id FROM sprints s JOIN teams t ON t.workspace_id=s.workspace_id AND t.id=s.team_id WHERE s.workspace_id=$1 AND s.team_id=$2 AND s.state='active' AND t.sprints ORDER BY s.starts_at,s.id LIMIT 1",
+        workspace,
+        team,
+    )
+    .fetch_optional(&mut *conn)
+    .await?)
+}
+
 pub(crate) async fn next_number(
     conn: &mut PgConnection,
     workspace: Uuid,

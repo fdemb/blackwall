@@ -1337,6 +1337,48 @@ mod tests {
         })
     }
 
+    fn start(id: Uuid, team: Uuid) -> serde_json::Value {
+        let mut command = sprint(id, team);
+        command["type"] = "update_sprint".into();
+        command["state"] = "active".into();
+        command.as_object_mut().unwrap().remove("team_id");
+        command
+    }
+
+    #[tokio::test]
+    async fn started_work_joins_the_active_sprint() {
+        let (database, store, workspace, owner) = setup().await;
+        let (team, active_sprint, issue) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
+        let stages: Vec<Uuid> = (0..4).map(|_| Uuid::new_v4()).collect();
+        let (todo, doing) = (stages[1], stages[2]);
+        let run = |command| run(&store, workspace, owner, command);
+        run(json!({"type": "create_team", "id": team, "name": "A", "key": "A", "default_stage_ids": stages}))
+            .await
+            .unwrap();
+        run(json!({"type": "set_team_sprints", "id": team, "sprints": true}))
+            .await
+            .unwrap();
+        run(sprint(active_sprint, team)).await.unwrap();
+        run(start(active_sprint, team)).await.unwrap();
+        run(json!({"type": "create_issue", "input": {"id": issue, "title": "Work", "team_id": team, "stage_id": todo}}))
+            .await
+            .unwrap();
+        let sprint_of = || {
+            sqlx::query_scalar::<_, Option<Uuid>>("SELECT sprint_id FROM issues WHERE id=$1")
+                .bind(issue)
+                .fetch_one(&store.pool)
+        };
+        // Planned stages wait for planning.
+        assert_eq!(sprint_of().await.unwrap(), None);
+        run(json!({"type": "move_issue", "id": issue, "stage_id": doing, "before_id": null}))
+            .await
+            .unwrap();
+        assert_eq!(sprint_of().await.unwrap(), Some(active_sprint));
+
+        store.pool.close().await;
+        database.cleanup().await;
+    }
+
     #[tokio::test]
     async fn sprints_turn_off_only_without_open_sprints() {
         let (database, store, workspace, owner) = setup().await;
@@ -1379,13 +1421,7 @@ mod tests {
         run(json!({"type": "create_team", "id": team, "name": "A", "key": "A"}))
             .await
             .unwrap();
-        let start = |id: Uuid| {
-            let mut command = sprint(id, team);
-            command["type"] = "update_sprint".into();
-            command["state"] = "active".into();
-            command.as_object_mut().unwrap().remove("team_id");
-            command
-        };
+        let start = |id: Uuid| start(id, team);
         run(sprint(first, team)).await.unwrap();
         run(sprint(second, team)).await.unwrap();
         run(start(first)).await.unwrap();

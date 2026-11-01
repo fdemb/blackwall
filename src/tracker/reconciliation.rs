@@ -95,6 +95,8 @@ struct Stage {
 struct Lookups<'a> {
     import: PageImport<'a>,
     stages: Vec<Stage>,
+    /// The mapped team's active sprint, which started work joins.
+    active_sprint: Option<Uuid>,
     statuses: BTreeMap<&'a str, &'a RemoteStatus>,
     /// Status names folded as PostgreSQL folds stage names.
     folded: BTreeMap<String, String>,
@@ -124,10 +126,13 @@ impl<'a> Lookups<'a> {
             position: row.position,
         })
         .collect();
+        let active_sprint =
+            persistence::active_sprint(conn, import.workspace, import.mapping.team_id).await?;
         let metadata = import.metadata;
         let mut lookups = Self {
             import,
             stages,
+            active_sprint,
             statuses: metadata
                 .statuses
                 .iter()
@@ -325,6 +330,14 @@ impl<'a> Lookups<'a> {
             // Backlog work has no sprint.
             if destination.kind == "backlog" && after.stage_id == destination.id {
                 after.sprint_id = None;
+            }
+            // Started work joins the active sprint, as local edits do.
+            let entered = before
+                .as_ref()
+                .is_none_or(|old| old.stage_id != after.stage_id);
+            let in_active = destination.kind == "active" && after.stage_id == destination.id;
+            if after.joins_active_sprint(in_active, entered) {
+                after.sprint_id = self.active_sprint;
             }
         }
         after.parent_id = parents.wanted.get(&id).copied().flatten();

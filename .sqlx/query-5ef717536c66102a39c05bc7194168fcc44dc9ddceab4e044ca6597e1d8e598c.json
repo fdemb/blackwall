@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT s.id FROM sprints s JOIN teams t ON t.workspace_id=s.workspace_id AND t.id=s.team_id WHERE s.workspace_id=$1 AND s.team_id=$2 AND s.state='active' AND t.sprints ORDER BY s.starts_at,s.id LIMIT 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "5ef717536c66102a39c05bc7194168fcc44dc9ddceab4e044ca6597e1d8e598c"
+}

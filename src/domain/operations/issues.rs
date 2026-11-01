@@ -156,6 +156,9 @@ impl Workspace {
         if target_is_backlog {
             self.issue_mut(id)?.sprint_id = None;
         }
+        let mut issue = self.issue(id)?.clone();
+        self.join_active_sprint(&mut issue, original_stage != stage_id);
+        self.issue_mut(id)?.sprint_id = issue.sprint_id;
 
         Ok(original_stage != stage_id)
     }
@@ -238,6 +241,7 @@ impl Workspace {
         }
 
         self.fit_sprint(&mut issue, input.stage_id.is_some())?;
+        self.join_active_sprint(&mut issue, input.stage_id.is_some());
         issue.position = self
             .issues
             .iter()
@@ -289,6 +293,7 @@ impl Workspace {
         }
         let entered_stage = i.stage_id != old_stage;
         self.fit_sprint(&mut i, entered_stage)?;
+        self.join_active_sprint(&mut i, entered_stage);
 
         let fields = old.changed_fields(&i);
         if fields.is_empty() {
@@ -447,6 +452,26 @@ impl Workspace {
             SprintFit::Plan => issue.stage_id = team.sprint_stage()?,
         }
         Ok(())
+    }
+
+    /// Started work joins the team's active sprint; see [`Issue::joins_active_sprint`].
+    fn join_active_sprint(&self, issue: &mut Issue, entered_stage: bool) {
+        let Ok(team) = self.team(issue.team_id) else {
+            return;
+        };
+        let in_active = team
+            .stages
+            .iter()
+            .any(|s| s.id == issue.stage_id && s.kind == StageKind::Active);
+        if !team.sprints || !issue.joins_active_sprint(in_active, entered_stage) {
+            return;
+        }
+        issue.sprint_id = self
+            .sprints
+            .iter()
+            .filter(|s| s.team_id == team.id && s.state == SprintState::Active)
+            .min_by_key(|s| (s.starts_at, s.id))
+            .map(|s| s.id);
     }
 
     fn restore(&mut self, id: IssueId, now: DateTime<Utc>) -> Result<()> {

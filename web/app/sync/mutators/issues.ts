@@ -1,4 +1,5 @@
 import { newMentions } from "../../lib/mentions";
+import { bySprintStart } from "../../lib/order";
 import { sprintStageId } from "../../lib/teams";
 import type { Id, IssuePatch } from "../../lib/types";
 import { parseTimestamp } from "../records";
@@ -64,6 +65,21 @@ function fitSprint(tx: Tx, next: SyncIssue, enteredStage: boolean): void {
   const stageId = sprintStageId(tx.get("teams", next.team_id)?.stages ?? []);
   if (stageId === undefined) throw new MutationError(400, "team has no stage for sprint work");
   next.stage_id = stageId;
+}
+
+/**
+ * Work with no sprint that enters an active stage joins the team's active sprint, mirroring
+ * `join_active_sprint` in `src/store/issues.rs`. Planned stages wait for planning.
+ */
+function joinActiveSprint(tx: Tx, next: SyncIssue, enteredStage: boolean): void {
+  if (next.sprint_id !== null || !enteredStage) return;
+  if (stageKindOf(tx, next.team_id, next.stage_id) !== "active") return;
+  if (!tx.get("teams", next.team_id)?.sprints) return;
+  const active = tx
+    .byIndex("sprints", "team_id", next.team_id)
+    .filter((sprint) => sprint.state === "active")
+    .sort(bySprintStart)[0];
+  if (active) next.sprint_id = active.id;
 }
 
 /**
@@ -173,7 +189,9 @@ export const createIssue: Mutator<ArgsOf<"create_issue">> = (tx, args, ctx) => {
   const stageId = resolveStage(tx, input.team_id, input.stage_id);
   const next = issueFromInput(input, id, stageId, ctx);
   followMentions(tx, next, "");
-  fitSprint(tx, next, input.stage_id !== null && input.stage_id !== undefined);
+  const chosen = input.stage_id !== null && input.stage_id !== undefined;
+  fitSprint(tx, next, chosen);
+  joinActiveSprint(tx, next, chosen);
   // The server stamps done_at when creating into a done stage.
   next.done_at = doneAt(tx, input.team_id, next.stage_id, null, ctx.at);
   // A replay over a base that already holds this id keeps the stored number,
@@ -244,6 +262,7 @@ function patchIssue(
   if (patch.team_id !== undefined && patch.team_id !== current.team_id)
     enterTeam(tx, current, next, patch.team_id);
   fitSprint(tx, next, next.stage_id !== current.stage_id);
+  joinActiveSprint(tx, next, next.stage_id !== current.stage_id);
   if (unchanged(current, next)) return;
   validateIssue(tx, next, current);
   if (next.stage_id !== current.stage_id) {
@@ -382,6 +401,7 @@ export const moveIssue: Mutator<ArgsOf<"move_issue">> = (tx, args, ctx) => {
   const next = copyIssue(current);
   next.stage_id = args.stage_id;
   fitSprint(tx, next, true);
+  joinActiveSprint(tx, next, next.stage_id !== current.stage_id);
   validateIssue(tx, next, current);
   next.position = orderPosition(tx, current, args.stage_id, args.before_id ?? null);
   if (next.stage_id !== current.stage_id) {

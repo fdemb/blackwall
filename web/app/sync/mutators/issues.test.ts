@@ -616,7 +616,8 @@ describe("update_issue team moves", () => {
       number: 1,
       former_keys: [{ team_id: TEAM, number: 1 }],
       stage_id: STAGE_OTHER,
-      sprint_id: null,
+      // It leaves its old team's sprint. STAGE_OTHER is active, so it joins the new team's.
+      sprint_id: SPRINT_OTHER,
       project_id: null,
       milestone_id: null,
       position: 0,
@@ -837,6 +838,25 @@ describe("backlog and sprints", () => {
       patch: { stage_id: STAGE_BACKLOG, sprint_id: SPRINT },
     });
     expect(placement(store, "issue-2")).toEqual({ stage_id: STAGE_BACKLOG, sprint_id: null });
+  });
+
+  it("adds work that enters an active stage to the team's active sprint", () => {
+    const store = seedStore();
+    mutate(store, "move_issue", { id: "issue-3", stage_id: STAGE_ACTIVE, before_id: null });
+    expect(placement(store, "issue-3")).toEqual({ stage_id: STAGE_ACTIVE, sprint_id: SPRINT });
+    mutate(store, "update_issue", { id: "issue-y", patch: { stage_id: STAGE_ACTIVE } });
+    expect(placement(store, "issue-y")).toEqual({ stage_id: STAGE_ACTIVE, sprint_id: SPRINT });
+    // Reordering within the stage doesn't start the work again.
+    mutate(store, "move_issue", { id: "issue-2", stage_id: STAGE_ACTIVE, before_id: null });
+    expect(placement(store, "issue-2")).toEqual({ stage_id: STAGE_ACTIVE, sprint_id: null });
+  });
+
+  it("leaves started work alone in a team without sprints", () => {
+    const store = seedStore();
+    const team = store.get("teams", TEAM)!;
+    store.applyBase([{ entity: "teams", id: TEAM, record: { ...team, sprints: false } }]);
+    mutate(store, "move_issue", { id: "issue-3", stage_id: STAGE_ACTIVE, before_id: null });
+    expect(placement(store, "issue-3")).toEqual({ stage_id: STAGE_ACTIVE, sprint_id: null });
   });
 
   it("creates sprint work outside the default backlog stage", () => {
