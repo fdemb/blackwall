@@ -10,6 +10,7 @@ import { Menu, MenuItem, MenuPopover, MenuTrigger } from "~/components/ui/menu";
 import { OPEN, whereIs } from "~/lib/filters";
 import { sprintLabel } from "~/lib/format";
 import { sprintPath } from "~/lib/last-view";
+import { bySprintStart } from "~/lib/order";
 import { useI18n } from "~/lib/i18n";
 import { useIssues } from "~/lib/queries";
 import { usePending } from "~/lib/use-pending";
@@ -291,10 +292,19 @@ function isSprintDirty(
   );
 }
 
+/** The team's planned sprint that starts first, other than `sprint`. */
+function nextPlannedSprint(sprints: readonly Sprint[], sprint: Sprint): Id | null {
+  const planned = sprints.filter(
+    (s) => s.team_id === sprint.team_id && s.id !== sprint.id && s.state === "planned",
+  );
+  return planned.sort(bySprintStart)[0]?.id ?? null;
+}
+
 function CompleteForm({ sprint, close }: { sprint: Sprint; close: () => void }) {
   const { t } = useI18n();
   const { ws, run } = useWorkspace();
-  const [target, setTarget] = useState<Id | null>(null);
+  // Unfinished work moves on to the team's next planned sprint unless the person picks otherwise.
+  const [target, setTarget] = useState<Id | null>(() => nextPlannedSprint(ws.sprints, sprint));
   const { pending, error, guard } = usePending();
   const query = useIssues({ where: [whereIs("sprint_id", sprint.id), OPEN] });
   const stats = useSprintProgress().get(sprint.id);
