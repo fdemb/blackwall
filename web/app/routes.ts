@@ -20,6 +20,7 @@ export default [
           index("routes/team-list.tsx"),
           route("board", "routes/team-board.tsx"),
           route("backlog", "routes/team-backlog.tsx"),
+          route("all", "routes/team-all.tsx"),
           route("sprints", "routes/sprints.tsx"),
           route("sprints/:sprintId", "routes/sprint.tsx", [
             index("routes/sprint-board.tsx"),

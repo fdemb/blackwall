@@ -537,6 +537,11 @@ export const pl = {
   "team.icons.compass": "Kompas",
   "team.icons.leaf": "Liść",
   "board.empty": "Brak zadań",
+  "board.collapse": "Zwiń {{name}}",
+  "board.expand_one": "Rozwiń {{name}}, {{count}} zadanie",
+  "board.expand_few": "Rozwiń {{name}}, {{count}} zadania",
+  "board.expand_many": "Rozwiń {{name}}, {{count}} zadań",
+  "board.expand_other": "Rozwiń {{name}}, {{count}} zadania",
   "backlog.emptyTitle": "Backlog jest pusty",
   "backlog.emptySub": "Żadne zadanie nie ma statusu backlog.",
 

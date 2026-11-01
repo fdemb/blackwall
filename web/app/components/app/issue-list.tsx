@@ -648,19 +648,21 @@ function BulkBar({
         }
         onAction={(id) => update(id === NONE ? { clear_milestone: true } : { milestone_id: id })}
       />
-      <BulkMenu
-        label={t("field.sprint")}
-        empty={t("bulk.sameTeamSprint")}
-        options={
-          team
-            ? [
-                { id: NONE, name: t("sprint.none") },
-                ...sprints.map((s) => ({ id: s.id, name: sprintLabel(s) })),
-              ]
-            : []
-        }
-        onAction={(id) => update(id === NONE ? { clear_sprint: true } : { sprint_id: id })}
-      />
+      {team?.sprints !== false && (
+        <BulkMenu
+          label={t("field.sprint")}
+          empty={t("bulk.sameTeamSprint")}
+          options={
+            team
+              ? [
+                  { id: NONE, name: t("sprint.none") },
+                  ...sprints.map((s) => ({ id: s.id, name: sprintLabel(s) })),
+                ]
+              : []
+          }
+          onAction={(id) => update(id === NONE ? { clear_sprint: true } : { sprint_id: id })}
+        />
+      )}
       <BulkMenu
         label={t("field.estimate")}
         options={[

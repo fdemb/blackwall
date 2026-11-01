@@ -110,6 +110,25 @@ export function useIssues(
   );
 }
 
+/** How many issues match `filter` in each stage, without building the issues themselves. */
+export function useStageCounts(filter: IssueFilter, enabled = true): Record<string, number> {
+  return useView(
+    (store) => {
+      const counts: Record<string, number> = {};
+      if (!enabled) return counts;
+      try {
+        for (const issue of filterIssues(store, filter))
+          counts[issue.stage_id] = (counts[issue.stage_id] ?? 0) + 1;
+      } catch {
+        // The list query reports the same filter error.
+      }
+      return counts;
+    },
+    ["issues", "teams"],
+    [JSON.stringify(filter), enabled],
+  );
+}
+
 export function useNotifications(unreadOnly = false) {
   const items = useView(
     (store) =>

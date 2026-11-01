@@ -515,6 +515,9 @@ export const en = {
   "team.icons.compass": "Compass",
   "team.icons.leaf": "Leaf",
   "board.empty": "No issues",
+  "board.collapse": "Collapse {{name}}",
+  "board.expand_one": "Expand {{name}}, {{count}} issue",
+  "board.expand_other": "Expand {{name}}, {{count}} issues",
   "backlog.emptyTitle": "Backlog is clear",
   "backlog.emptySub": "No issues have a backlog status.",
 

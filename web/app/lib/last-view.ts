@@ -5,7 +5,7 @@ import type { Sprint } from "./types";
 const TEAM_KEY = "bw-team-view:v1";
 const SPRINT_KEY = "bw-sprint-view:v1";
 
-const TEAM_VIEWS = ["list", "board", "backlog"] as const;
+const TEAM_VIEWS = ["list", "board", "backlog", "all"] as const;
 const SPRINT_VIEWS = ["board", "list", "plan"] as const;
 export type TeamView = (typeof TEAM_VIEWS)[number];
 export type SprintView = (typeof SPRINT_VIEWS)[number];

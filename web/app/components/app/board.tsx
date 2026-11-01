@@ -1,6 +1,8 @@
 import { useCallback } from "react";
 import {
+  Button as AriaButton,
   DropIndicator,
+  DropZone,
   GridList,
   GridListItem,
   ListLayout,
@@ -8,7 +10,7 @@ import {
   Virtualizer,
   type DropTarget,
 } from "react-aria-components";
-import { Plus } from "lucide-react";
+import { ChevronsLeft, Plus } from "lucide-react";
 import { Button } from "~/components/ui/button";
 import { cn } from "~/lib/utils";
 import { useIssueKeyWidth } from "./issue-key";
@@ -75,6 +77,10 @@ export interface DndColumnProps {
   emptyText?: string;
   /** Sits between the header and the cards, for column-level context such as a sprint goal. */
   summary?: React.ReactNode;
+  /** A collapsed column is a strip with the title and count. It still takes drops. */
+  collapsed?: boolean;
+  /** Offers collapsing in the header, and expanding from the strip. */
+  onCollapsedChange?: (collapsed: boolean) => void;
 }
 
 export function DndColumn({
@@ -90,6 +96,8 @@ export function DndColumn({
   aside,
   emptyText,
   summary,
+  collapsed = false,
+  onCollapsedChange,
 }: DndColumnProps) {
   const { t } = useI18n();
   const { canWrite } = useWorkspace();
@@ -124,6 +132,17 @@ export function DndColumn({
     },
     renderDropIndicator: (target) => <DropLine target={target} />,
   });
+  if (collapsed)
+    return (
+      <CollapsedColumn
+        title={title}
+        icon={icon}
+        count={count ?? issues.length}
+        canDrop={canWrite && canDrop}
+        onDrop={(ids, source) => onDrop(ids, null, source)}
+        onExpand={() => onCollapsedChange?.(false)}
+      />
+    );
   return (
     <section
       className={cn(
@@ -137,6 +156,16 @@ export function DndColumn({
         <span className=" tabular-nums text-muted-foreground">{count ?? issues.length}</span>
         <span className="ml-auto flex items-center gap-1">
           {aside}
+          {onCollapsedChange && (
+            <Button
+              variant="ghost"
+              size="icon"
+              aria-label={t("board.collapse", { name: title })}
+              onPress={() => onCollapsedChange(true)}
+            >
+              <ChevronsLeft aria-hidden />
+            </Button>
+          )}
           {onCreate && canWrite && (
             <Button variant="ghost" size="icon" aria-label={t("issue.new")} onPress={onCreate}>
               <Plus aria-hidden />
@@ -163,6 +192,47 @@ export function DndColumn({
         </GridList>
       </Virtualizer>
     </section>
+  );
+}
+
+/** A column folded into a strip. Dropping cards on it moves them to the end of its stage. */
+function CollapsedColumn({
+  title,
+  icon,
+  count,
+  canDrop,
+  onDrop,
+  onExpand,
+}: {
+  title: string;
+  icon?: React.ReactNode;
+  count: number;
+  canDrop: boolean;
+  onDrop: (ids: Id[], source: Id | null) => void;
+  onExpand: () => void;
+}) {
+  const { t } = useI18n();
+  return (
+    <DropZone
+      aria-label={title}
+      isDisabled={!canDrop}
+      getDropOperation={(types) => (types.has(ISSUE_DRAG_TYPE) ? "move" : "cancel")}
+      onDrop={async (e) => {
+        const { ids, source } = await readDraggedIssues(e.items);
+        if (ids.length) onDrop(ids, source);
+      }}
+      className="flex w-11 shrink-0 flex-col rounded-xl border border-border/50 bg-board-column transition-colors drop-target:bg-accent/60 drop-target:ring-2 drop-target:ring-primary/40"
+    >
+      <AriaButton
+        aria-label={t("board.expand", { name: title, count })}
+        onPress={onExpand}
+        className="flex flex-1 cursor-default flex-col items-center gap-2 rounded-xl py-3 text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/60"
+      >
+        {icon}
+        <span className="tabular-nums">{count}</span>
+        <span className="font-medium text-foreground [writing-mode:vertical-rl]">{title}</span>
+      </AriaButton>
+    </DropZone>
   );
 }
 

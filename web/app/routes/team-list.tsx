@@ -1,8 +1,8 @@
 import { Workbench } from "~/components/app/workbench";
-import { clause, whereIs } from "~/lib/filters";
+import { whereIs } from "~/lib/filters";
 import { useTeamContext } from "./team";
 
-/** The team's issues outside the backlog. */
+/** The team's open issues outside the backlog: those in planned and active stages. */
 export default function TeamList() {
   const { team, state, heading, tabs } = useTeamContext();
   return (
@@ -11,7 +11,9 @@ export default function TeamList() {
       title={team.name}
       heading={heading}
       nav={tabs}
-      base={{ where: [whereIs("team_id", team.id), clause("stage_kind", "is_not", ["backlog"])] }}
+      base={{
+        where: [whereIs("team_id", team.id), whereIs("stage_kind", "planned", "active")],
+      }}
       hide={["team_id", "stage_kind"]}
     />
   );
