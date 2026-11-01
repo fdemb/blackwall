@@ -554,6 +554,7 @@ export const pl = {
   "sprint.starts": "Początek",
   "sprint.ends": "Koniec",
   "sprint.start": "Rozpocznij sprint",
+  "sprint.ready": "Gotowe do pracy",
   "sprint.otherActive": "Najpierw zakończ aktywny sprint:",
   "sprint.complete": "Zakończ sprint",
   "sprint.archive": "Archiwizuj",

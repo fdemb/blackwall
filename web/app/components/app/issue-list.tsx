@@ -48,7 +48,7 @@ import { BlockedBadge, SubtaskProgress, TrackerBadge } from "./issue-parts";
 
 export type GroupBy = ListGroup;
 
-interface Group {
+export interface Group {
   id: string;
   title: string;
   icon?: React.ReactNode;
@@ -134,6 +134,7 @@ export function IssueList({
   fill = false,
   selectionBar,
   onDropIssues,
+  sections,
 }: IssueListProps & { fill?: boolean }) {
   const List = fill ? FillIssueList : PlainIssueList;
   return (
@@ -145,6 +146,7 @@ export function IssueList({
       selectable={selectable}
       selectionBar={selectionBar}
       onDropIssues={onDropIssues}
+      sections={sections}
     />
   );
 }
@@ -162,6 +164,8 @@ interface IssueListProps {
    * list keeps no order of its own, so a drop lands on the list, not between rows.
    */
   onDropIssues?: (ids: Id[]) => void;
+  /** Fixed sections in place of `groupBy`, such as the sprint plan's Ready and Backlog. */
+  sections?: Group[];
 }
 
 /** Grows with its content. For dialogs, drawers and short lists. */
@@ -173,6 +177,7 @@ export function PlainIssueList({
   selectable = true,
   selectionBar,
   onDropIssues,
+  sections,
 }: IssueListProps) {
   const { grid, bar } = useIssueGrid({
     issues,
@@ -182,6 +187,7 @@ export function PlainIssueList({
     selectable,
     selectionBar,
     onDropIssues,
+    sections,
     fill: false,
   });
   // A drop target stays on screen when empty, with the empty state inside it.
@@ -203,6 +209,7 @@ export function FillIssueList({
   selectable = true,
   selectionBar,
   onDropIssues,
+  sections,
 }: IssueListProps) {
   const { grid, bar } = useIssueGrid({
     issues,
@@ -212,6 +219,7 @@ export function FillIssueList({
     selectable,
     selectionBar,
     onDropIssues,
+    sections,
     fill: true,
   });
   if (issues.length === 0 && !onDropIssues) return <>{emptyState}</>;
@@ -237,13 +245,15 @@ function useIssueGrid({
   selectable,
   selectionBar,
   onDropIssues,
+  sections,
   fill,
 }: Required<Pick<IssueListProps, "issues" | "groupBy" | "selectable">> &
-  Pick<IssueListProps, "showTeam" | "emptyState" | "selectionBar" | "onDropIssues"> & {
+  Pick<IssueListProps, "showTeam" | "emptyState" | "selectionBar" | "onDropIssues" | "sections"> & {
     fill: boolean;
   }) {
   const { t } = useI18n();
-  const groups = useGroups(issues, groupBy);
+  const grouped = useGroups(issues, groupBy);
+  const groups = sections ?? grouped;
   const keyWidth = useIssueKeyWidth(issues);
   const [selected, setSelected] = useState<Set<Id>>(() => new Set());
   const { canWrite } = useWorkspace();
@@ -302,7 +312,7 @@ function useIssueGrid({
         !fill && !selectionBar && visibleSelected.size > 0 && "pb-24",
       )}
     >
-      {groupBy === "none" ? (
+      {groupBy === "none" && !sections ? (
         <IssueRows items={issues} showTeam={showTeam} canSelect={canSelect} keyWidth={keyWidth} />
       ) : (
         groups.map((g) => {

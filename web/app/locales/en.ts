@@ -530,6 +530,7 @@ export const en = {
   "sprint.starts": "Starts",
   "sprint.ends": "Ends",
   "sprint.start": "Start sprint",
+  "sprint.ready": "Ready",
   "sprint.otherActive": "Complete the active sprint first:",
   "sprint.complete": "Complete sprint",
   "sprint.archive": "Archive",
