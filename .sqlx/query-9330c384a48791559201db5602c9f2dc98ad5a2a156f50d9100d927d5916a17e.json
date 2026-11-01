@@ -1,0 +1,21 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO teams(id,workspace_id,name,key,archive_after_days,icon,color,sprints) VALUES($1,$2,$3,$4,$5::bigint,$6,$7,$8)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Text",
+        "Int8",
+        "Text",
+        "Text",
+        "Bool"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "9330c384a48791559201db5602c9f2dc98ad5a2a156f50d9100d927d5916a17e"
+}

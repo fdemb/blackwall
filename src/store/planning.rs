@@ -29,6 +29,10 @@ impl Operation<'_> {
                 self.set_team_appearance(id, icon, color).await?;
                 id.0
             }
+            Command::SetTeamSprints { id, sprints } => {
+                self.set_team_sprints(id, sprints).await?;
+                id.0
+            }
             Command::UpdateTeam { id, name, key } => {
                 self.update_team(id, name, key).await?;
                 id.0
@@ -315,6 +319,34 @@ impl Operation<'_> {
             id,
             icon,
             color,
+        )
+        .execute(&mut *self.tx)
+        .await?;
+        Ok(())
+    }
+
+    async fn set_team_sprints(&mut self, id: TeamId, sprints: bool) -> Result<()> {
+        let id = id.0;
+        self.admin()?;
+        // Creating a sprint locks the team row, so the check holds until commit.
+        self.touch("teams", id).await?;
+        if !sprints {
+            let open: bool = sqlx::query_scalar!(
+                "SELECT EXISTS(SELECT 1 FROM sprints WHERE workspace_id=$1 AND team_id=$2 AND state IN ('planned','active')) AS \"exists!\"",
+                self.workspace_id,
+                id,
+            )
+            .fetch_one(&mut *self.tx)
+            .await?;
+            if open {
+                return Err(Error::Conflict(crate::domain::SPRINTS_IN_USE.into()));
+            }
+        }
+        sqlx::query!(
+            "UPDATE teams SET sprints=$3 WHERE workspace_id=$1 AND id=$2",
+            self.workspace_id,
+            id,
+            sprints,
         )
         .execute(&mut *self.tx)
         .await?;
@@ -1247,6 +1279,65 @@ mod tests {
             .await;
             assert!(matches!(rejected, Err(Error::BadRequest(_))));
         }
+
+        store.pool.close().await;
+        database.cleanup().await;
+    }
+
+    async fn run(
+        store: &Store,
+        workspace: WorkspaceId,
+        actor: Uuid,
+        command: serde_json::Value,
+    ) -> Result<OperationResult> {
+        store
+            .operation(
+                workspace,
+                actor,
+                serde_json::from_value(command).unwrap(),
+                BTreeMap::new(),
+                None,
+                None,
+            )
+            .await
+    }
+
+    fn sprint(id: Uuid, team: Uuid) -> serde_json::Value {
+        json!({
+            "type": "create_sprint", "id": id, "team_id": team, "name": "Sprint", "goal": "",
+            "starts_at": "2026-11-02T00:00:00Z", "ends_at": "2026-11-16T00:00:00Z",
+        })
+    }
+
+    #[tokio::test]
+    async fn sprints_turn_off_only_without_open_sprints() {
+        let (database, store, workspace, owner) = setup().await;
+        let (team, planned) = (Uuid::new_v4(), Uuid::new_v4());
+        let run = |command| run(&store, workspace, owner, command);
+        run(json!({"type": "create_team", "id": team, "name": "A", "key": "A"}))
+            .await
+            .unwrap();
+        let flag = || {
+            sqlx::query_scalar::<_, bool>("SELECT sprints FROM teams WHERE id=$1")
+                .bind(team)
+                .fetch_one(&store.pool)
+        };
+        assert!(!flag().await.unwrap());
+        run(json!({"type": "set_team_sprints", "id": team, "sprints": true}))
+            .await
+            .unwrap();
+        assert!(flag().await.unwrap());
+
+        run(sprint(planned, team)).await.unwrap();
+        let off = json!({"type": "set_team_sprints", "id": team, "sprints": false});
+        assert!(matches!(run(off.clone()).await, Err(Error::Conflict(_))));
+        assert!(flag().await.unwrap());
+
+        run(json!({"type": "complete_sprint", "id": planned, "carryover_sprint_id": null}))
+            .await
+            .unwrap();
+        run(off).await.unwrap();
+        assert!(!flag().await.unwrap());
 
         store.pool.close().await;
         database.cleanup().await;

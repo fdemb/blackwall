@@ -434,6 +434,9 @@ export const en = {
   "team.backlogSub": "Work not yet planned into a sprint",
   "team.create": "Create team",
   "team.createFirst": "Create your first team",
+  "team.useSprints": "Use sprints",
+  "team.useSprintsSub":
+    "Plan work in sprints. When off, sprints are hidden from the sidebar and from issues.",
   "team.archive": "Auto-archive",
   "team.archiveSub":
     "Done issues move to the archive after this long. Cancelled issues never archive.",

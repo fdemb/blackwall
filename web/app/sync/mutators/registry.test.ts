@@ -39,6 +39,7 @@ const ALL_COMMANDS = [
   "set_team_members",
   "set_team_archive",
   "set_team_appearance",
+  "set_team_sprints",
   "update_team",
   "delete_team",
   "create_stage",

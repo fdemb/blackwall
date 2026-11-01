@@ -19,6 +19,7 @@ export function makeTeam(id = "team-1"): Team {
     archive_after_days: 30,
     icon: "users",
     color: "violet",
+    sprints: true,
   };
 }
 

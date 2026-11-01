@@ -95,9 +95,9 @@ function CreateIssueForm() {
 
   if (ws.teams.length === 0) return <NeedTeam wsSlug={ws.slug} onNavigate={create.hide} />;
 
-  const sprints = ws.sprints.filter(
-    (s) => s.team_id === teamId && (s.state === "planned" || s.state === "active"),
-  );
+  const sprints = openSprints(ws.sprints, team);
+  // A sprint carried over from the defaults that the team doesn't offer is dropped.
+  const chosenSprint = sprints.some((s) => s.id === sprintId) ? sprintId : null;
   const projects = ws.projects.filter(
     (p) => !teamId || p.team_ids.length === 0 || p.team_ids.includes(teamId),
   );
@@ -117,7 +117,7 @@ function CreateIssueForm() {
         estimate,
         deadline,
         project_id: projectId,
-        sprint_id: sprintId,
+        sprint_id: chosenSprint,
         parent_id: parentId,
       };
       const id = await run({ type: "create_issue", input }, { quiet: true });
@@ -229,7 +229,7 @@ function CreateIssueForm() {
           sprints={sprints}
           projectId={projectId}
           setProjectId={setProjectId}
-          sprintId={sprintId}
+          sprintId={chosenSprint}
           setSprintId={pickSprint}
           deadline={deadline}
           setDeadline={setDeadline}
@@ -516,6 +516,14 @@ function MoreProperties({ hidden, onPick }: { hidden: Extra[]; onPick: (key: Ext
 function defaultTeamId(teams: readonly Team[], me: Id, d: Partial<IssueInput>): Id | undefined {
   const myTeam = teams.find((tm) => tm.members.includes(me)) ?? teams[0];
   return d.team_id ?? myTeam?.id;
+}
+
+/** The team's planned and active sprints. None for a team without sprints, which hides the field. */
+function openSprints(sprints: readonly Sprint[], team: Team | undefined) {
+  if (!team?.sprints) return [];
+  return sprints.filter(
+    (s) => s.team_id === team.id && (s.state === "planned" || s.state === "active"),
+  );
 }
 
 function resolveStageId(team: Team | undefined, stageId: Id | null, sprintId: Id | null) {

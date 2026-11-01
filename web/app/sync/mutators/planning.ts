@@ -97,6 +97,8 @@ export const createTeam: Mutator<ArgsOf<"create_team">> = (tx, args, ctx) => {
     color: previous
       ? previous.color
       : leastUsedTeamColor(tx.all("teams").map((team) => team.color)),
+    // New teams start without sprints.
+    sprints: previous ? previous.sprints : false,
   });
   for (const user of members) joinTeam(tx, user, id);
 };
@@ -195,6 +197,27 @@ export const updateTeam: Mutator<ArgsOf<"update_team">> = (tx, args, ctx) => {
     next.key = args.key;
     next.former_keys = [...team.former_keys.filter((key) => key !== args.key), team.key].sort();
   }
+  tx.put("teams", next);
+};
+
+/** Mirrors `planning::set_team_sprints`: a team with open sprints can't turn them off. */
+export const setTeamSprints: Mutator<ArgsOf<"set_team_sprints">> = (tx, args, ctx) => {
+  requireAdmin(requireRole(tx, ctx.actor, "set_team_sprints", args));
+  const team = requireRecord(tx, "teams", args.id);
+  const open = tx
+    .all("sprints")
+    .some(
+      (sprint) =>
+        sprint.team_id === args.id && (sprint.state === "planned" || sprint.state === "active"),
+    );
+  if (!args.sprints && open) {
+    throw new MutationError(
+      409,
+      "complete the team's planned and active sprints before turning sprints off",
+    );
+  }
+  const next = copyTeam(team);
+  next.sprints = args.sprints;
   tx.put("teams", next);
 };
 

@@ -101,6 +101,7 @@ const COMMAND_FIELDS: Record<Command["type"] | "add_attachment" | "attach_commen
     archive_after_days: { kind: "default", value: 30, nullable: true, integer: "u32" },
   },
   set_team_appearance: { id: required, icon: required, color: required },
+  set_team_sprints: { id: required, sprints: required },
   update_team: { id: required, name: required, key: required },
   delete_team: id,
   create_stage: {

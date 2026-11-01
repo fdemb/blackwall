@@ -302,10 +302,12 @@ function TeamLinks({ team, base }: { team: Team; base: string }) {
           >
             {t("team.issues")}
           </Link>
-          <Link to={sprints} className={linkClass({ isActive: onSprints && !onActive })}>
-            {t("team.sprints")}
-          </Link>
-          {active && (
+          {team.sprints && (
+            <Link to={sprints} className={linkClass({ isActive: onSprints && !onActive })}>
+              {t("team.sprints")}
+            </Link>
+          )}
+          {team.sprints && active && (
             <Link
               to={sprintPath(ws.slug, key, active)}
               aria-current={onActive ? "page" : undefined}

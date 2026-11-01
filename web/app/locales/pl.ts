@@ -452,6 +452,9 @@ export const pl = {
   "team.backlogSub": "Praca jeszcze nie zaplanowana w sprincie",
   "team.create": "Utwórz zespół",
   "team.createFirst": "Utwórz pierwszy zespół",
+  "team.useSprints": "Używaj sprintów",
+  "team.useSprintsSub":
+    "Planuj pracę w sprintach. Po wyłączeniu sprinty znikają z paska bocznego i z zadań.",
   "team.archive": "Automatyczna archiwizacja",
   "team.archiveSub":
     "Zrobione zadania trafiają do archiwum po tym czasie. Anulowane nigdy się nie archiwizują.",

@@ -16,6 +16,7 @@ import { Dialog, useDialogDirty } from "~/components/ui/dialog";
 import { FormError, Input, TextField } from "~/components/ui/field";
 import { Menu, MenuItem, MenuPopover, MenuTrigger } from "~/components/ui/menu";
 import { Select } from "~/components/ui/select";
+import { Switch } from "~/components/ui/toggles";
 import { ConfirmDialog } from "~/components/app/confirm";
 import { StageIcon } from "~/components/app/icons";
 import { MultiMemberPicker } from "~/components/app/pickers";
@@ -74,6 +75,7 @@ function TeamDetail({ team }: { team: Team }) {
       <Details team={team} />
       <Workflow view={view} />
       <Members team={team} />
+      <Sprints team={team} />
       <AutoArchive team={team} />
       {canAdmin && <DeleteTeam team={team} />}
     </div>
@@ -625,6 +627,25 @@ function Members({ team }: { team: Team }) {
           ))}
         </SettingsList>
       )}
+    </SettingsSection>
+  );
+}
+
+function Sprints({ team }: { team: Team }) {
+  const { t } = useI18n();
+  const { run, canAdmin } = useWorkspace();
+  return (
+    <SettingsSection title={t("team.sprints")}>
+      <SettingsRow label={t("team.useSprints")} description={t("team.useSprintsSub")}>
+        <Switch
+          aria-label={t("team.useSprints")}
+          isDisabled={!canAdmin}
+          isSelected={team.sprints}
+          onChange={(sprints) =>
+            run({ type: "set_team_sprints", id: team.id, sprints }).catch(() => {})
+          }
+        />
+      </SettingsRow>
     </SettingsSection>
   );
 }

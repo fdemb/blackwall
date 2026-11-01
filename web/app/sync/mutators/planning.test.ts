@@ -164,6 +164,7 @@ describe("create_team", () => {
       // The seeded teams are violet and blue, so the next color is sky.
       icon: "users",
       color: "sky",
+      sprints: false,
     });
     expect(store.get("members", ADMIN)?.team_ids).toEqual([TEAM, "team-new"]);
     expect(store.get("members", MEMBER)?.team_ids).toEqual([TEAM, "team-new"]);
@@ -567,6 +568,30 @@ describe("set_team_archive", () => {
     rejects("set_team_archive", args, 403, "permission denied", MEMBER);
     rejects("set_team_archive", args, 403, "permission denied", VIEWER);
     rejects("set_team_archive", args, 403, "permission denied", GHOST);
+  });
+});
+
+describe("set_team_sprints", () => {
+  it("refuses to turn sprints off while a sprint is planned or active", () => {
+    const message = "complete the team's planned and active sprints before turning sprints off";
+    rejects("set_team_sprints", { id: TEAM, sprints: false }, 409, message);
+    const withSprint = (state: "planned" | "completed") => {
+      const store = seedStore(OWNER);
+      const sprint = store.get("sprints", SPRINT)!;
+      store.applyBase([{ entity: "sprints", id: SPRINT, record: { ...sprint, state } }]);
+      return store;
+    };
+    const planned = withSprint("planned");
+    const id = mutate(planned, "set_team_sprints", { id: TEAM, sprints: false });
+    expect(planned.replayErrors().get(id)?.status).toBe(409);
+    const store = withSprint("completed");
+    const before = liveTeam(store, TEAM);
+    mutate(store, "set_team_sprints", { id: TEAM, sprints: false });
+    expectRecord(store, "teams", TEAM, { ...before, sprints: false });
+  });
+
+  it("requires owner or admin", () => {
+    rejects("set_team_sprints", { id: TEAM, sprints: true }, 403, "permission denied", MEMBER);
   });
 });
 

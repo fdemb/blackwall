@@ -2052,6 +2052,23 @@
           },
           {
             "type": "object",
+            "description": "Turns sprints on or off for the team. Turning them off fails while the\nteam has a planned or active sprint.",
+            "required": ["id", "sprints", "type"],
+            "properties": {
+              "id": {
+                "$ref": "#/components/schemas/TeamId"
+              },
+              "sprints": {
+                "type": "boolean"
+              },
+              "type": {
+                "type": "string",
+                "enum": ["set_team_sprints"]
+              }
+            }
+          },
+          {
+            "type": "object",
             "description": "Renames the team and changes its key. Issue keys under a former key keep\nresolving, and no other team can take a key this team has used.",
             "required": ["id", "name", "key", "type"],
             "properties": {
@@ -5232,6 +5249,10 @@
           },
           "name": {
             "type": "string"
+          },
+          "sprints": {
+            "type": "boolean",
+            "description": "Whether the team plans its work in sprints."
           },
           "stages": {
             "type": "array",

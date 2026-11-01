@@ -95,6 +95,7 @@ export function Properties({
   const { ws, canWrite, member, run } = useWorkspace();
   const patch = useIssuePatch(issue);
   const projectMilestones = ws.milestones.filter((m) => m.project_id === issue.project_id);
+  const usesSprints = ws.teams.find((team) => team.id === issue.team_id)?.sprints ?? false;
   const sprints = ws.sprints.filter(
     (s) =>
       s.team_id === issue.team_id &&
@@ -166,16 +167,18 @@ export function Properties({
             />
           </Prop>
         )}
-        <Prop label={t("field.sprint")}>
-          <NullableSelect
-            variant="ghost"
-            isDisabled={!canWrite}
-            noneLabel={t("sprint.none")}
-            value={issue.sprint_id}
-            options={sprints.map((s) => ({ id: s.id, label: sprintLabel(s) }))}
-            onChange={(id) => patch(id ? { sprint_id: id } : { clear_sprint: true })}
-          />
-        </Prop>
+        {usesSprints && (
+          <Prop label={t("field.sprint")}>
+            <NullableSelect
+              variant="ghost"
+              isDisabled={!canWrite}
+              noneLabel={t("sprint.none")}
+              value={issue.sprint_id}
+              options={sprints.map((s) => ({ id: s.id, label: sprintLabel(s) }))}
+              onChange={(id) => patch(id ? { sprint_id: id } : { clear_sprint: true })}
+            />
+          </Prop>
+        )}
         <Prop label={t("field.deadline")}>
           <DatePicker
             variant="ghost"

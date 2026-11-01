@@ -204,7 +204,9 @@ async fn insert_import(op: &mut Operation<'_>, w: &Workspace) -> Result<()> {
 
 async fn insert_planning(op: &mut Operation<'_>, w: &Workspace) -> Result<()> {
     for team in &w.teams {
-        insert_team(op, w.id, team).await?;
+        // Exports from before the setting lack it, so a team with sprints keeps them.
+        let sprints = team.sprints || w.sprints.iter().any(|s| s.team_id == team.id);
+        insert_team(op, w.id, team, sprints).await?;
         insert_stages(op, w.id, team).await?;
     }
     for label in &w.labels {
@@ -241,9 +243,14 @@ async fn insert_planning(op: &mut Operation<'_>, w: &Workspace) -> Result<()> {
     Ok(())
 }
 
-async fn insert_team(op: &mut Operation<'_>, workspace: Uuid, team: &Team) -> Result<()> {
+async fn insert_team(
+    op: &mut Operation<'_>,
+    workspace: Uuid,
+    team: &Team,
+    sprints: bool,
+) -> Result<()> {
     sqlx::query!(
-        "INSERT INTO teams(id,workspace_id,name,key,archive_after_days,icon,color) VALUES($1,$2,$3,$4,$5::bigint,$6,$7)",
+        "INSERT INTO teams(id,workspace_id,name,key,archive_after_days,icon,color,sprints) VALUES($1,$2,$3,$4,$5::bigint,$6,$7,$8)",
         team.id,
         workspace,
         &team.name,
@@ -251,6 +258,7 @@ async fn insert_team(op: &mut Operation<'_>, workspace: Uuid, team: &Team) -> Re
         team.archive_after_days.map(i64::from),
         &team.icon,
         &team.color,
+        sprints,
     )
     .execute(&mut *op.tx)
     .await?;
