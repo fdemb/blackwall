@@ -515,6 +515,8 @@ export const en = {
   "team.icons.compass": "Compass",
   "team.icons.leaf": "Leaf",
   "board.empty": "No issues",
+  "board.noActiveSprint": "No active sprint",
+  "board.noActiveSprintSub": "Start a sprint to see its work here.",
   "board.collapse": "Collapse {{name}}",
   "board.expand_one": "Expand {{name}}, {{count}} issue",
   "board.expand_other": "Expand {{name}}, {{count}} issues",

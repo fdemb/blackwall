@@ -537,6 +537,8 @@ export const pl = {
   "team.icons.compass": "Kompas",
   "team.icons.leaf": "Liść",
   "board.empty": "Brak zadań",
+  "board.noActiveSprint": "Brak aktywnego sprintu",
+  "board.noActiveSprintSub": "Rozpocznij sprint, aby zobaczyć tu jego zadania.",
   "board.collapse": "Zwiń {{name}}",
   "board.expand_one": "Rozwiń {{name}}, {{count}} zadanie",
   "board.expand_few": "Rozwiń {{name}}, {{count}} zadania",
