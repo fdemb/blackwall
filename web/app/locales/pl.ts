@@ -452,6 +452,9 @@ export const pl = {
   "team.backlogSub": "Praca jeszcze nie zaplanowana w sprincie",
   "team.create": "Utwórz zespół",
   "team.createFirst": "Utwórz pierwszy zespół",
+  "team.useSprints": "Używaj sprintów",
+  "team.useSprintsSub":
+    "Planuj pracę w sprintach. Po wyłączeniu sprinty znikają z paska bocznego i z zadań.",
   "team.archive": "Automatyczna archiwizacja",
   "team.archiveSub":
     "Zrobione zadania trafiają do archiwum po tym czasie. Anulowane nigdy się nie archiwizują.",
@@ -534,6 +537,13 @@ export const pl = {
   "team.icons.compass": "Kompas",
   "team.icons.leaf": "Liść",
   "board.empty": "Brak zadań",
+  "board.noActiveSprint": "Brak aktywnego sprintu",
+  "board.noActiveSprintSub": "Rozpocznij sprint, aby zobaczyć tu jego zadania.",
+  "board.collapse": "Zwiń {{name}}",
+  "board.expand_one": "Rozwiń {{name}}, {{count}} zadanie",
+  "board.expand_few": "Rozwiń {{name}}, {{count}} zadania",
+  "board.expand_many": "Rozwiń {{name}}, {{count}} zadań",
+  "board.expand_other": "Rozwiń {{name}}, {{count}} zadania",
   "backlog.emptyTitle": "Backlog jest pusty",
   "backlog.emptySub": "Żadne zadanie nie ma statusu backlog.",
 
@@ -544,6 +554,8 @@ export const pl = {
   "sprint.starts": "Początek",
   "sprint.ends": "Koniec",
   "sprint.start": "Rozpocznij sprint",
+  "sprint.ready": "Gotowe do pracy",
+  "sprint.otherActive": "Najpierw zakończ aktywny sprint:",
   "sprint.complete": "Zakończ sprint",
   "sprint.archive": "Archiwizuj",
   "sprint.past": "Poprzednie sprinty",

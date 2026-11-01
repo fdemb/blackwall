@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Link } from "react-router";
 import { Form } from "react-aria-components";
 import { Archive, CheckCheck, MoreHorizontal, Pencil, Play } from "lucide-react";
 import { Button } from "~/components/ui/button";
@@ -8,6 +9,8 @@ import { TextField } from "~/components/ui/field";
 import { Menu, MenuItem, MenuPopover, MenuTrigger } from "~/components/ui/menu";
 import { OPEN, whereIs } from "~/lib/filters";
 import { sprintLabel } from "~/lib/format";
+import { sprintPath } from "~/lib/last-view";
+import { bySprintStart } from "~/lib/order";
 import { useI18n } from "~/lib/i18n";
 import { useIssues } from "~/lib/queries";
 import { usePending } from "~/lib/use-pending";
@@ -23,7 +26,7 @@ import { QueryStatus } from "./query-status";
  */
 function useSprintCommands(sprint: Sprint) {
   const { t } = useI18n();
-  const { run } = useWorkspace();
+  const { run, ws } = useWorkspace();
   const [dialog, setDialog] = useState<"edit" | "complete" | null>(null);
   const { pending, guard } = usePending();
   const start = () =>
@@ -39,6 +42,10 @@ function useSprintCommands(sprint: Sprint) {
       }),
     );
   const archive = () => void guard(() => run({ type: "archive_sprint", id: sprint.id }));
+  // A team runs one sprint at a time, so a planned sprint waits for the active one.
+  const blocker = ws.sprints.find(
+    (s) => s.team_id === sprint.team_id && s.id !== sprint.id && s.state === "active",
+  );
   const dialogs = (
     <>
       <Dialog
@@ -62,6 +69,7 @@ function useSprintCommands(sprint: Sprint) {
   );
   return {
     pending,
+    blocker,
     start,
     archive,
     edit: () => setDialog("edit"),
@@ -74,7 +82,7 @@ function useSprintCommands(sprint: Sprint) {
 export function SprintActions({ sprint }: { sprint: Sprint }) {
   const { t } = useI18n();
   const { canWrite } = useWorkspace();
-  const { pending, start, archive, edit, complete, dialogs } = useSprintCommands(sprint);
+  const { pending, blocker, start, archive, edit, complete, dialogs } = useSprintCommands(sprint);
   if (!canWrite) return null;
   return (
     <>
@@ -84,8 +92,9 @@ export function SprintActions({ sprint }: { sprint: Sprint }) {
           {t("action.edit")}
         </Button>
       )}
+      {sprint.state === "planned" && blocker && <ActiveSprintNote sprint={blocker} />}
       {sprint.state === "planned" && (
-        <Button variant="primary" size="sm" isDisabled={pending} onPress={start}>
+        <Button variant="primary" size="sm" isDisabled={pending || !!blocker} onPress={start}>
           <Play aria-hidden />
           {pending ? t("sprint.starting") : t("sprint.start")}
         </Button>
@@ -107,11 +116,30 @@ export function SprintActions({ sprint }: { sprint: Sprint }) {
   );
 }
 
+/** Why a planned sprint can't start yet, with a link to the team's active sprint. */
+function ActiveSprintNote({ sprint }: { sprint: Sprint }) {
+  const { t } = useI18n();
+  const { ws } = useWorkspace();
+  const team = ws.teams.find((tm) => tm.id === sprint.team_id);
+  if (!team) return null;
+  return (
+    <span className="text-muted-foreground">
+      {t("sprint.otherActive")}{" "}
+      <Link
+        to={sprintPath(ws.slug, team.key, sprint)}
+        className="font-medium text-foreground hover:underline"
+      >
+        {sprintLabel(sprint)}
+      </Link>
+    </span>
+  );
+}
+
 /** The same actions as `SprintActions`, folded into a menu for list rows. */
 export function SprintMenu({ sprint, className }: { sprint: Sprint; className?: string }) {
   const { t } = useI18n();
   const { canWrite } = useWorkspace();
-  const { pending, start, archive, edit, complete, dialogs } = useSprintCommands(sprint);
+  const { pending, blocker, start, archive, edit, complete, dialogs } = useSprintCommands(sprint);
   if (!canWrite || sprint.state === "archived") return null;
   return (
     <>
@@ -133,7 +161,7 @@ export function SprintMenu({ sprint, className }: { sprint: Sprint; className?: 
               {t("action.edit")}
             </MenuItem>
             {sprint.state === "planned" && (
-              <MenuItem id="start" isDisabled={pending}>
+              <MenuItem id="start" isDisabled={pending || !!blocker}>
                 <Play />
                 {pending ? t("sprint.starting") : t("sprint.start")}
               </MenuItem>
@@ -264,10 +292,19 @@ function isSprintDirty(
   );
 }
 
+/** The team's planned sprint that starts first, other than `sprint`. */
+function nextPlannedSprint(sprints: readonly Sprint[], sprint: Sprint): Id | null {
+  const planned = sprints.filter(
+    (s) => s.team_id === sprint.team_id && s.id !== sprint.id && s.state === "planned",
+  );
+  return planned.sort(bySprintStart)[0]?.id ?? null;
+}
+
 function CompleteForm({ sprint, close }: { sprint: Sprint; close: () => void }) {
   const { t } = useI18n();
   const { ws, run } = useWorkspace();
-  const [target, setTarget] = useState<Id | null>(null);
+  // Unfinished work moves on to the team's next planned sprint unless the person picks otherwise.
+  const [target, setTarget] = useState<Id | null>(() => nextPlannedSprint(ws.sprints, sprint));
   const { pending, error, guard } = usePending();
   const query = useIssues({ where: [whereIs("sprint_id", sprint.id), OPEN] });
   const stats = useSprintProgress().get(sprint.id);

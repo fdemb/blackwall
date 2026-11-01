@@ -77,6 +77,7 @@ const CASES = {
     explicit: { archive_after_days: null },
   },
   set_team_appearance: { args: { id: ID, icon: "users", color: "violet" } },
+  set_team_sprints: { args: { id: ID, sprints: true } },
   update_team: { args: { id: ID, name: "Team", key: "TEA" } },
   create_stage: {
     args: { team_id: ID, name: "Stage", kind: "backlog", position: 0 },

@@ -92,6 +92,7 @@ function team(): Team {
     archive_after_days: 30,
     icon: "users",
     color: "violet",
+    sprints: true,
   };
 }
 
@@ -107,6 +108,7 @@ function otherTeam(): Team {
     archive_after_days: null,
     icon: "rocket",
     color: "blue",
+    sprints: true,
   };
 }
 

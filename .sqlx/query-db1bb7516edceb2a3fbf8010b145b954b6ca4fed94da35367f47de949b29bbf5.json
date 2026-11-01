@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE teams SET sprints=$3 WHERE workspace_id=$1 AND id=$2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Bool"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "db1bb7516edceb2a3fbf8010b145b954b6ca4fed94da35367f47de949b29bbf5"
+}

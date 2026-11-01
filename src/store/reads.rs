@@ -903,6 +903,17 @@ impl Store {
 }
 
 impl Store {
+    /// Teams with more than one active sprint, from before starting a sprint
+    /// required the others to be complete. Their members pick which to complete.
+    pub async fn teams_with_parallel_sprints(&self) -> Result<Vec<(Uuid, Uuid, i64)>> {
+        Ok(sqlx::query_as(
+            "SELECT workspace_id,team_id,count(*) FROM sprints WHERE state='active' \
+             GROUP BY workspace_id,team_id HAVING count(*)>1 ORDER BY workspace_id,team_id",
+        )
+        .fetch_all(&self.pool)
+        .await?)
+    }
+
     /// Every limited resource's count and limit, as the capacity check counts them.
     pub async fn usage(&self, workspace: WorkspaceId, actor: Uuid) -> Result<Vec<Usage>> {
         let workspace = workspace.0;

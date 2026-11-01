@@ -32,6 +32,12 @@ pub enum Command {
         icon: String,
         color: String,
     },
+    /// Turns sprints on or off for the team. Turning them off fails while the
+    /// team has a planned or active sprint.
+    SetTeamSprints {
+        id: TeamId,
+        sprints: bool,
+    },
     /// Renames the team and changes its key. Issue keys under a former key keep
     /// resolving, and no other team can take a key this team has used.
     UpdateTeam {
@@ -373,6 +379,7 @@ impl Command {
             | Self::SetTeamMembers { .. }
             | Self::SetTeamArchive { .. }
             | Self::SetTeamAppearance { .. }
+            | Self::SetTeamSprints { .. }
             | Self::UpdateTeam { .. }
             | Self::DeleteTeam { .. }
             | Self::CreateStage { .. }
@@ -424,6 +431,7 @@ impl Command {
             Self::SetTeamMembers { .. } => "set_team_members",
             Self::SetTeamArchive { .. } => "set_team_archive",
             Self::SetTeamAppearance { .. } => "set_team_appearance",
+            Self::SetTeamSprints { .. } => "set_team_sprints",
             Self::UpdateTeam { .. } => "update_team",
             Self::DeleteTeam { .. } => "delete_team",
             Self::CreateStage { .. } => "create_stage",

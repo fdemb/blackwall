@@ -299,6 +299,9 @@ pub struct UpdateTeam {
     /// A new key. Issue keys under the old one keep resolving, and no other
     /// team can take it.
     pub key: Option<String>,
+    /// Whether the team plans its work in sprints. Turning it off fails with
+    /// 409 while the team has a planned or active sprint.
+    pub sprints: Option<bool>,
 }
 
 #[utoipa::path(
@@ -307,31 +310,61 @@ pub struct UpdateTeam {
     tag = "teams",
     params(("workspace" = Uuid, Path), ("team" = Uuid, Path)),
     request_body = UpdateTeam,
-    responses((status = 200, body = Team), (status = 412, body = crate::error::ErrorBody))
+    responses(
+        (status = 200, body = Team),
+        (status = 409, body = crate::error::ErrorBody),
+        (status = 412, body = crate::error::ErrorBody)
+    )
 )]
 pub async fn update_team(
     State(store): State<Store>,
     actor: ApiActor,
     Path((workspace, team)): Path<(WorkspaceId, Uuid)>,
-    options: WriteOptions,
+    mut options: WriteOptions,
     Json(body): Json<UpdateTeam>,
 ) -> Result<Response> {
     let scope = actor.write(workspace)?;
-    run(
-        &store,
-        scope,
-        async {
-            let current: Team = record(&store, scope, "teams", team).await?;
-            Ok(Command::UpdateTeam {
-                id: TeamId(team),
-                name: body.name.unwrap_or(current.name),
-                key: body.key.unwrap_or(current.key),
-            })
-        },
-        Some(team),
-        options,
-    )
-    .await?;
+    if body.name.is_some() || body.key.is_some() || body.sprints.is_none() {
+        let result = run(
+            &store,
+            scope,
+            async {
+                let current: Team = record(&store, scope, "teams", team).await?;
+                Ok(Command::UpdateTeam {
+                    id: TeamId(team),
+                    name: body.name.unwrap_or(current.name),
+                    key: body.key.unwrap_or(current.key),
+                })
+            },
+            Some(team),
+            WriteOptions {
+                if_match: options.if_match,
+                idempotency_key: options.idempotency_key.clone(),
+                sent: options.sent.clone(),
+                legacy_key: None,
+            },
+        )
+        .await?;
+        options.if_match = options
+            .if_match
+            .and_then(|_| result.versions.get(&team).copied());
+        options = options.step("sprints");
+    }
+    if let Some(sprints) = body.sprints {
+        run(
+            &store,
+            scope,
+            async {
+                Ok(Command::SetTeamSprints {
+                    id: TeamId(team),
+                    sprints,
+                })
+            },
+            Some(team),
+            options,
+        )
+        .await?;
+    }
     let team: Team = record(&store, scope, "teams", team).await?;
     Ok(one(StatusCode::OK, team))
 }

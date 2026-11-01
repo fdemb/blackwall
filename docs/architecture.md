@@ -42,4 +42,8 @@ Maintenance logs pool size and idle connections, lock waiters, queue depth, olde
 
 Issues in a Done stage (cancelled excluded) auto-archive past their team's `archive_after_days` deadline via a periodic sweep that also backfills the Done-entry clock; a NULL deadline means never. Synced issues follow the same rule, with imports starting the clock on entering Done and clearing both the clock and the archive when a work package reopens. Archived issues stay out of default listings, reports, and counts but remain readable by id, restorable, and read-only until unarchived. Manual archive and unarchive commands, including bulk variants, enforce the same Done-only rule.
 
+A team has at most one active sprint. Starting a sprint while another of the team's sprints is active fails with 409, so the team completes that one first. Teams that already had several active sprints keep them until they complete all but one, and the server logs a warning for each such team at startup.
+
 Backlog issues have no sprint. An issue that enters a backlog stage, by an edit, a move, or a stage turning into or merging into a backlog stage, leaves its sprint. A backlog issue that joins a sprint moves to the team's first planned stage, or its first active stage when it has no planned one. When one edit names both a backlog stage and a sprint, the stage wins.
+
+In a team that uses sprints, an issue with no sprint that enters an active stage joins the team's active sprint. Creating an issue in an active stage, an edit, a move and a tracker import all follow the rule, and the sync client predicts it. Reordering within a stage doesn't count as entering it. Planned stages don't trigger it, so unscheduled Todo work waits for planning, and a team with no active sprint sees no change.

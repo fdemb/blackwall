@@ -28,6 +28,7 @@ import { QueryStatus } from "../components/app/query-status";
 import { ToastProvider, useToast } from "../components/ui/toast";
 import { createEngine, SCHEMA, type SyncEngine } from "../sync/engine";
 import { makeIssue, makeTeam, NOW } from "../sync/fixtures";
+import type { SyncIssue } from "../sync/records";
 import { MutationError } from "../sync/mutators";
 import { IDB_VERSION, IndexedDBReplicaStorage } from "../sync/persistence/idb";
 import type { ReplicaStorage } from "../sync/persistence/types";
@@ -68,11 +69,14 @@ async function fixture({
   teamId = "team-1",
   role = "owner",
   scopes = ["comments", "activity"],
+  stageIds = ["stage-todo", "stage-done"],
 }: {
   online?: boolean;
   otherMember?: boolean;
   storage?: ReplicaStorage;
   teamId?: string;
+  /** Todo and Done. Filter clauses on stages need UUIDs. */
+  stageIds?: readonly [string, string];
   role?: Role;
   scopes?: readonly ("comments" | "activity")[];
 } = {}) {
@@ -83,6 +87,12 @@ async function fixture({
   });
   const team = { ...makeTeam(teamId), members: [profile.id] };
   team.stages[0].kind = "planned";
+  team.stages[0].id = stageIds[0];
+  team.stages[1].id = stageIds[1];
+  const staged = (issue: SyncIssue) => ({
+    ...issue,
+    stage_id: issue.stage_id === "stage-done" ? stageIds[1] : stageIds[0],
+  });
   await replica.writeBootstrap({
     cursor: "1:1:",
     lastMutationId: 0,
@@ -129,7 +139,7 @@ async function fixture({
         makeIssue("child", { team_id: teamId, parent_id: "issue", stage_id: "stage-done" }),
         makeIssue("blocker", { team_id: teamId }),
         makeIssue("dependent", { team_id: teamId, dependencies: ["issue"] }),
-      ],
+      ].map(staged),
       notifications: [
         {
           id: "notification",
@@ -393,7 +403,10 @@ describe("workspace React integration without a DOM", () => {
   it("renders the existing issue board columns and replica counts", async () => {
     // The board scopes its query with a team clause, and clause values must be UUIDs.
     const teamId = "11111111-1111-4111-8111-000000000001";
-    const engine = await fixture({ teamId });
+    const engine = await fixture({
+      teamId,
+      stageIds: ["11111111-1111-4111-8111-000000000002", "11111111-1111-4111-8111-000000000003"],
+    });
     const html = render(
       engine,
       <MemoryRouter initialEntries={[`/workspace/team/${teamId}`]}>
@@ -403,7 +416,9 @@ describe("workspace React integration without a DOM", () => {
     expect(html).toContain("Team board");
     expect(html).toContain('tabular-nums text-muted-foreground">4</span>');
     expect(html).toContain("Todo");
+    // Done starts collapsed: a strip with its count and no cards.
     expect(html).toContain("Done");
+    expect(html).toContain('<span class="tabular-nums">1</span>');
   });
   it("renders the existing sidebar, issue list, offline banner, and save status from an optimistic replica", async () => {
     const engine = await fixture();

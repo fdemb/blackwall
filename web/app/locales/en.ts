@@ -434,6 +434,9 @@ export const en = {
   "team.backlogSub": "Work not yet planned into a sprint",
   "team.create": "Create team",
   "team.createFirst": "Create your first team",
+  "team.useSprints": "Use sprints",
+  "team.useSprintsSub":
+    "Plan work in sprints. When off, sprints are hidden from the sidebar and from issues.",
   "team.archive": "Auto-archive",
   "team.archiveSub":
     "Done issues move to the archive after this long. Cancelled issues never archive.",
@@ -512,6 +515,11 @@ export const en = {
   "team.icons.compass": "Compass",
   "team.icons.leaf": "Leaf",
   "board.empty": "No issues",
+  "board.noActiveSprint": "No active sprint",
+  "board.noActiveSprintSub": "Start a sprint to see its work here.",
+  "board.collapse": "Collapse {{name}}",
+  "board.expand_one": "Expand {{name}}, {{count}} issue",
+  "board.expand_other": "Expand {{name}}, {{count}} issues",
   "backlog.emptyTitle": "Backlog is clear",
   "backlog.emptySub": "No issues have a backlog status.",
 
@@ -522,6 +530,8 @@ export const en = {
   "sprint.starts": "Starts",
   "sprint.ends": "Ends",
   "sprint.start": "Start sprint",
+  "sprint.ready": "Ready",
+  "sprint.otherActive": "Complete the active sprint first:",
   "sprint.complete": "Complete sprint",
   "sprint.archive": "Archive",
   "sprint.past": "Past sprints",

@@ -99,6 +99,11 @@ the server would.
 ## Scope filters in the UI
 
 Pages add their own clauses on top of the person's filter: the team page adds `team_id is <team>`,
-its Active view adds `stage_kind is_not backlog`, and the backlog adds `stage_kind is backlog`. The filter bar hides
-those fields, and a person's clause on a scoped field is dropped before the scope's clause is
-appended. Saving a view stores the merged filter.
+its Active view adds `stage_kind is planned, active`, its Backlog view adds `stage_kind is backlog`,
+and its All issues view adds nothing more. The filter bar hides those fields, and a person's clause
+on a scoped field is dropped before the scope's clause is appended. Saving a view stores the merged
+filter.
+
+The board leaves collapsed columns out of its list with `stage_id is_not <collapsed stages>`, and
+counts their issues with `stage_id is <collapsed stages>`. Both clauses go on after the merge, so a
+stage filter of the person's own still applies.

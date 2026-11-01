@@ -247,6 +247,7 @@ export type Command = Sendable<
   | { type: "set_team_members"; id: Id; members: Id[] }
   | { type: "set_team_archive"; id: Id; archive_after_days: number | null }
   | { type: "set_team_appearance"; id: Id; icon: TeamIcon; color: TeamColor }
+  | { type: "set_team_sprints"; id: Id; sprints: boolean }
   | { type: "update_team"; id: Id; name: string; key: string }
   | { type: "delete_team"; id: Id }
   | { type: "create_stage"; id?: Id; team_id: Id; name: string; kind: StageKind; position: number }

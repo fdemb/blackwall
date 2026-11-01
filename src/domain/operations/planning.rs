@@ -43,6 +43,19 @@ impl Workspace {
                 team.color = color;
                 Ok(id.0)
             }
+            Command::SetTeamSprints { id, sprints } => {
+                self.admin(actor)?;
+                if !sprints
+                    && self
+                        .sprints
+                        .iter()
+                        .any(|s| s.team_id == id.0 && !s.state.is_finished())
+                {
+                    return Err(Error::Conflict(super::super::SPRINTS_IN_USE.into()));
+                }
+                self.team_mut(id)?.sprints = sprints;
+                Ok(id.0)
+            }
             Command::UpdateTeam { id, name, key } => {
                 self.update_team(actor, id, name, key)?;
                 Ok(id.0)
@@ -397,6 +410,7 @@ impl Workspace {
             archive_after_days: super::super::default_archive_days(),
             icon: super::super::default_team_icon(),
             color: color.into(),
+            sprints: false,
         });
         Ok(id)
     }
@@ -529,10 +543,24 @@ impl Workspace {
             ));
         }
 
-        let sprint = find_mut(&mut self.sprints, |s| s.id == id)?;
+        let sprint = self
+            .sprints
+            .iter()
+            .find(|s| s.id == id)
+            .ok_or(Error::NotFound)?;
         if sprint.state.is_finished() {
             return Err(Error::Conflict("sprint already completed".into()));
         }
+        let team = sprint.team_id;
+        if state == SprintState::Active
+            && self
+                .sprints
+                .iter()
+                .any(|s| s.id != id && s.team_id == team && s.state == SprintState::Active)
+        {
+            return Err(Error::Conflict(super::super::SPRINT_ALREADY_ACTIVE.into()));
+        }
+        let sprint = find_mut(&mut self.sprints, |s| s.id == id)?;
         sprint.name = name;
         sprint.goal = goal;
         sprint.starts_at = starts_at;

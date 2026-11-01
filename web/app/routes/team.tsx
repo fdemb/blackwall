@@ -6,7 +6,7 @@ import {
   useOutletContext,
   useParams,
 } from "react-router";
-import { KanbanSquare, List, ListTodo } from "lucide-react";
+import { KanbanSquare, List, ListTodo, Layers } from "lucide-react";
 import { Tab, TabList, Tabs } from "~/components/ui/tabs";
 import { useQueueState, type QueueState } from "~/components/app/workbench";
 import { TeamCrumb } from "~/components/app/page";
@@ -69,6 +69,10 @@ function TeamLayout() {
         <Tab id="backlog" size="compact">
           <ListTodo />
           {t("team.backlog")}
+        </Tab>
+        <Tab id="all" size="compact">
+          <Layers />
+          {t("nav.allIssues")}
         </Tab>
       </TabList>
     </Tabs>

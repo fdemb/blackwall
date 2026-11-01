@@ -192,6 +192,12 @@ impl Issue {
         }
     }
 
+    /// Work with no sprint that enters an active stage joins the team's active
+    /// sprint. Planned stages wait for planning.
+    pub(crate) fn joins_active_sprint(&self, in_active: bool, entered_stage: bool) -> bool {
+        self.sprint_id.is_none() && in_active && entered_stage
+    }
+
     /// Backlog issues have no sprint. `entered_stage` says whether the edit chose
     /// the stage, which then wins over the sprint.
     pub(crate) fn sprint_fit(&self, in_backlog: bool, entered_stage: bool) -> SprintFit {

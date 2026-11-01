@@ -19,6 +19,7 @@ const required = new Map<string, string[]>([
   ["set_team_members", ["id", "members"]],
   ["set_team_archive", ["id"]],
   ["set_team_appearance", ["id", "icon", "color"]],
+  ["set_team_sprints", ["id", "sprints"]],
   ["update_team", ["id", "name", "key"]],
   ["delete_team", ["id"]],
   ["create_stage", ["team_id", "name", "kind", "position"]],
@@ -102,6 +103,7 @@ const strings = new Set([
   "after",
 ]);
 const booleans = new Set([
+  "sprints",
   "shared",
   "following",
   "enabled",

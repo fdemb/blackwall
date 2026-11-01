@@ -278,6 +278,9 @@ export const scenarios = {
   set_team_appearance: {
     command: (f) => ({ type: "set_team_appearance", id: f.team, icon: "rocket", color: "teal" }),
   },
+  set_team_sprints: {
+    command: (f) => ({ type: "set_team_sprints", id: f.team, sprints: true }),
+  },
   update_team: {
     command: (f) => ({ type: "update_team", id: f.team, name: "Platform", key: "PLAT" }),
   },

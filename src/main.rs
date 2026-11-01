@@ -82,6 +82,15 @@ async fn serve(store: &Store) -> MainResult {
     store.registration =
         blackwall::auth::RegistrationMode::parse(std::env::var("REGISTRATION").ok().as_deref())?;
 
+    for (workspace, team, active) in store.teams_with_parallel_sprints().await? {
+        tracing::warn!(
+            %workspace,
+            %team,
+            active,
+            "team has several active sprints; complete all but one to start new sprints"
+        );
+    }
+
     // One change listener per HTTP process; the worker never starts one.
     let _sync_events = store.spawn_sync_events();
     let events = store.clone();

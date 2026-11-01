@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT kind='active' AS \"active!\" FROM stages WHERE workspace_id=$1 AND team_id=$2 AND id=$3",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "active!",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "0d99cefd82cb0d19e8337433449488d61ec46ed14770910964617cd591118979"
+}

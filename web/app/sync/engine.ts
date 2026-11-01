@@ -90,7 +90,7 @@ export type {
 } from "./engine-types";
 export type { TabMessage } from "./tabs";
 
-export const SCHEMA = 8;
+export const SCHEMA = 9;
 
 export type OnlineResult = MutationResult & { invitation?: IssuedInvitation };
 /** A refreshed CSRF token, retried at once, or a failure to retry after a backoff. */

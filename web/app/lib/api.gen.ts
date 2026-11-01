@@ -836,6 +836,12 @@ export interface components {
         }
       | {
           id: components["schemas"]["TeamId"];
+          sprints: boolean;
+          /** @enum {string} */
+          type: "set_team_sprints";
+        }
+      | {
+          id: components["schemas"]["TeamId"];
           key: string;
           name: string;
           /** @enum {string} */
@@ -2068,6 +2074,8 @@ export interface components {
       key?: string;
       members: string[];
       name: string;
+      /** @description Whether the team plans its work in sprints. */
+      sprints?: boolean;
       stages: components["schemas"]["Stage"][];
       /** Format: int64 */
       version?: number;

@@ -1,17 +1,18 @@
-import { useId, useState } from "react";
+import { useId, useMemo, useState } from "react";
 import { Form } from "react-aria-components";
 import { Navigate } from "react-router";
 import { ListTodo, Minus, Plus, X } from "lucide-react";
 import { Button } from "~/components/ui/button";
 import { Input } from "~/components/ui/field";
 import { FilterBar } from "~/components/app/filter-bar";
+import { StageIcon } from "~/components/app/icons";
 import type { HiddenFilter } from "~/components/app/filter-bar";
 import { IssueList } from "~/components/app/issue-list";
 import { EmptyState, Page, PageHeader } from "~/components/app/page";
 import { QueryStatus } from "~/components/app/query-status";
 import { useQueueState } from "~/components/app/workbench";
 import { bulkIssueCommands } from "~/lib/bulk-issues";
-import { OPEN, effectiveFilter, isNarrowed, whereIs } from "~/lib/filters";
+import { OPEN, addClause, effectiveFilter, isNarrowed, whereIs } from "~/lib/filters";
 import { useI18n } from "~/lib/i18n";
 import { useIssues } from "~/lib/queries";
 import { sprintStageId } from "~/lib/teams";
@@ -38,7 +39,10 @@ export default function SprintPlan() {
 
 const CANDIDATE_SCOPE: HiddenFilter[] = ["team_id", "sprint_id", "stage_kind"];
 
-/** Open issues of the team that no sprint holds, whatever their status. */
+/**
+ * Open issues of the team that no sprint holds: Ready work outside backlog stages first, then the
+ * backlog. Both sit in one list, so selection and dragging span them.
+ */
 function Candidates({ team, sprint }: { team: Team; sprint: Sprint }) {
   const { t } = useI18n();
   const { filter, setFilter } = useQueueState();
@@ -47,10 +51,26 @@ function Candidates({ team, sprint }: { team: Team; sprint: Sprint }) {
     where: [whereIs("team_id", team.id), whereIs("sprint_id", null), OPEN],
     sort: filter.sort ?? "priority",
   };
-  const query = useIssues(effectiveFilter(filter, base));
+  const scoped = effectiveFilter(filter, base);
+  const query = useIssues(addClause(scoped, whereIs("stage_kind", "planned", "active")));
+  const backlog = useIssues(addClause(scoped, whereIs("stage_kind", "backlog")));
   const narrowed = isNarrowed(filter, CANDIDATE_SCOPE);
+  const issues = useMemo(() => [...query.items, ...backlog.items], [query.items, backlog.items]);
+  const sections = useMemo(
+    () =>
+      [
+        { id: "ready", title: t("sprint.ready"), items: query.items },
+        {
+          id: "backlog",
+          title: t("team.backlog"),
+          icon: <StageIcon kind="backlog" />,
+          items: backlog.items,
+        },
+      ].filter((section) => section.items.length > 0),
+    [query.items, backlog.items, t],
+  );
   return (
-    <Pane title={t("sprint.unplanned")} count={query.items.length}>
+    <Pane title={t("sprint.unplanned")} count={issues.length}>
       <FilterBar
         filter={filter}
         onChange={setFilter}
@@ -60,7 +80,8 @@ function Candidates({ team, sprint }: { team: Team; sprint: Sprint }) {
       />
       <QueryStatus query={query} />
       <IssueList
-        issues={query.items}
+        issues={issues}
+        sections={sections}
         fill
         emptyState={
           narrowed ? (

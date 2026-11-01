@@ -148,6 +148,7 @@ describe("resolving created stages", () => {
     archive_after_days: null,
     icon: "users",
     color: "blue",
+    sprints: false,
     stages: [{ id: "stage-new", version: 1, name: "new", kind: "backlog", position: 2 }],
   };
 
@@ -275,6 +276,7 @@ describe("checking references before saving", () => {
     archive_after_days: null,
     icon: "users",
     color: "blue",
+    sprints: false,
     stages: [{ id: "stage-a", version: 1, name: "New", kind: "backlog", position: 1 }],
   };
   const members = new Set(["member-b"]);

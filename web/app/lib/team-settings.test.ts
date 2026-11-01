@@ -33,6 +33,7 @@ const team = (overrides: Partial<Team> = {}): Team => ({
   archive_after_days: 30,
   icon: "code",
   color: "violet",
+  sprints: false,
   ...overrides,
 });
 

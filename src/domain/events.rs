@@ -63,9 +63,11 @@ pub fn webhook_event(action: &str) -> Option<(&'static str, &'static str)> {
         "edit_comment" | "attach_comment_file" => ("comment.updated", "comment"),
         "delete_comment" => ("comment.deleted", "comment"),
         "create_team" => ("team.created", "team"),
-        "set_team_members" | "set_team_archive" | "set_team_appearance" | "update_team" => {
-            ("team.updated", "team")
-        }
+        "set_team_members"
+        | "set_team_archive"
+        | "set_team_appearance"
+        | "set_team_sprints"
+        | "update_team" => ("team.updated", "team"),
         "delete_team" => ("team.deleted", "team"),
         "create_stage" => ("stage.created", "stage"),
         "update_stage" => ("stage.updated", "stage"),
