@@ -1384,6 +1384,7 @@ describe("create_sprint / update_sprint", () => {
       state: "planned",
       outcome: null,
     });
+    mutate(store, "complete_sprint", { id: SPRINT, carryover_sprint_id: null });
     mutate(store, "update_sprint", {
       id: "sprint-new",
       name: "Next up",
@@ -1393,6 +1394,18 @@ describe("create_sprint / update_sprint", () => {
       state: "active",
     });
     expect(store.get("sprints", "sprint-new")?.state).toBe("active");
+  });
+
+  it("starts one sprint per team at a time", () => {
+    const store = seedStore(MEMBER);
+    const args = { name: "N", goal: "", starts_at: STARTS, ends_at: ENDS };
+    mutate(store, "create_sprint", { ...args, id: "sprint-new", team_id: TEAM });
+    const id = mutate(store, "update_sprint", { ...args, id: "sprint-new", state: "active" });
+    expect(store.replayErrors().get(id)).toMatchObject({
+      status: 409,
+      message: "another sprint of this team is already active",
+    });
+    expect(store.get("sprints", "sprint-new")?.state).toBe("planned");
   });
 
   it("is idempotent", () => {

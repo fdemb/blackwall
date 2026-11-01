@@ -541,6 +541,9 @@ export const updateSprint: Mutator<ArgsOf<"update_sprint">> = (tx, args, ctx) =>
   if (sprint.state === "completed" || sprint.state === "archived") {
     throw new MutationError(409, "sprint already completed");
   }
+  if (args.state === "active" && activeSprint(tx, sprint.team_id, sprint.id)) {
+    throw new MutationError(409, "another sprint of this team is already active");
+  }
   tx.put("sprints", {
     ...sprint,
     name: args.name,
@@ -550,6 +553,13 @@ export const updateSprint: Mutator<ArgsOf<"update_sprint">> = (tx, args, ctx) =>
     state: args.state,
   });
 };
+
+/** Mirrors `planning::only_active_sprint`: the team's active sprint other than `except`. */
+function activeSprint(tx: Tx, teamId: string, except: string) {
+  return tx
+    .byIndex("sprints", "team_id", teamId)
+    .find((sprint) => sprint.id !== except && sprint.state === "active");
+}
 
 export const completeSprint: Mutator<ArgsOf<"complete_sprint">> = (tx, args, ctx) => {
   requireRole(tx, ctx.actor, "complete_sprint", args);

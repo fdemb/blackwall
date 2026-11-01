@@ -328,7 +328,7 @@ impl Operation<'_> {
     async fn set_team_sprints(&mut self, id: TeamId, sprints: bool) -> Result<()> {
         let id = id.0;
         self.admin()?;
-        // Creating a sprint locks the team row, so the check holds until commit.
+        // Creating or starting a sprint locks the team row, so the check holds until commit.
         self.touch("teams", id).await?;
         if !sprints {
             let open: bool = sqlx::query_scalar!(
@@ -937,10 +937,38 @@ impl Operation<'_> {
         if terminal_sprint(&self.sprint_state(id).await?) {
             return Err(Error::Conflict("sprint already completed".into()));
         }
+        if state == SprintState::Active {
+            self.only_active_sprint(id).await?;
+        }
 
         sqlx::query!("UPDATE sprints SET name=$3,goal=$4,starts_at=$5,ends_at=$6,state=$7 WHERE workspace_id=$1 AND id=$2", self.workspace_id, id, name, goal, starts_at, ends_at, enum_text(&state))
             .execute(&mut *self.tx)
             .await?;
+        Ok(())
+    }
+
+    /// Fails when another sprint of the sprint's team is active. Starts lock the
+    /// team row, so two sprints can't start at once.
+    async fn only_active_sprint(&mut self, id: Uuid) -> Result<()> {
+        let team = sqlx::query_scalar!(
+            "SELECT team_id FROM sprints WHERE workspace_id=$1 AND id=$2",
+            self.workspace_id,
+            id,
+        )
+        .fetch_one(&mut *self.tx)
+        .await?;
+        persistence::lock_team_numbers(&mut self.tx, self.workspace_id, team).await?;
+        let other: bool = sqlx::query_scalar!(
+            "SELECT EXISTS(SELECT 1 FROM sprints WHERE workspace_id=$1 AND team_id=$2 AND id<>$3 AND state='active') AS \"exists!\"",
+            self.workspace_id,
+            team,
+            id,
+        )
+        .fetch_one(&mut *self.tx)
+        .await?;
+        if other {
+            return Err(Error::Conflict(crate::domain::SPRINT_ALREADY_ACTIVE.into()));
+        }
         Ok(())
     }
 
@@ -1338,6 +1366,37 @@ mod tests {
             .unwrap();
         run(off).await.unwrap();
         assert!(!flag().await.unwrap());
+
+        store.pool.close().await;
+        database.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn teams_run_one_active_sprint_at_a_time() {
+        let (database, store, workspace, owner) = setup().await;
+        let (team, first, second) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
+        let run = |command| run(&store, workspace, owner, command);
+        run(json!({"type": "create_team", "id": team, "name": "A", "key": "A"}))
+            .await
+            .unwrap();
+        let start = |id: Uuid| {
+            let mut command = sprint(id, team);
+            command["type"] = "update_sprint".into();
+            command["state"] = "active".into();
+            command.as_object_mut().unwrap().remove("team_id");
+            command
+        };
+        run(sprint(first, team)).await.unwrap();
+        run(sprint(second, team)).await.unwrap();
+        run(start(first)).await.unwrap();
+        // Saving the active sprint again is not a second start.
+        run(start(first)).await.unwrap();
+        assert!(matches!(run(start(second)).await, Err(Error::Conflict(_))));
+
+        run(json!({"type": "complete_sprint", "id": first, "carryover_sprint_id": null}))
+            .await
+            .unwrap();
+        run(start(second)).await.unwrap();
 
         store.pool.close().await;
         database.cleanup().await;

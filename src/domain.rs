@@ -524,6 +524,9 @@ pub(crate) fn least_used_team_color<'a>(taken: impl IntoIterator<Item = &'a str>
     TEAM_COLORS[index]
 }
 
+/// Why a sprint can't start while another sprint of its team is active.
+pub(crate) const SPRINT_ALREADY_ACTIVE: &str = "another sprint of this team is already active";
+
 /// Why a team with a planned or active sprint can't turn sprints off.
 pub(crate) const SPRINTS_IN_USE: &str =
     "complete the team's planned and active sprints before turning sprints off";

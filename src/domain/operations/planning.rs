@@ -543,10 +543,24 @@ impl Workspace {
             ));
         }
 
-        let sprint = find_mut(&mut self.sprints, |s| s.id == id)?;
+        let sprint = self
+            .sprints
+            .iter()
+            .find(|s| s.id == id)
+            .ok_or(Error::NotFound)?;
         if sprint.state.is_finished() {
             return Err(Error::Conflict("sprint already completed".into()));
         }
+        let team = sprint.team_id;
+        if state == SprintState::Active
+            && self
+                .sprints
+                .iter()
+                .any(|s| s.id != id && s.team_id == team && s.state == SprintState::Active)
+        {
+            return Err(Error::Conflict(super::super::SPRINT_ALREADY_ACTIVE.into()));
+        }
+        let sprint = find_mut(&mut self.sprints, |s| s.id == id)?;
         sprint.name = name;
         sprint.goal = goal;
         sprint.starts_at = starts_at;
